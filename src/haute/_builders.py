@@ -46,7 +46,11 @@ from haute._edge_join import (
     execute_edge_join,
     resolve_edge_join_role_indices,
 )
-from haute._execution_context import ExecutionProfile, current_execution_context
+from haute._execution_context import (
+    ExecutionProfile,
+    FullTermTally,
+    current_execution_context,
+)
 from haute._graph_utils import _sanitize_func_name, build_instance_mapping, edge_input_name
 from haute._io import _select_columns
 from haute._logging import get_logger
@@ -1311,11 +1315,18 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         feature_contract_path=scoring_contract_path(model_source, config, base_dir),
         reuse_loaded_model=ctx.reuse_loaded_model,
         input_fanout=_upstream_scenario_fanout(ctx.upstream_ids, ctx.node_map),
+        full_term_tally=_full_term_tally(ctx),
         base_dir=base_dir,
         preamble_ns=dict(ctx.preamble_ns) if ctx.preamble_ns else None,
     )
 
     return ctx.func_name, scorer.score, False
+
+
+def _full_term_tally(ctx: NodeBuildContext) -> FullTermTally | None:
+    """Where this node's scorer records what it priced as a full policy term."""
+    context = current_execution_context()
+    return None if context is None else context.provenance.full_term_tally(ctx.node.id)
 
 
 def _upstream_scenario_fanout(

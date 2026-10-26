@@ -17,7 +17,7 @@ Every loaded model is bound to the feature contract it scores under
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeAlias
@@ -25,8 +25,6 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeAlias
 from haute.errors import ConfigError
 
 if TYPE_CHECKING:
-    import polars as pl
-
     from haute._mlflow_io import ScoringModel
     from haute._mlflow_utils import ResolvedBackend
 
@@ -438,38 +436,3 @@ def inspect_model_file(
             else None
         ),
     )
-
-
-def full_term_exposure_notes(
-    config: Mapping[str, Any], input_columns: Iterable[str], scored: pl.DataFrame
-) -> list[str]:
-    """What a Model Score preview priced as a full policy term, said on the node.
-
-    A missing or empty exposure scores as one; a renamed column or a join that
-    empties some rows would otherwise annualise them unseen. An additive offset
-    is never filled (scoring refuses it), so it needs no note.
-    """
-    from haute._builders import _configured_pipeline_dir
-
-    source = parse_model_source(dict(config))
-    if source is None:
-        return []
-    base_dir = _configured_pipeline_dir()
-    scoring_model = load_scoring_model(
-        source,
-        str(config.get("task", "regression")),
-        feature_contract_path=scoring_contract_path(source, dict(config), base_dir),
-        base_dir=base_dir,
-    )
-    column = getattr(scoring_model, "offset_column", None)
-    if not column or getattr(scoring_model, "offset_link", None) != "log":
-        return []
-    if column not in set(input_columns):
-        return [f"Scored as a full policy term: the input has no {column!r} column."]
-    empty = scored.get_column(column).null_count() if column in scored.columns else 0
-    if not empty:
-        return []
-    return [
-        f"{empty:,} of the {scored.height:,} previewed rows have no {column!r} and were "
-        "scored as a full policy term."
-    ]

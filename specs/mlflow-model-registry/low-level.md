@@ -900,11 +900,15 @@ endpoint.
   `explain_model_score_from_config` fills a traced row's missing exposure the
   same way, so the trace explains the price the scorer gave, and adds
   `notes` to the explanation saying the row was priced as a full policy term.
-  `full_term_exposure_notes(config, input_columns, scored)` in `_model_source.py`
-  gives the preview's note for a Model Score node whose bound model has an
-  exposure: the column its input (its parents' outputs) lacks, else the count of
-  previewed rows whose exposure is null; the executor sets it as the node's
-  `NodeResult.notes`; a non-numeric or
+  The preview's note comes from what scoring filled, before any display
+  projection: `ModelScorer.score` sets the node's `FullTermTally` (from
+  `ExecutionProvenance.full_term_tally(node_id)`, `src/haute/_execution_context.py`)
+  in a context variable each scoring path reads as it starts (a row-local scan's
+  callbacks record into the tally it captured), `_full_term_offset` records the
+  rows it scored, those without an exposure and a missing column, and the
+  executor sets `ExecutionProvenance.full_term_notes()` as each node's
+  `NodeResult.notes`, kept in the preview cache beside the outputs so a cached
+  preview says the same; a non-numeric or
   non-finite explanation offset raises `ModelExplanationError` before CatBoost
   is called.
 - **Pyfunc feature discovery uses the supported MLflow signature API.**

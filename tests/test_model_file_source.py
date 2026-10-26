@@ -1188,7 +1188,7 @@ def test_the_preview_notes_an_exposure_it_priced_as_a_full_policy_term(project: 
 
     model_path = train(project, "catboost", loss="Poisson", iterations=10, depth=2)
 
-    def notes(frame: pl.DataFrame, name: str) -> list[str]:
+    def notes(frame: pl.DataFrame, name: str, columns: list[str] | None = None) -> list[str]:
         frame.write_parquet(project / name)
         graph = make_graph(
             {
@@ -1213,9 +1213,9 @@ def test_the_preview_notes_an_exposure_it_priced_as_a_full_policy_term(project: 
                 "edges": [make_edge("src", "ms")],
             }
         )
-        result = execute_graph(graph, target_node_id="ms")["ms"]
-        assert result.status == "ok", result.error
-        return result.notes
+        result = execute_graph(graph, target_node_id="ms", requested_preview_columns=columns)
+        assert result["ms"].status == "ok", result["ms"].error
+        return result["ms"].notes
 
     frame = data(seed=29).head(10)
     assert notes(frame, "full.parquet") == []
@@ -1225,6 +1225,80 @@ def test_the_preview_notes_an_exposure_it_priced_as_a_full_policy_term(project: 
     blanks = frame.with_columns(
         exposure=pl.when(pl.int_range(pl.len()) < 3).then(None).otherwise(pl.col("exposure"))
     )
-    assert notes(blanks, "blanks.parquet") == [
-        "3 of the 10 previewed rows have no 'exposure' and were scored as a full policy term."
+    counted = ["3 of the 10 rows scored had no 'exposure' and were scored as a full policy term."]
+    assert notes(blanks, "blanks.parquet") == counted
+    # A cached preview says the same, and so does one that shows only the prediction:
+    # the count is what scoring filled, not what the preview displays.
+    assert notes(blanks, "blanks.parquet") == counted
+    assert notes(blanks, "projected.parquet", columns=["pred"]) == counted
+
+
+def test_the_note_reads_a_model_score_fed_by_one_table_of_several(project: Path) -> None:
+    """A parent that emits several tables feeds the scorer one of them, by its port."""
+    import json
+
+    from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+    from haute.executor import _preview_cache, execute_graph
+    from tests.conftest import build_test_api_input_snapshots
+
+    model_path = train(project, "catboost", loss="Poisson", iterations=10, depth=2)
+    records = [
+        {"age": 30.0 + i, "region": "north", "exposure": None if i < 2 else 0.5, "drivers": [{}]}
+        for i in range(5)
     ]
+    (project / "quotes.json").write_text(json.dumps(records), encoding="utf-8")
+
+    def column(name: str, kind: str, path: str = "$[:]") -> dict[str, object]:
+        return {"name": name, "path": f"{path}.{name}", "type": kind, "selected": True}
+
+    config = {
+        "path": str(project / "quotes.json"),
+        "contract": "opaque",
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": "quotes",
+                "emit": True,
+                "columns": [
+                    column("age", "float"),
+                    column("region", "str"),
+                    column("exposure", "float"),
+                ],
+            },
+            {
+                "path": "$[:].drivers[:]",
+                "label": "drivers",
+                "emit": True,
+                "columns": [column("age", "float", "$[:]")],
+            },
+        ],
+    }
+    build_test_api_input_snapshots(project / "quotes.json", config)
+    graph = PipelineGraph(
+        nodes=[
+            GraphNode(
+                id="api", data=NodeData(label="api", nodeType=NodeType.API_INPUT, config=config)
+            ),
+            GraphNode(
+                id="ms",
+                data=NodeData(
+                    label="ms",
+                    nodeType=NodeType.MODEL_SCORE,
+                    config={
+                        "sourceType": "file",
+                        "model_path": model_path.name,
+                        "task": "regression",
+                        "output_column": "pred",
+                    },
+                ),
+            ),
+        ],
+        edges=[GraphEdge(id="e", source="api", target="ms", sourceHandle="quotes")],
+    )
+    counted = ["2 of the 5 rows scored had no 'exposure' and were scored as a full policy term."]
+    # The scorer previewed alone, and the whole pipeline with the parent's tables too.
+    for target in ("ms", None):
+        _preview_cache.clear()
+        result = execute_graph(graph, target_node_id=target)
+        assert result["ms"].status == "ok", result["ms"].error
+        assert result["ms"].notes == counted

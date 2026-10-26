@@ -1351,6 +1351,7 @@ def _execute_graph_core(
             avail_cols = cached["available_columns"]
             output_cols = cached["output_columns"]
             frame_cols = cached["frame_columns"]
+            node_notes = cached["notes"]
             read_generations = tuple(
                 replace(generation, kind="seeded") for generation in cached.get("seed_plan", ())
             )
@@ -1390,6 +1391,10 @@ def _execute_graph_core(
         merged_avail = {**cached["available_columns"], **avail_cols}
         merged_output_cols = {**cached["output_columns"], **output_cols}
         merged_frame_cols = {**cached["frame_columns"], **frame_cols}
+        # A node scored again says what it priced now, not what it priced before.
+        merged_notes = {
+            nid: notes for nid, notes in cached["notes"].items() if nid not in eager_outputs
+        } | execution_context.provenance.full_term_notes()
         merged_order = list(dict.fromkeys(cached["order"] + order))
         # A node that re-executed successfully in the extend path must
         # clear any stale cached error from an earlier transient failure.
@@ -1408,10 +1413,12 @@ def _execute_graph_core(
                 "available_columns": merged_avail,
                 "output_columns": merged_output_cols,
                 "frame_columns": merged_frame_cols,
+                "notes": merged_notes,
                 "execution_strategy": _current_execution_strategy(),
             }
         )
         eager_outputs = merged
+        node_notes = merged_notes
         errors = merged_errors
         timings = merged_timings
         memory_bytes = merged_memory
@@ -1442,6 +1449,7 @@ def _execute_graph_core(
         eager_outputs = {k: v for k, v in raw_outputs.items() if v is not None}
         if snapshot_plan is not None:
             read_generations = snapshot_plan.read_generations(order)
+        node_notes = execution_context.provenance.full_term_notes()
         _store_entry(
             {
                 "eager_outputs": eager_outputs,
@@ -1453,6 +1461,7 @@ def _execute_graph_core(
                 "available_columns": avail_cols,
                 "output_columns": output_cols,
                 "frame_columns": frame_cols,
+                "notes": node_notes,
                 "execution_strategy": _current_execution_strategy(),
             }
         )
@@ -1659,13 +1668,6 @@ def _execute_graph_core(
                 preview_row_limit = None
                 preview = []
 
-            notes: list[str] = []
-            if node_data.nodeType == NodeType.MODEL_SCORE:
-                from haute._model_source import full_term_exposure_notes
-
-                inputs = set().union(*(_cached_output_names(p) for p in parents_of.get(nid, ())))
-                notes = full_term_exposure_notes(node_data.config, inputs, df)
-
             results[nid] = NodeResult(
                 status="ok",
                 row_count=len(df),
@@ -1682,7 +1684,7 @@ def _execute_graph_core(
                 timing_ms=timings.get(nid, 0),
                 memory_bytes=memory_bytes.get(nid, 0),
                 schema_warnings=node_warnings,
-                notes=notes,
+                notes=node_notes.get(nid, []),
             )
     finally:
         # Release the pin even when result serialisation/projection fails.

@@ -157,7 +157,8 @@ Out of scope (owned elsewhere):
   refused naming it. Because a renamed exposure column or a join that empties
   some rows would otherwise annualise them unseen, the Model Score node's
   preview carries a note (`NodeResult.notes`) naming the exposure column its
-  input lacks, or how many previewed rows had none, and a traced row without one
+  input lacks, or how many of the rows it scored had none (counted as scoring
+  fills them, so a preview showing only some columns still says so), and a traced row without one
   says it was priced as a full policy term. Nothing fails, and a deployed quote
   carries no note.
 - A model trained outside Haute scores like any other, with no contract and no

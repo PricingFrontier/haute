@@ -37,6 +37,8 @@ from haute.errors import FeatureMismatchError as FeatureMismatchError
 if TYPE_CHECKING:
     from typing import IO
 
+    from haute._execution_context import FullTermTally
+
     # ``Task`` is the shared classification/regression literal already defined
     # for the feature contract; reuse it so the scorer surface does not invent
     # a second, drift-prone spelling of the task domain.
@@ -470,6 +472,13 @@ def model_score_whole_output() -> Iterator[None]:
         _score_whole_output.reset(token)
 
 
+# Where the scorer running now records what it priced as a full policy term
+# (set by ``ModelScorer.score``); each scoring path reads it once, as it
+# starts, so a row-local scan's callbacks record into the same tally.
+_full_term_tally: contextvars.ContextVar[FullTermTally | None] = contextvars.ContextVar(
+    "haute_model_score_full_term_tally", default=None
+)
+
 # How many rows the scored frame holds per row of the source it is read from:
 # the product of the scenario expansions between them (1: none). The input
 # sink reads that source in proportionally smaller chunks.
@@ -605,7 +614,10 @@ def _require_positive_log_link_offset(
 
 
 def _full_term_offset(
-    frame: pl.DataFrame, offset_column: str | None, offset_link: str | None
+    frame: pl.DataFrame,
+    offset_column: str | None,
+    offset_link: str | None,
+    tally: FullTermTally | None = None,
 ) -> pl.DataFrame:
     """The frame scoring reads, with a missing or null exposure at its full-term value.
 
@@ -613,7 +625,8 @@ def _full_term_offset(
     adds nothing to a log-link model. An additive offset is a base premium
     with no full-term value, so a missing, null or non-finite one is refused.
     Scoring reads this copy and attaches predictions to the caller's frame, so
-    the caller's own columns are never filled.
+    the caller's own columns are never filled. *tally*, when given, records
+    what was filled, for the preview's note.
     """
     if not offset_column:
         return frame
@@ -623,9 +636,13 @@ def _full_term_offset(
     if neutral is None:
         _require_additive_offset(frame, offset_column)
         return frame
-    if offset_column not in frame.columns:
+    missing = offset_column not in frame.columns
+    empty = frame.height if missing else frame.get_column(offset_column).null_count()
+    if tally is not None:
+        tally.record(offset_column, rows=frame.height, empty=empty, missing=missing)
+    if missing:
         return frame.with_columns(pl.lit(neutral, dtype=pl.Float64).alias(offset_column))
-    if frame.get_column(offset_column).null_count() == 0:
+    if empty == 0:
         return frame
     return frame.with_columns(pl.col(offset_column).cast(pl.Float64).fill_null(neutral))
 
@@ -895,6 +912,7 @@ def _score_eager_unified(
         output_col,
         offset_column=offset_column,
         offset_link=offset_link,
+        tally=_full_term_tally.get(),
     )
     return _project_scored_output(
         scored.lazy(),
@@ -915,11 +933,12 @@ def _score_collected_frame(
     *,
     offset_column: str | None,
     offset_link: str | None,
+    tally: FullTermTally | None = None,
 ) -> tuple[pl.DataFrame, list[str]]:
     """Score one materialised frame; return it with predictions."""
     from haute._mlflow_io import _prepare_predict_frame
 
-    scoring = _full_term_offset(frame, offset_column, offset_link)
+    scoring = _full_term_offset(frame, offset_column, offset_link, tally)
     predict_features = _offset_predict_features(features, flavor, offset_column)
     if flavor == "rustystats":
         _require_positive_log_link_offset(scoring, offset_column, offset_link)
@@ -1011,6 +1030,8 @@ def _score_row_local_scan(
     if proba_dtype is not None:
         output_dtypes[f"{output_col}_proba"] = proba_dtype
     output_schema = pl.Schema({**input_schema, **output_dtypes})
+    # Read now: the scan's callbacks may run on another thread.
+    tally = _full_term_tally.get()
 
     def score_batch(frame: pl.DataFrame) -> pl.DataFrame:
         scored, _generated = _score_collected_frame(
@@ -1023,6 +1044,7 @@ def _score_row_local_scan(
             output_col,
             offset_column=offset_column,
             offset_link=offset_link,
+            tally=tally,
         )
         return scored.with_columns(
             pl.col(name).cast(dtype, strict=True) for name, dtype in output_dtypes.items()
@@ -1505,6 +1527,7 @@ class ModelScorer:
         input_fanout: int = 1,
         base_dir: str | Path | None = None,
         preamble_ns: dict[str, Any] | None = None,
+        full_term_tally: FullTermTally | None = None,
     ) -> None:
         # The preamble's names, seen by the post-processing code beside ``model``.
         self.preamble_ns = preamble_ns
@@ -1524,6 +1547,7 @@ class ModelScorer:
         self.feature_contract_path = feature_contract_path or None
         self.reuse_loaded_model = reuse_loaded_model
         self.input_fanout = max(1, int(input_fanout))
+        self.full_term_tally = full_term_tally
         self.base_dir = base_dir
         self._bound_model: BoundModel | None = None
         self._scoring_model_lock = threading.Lock()
@@ -1579,6 +1603,7 @@ class ModelScorer:
             dfs = dfs_positional
         lf = dfs[0] if dfs else pl.LazyFrame()
         fanout_token = _score_input_fanout.set(self.input_fanout)
+        tally_token = _full_term_tally.set(self.full_term_tally)
         try:
             return _run_score_pipeline(
                 scoring_model,
@@ -1600,6 +1625,7 @@ class ModelScorer:
                 ),
             )
         finally:
+            _full_term_tally.reset(tally_token)
             _score_input_fanout.reset(fanout_token)
 
 
@@ -1898,13 +1924,14 @@ def _batch_score_to_parquet(
                 bounded_collect_batches(input_path, chunk_size=_SCORE_BATCH_SIZE)
             )
         input_schema_names = list(input_schema)
+        tally = _full_term_tally.get()
         execution_context = current_execution_context()
         with batch_context as input_batches:
             for chunk_raw in input_batches:
                 if execution_context is not None:
                     execution_context.checkpoint(label="model_score_batch")
                 chunk = chunk_raw.to_frame() if isinstance(chunk_raw, pl.Series) else chunk_raw
-                scoring = _full_term_offset(chunk, offset_column, offset_link)
+                scoring = _full_term_offset(chunk, offset_column, offset_link, tally)
                 if scoring_model.flavor == "rustystats":
                     _require_positive_log_link_offset(scoring, offset_column, offset_link)
                 x_data = _prepare_predict_frame(

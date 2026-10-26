@@ -1162,6 +1162,46 @@ _WORKER_RECORD_KEYS = (
 )
 
 
+class FullTermTally:
+    """What one Model Score priced as a full policy term while it scored.
+
+    Scoring fills a missing or empty exposure in its own copy of each frame
+    (``haute._model_scorer._full_term_offset``) and records it here, before any
+    display projection can drop the column, so a preview can say so.
+    """
+
+    __slots__ = ("_lock", "column", "missing", "rows", "empty")
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.column: str | None = None
+        self.missing = False
+        self.rows = 0
+        self.empty = 0
+
+    def record(self, column: str, *, rows: int, empty: int, missing: bool) -> None:
+        """Count one scored frame: its rows, those without an exposure, and a missing column."""
+        with self._lock:
+            self.column = column
+            self.missing = self.missing or missing
+            self.rows += rows
+            self.empty += empty
+
+    def notes(self) -> list[str]:
+        """The note the node's preview shows, or none when every row had its exposure."""
+        with self._lock:
+            if self.column is None:
+                return []
+            if self.missing:
+                return [f"Scored as a full policy term: the input has no {self.column!r} column."]
+            if not self.empty:
+                return []
+            return [
+                f"{self.empty:,} of the {self.rows:,} rows scored had no {self.column!r} and "
+                "were scored as a full policy term."
+            ]
+
+
 class ExecutionProvenance:
     """What one execution prepared, read, captured, wrote, and warned about.
 
@@ -1170,10 +1210,18 @@ class ExecutionProvenance:
     in several processes reports all of them.
     """
 
-    __slots__ = ("_lock", "_records", "_warnings", "_preview_seed_plan", "_write_outcomes")
+    __slots__ = (
+        "_lock",
+        "_records",
+        "_warnings",
+        "_preview_seed_plan",
+        "_write_outcomes",
+        "_full_term",
+    )
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
+        self._full_term: dict[str, FullTermTally] = {}
         self._records: dict[str, list[Any]] = {key: [] for key in _WORKER_RECORD_KEYS}
         self._warnings: list[dict[str, str | None]] = []
         self._preview_seed_plan: tuple[Any, ...] = ()
@@ -1214,6 +1262,17 @@ class ExecutionProvenance:
     def preview_seed_plan(self, generations: tuple[Any, ...]) -> None:
         with self._lock:
             self._preview_seed_plan = tuple(generations)
+
+    def full_term_tally(self, node_id: str) -> FullTermTally:
+        """The tally *node_id*'s scorer records what it priced as a full policy term in."""
+        with self._lock:
+            return self._full_term.setdefault(node_id, FullTermTally())
+
+    def full_term_notes(self) -> dict[str, list[str]]:
+        """Each node's full-policy-term note, for the nodes that have one."""
+        with self._lock:
+            tallies = dict(self._full_term)
+        return {node_id: notes for node_id, tally in tallies.items() if (notes := tally.notes())}
 
     def record_training_write(
         self, outcome: ChunkedWrite, *, native_reason: str | None = None
