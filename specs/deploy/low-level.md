@@ -1010,8 +1010,8 @@ what they cover:
   cache-miss regressions (container target bundles the warning, Databricks refuses).
 - **`test_deploy_data_location.py`** — a project with its pipeline in `rating/`: a Parquet or
   CSV the quote output reads from the project's `data/` is refused naming the node, the
-  path and the folder, while one read only off the path to the quote output is not
-  shipped; a CSV in the pipeline folder deploys from an empty cache and an edited one
+  path and the folder, while one read only off the path to the quote output (a dangling
+  branch, or a source switch's non-live input) is not shipped; a CSV in the pipeline folder deploys from an empty cache and an edited one
   ships its new rows; a direct Parquet glob ships every file and a partitioned folder its
   partition column, each scored from the bundled artefacts.
 - **`test_deploy_quote_input_tables.py`** — a deployed Quote Input with a quote table

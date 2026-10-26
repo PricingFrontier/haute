@@ -192,8 +192,10 @@ source) the quote output depends on, after pruning, must live inside the pipelin
 versions it and CI checks it out. One outside it, such as the project's local `data/`, is
 never shipped: resolution refuses the deployment naming the node, its configured path and
 the folder, with the remedy (move the file into `<folder>/files/data`, or keep the input
-off the path to the quote output). Inputs off that path, which pruning removes (model
-training, optimisation), may read from anywhere. Inside the folder the data always ships:
+off the path to the quote output). Pruning drops every node the quote output does not
+depend on (a training or optimisation branch, a data export, a source switch's non-live
+input), so a Data Input off that path may read from anywhere. Inside the folder the data
+always ships:
 resolution builds a missing snapshot and refreshes a stale one before bundling, as an
 execution's automatic preparation does, so a clean checkout in CI deploys it and an edited
 file never ships its old copy. The request input's sample, Load File nodes and model files

@@ -24,8 +24,9 @@ can't be versioned (GitHub refuses it), so Commit stops and names it. Keep a fil
 in `data/`, or log the model to MLflow.
 
 Data the quote output reads must be in the pipeline folder: a deploy refuses a Data Input
-on the way to the quote output that reads from `data/`. Model training and optimisation
-can read from `data/` ([Deployment](../deployment/index.md)).
+on the way to the quote output that reads from `data/`. Anything else, such as model
+training or optimisation, can read from `data/`: a deploy drops every node the quote output
+doesn't depend on ([Deployment](../deployment/index.md)).
 
 `data/` and `outputs/` stay on your machine. Moving to another version, catching up or
 branching away deletes `outputs/`, because what a run writes belongs to the version that

@@ -4,8 +4,8 @@ A file-based Data Input on the path to the quote output must live inside the pip
 folder (``rating/``): deploy ships it, building or refreshing its snapshot first, so a
 clean checkout in CI deploys it and an edited file never ships its old copy, and a
 direct Parquet folder or glob ships every file it names. One outside the folder is
-refused, since the deployed model could not score without it; outside the path to the
-quote output (model training, optimisation) it may live anywhere.
+refused, since the deployed model could not score without it. A deployment drops every
+node the quote output does not depend on, so off that path it may live anywhere.
 """
 
 from __future__ import annotations
@@ -60,20 +60,42 @@ def _edge(source: str, target: str, port: str | None = None) -> GraphEdge:
 
 
 def _deploy(
-    project: Path, rates: dict[str, Any], *, training_path: str | None = None
+    project: Path,
+    rates: dict[str, Any],
+    *,
+    training_path: str | None = None,
+    batch_path: str | None = None,
 ) -> ResolvedDeploy:
-    """Resolve a deployment pricing each quote with the factor its region reads from *rates*."""
+    """Resolve a deployment pricing each quote with the factor its region reads from *rates*.
+
+    *training_path* adds a branch the quote output does not read; *batch_path* routes the
+    quotes through a source switch whose non-live input reads that file.
+    """
+    quotes = "request" if batch_path is None else "switch"
     nodes = [
         _node("request", NodeType.API_INPUT, {"path": "quotes.parquet"}),
         _node("rates", NodeType.DATA_INPUT, rates),
-        _node("priced", NodeType.POLARS, {"code": "df = request.join(rates, on='region')"}),
+        _node("priced", NodeType.POLARS, {"code": f"df = {quotes}.join(rates, on='region')"}),
         _node("out", NodeType.OUTPUT, make_output_config(["quote_id", "factor"])),
     ]
     edges = [
-        _edge("request", "priced", "request"),
+        _edge("request", "priced" if batch_path is None else "switch", "request"),
         _edge("rates", "priced"),
         _edge("priced", "out"),
     ]
+    if batch_path is not None:
+        nodes += [
+            _node("batch", NodeType.DATA_INPUT, make_file_input_config(batch_path)),
+            _node(
+                "switch",
+                NodeType.LIVE_SWITCH,
+                {
+                    "input_scenario_map": {"request": "live", "batch": "batch"},
+                    "inputs": ["request", "batch"],
+                },
+            ),
+        ]
+        edges += [_edge("batch", "switch"), _edge("switch", "priced")]
     if training_path is not None:
         nodes += [
             _node("history", NodeType.DATA_INPUT, make_file_input_config(training_path)),
@@ -129,18 +151,22 @@ def test_outside_data_on_quote_path_refused(project: Path, name: str) -> None:
     assert "'rating'" in message
 
 
-def test_outside_data_off_quote_path_ok(project: Path) -> None:
-    """Data outside the pipeline folder that the quote output does not read is not shipped."""
+@pytest.mark.parametrize("branch", ["training_path", "batch_path"])
+def test_outside_data_off_quote_path_ok(project: Path, branch: str) -> None:
+    """Data outside the pipeline folder that the quote output does not read is not shipped.
+
+    Off the path is a branch the output never reads or a source switch's non-live input.
+    """
     _rates(project / "rating" / "files" / "data" / "rates.parquet", {"N": 1.1, "S": 1.2})
-    _rates(project / "data" / "history.csv", {"N": 9.0})
+    (project / "data").mkdir()
+    pl.DataFrame({"quote_id": [9], "region": ["N"]}).write_csv(project / "data" / "o.csv")
 
     resolved = _deploy(
-        project,
-        make_file_input_config("files/data/rates.parquet"),
-        training_path="data/history.csv",
+        project, make_file_input_config("files/data/rates.parquet"), **{branch: "data/o.csv"}
     )
 
-    assert not any(name.startswith("history") for name in resolved.artifacts)
+    assert {"history", "batch"}.isdisjoint(node.id for node in resolved.pruned_graph.nodes)
+    assert not any(name.startswith(("history", "batch")) for name in resolved.artifacts)
     assert _scored(resolved) == {1: 1.1, 2: 1.2}
 
 

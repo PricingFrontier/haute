@@ -470,8 +470,9 @@ def refuse_data_outside_pipeline_folder(
 
     Deploy ships only data stored in the pipeline folder (``rating/``); a file outside
     it, such as the project's local ``data/``, is never shipped, so a deployment reading
-    one could not score. Inputs off the path to the quote output, which the pruned
-    graph no longer holds (model training, optimisation), may read from anywhere.
+    one could not score. A deployment drops every node the quote output does not
+    depend on (the pruned graph no longer holds it: a training or optimisation branch, a
+    data export, a source switch's non-live input), so those may read from anywhere.
     """
     from haute._project_layout import PIPELINE_FILES_FOLDER
 
@@ -488,8 +489,8 @@ def refuse_data_outside_pipeline_folder(
             f"Data Input node {node_id!r} reads {raw_path!r}, outside the pipeline folder "
             f"{shown!r}, and the quote output depends on it. Deploy ships only data stored "
             f"in the pipeline folder: move the file into {shown}/{PIPELINE_FILES_FOLDER}/data, "
-            "or take this input off the path to the quote output (model training and "
-            "optimisation may read data from anywhere).",
+            "or take this input off the path to the quote output (a deployment drops every "
+            "node the quote output does not depend on, so those may read data from anywhere).",
             node_id=node_id,
             field="path",
             path=raw_path,
