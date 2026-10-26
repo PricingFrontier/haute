@@ -13,6 +13,8 @@ from haute.errors import DeployError
 from haute.graph_utils import NodeType, PipelineGraph
 
 if TYPE_CHECKING:
+    from mlflow.tracking import MlflowClient
+
     from haute._mlflow_utils import ResolvedBackend
 
 logger = get_logger(component="deploy.bundler")
@@ -291,14 +293,23 @@ def _collect_model_file(
 
 
 def _run_contract(backend: ResolvedBackend, run_id: str, artifact: str) -> Path | None:
-    """The contract run *run_id* logged beside *artifact*, or ``None`` when it logged none."""
+    """The contract run *run_id* logged beside *artifact*, or ``None`` when it logged none.
+
+    The run's client is opened only to list the run when the contract is not
+    already cached, as the model's own download is.
+    """
+    import mlflow
+
     from haute._mlflow_io import _run_contract_if_logged
     from haute._mlflow_utils import resolve_mlflow_source
 
-    _run_id, _version, mlflow_mod, client, _backend = resolve_mlflow_source(
-        source_type="run", run_id=run_id, backend=backend
-    )
-    logged = _run_contract_if_logged(mlflow_mod, client, backend, run_id, artifact)
+    def client() -> MlflowClient:
+        opened: MlflowClient = resolve_mlflow_source(
+            source_type="run", run_id=run_id, backend=backend
+        )[3]
+        return opened
+
+    logged = _run_contract_if_logged(mlflow, client, backend, run_id, artifact)
     return None if logged is None else Path(logged)
 
 

@@ -2403,7 +2403,7 @@ class TestRunContractIfLogged:
             patch("haute._mlflow_io._resolve_artifact_local", side_effect=OSError("reset")),
             pytest.raises(OSError, match="reset"),
         ):
-            _run_contract_if_logged(MagicMock(), client, _FAKE_BACKEND, "r1", "m.cbm")
+            _run_contract_if_logged(MagicMock(), lambda: client, _FAKE_BACKEND, "r1", "m.cbm")
         assert not self._marker("r1", "m.feature_contract.json").exists()
 
     def test_a_failed_listing_is_raised_not_read_as_absence(self):
@@ -2417,7 +2417,7 @@ class TestRunContractIfLogged:
             patch("haute._mlflow_io._resolve_artifact_local", side_effect=OSError("missing")),
             pytest.raises(MlflowException, match="401"),
         ):
-            _run_contract_if_logged(MagicMock(), client, _FAKE_BACKEND, "r2", "m.cbm")
+            _run_contract_if_logged(MagicMock(), lambda: client, _FAKE_BACKEND, "r2", "m.cbm")
         assert not self._marker("r2", "m.feature_contract.json").exists()
 
     def test_an_absent_contract_is_recorded_and_not_fetched_again(self):
@@ -2425,18 +2425,26 @@ class TestRunContractIfLogged:
 
         client = MagicMock()
         client.list_artifacts.return_value = [MagicMock(path="models/m.cbm")]
+        opened: list[object] = []
+
+        def open_client() -> MagicMock:
+            opened.append(client)
+            return client
+
         with patch(
             "haute._mlflow_io._resolve_artifact_local", side_effect=OSError("missing")
         ) as resolve:
             first = _run_contract_if_logged(
-                MagicMock(), client, _FAKE_BACKEND, "r3", "models/m.cbm"
+                MagicMock(), open_client, _FAKE_BACKEND, "r3", "models/m.cbm"
             )
             second = _run_contract_if_logged(
-                MagicMock(), client, _FAKE_BACKEND, "r3", "models/m.cbm"
+                MagicMock(), open_client, _FAKE_BACKEND, "r3", "models/m.cbm"
             )
 
         assert first is None and second is None
-        # The contract's own directory is listed, once; the marker answers the second call.
+        # The contract's own directory is listed, once; the marker answers the second call
+        # without opening the tracking store.
         client.list_artifacts.assert_called_once_with("r3", "models")
+        assert len(opened) == 1
         assert resolve.call_count == 1
         assert self._marker("r3", "models/m.feature_contract.json").is_file()

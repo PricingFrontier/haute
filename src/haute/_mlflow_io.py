@@ -1152,7 +1152,11 @@ def _run_lists_artifact(client: MlflowClient, run_id: str, artifact: str) -> boo
 
 
 def _run_contract_if_logged(
-    mlflow_mod: Any, client: MlflowClient, backend: ResolvedBackend, run_id: str, artifact: str
+    mlflow_mod: Any,
+    client: Callable[[], MlflowClient],
+    backend: ResolvedBackend,
+    run_id: str,
+    artifact: str,
 ) -> str | None:
     """The local copy of the contract a run logged beside *artifact*, or ``None``.
 
@@ -1161,6 +1165,8 @@ def _run_contract_if_logged(
     download fails, and recorded beside where the contract would sit in the
     disk cache, so the fast path and a disk-cache-only load see it; a failed
     download of a contract the listing names, and a failed listing, propagate.
+    *client* is called only for that listing, so a cached contract or a
+    recorded absence never opens the tracking store.
     """
     contract_artifact = _run_contract_artifact(artifact)
     with _disk_cache_run_in_use(run_id):
@@ -1172,7 +1178,7 @@ def _run_contract_if_logged(
         try:
             return _resolve_artifact_local(mlflow_mod, backend, run_id, contract_artifact)
         except Exception:
-            if _run_lists_artifact(client, run_id, contract_artifact):
+            if _run_lists_artifact(client(), run_id, contract_artifact):
                 raise
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.touch()
@@ -1678,7 +1684,9 @@ def _load_with_bounded_retry(
             local_path = _resolve_artifact_local(mlflow_mod, backend, run_id, artifact)
             family = model_family(flavor)
             assert family.load_file is not None  # only file-loaded families retry here
-            contract_path = _run_contract_if_logged(mlflow_mod, client, backend, run_id, artifact)
+            contract_path = _run_contract_if_logged(
+                mlflow_mod, lambda: client, backend, run_id, artifact
+            )
             scoring_model = family.load_file(
                 local_path,
                 task,
