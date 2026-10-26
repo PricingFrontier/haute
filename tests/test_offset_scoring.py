@@ -665,18 +665,24 @@ def _glm_scoring_model(haute_scratch: Path):
 
 
 class TestCanvasScorerOffset:
-    def test_glm_scoring_missing_offset_column_fails_loud(self, haute_scratch: Path) -> None:
+    def test_glm_scoring_without_its_offset_prices_a_full_policy_term(
+        self, haute_scratch: Path
+    ) -> None:
         pytest.importorskip("rustystats", reason="rustystats optional dependency not installed")
         from haute._model_scorer import _run_score_pipeline
 
         df, scoring_model = _glm_scoring_model(haute_scratch)
-        with pytest.raises(FeatureMismatchError):
-            _run_score_pipeline(
-                scoring_model,
-                df.drop("exposure", "claim_count").lazy(),
-                task="regression",
-                output_col="prediction",
+
+        def scored(frame: pl.DataFrame) -> pl.DataFrame:
+            return _run_score_pipeline(
+                scoring_model, frame.lazy(), task="regression", output_col="prediction"
             ).collect()
+
+        without = scored(df.drop("exposure", "claim_count"))
+        full_term = scored(df.drop("claim_count").with_columns(exposure=pl.lit(1.0)))
+        np.testing.assert_allclose(without["prediction"], full_term["prediction"], rtol=1e-12)
+        # Scoring fills its own copy: the output gains no exposure column.
+        assert "exposure" not in without.columns
 
     @pytest.mark.parametrize("source", ["live", "batch"])
     def test_scoring_refuses_non_positive_log_link_exposure(
@@ -759,7 +765,10 @@ class TestCanvasScorerOffset:
         expected = algo.predict(model, df, ["age", "region"], offset="exposure")
         np.testing.assert_allclose(scored, expected, rtol=1e-6)
 
-    def test_catboost_scoring_missing_offset_column_fails_loud(self, haute_scratch: Path) -> None:
+    @pytest.mark.parametrize("source", ["live", "batch"])
+    def test_catboost_scoring_without_its_offset_prices_a_full_policy_term(
+        self, haute_scratch: Path, source: str
+    ) -> None:
         pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         from haute._mlflow_io import load_local_model
         from haute._model_scorer import _run_score_pipeline
@@ -770,13 +779,24 @@ class TestCanvasScorerOffset:
         algo.save(model, model_path)
         scoring_model = load_local_model(str(model_path), "regression")
 
-        with pytest.raises(FeatureMismatchError, match="exposure"):
-            _run_score_pipeline(
-                scoring_model,
-                df.drop("exposure", "claim_count").lazy(),
-                task="regression",
-                output_col="prediction",
-            ).collect()
+        def scored(frame: pl.DataFrame) -> np.ndarray:
+            return (
+                _run_score_pipeline(
+                    scoring_model,
+                    frame.lazy(),
+                    task="regression",
+                    output_col="prediction",
+                    source=source,
+                )
+                .collect()["prediction"]
+                .to_numpy()
+            )
+
+        np.testing.assert_allclose(
+            scored(df.drop("exposure", "claim_count")),
+            scored(df.drop("claim_count").with_columns(exposure=pl.lit(1.0))),
+            rtol=1e-12,
+        )
 
     @staticmethod
     def _score_raw_catboost(model: object, df: pl.DataFrame) -> pl.DataFrame:
@@ -863,6 +883,7 @@ class TestPyfuncScorerOffset:
             feature_names=["age"],
             flavor="pyfunc",
             offset_column="exposure",
+            offset_link="log",
         )
 
     def _frame(self) -> pl.DataFrame:
@@ -888,18 +909,22 @@ class TestPyfuncScorerOffset:
         np.testing.assert_allclose(scored, expected, rtol=1e-10)
 
     @pytest.mark.parametrize("row_limit", [None, 2])
-    def test_missing_offset_fails_loud(self, row_limit: int | None) -> None:
+    def test_a_missing_offset_is_a_full_policy_term(self, row_limit: int | None) -> None:
         from haute._model_scorer import _run_score_pipeline
 
         df = self._frame().drop("exposure")
-        with pytest.raises(FeatureMismatchError, match="exposure"):
-            _run_score_pipeline(
-                self._model(),
-                df.lazy(),
-                task="regression",
-                output_col="prediction",
-                row_limit=row_limit,
-            ).collect()
+        scored = _run_score_pipeline(
+            self._model(),
+            df.lazy(),
+            task="regression",
+            output_col="prediction",
+            row_limit=row_limit,
+        ).collect()
+
+        np.testing.assert_allclose(
+            scored["prediction"].to_numpy(), df["age"].to_numpy()[: scored.height] * 0.1
+        )
+        assert "exposure" not in scored.columns
 
     @pytest.mark.parametrize(
         "required_output_columns", [None, frozenset({"prediction"})], ids=["all", "narrow"]
@@ -1039,28 +1064,32 @@ class TestDeployScorerOffset:
         }
         return df, algo, model, contract_path, artifact_paths
 
-    def test_deploy_payload_missing_offset_fails_loud(self, haute_scratch: Path) -> None:
-        """A payload without the offset column must be rejected loud.
-
-        The column-contract planner (which reads the bundled feature
-        contract's ``offset_column``) rejects the graph before scoring even
-        starts; the runtime contract check and feature validation back it
-        up at score time.  Any of those layers raising is a pass — what is
-        forbidden is a silent offset-absent score.
-        """
+    def test_a_deploy_payload_without_its_offset_prices_a_full_policy_term(
+        self, haute_scratch: Path
+    ) -> None:
+        """A quote is priced for a full policy term: no exposure, or an empty one, is one."""
         pytest.importorskip("rustystats", reason="rustystats optional dependency not installed")
         from haute.deploy._scorer import score_graph
-        from haute.errors import ContractMismatchError
 
-        df, _algo, _model, contract_path, artifact_paths = self._bundle(haute_scratch)
-        with pytest.raises((FeatureMismatchError, ContractMismatchError)):
-            score_graph(
+        df, algo, model, contract_path, artifact_paths = self._bundle(haute_scratch)
+        full_term = algo.predict(
+            model, df.with_columns(exposure=pl.lit(1.0)), ["age"], offset="exposure"
+        )
+
+        def served(payload: pl.DataFrame) -> np.ndarray:
+            return score_graph(
                 graph=self._graph(contract_path),
-                input_df=df.drop("exposure", "claim_count"),
+                input_df=payload,
                 input_node_ids=["api_in"],
                 output_node_id="output",
                 artifact_paths=artifact_paths,
-            )
+            )["prediction"].to_numpy()
+
+        np.testing.assert_allclose(served(df.drop("exposure", "claim_count")), full_term, rtol=1e-8)
+        empty = df.drop("claim_count").with_columns(
+            pl.lit(None, dtype=pl.Float64).alias("exposure")
+        )
+        np.testing.assert_allclose(served(empty), full_term, rtol=1e-8)
 
     def test_deploy_served_score_includes_offset(self, haute_scratch: Path) -> None:
         pytest.importorskip("rustystats", reason="rustystats optional dependency not installed")

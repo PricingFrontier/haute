@@ -25,7 +25,7 @@ from haute._chunked_writes import (
     write_parts,
 )
 from haute._column_lineage import analyze_polars_lineage
-from haute._contracts import Contract, get_column_contract
+from haute._contracts import Contract, get_node_contract
 from haute._edge_join import (
     build_edge_join_kwargs,
     edge_join_key_columns_by_role,
@@ -281,7 +281,7 @@ def _resolve_effective_contract(
     Programmer errors always propagate unchanged.
     """
     try:
-        builder = Contract.from_tuple(get_column_contract(node.data.nodeType, node.data.config))
+        builder = get_node_contract(node.data.nodeType, node.data.config)
     except Exception as exc:
         if not _is_boundary_check_exception(exc):
             raise

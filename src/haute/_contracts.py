@@ -18,7 +18,8 @@ from haute._types import NodeType
 # ``produced``: columns the node creates (not in input).  None = opaque.
 # ``referenced``: input columns the node reads for computation.  None = opaque.
 ColumnContract = tuple[set[str] | None, set[str] | None]
-ColumnContractFn = Callable[[dict[str, Any]], ColumnContract]
+#: A builder's column callback: the tuple form, or a :class:`Contract` with optional inputs.
+ColumnContractFn = Callable[[dict[str, Any]], "ColumnContract | Contract"]
 
 #: Sentinel for builders that are genuinely opaque — user code, external
 #: file schemas, etc.  Registering this explicitly (rather than omitting
@@ -37,6 +38,10 @@ OPAQUE_CONTRACT_SENTINEL = "opaque"
 #: MLflow source.
 _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY = "__haute_deploy_model_input_columns"
 
+#: Private config key beside ``_DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY``: the
+#: served model's inputs it reads only when a request has them (its offset).
+_DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY = "__haute_deploy_model_optional_input_columns"
+
 #: Private config key used only on the scorer's copied deploy graph. It carries
 #: the input columns of the bundled artifact a file-sourced optimiserApply
 #: serves (an empty list: keep the generic rules), so projection plans from the
@@ -47,11 +52,18 @@ _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY = "__haute_deploy_optimiser_input_col
 
 @dataclass(frozen=True, slots=True)
 class Contract:
-    """Small dataclass mirror of the tuple-based ``ColumnContract``."""
+    """Small dataclass mirror of the tuple-based ``ColumnContract``.
+
+    ``optional_inputs`` are columns the node reads when its input has them and
+    never requires (a Model Score's offset): projection keeps them where they
+    exist, and neither the boundary check nor an edge's projection fails
+    without them. The tuple form folds them into the referenced side.
+    """
 
     inputs: frozenset[str] | None
     outputs: frozenset[str] | None
     inputs_by_parent: Mapping[str, frozenset[str] | None] | None = None
+    optional_inputs: frozenset[str] = frozenset()
 
     @classmethod
     def opaque(cls) -> Contract:
@@ -79,12 +91,15 @@ class Contract:
         return Contract(
             inputs=self.inputs if self.inputs is not None else declared.inputs,
             outputs=self.outputs if self.outputs is not None else declared.outputs,
+            optional_inputs=self.optional_inputs,
         )
 
     def to_tuple(self) -> ColumnContract:
-        """Return the ``(produced, referenced)`` tuple form."""
+        """Return the ``(produced, referenced)`` tuple form, optional inputs referenced."""
         produced = set(self.outputs) if self.outputs is not None else None
-        referenced = set(self.inputs) if self.inputs is not None else None
+        referenced = (
+            set(self.inputs) | set(self.optional_inputs) if self.inputs is not None else None
+        )
         return produced, referenced
 
     @classmethod
@@ -176,11 +191,12 @@ def _freeze_mapping(value: Any) -> dict[str, frozenset[str] | None] | None:
     return out
 
 
-def get_column_contract(
-    node_type: NodeType,
-    config: dict[str, Any],
-) -> ColumnContract:
-    """Return the column contract for a node type."""
+def get_node_contract(node_type: NodeType, config: dict[str, Any]) -> Contract:
+    """Return the column contract for a node type, optional inputs included.
+
+    A builder's callback returns the ``(produced, referenced)`` tuple, or a
+    :class:`Contract` when it reads some columns only where they exist.
+    """
     ensure_registry_ready()
     entry = NODE_REGISTRY.get(node_type)
     if entry is None or entry.column_contract is None:
@@ -190,5 +206,13 @@ def get_column_contract(
             "in NODE_REGISTRY (pass columns=... or opaque=True to "
             "_register).",
         )
-    result: ColumnContract = entry.column_contract(config)
-    return result
+    result = entry.column_contract(config)
+    return result if isinstance(result, Contract) else Contract.from_tuple(result)
+
+
+def get_column_contract(
+    node_type: NodeType,
+    config: dict[str, Any],
+) -> ColumnContract:
+    """Return the column contract for a node type as its tuple form."""
+    return get_node_contract(node_type, config).to_tuple()

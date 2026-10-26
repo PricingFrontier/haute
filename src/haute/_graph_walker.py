@@ -369,6 +369,8 @@ class _WalkProjection:
     api_port_columns: Mapping[str, Mapping[str, frozenset[str] | None]]
     strategy_required: Mapping[str, set[str] | projection_planner.AllExceptColumns]
     boundary_operators: Mapping[str, str]
+    optional_columns: frozenset[str] = frozenset()
+    """Demanded columns a parent may lack (``ProjectionPlan.optional_columns``)."""
 
 
 @dataclass(slots=True)
@@ -863,6 +865,7 @@ class _Walk:
             ),
             strategy_required=planning_required,
             boundary_operators=operators,
+            optional_columns=plan.optional_columns,
         )
 
     def _plan_display_projection(self) -> _WalkProjection:
@@ -911,6 +914,7 @@ class _Walk:
                 relevant_edges=self.graph_plan.relevant_edges,
                 submodels=self.graph.submodels,
             ),
+            optional_columns=plan.optional_columns if plan is not None else frozenset(),
         )
 
     def _plan_strategy(
@@ -1380,6 +1384,8 @@ class _Walk:
         schema_columns = lazy_frame.collect_schema().names()
         missing = set(demand) - set(schema_columns)
         required = set(demand) if runtime_demand is not None else self._run_demand(edge)
+        # A column some node reads only where it exists is dropped, not required.
+        required -= self.projection.optional_columns
         if missing & required:
             raise ContractMismatchError(
                 "Columns required by a projection contract are missing from the parent frame.",

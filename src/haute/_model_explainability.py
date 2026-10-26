@@ -710,6 +710,17 @@ def explain_native_prediction(
     }
 
 
+def _full_term_row(input_row: dict[str, Any], scoring_model: Any) -> dict[str, Any]:
+    """The traced row with a missing or null offset at its full-term value, as scoring reads it."""
+    offset_column = getattr(scoring_model, "offset_column", None)
+    if not offset_column or input_row.get(offset_column) is not None:
+        return input_row
+    from haute.modelling._algorithms import full_term_offset
+
+    offset_link = getattr(scoring_model, "offset_link", None)
+    return {**input_row, offset_column: full_term_offset(offset_link)}
+
+
 def explain_model_score_from_config(
     config: dict[str, Any],
     input_row: dict[str, Any],
@@ -745,6 +756,7 @@ def explain_model_score_from_config(
     effective_prediction = (
         prediction_value if prediction_value is not None else output_row.get(prediction_column)
     )
+    input_row = _full_term_row(input_row, scoring_model)
     family = model_family(scoring_model.flavor)
     if family.explanation is None:
         return None

@@ -148,9 +148,11 @@ Out of scope (owned elsewhere):
   binds what a deployed bundle ships; a model whose run logged none scores
   against the features its own file names. A CatBoost
   model with no declaration scores with no offset, the full-policy-term basis
-  a quote is priced on (an exposure of one adds nothing to a log-link model),
-  and a declared offset column missing from the scoring input fails before
-  prediction.
+  a quote is priced on (an exposure of one adds nothing to a log-link model).
+  A declared offset whose column the scoring input lacks, or whose value a row
+  leaves null, scores the same way, for every model family: an exposure of one
+  under a log link, an additive offset of zero otherwise. A zero or negative
+  exposure is still refused.
 - A file-sourced model is cached in memory by its resolved path, `task` and
   the byte identity of the contract it scores under, gated on the model
   file's freshness token, in the same cache the deploy scorer serves bundled
@@ -315,11 +317,11 @@ Out of scope (owned elsewhere):
   indices and offset baseline are positional/structural, not named, so the
   scorer hands every model its features selected by name in the model's own
   order: a reordered input can never misalign them, and is never refused. A
-  missing feature or offset would silently produce a wrong-but-plausible
-  prediction rather than an error, so feature presence, categorical dtype, and
-  offset presence are all checked before any `predict()` call, and a
-  multiclass `predict_proba` output is rejected rather than arbitrarily
-  picking one class's column.
+  missing feature would silently produce a wrong-but-plausible prediction
+  rather than an error, so feature presence and categorical dtype are checked
+  before any `predict()` call (a missing offset is not a mismatch: it scores as
+  a full policy term), and a multiclass `predict_proba` output is rejected
+  rather than arbitrarily picking one class's column.
 - **The model family registry lives in its own leaf module.**
   `_model_flavors.py` has no dependency on the rest of `haute` (loaders and
   offset readers are bound lazily by module path), specifically so that
@@ -423,9 +425,9 @@ Out of scope (owned elsewhere):
   model are treated as a programming or library-contract error, not
   corruption — they are never retried and propagate immediately with
   their real stack trace.
-- A scoring input that fails the feature contract (missing features,
-  a categorical column with numeric dtype, or a missing offset
-  column): `FeatureMismatchError` with the relevant expected/actual context. A categorical
+- A scoring input that fails the feature contract (missing features or a
+  categorical column with numeric dtype): `FeatureMismatchError` with the
+  relevant expected/actual context. A categorical
   value is never such a failure.
 - An unsupported or misspelled scoring flavor reaching `score_frame()`:
   `ConfigError` — never silently treated as pyfunc.

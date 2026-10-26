@@ -29,6 +29,8 @@ from haute._config_validation import (
 )
 from haute._contracts import (
     _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY,
+    _DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY,
+    Contract,
 )
 from haute._contracts import (
     OPAQUE_CONTRACT as _OPAQUE_CONTRACT,
@@ -1124,7 +1126,27 @@ def _build_modelling(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, _modelling_passthrough_fn, False
 
 
-def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
+def _model_score_inputs(
+    produced: set[str], features: Iterable[str], offset_column: object
+) -> Contract:
+    """A scorer reads its features, and its offset only where the input has it.
+
+    A quote is priced for a full policy term, so a missing offset is filled at
+    scoring; projection keeps a present one so pruning never drops it.
+    """
+    offset = (
+        frozenset({offset_column})
+        if isinstance(offset_column, str) and offset_column
+        else frozenset()
+    )
+    return Contract(
+        inputs=frozenset(features) - offset,
+        outputs=frozenset(produced),
+        optional_inputs=offset,
+    )
+
+
+def _model_score_columns(config: dict[str, Any]) -> _ColumnContract | Contract:
     out = config.get("output_column", "prediction") or "prediction"
     produced = {out}
 
@@ -1161,11 +1183,6 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
         from haute.modelling._feature_contract import load_contract_cached
 
         contract = load_contract_cached(feature_contract_path)
-        referenced = set(contract.features)
-        if contract.offset_column:
-            # The offset is a required scoring input (not a feature) —
-            # upstream pruning must not drop it.
-            referenced.add(contract.offset_column)
         if (
             config.get("task") == "classification"
             and contract.model is not None
@@ -1174,7 +1191,7 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
             # A Haute-trained binary classifier always scores its positive-class
             # probability; a prediction-only classifier records no class labels.
             produced = {*produced, f"{out}_proba"}
-        return produced, referenced
+        return _model_score_inputs(produced, contract.features, contract.offset_column)
 
     if _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY in config:
         # The deploy scorer annotates its in-memory graph copy from the
@@ -1182,18 +1199,29 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
         # internal state is an implementation defect, not a reason to fall
         # through to the graph's now-obsolete MLflow source.
         deploy_inputs = config[_DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY]
-        if (
-            not isinstance(deploy_inputs, list)
-            or any(not isinstance(column, str) or not column for column in deploy_inputs)
-            or len(set(deploy_inputs)) != len(deploy_inputs)
+        optional_inputs = config.get(_DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY, [])
+        for key, columns in (
+            (_DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY, deploy_inputs),
+            (_DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY, optional_inputs),
         ):
-            from haute.errors import ConfigError
+            if (
+                not isinstance(columns, list)
+                or any(not isinstance(column, str) or not column for column in columns)
+                or len(set(columns)) != len(columns)
+            ):
+                from haute.errors import ConfigError
 
-            raise ConfigError(
-                "modelScore node has invalid internal deploy model inputs",
-                config_key=_DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY,
-            )
-        return produced, set(deploy_inputs) if deploy_inputs else None
+                raise ConfigError(
+                    "modelScore node has invalid internal deploy model inputs",
+                    config_key=key,
+                )
+        if not deploy_inputs:
+            return produced, None
+        return Contract(
+            inputs=frozenset(deploy_inputs),
+            outputs=frozenset(produced),
+            optional_inputs=frozenset(optional_inputs),
+        )
 
     # Feature columns are only known after loading the model.
     if model_source is None:
@@ -1224,11 +1252,9 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
         model_source, config.get("task", "regression"), base_dir=_configured_pipeline_dir()
     )
     if scoring_model.feature_names:
-        referenced = set(scoring_model.feature_names)
-        model_offset = getattr(scoring_model, "offset_column", None)
-        if isinstance(model_offset, str) and model_offset:
-            referenced.add(model_offset)
-        return produced, referenced
+        return _model_score_inputs(
+            produced, scoring_model.feature_names, getattr(scoring_model, "offset_column", None)
+        )
     return produced, None
 
 

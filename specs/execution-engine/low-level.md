@@ -81,8 +81,9 @@
   ports. `edge_demands` and edge diagnostics use that key, never a lossy
   `(source_node_id, target_node_id)` pair; the mappings accept complete keys only.
   `ProjectionPlan.demand_for_edge()` is the runtime lookup.
-  The plan also carries `needed_by_node`, materialisation/opaque boundaries, and
-  bounded diagnostics.
+  The plan also carries `needed_by_node`, materialisation/opaque boundaries,
+  `optional_columns` (the union of every planned node's `Contract.optional_inputs`)
+  and bounded diagnostics.
 - **`ColumnLineageAnalysis`** (`src/haute/_column_lineage.py`, frozen dataclass) —
   the reusable result of parsing a Polars node's linear frame program. It reports an
   exact output schema when proven, per-input backward demands when proven, a closed
@@ -811,7 +812,10 @@ column required only by that broader demand is absent from the actual runtime sc
 is removed from the edge projections and the capture is written without it. A missing
 capture-only column never fails otherwise-valid runtime execution; a missing
 runtime-required column still raises the typed contract mismatch at the first proven
-boundary.
+boundary. A column in the plan's `optional_columns` (one a node reads only where it exists,
+such as a Model Score's offset) is demanded like any other, so projection keeps it where a
+parent has it, but it is never runtime-required: an edge whose parent lacks it drops it from
+the projection instead of failing.
 
 **Planned executions (`snapshot_plan`).** A sink walk given a leased
 [seed plan](../caching/low-level.md#seed-plans) runs exactly that plan. The plan must have

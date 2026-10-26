@@ -4033,8 +4033,12 @@ class TestBundledModelContractInputs:
                 {"ms"},
             )
 
-    def test_model_offset_is_included_once_in_deploy_inputs(self):
-        from haute._contracts import _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY
+    def test_model_offset_is_an_optional_deploy_input(self):
+        """A request without the offset is priced for a full policy term."""
+        from haute._contracts import (
+            _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY,
+            _DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY,
+        )
         from haute.deploy._scorer import _attach_bundled_model_contract_inputs
 
         scoring_model = MagicMock(
@@ -4052,10 +4056,9 @@ class TestBundledModelContractInputs:
                 {"ms"},
             )
 
-        assert result.node_map["ms"].data.config[_DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY] == [
-            "x",
-            "exposure",
-        ]
+        config = result.node_map["ms"].data.config
+        assert config[_DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY] == ["x"]
+        assert config[_DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY] == ["exposure"]
 
 
 class TestRemapArtifact:

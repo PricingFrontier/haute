@@ -917,6 +917,25 @@ class TestModelFileSourceInvalidation:
         assert after[0] == pytest.approx(before[0] + 100.0)
         assert after[2] != before[2]
 
+    def test_a_source_without_the_offset_scores_a_full_policy_term(self, scoring):
+        """The planner keeps the offset where the input has it and never requires it."""
+        root, model, graph = scoring
+        sibling = model.with_name("freq.feature_contract.json")
+        _contract_file(sibling, offset=None)
+        base = self._observe(graph())
+
+        _contract_file(sibling, offset="exposure")
+        with_exposure = self._observe(graph())
+        data = root / "data.parquet"
+        pl.DataFrame({"age": [30.0]}).write_parquet(data)
+        _bump_mtime(data)
+        without = self._observe(graph())
+
+        # The additive offset adds the source's exposure, or nothing without one.
+        assert with_exposure[0] == pytest.approx(base[0] + 100.0)
+        assert without[0] == pytest.approx(base[0])
+        assert without[1] == without[0]
+
     def test_removing_the_contract_rescores_and_removing_the_model_fails_by_name(self, scoring):
         root, model, graph = scoring
         sibling = model.with_name("freq.feature_contract.json")

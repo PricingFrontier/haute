@@ -26,7 +26,7 @@ from haute._model_source import (
     load_scoring_model,
 )
 from haute._path_resolution import RuntimePathOutsideProjectError
-from haute.errors import ConfigError, FeatureMismatchError
+from haute.errors import ConfigError, FeatureMismatchError, HauteValidationError
 from haute.modelling._feature_contract import build_contract, save_contract
 from haute.modelling._training_job import model_contract_filename
 
@@ -247,12 +247,17 @@ def test_metadata_and_contract_that_disagree_are_refused(project: Path, kind: st
 
 
 @pytest.mark.parametrize("kind", SOURCES)
-def test_a_missing_declared_offset_input_fails_before_prediction(project: Path, kind: str) -> None:
+def test_a_missing_declared_offset_input_scores_as_a_full_policy_term(
+    project: Path, kind: str
+) -> None:
     model_path = external_catboost(project, offset=True)
     contract = write_contract(model_path, offset="exposure", link="log")
+    frame = data(seed=16)
 
-    with pytest.raises(FeatureMismatchError, match="exposure"):
-        score(source_for(kind, model_path, contract), data().drop("exposure"))
+    scored = score(source_for(kind, model_path, contract), frame.drop("exposure"))
+
+    full_term = frame.with_columns(exposure=pl.lit(1.0))
+    np.testing.assert_allclose(scored, native_reference(model_path, full_term, offset=True))
 
 
 def test_a_contract_naming_an_offset_without_its_link_is_refused(project: Path) -> None:
@@ -311,6 +316,59 @@ def test_an_ebm_scores_without_its_contract(project: Path) -> None:
 
 
 GLM = {"terms": {"age": {"type": "linear"}}, "family": "poisson", "link": "log"}
+
+#: Every family Haute trains, each with an exposure offset.
+FAMILIES = [
+    ("catboost", {"loss": "Poisson", "iterations": 20, "depth": 3}),
+    ("glm", GLM),
+    ("xgboost", {"loss": "Poisson", "num_boost_round": 20, "max_depth": 3}),
+    ("lightgbm", {"loss": "Poisson", "num_iterations": 20, "num_leaves": 7, "min_data_in_leaf": 5}),
+    ("ebm", {"loss": "Poisson", "max_rounds": 20, "interactions": 0}),
+    ("tboost", {"loss": "Poisson", "n_trees": 50, "n_bags": 1, "prune": False}),
+]
+
+
+@pytest.mark.parametrize(("algorithm", "params"), FAMILIES, ids=[name for name, _ in FAMILIES])
+def test_every_family_prices_a_missing_or_empty_exposure_as_a_full_policy_term(
+    project: Path, algorithm: str, params: dict[str, Any]
+) -> None:
+    source = FileModelSource(model_path=train(project, algorithm, **dict(params)).name)
+    frame = data(seed=17)
+    full_term = score(source, frame.with_columns(exposure=pl.lit(1.0)))
+    as_given = score(source, frame)
+
+    np.testing.assert_allclose(score(source, frame.drop("exposure")), full_term, rtol=1e-9)
+    even = np.arange(frame.height) % 2 == 0
+    blanks = frame.with_columns(
+        exposure=pl.when(pl.Series(even)).then(None).otherwise(pl.col("exposure"))
+    )
+    np.testing.assert_allclose(
+        score(source, blanks), np.where(even, full_term, as_given), rtol=1e-9
+    )
+    with pytest.raises(HauteValidationError, match="must be positive under a log link"):
+        score(source, frame.with_columns(exposure=pl.lit(0.0)))
+
+
+@pytest.mark.parametrize(("algorithm", "params"), FAMILIES, ids=[name for name, _ in FAMILIES])
+def test_the_trace_explains_a_row_priced_without_its_exposure(
+    project: Path, algorithm: str, params: dict[str, Any]
+) -> None:
+    from haute._model_explainability import explain_model_score_from_config
+
+    model_path = train(project, algorithm, **dict(params))
+    row = data(seed=18).head(1).drop("exposure")
+    prediction = float(score(FileModelSource(model_path=model_path.name), row)[0])
+
+    explanation = explain_model_score_from_config(
+        {"sourceType": "file", "model_path": model_path.name, "task": "regression"},
+        row.row(0, named=True),
+        {"pred": prediction},
+        prediction_column="pred",
+        prediction_value=prediction,
+    )
+
+    assert explanation is not None
+    assert explanation["prediction_value"] == pytest.approx(prediction)
 
 
 @pytest.mark.parametrize(

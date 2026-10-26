@@ -1794,7 +1794,9 @@ class TestRowLocalScanScoring:
             scoring_model, lf, task=task, output_col="pred", source="batch", row_limit=10
         )
 
-    def test_limited_scoring_requires_the_contract_offset_column(self) -> None:
+    def test_limited_scoring_without_the_contract_offset_prices_a_full_policy_term(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         # The offset a contract declares is bound onto the carrier.
         scoring_model = ScoringModel(
             _make_mock_model(["a", "b"]),
@@ -1803,16 +1805,25 @@ class TestRowLocalScanScoring:
             offset_column="exposure",
             offset_link="log",
         )
+        baselines: list[list[float]] = []
 
-        with pytest.raises(FeatureMismatchError, match="exposure"):
-            _run_score_pipeline(
-                scoring_model,
-                self._frame(3),
-                task="regression",
-                output_col="pred",
-                source="batch",
-                row_limit=10,
-            )
+        def pool(x_data, frame, features, cat_feature_names, offset_column, *, offset_link):  # type: ignore[no-untyped-def]
+            baselines.append(frame[offset_column].to_list())
+            return x_data
+
+        monkeypatch.setattr("haute._model_scorer._catboost_baseline_pool", pool)
+
+        scored = _run_score_pipeline(
+            scoring_model,
+            self._frame(3),
+            task="regression",
+            output_col="pred",
+            source="batch",
+            row_limit=10,
+        ).collect()
+
+        assert baselines == [[1.0, 1.0, 1.0]]
+        assert "exposure" not in scored.columns
 
     def test_limit_reaching_the_scorer_predicts_only_limited_rows(
         self, monkeypatch: pytest.MonkeyPatch

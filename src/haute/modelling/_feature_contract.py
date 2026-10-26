@@ -512,14 +512,9 @@ def assert_schema_matches_contract(schema: pl.Schema, expected: FeatureContract)
             "MISSING" if dtype is None else contract_dtype_name(dtype, column=name)
         )
     categorical_features = [name for name in expected.features if feature_types[name] == "String"]
-    # The offset column is a required scoring input: the live contract carries
-    # it only when the schema does, so an input without it fails the diff by
-    # name instead of scoring on an offset-absent basis.
-    offset_column = (
-        expected.offset_column
-        if expected.offset_column and schema.get(expected.offset_column) is not None
-        else None
-    )
+    # The offset is optional: a quote without it is priced for a full policy
+    # term, so its presence is never a mismatch.
+    offset_column = expected.offset_column or None
     actual = build_contract(
         features=list(expected.features),
         feature_types=feature_types,

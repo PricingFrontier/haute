@@ -103,6 +103,15 @@ def catboost_offset_link(loss_function: str | None) -> str:
     return "log" if name in _LOG_LINK_CATBOOST_LOSSES else "identity"
 
 
+def full_term_offset(link: str | None) -> float:
+    """The offset of a full policy term: an exposure of one under a log link, else zero.
+
+    A quote is priced for a full policy term, so scoring reads a missing or
+    null offset as this value; training and evaluation never do.
+    """
+    return 1.0 if link == "log" else 0.0
+
+
 def offset_baseline(values: Any, *, column: str, link: str, context: str) -> np.ndarray:
     """Transform offset column values into a raw-score baseline.
 

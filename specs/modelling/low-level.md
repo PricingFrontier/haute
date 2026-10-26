@@ -1342,8 +1342,9 @@ potentially large copy on its threadpool.
   `haute_offset_link` records the transform beside `haute_offset_column`, and a model
   recording a column without a link is refused. A fit without an offset stamps an empty
   `haute_offset_column` (and no link), so every model Haute trains declares its offset;
-  an absent key leaves the offset undeclared, and scoring then needs a contract that
-  declares it (see the MLflow model registry specification). The job's offset link and the link
+  an absent key leaves the offset undeclared, and scoring then takes the declaration from
+  a contract, or scores with no offset when none declares it (see the MLflow model
+  registry specification). The job's offset link and the link
   stamped at fit both follow the effective loss (`TrainingJob._catboost_loss_function`).
 - GLM prediction keeps the offset column inside the frame handed to RustyStats rather
   than transforming it in Python — RustyStats owns the fit-time offset transform (e.g.

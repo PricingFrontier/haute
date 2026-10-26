@@ -23,6 +23,7 @@ from haute._api_input_schema import quote_input_reads_tables
 from haute._cache import canonical_json
 from haute._contracts import (
     _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY,
+    _DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY,
     _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY,
 )
 from haute._execution_admission import create_admitted_execution_context
@@ -434,11 +435,18 @@ def _attach_bundled_model_contract_inputs(
                 node_id=node.id,
             )
 
-        deploy_inputs = list(feature_names)
-        if offset_column is not None and offset_column not in deploy_inputs:
-            deploy_inputs.append(offset_column)
+        # A request without the offset is priced for a full policy term, so the
+        # offset is read where the request has it and never required.
+        deploy_inputs = [column for column in feature_names if column != offset_column]
+        optional_inputs = [offset_column] if offset_column is not None else []
         nodes.append(
-            node.with_config({**config, _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY: deploy_inputs})
+            node.with_config(
+                {
+                    **config,
+                    _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY: deploy_inputs,
+                    _DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY: optional_inputs,
+                }
+            )
         )
         changed = True
 

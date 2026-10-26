@@ -95,10 +95,12 @@ deployed, so its input is checked against the features and types it was trained 
 model whose run logged no contract, such as one trained outside Haute, scores against the
 features its own file names.
 
-Scoring checks the input against the model's features before it runs: a missing feature,
-a missing offset column the model was trained with, or a numeric column where the model
-expects a categorical one fails with an error listing what is wrong, rather than predicting
-from mismatched data. A model with a feature contract also refuses a column whose type
+Scoring checks the input against the model's features before it runs: a missing feature
+or a numeric column where the model expects a categorical one fails with an error listing
+what is wrong, rather than predicting from mismatched data. The offset a model was trained
+with is optional: a quote is priced for a full policy term, so a missing exposure column, or
+a row whose exposure is empty, scores as an exposure of one (and a missing additive offset
+as zero). An exposure of zero or less is still refused. A model with a feature contract also refuses a column whose type
 differs from training, such as whole numbers where it was trained on decimals, with the
 same error a deployed pipeline gives. The order the input's columns arrive in does not
 matter.
