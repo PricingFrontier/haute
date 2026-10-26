@@ -789,9 +789,10 @@ def test_a_cached_model_s_contract_downloads_from_a_local_store_not_yet_opened(
     from haute.deploy._bundler import _run_contract
 
     backend, run_id = _local_run_with_contract(haute_scratch, monkeypatch)
-    cached_model = _artifact_cache_path(
+    cached = _artifact_cache_path(
         haute_scratch / ".cache" / "models", backend.digest, run_id, "model.cbm"
     )
+    cached_model = haute_scratch / cached.relative_to(haute_scratch.resolve())
     cached_model.parent.mkdir(parents=True)
     cached_model.write_bytes(b"model")
 
