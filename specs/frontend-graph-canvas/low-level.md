@@ -239,7 +239,9 @@ reconciliation rather than dropping them or committing a second mutation.
   `label`, `nodeType`, `description?`, `config?`, `code?`, `func_name?`, plus
   underscore-prefixed *transient* fields that are runtime-only and never
   persisted: `_columns`, `_availableColumns`, `_schemaWarnings`, `_notes` (the
-  previewed node's `NodeResult.notes`, such as a Model Score's full-policy-term note),
+  previewed node's `NodeResult.notes`, such as a Model Score's full-policy-term note,
+  set by `applyPreviewResultColumnsToNodes` whether the response's schema maps or its
+  flat `columns` gave the node its columns),
   `_columnsSource` (the active source the column stash was captured
   under — set alongside `_columns`/`_availableColumns`/`_schemaWarnings`
   by `usePipelineAPI`, compared against the live active source to decide
