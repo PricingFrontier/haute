@@ -238,7 +238,8 @@ reconciliation rather than dropping them or committing a second mutation.
 - **`HauteNodeData`** (`types/node.ts`) — base node data shape:
   `label`, `nodeType`, `description?`, `config?`, `code?`, `func_name?`, plus
   underscore-prefixed *transient* fields that are runtime-only and never
-  persisted: `_columns`, `_availableColumns`, `_schemaWarnings`,
+  persisted: `_columns`, `_availableColumns`, `_schemaWarnings`, `_notes` (the
+  previewed node's `NodeResult.notes`, such as a Model Score's full-policy-term note),
   `_columnsSource` (the active source the column stash was captured
   under — set alongside `_columns`/`_availableColumns`/`_schemaWarnings`
   by `usePipelineAPI`, compared against the live active source to decide
@@ -446,7 +447,7 @@ reconciliation rather than dropping them or committing a second mutation.
    `panelContextFingerprint`/`Version` only if `computePanelContextFingerprint`
    (hashed over `PANEL_CONTEXT_NODE_DATA_KEYS`: label, description,
    nodeType, config, code, func_name, `_columns`, `_availableColumns`,
-   `_schemaWarnings`) changed, and recomputes `structuralFingerprint`/
+   `_schemaWarnings`, `_notes`) changed, and recomputes `structuralFingerprint`/
    `Version` only if `computeStructuralFingerprint` (sorted `id:hash` pairs
    via `shallowNodeDataHash`, plus sorted edge endpoint/handle keys, plus
    preamble) changed.

@@ -359,6 +359,9 @@ export interface NodeResult {
   timings?: NodeTiming[]
   memory?: NodeMemory[]
   schema_warnings?: SchemaWarning[]
+  /** What the node's result rests on that its rows do not show, one line each
+   * (a Model Score whose input had no exposure priced it as a full policy term). */
+  notes?: string[]
   node_statuses?: Record<string, BackendNodeStatus>
   node_columns?: Record<string, ColumnInfo[]>
   node_available_columns?: Record<string, ColumnInfo[]>

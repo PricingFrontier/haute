@@ -396,6 +396,7 @@ def test_the_trace_explains_a_row_priced_without_its_exposure(
 
     assert explanation is not None
     assert explanation["prediction_value"] == pytest.approx(prediction)
+    assert explanation["notes"] == ["Priced as a full policy term: this row has no 'exposure'."]
 
 
 @pytest.mark.parametrize(
@@ -1178,3 +1179,52 @@ def test_a_lightgbm_model_trained_outside_haute_keeps_its_response_transform(
             prediction_column="pred",
             prediction_value=float(scored["pred"][0]),
         )
+
+
+def test_the_preview_notes_an_exposure_it_priced_as_a_full_policy_term(project: Path) -> None:
+    """Nothing fails, but a renamed column or a join that empties rows is said, not hidden."""
+    from haute.executor import execute_graph
+    from tests.conftest import make_edge, make_graph, make_node, make_source_node
+
+    model_path = train(project, "catboost", loss="Poisson", iterations=10, depth=2)
+
+    def notes(frame: pl.DataFrame, name: str) -> list[str]:
+        frame.write_parquet(project / name)
+        graph = make_graph(
+            {
+                "nodes": [
+                    make_source_node("src", str(project / name)),
+                    make_node(
+                        {
+                            "id": "ms",
+                            "data": {
+                                "label": "ms",
+                                "nodeType": "modelScore",
+                                "config": {
+                                    "sourceType": "file",
+                                    "model_path": model_path.name,
+                                    "task": "regression",
+                                    "output_column": "pred",
+                                },
+                            },
+                        }
+                    ),
+                ],
+                "edges": [make_edge("src", "ms")],
+            }
+        )
+        result = execute_graph(graph, target_node_id="ms")["ms"]
+        assert result.status == "ok", result.error
+        return result.notes
+
+    frame = data(seed=29).head(10)
+    assert notes(frame, "full.parquet") == []
+    assert notes(frame.drop("exposure"), "none.parquet") == [
+        "Scored as a full policy term: the input has no 'exposure' column."
+    ]
+    blanks = frame.with_columns(
+        exposure=pl.when(pl.int_range(pl.len()) < 3).then(None).otherwise(pl.col("exposure"))
+    )
+    assert notes(blanks, "blanks.parquet") == [
+        "3 of the 10 previewed rows have no 'exposure' and were scored as a full policy term."
+    ]

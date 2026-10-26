@@ -190,6 +190,8 @@ export interface ModelScoreContributionDetail {
 }
 
 export interface ModelScoreExplanationDetail {
+  /** What the price rests on that the ladder does not show (a row priced as a full policy term). */
+  notes?: string[]
   type?: "catboost_shap" | "rustystats_glm_contributions" | "xgboost_contributions" | "lightgbm_contributions" | "ebm_terms" | "tboost_tables" | string
   method?: "catboost_shap" | "rustystats_glm_contributions" | "xgboost_contributions" | "lightgbm_contributions" | "ebm_terms" | "tboost_tables" | string
   status?: "ok" | "error" | string

@@ -313,6 +313,7 @@ function applyPreviewColumnsToNodes(nodes: Node[], nodeId: string, columns: Colu
           _availableColumns: result.available_columns ?? columns,
           _frameColumns: result.frame_columns ?? result.node_frame_columns?.[nodeId],
           _schemaWarnings: result.schema_warnings ?? [],
+          _notes: result.notes ?? [],
           _columnsSource: source,
           _columnsStructuralVersion: structuralVersion,
         },
@@ -399,8 +400,8 @@ function invalidateStaleColumnStashes(nodes: Node[], activeSource: string): Node
   if (!nodes.some(isStale)) return nodes
   return nodes.map((n) => {
     if (!isStale(n)) return n
-    const { _columns, _availableColumns, _schemaWarnings, _columnsSource, _columnsStructuralVersion, ...rest } = n.data
-    void _columns; void _availableColumns; void _schemaWarnings; void _columnsSource; void _columnsStructuralVersion
+    const { _columns, _availableColumns, _schemaWarnings, _notes, _columnsSource, _columnsStructuralVersion, ...rest } = n.data
+    void _columns; void _availableColumns; void _schemaWarnings; void _notes; void _columnsSource; void _columnsStructuralVersion
     return { ...n, data: rest }
   })
 }

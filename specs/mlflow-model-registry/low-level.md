@@ -898,7 +898,13 @@ endpoint.
   missing column (`FeatureMismatchError`) and a null or non-finite value
   (`HauteValidationError`), so a null never reaches a prediction as NaN.
   `explain_model_score_from_config` fills a traced row's missing exposure the
-  same way, so the trace explains the price the scorer gave; a non-numeric or
+  same way, so the trace explains the price the scorer gave, and adds
+  `notes` to the explanation saying the row was priced as a full policy term.
+  `full_term_exposure_notes(config, input_columns, scored)` in `_model_source.py`
+  gives the preview's note for a Model Score node whose bound model has an
+  exposure: the column its input (its parents' outputs) lacks, else the count of
+  previewed rows whose exposure is null; the executor sets it as the node's
+  `NodeResult.notes`; a non-numeric or
   non-finite explanation offset raises `ModelExplanationError` before CatBoost
   is called.
 - **Pyfunc feature discovery uses the supported MLflow signature API.**

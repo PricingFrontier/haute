@@ -916,6 +916,7 @@ describe("NodePanel", () => {
         _columns: [{ name: "old_output", dtype: "f64" }],
         _availableColumns: [{ name: "old_output", dtype: "f64" }],
         _schemaWarnings: [{ column: "old_output", status: "stale" }],
+        _notes: ["An earlier preview's note"],
       },
     })
     const onUpdateNode = vi.fn((_nodeId: string, _data: Record<string, unknown>) => ({ ok: true as const }))
@@ -929,6 +930,18 @@ describe("NodePanel", () => {
     expect(updatedData._columns).toBeUndefined()
     expect(updatedData._availableColumns).toBeUndefined()
     expect(updatedData._schemaWarnings).toBeUndefined()
+    expect(updatedData._notes).toBeUndefined()
+  })
+
+  it("shows the notes the node's last preview gave", () => {
+    const note = "Scored as a full policy term: the input has no 'exposure' column."
+    renderPanel({
+      node: makeNode({
+        data: { label: "Score", description: "", nodeType: "polars", config: {}, _notes: [note] },
+      }),
+    })
+
+    expect(screen.getByTestId("node-notes")).toHaveTextContent(note)
   })
 
   it.each([

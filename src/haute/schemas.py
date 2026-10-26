@@ -1542,6 +1542,9 @@ class NodeResult(BaseModel):
     timing_ms: float = 0
     memory_bytes: int = 0
     schema_warnings: list[SchemaWarning] = Field(default_factory=list)
+    # What the node's result rests on that its rows do not show: a Model Score
+    # whose input had no exposure priced it as a full policy term.
+    notes: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

@@ -759,33 +759,41 @@ def explain_model_score_from_config(
     effective_prediction = (
         prediction_value if prediction_value is not None else output_row.get(prediction_column)
     )
-    input_row = _full_term_row(input_row, scoring_model)
+    filled = _full_term_row(input_row, scoring_model)
+    notes = (
+        []
+        if filled is input_row
+        else [f"Priced as a full policy term: this row has no {scoring_model.offset_column!r}."]
+    )
     family = model_family(scoring_model.flavor)
     if family.explanation is None:
         return None
+    explanation: dict[str, Any] | None = None
     try:
         if family.self_describing:
-            return explain_native_prediction(
+            explanation = explain_native_prediction(
                 scoring_model,
-                input_row,
+                filled,
                 task=task,
                 prediction_value=effective_prediction,
             )
-        if family.explanation == "catboost_shap":
-            return explain_catboost_prediction(
+        elif family.explanation == "catboost_shap":
+            explanation = explain_catboost_prediction(
                 scoring_model,
-                input_row,
+                filled,
                 task=task,
                 prediction_value=effective_prediction,
             )
-        if family.explanation == "rustystats_glm_contributions":
-            return explain_rustystats_glm_prediction(
+        elif family.explanation == "rustystats_glm_contributions":
+            explanation = explain_rustystats_glm_prediction(
                 scoring_model,
-                input_row,
+                filled,
                 prediction_value=effective_prediction,
             )
     except ModelExplanationError as exc:
         raise ModelExplanationError(str(exc), method=family.explanation) from exc
+    if explanation is not None:
+        return {**explanation, "notes": notes} if notes else explanation
     raise ValueError(
         f"Model family {family.flavor!r} registers explanation {family.explanation!r}, "
         "which no explainer implements."

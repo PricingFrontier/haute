@@ -1659,6 +1659,13 @@ def _execute_graph_core(
                 preview_row_limit = None
                 preview = []
 
+            notes: list[str] = []
+            if node_data.nodeType == NodeType.MODEL_SCORE:
+                from haute._model_source import full_term_exposure_notes
+
+                inputs = set().union(*(_cached_output_names(p) for p in parents_of.get(nid, ())))
+                notes = full_term_exposure_notes(node_data.config, inputs, df)
+
             results[nid] = NodeResult(
                 status="ok",
                 row_count=len(df),
@@ -1675,6 +1682,7 @@ def _execute_graph_core(
                 timing_ms=timings.get(nid, 0),
                 memory_bytes=memory_bytes.get(nid, 0),
                 schema_warnings=node_warnings,
+                notes=notes,
             )
     finally:
         # Release the pin even when result serialisation/projection fails.

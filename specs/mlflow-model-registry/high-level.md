@@ -154,7 +154,12 @@ Out of scope (owned elsewhere):
   as an exposure of one. A zero or negative exposure is still refused. An
   additive (identity-link) offset is a base premium, not an exposure, so it has
   no full-term value: a missing column, or a null or non-finite value, is
-  refused naming it.
+  refused naming it. Because a renamed exposure column or a join that empties
+  some rows would otherwise annualise them unseen, the Model Score node's
+  preview carries a note (`NodeResult.notes`) naming the exposure column its
+  input lacks, or how many previewed rows had none, and a traced row without one
+  says it was priced as a full policy term. Nothing fails, and a deployed quote
+  carries no note.
 - A model trained outside Haute scores like any other, with no contract and no
   offset: a CatBoost or GLM file describes itself, and an XGBoost (`.ubj`),
   LightGBM (`.lgbm`) or t-boost (`.tboost`) file without the record Haute
