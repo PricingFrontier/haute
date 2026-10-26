@@ -384,7 +384,7 @@ the skip/conservation accounting.
   is proven. Builds without an execution context use the parallel path; isolated
   worker builds never treat a per-process limit as an aggregate descendant budget.
 
-**Shred core** — `shred_to_buffers(records, v2_config, stats=None, record_format="json")`:
+**Shred core** — `shred_to_buffers(records, v2_config, stats=None)`:
 1. Validate schema; collect emit-true tables' `(label, segments, col_specs)`, where
    each column spec carries its own `source_depth` (its own table's array depth, or
    a shallower ancestor depth for a W1 "distribute a parent value to every
@@ -406,11 +406,14 @@ the skip/conservation accounting.
    shape mismatch, never fabricated as a null scalar row). A missing key or a null
    at the array position yields nothing. Any other value that is not a list there
    counts one row skip against every emitting table at or below the position
-   (`labels_at_or_below`), unless `record_format` is `"xml"`
-   (`_records.record_format(data_path)`, by suffix, passed by both file shreds in
-   `_writer.py`), where it is a one-element list: XML repeats an element to make a
-   list. A served request is JSON, so `shred_request` refuses such a value naming
-   the table. Declared string columns
+   (`labels_at_or_below`); a served request is JSON, so `shred_request` refuses
+   such a value naming the table. An XML file's records reach the walk through
+   `file_records(data_path, v2_config, stats=None)` (both file shreds in
+   `_writer.py`, and a deploy's sample quote), which for an `.xml` source
+   (`_records.record_format`, by suffix) applies `single_element_lists(v2_config)`:
+   each single element present at an emitting table's array path becomes a
+   one-element list, in place, since XML repeats an element to make a list; a
+   missing or null value and everything off those paths are left alone. Declared string columns
    use the shared deterministic JSON-scalar renderer; dict/list values remain
    shape values and are rejected or counted rather than stringified.
 5. A `_row_sink`, when given, receives each row as a tuple of values in declared

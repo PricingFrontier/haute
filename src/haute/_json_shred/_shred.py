@@ -3,8 +3,9 @@ root-conservation accounting, and parallel chunk execution primitives."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, NoReturn, cast
 
 import orjson
@@ -22,7 +23,12 @@ from haute._api_input_schema import (
     parse_table_path,
     validate_v2_schema,
 )
-from haute._json_shred._records import RecordFormat, ShredSkipStats, _ShredExecutionProgress
+from haute._json_shred._records import (
+    ShredSkipStats,
+    _iter_records,
+    _ShredExecutionProgress,
+    record_format,
+)
 from haute._logging import get_logger
 
 logger = get_logger(component="json_shred")
@@ -402,7 +408,6 @@ def shred_to_buffers(
     v2_config: dict[str, Any],
     *,  # pragma: no mutate
     stats: ShredSkipStats | None = None,  # pragma: no mutate
-    record_format: RecordFormat = "json",
     _table_specs: tuple[_EmittingTableSpec, ...] | None = None,  # pragma: no mutate
     _row_sink: Callable[[str, _Row], None] | None = None,  # pragma: no mutate
     _emitted_counts: dict[str, int] | None = None,  # pragma: no mutate
@@ -427,9 +432,9 @@ def shred_to_buffers(
 
     A value that is not a list where the schema declares an array is counted
     against every table at or below that array, since all their rows from it are
-    lost; a missing key or a null is no array. Records read from XML
-    (*record_format*) are the exception: XML repeats an element to make a list,
-    so one element there is a one-element list.
+    lost; a missing key or a null is no array. Records read from an XML file
+    reach the walk through :func:`file_records`, which makes each single element
+    at a declared array a one-element list first.
     """
     progress = _ShredExecutionProgress.current()
     progress.checkpoint("json_shred_before_rows")
@@ -495,7 +500,6 @@ def shred_to_buffers(
         for descents in descents_by_pos.values()
         for _obj_prefix, _array_key, child_pos in descents
     }
-    wraps_single_elements = record_format == "xml"
 
     # The public path retains its historic per-table buffers.  Direct runtime
     # loading supplies a sink, so the walk instead hands each row to its bounded
@@ -552,16 +556,13 @@ def shred_to_buffers(
 
     def _walk_array(arr: Any, pos: tuple[PathSeg, ...], ancestors: tuple[Any, ...]) -> None:
         # Iterate the array at ``pos``, emitting a row per element. A missing
-        # key or a null yields nothing; one XML element is a one-element list;
-        # any other value that is not a list is a counted shape mismatch.
+        # key or a null yields nothing; any other value that is not a list is a
+        # counted shape mismatch.
         if not isinstance(arr, list):
-            if arr is None:
-                return
-            if not wraps_single_elements:
+            if arr is not None:
                 for label in labels_at_or_below[pos]:
                     _count_row_skip(label)
-                return
-            arr = [arr]
+            return
         for item in arr:
             if item is None:
                 # A null *element* is a real value for a scalar child table (its
@@ -581,6 +582,61 @@ def shred_to_buffers(
 
     progress.checkpoint("json_shred_after_rows")
     return buffers
+
+
+def single_element_lists(v2_config: dict[str, Any]) -> Callable[[Any], Any]:
+    """A function making each single element at one of *v2_config*'s arrays a list.
+
+    XML has no array syntax: it repeats an element to make a list, so a record read
+    from XML holds one object or scalar where its schema declares an array and the
+    element occurs once. The function changes a record in place and returns it; a
+    missing or null value is left alone, and so is everything off the emitting
+    tables' array paths.
+    """
+    paths: dict[PathSeg, Any] = {}
+    for spec in _emitting_table_specs(v2_config):
+        node = paths
+        for segment in spec.segments:
+            node = node.setdefault(segment, {})
+
+    def wrap(value: Any, node: dict[PathSeg, Any]) -> None:
+        if not isinstance(value, dict):
+            return
+        for (key, is_array), child in node.items():
+            held = value.get(key)
+            if held is None:
+                continue
+            if not is_array:
+                wrap(held, child)
+                continue
+            if not isinstance(held, list):
+                held = value[key] = [held]
+            for element in held:
+                wrap(element, child)
+
+    def single_elements_as_lists(record: Any) -> Any:
+        wrap(record, paths)
+        return record
+
+    return single_elements_as_lists
+
+
+def file_records(
+    data_path: Path,
+    v2_config: dict[str, Any],
+    *,  # pragma: no mutate
+    stats: ShredSkipStats | None = None,  # pragma: no mutate
+) -> Iterator[dict[str, Any]]:
+    """A structured file's records as the shred walks them.
+
+    An XML file's single elements at the schema's arrays are one-element lists
+    (:func:`single_element_lists`); a JSON or JSONL file says which values are lists.
+    """
+    records = _iter_records(data_path, stats=stats)
+    if record_format(data_path) != "xml":
+        return records
+    as_lists = single_element_lists(v2_config)
+    return (as_lists(record) for record in records)
 
 
 def _assert_root_conservation(

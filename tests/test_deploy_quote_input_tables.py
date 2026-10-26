@@ -361,6 +361,31 @@ def test_the_dry_run_reads_the_sample_s_first_quote_into_the_tables(sample):
     }
 
 
+def test_an_xml_sample_s_single_driver_is_a_list_of_one_in_the_dry_run(
+    haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The request a deployment receives is JSON, so the sample quote takes its shape."""
+    monkeypatch.chdir(haute_scratch)
+    sample = haute_scratch / "request.xml"
+    sample.write_text(
+        "<quotes><quote><quote_id>3</quote_id><region>N</region>"
+        "<drivers><age>61</age></drivers></quote></quotes>",
+        encoding="utf-8",
+    )
+    tables = [
+        {**table, "columns": [{**column, "type": "str"} for column in table["columns"]]}
+        for table in TABLES
+    ]
+    graph = _graph(sample, tables=tables, band="df = drivers.with_columns(band=pl.lit('x'))")
+
+    assert _read_sample_row(graph, ["request"]) == QuoteRequest(
+        ({"quote_id": "3", "region": "N", "drivers": [{"age": "61"}]},)
+    )
+    assert infer_output_schema(graph, "out", ["request"])["drivers"] == (
+        "List(Struct({'age': String, 'band': String}))"
+    )
+
+
 def _load_app(root: Path, graph: PipelineGraph) -> Any:
     rows = request_rows(graph, ["request"], "out", {})
     manifest = {

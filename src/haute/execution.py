@@ -1199,12 +1199,11 @@ def _direct_source_files(config: Mapping[str, Any], path: Path) -> dict[str, Pat
 
     A single file is signed by its own ``path`` entry and adds none.
     """
-    from haute._json_shred._source_proof import source_files
+    from haute._input_providers import named_source_files
 
     if path.is_file():
         return {}
-    arguments = config.get("arguments") or {}
-    files = source_files(path, glob=arguments.get("glob", True) is not False)
+    files = named_source_files(config, path)
     return {f"path:{index}": file for index, file in enumerate(files)}
 
 

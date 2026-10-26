@@ -226,7 +226,7 @@ def source_signature(
     path = _local_source_path(config, base_dir)
     if path is None:
         return None
-    files = _named_source_files(config, path)
+    files = named_source_files(config, path)
     if not files:
         return "missing"
     if path.is_file():
@@ -246,10 +246,12 @@ def signed_source_files(
     file's content is read.
     """
     path = _local_source_path(config, base_dir)
-    return () if path is None else _named_source_files(config, path)
+    return () if path is None else named_source_files(config, path)
 
 
-def _named_source_files(config: Mapping[str, Any], path: Path) -> tuple[Path, ...]:
+def named_source_files(config: Mapping[str, Any], path: Path) -> tuple[Path, ...]:
+    """The files a file input's resolved *path* names, a pattern read as its ``glob``
+    argument says (Polars' default expands it)."""
     arguments = config.get("arguments") or {}
     return source_files(path, glob=arguments.get("glob", True) is not False)
 

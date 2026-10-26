@@ -1001,7 +1001,9 @@ what they cover:
   and a drivers table (BUG-31): each port receives its own table's rows and declared
   types and the answer equals the editor's for the same quotes; a quote that is not an
   object, a driver of the wrong shape, drivers given as one object or a scalar instead of
-  a list, and a value of the wrong type are refused naming the table or column; drivers nested under their quote, a drivers aggregate joined back and
+  a list, and a value of the wrong type are refused naming the table or column; an XML
+  sample's single `<drivers>` element reaches the dry run as a list of one, the JSON shape
+  a served request takes; drivers nested under their quote, a drivers aggregate joined back and
   a drivers' mean answer a batch quote by quote (BUG-38), each quote as alone, where one
   frame would give each quote the drivers' mean over both, two quotes sharing a key each
   other's drivers, and a key a node's own column step rewrites the other quote's
