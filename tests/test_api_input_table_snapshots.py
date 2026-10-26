@@ -128,7 +128,7 @@ def test_each_emitting_table_is_one_identity_named_by_its_own_spec(tmp_path: Pat
             "path": "$[:].drivers[:]",
             "columns": [["id", "$[:].id", "int"], ["age", "$[:].drivers[:].age", "int"]],
         },
-        "shred_version": 1,
+        "shred_version": 2,
     }
     with pytest.raises(KeyError, match="unused"):
         source.table("unused")
