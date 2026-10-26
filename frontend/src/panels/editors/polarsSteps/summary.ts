@@ -62,7 +62,7 @@ function conditionsParts(conditions: Condition[], match: "all" | "any"): Summary
 }
 
 function exprParts(expr: Expr): SummaryPart[] {
-  if (expr.type === "operand" || expr.type === "binary" || expr.type === "function") {
+  if (expr.type === "operand" || expr.type === "binary" || expr.type === "function" || expr.type === "sum_horizontal") {
     // A formula typed as text is summarised exactly as typed; otherwise as
     // the formula grammar would print it.
     if (typeof expr.text === "string") return expr.text.length > 0 ? [code(expr.text)] : [missing("formula")]
@@ -74,18 +74,31 @@ function exprParts(expr: Expr): SummaryPart[] {
     case "binary":
       return [...operandParts(expr.left), op(expr.op), ...operandParts(expr.right)]
     case "function":
-      return [code(expr.fn), ...operandParts(expr.operand)]
+      return [code(expr.fn), ...operandParts(expr.operand), ...expr.args.flatMap((arg) => [sep(","), ...operandParts(arg)])]
     case "conditional":
-      return [text("if"), ...conditionsParts(expr.conditions, expr.match), text("then"), ...operandParts(expr.then), text("else"), ...operandParts(expr.otherwise)]
+      return [
+        ...expr.branches.flatMap((b, index) => [
+          ...(index === 0 ? [text("if")] : [sep(","), text("else if")]),
+          ...conditionsParts(b.conditions, b.match),
+          text("then"),
+          ...operandParts(b.then),
+        ]),
+        ...(expr.branches.length > 1 ? [sep(",")] : []),
+        text("else"),
+        ...operandParts(expr.otherwise),
+      ]
     case "window": {
       const label = WINDOW_AGGREGATIONS.find((a) => a.value === expr.agg)?.label ?? expr.agg
-      const subject = COLUMNLESS_AGGREGATIONS.has(expr.agg) ? [text(label)] : [text(label), op("of"), column(expr.column)]
+      const subject = COLUMNLESS_AGGREGATIONS.has(expr.agg) ? [text(label)] : [text(label), op("of"), ...operandParts(expr.of)]
       const over = expr.over.length ? [op("over"), ...list(expr.over, (name) => [column(name)])] : [op("over all rows")]
       const order = expr.orderBy?.length ? [op("ordered by"), ...list(expr.orderBy, (k) => [column(k.column), ...(k.descending ? [op("desc")] : [])])] : []
-      return [...subject, ...over, ...order]
+      const filter = expr.where ? [op("where"), ...conditionsParts(expr.where.conditions, expr.where.match)] : []
+      return [...subject, ...filter, ...over, ...order]
     }
     case "concat":
       return [code(`join(${expr.parts.map((part) => partsText(operandParts(part))).join(", ")})`)]
+    case "sum_horizontal":
+      return [code(`sum_horizontal(${expr.parts.map((part) => partsText(operandParts(part))).join(", ")})`)]
   }
 }
 

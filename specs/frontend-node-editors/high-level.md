@@ -351,7 +351,7 @@ options read in plain words with the Polars name where it helps (fill strategies
 as "Int64 (whole number)"); secondary actions are quiet text buttons ("+ Add condition");
 and options the simple case never needs sit behind a "More options" disclosure that opens
 by itself when the saved step uses one (the type-wide selection on select and drop, the
-per-aggregation row filters, and a join's key check, row order and suffix, where "used"
+per-aggregation row filters, a window's row filter, and a join's key check, row order and suffix, where "used"
 means differing from a new step's value, so a suffix other than `_right` or a row order other
 than the join kind's own). Column pickers
 offer the start input's columns (for an edge from a multi-output producer such as a
@@ -374,9 +374,15 @@ unknown comes earlier), a name that is not among them is drawn with a dashed amb
 and a note ("`quot_id` isn't in the data at this step. Did you mean `quote_id`?") whose
 button replaces it with the closest name; a collapsed card lists such names too, so a
 reorder marks the affected card at once. A window expression offers the plain aggregates plus row number, running total,
-previous value, rank, dense rank and forward/backward fill, an optional in-group order
-(one direction, with a hint that ordering needs a group column), a rank direction, and a
-quantile; a text-join expression lists two or more parts and a separator; a group-by
+previous value, rank, dense rank and forward/backward fill, of a column or an expression
+(the operand control with Column and Expression kinds; a row count and a row number take
+none, so choosing one drops it and choosing another aggregate after them starts an empty
+column), an optional in-group order
+(one direction, with a hint that ordering needs a group column), a rank direction, a
+quantile, and, for the plain aggregates, a row filter under More options ("Only rows
+where…", which adds a "When" condition list with "Aggregate every row" to remove it),
+dropped when the aggregate changes to a positional one; a text-join expression lists two
+or more parts and a separator, and a sum across lists two or more parts; a group-by
 aggregation reads as `[name] = [function] of [column]`, wrapping after the `=` when narrow,
 takes an optional quantile and an optional row filter, and an empty key list summarises the
 whole frame. An aggregation names itself `<column>_<function>` (`row_count` for a row count)
@@ -400,8 +406,8 @@ changing the kind moves a default order to the new kind's while keeping one the 
 "any order" (`none`) stays an explicit choice. A sort is rendered stable (`maintain_order=True`):
 tied rows keep the order they arrived in.
 Unique can drop every duplicate. The forms accept the renderer's own shorthand for a
-persisted step (a null literal without a value, a columnless window aggregate without
-a column, an order key without a direction, a text join without a separator) and
+persisted step (a null literal without a value, an order key without a direction, a
+text join without a separator) and
 canonicalise it before editing. A value in a
 condition or expression is a typed literal, a column, a variable
 defined by an earlier variable step, or a pipeline global constant, edited as one control: a
@@ -412,13 +418,20 @@ types the step schema accepts there (string operators take text values only; a v
 holds a number, text or true/false; a `null` literal is offered for expression operands
 but never in a membership list or a variable; Constant is offered only when a constant of a
 type the slot takes exists, listing only those; function arguments are labelled and typed
-per function, and take a constant of their type). A fresh condition's value follows the chosen column's type (text for a
+per function, and take a constant of their type, while clip's bounds, fill_null's value
+and divide's divisor are operand fields that also take a column, a variable or an
+expression). A fresh condition's value follows the chosen column's type (text for a
 text column, a date for a date column, true/false for a boolean column, and the number 0
 otherwise or when the type is unknown); a value already edited, or a text operator's
 value, is left alone. Conditions read under a lead that says what they do: a filter's as
-"Keep rows where [all] of these are true", an if-then's and an aggregation row filter's as
-"When [all] of these are true", the match select sitting in the sentence. "Computed as"
-offers Value, Formula, Function, If-then, Window and Join text; a new column starts in
+"Keep rows where [all] of these are true", an if-then's first branch and an aggregation's
+or a window's row filter as "When [all] of these are true", and an if-then's later
+branches as "Otherwise, when [all] of these are true", the match select sitting in the
+sentence. An if-then lists its branches, each a condition list and a Then value, boxed
+and removable ("Remove branch 2") while there are several, then "Add branch" (a new
+branch's condition starting from the previous branch's first column), and its
+Otherwise value last; a row takes the first branch whose conditions hold. "Computed as"
+offers Value, Formula, Function, If-then, Window, Join text and Sum across; a new column starts in
 Formula, its name field taking focus first. A formula is edited as text
 (`(premium + tax) * 1.05 / 12`, `round(premium / sum_insured * 1000, 3)`: columns by name or
 in backticks, earlier variables by name, global constants by name or as `global_constants.<name>`
@@ -429,8 +442,11 @@ text, `true`/`false`/`null`,
 `date('YYYY-MM-DD')`, Python operator precedence with `**` right-associative (power
 binds before a leading sign, while negative exponents are accepted: `-2 ** 2` is
 `-(2 ** 2)`, `(-2) ** 2` is distinct, and `2 ** -2` is valid), brackets,
-and the catalogue's functions with plain-value arguments, their names read in any case and
-kept in the catalogue's spelling); the text is parsed into the
+and the catalogue's functions, their names read in any case and kept in the catalogue's
+spelling, with plain-value arguments except clip's bounds, fill_null's value and
+divide's divisor, which take any formula (`clip(irpm_total, -irpm_cap, irpm_cap)`,
+`divide(premium, limit)`, missing where the divisor is zero or missing), and
+`sum_horizontal(a, b, …)` over two or more formulas, which skips missing values); the text is parsed into the
 nested expression schema on commit and kept on the expression as typed, so brackets and
 spacing survive collapsing and reopening the card and the card summary shows the same
 text (text that no longer describes the expression is replaced by a fresh rendering);
@@ -468,9 +484,9 @@ their enclosing expression depth: an over-depth draft stays editable with an inl
 error and leaves the last valid expression unchanged. Summaries print a value or
 formula in formula notation
 (quoted text, `date('...')`, brackets only where re-parsing needs them, a placeholder naming
-what is missing for a part not yet filled in) and describe windows, conditionals and text
-joins in words; a group-by
-aggregation's row filter offers no nested expressions. The Combine group also offers
+what is missing for a part not yet filled in) and describe windows (their row filter
+included), conditionals (every branch) and text joins in words; a group-by
+aggregation's or a window's row filter offers no nested expressions. The Combine group also offers
 "Pivot to columns" (index chips, the spread column, aggregate and values column, and
 one row per output column pairing a typed value with a name the value suggests, all
 rows sharing the first row's type) and "Unpivot to rows" (stacked columns, index
@@ -566,8 +582,8 @@ category, a duration a number, binary data text, text anything but true/false, a
 number or date becomes a category directly), the same table the renderer holds
 (`CAST_REFUSALS`, checked against Polars by a test); a formula casting a known text
 column to a date, or a category to anything but text, is refused with the function to
-use instead; std and var are not offered for a duration, and log and exp only for
-numbers and true/false. A numeric "is one of" records the kind of number its column
+use instead; std and var are not offered for a duration, and log, exp and divide only
+for numbers and true/false. A numeric "is one of" records the kind of number its column
 holds, from the column's type: `integer` renders its values as whole numbers
 (`[100, 300]`), `float` as floats (`[100.0, 300.0]`), and `decimal` as exact decimals
 parsed from their text, so a list of whole numbers matches a float column and `0.1`

@@ -6,6 +6,7 @@ import ast
 import contextlib
 import datetime as dt
 import json
+import math
 import pickle
 import re
 import subprocess
@@ -142,9 +143,13 @@ GOLDEN_STEPS: list[dict[str, Any]] = [
         name="band",
         expr={
             "type": "conditional",
-            "match": "any",
-            "conditions": [cond("gross", "ge", value=num(500))],
-            "then": text("high"),
+            "branches": [
+                {
+                    "match": "any",
+                    "conditions": [cond("gross", "ge", value=num(500))],
+                    "then": text("high"),
+                }
+            ],
             "otherwise": text("low"),
         },
     ),
@@ -643,7 +648,7 @@ def test_free_code_validation_never_executes_the_snippet(tmp_path: Path) -> None
                 "x",
                 "with_column",
                 name="n",
-                expr={"type": "window", "agg": "sum", "column": "a", "over": ["k"]},
+                expr={"type": "window", "agg": "sum", "of": col("a"), "over": ["k"]},
             ),
             'df = df.with_columns(pl.col("a").sum().over(["k"]).alias("n"))',
         ),
@@ -665,9 +670,13 @@ def test_variable_receiver_and_then_branch_render_as_expressions() -> None:
             name="y",
             expr={
                 "type": "conditional",
-                "match": "all",
-                "conditions": [cond("premium", "gt", value=var("rate"))],
-                "then": var("rate"),
+                "branches": [
+                    {
+                        "match": "all",
+                        "conditions": [cond("premium", "gt", value=var("rate"))],
+                        "then": var("rate"),
+                    }
+                ],
                 "otherwise": col("premium"),
             },
         ),
@@ -936,16 +945,22 @@ def null() -> dict[str, Any]:
 def window(
     name: str,
     agg: str,
-    column: str,
+    of: str | dict[str, Any] | None,
     over: list[str],
     order_by: list[tuple[str, bool]] | None = None,
     descending: bool | None = None,
+    where: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    expr: dict[str, Any] = {"type": "window", "agg": agg, "column": column, "over": over}
+    """A window step; *of* names a column, or is an operand, or None for a count."""
+    expr: dict[str, Any] = {"type": "window", "agg": agg, "over": over}
+    if of is not None:
+        expr["of"] = col(of) if isinstance(of, str) else of
     if order_by is not None:
         expr["orderBy"] = [{"column": c, "descending": d} for c, d in order_by]
     if descending is not None:
         expr["descending"] = descending
+    if where is not None:
+        expr["where"] = {"match": "all", "conditions": where}
     return step(f"w_{name}", "with_column", name=name, expr=expr)
 
 
@@ -956,7 +971,7 @@ def window(
             window(
                 "rn",
                 "row_number",
-                "quote_id",
+                None,
                 ["region"],
                 [("premium", False), ("quote_id", False)],
             ),
@@ -1006,7 +1021,7 @@ def window(
             window("tot", "sum", "premium", []),
             'df = df.with_columns(pl.col("premium").sum().alias("tot"))',
         ),
-        (window("n", "len", "premium", []), 'df = df.with_columns(pl.len().alias("n"))'),
+        (window("n", "len", None, []), 'df = df.with_columns(pl.len().alias("n"))'),
         (
             step(
                 "x",
@@ -1129,9 +1144,13 @@ def window(
                 name="k",
                 expr={
                     "type": "conditional",
-                    "match": "all",
-                    "conditions": [cond("a", "eq", value=num(1))],
-                    "then": col("b"),
+                    "branches": [
+                        {
+                            "match": "all",
+                            "conditions": [cond("a", "eq", value=num(1))],
+                            "then": col("b"),
+                        }
+                    ],
                     "otherwise": null(),
                 },
             ),
@@ -1245,7 +1264,7 @@ def test_window_quantile_renders() -> None:
             expr={
                 "type": "window",
                 "agg": "quantile",
-                "column": "premium",
+                "of": col("premium"),
                 "over": ["region"],
                 "quantile": 0.9,
             },
@@ -1265,12 +1284,12 @@ def test_window_quantile_renders() -> None:
     ("kind_step", "index", "fragment"),
     [
         (
-            window("rn", "row_number", "q", ["r"], [("a", False), ("b", True)]),
+            window("rn", "row_number", None, ["r"], [("a", False), ("b", True)]),
             1,
             "share one direction",
         ),
-        (window("rn", "row_number", "q", [], [("a", False)]), 1, "sort the frame instead"),
-        (window("rn", "row_number", "q", ["r"], []), 1, "at least one column"),
+        (window("rn", "row_number", None, [], [("a", False)]), 1, "sort the frame instead"),
+        (window("rn", "row_number", None, ["r"], []), 1, "at least one column"),
         (
             step(
                 "x",
@@ -1436,8 +1455,8 @@ def test_extended_vocabulary_executes(tmp_path: Path) -> None:
     by_qid = [("qid", False)]
     steps = [
         source("policies"),
-        window("rn", "row_number", "", ["region"], by_qid),
-        window("rn_desc", "row_number", "", ["region"], [("qid", True)]),
+        window("rn", "row_number", None, ["region"], by_qid),
+        window("rn_desc", "row_number", None, ["region"], [("qid", True)]),
         window("cs", "cum_sum", "premium", ["region"], by_qid),
         window("prev", "shift", "premium", ["region"], by_qid),
         window("rk", "dense_rank", "premium", ["region"], descending=True),
@@ -1452,7 +1471,7 @@ def test_extended_vocabulary_executes(tmp_path: Path) -> None:
             expr={
                 "type": "window",
                 "agg": "quantile",
-                "column": "premium",
+                "of": col("premium"),
                 "over": ["region"],
                 "quantile": 0.25,
             },
@@ -1513,9 +1532,13 @@ def test_extended_vocabulary_executes(tmp_path: Path) -> None:
             name="masked",
             expr={
                 "type": "conditional",
-                "match": "all",
-                "conditions": [cond("region", "eq", value=text("north"))],
-                "then": col("premium"),
+                "branches": [
+                    {
+                        "match": "all",
+                        "conditions": [cond("region", "eq", value=text("north"))],
+                        "then": col("premium"),
+                    }
+                ],
                 "otherwise": null(),
             },
         ),
@@ -1782,7 +1805,7 @@ def fn(name: str, operand: dict[str, Any], *args: dict[str, Any]) -> dict[str, A
                 expr=binary(
                     col("premium"),
                     "-",
-                    ex({"type": "window", "agg": "mean", "column": "premium", "over": ["region"]}),
+                    ex({"type": "window", "agg": "mean", "of": col("premium"), "over": ["region"]}),
                 ),
             ),
             "df = df.with_columns(\n"
@@ -1799,9 +1822,13 @@ def fn(name: str, operand: dict[str, Any], *args: dict[str, Any]) -> dict[str, A
                     ex(
                         {
                             "type": "conditional",
-                            "match": "all",
-                            "conditions": [cond("region", "eq", value=text("north"))],
-                            "then": col("premium"),
+                            "branches": [
+                                {
+                                    "match": "all",
+                                    "conditions": [cond("region", "eq", value=text("north"))],
+                                    "then": col("premium"),
+                                }
+                            ],
                             "otherwise": ex(binary(col("premium"), "*", num(-1))),
                         }
                     ),
@@ -2066,7 +2093,7 @@ def test_nested_expressions_execute(tmp_path: Path) -> None:
             expr=binary(
                 col("premium"),
                 "-",
-                ex({"type": "window", "agg": "mean", "column": "premium", "over": ["region"]}),
+                ex({"type": "window", "agg": "mean", "of": col("premium"), "over": ["region"]}),
             ),
         ),
         step(
@@ -2088,9 +2115,13 @@ def test_nested_expressions_execute(tmp_path: Path) -> None:
                 ex(
                     {
                         "type": "conditional",
-                        "match": "all",
-                        "conditions": [cond("region", "eq", value=text("north"))],
-                        "then": col("premium"),
+                        "branches": [
+                            {
+                                "match": "all",
+                                "conditions": [cond("region", "eq", value=text("north"))],
+                                "then": col("premium"),
+                            }
+                        ],
                         "otherwise": ex(binary(col("premium"), "*", num(-1))),
                     }
                 ),
@@ -2422,7 +2453,7 @@ def test_reshaping_and_dtype_selectors_render(kind_step: dict[str, Any], expecte
             "not the pattern '*'",
         ),
         (
-            window("rn", "row_number", "", ["g"], [("^measure_.*$", False)]),
+            window("rn", "row_number", None, ["g"], [("^measure_.*$", False)]),
             "not the pattern",
         ),
         (
@@ -2702,13 +2733,495 @@ def test_generated_reshaping_code_stays_inside_the_lineage_model() -> None:
             "with_column",
             name="dev",
             expr=binary(
-                col("a"), "-", ex({"type": "window", "agg": "mean", "column": "a", "over": ["g"]})
+                col("a"), "-", ex({"type": "window", "agg": "mean", "of": col("a"), "over": ["g"]})
             ),
         ),
         step("sel", "select", columns=["dev"]),
     )
     windowed = analyze_polars_lineage(nested_window, schema, demanded_output=["dev"])
     assert windowed.supported and windowed.demands_by_input == {"rows": frozenset({"a", "g"})}
+
+
+# ---------------------------------------------------------------------------
+# Window row filters and values, operand arguments, divide, branches, sum across
+# ---------------------------------------------------------------------------
+
+_WEB = [cond("channel", "eq", value=text("web"))]
+_CAP = {"kind": "constant", "name": "cap"}
+_NEGATIVE_CAP = ex(binary(num(0), "-", col("cap")))
+
+
+def branch(
+    conditions: list[dict[str, Any]], then: dict[str, Any], match: str = "all"
+) -> dict[str, Any]:
+    return {"match": match, "conditions": conditions, "then": then}
+
+
+def branches(*arms: dict[str, Any], otherwise: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "conditional", "branches": list(arms), "otherwise": otherwise}
+
+
+def sum_across(*parts: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "sum_horizontal", "parts": list(parts)}
+
+
+#: The IRPM clip as an if-then: the cap above, its negative below, the value between.
+_CAPPED = branches(
+    branch([cond("irpm", "gt", value=col("cap"))], col("cap")),
+    branch([cond("irpm", "lt", value=_NEGATIVE_CAP)], _NEGATIVE_CAP),
+    otherwise=col("irpm"),
+)
+
+
+@pytest.mark.parametrize(
+    ("kind_step", "expected"),
+    [
+        (
+            window("web_total", "sum", "premium", ["region"], where=_WEB),
+            "df = df.with_columns(\n"
+            '    pl.col("premium")\n'
+            '    .filter(pl.col("channel") == "web")\n'
+            "    .sum()\n"
+            '    .over(["region"])\n'
+            '    .alias("web_total")\n'
+            ")",
+        ),
+        (
+            window("web_quotes", "len", None, ["region"], where=_WEB),
+            "df = df.with_columns(\n"
+            '    (pl.col("channel") == "web").sum().over(["region"]).alias("web_quotes")\n'
+            ")",
+        ),
+        (
+            window("first_web", "first", "premium", ["region"], [("qid", False)], where=_WEB),
+            "df = df.with_columns(\n"
+            '    pl.col("premium")\n'
+            '    .filter(pl.col("channel") == "web")\n'
+            "    .first()\n"
+            '    .over(["region"], order_by=["qid"], descending=False)\n'
+            '    .alias("first_web")\n'
+            ")",
+        ),
+        (
+            window("loaded", "sum", ex(binary(col("lim"), "*", col("load"))), ["q"], where=_WEB),
+            "df = df.with_columns(\n"
+            '    (pl.col("lim") * pl.col("load"))\n'
+            '    .filter(pl.col("channel") == "web")\n'
+            "    .sum()\n"
+            '    .over(["q"])\n'
+            '    .alias("loaded")\n'
+            ")",
+        ),
+        (
+            window("run", "cum_sum", ex(fn("abs", col("x"))), ["q"], [("qid", False)]),
+            "df = df.with_columns(\n"
+            '    pl.col("x")\n'
+            "    .abs()\n"
+            "    .cum_sum()\n"
+            '    .over(["q"], order_by=["qid"], descending=False)\n'
+            '    .alias("run")\n'
+            ")",
+        ),
+        (
+            step(
+                "c",
+                "with_column",
+                name="t",
+                expr=fn("clip", col("irpm"), ex(binary(num(0), "-", col("cap"))), col("cap")),
+            ),
+            "df = df.with_columns(\n"
+            '    pl.col("irpm").clip(pl.lit(0) - pl.col("cap"), pl.col("cap")).alias("t")\n'
+            ")",
+        ),
+        (
+            step("c", "with_column", name="t", expr=fn("clip", col("x"), _CAP, var("top"))),
+            'df = df.with_columns(pl.col("x").clip(global_constants.cap, top).alias("t"))',
+        ),
+        (
+            step("f", "with_column", name="t", expr=fn("fill_null", col("a"), col("b"))),
+            'df = df.with_columns(pl.col("a").fill_null(pl.col("b")).alias("t"))',
+        ),
+        (
+            step("f", "with_column", name="t", expr=fn("clip", col("a"), num(-1), num(1))),
+            'df = df.with_columns(pl.col("a").clip(-1, 1).alias("t"))',
+        ),
+        (
+            step("d", "with_column", name="t", expr=fn("divide", col("premium"), col("lim"))),
+            "df = df.with_columns(\n"
+            '    pl.when(pl.col("lim") != 0).then(pl.col("premium") / pl.col("lim")).alias("t")\n'
+            ")",
+        ),
+        (
+            step(
+                "d",
+                "with_column",
+                name="t",
+                expr=fn("divide", col("p"), ex(binary(col("a"), "-", col("b")))),
+            ),
+            "df = df.with_columns(\n"
+            '    pl.when(pl.col("a") - pl.col("b") != 0)\n'
+            '    .then(pl.col("p") / (pl.col("a") - pl.col("b")))\n'
+            '    .alias("t")\n'
+            ")",
+        ),
+        (
+            step("b", "with_column", name="t", expr=_CAPPED),
+            "df = df.with_columns(\n"
+            '    pl.when(pl.col("irpm") > pl.col("cap"))\n'
+            '    .then(pl.col("cap"))\n'
+            '    .when(pl.col("irpm") < pl.lit(0) - pl.col("cap"))\n'
+            '    .then(pl.lit(0) - pl.col("cap"))\n'
+            '    .otherwise(pl.col("irpm"))\n'
+            '    .alias("t")\n'
+            ")",
+        ),
+        (
+            step(
+                "sa",
+                "with_column",
+                name="t",
+                expr=sum_across(col("a"), col("b"), ex(binary(col("c"), "*", num(2)))),
+            ),
+            "df = df.with_columns(\n"
+            '    pl.sum_horizontal(pl.col("a"), pl.col("b"), pl.col("c") * 2).alias("t")\n'
+            ")",
+        ),
+    ],
+    ids=[
+        "filtered-sum",
+        "filtered-row-count",
+        "filtered-ordered-first",
+        "filtered-sum-of-a-formula",
+        "running-total-of-a-function",
+        "clip-between-column-bounds",
+        "clip-by-a-constant-and-a-variable",
+        "fill-null-from-a-column",
+        "clip-between-plain-values",
+        "divide-by-a-column",
+        "divide-by-a-formula",
+        "if-then-with-two-branches",
+        "sum-across",
+    ],
+)
+def test_expression_additions_render(kind_step: dict[str, Any], expected: str) -> None:
+    top = step("v", "variable", name="top", value=num(2))
+    rendered = render_polars_steps([source(), top, kind_step], ["quotes"], start="input")
+    assert step_text(rendered, 2) == expected
+
+
+@pytest.mark.parametrize(
+    ("kind_step", "fragment"),
+    [
+        (
+            window("cs", "cum_sum", "premium", ["region"], [("qid", False)], where=_WEB),
+            "row filter needs an aggregate of the whole group, such as sum or mean; "
+            "'cum_sum' gives a value per row",
+        ),
+        (
+            window("rn", "row_number", None, ["region"], [("qid", False)], where=_WEB),
+            "'row_number' gives a value per row",
+        ),
+        (
+            window(
+                "t",
+                "sum",
+                "premium",
+                ["region"],
+                where=[cond("premium", "gt", value=ex(binary(col("a"), "*", num(2))))],
+            ),
+            "must be a plain value, column or variable here",
+        ),
+        (window("n", "len", "premium", []), "'len' takes no value to aggregate; remove its 'of'"),
+        (
+            window("rn", "row_number", "qid", ["region"]),
+            "'row_number' takes no value to aggregate; remove its 'of'",
+        ),
+        (window("t", "sum", None, []), "needs a value to aggregate: a column or an expression"),
+        (window("t", "sum", num(1), []), "value must be a column or an expression"),
+        (window("t", "mean", var("rate"), []), "value must be a column or an expression"),
+        (
+            step("c", "with_column", name="t", expr=fn("clip", col("a"), text("low"), num(1))),
+            "clip argument 1 must be a number, a column, a variable, a constant or an expression",
+        ),
+        (
+            step("c", "with_column", name="t", expr=fn("fill_null", col("a"), null())),
+            "must be a number, text or true/false, a column, a variable, a constant or an "
+            "expression",
+        ),
+        (
+            step("r", "with_column", name="t", expr=fn("round", col("a"), col("places"))),
+            "round argument 1 must be a plain value or a constant",
+        ),
+        (
+            step("b", "with_column", name="t", expr=branches(otherwise=num(0))),
+            "Expression needs at least one branch",
+        ),
+        (
+            step("b", "with_column", name="t", expr=branches(branch([], num(1)), otherwise=num(0))),
+            "Add at least one condition",
+        ),
+        (
+            step(
+                "b",
+                "with_column",
+                name="t",
+                expr={
+                    "type": "conditional",
+                    "match": "all",
+                    "conditions": [cond("a", "is_null")],
+                    "then": num(1),
+                    "otherwise": num(0),
+                },
+            ),
+            "Unknown field(s) ['conditions', 'match', 'then'] in Expression",
+        ),
+        (
+            step(
+                "b",
+                "with_column",
+                name="t",
+                expr=branches(
+                    branch([cond("a", "is_null")], num(1)),
+                    branch([cond("a", "nope")], num(2)),
+                    otherwise=num(0),
+                ),
+            ),
+            "Expression branch 2 condition 1 operator must be one of",
+        ),
+        (
+            step("sa", "with_column", name="t", expr=sum_across(col("a"))),
+            "Expression sum across needs at least two parts",
+        ),
+        (
+            step(
+                "sa",
+                "with_column",
+                name="t",
+                expr={**sum_across(col("a"), col("b")), "text": 3},
+            ),
+            "Expression formula text must be a string",
+        ),
+    ],
+    ids=[
+        "positional-aggregate",
+        "row-number",
+        "nested-filter-operand",
+        "row-count-with-a-value",
+        "row-number-with-a-value",
+        "sum-without-a-value",
+        "literal-value",
+        "variable-value",
+        "clip-to-text",
+        "fill-null-with-null",
+        "round-to-a-column",
+        "if-then-without-branches",
+        "if-then-branch-without-conditions",
+        "if-then-in-the-old-shape",
+        "if-then-later-branch-names-itself",
+        "sum-across-one-part",
+        "sum-across-with-malformed-text",
+    ],
+)
+def test_expression_additions_reject(kind_step: dict[str, Any], fragment: str) -> None:
+    with pytest.raises(PolarsStepError) as exc_info:
+        render_polars_steps([source(), kind_step], ["quotes"], start="input")
+    assert exc_info.value.step_index == 1
+    assert fragment in exc_info.value.message
+
+
+def test_a_window_row_filter_aggregates_only_the_passing_rows() -> None:
+    frame = pl.DataFrame(
+        {
+            "region": ["n", "n", "n", "s", "s"],
+            "qid": [3, 1, 2, 4, 5],
+            "channel": ["web", "broker", "web", "broker", None],
+            "premium": [100.0, 50.0, 25.0, 30.0, 20.0],
+        }
+    )
+    out = _run_steps(
+        [
+            source(),
+            window("web_total", "sum", "premium", ["region"], where=_WEB),
+            window("web_mean", "mean", "premium", ["region"], where=_WEB),
+            window("web_quotes", "len", None, ["region"], where=_WEB),
+            window("first_web", "first", "premium", ["region"], [("qid", False)], where=_WEB),
+        ],
+        frame,
+    )
+    # A partition with no passing row aggregates no rows: 0 for sum and the
+    # counts, null otherwise; the missing channel never passes.
+    assert out["web_total"].to_list() == [125.0, 125.0, 125.0, 0.0, 0.0]
+    assert out["web_mean"].to_list() == [62.5, 62.5, 62.5, None, None]
+    assert out["web_quotes"].to_list() == [2, 2, 2, 0, 0]
+    assert out["first_web"].to_list() == [25.0, 25.0, 25.0, None, None]
+
+
+def test_a_window_aggregates_an_expression() -> None:
+    frame = pl.DataFrame(
+        {
+            "q": [1, 1, 2],
+            "lim": [100.0, 200.0, 50.0],
+            "load": [0.01, 0.02, 0.5],
+            "channel": ["web", "broker", "web"],
+        }
+    )
+    loaded = ex(binary(col("lim"), "*", col("load")))
+    out = _run_steps(
+        [
+            source(),
+            window("loaded", "sum", loaded, ["q"]),
+            window("web_loaded", "sum", loaded, ["q"], where=_WEB),
+        ],
+        frame,
+    )
+    assert out["loaded"].to_list() == [5.0, 5.0, 25.0]
+    assert out["web_loaded"].to_list() == [1.0, 1.0, 25.0]
+
+
+def test_clip_and_fill_null_take_columns_and_expressions() -> None:
+    frame = pl.DataFrame(
+        {
+            "irpm": [0.4, -0.4, 0.1, None],
+            "cap": [0.25, 0.25, 0.25, 0.25],
+            "quoted": [None, 2.0, None, 4.0],
+            "fallback": [1.0, 1.0, 3.0, 3.0],
+        }
+    )
+    out = _run_steps(
+        [
+            source(),
+            step(
+                "c",
+                "with_column",
+                name="capped",
+                expr=fn("clip", col("irpm"), ex(binary(num(0), "-", col("cap"))), col("cap")),
+            ),
+            step(
+                "f",
+                "with_column",
+                name="filled",
+                expr=fn("fill_null", col("quoted"), ex(binary(col("fallback"), "*", num(2)))),
+            ),
+        ],
+        frame,
+    )
+    assert out["capped"].to_list() == [0.25, -0.25, 0.1, None]
+    assert out["filled"].to_list() == [2.0, 2.0, 6.0, 4.0]
+
+
+def test_divide_is_missing_where_the_divisor_is_zero_or_missing() -> None:
+    frame = pl.DataFrame(
+        {"premium": [10.0, 10.0, 10.0, None, 0.0], "lim": [4.0, 0.0, None, 2.0, 0.0]}
+    )
+    out = _run_steps(
+        [
+            source(),
+            step("d", "with_column", name="rate", expr=fn("divide", col("premium"), col("lim"))),
+            step("p", "with_column", name="plain", expr=binary(col("premium"), "/", col("lim"))),
+        ],
+        frame,
+    )
+    assert out["rate"].to_list() == [2.5, None, None, None, None]
+    # `/` stays Polars' division: infinite for x / 0 and NaN for 0 / 0.
+    plain = out["plain"].to_list()
+    assert plain[:4] == [2.5, float("inf"), None, None] and math.isnan(plain[4])
+
+
+def test_a_row_takes_the_first_branch_whose_conditions_hold() -> None:
+    frame = pl.DataFrame({"irpm": [0.4, -0.4, 0.1, None], "cap": [0.25] * 4})
+    out = _run_steps([source(), step("b", "with_column", name="t", expr=_CAPPED)], frame)
+    assert out["t"].to_list() == [0.25, -0.25, 0.1, None]
+    overlapping = branches(
+        branch([cond("irpm", "gt", value=num(0))], text("positive")),
+        branch([cond("irpm", "gt", value=num(0.3))], text("large")),
+        otherwise=text("other"),
+    )
+    out = _run_steps([source(), step("b", "with_column", name="t", expr=overlapping)], frame)
+    assert out["t"].to_list() == ["positive", "other", "positive", "other"]
+
+
+def test_a_sum_across_skips_missing_parts() -> None:
+    frame = pl.DataFrame({"a": [1.0, None, None], "b": [2.0, None, 3.0]})
+    out = _run_steps(
+        [source(), step("sa", "with_column", name="t", expr=sum_across(col("a"), col("b")))],
+        frame,
+    )
+    # A row whose parts are all missing sums to 0, as Fill missing (0) and a formula would.
+    assert out["t"].to_list() == [3.0, 0.0, 3.0]
+
+
+def test_a_constant_in_an_operand_argument_is_checked_against_the_argument_types() -> None:
+    rendered = render_polars_steps(
+        [source(), step("c", "with_column", name="t", expr=fn("fill_null", col("a"), _CAP))],
+        ["quotes"],
+        start="input",
+    )
+    [reference] = rendered.constant_references
+    assert (reference.step_index, reference.name) == (1, "cap")
+    assert reference.types == ("integer", "float", "text", "boolean")
+
+
+def test_generated_expression_additions_stay_inside_the_lineage_model() -> None:
+    """Each addition's generated shape is one the lineage and cardinality models prove."""
+    from haute._column_lineage import analyze_polars_cardinality, analyze_polars_lineage
+
+    schema = {"rows": frozenset({"region", "qid", "channel", "premium", "spare"})}
+    cases = {
+        "filtered window": (
+            window("t", "sum", "premium", ["region"], where=_WEB),
+            {"premium", "channel", "region"},
+        ),
+        "filtered row count": (
+            window("t", "len", None, ["region"], where=_WEB),
+            {"channel", "region"},
+        ),
+        "window of a formula": (
+            window("t", "sum", ex(binary(col("premium"), "*", col("qid"))), ["region"]),
+            {"premium", "qid", "region"},
+        ),
+        "divide": (
+            step("d", "with_column", name="t", expr=fn("divide", col("premium"), col("qid"))),
+            {"premium", "qid"},
+        ),
+        "if-then branches": (
+            step(
+                "b",
+                "with_column",
+                name="t",
+                expr=branches(
+                    branch([cond("premium", "gt", value=col("qid"))], col("qid")),
+                    branch([cond("channel", "is_null")], num(0)),
+                    otherwise=col("premium"),
+                ),
+            ),
+            {"premium", "qid", "channel"},
+        ),
+        "sum across": (
+            step(
+                "sa",
+                "with_column",
+                name="t",
+                expr=sum_across(col("premium"), ex(binary(col("qid"), "*", num(2)))),
+            ),
+            {"premium", "qid"},
+        ),
+        "clip between columns": (
+            step(
+                "c",
+                "with_column",
+                name="t",
+                expr=fn("clip", col("premium"), ex(binary(num(0), "-", col("qid"))), col("qid")),
+            ),
+            {"premium", "qid"},
+        ),
+    }
+    for name, (kind_step, demanded) in cases.items():
+        code = render_polars_steps([source("rows"), kind_step], ["rows"], start="input").code
+        lineage = analyze_polars_lineage(code, schema, demanded_output=["t"])
+        assert lineage.supported, (name, lineage.reason)
+        assert lineage.demands_by_input == {"rows": frozenset(demanded)}, name
+        bound = analyze_polars_cardinality(code, {"rows": 100})
+        assert bound.supported and bound.output_upper_bound == 100, (name, bound.reason)
 
 
 def test_a_start_only_program_previews_the_input_unchanged(tmp_path: Path) -> None:
@@ -2888,9 +3401,13 @@ def test_executor_runs_every_step_kind(tmp_path: Path) -> None:
                 name="band",
                 expr={
                     "type": "conditional",
-                    "match": "all",
-                    "conditions": [cond("premium", "ge", value=num(500))],
-                    "then": text("north"),
+                    "branches": [
+                        {
+                            "match": "all",
+                            "conditions": [cond("premium", "ge", value=num(500))],
+                            "then": text("north"),
+                        }
+                    ],
                     "otherwise": text("low"),
                 },
             ),
@@ -2901,7 +3418,7 @@ def test_executor_runs_every_step_kind(tmp_path: Path) -> None:
                 "x",
                 "with_column",
                 name="tot",
-                expr={"type": "window", "agg": "sum", "column": "premium", "over": ["region"]},
+                expr={"type": "window", "agg": "sum", "of": col("premium"), "over": ["region"]},
             ),
         ],
         "functions": [
@@ -5910,9 +6427,13 @@ def test_fill_and_branch_values_take_every_constant_type() -> None:
                 name="band",
                 expr={
                     "type": "conditional",
-                    "match": "all",
-                    "conditions": [cond("x", "gt", value=num(1))],
-                    "then": const("b"),
+                    "branches": [
+                        {
+                            "match": "all",
+                            "conditions": [cond("x", "gt", value=num(1))],
+                            "then": const("b"),
+                        }
+                    ],
                     "otherwise": text("low"),
                 },
             ),
@@ -6270,8 +6791,20 @@ def test_the_cast_table_is_what_polars_refuses() -> None:
             "std takes numbers, and 'wait' is a duration, which Polars 2 refuses: turn it "
             "into days first, as total_days(wait).",
         ),
+        (
+            [source(), window("spread", "var", "wait", ["k"])],
+            pl.LazyFrame({"k": ["a", "a"], "wait": [dt.timedelta(days=1), dt.timedelta(days=3)]}),
+            "var takes numbers, and 'wait' is a duration, which Polars 2 refuses: turn it "
+            "into days first, as total_days(wait).",
+        ),
     ],
-    ids=["text-to-date", "category-to-number", "formula-try-cast-to-date", "std-of-a-duration"],
+    ids=[
+        "text-to-date",
+        "category-to-number",
+        "formula-try-cast-to-date",
+        "std-of-a-duration",
+        "window-var-of-a-duration",
+    ],
 )
 def test_a_refusal_polars_2_makes_only_on_rows_names_its_step(
     steps: list[dict[str, Any]], frame: pl.LazyFrame, remedy: str

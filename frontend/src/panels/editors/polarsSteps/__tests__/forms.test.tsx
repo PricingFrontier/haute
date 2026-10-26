@@ -165,6 +165,39 @@ describe("step forms only build schema-valid payloads", () => {
     expect(screen.getByLabelText("Maximum")).toBeInTheDocument()
   })
 
+  it("clip's bounds and fill_null's value also take a column, a variable or an expression", () => {
+    const spy = vi.fn()
+    const step: Step = {
+      id: "w",
+      kind: "with_column",
+      name: "capped",
+      expr: { type: "function", fn: "clip", operand: { kind: "column", name: "premium" }, args: [{ kind: "literal", type: "number", value: 0 }, { kind: "literal", type: "number", value: 1 }] },
+    }
+    render(<Stateful initial={step} spy={spy} />)
+    expect(optionValues(screen.getByLabelText("Maximum kind"))).toEqual(["number", "column", "variable", "expr"])
+    fireEvent.change(screen.getByLabelText("Maximum kind"), { target: { value: "column" } })
+    fireEvent.change(screen.getByRole("combobox", { name: "Maximum column" }), { target: { value: "region" } })
+    fireEvent.blur(screen.getByRole("combobox", { name: "Maximum column" }))
+    let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toMatchObject({ args: [{ kind: "literal", value: 0 }, { kind: "column", name: "region" }] })
+    expect(stepProblem(latest)).toBeNull()
+    fireEvent.change(screen.getByLabelText("Minimum kind"), { target: { value: "expr" } })
+    expect(screen.getByRole("group", { name: "Minimum expression" })).toBeInTheDocument()
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toMatchObject({ args: [{ kind: "expr", expr: { type: "binary", text: "" } }, { kind: "column", name: "region" }] })
+    expect(stepProblem(latest)).toBeNull()
+    // divide's divisor takes a number or any operand; fill_null takes text and
+    // true/false too; plain-value arguments stay plain.
+    fireEvent.change(screen.getByLabelText("Function"), { target: { value: "divide" } })
+    expect(optionValues(screen.getByLabelText("Divisor kind"))).toEqual(["number", "column", "variable", "expr"])
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toMatchObject({ fn: "divide", args: [{ kind: "literal", type: "number", value: 0 }] })
+    fireEvent.change(screen.getByLabelText("Function"), { target: { value: "fill_null" } })
+    expect(optionValues(screen.getByLabelText("Fill with kind"))).toEqual(["number", "text", "boolean", "column", "variable", "expr"])
+    fireEvent.change(screen.getByLabelText("Function"), { target: { value: "round" } })
+    expect(screen.queryByLabelText("Decimal places kind")).not.toBeInTheDocument()
+  })
+
   it("cast offers the cast types through a Type select", () => {
     const onChange = vi.fn()
     const step: Step = {
@@ -199,9 +232,7 @@ describe("step forms only build schema-valid payloads", () => {
       name: "masked",
       expr: {
         type: "conditional",
-        match: "all",
-        conditions: [{ column: "region", operator: "eq", value: { kind: "literal", type: "text", value: "north" } }],
-        then: { kind: "column", name: "premium" },
+        branches: [{ match: "all", conditions: [{ column: "region", operator: "eq", value: { kind: "literal", type: "text", value: "north" } }], then: { kind: "column", name: "premium" } }],
         otherwise: { kind: "literal", type: "number", value: 0 },
       },
     }
@@ -215,25 +246,107 @@ describe("step forms only build schema-valid payloads", () => {
 
   it("window expressions offer the window-only aggregates, an in-group order, and a rank direction", () => {
     const spy = vi.fn()
-    const step: Step = { id: "w", kind: "with_column", name: "rn", expr: { type: "window", agg: "sum", column: "premium", over: ["region"] } }
+    const step: Step = { id: "w", kind: "with_column", name: "rn", expr: { type: "window", agg: "sum", of: { kind: "column", name: "premium" }, over: ["region"] } }
     render(<Stateful initial={step} spy={spy} />)
     expect(optionValues(screen.getByLabelText("Window aggregate"))).toContain("row_number")
     fireEvent.change(screen.getByLabelText("Window aggregate"), { target: { value: "row_number" } })
-    expect(screen.queryByLabelText("Window column")).not.toBeInTheDocument()
+    // A row number aggregates no value, so its value goes and a later aggregate starts an empty one.
+    expect(screen.queryByRole("group", { name: "Window value" })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Add order column" }))
     fireEvent.change(screen.getByLabelText("Window order direction"), { target: { value: "desc" } })
     let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
-    expect(latest.expr).toEqual({ type: "window", agg: "row_number", column: "premium", over: ["region"], orderBy: [{ column: "", descending: true }] })
+    expect(latest.expr).toEqual({ type: "window", agg: "row_number", over: ["region"], orderBy: [{ column: "", descending: true }] })
     fireEvent.click(screen.getByRole("button", { name: "Remove window order 1" }))
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
-    expect(latest.expr).toEqual({ type: "window", agg: "row_number", column: "premium", over: ["region"] })
+    expect(latest.expr).toEqual({ type: "window", agg: "row_number", over: ["region"] })
     fireEvent.change(screen.getByLabelText("Window aggregate"), { target: { value: "dense_rank" } })
     fireEvent.change(screen.getByLabelText("Rank order"), { target: { value: "desc" } })
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
-    expect(latest.expr).toEqual({ type: "window", agg: "dense_rank", column: "premium", over: ["region"], descending: true })
+    expect(latest.expr).toEqual({ type: "window", agg: "dense_rank", of: { kind: "column", name: "" }, over: ["region"], descending: true })
     fireEvent.change(screen.getByLabelText("Window aggregate"), { target: { value: "quantile" } })
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
-    expect(latest.expr).toEqual({ type: "window", agg: "quantile", column: "premium", over: ["region"], quantile: 0.5 })
+    expect(latest.expr).toEqual({ type: "window", agg: "quantile", of: { kind: "column", name: "" }, over: ["region"], quantile: 0.5 })
+  })
+
+  it("a window aggregates a column or an expression", () => {
+    const spy = vi.fn()
+    const step: Step = { id: "w", kind: "with_column", name: "t", expr: { type: "window", agg: "sum", of: { kind: "column", name: "premium" }, over: ["region"] } }
+    render(<Stateful initial={step} spy={spy} />)
+    expect(optionValues(screen.getByLabelText("Window value kind"))).toEqual(["column", "expr"])
+    fireEvent.change(screen.getByLabelText("Window value kind"), { target: { value: "expr" } })
+    expect(screen.getByRole("group", { name: "Window value expression" })).toBeInTheDocument()
+    const formula = screen.getByLabelText("Formula")
+    fireEvent.change(formula, { target: { value: "premium * rate" } })
+    fireEvent.blur(formula)
+    const latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toEqual({
+      type: "window",
+      agg: "sum",
+      of: { kind: "expr", expr: { type: "binary", left: { kind: "column", name: "premium" }, op: "*", right: { kind: "variable", name: "rate" }, text: "premium * rate" } },
+      over: ["region"],
+    })
+    expect(stepProblem(latest)).toBeNull()
+    expect(summarizeStep(latest)).toBe("t = sum of (premium * rate) over region")
+  })
+
+  it("a window's row filter sits under More options for the plain aggregates and goes with a positional one", () => {
+    const spy = vi.fn()
+    const step: Step = { id: "w", kind: "with_column", name: "t", expr: { type: "window", agg: "sum", of: { kind: "column", name: "premium" }, over: ["region"] } }
+    render(<Stateful initial={step} spy={spy} />)
+    expect(screen.queryByRole("button", { name: /Only rows where/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "More options" }))
+    fireEvent.click(screen.getByRole("button", { name: /Only rows where/ }))
+    // Like an aggregation's filter, its conditions take plain values only.
+    expect(optionValues(screen.getByLabelText("Window filter condition 1 value kind"))).toEqual(["number", "text", "boolean", "date", "column", "variable"])
+    fireEvent.change(screen.getByRole("combobox", { name: "Window filter condition 1 column" }), { target: { value: "region" } })
+    fireEvent.blur(screen.getByRole("combobox", { name: "Window filter condition 1 column" }))
+    let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toEqual({
+      type: "window",
+      agg: "sum",
+      of: { kind: "column", name: "premium" },
+      over: ["region"],
+      where: { match: "all", conditions: [{ column: "region", operator: "eq", value: { kind: "literal", type: "number", value: 0 } }] },
+    })
+    expect(stepProblem(latest)).toBeNull()
+    expect(summarizeStep(latest)).toBe("t = sum of premium where region equals 0 over region")
+    fireEvent.change(screen.getByLabelText("Window aggregate"), { target: { value: "cum_sum" } })
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toEqual({ type: "window", agg: "cum_sum", of: { kind: "column", name: "premium" }, over: ["region"] })
+    expect(screen.queryByRole("button", { name: "More options" })).not.toBeInTheDocument()
+  })
+
+  it("opens a window's More options by itself when it saved a row filter", () => {
+    const where = { match: "all" as const, conditions: [{ column: "region", operator: "eq" as const, value: { kind: "literal" as const, type: "text" as const, value: "north" } }] }
+    const step: Step = { id: "w", kind: "with_column", name: "t", expr: { type: "window", agg: "mean", of: { kind: "column", name: "premium" }, over: [], where } }
+    render(<StepForm step={step} onChange={vi.fn()} ctx={ctx} />)
+    expect(screen.getByRole("button", { name: "More options" })).toHaveAttribute("aria-expanded", "true")
+    expect(screen.getByRole("button", { name: "Aggregate every row" })).toBeInTheDocument()
+  })
+
+  it("a sum across keeps two or more parts, as a structured expression or typed as a formula", () => {
+    const spy = vi.fn()
+    const step: Step = { id: "s", kind: "with_column", name: "total", expr: { type: "binary", left: { kind: "column", name: "premium" }, op: "*", right: { kind: "literal", type: "number", value: 1 }, text: "" } }
+    render(<Stateful initial={step} spy={spy} />)
+    fireEvent.change(screen.getByLabelText("Expression type"), { target: { value: "sum_horizontal" } })
+    let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toEqual({ type: "sum_horizontal", parts: [{ kind: "column", name: "" }, { kind: "column", name: "" }] })
+    expect(screen.queryByRole("button", { name: "Remove part 1" })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Add part" }))
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toMatchObject({ parts: [{}, {}, {}] })
+    expect(stepProblem(latest)).toBeNull()
+    cleanup()
+    // Typed in the formula box it stays a formula, completed like any function.
+    render(<Stateful initial={step} spy={spy} />)
+    const box = screen.getByLabelText("Formula")
+    fireEvent.change(box, { target: { value: "sum_h", selectionStart: 5 } })
+    expect(screen.getByRole("option", { name: /sum_horizontal/ })).toHaveTextContent("sum across columns, skipping missing values")
+    fireEvent.change(box, { target: { value: "sum_horizontal(premium, region)" } })
+    fireEvent.blur(box)
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toEqual({ type: "sum_horizontal", parts: [{ kind: "column", name: "premium" }, { kind: "column", name: "region" }], text: "sum_horizontal(premium, region)" })
+    expect(summarizeStep(latest)).toBe("total = sum_horizontal(premium, region)")
   })
 
   it("text joins keep at least two parts and a separator", () => {
@@ -853,7 +966,7 @@ describe("step forms only build schema-valid payloads", () => {
       name: "share",
       expr: {
         type: "binary",
-        left: { kind: "expr", expr: { type: "window", agg: "sum", column: "premium", over: ["region"] } },
+        left: { kind: "expr", expr: { type: "window", agg: "sum", of: { kind: "column", name: "premium" }, over: ["region"] } },
         op: "/",
         right: { kind: "literal", type: "number", value: 12 },
       },
@@ -876,9 +989,7 @@ describe("step forms only build schema-valid payloads", () => {
       name: "band",
       expr: {
         type: "conditional",
-        match: "all",
-        conditions: [{ column: "premium", operator: "gt", value: { kind: "literal", type: "number", value: 100 } }],
-        then: { kind: "literal", type: "text", value: "high" },
+        branches: [{ match: "all", conditions: [{ column: "premium", operator: "gt", value: { kind: "literal", type: "number", value: 100 } }], then: { kind: "literal", type: "text", value: "high" } }],
         otherwise: { kind: "literal", type: "text", value: "low" },
       },
     }
@@ -887,14 +998,41 @@ describe("step forms only build schema-valid payloads", () => {
     expect(screen.getByLabelText("If condition 1 column")).toHaveValue("premium")
     fireEvent.change(screen.getByLabelText("Then value value"), { target: { value: "top" } })
     fireEvent.blur(screen.getByLabelText("Then value value"))
-    expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>).expr).toMatchObject({ then: { kind: "literal", type: "text", value: "top" } })
+    expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>).expr).toMatchObject({ branches: [{ then: { kind: "literal", type: "text", value: "top" } }] })
     fireEvent.change(screen.getByLabelText("Otherwise value kind"), { target: { value: "column" } })
     expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>).expr).toMatchObject({ otherwise: { kind: "column", name: "" } })
     fireEvent.click(screen.getByRole("button", { name: "Add condition" }))
     const latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
-    expect(latest.expr).toMatchObject({ type: "conditional", conditions: [expect.anything(), { column: "", operator: "eq" }] })
+    expect(latest.expr).toMatchObject({ type: "conditional", branches: [{ conditions: [expect.anything(), { column: "", operator: "eq" }] }] })
     expect(screen.getByLabelText("If match")).toHaveValue("all")
     expect(summarizeStep(latest)).toBe("band = if premium is greater than 100 and column equals 0 then 'top' else column")
+  })
+
+  it("an if-then adds later branches, led by Otherwise, when, and removes them", () => {
+    const spy = vi.fn()
+    const high = { match: "all" as const, conditions: [{ column: "premium", operator: "gt" as const, value: { kind: "literal" as const, type: "number" as const, value: 100 } }], then: { kind: "literal" as const, type: "text" as const, value: "high" } }
+    const step: Step = { id: "b", kind: "with_column", name: "band", expr: { type: "conditional", branches: [high], otherwise: { kind: "literal", type: "text", value: "low" } } }
+    render(<Stateful initial={step} spy={spy} />)
+    expect(screen.queryByRole("button", { name: /Remove branch/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Add branch" }))
+    let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    // The new branch tests the previous branch's column and starts from a value of its Then's type.
+    expect(latest.expr).toEqual({
+      type: "conditional",
+      branches: [high, { match: "all", conditions: [{ column: "premium", operator: "eq", value: { kind: "literal", type: "number", value: 0 } }], then: { kind: "literal", type: "text", value: "" } }],
+      otherwise: { kind: "literal", type: "text", value: "low" },
+    })
+    expect(within(screen.getByRole("group", { name: "Branch 2" })).getByText("Otherwise, when")).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText("Branch 2 then value value"), { target: { value: "mid" } })
+    fireEvent.blur(screen.getByLabelText("Branch 2 then value value"))
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(stepProblem(latest)).toBeNull()
+    expect(summarizeStep(latest)).toBe("band = if premium is greater than 100 then 'high', else if premium equals 0 then 'mid', else 'low'")
+    fireEvent.click(screen.getByRole("button", { name: "Remove branch 1" }))
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toMatchObject({ branches: [{ conditions: [{ operator: "eq" }], then: { value: "mid" } }] })
+    expect(screen.queryByRole("button", { name: /Remove branch/ })).not.toBeInTheDocument()
+    expect(screen.queryByText("Otherwise, when")).not.toBeInTheDocument()
   })
 })
 
@@ -1129,7 +1267,7 @@ describe("forms read as sentences", () => {
       id: "w",
       kind: "with_column",
       name: "band",
-      expr: { type: "conditional", match: "all", conditions, then: { kind: "literal", type: "number", value: 1 }, otherwise: { kind: "literal", type: "number", value: 0 } },
+      expr: { type: "conditional", branches: [{ match: "all", conditions, then: { kind: "literal", type: "number", value: 1 } }], otherwise: { kind: "literal", type: "number", value: 0 } },
     })],
     ["an aggregation's row filter", "Aggregation 1 filter", (conditions: Array<{ column: string; operator: "is_null" }>): Step => ({
       id: "g",
@@ -1307,6 +1445,10 @@ describe("steps offer only what Polars 2 runs on the column types the editor kno
     fireEvent.change(box, { target: { value: "log(region)" } })
     fireEvent.blur(box)
     expect(screen.getByText("log() takes numbers, and region is String.")).toBeInTheDocument()
+
+    fireEvent.change(box, { target: { value: "divide(region, 2)" } })
+    fireEvent.blur(box)
+    expect(screen.getByText("divide() takes numbers, and region is String.")).toBeInTheDocument()
 
     fireEvent.change(box, { target: { value: "try_to_date(start, '%Y-%m-%d')" } })
     fireEvent.blur(box)

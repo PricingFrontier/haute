@@ -427,94 +427,77 @@
         "name": "decision",
         "expr": {
           "type": "conditional",
-          "match": "all",
-          "conditions": [
+          "branches": [
             {
-              "column": "premium",
-              "operator": "is_null"
+              "match": "all",
+              "conditions": [
+                {
+                  "column": "age",
+                  "operator": "lt",
+                  "value": {
+                    "kind": "literal",
+                    "type": "number",
+                    "value": 18
+                  }
+                }
+              ],
+              "then": {
+                "kind": "literal",
+                "type": "text",
+                "value": "decline"
+              }
+            },
+            {
+              "match": "any",
+              "conditions": [
+                {
+                  "column": "claims_count",
+                  "operator": "ge",
+                  "value": {
+                    "kind": "literal",
+                    "type": "number",
+                    "value": 3
+                  }
+                },
+                {
+                  "column": "vehicle_value",
+                  "operator": "gt",
+                  "value": {
+                    "kind": "literal",
+                    "type": "number",
+                    "value": 100000
+                  }
+                }
+              ],
+              "then": {
+                "kind": "literal",
+                "type": "text",
+                "value": "refer"
+              }
+            },
+            {
+              "match": "all",
+              "conditions": [
+                {
+                  "column": "premium",
+                  "operator": "is_null"
+                }
+              ],
+              "then": {
+                "kind": "literal",
+                "type": "text",
+                "value": "await_price"
+              }
             }
           ],
-          "then": {
-            "kind": "literal",
-            "type": "text",
-            "value": "await_price"
-          },
           "otherwise": {
             "kind": "literal",
             "type": "text",
             "value": "accept"
           }
         }
-      },
-      {
-        "id": "s27",
-        "kind": "with_column",
-        "name": "decision",
-        "expr": {
-          "type": "conditional",
-          "match": "any",
-          "conditions": [
-            {
-              "column": "claims_count",
-              "operator": "ge",
-              "value": {
-                "kind": "literal",
-                "type": "number",
-                "value": 3
-              }
-            },
-            {
-              "column": "vehicle_value",
-              "operator": "gt",
-              "value": {
-                "kind": "literal",
-                "type": "number",
-                "value": 100000
-              }
-            }
-          ],
-          "then": {
-            "kind": "literal",
-            "type": "text",
-            "value": "refer"
-          },
-          "otherwise": {
-            "kind": "column",
-            "name": "decision"
-          }
-        }
-      },
-      {
-        "id": "s28",
-        "kind": "with_column",
-        "name": "decision",
-        "expr": {
-          "type": "conditional",
-          "match": "all",
-          "conditions": [
-            {
-              "column": "age",
-              "operator": "lt",
-              "value": {
-                "kind": "literal",
-                "type": "number",
-                "value": 18
-              }
-            }
-          ],
-          "then": {
-            "kind": "literal",
-            "type": "text",
-            "value": "decline"
-          },
-          "otherwise": {
-            "kind": "column",
-            "name": "decision"
-          }
-        }
       }
-    ],
-    "note": "a when-chain is built backwards, each branch overriding the column"
+    ]
   },
   "nested_ncd_discount": {
     "steps": [
@@ -529,23 +512,27 @@
         "name": "d_web",
         "expr": {
           "type": "conditional",
-          "match": "all",
-          "conditions": [
+          "branches": [
             {
-              "column": "channel",
-              "operator": "eq",
-              "value": {
+              "match": "all",
+              "conditions": [
+                {
+                  "column": "channel",
+                  "operator": "eq",
+                  "value": {
+                    "kind": "literal",
+                    "type": "text",
+                    "value": "web"
+                  }
+                }
+              ],
+              "then": {
                 "kind": "literal",
-                "type": "text",
-                "value": "web"
+                "type": "number",
+                "value": 0.3
               }
             }
           ],
-          "then": {
-            "kind": "literal",
-            "type": "number",
-            "value": 0.3
-          },
           "otherwise": {
             "kind": "literal",
             "type": "number",
@@ -559,23 +546,27 @@
         "name": "d_mid",
         "expr": {
           "type": "conditional",
-          "match": "all",
-          "conditions": [
+          "branches": [
             {
-              "column": "ncd_years",
-              "operator": "ge",
-              "value": {
+              "match": "all",
+              "conditions": [
+                {
+                  "column": "ncd_years",
+                  "operator": "ge",
+                  "value": {
+                    "kind": "literal",
+                    "type": "number",
+                    "value": 2
+                  }
+                }
+              ],
+              "then": {
                 "kind": "literal",
                 "type": "number",
-                "value": 2
+                "value": 0.15
               }
             }
           ],
-          "then": {
-            "kind": "literal",
-            "type": "number",
-            "value": 0.15
-          },
           "otherwise": {
             "kind": "literal",
             "type": "number",
@@ -589,22 +580,26 @@
         "name": "d_all",
         "expr": {
           "type": "conditional",
-          "match": "all",
-          "conditions": [
+          "branches": [
             {
-              "column": "ncd_years",
-              "operator": "ge",
-              "value": {
-                "kind": "literal",
-                "type": "number",
-                "value": 5
+              "match": "all",
+              "conditions": [
+                {
+                  "column": "ncd_years",
+                  "operator": "ge",
+                  "value": {
+                    "kind": "literal",
+                    "type": "number",
+                    "value": 5
+                  }
+                }
+              ],
+              "then": {
+                "kind": "column",
+                "name": "d_web"
               }
             }
           ],
-          "then": {
-            "kind": "column",
-            "name": "d_web"
-          },
           "otherwise": {
             "kind": "column",
             "name": "d_mid"
@@ -617,22 +612,26 @@
         "name": "ncd_discount",
         "expr": {
           "type": "conditional",
-          "match": "all",
-          "conditions": [
+          "branches": [
             {
-              "column": "claims_count",
-              "operator": "eq",
-              "value": {
-                "kind": "literal",
-                "type": "number",
-                "value": 0
+              "match": "all",
+              "conditions": [
+                {
+                  "column": "claims_count",
+                  "operator": "eq",
+                  "value": {
+                    "kind": "literal",
+                    "type": "number",
+                    "value": 0
+                  }
+                }
+              ],
+              "then": {
+                "kind": "column",
+                "name": "d_all"
               }
             }
           ],
-          "then": {
-            "kind": "column",
-            "name": "d_all"
-          },
           "otherwise": {
             "kind": "literal",
             "type": "number",
@@ -1670,7 +1669,10 @@
         "expr": {
           "type": "window",
           "agg": "mean",
-          "column": "premium",
+          "of": {
+            "kind": "column",
+            "name": "premium"
+          },
           "over": [
             "region"
           ]
@@ -1683,7 +1685,10 @@
         "expr": {
           "type": "window",
           "agg": "median",
-          "column": "premium",
+          "of": {
+            "kind": "column",
+            "name": "premium"
+          },
           "over": [
             "region",
             "channel"
@@ -1697,7 +1702,10 @@
         "expr": {
           "type": "window",
           "agg": "dense_rank",
-          "column": "premium",
+          "of": {
+            "kind": "column",
+            "name": "premium"
+          },
           "over": [
             "region"
           ],
@@ -1720,7 +1728,6 @@
         "expr": {
           "type": "window",
           "agg": "row_number",
-          "column": "claim_id",
           "over": [
             "policy_id"
           ],
@@ -1743,7 +1750,10 @@
         "expr": {
           "type": "window",
           "agg": "cum_sum",
-          "column": "amount",
+          "of": {
+            "kind": "column",
+            "name": "amount"
+          },
           "over": [
             "policy_id"
           ],
@@ -1794,7 +1804,10 @@
         "expr": {
           "type": "window",
           "agg": "shift",
-          "column": "premium",
+          "of": {
+            "kind": "column",
+            "name": "premium"
+          },
           "over": [
             "policy_id"
           ],
@@ -2511,18 +2524,22 @@
         "name": "reporting_premium",
         "expr": {
           "type": "conditional",
-          "match": "all",
-          "conditions": [
+          "branches": [
             {
-              "column": "premium",
-              "operator": "is_null"
+              "match": "all",
+              "conditions": [
+                {
+                  "column": "premium",
+                  "operator": "is_null"
+                }
+              ],
+              "then": {
+                "kind": "literal",
+                "type": "number",
+                "value": 0.0
+              }
             }
           ],
-          "then": {
-            "kind": "literal",
-            "type": "number",
-            "value": 0.0
-          },
           "otherwise": {
             "kind": "column",
             "name": "premium"
@@ -2535,18 +2552,22 @@
         "name": "premium_was_missing",
         "expr": {
           "type": "conditional",
-          "match": "all",
-          "conditions": [
+          "branches": [
             {
-              "column": "premium",
-              "operator": "is_null"
+              "match": "all",
+              "conditions": [
+                {
+                  "column": "premium",
+                  "operator": "is_null"
+                }
+              ],
+              "then": {
+                "kind": "literal",
+                "type": "boolean",
+                "value": true
+              }
             }
           ],
-          "then": {
-            "kind": "literal",
-            "type": "boolean",
-            "value": true
-          },
           "otherwise": {
             "kind": "literal",
             "type": "boolean",
@@ -2570,7 +2591,10 @@
         "expr": {
           "type": "window",
           "agg": "forward_fill",
-          "column": "premium",
+          "of": {
+            "kind": "column",
+            "name": "premium"
+          },
           "over": [
             "policy_id"
           ],
@@ -2621,7 +2645,10 @@
         "expr": {
           "type": "window",
           "agg": "median",
-          "column": "premium",
+          "of": {
+            "kind": "column",
+            "name": "premium"
+          },
           "over": [
             "region"
           ]
@@ -2633,17 +2660,21 @@
         "name": "region_filled_premium",
         "expr": {
           "type": "conditional",
-          "match": "all",
-          "conditions": [
+          "branches": [
             {
-              "column": "premium",
-              "operator": "is_null"
+              "match": "all",
+              "conditions": [
+                {
+                  "column": "premium",
+                  "operator": "is_null"
+                }
+              ],
+              "then": {
+                "kind": "column",
+                "name": "_region_median"
+              }
             }
           ],
-          "then": {
-            "kind": "column",
-            "name": "_region_median"
-          },
           "otherwise": {
             "kind": "column",
             "name": "premium"
@@ -2657,7 +2688,10 @@
         "expr": {
           "type": "window",
           "agg": "median",
-          "column": "premium",
+          "of": {
+            "kind": "column",
+            "name": "premium"
+          },
           "over": []
         }
       },
@@ -2667,17 +2701,21 @@
         "name": "imputed_premium",
         "expr": {
           "type": "conditional",
-          "match": "all",
-          "conditions": [
+          "branches": [
             {
-              "column": "region_filled_premium",
-              "operator": "is_null"
+              "match": "all",
+              "conditions": [
+                {
+                  "column": "region_filled_premium",
+                  "operator": "is_null"
+                }
+              ],
+              "then": {
+                "kind": "column",
+                "name": "_portfolio_median"
+              }
             }
           ],
-          "then": {
-            "kind": "column",
-            "name": "_portfolio_median"
-          },
           "otherwise": {
             "kind": "column",
             "name": "region_filled_premium"
@@ -2690,18 +2728,22 @@
         "name": "imputed_premium",
         "expr": {
           "type": "conditional",
-          "match": "all",
-          "conditions": [
+          "branches": [
             {
-              "column": "imputed_premium",
-              "operator": "is_null"
+              "match": "all",
+              "conditions": [
+                {
+                  "column": "imputed_premium",
+                  "operator": "is_null"
+                }
+              ],
+              "then": {
+                "kind": "literal",
+                "type": "number",
+                "value": 500.0
+              }
             }
           ],
-          "then": {
-            "kind": "literal",
-            "type": "number",
-            "value": 500.0
-          },
           "otherwise": {
             "kind": "column",
             "name": "imputed_premium"
@@ -2865,7 +2907,6 @@
         "expr": {
           "type": "window",
           "agg": "row_number",
-          "column": "claim_id",
           "over": [
             "policy_id"
           ]
@@ -2966,7 +3007,10 @@
         "expr": {
           "type": "window",
           "agg": "sum",
-          "column": "quote_count",
+          "of": {
+            "kind": "column",
+            "name": "quote_count"
+          },
           "over": [
             "region"
           ]
@@ -2996,7 +3040,10 @@
         "expr": {
           "type": "window",
           "agg": "sum",
-          "column": "quote_count",
+          "of": {
+            "kind": "column",
+            "name": "quote_count"
+          },
           "over": []
         }
       },
@@ -3141,22 +3188,26 @@
         "name": "movement_band",
         "expr": {
           "type": "conditional",
-          "match": "all",
-          "conditions": [
+          "branches": [
             {
-              "column": "proposed_premium",
-              "operator": "le",
-              "value": {
-                "kind": "column",
-                "name": "_cap"
+              "match": "all",
+              "conditions": [
+                {
+                  "column": "proposed_premium",
+                  "operator": "le",
+                  "value": {
+                    "kind": "column",
+                    "name": "_cap"
+                  }
+                }
+              ],
+              "then": {
+                "kind": "literal",
+                "type": "text",
+                "value": "zero_to_ten_percent"
               }
             }
           ],
-          "then": {
-            "kind": "literal",
-            "type": "text",
-            "value": "zero_to_ten_percent"
-          },
           "otherwise": {
             "kind": "literal",
             "type": "text",
@@ -3170,22 +3221,26 @@
         "name": "movement_band",
         "expr": {
           "type": "conditional",
-          "match": "all",
-          "conditions": [
+          "branches": [
             {
-              "column": "proposed_premium",
-              "operator": "lt",
-              "value": {
-                "kind": "column",
-                "name": "premium"
+              "match": "all",
+              "conditions": [
+                {
+                  "column": "proposed_premium",
+                  "operator": "lt",
+                  "value": {
+                    "kind": "column",
+                    "name": "premium"
+                  }
+                }
+              ],
+              "then": {
+                "kind": "literal",
+                "type": "text",
+                "value": "decrease"
               }
             }
           ],
-          "then": {
-            "kind": "literal",
-            "type": "text",
-            "value": "decrease"
-          },
           "otherwise": {
             "kind": "column",
             "name": "movement_band"
@@ -3241,7 +3296,10 @@
         "expr": {
           "type": "window",
           "agg": "sum",
-          "column": "current_premium_total",
+          "of": {
+            "kind": "column",
+            "name": "current_premium_total"
+          },
           "over": []
         }
       },
@@ -3473,23 +3531,27 @@
         "name": "repeat_claimant",
         "expr": {
           "type": "conditional",
-          "match": "all",
-          "conditions": [
+          "branches": [
             {
-              "column": "prior_claim_count",
-              "operator": "ge",
-              "value": {
+              "match": "all",
+              "conditions": [
+                {
+                  "column": "prior_claim_count",
+                  "operator": "ge",
+                  "value": {
+                    "kind": "literal",
+                    "type": "number",
+                    "value": 2
+                  }
+                }
+              ],
+              "then": {
                 "kind": "literal",
-                "type": "number",
-                "value": 2
+                "type": "boolean",
+                "value": true
               }
             }
           ],
-          "then": {
-            "kind": "literal",
-            "type": "boolean",
-            "value": true
-          },
           "otherwise": {
             "kind": "literal",
             "type": "boolean",
@@ -3610,23 +3672,27 @@
         "name": "age_band",
         "expr": {
           "type": "conditional",
-          "match": "all",
-          "conditions": [
+          "branches": [
             {
-              "column": "age",
-              "operator": "lt",
-              "value": {
+              "match": "all",
+              "conditions": [
+                {
+                  "column": "age",
+                  "operator": "lt",
+                  "value": {
+                    "kind": "literal",
+                    "type": "number",
+                    "value": 65
+                  }
+                }
+              ],
+              "then": {
                 "kind": "literal",
-                "type": "number",
-                "value": 65
+                "type": "text",
+                "value": "25_to_64"
               }
             }
           ],
-          "then": {
-            "kind": "literal",
-            "type": "text",
-            "value": "25_to_64"
-          },
           "otherwise": {
             "kind": "literal",
             "type": "text",
@@ -3640,23 +3706,27 @@
         "name": "age_band",
         "expr": {
           "type": "conditional",
-          "match": "all",
-          "conditions": [
+          "branches": [
             {
-              "column": "age",
-              "operator": "lt",
-              "value": {
+              "match": "all",
+              "conditions": [
+                {
+                  "column": "age",
+                  "operator": "lt",
+                  "value": {
+                    "kind": "literal",
+                    "type": "number",
+                    "value": 25
+                  }
+                }
+              ],
+              "then": {
                 "kind": "literal",
-                "type": "number",
-                "value": 25
+                "type": "text",
+                "value": "under_25"
               }
             }
           ],
-          "then": {
-            "kind": "literal",
-            "type": "text",
-            "value": "under_25"
-          },
           "otherwise": {
             "kind": "column",
             "name": "age_band"
@@ -3670,7 +3740,10 @@
         "expr": {
           "type": "window",
           "agg": "median",
-          "column": "premium",
+          "of": {
+            "kind": "column",
+            "name": "premium"
+          },
           "over": [
             "region",
             "age_band"
@@ -3761,7 +3834,6 @@
         "expr": {
           "type": "window",
           "agg": "row_number",
-          "column": "quote_id",
           "over": [
             "region"
           ]
@@ -3814,5 +3886,258 @@
       }
     ],
     "note": "row numbers follow the preceding sort, as in the original"
+  },
+  "direct_rate_per_thousand": {
+    "steps": [
+      {
+        "id": "s340",
+        "kind": "source",
+        "input": "quotes"
+      },
+      {
+        "id": "s341",
+        "kind": "with_column",
+        "name": "direct_rate_per_thousand",
+        "expr": {
+          "type": "function",
+          "fn": "divide",
+          "operand": {
+            "kind": "expr",
+            "expr": {
+              "type": "window",
+              "agg": "sum",
+              "of": {
+                "kind": "column",
+                "name": "premium"
+              },
+              "over": [
+                "policy_id"
+              ],
+              "where": {
+                "match": "all",
+                "conditions": [
+                  {
+                    "column": "channel",
+                    "operator": "is_in",
+                    "values": [
+                      {
+                        "kind": "literal",
+                        "type": "text",
+                        "value": "web"
+                      },
+                      {
+                        "kind": "literal",
+                        "type": "text",
+                        "value": "phone"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          "args": [
+            {
+              "kind": "expr",
+              "expr": {
+                "type": "window",
+                "agg": "sum",
+                "of": {
+                  "kind": "expr",
+                  "expr": {
+                    "type": "binary",
+                    "left": {
+                      "kind": "column",
+                      "name": "sum_insured"
+                    },
+                    "op": "/",
+                    "right": {
+                      "kind": "literal",
+                      "type": "number",
+                      "value": 1000
+                    }
+                  }
+                },
+                "over": [
+                  "policy_id"
+                ],
+                "where": {
+                  "match": "all",
+                  "conditions": [
+                    {
+                      "column": "channel",
+                      "operator": "is_in",
+                      "values": [
+                        {
+                          "kind": "literal",
+                          "type": "text",
+                          "value": "web"
+                        },
+                        {
+                          "kind": "literal",
+                          "type": "text",
+                          "value": "phone"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "capped_schedule_load": {
+    "steps": [
+      {
+        "id": "s342",
+        "kind": "source",
+        "input": "quotes"
+      },
+      {
+        "id": "s343",
+        "kind": "with_column",
+        "name": "load_cap",
+        "expr": {
+          "type": "operand",
+          "operand": {
+            "kind": "literal",
+            "type": "number",
+            "value": 0.2
+          }
+        }
+      },
+      {
+        "id": "s344",
+        "kind": "with_column",
+        "name": "schedule_load",
+        "expr": {
+          "type": "function",
+          "fn": "clip",
+          "operand": {
+            "kind": "expr",
+            "expr": {
+              "type": "sum_horizontal",
+              "parts": [
+                {
+                  "kind": "expr",
+                  "expr": {
+                    "type": "binary",
+                    "left": {
+                      "kind": "column",
+                      "name": "claims_count"
+                    },
+                    "op": "*",
+                    "right": {
+                      "kind": "literal",
+                      "type": "number",
+                      "value": 0.1
+                    }
+                  }
+                },
+                {
+                  "kind": "expr",
+                  "expr": {
+                    "type": "binary",
+                    "left": {
+                      "kind": "column",
+                      "name": "ncd_years"
+                    },
+                    "op": "*",
+                    "right": {
+                      "kind": "literal",
+                      "type": "number",
+                      "value": -0.03
+                    }
+                  }
+                },
+                {
+                  "kind": "expr",
+                  "expr": {
+                    "type": "conditional",
+                    "branches": [
+                      {
+                        "match": "all",
+                        "conditions": [
+                          {
+                            "column": "age",
+                            "operator": "lt",
+                            "value": {
+                              "kind": "literal",
+                              "type": "number",
+                              "value": 25
+                            }
+                          }
+                        ],
+                        "then": {
+                          "kind": "literal",
+                          "type": "number",
+                          "value": 0.15
+                        }
+                      },
+                      {
+                        "match": "all",
+                        "conditions": [
+                          {
+                            "column": "age",
+                            "operator": "ge",
+                            "value": {
+                              "kind": "literal",
+                              "type": "number",
+                              "value": 70
+                            }
+                          }
+                        ],
+                        "then": {
+                          "kind": "literal",
+                          "type": "number",
+                          "value": 0.05
+                        }
+                      }
+                    ],
+                    "otherwise": {
+                      "kind": "literal",
+                      "type": "null",
+                      "value": null
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "args": [
+            {
+              "kind": "expr",
+              "expr": {
+                "type": "binary",
+                "left": {
+                  "kind": "literal",
+                  "type": "number",
+                  "value": 0
+                },
+                "op": "-",
+                "right": {
+                  "kind": "column",
+                  "name": "load_cap"
+                }
+              }
+            },
+            {
+              "kind": "column",
+              "name": "load_cap"
+            }
+          ]
+        }
+      },
+      {
+        "id": "s345",
+        "kind": "drop",
+        "columns": [
+          "load_cap"
+        ]
+      }
+    ]
   }
 }

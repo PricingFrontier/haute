@@ -124,6 +124,9 @@ export const PIVOT_AGGREGATIONS: Array<{ value: PivotAggregation; label: string 
   { value: "count", label: "count (non-null)" },
   { value: "len", label: "row count" },
 ]
+/** Aggregates that reduce a group to one value: the only ones a window's row filter applies to. */
+export const REDUCING_AGGREGATIONS: ReadonlySet<WindowAggregation> = new Set<WindowAggregation>(AGGREGATIONS.map((a) => a.value))
+
 /** Window aggregates that take no input column. */
 export const COLUMNLESS_AGGREGATIONS: ReadonlySet<WindowAggregation> = new Set<WindowAggregation>(["len", "row_number"])
 
@@ -224,7 +227,13 @@ export const LIST_LITERAL_TYPES = LITERAL_TYPES.filter((t) => t.value !== "null"
  * is zero or more; `int` may be negative (a slice start counting from the end);
  * `format` is a date format such as `%Y-%m-%d`.
  */
-export type FunctionArg = "integer" | "int" | "number" | "scalar" | "dtype" | "text" | "format"
+export type FunctionArg = "integer" | "int" | "number" | "dtype" | "text" | "format" | "number_operand" | "scalar_operand"
+/** Arguments that take any operand besides a plain value of these types (the renderer's `_OPERAND_ARGUMENT_LITERALS`). */
+export const OPERAND_ARGUMENT_LITERALS: Partial<Record<FunctionArg, readonly LiteralType[]>> = {
+  number_operand: ["number"],
+  scalar_operand: ["number", "text", "boolean"],
+}
+export const isOperandArgument = (arg: FunctionArg | undefined): boolean => arg !== undefined && OPERAND_ARGUMENT_LITERALS[arg] !== undefined
 export const FUNCTIONS: Array<{ value: FunctionName; label: string; args: FunctionArg[] }> = [
   { value: "abs", label: "absolute value", args: [] },
   { value: "round", label: "round", args: ["integer"] },
@@ -233,8 +242,9 @@ export const FUNCTIONS: Array<{ value: FunctionName; label: string; args: Functi
   { value: "sqrt", label: "square root", args: [] },
   { value: "log", label: "natural log", args: [] },
   { value: "exp", label: "exponential", args: [] },
-  { value: "clip", label: "clip between", args: ["number", "number"] },
-  { value: "fill_null", label: "fill missing with", args: ["scalar"] },
+  { value: "clip", label: "clip between", args: ["number_operand", "number_operand"] },
+  { value: "divide", label: "divide, missing where the divisor is zero", args: ["number_operand"] },
+  { value: "fill_null", label: "fill missing with", args: ["scalar_operand"] },
   { value: "cast", label: "cast to type", args: ["dtype"] },
   { value: "upper", label: "upper case", args: [] },
   { value: "lower", label: "lower case", args: [] },
@@ -260,6 +270,11 @@ export const FUNCTIONS: Array<{ value: FunctionName; label: string; args: Functi
 ]
 
 /** The format a text column's dates start from: ISO dates, and ISO date and time. */
+/** The sum across columns, a formula function of two or more values that is its own expression type. */
+export const SUM_HORIZONTAL = { value: "sum_horizontal", label: "sum across columns, skipping missing values" } as const
+/** Every function a formula can call: the catalogue's, then the sum across. */
+export const FORMULA_FUNCTIONS: ReadonlyArray<{ value: string; label: string }> = [...FUNCTIONS, SUM_HORIZONTAL]
+
 export const DATE_FORMAT_DEFAULTS: Record<"Date" | "Datetime", string> = {
   Date: "%Y-%m-%d",
   Datetime: "%Y-%m-%d %H:%M:%S",
@@ -312,7 +327,7 @@ const NUMERIC_FAMILIES: ReadonlySet<CastFamily> = new Set<CastFamily>(["integer"
 export function functionTakes(fn: FunctionName, dtype: string | null): boolean {
   const family = castFamily(dtype)
   if (family === null) return true
-  if (fn === "log" || fn === "exp") return NUMERIC_FAMILIES.has(family)
+  if (fn === "log" || fn === "exp" || fn === "divide") return NUMERIC_FAMILIES.has(family)
   if (fn === "to_date" || fn === "to_datetime" || fn === "try_to_date" || fn === "try_to_datetime") return family === "text"
   return true
 }
@@ -327,7 +342,7 @@ export function exprTypeProblem(expr: Expr, typeOf: (name: string) => string | n
   const operandProblem = (operand: Operand): string | null => (operand.kind === "expr" ? exprTypeProblem(operand.expr, typeOf) : null)
   switch (expr.type) {
     case "function": {
-      const inner = operandProblem(expr.operand)
+      const inner = operandProblem(expr.operand) ?? expr.args.map(operandProblem).find((problem) => problem !== null)
       if (inner) return inner
       if (expr.operand.kind !== "column") return null
       const name = expr.operand.name
@@ -335,7 +350,7 @@ export function exprTypeProblem(expr: Expr, typeOf: (name: string) => string | n
       const family = castFamily(dtype)
       if (family === null || dtype === null) return null
       if (!functionTakes(expr.fn, dtype)) {
-        return expr.fn === "log" || expr.fn === "exp"
+        return expr.fn === "log" || expr.fn === "exp" || expr.fn === "divide"
           ? `${expr.fn}() takes numbers, and ${name} is ${dtype}.`
           : `${expr.fn}() parses text, and ${name} is ${dtype}.`
       }
@@ -357,13 +372,17 @@ export function exprTypeProblem(expr: Expr, typeOf: (name: string) => string | n
     case "binary":
       return operandProblem(expr.left) ?? operandProblem(expr.right)
     case "conditional":
-      return operandProblem(expr.then) ?? operandProblem(expr.otherwise)
+      return expr.branches.map((b) => operandProblem(b.then)).find((problem) => problem !== null) ?? operandProblem(expr.otherwise)
     case "concat":
+    case "sum_horizontal":
       return expr.parts.map(operandProblem).find((problem) => problem !== null) ?? null
-    case "window":
-      return aggregationTakes(expr.agg, expr.column ? typeOf(expr.column) : null)
+    case "window": {
+      if (expr.of?.kind !== "column") return expr.of ? operandProblem(expr.of) : null
+      const name = expr.of.name
+      return aggregationTakes(expr.agg, name ? typeOf(name) : null)
         ? null
-        : `${expr.agg} takes numbers, and ${expr.column} is a duration: turn it into days first (total_days).`
+        : `${expr.agg} takes numbers, and ${name} is a duration: turn it into days first (total_days).`
+    }
   }
 }
 
@@ -408,7 +427,8 @@ export function defaultArgFor(arg: FunctionArg): LiteralOperand {
     case "int":
     case "number":
       return literal("number", 0)
-    case "scalar":
+    case "number_operand":
+    case "scalar_operand":
       return literal("number", 0)
     case "dtype":
       return literal("text", "Float64")
@@ -430,11 +450,13 @@ export function defaultExpr(type: Expr["type"], column = ""): Expr {
     case "function":
       return { type, fn: "abs", operand, args: [] }
     case "conditional":
-      return { type, match: "all", conditions: [defaultCondition(column)], then: literal("number", 1), otherwise: literal("number", 0) }
+      return { type, branches: [{ match: "all", conditions: [defaultCondition(column)], then: literal("number", 1) }], otherwise: literal("number", 0) }
     case "window":
-      return { type, agg: "sum", column, over: [] }
+      return { type, agg: "sum", of: operand, over: [] }
     case "concat":
       return { type, parts: [operand, { kind: "column", name: "" }], separator: " " }
+    case "sum_horizontal":
+      return { type, parts: [operand, { kind: "column", name: "" }] }
   }
 }
 
@@ -609,23 +631,52 @@ export function exprProblem(value: unknown, where: string, depth = 1): string | 
     case "function":
       if (typeof expr.fn !== "string") return `${where} is missing its function.`
       if (expr.text !== undefined && typeof expr.text !== "string") return `${where} has malformed formula text.`
-      if (!Array.isArray(expr.args) || expr.args.some((a) => argumentProblem(a, where) !== null)) return `${where} has malformed function arguments.`
+      if (!Array.isArray(expr.args)) return `${where} has malformed function arguments.`
+      {
+        const kinds = FUNCTIONS.find((f) => f.value === expr.fn)?.args ?? []
+        for (const [index, arg] of expr.args.entries()) {
+          // An operand argument takes any operand; the others a plain value or a constant.
+          if (isOperandArgument(kinds[index])) {
+            const problem = operandProblem(arg, `${where} argument ${index + 1}`, depth)
+            if (problem) return problem
+          } else if (argumentProblem(arg, where) !== null) {
+            return `${where} has malformed function arguments.`
+          }
+        }
+      }
       return operandProblem(expr.operand, where, depth)
-    case "conditional":
-      if (typeof expr.match !== "string") return `${where} is missing its match mode.`
-      return (
-        conditionsProblem(expr.conditions, where, depth)
-        ?? operandProblem(expr.then, `${where} then branch`, depth)
-        ?? operandProblem(expr.otherwise, `${where} otherwise branch`, depth)
-      )
+    case "conditional": {
+      if (!Array.isArray(expr.branches) || expr.branches.length === 0) return `${where} is missing its branches.`
+      for (const [index, raw] of expr.branches.entries()) {
+        // One branch is the whole if-then; several are named by their place.
+        const label = expr.branches.length === 1 ? where : `${where} branch ${index + 1}`
+        if (!isShape(raw, "object")) return `${label} is malformed.`
+        const branch = raw as Record<string, unknown>
+        if (typeof branch.match !== "string") return `${label} is missing its match mode.`
+        const problem = conditionsProblem(branch.conditions, label, depth) ?? operandProblem(branch.then, `${label} then value`, depth)
+        if (problem) return problem
+      }
+      return operandProblem(expr.otherwise, `${where} otherwise value`, depth)
+    }
     case "window": {
-      // The renderer ignores `column` for columnless aggregates, defaults an
-      // order key's `descending` to false, and the forms canonicalise both.
+      // The renderer defaults an order key's `descending` to false, and the
+      // forms canonicalise it.
       if (typeof expr.agg !== "string") return `${where} is missing its aggregate.`
-      const columnless = COLUMNLESS_AGGREGATIONS.has(expr.agg as WindowAggregation)
-      if (typeof expr.column !== "string" && !(columnless && expr.column === undefined)) return `${where} is missing its aggregate.`
+      if (COLUMNLESS_AGGREGATIONS.has(expr.agg as WindowAggregation)) {
+        if (expr.of !== undefined) return `${where} counts rows and takes no value.`
+      } else {
+        if (!isShape(expr.of, "object")) return `${where} is missing the value it aggregates.`
+        const of = expr.of as Record<string, unknown>
+        if (of.kind !== "column" && of.kind !== "expr") return `${where} aggregates a column or an expression.`
+        const problem = operandProblem(of, `${where} value`, depth)
+        if (problem) return problem
+      }
       if (expr.descending !== undefined && typeof expr.descending !== "boolean") return `${where} has a malformed rank direction.`
       if (expr.quantile !== undefined && typeof expr.quantile !== "number") return `${where} has a malformed quantile.`
+      if (expr.where !== undefined) {
+        const filter = rowFilterProblem(expr.where, where)
+        if (filter) return filter
+      }
       const over = stringListProblem(expr.over, `${where} over`)
       if (over || expr.orderBy === undefined) return over
       const order = rowsProblem(expr.orderBy, [["column", "string"]], `${where} order`)
@@ -635,6 +686,14 @@ export function exprProblem(value: unknown, where: string, depth = 1): string | 
     }
     case "concat":
       if (expr.separator !== undefined && typeof expr.separator !== "string") return `${where} has a malformed separator.`
+      if (!Array.isArray(expr.parts)) return `${where} is missing its parts.`
+      for (const [index, part] of expr.parts.entries()) {
+        const problem = operandProblem(part, `${where} part ${index + 1}`, depth)
+        if (problem) return problem
+      }
+      return null
+    case "sum_horizontal":
+      if (expr.text !== undefined && typeof expr.text !== "string") return `${where} has malformed formula text.`
       if (!Array.isArray(expr.parts)) return `${where} is missing its parts.`
       for (const [index, part] of expr.parts.entries()) {
         const problem = operandProblem(part, `${where} part ${index + 1}`, depth)
@@ -744,6 +803,14 @@ export function stepProblem(step: unknown): string | null {
   }
 }
 
+/** A row filter (`{match, conditions}`) on an aggregation or a window. */
+function rowFilterProblem(value: unknown, where: string): string | null {
+  if (!isShape(value, "object")) return `${where} has a malformed row filter.`
+  const group = value as Record<string, unknown>
+  if (typeof group.match !== "string") return `${where} has a malformed row filter.`
+  return conditionsProblem(group.conditions, `${where} filter`)
+}
+
 function aggregationsProblem(entries: Array<Record<string, unknown>>, where: string): string | null {
   for (const [index, entry] of entries.entries()) {
     const label = `${where} aggregation ${index + 1}`
@@ -755,10 +822,7 @@ function aggregationsProblem(entries: Array<Record<string, unknown>>, where: str
     }
     if (typeof entry.column !== "string" || typeof entry.name !== "string") return `${label} is missing "column" or "name".`
     if (entry.where !== undefined) {
-      if (!isShape(entry.where, "object")) return `${label} has a malformed row filter.`
-      const group = entry.where as Record<string, unknown>
-      if (typeof group.match !== "string") return `${label} has a malformed row filter.`
-      const problem = conditionsProblem(group.conditions, `${label} filter`)
+      const problem = rowFilterProblem(entry.where, label)
       if (problem) return problem
     }
   }
@@ -776,8 +840,8 @@ function fillProblem(value: unknown, where: string): string | null {
 /**
  * The step with every optional-on-the-backend field filled in, so forms and
  * summaries can read canonical shapes: a null literal carries `value: null`,
- * a window always has a `column` and each order key a `descending`, and a
- * concat has a `separator`. Only steps `stepProblem` accepts are canonicalised.
+ * a window's order key a `descending`, and a concat a `separator`. Only steps
+ * `stepProblem` accepts are canonicalised.
  */
 export function canonicalStep(step: Step): Step {
   switch (step.kind) {
@@ -813,15 +877,17 @@ function canonicalExpr(expr: Expr): Expr {
   switch (expr.type) {
     case "window": {
       const orderBy = expr.orderBy?.map((k) => ({ column: k.column, descending: k.descending ?? false }))
-      return { ...expr, column: expr.column ?? "", ...(orderBy ? { orderBy } : {}) }
+      const where = expr.where ? { where: { ...expr.where, conditions: expr.where.conditions.map(canonicalCondition) } } : {}
+      return { ...expr, ...(expr.of ? { of: canonicalOperand(expr.of) } : {}), ...(orderBy ? { orderBy } : {}), ...where }
     }
     case "concat":
       return { ...expr, parts: expr.parts.map(canonicalOperand), separator: expr.separator ?? "" }
+    case "sum_horizontal":
+      return { ...expr, parts: expr.parts.map(canonicalOperand) }
     case "conditional":
       return {
         ...expr,
-        conditions: expr.conditions.map(canonicalCondition),
-        then: canonicalOperand(expr.then),
+        branches: expr.branches.map((b) => ({ ...b, conditions: b.conditions.map(canonicalCondition), then: canonicalOperand(b.then) })),
         otherwise: canonicalOperand(expr.otherwise),
       }
     case "operand":
@@ -829,7 +895,7 @@ function canonicalExpr(expr: Expr): Expr {
     case "binary":
       return { ...expr, left: canonicalOperand(expr.left), right: canonicalOperand(expr.right) }
     case "function":
-      return { ...expr, operand: canonicalOperand(expr.operand) }
+      return { ...expr, operand: canonicalOperand(expr.operand), args: expr.args.map(canonicalOperand) }
   }
 }
 

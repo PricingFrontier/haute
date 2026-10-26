@@ -347,8 +347,9 @@ any other edit discards them.
 Step-id uniqueness checks for valid lists run in linear time in the number of steps.
 The vocabulary covers filters
 (comparison, null, membership, text and regex operators), derived columns (formulas,
-typed functions over numbers, text, dates and durations, conditionals, window
-aggregates with a partition and an optional in-partition order, and text joins),
+typed functions over numbers, text, dates and durations, conditionals with one or more
+branches, window aggregates of a column or an expression with a partition, an optional
+in-partition order and an optional row filter, text joins, and sums across columns),
 select, drop, rename, cast (the integer, float, string, boolean, date, datetime and
 categorical dtypes), sort, unique, group-by with optional per-aggregate row filters
 and quantiles (an empty key list summarises the whole frame), joins with optional
@@ -357,8 +358,9 @@ elsewhere) and output-order control, concat, fill-null, limit, and
 node-local variables; a null literal renders as `pl.lit(None)` in expression position
 and is refused in membership lists and variables. An operand may itself be a nested
 expression (`{"kind": "expr", "expr": ...}`) wherever a value, column or variable is
-accepted, except in membership lists, variable values and function arguments, which
-stay plain values; a value, formula or function expression may carry a `text` annotation (the
+accepted, except in membership lists, variable values and the plain-value function
+arguments, which stay plain values; a value, formula, function or sum-across expression
+may carry a `text` annotation (the
 formula exactly as the editor's user typed it, kept for display and never rendered); a
 nested formula is bracketed only where Python's left-to-right
 evaluation needs it (a left operand only when its operator is weaker than the
@@ -366,8 +368,33 @@ parent's, a right operand and either side of `**` always, and anywhere outside a
 formula), so a chain of terms reads flat, and nesting is capped at twelve levels (a
 step's own expression is level one), beyond which the step is refused
 with a message to compute part of the expression in an earlier step; inside a
-group-by aggregation's row filter operands stay plain, because a nested aggregate
-there would mean the group's value rather than the frame's. Two reshaping steps
+group-by aggregation's or a window's row filter operands stay plain, because a nested
+aggregate there would mean the group's or the partition's value rather than the
+frame's. A conditional is a list of `branches`, each `{"match", "conditions", "then"}`,
+and an `otherwise`, rendered as one `.when(...).then(...)` per branch after the first
+`pl.when(...).then(...)` and then `.otherwise(...)`, so a row takes the value of the
+first branch whose conditions hold (a single branch renders exactly as
+`pl.when(c).then(t).otherwise(o)`). A window aggregate's `of` is a column or a nested
+expression (`pl.col('limit').sum().over(['q'])`, or with a formula in brackets
+`(pl.col('limit') * pl.col('load')).sum().over(['q'])`); a row count and a row number
+take no `of` and every other aggregate needs one. A window whose aggregate reduces a
+partition to one value (the group-by aggregates, sum through row count) may carry a
+`where` row filter shaped like a group-by aggregation's, rendered as a `.filter(...)`
+before the aggregate (`pl.col('limit').filter(...).sum().over(['q'])`, and a row count
+as `(...).sum()`), so a partition with no passing row aggregates no rows (0 for sum
+and the counts, null otherwise); the positional aggregates (row number, running total,
+previous value, rank, dense rank, forward and backward fill) refuse a row filter,
+because filtering changes the partition's length. A function's arguments are typed:
+clip's bounds and divide's divisor (`number_operand`) and fill_null's value
+(`scalar_operand`) take a column, a step variable, a constant of the argument's types,
+a nested expression, or a plain value (a number; or a number, text or true/false),
+rendered in value position (`pl.col('irpm').clip(pl.col('floor'), pl.col('cap'))`);
+every other argument takes a plain value or a constant of its type. `divide(value,
+divisor)` renders `pl.when(divisor != 0).then(value / divisor)`, which is null where
+the divisor is zero or missing, while `/` stays Polars' division (`x / 0` is infinite
+and `0 / 0` is NaN). A sum across columns (`{"type": "sum_horizontal", "parts":
+[...]}`, two or more operands in expression position) renders `pl.sum_horizontal(...)`,
+which skips missing values, so a row whose parts are all missing sums to 0. Two reshaping steps
 complete the vocabulary: a fixed-column `pivot` (index columns, the column whose
 values spread out, one entry per output column pairing a plain literal value with an
 output name, the values column, and an aggregate among sum, mean, min, max, median,

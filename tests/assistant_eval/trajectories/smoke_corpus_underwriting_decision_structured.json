@@ -32,89 +32,73 @@
                           "name": "decision",
                           "expr": {
                             "type": "conditional",
-                            "match": "all",
-                            "conditions": [
+                            "branches": [
                               {
-                                "column": "premium",
-                                "operator": "is_null"
+                                "match": "all",
+                                "conditions": [
+                                  {
+                                    "column": "age",
+                                    "operator": "lt",
+                                    "value": {
+                                      "kind": "literal",
+                                      "type": "number",
+                                      "value": 18
+                                    }
+                                  }
+                                ],
+                                "then": {
+                                  "kind": "literal",
+                                  "type": "text",
+                                  "value": "decline"
+                                }
+                              },
+                              {
+                                "match": "any",
+                                "conditions": [
+                                  {
+                                    "column": "claims_count",
+                                    "operator": "ge",
+                                    "value": {
+                                      "kind": "literal",
+                                      "type": "number",
+                                      "value": 3
+                                    }
+                                  },
+                                  {
+                                    "column": "vehicle_value",
+                                    "operator": "gt",
+                                    "value": {
+                                      "kind": "literal",
+                                      "type": "number",
+                                      "value": 100000
+                                    }
+                                  }
+                                ],
+                                "then": {
+                                  "kind": "literal",
+                                  "type": "text",
+                                  "value": "refer"
+                                }
+                              },
+                              {
+                                "match": "all",
+                                "conditions": [
+                                  {
+                                    "column": "premium",
+                                    "operator": "is_null"
+                                  }
+                                ],
+                                "then": {
+                                  "kind": "literal",
+                                  "type": "text",
+                                  "value": "await_price"
+                                }
                               }
                             ],
-                            "then": {
-                              "kind": "literal",
-                              "type": "text",
-                              "value": "await_price"
-                            },
                             "otherwise": {
                               "kind": "literal",
                               "type": "text",
                               "value": "accept"
-                            }
-                          }
-                        },
-                        {
-                          "id": "s27",
-                          "kind": "with_column",
-                          "name": "decision",
-                          "expr": {
-                            "type": "conditional",
-                            "match": "any",
-                            "conditions": [
-                              {
-                                "column": "claims_count",
-                                "operator": "ge",
-                                "value": {
-                                  "kind": "literal",
-                                  "type": "number",
-                                  "value": 3
-                                }
-                              },
-                              {
-                                "column": "vehicle_value",
-                                "operator": "gt",
-                                "value": {
-                                  "kind": "literal",
-                                  "type": "number",
-                                  "value": 100000
-                                }
-                              }
-                            ],
-                            "then": {
-                              "kind": "literal",
-                              "type": "text",
-                              "value": "refer"
-                            },
-                            "otherwise": {
-                              "kind": "column",
-                              "name": "decision"
-                            }
-                          }
-                        },
-                        {
-                          "id": "s28",
-                          "kind": "with_column",
-                          "name": "decision",
-                          "expr": {
-                            "type": "conditional",
-                            "match": "all",
-                            "conditions": [
-                              {
-                                "column": "age",
-                                "operator": "lt",
-                                "value": {
-                                  "kind": "literal",
-                                  "type": "number",
-                                  "value": 18
-                                }
-                              }
-                            ],
-                            "then": {
-                              "kind": "literal",
-                              "type": "text",
-                              "value": "decline"
-                            },
-                            "otherwise": {
-                              "kind": "column",
-                              "name": "decision"
                             }
                           }
                         }

@@ -28,9 +28,10 @@ import keyword
 import math
 import re
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from functools import partial
 from types import MappingProxyType
 from typing import Any, Literal
 
@@ -414,16 +415,25 @@ _ARGUMENT_CONSTANT_TYPES: dict[str, tuple[str, ...]] = {
     "number": ("integer", "float"),
     "text": ("text",),
     "format": ("text",),
-    "scalar": ("integer", "float", "text", "boolean"),
     "dtype": (),
+    "number_operand": ("integer", "float"),
+    "scalar_operand": ("integer", "float", "text", "boolean"),
+}
+#: Arguments that take any operand (a column, a variable, a constant or a
+#: nested expression) besides a plain value of these literal types.
+_OPERAND_ARGUMENT_LITERALS: dict[str, tuple[str, ...]] = {
+    "number_operand": ("number",),
+    "scalar_operand": ("number", "text", "boolean"),
 }
 #: How deep expressions may nest as operands; a with_column expression is depth 1.
 #: A formula chain nests one level per operator, so a dozen terms fit.
 MAX_EXPR_DEPTH = 12
 _PRECEDENCE: dict[str, int] = {"+": 1, "-": 1, "*": 2, "/": 2, "//": 2, "%": 2, "**": 3}
 
-#: ``fn -> (argument literal types, render template)``. ``{r}`` is the
-#: receiver rendered in expression position; ``{0}``/``{1}`` are bare literals.
+#: ``fn -> (argument types, render template)``. ``{r}`` is the receiver
+#: rendered in expression position; ``{0}``/``{1}`` are the arguments in value
+#: position (a bare literal or constant, or an operand argument's column,
+#: variable or expression).
 FUNCTIONS: dict[str, tuple[tuple[str, ...], str]] = {
     "abs": ((), "{r}.abs()"),
     "floor": ((), "{r}.floor()"),
@@ -432,8 +442,10 @@ FUNCTIONS: dict[str, tuple[tuple[str, ...], str]] = {
     "log": ((), "{r}.log()"),
     "exp": ((), "{r}.exp()"),
     "round": (("integer",), "{r}.round({0})"),
-    "clip": (("number", "number"), "{r}.clip({0}, {1})"),
-    "fill_null": (("scalar",), "{r}.fill_null({0})"),
+    "clip": (("number_operand", "number_operand"), "{r}.clip({0}, {1})"),
+    # Null where the divisor is zero or missing; `/` keeps Polars' inf and NaN.
+    "divide": (("number_operand",), "pl.when({0} != 0).then({r} / {0})"),
+    "fill_null": (("scalar_operand",), "{r}.fill_null({0})"),
     "cast": (("dtype",), "{r}.cast(pl.{0})"),
     "upper": ((), "{r}.str.to_uppercase()"),
     "lower": ((), "{r}.str.to_lowercase()"),
@@ -792,7 +804,11 @@ def _expression_refusal(node: object, schema: pl.Schema) -> str | None:
                 if remedy is not None:
                     return remedy
         if "agg" in node:
-            remedy = _duration_spread(node.get("column"), node.get("agg"), schema)
+            column = node.get("column")
+            of = node.get("of")
+            if isinstance(of, Mapping) and of.get("kind") == "column":
+                column = of.get("name")
+            remedy = _duration_spread(column, node.get("agg"), schema)
             if remedy is not None:
                 return remedy
         children: Sequence[object] = list(node.values())
@@ -1271,18 +1287,19 @@ class _Renderer:
 
     def _aggregate(
         self,
-        column: object,
+        receiver: Callable[[], str],
         agg: object,
         label: str,
         *,
         quantile: object = None,
         where: object = None,
     ) -> str:
+        """Render *agg* of the value *receiver* renders, which a row count never reads."""
         name, call = self._aggregate_call(agg, label, quantile)
         if where is None:
             if name == "len":
                 return "pl.len()"
-            return f"{self._column(column, f'{label} column')}{call}"
+            return f"{receiver()}{call}"
         where_group = self._object(where, f"{label} where")
         self._keys(where_group, ("match", "conditions"), f"{label} where")
         self.plain_operands += 1
@@ -1292,7 +1309,7 @@ class _Renderer:
             self.plain_operands -= 1
         if name == "len":
             return f"({predicate}).sum()"
-        return f"{self._column(column, f'{label} column')}.filter({predicate}){call}"
+        return f"{receiver()}.filter({predicate}){call}"
 
     def _aggregate_call(self, agg: object, label: str, quantile: object) -> tuple[str, str]:
         """Return the aggregate name and its rendered method call."""
@@ -1358,11 +1375,22 @@ class _Renderer:
             ]
             return template.format(*rendered_args, r=receiver)
         if kind == "conditional":
-            self._keys(expr, ("type", "match", "conditions", "then", "otherwise"), label)
-            conditions = self._conditions(expr, label)
-            then = self._operand(expr.get("then"), f"{label} then", expr=True)
+            self._keys(expr, ("type", "branches", "otherwise"), label)
+            branches = expr.get("branches")
+            if not isinstance(branches, list) or not branches:
+                raise self.fail(f"{label} needs at least one branch.")
+            # A row takes the first branch whose conditions hold, as Polars'
+            # chained when/then gives it; one branch keeps its plain labels.
+            chain = "pl"
+            for i, raw in enumerate(branches):
+                where = label if len(branches) == 1 else f"{label} branch {i + 1}"
+                branch = self._object(raw, where)
+                self._keys(branch, ("match", "conditions", "then"), where)
+                conditions = self._conditions(branch, where)
+                then = self._operand(branch.get("then"), f"{where} then", expr=True)
+                chain += f".when({conditions}).then({then})"
             otherwise = self._operand(expr.get("otherwise"), f"{label} otherwise", expr=True)
-            return f"pl.when({conditions}).then({then}).otherwise({otherwise})"
+            return f"{chain}.otherwise({otherwise})"
         if kind == "window":
             return self._window(expr, label)
         if kind == "concat":
@@ -1378,25 +1406,58 @@ class _Renderer:
                 for i, part in enumerate(parts)
             ]
             return f"pl.concat_str([{', '.join(rendered_parts)}], separator={separator!r})"
+        if kind == "sum_horizontal":
+            self._keys(expr, ("type", "parts", "text"), label)
+            self._formula_text(expr, label)
+            parts = expr.get("parts")
+            if not isinstance(parts, list) or len(parts) < 2:
+                raise self.fail(f"{label} sum across needs at least two parts.")
+            rendered_parts = [
+                self._operand(part, f"{label} part {i + 1}", expr=True)
+                for i, part in enumerate(parts)
+            ]
+            # Polars skips missing parts, so a row with every part missing sums to 0.
+            return f"pl.sum_horizontal({', '.join(rendered_parts)})"
         raise self.fail(f"Unknown expression type {kind!r}.")
 
     def _window(self, expr: Mapping[str, Any], label: str) -> str:
         self._keys(
-            expr, ("type", "agg", "column", "over", "orderBy", "descending", "quantile"), label
+            expr,
+            ("type", "agg", "of", "over", "orderBy", "descending", "quantile", "where"),
+            label,
         )
         over = self._str_list(expr.get("over"), f"{label} over", allow_empty=True)
         agg = self._choice(expr.get("agg"), WINDOW_AGGREGATIONS, f"{label} aggregation")
         descending = expr.get("descending", False)
         if not isinstance(descending, bool):
             raise self.fail(f"{label} descending must be true or false.")
+        where = expr.get("where")
+        if where is not None and agg not in AGGREGATIONS:
+            # Filtering changes a partition's length, which a positional
+            # aggregate must keep to give each row its value.
+            raise self.fail(
+                f"{label} row filter needs an aggregate of the whole group, such as sum or "
+                f"mean; {agg!r} gives a value per row."
+            )
+        if agg in ("len", "row_number"):
+            if "of" in expr:
+                raise self.fail(f"{label} {agg!r} takes no value to aggregate; remove its 'of'.")
+        elif "of" not in expr:
+            raise self.fail(f"{label} needs a value to aggregate: a column or an expression.")
         if agg == "row_number":
             # The idiom analysts write; the cardinality classifier recognises
             # a range bounded by ``pl.len()`` as one value per row.
             base = "pl.int_range(1, pl.len() + 1)"
         elif agg in AGGREGATIONS:
-            base = self._aggregate(expr.get("column"), agg, label, quantile=expr.get("quantile"))
+            base = self._aggregate(
+                partial(self._window_value, expr.get("of"), label),
+                agg,
+                label,
+                quantile=expr.get("quantile"),
+                where=where,
+            )
         else:
-            column = self._column(expr.get("column"), f"{label} column")
+            column = self._window_value(expr.get("of"), label)
             base = {
                 "cum_sum": f"{column}.cum_sum()",
                 "shift": f"{column}.shift(1)",
@@ -1431,8 +1492,32 @@ class _Renderer:
             raise self.fail(f"{label} order columns must all share one direction.")
         return f"{base}.over({over!r}, order_by={columns!r}, descending={flags[0]!r})"
 
+    def _operand_argument(self, operand: Mapping[str, Any], expected: str, label: str) -> str:
+        """An argument that takes any operand, rendered in value position."""
+        literals = _OPERAND_ARGUMENT_LITERALS[expected]
+        if operand.get("kind") == "literal":
+            literal_type, rendered = self._literal(operand, label)
+            if literal_type not in literals:
+                plain = "a number" if literals == ("number",) else "a number, text or true/false"
+                raise self.fail(
+                    f"{label} must be {plain}, a column, a variable, a constant or an expression."
+                )
+            return rendered
+        return self._operand(
+            operand, label, expr=False, constant_types=_ARGUMENT_CONSTANT_TYPES[expected]
+        )
+
+    def _window_value(self, value: object, label: str) -> str:
+        """A window's value: a column, or a nested expression (a formula in brackets)."""
+        operand = self._object(value, f"{label} value")
+        if operand.get("kind") not in ("column", "expr"):
+            raise self.fail(f"{label} value must be a column or an expression.")
+        return self._operand(operand, f"{label} value", expr=True)
+
     def _function_arg(self, value: object, expected: str, label: str) -> str:
         operand = self._object(value, label)
+        if expected in _OPERAND_ARGUMENT_LITERALS:
+            return self._operand_argument(operand, expected, label)
         if operand.get("kind") == "constant":
             types = _ARGUMENT_CONSTANT_TYPES[expected]
             if not types:
@@ -1463,10 +1548,6 @@ class _Renderer:
             if literal_type != "text":
                 raise self.fail(f"{label} must be a date format such as '%Y-%m-%d'.")
             return self._date_format(operand.get("value"), label)
-        if expected == "scalar":
-            if literal_type in ("date", "null"):
-                raise self.fail(f"{label} must be a number, text or true/false.")
-            return rendered
         if literal_type != "text" or operand.get("value") not in CAST_DTYPES:
             raise self.fail(f"{label} must be one of {list(CAST_DTYPES)!r}.")
         return str(operand["value"])
@@ -1626,7 +1707,7 @@ class _Renderer:
                 raise self.fail(f"Aggregation name {name!r} is used more than once.")
             names.add(name)
             aggregate = self._aggregate(
-                entry.get("column"),
+                partial(self._column, entry.get("column"), f"{label} column"),
                 entry.get("agg"),
                 label,
                 quantile=entry.get("quantile"),

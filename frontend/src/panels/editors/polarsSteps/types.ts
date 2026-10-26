@@ -19,11 +19,15 @@ export type ColumnOperand = { kind: "column"; name: string }
 export type VariableOperand = { kind: "variable"; name: string }
 /** A pipeline global constant, read as `global_constants.<name>`; also a typed function argument. */
 export type ConstantOperand = { kind: "constant"; name: string }
-/** A nested expression; allowed wherever an operand is, except membership lists, variables and function arguments. */
+/** A nested expression; allowed wherever an operand is, except membership lists, variables and plain-value function arguments. */
 export type ExprOperand = { kind: "expr"; expr: Expr }
 export type Operand = LiteralOperand | ColumnOperand | VariableOperand | ConstantOperand | ExprOperand
-/** A function's extra argument: a plain value, or a constant of the argument's type. */
-export type FunctionArgValue = LiteralOperand | ConstantOperand
+/**
+ * A function's extra argument: a plain value or a constant of the argument's
+ * type, and for an operand argument (clip's bounds, fill_null's value) also a
+ * column, a variable or a nested expression.
+ */
+export type FunctionArgValue = Operand
 
 export type ConditionOperator =
   | "eq" | "ne" | "gt" | "ge" | "lt" | "le"
@@ -63,7 +67,7 @@ export type JoinMaintainOrder = "none" | "left" | "right" | "left_right" | "righ
 export type FillStrategy = "forward" | "backward" | "min" | "max" | "mean" | "zero" | "one"
 export type FunctionName =
   | "abs" | "floor" | "ceil" | "sqrt" | "log" | "exp"
-  | "round" | "clip" | "fill_null" | "cast"
+  | "round" | "clip" | "divide" | "fill_null" | "cast"
   | "upper" | "lower" | "strip" | "length"
   | "replace" | "replace_all" | "replace_regex" | "slice" | "split_part" | "extract"
   | "year" | "month" | "day" | "weekday" | "offset_by" | "total_days"
@@ -71,17 +75,20 @@ export type FunctionName =
 
 export type OrderKey = { column: string; descending: boolean }
 export type ConditionGroup = { match: MatchMode; conditions: Condition[] }
+/** One if-then branch: a row takes `then` when these conditions hold and no earlier branch's did. */
+export type ConditionalBranch = ConditionGroup & { then: Operand }
 
 export type Expr =
   | { type: "operand"; operand: Operand; text?: string }
   /** `text` is the formula exactly as typed, kept for display; the renderer ignores it. */
   | { type: "binary"; left: Operand; op: BinaryOperator; right: Operand; text?: string }
   | { type: "function"; fn: FunctionName; operand: Operand; args: FunctionArgValue[]; text?: string }
-  | { type: "conditional"; match: MatchMode; conditions: Condition[]; then: Operand; otherwise: Operand }
+  | { type: "conditional"; branches: ConditionalBranch[]; otherwise: Operand }
   | {
       type: "window"
       agg: WindowAggregation
-      column: string
+      /** The value aggregated: a column or a nested expression; absent for a row count and a row number. */
+      of?: Operand
       over: string[]
       /** Row order within each partition; needs at least one `over` column. */
       orderBy?: OrderKey[]
@@ -89,8 +96,12 @@ export type Expr =
       descending?: boolean
       /** The quantile in [0, 1] (`quantile` only). */
       quantile?: number
+      /** Aggregate only the rows matching these conditions (plain aggregates only, plain values only). */
+      where?: ConditionGroup
     }
   | { type: "concat"; parts: Operand[]; separator: string }
+  /** `pl.sum_horizontal`: missing parts are skipped, so a row with every part missing sums to 0. */
+  | { type: "sum_horizontal"; parts: Operand[]; text?: string }
 
 export type StepBase = { id: string }
 

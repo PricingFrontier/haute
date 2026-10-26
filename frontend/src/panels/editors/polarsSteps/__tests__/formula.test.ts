@@ -22,6 +22,13 @@ describe("formula text", () => {
     "upper(region)",
     "cast(premium, Int64)",
     "fill_null(premium, 0)",
+    "fill_null(premium, base * 1.1)",
+    "clip(irpm, 0 - cap, cap)",
+    "clip(irpm, -0.25, 0.25)",
+    "divide(premium, limit)",
+    "divide(premium, limit - excess) * 100",
+    "sum_horizontal(load_a, load_b, claims * 0.1)",
+    "1 + sum_horizontal(load_a, load_b)",
     "replace(region, 'north', 'N')",
     "`my column` + 1",
     "'text' + region",
@@ -126,8 +133,8 @@ describe("formula text", () => {
   })
 
   it("has no text for expressions the formula grammar cannot express", () => {
-    expect(formulaText({ type: "window", agg: "mean", column: "premium", over: ["region"] })).toBeNull()
-    expect(formulaText(binary(col("premium"), "-", ex({ type: "window", agg: "mean", column: "premium", over: ["region"] })))).toBeNull()
+    expect(formulaText({ type: "window", agg: "mean", of: { kind: "column", name: "premium" }, over: ["region"] })).toBeNull()
+    expect(formulaText(binary(col("premium"), "-", ex({ type: "window", agg: "mean", of: { kind: "column", name: "premium" }, over: ["region"] })))).toBeNull()
     expect(formulaText({ type: "concat", parts: [col("a"), col("b")], separator: "-" })).toBeNull()
   })
 
@@ -156,6 +163,44 @@ describe("formula text", () => {
   })
 })
 
+describe("operand arguments", () => {
+  it("take any formula for clip's bounds and fill_null's value", () => {
+    expect(withoutFormulaText(parseFormula("clip(irpm_total, -cap, cap)"))).toEqual({
+      type: "function",
+      fn: "clip",
+      operand: col("irpm_total"),
+      args: [ex(binary(num(0), "-", col("cap"))), col("cap")],
+    })
+    expect(withoutFormulaText(parseFormula("fill_null(quoted, rate * 2)", ["rate"]))).toEqual({
+      type: "function",
+      fn: "fill_null",
+      operand: col("quoted"),
+      // An earlier step's variable stays a variable there.
+      args: [ex(binary({ kind: "variable", name: "rate" }, "*", num(2)))],
+    })
+  })
+
+  it("refuse a plain value of the wrong type, while plain-value arguments still refuse a column", () => {
+    expect(() => parseFormula("clip(a, 'low', 1)")).toThrow("clip() expects a number, a column or a formula here.")
+    expect(() => parseFormula("fill_null(a, null)")).toThrow("fill_null() expects a number, quoted text, true/false, a column or a formula here.")
+    expect(() => parseFormula("round(a, places)")).toThrow("round() expects a number here.")
+  })
+})
+
+describe("sum_horizontal", () => {
+  it("sums two or more formulas as its own expression type, kept as typed", () => {
+    const parsed = parseFormula("SUM_HORIZONTAL(a, b * 2)")
+    expect(parsed).toEqual({ type: "sum_horizontal", parts: [col("a"), ex(binary(col("b"), "*", num(2)))], text: "sum_horizontal(a, b * 2)" })
+    expect(displayFormula(parsed)).toBe("sum_horizontal(a, b * 2)")
+    expect(formulaText({ type: "sum_horizontal", parts: [col("a"), ex({ type: "window", agg: "sum", of: col("b"), over: [] })] })).toBeNull()
+  })
+
+  it("needs two or more values", () => {
+    expect(() => parseFormula("sum_horizontal(a)")).toThrow("sum_horizontal() takes two or more values.")
+    expect(() => parseFormula("sum_horizontal()")).toThrow(FormulaError)
+  })
+})
+
 describe("renameColumnInFormula", () => {
   it("renames column references only, never quoted text, functions, keywords or variables", () => {
     expect(renameColumnInFormula('replace(primium, "primium", "discount")', "primium", "premium")).toBe('replace(premium, "primium", "discount")')
@@ -169,6 +214,12 @@ describe("renameColumnInFormula", () => {
     expect(renameColumnInFormula("cast(Float64, Float64)", "Float64", "Float32")).toBe("cast(Float32, Float64)")
     expect(renameColumnInFormula("round(abs(x), 2) + clip(x, 0, 1)", "x", "y")).toBe("round(abs(y), 2) + clip(y, 0, 1)")
     expect(renameColumnInFormula("(x + 1) * x", "x", "y")).toBe("(y + 1) * y")
+  })
+
+  it("renames a column inside an operand argument", () => {
+    expect(renameColumnInFormula("clip(irpm, -cap, cap) + round(cap, 2)", "cap", "limit")).toBe("clip(irpm, -limit, limit) + round(limit, 2)")
+    expect(renameColumnInFormula("fill_null(a, (b + 1) * 2)", "b", "base")).toBe("fill_null(a, (base + 1) * 2)")
+    expect(renameColumnInFormula("sum_horizontal(a, b, b * 2)", "b", "base")).toBe("sum_horizontal(a, base, base * 2)")
   })
 })
 

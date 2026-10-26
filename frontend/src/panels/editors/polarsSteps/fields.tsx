@@ -1242,11 +1242,12 @@ export function ConditionList({
   variables: string[]
   ariaLabel: string
   renderExpression?: RenderExpression
-  lead: "keep" | "when"
+  /** "Keep rows where", "When", or "Otherwise, when" for an if-then's later branch. */
+  lead: "keep" | "when" | "otherwiseWhen"
   /** Id for the first condition's column box, when it is the first field of its card. */
   firstId?: string
 }) {
-  const opening = lead === "keep" ? "Keep rows where" : "When"
+  const opening = lead === "keep" ? "Keep rows where" : lead === "when" ? "When" : "Otherwise, when"
   return (
     <div className="grid gap-1.5">
       {conditions.length > 1 ? (

@@ -16,7 +16,7 @@ describe("stepProblem", () => {
       { id: "s", kind: "source", input: "quotes" },
       { id: "f", kind: "filter", match: "all", conditions: [{ column: "a", operator: "is_null" }] },
       { id: "w", kind: "with_column", name: "n", expr: { type: "function", fn: "round", operand: col("a"), args: [{ kind: "literal", type: "number", value: 2 }] } },
-      { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", match: "any", conditions: [{ column: "a", operator: "is_null" }], then: col("a"), otherwise: col("b") } },
+      { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", branches: [{ match: "any", conditions: [{ column: "a", operator: "is_null" }], then: col("a") }], otherwise: col("b") } },
       { id: "g", kind: "group_by", keys: ["k"], aggregations: [{ column: "a", agg: "sum", name: "s" }] },
       { id: "j", kind: "join", input: "rates", how: "left", leftOn: ["k"], rightOn: ["k"], suffix: "_r", maintainOrder: "left_right" },
       { id: "fn", kind: "fill_null", columns: [], fill: { kind: "strategy", strategy: "forward" } },
@@ -25,16 +25,16 @@ describe("stepProblem", () => {
         id: "ow",
         kind: "with_column",
         name: "rn",
-        expr: { type: "window", agg: "row_number", column: "", over: ["k"], orderBy: [{ column: "a", descending: true }] },
+        expr: { type: "window", agg: "row_number", over: ["k"], orderBy: [{ column: "a", descending: true }] },
       },
-      { id: "rk", kind: "with_column", name: "rk", expr: { type: "window", agg: "dense_rank", column: "a", over: [], descending: true } },
-      { id: "q", kind: "with_column", name: "q", expr: { type: "window", agg: "quantile", column: "a", over: ["k"], quantile: 0.9 } },
+      { id: "rk", kind: "with_column", name: "rk", expr: { type: "window", agg: "dense_rank", of: { kind: "column", name: "a" }, over: [], descending: true } },
+      { id: "q", kind: "with_column", name: "q", expr: { type: "window", agg: "quantile", of: { kind: "column", name: "a" }, over: ["k"], quantile: 0.9 } },
       { id: "cc", kind: "with_column", name: "key", expr: { type: "concat", parts: [col("a"), { kind: "literal", type: "text", value: "-" }, col("b")], separator: "" } },
       {
         id: "nl",
         kind: "with_column",
         name: "m",
-        expr: { type: "conditional", match: "all", conditions: [{ column: "a", operator: "matches", value: { kind: "literal", type: "text", value: "^c" } }], then: col("a"), otherwise: { kind: "literal", type: "null", value: null } },
+        expr: { type: "conditional", branches: [{ match: "all", conditions: [{ column: "a", operator: "matches", value: { kind: "literal", type: "text", value: "^c" } }], then: col("a") }], otherwise: { kind: "literal", type: "null", value: null } },
       },
       {
         id: "gw",
@@ -68,17 +68,36 @@ describe("stepProblem", () => {
       { id: "r", kind: "with_column", name: "rn", expr: { type: "window", agg: "row_number", over: ["k"], orderBy: [{ column: "a" }] } as never },
       { id: "c", kind: "with_column", name: "key", expr: { type: "concat", parts: [col("a"), col("b")] } as never },
     ]
+    // An order key without a direction is shorthand; a row number has no value.
     for (const step of shorthand) expect(stepProblem(step)).toBeNull()
     expect(canonicalStep(shorthand[0])).toEqual({ ...shorthand[0], expr: { type: "operand", operand: { kind: "literal", type: "null", value: null } } })
     expect(canonicalStep(shorthand[1])).toEqual({
       ...shorthand[1],
-      expr: { type: "window", agg: "row_number", column: "", over: ["k"], orderBy: [{ column: "a", descending: false }] },
+      expr: { type: "window", agg: "row_number", over: ["k"], orderBy: [{ column: "a", descending: false }] },
     })
     expect(canonicalStep(shorthand[2])).toEqual({ ...shorthand[2], expr: { type: "concat", parts: [col("a"), col("b")], separator: "" } })
-    expect(stepProblem({ id: "r", kind: "with_column", name: "s", expr: { type: "window", agg: "sum", over: ["k"] } })).toMatch(/missing its aggregate/)
-    expect(stepProblem({ id: "r", kind: "with_column", name: "s", expr: { type: "window", agg: "sum", column: "a", over: [], orderBy: [{ column: "a", descending: "yes" }] } })).toMatch(
+    expect(stepProblem({ id: "r", kind: "with_column", name: "s", expr: { type: "window", agg: "sum", of: { kind: "column", name: "a" }, over: [], orderBy: [{ column: "a", descending: "yes" }] } })).toMatch(
       /malformed direction/,
     )
+  })
+
+  it("needs a window's value, a column or an expression, except for a row count and a row number", () => {
+    const window = (agg: string, of?: unknown): Step => ({ id: "w", kind: "with_column", name: "s", expr: { type: "window", agg, ...(of ? { of } : {}), over: ["k"] } as never })
+    expect(stepProblem(window("sum", col("a")))).toBeNull()
+    expect(stepProblem(window("cum_sum", { kind: "expr", expr: { type: "binary", left: col("a"), op: "*", right: col("b") } }))).toBeNull()
+    expect(stepProblem(window("len"))).toBeNull()
+    expect(stepProblem(window("sum"))).toMatch(/missing the value it aggregates/)
+    expect(stepProblem(window("len", col("a")))).toMatch(/counts rows and takes no value/)
+    expect(stepProblem(window("mean", { kind: "literal", type: "number", value: 1 }))).toMatch(/aggregates a column or an expression/)
+    expect(stepProblem(window("max", { kind: "expr", expr: { type: "binary", left: col("a") } }))).toMatch(/missing its operator/)
+  })
+
+  it("checks a window's row filter like an aggregation's", () => {
+    const window = (where: unknown): Step => ({ id: "w", kind: "with_column", name: "s", expr: { type: "window", agg: "sum", of: { kind: "column", name: "a" }, over: ["k"], where } as never })
+    expect(stepProblem(window({ match: "all", conditions: [{ column: "k", operator: "is_null" }] }))).toBeNull()
+    expect(stepProblem(window("rows"))).toMatch(/malformed row filter/)
+    expect(stepProblem(window({ conditions: [] }))).toMatch(/malformed row filter/)
+    expect(stepProblem(window({ match: "all", conditions: [{ column: 3 }] }))).toMatch(/condition 1 is malformed/)
   })
 
   it("accepts nested expressions up to the renderer's depth and refuses them in literal-only positions", () => {
@@ -139,17 +158,17 @@ describe("stepProblem", () => {
     expect(stepProblem(filter(nested(13)))).toMatch(/nests more than 12 levels/)
     expect(stepProblem(fill(nested(12)))).toBeNull()
     expect(stepProblem(fill(nested(13)))).toMatch(/nests more than 12 levels/)
-    // A filter condition value carrying the renderer's columnless-window shorthand is canonicalised.
+    // A row count in a filter condition's value is canonical as saved, with no value of its own.
     const shorthand = filter({ kind: "expr", expr: { type: "window", agg: "len", over: [] } as never })
     expect(stepProblem(shorthand)).toBeNull()
-    expect(canonicalStep(shorthand)).toEqual(filter({ kind: "expr", expr: { type: "window", agg: "len", column: "", over: [] } }))
+    expect(canonicalStep(shorthand)).toEqual(filter({ kind: "expr", expr: { type: "window", agg: "len", over: [] } }))
   })
 
   it("summarises the extended vocabulary in plain words", () => {
     expect(
-      summarizeStep({ id: "ow", kind: "with_column", name: "rn", expr: { type: "window", agg: "row_number", column: "", over: ["k"], orderBy: [{ column: "a", descending: true }] } }),
+      summarizeStep({ id: "ow", kind: "with_column", name: "rn", expr: { type: "window", agg: "row_number", over: ["k"], orderBy: [{ column: "a", descending: true }] } }),
     ).toBe("rn = row number over k ordered by a desc")
-    expect(summarizeStep({ id: "t", kind: "with_column", name: "tot", expr: { type: "window", agg: "sum", column: "a", over: [] } })).toBe("tot = sum of a over all rows")
+    expect(summarizeStep({ id: "t", kind: "with_column", name: "tot", expr: { type: "window", agg: "sum", of: { kind: "column", name: "a" }, over: [] } })).toBe("tot = sum of a over all rows")
     expect(
       summarizeStep({ id: "cc", kind: "with_column", name: "key", expr: { type: "concat", parts: [col("a"), { kind: "literal", type: "null", value: null }], separator: "|" } }),
     ).toBe("key = join(a, null)")
@@ -161,7 +180,12 @@ describe("stepProblem", () => {
 
   it.each([
     ["function without args", { id: "w", kind: "with_column", name: "n", expr: { type: "function", fn: "round", operand: col("a") } }, /function arguments/],
-    ["conditional without conditions", { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", match: "all", then: col("a"), otherwise: col("b") } }, /conditions/],
+    ["conditional without conditions", { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", branches: [{ match: "all", then: col("a") }], otherwise: col("b") } }, /conditions/],
+    ["sum across without parts", { id: "s", kind: "with_column", name: "t", expr: { type: "sum_horizontal" } }, /missing its parts/],
+    ["sum across with a malformed part", { id: "s", kind: "with_column", name: "t", expr: { type: "sum_horizontal", parts: [col("a"), "b"] } }, /part 2 is missing its value/],
+    ["conditional without branches", { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", branches: [], otherwise: col("b") } }, /missing its branches/],
+    ["conditional in the old shape", { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", match: "all", conditions: [], then: col("a"), otherwise: col("b") } }, /missing its branches/],
+    ["later branch without a match", { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", branches: [{ match: "all", conditions: [], then: col("a") }, { conditions: [], then: col("a") }], otherwise: col("b") } }, /branch 2 is missing its match mode/],
     ["aggregation without name", { id: "g", kind: "group_by", keys: ["k"], aggregations: [{ column: "a", agg: "sum" }] }, /missing "column" or "name"/],
     ["filter without conditions", { id: "f", kind: "filter", match: "all" }, /conditions/],
     [
@@ -180,8 +204,8 @@ describe("stepProblem", () => {
       /malformed value/,
     ],
     ["condition without column", { id: "f", kind: "filter", match: "all", conditions: [{ operator: "eq" }] }, /condition 1 is malformed/],
-    ["window with a malformed order list", { id: "w", kind: "with_column", name: "n", expr: { type: "window", agg: "row_number", column: "", over: ["k"], orderBy: [{ descending: true }] } }, /order row 1 is missing "column"/],
-    ["window with a text quantile", { id: "w", kind: "with_column", name: "n", expr: { type: "window", agg: "quantile", column: "a", over: [], quantile: "0.5" } }, /malformed quantile/],
+    ["window with a malformed order list", { id: "w", kind: "with_column", name: "n", expr: { type: "window", agg: "row_number", over: ["k"], orderBy: [{ descending: true }] } }, /order row 1 is missing "column"/],
+    ["window with a text quantile", { id: "w", kind: "with_column", name: "n", expr: { type: "window", agg: "quantile", of: { kind: "column", name: "a" }, over: [], quantile: "0.5" } }, /malformed quantile/],
     ["concat without parts", { id: "w", kind: "with_column", name: "n", expr: { type: "concat", separator: "" } }, /missing its parts/],
     ["concat with a malformed part", { id: "w", kind: "with_column", name: "n", expr: { type: "concat", parts: [col("a"), "b"], separator: "" } }, /part 2 is missing its value/],
     ["null literal carrying a value", { id: "w", kind: "with_column", name: "n", expr: { type: "operand", operand: { kind: "literal", type: "null", value: 0 } } }, /malformed value/],

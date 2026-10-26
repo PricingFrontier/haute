@@ -16,7 +16,7 @@ import type { GlobalConstantType } from "../../../utils/globalConstants"
 import { ALL_CONSTANT_TYPES, useFittingConstants } from "./useFittingConstants"
 import { completionMatches } from "./completion"
 import { exprColumns, type ColumnInfo } from "./derivedColumns"
-import { FormulaError, callAtCaret, displayFormula, formulaText, functionNamed, parseFormula, renameColumnInFormula, typedAsFormula } from "./formula"
+import { FormulaError, callAtCaret, displayFormula, formulaText, parseFormula, renameColumnInFormula, typedAsFormula } from "./formula"
 import {
   AGGREGATION_OPTIONS,
   BINARY_OPERATORS,
@@ -26,13 +26,16 @@ import {
   DEFAULT_JOIN_ORDER,
   DTYPE_OPTIONS,
   FILL_STRATEGY_OPTIONS,
+  FORMULA_FUNCTIONS,
   FUNCTIONS,
   JOIN_HOW_OPTIONS,
   JOIN_MAINTAIN_ORDER,
   JOIN_VALIDATE,
   JOIN_VALIDATED_HOW,
   MAX_EXPR_DEPTH,
+  OPERAND_ARGUMENT_LITERALS,
   PIVOT_AGGREGATIONS,
+  REDUCING_AGGREGATIONS,
   WINDOW_AGGREGATIONS,
   aggregationTakes,
   canonicalStep,
@@ -82,10 +85,13 @@ import { StepSchemaContext, UNKNOWN_SCHEMA, schemaFor, useStepSchema, type StepS
 import { useCompletionList, type Completion } from "./useCompletionList"
 import type {
   AggregationSpec,
+  WindowAggregation,
   CastDtype,
   CastEntry,
   CastStep,
   ColumnAggregation,
+  ConditionGroup,
+  ConditionalBranch,
   DropStep,
   DtypeAggregation,
   ConcatStep,
@@ -152,8 +158,9 @@ const ARG_CONSTANT_TYPES: Record<FunctionArg, readonly GlobalConstantType[]> = {
   number: ["integer", "float"],
   text: ["text"],
   format: ["text"],
-  scalar: ["integer", "float", "text", "boolean"],
   dtype: [],
+  number_operand: ["integer", "float"],
+  scalar_operand: ["integer", "float", "text", "boolean"],
 }
 /** Literal types a stored value may take (fills, concat parts). */
 const VALUE_TYPES: readonly LiteralType[] = ["number", "text", "boolean", "date"]
@@ -219,6 +226,7 @@ const EXPR_TYPES: Array<{ value: Expr["type"]; label: string }> = [
   { value: "conditional", label: "If-then" },
   { value: "window", label: "Window" },
   { value: "concat", label: "Join text" },
+  { value: "sum_horizontal", label: "Sum across" },
 ]
 
 /** The "Computed as" select: choosing a type starts a fresh expression of that type. */
@@ -295,9 +303,9 @@ function formulaCompletions(draft: string, caret: number, columns: string[], var
         : { value: `var:${name}`, label: name, note: "variable" },
     ),
     ...constantEntries,
-    ...FUNCTIONS.filter((f) => f.value.startsWith(lower) && f.value !== lower).map((f) => ({ value: `fn:${f.value}`, label: f.value, note: f.label === f.value ? null : f.label, mark: "ƒ" })),
+    ...FORMULA_FUNCTIONS.filter((f) => f.value.startsWith(lower) && f.value !== lower).map((f) => ({ value: `fn:${f.value}`, label: f.value, note: f.label === f.value ? null : f.label, mark: "ƒ" })),
   ]
-  const exact = columns.includes(prefix) || variables.includes(prefix) || constants.includes(prefix) || functionNamed(prefix) !== undefined ? prefix : null
+  const exact = columns.includes(prefix) || variables.includes(prefix) || constants.includes(prefix) || FORMULA_FUNCTIONS.some((f) => f.value === lower) ? prefix : null
   return { prefix, entries, exact }
 }
 
@@ -305,6 +313,7 @@ function formulaCompletions(draft: string, caret: number, columns: string[], var
 const ARG_LABELS: Record<string, string[]> = {
   round: ["Decimal places"],
   clip: ["Minimum", "Maximum"],
+  divide: ["Divisor"],
   fill_null: ["Fill with"],
   cast: ["Type"],
   try_cast: ["Type"],
@@ -529,7 +538,7 @@ function StructuredFormula({ expr, onChange, ctx, depth }: { expr: Extract<Expr,
   )
 }
 
-function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "function" }>; onChange: (next: Expr) => void; ctx: StepFormContext }) {
+function FunctionArgs({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "function" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {
   const schema = useStepSchema()
   const spec = FUNCTIONS.find((f) => f.value === expr.fn)
   if (!spec || spec.args.length === 0) return null
@@ -539,6 +548,8 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
       {spec.args.map((arg, index) => {
         const value: FunctionArgValue = expr.args[index] ?? defaultArgFor(arg)
         const plain: LiteralOperand = value.kind === "literal" ? value : defaultArgFor(arg)
+        // A plain-value argument is a value or a constant; the step check refuses anything else.
+        const plainOrConstant = value.kind === "literal" || value.kind === "constant" ? value : plain
         const set = (next: FunctionArgValue) => {
           const args = spec.args.map((a, i) => (i === index ? next : (expr.args[i] ?? defaultArgFor(a))))
           onChange({ ...expr, args })
@@ -554,10 +565,28 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
             </Field>
           )
         }
+        const operandLiterals = OPERAND_ARGUMENT_LITERALS[arg]
+        if (operandLiterals) {
+          return (
+            <Field key={index} label={label}>
+              <OperandField
+                value={value}
+                onChange={set}
+                sources={ALL_SOURCES}
+                literalTypes={operandLiterals}
+                constantTypes={ARG_CONSTANT_TYPES[arg]}
+                columns={ctx.columns}
+                variables={ctx.variables}
+                ariaLabel={label}
+                renderExpression={nestedExpression(ctx, depth + 1)}
+              />
+            </Field>
+          )
+        }
         if (arg === "format") {
           return (
             <Field key={index} label={label}>
-              <ArgumentField value={value} onChange={set} constantTypes={ARG_CONSTANT_TYPES.format} plainValue={defaultArgFor("format")} plainLabel="text" ariaLabel={label}>
+              <ArgumentField value={plainOrConstant} onChange={set} constantTypes={ARG_CONSTANT_TYPES.format} plainValue={defaultArgFor("format")} plainLabel="text" ariaLabel={label}>
                 <TextField
                   value={plain.type === "text" ? String(plain.value) : ""}
                   onCommit={(format) => format.includes("%") && set(literal("text", format))}
@@ -568,26 +597,10 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
             </Field>
           )
         }
-        if (arg === "scalar") {
-          return (
-            <Field key={index} label={label}>
-              <OperandField
-                value={value}
-                onChange={(next) => (next.kind === "literal" || next.kind === "constant") && set(next)}
-                sources={["literal", "constant"]}
-                literalTypes={["number", "text", "boolean"]}
-                constantTypes={ARG_CONSTANT_TYPES.scalar}
-                columns={ctx.columns}
-                variables={[]}
-                ariaLabel={label}
-              />
-            </Field>
-          )
-        }
         if (arg === "text") {
           return (
             <Field key={index} label={label}>
-              <ArgumentField value={value} onChange={set} constantTypes={ARG_CONSTANT_TYPES.text} plainValue={literal("text", "")} plainLabel="text" ariaLabel={label}>
+              <ArgumentField value={plainOrConstant} onChange={set} constantTypes={ARG_CONSTANT_TYPES.text} plainValue={literal("text", "")} plainLabel="text" ariaLabel={label}>
                 <TextField value={plain.type === "text" ? String(plain.value) : ""} onCommit={(text) => set(literal("text", text))} ariaLabel={label} mono />
               </ArgumentField>
             </Field>
@@ -595,7 +608,7 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
         }
         return (
           <Field key={index} label={label}>
-            <ArgumentField value={value} onChange={set} constantTypes={ARG_CONSTANT_TYPES[arg]} plainValue={defaultArgFor(arg)} plainLabel="number" ariaLabel={label}>
+            <ArgumentField value={plainOrConstant} onChange={set} constantTypes={ARG_CONSTANT_TYPES[arg]} plainValue={defaultArgFor(arg)} plainLabel="number" ariaLabel={label}>
               <LiteralValueInput
                 value={plain.type === "number" ? plain : literal("number", 0)}
                 onChange={set}
@@ -641,63 +654,120 @@ function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: 
           <Field label="Of">
             <OperandField value={expr.operand} onChange={(operand) => onChange({ ...expr, operand })} ariaLabel="Function operand" {...operandProps} />
           </Field>
-          <FunctionArgs expr={expr} onChange={onChange} ctx={ctx} />
+          <FunctionArgs expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
         </>
       )
     case "conditional":
-      return (
-        <>
-          <ConditionList
-            conditions={expr.conditions}
-            match={expr.match}
-            onChange={(conditions, match) => onChange({ ...expr, conditions, match })}
-            columns={ctx.columns}
-            variables={ctx.variables}
-            ariaLabel="If"
-            renderExpression={operandProps.renderExpression}
-            lead="when"
-          />
-          <Field label="Then">
-            <OperandField value={expr.then} onChange={(then) => onChange({ ...expr, then })} ariaLabel="Then value" {...operandProps} />
-          </Field>
-          <Field label="Otherwise">
-            <OperandField value={expr.otherwise} onChange={(otherwise) => onChange({ ...expr, otherwise })} ariaLabel="Otherwise value" {...operandProps} />
-          </Field>
-        </>
-      )
+      return <ConditionalEditor expr={expr} onChange={onChange} ctx={ctx} operandProps={operandProps} />
     case "window":
-      return <WindowEditor expr={expr} onChange={onChange} ctx={ctx} />
+      return <WindowEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
     case "concat":
       return <ConcatEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
+    case "sum_horizontal":
+      return <SumAcrossEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
   }
 }
 
-function WindowEditor({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "window" }>; onChange: (next: Expr) => void; ctx: StepFormContext }) {
+/** An if-then: its branches in order, each a condition list and a Then value, then the Otherwise value. */
+function ConditionalEditor({
+  expr,
+  onChange,
+  ctx,
+  operandProps,
+}: {
+  expr: Extract<Expr, { type: "conditional" }>
+  onChange: (next: Expr) => void
+  ctx: StepFormContext
+  operandProps: ReturnType<typeof anyOperand>
+}) {
+  const many = expr.branches.length > 1
+  const Wrapper = many ? RowGroup : PlainRow
+  const setBranch = (index: number, next: ConditionalBranch) => onChange({ ...expr, branches: expr.branches.map((b, i) => (i === index ? next : b)) })
+  const addBranch = () => {
+    // A new branch tests the previous branch's first column and starts from a value of its Then's type.
+    const last = expr.branches[expr.branches.length - 1]
+    const then = last.then.kind === "literal" ? defaultLiteral(last.then.type) : literal("number", 0)
+    onChange({ ...expr, branches: [...expr.branches, { match: "all", conditions: [defaultCondition(last.conditions[0]?.column ?? "")], then }] })
+  }
+  return (
+    <>
+      {expr.branches.map((branch, index) => {
+        const name = index === 0 ? "If" : `Branch ${index + 1}`
+        return (
+          <Wrapper key={index} label={`Branch ${index + 1}`}>
+            <div className="flex items-start gap-1.5">
+              <div className="grid flex-1 gap-1.5 min-w-0">
+                <ConditionList
+                  conditions={branch.conditions}
+                  match={branch.match}
+                  onChange={(conditions, match) => setBranch(index, { ...branch, conditions, match })}
+                  columns={ctx.columns}
+                  variables={ctx.variables}
+                  ariaLabel={name}
+                  renderExpression={operandProps.renderExpression}
+                  lead={index === 0 ? "when" : "otherwiseWhen"}
+                />
+                <Field label="Then">
+                  <OperandField value={branch.then} onChange={(then) => setBranch(index, { ...branch, then })} ariaLabel={index === 0 ? "Then value" : `${name} then value`} {...operandProps} />
+                </Field>
+              </div>
+              {many && <RowRemove label={`Remove branch ${index + 1}`} onClick={() => onChange({ ...expr, branches: expr.branches.filter((_, i) => i !== index) })} />}
+            </div>
+          </Wrapper>
+        )
+      })}
+      <QuietAction onClick={addBranch} className="justify-self-start">Add branch</QuietAction>
+      <Field label="Otherwise">
+        <OperandField value={expr.otherwise} onChange={(otherwise) => onChange({ ...expr, otherwise })} ariaLabel="Otherwise value" {...operandProps} />
+      </Field>
+    </>
+  )
+}
+
+function WindowEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "window" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {
   const schema = useStepSchema()
   const isRank = expr.agg === "rank" || expr.agg === "dense_rank"
   const orderBy = expr.orderBy ?? []
   const setOrder = (next: typeof orderBy) => onChange(next.length ? { ...expr, orderBy: next } : omitKeys(expr, ["orderBy"]))
+  const ofType = expr.of?.kind === "column" && expr.of.name ? schema.typeOf(expr.of.name) : null
+  const setAggregate = (agg: WindowAggregation) => {
+    // A positional aggregate keeps one value per row, so a row filter cannot
+    // apply; a row count and a row number aggregate no value.
+    const dropped = ["descending", ...(REDUCING_AGGREGATIONS.has(agg) ? [] : ["where"]), ...(COLUMNLESS_AGGREGATIONS.has(agg) ? ["of"] : [])]
+    const next = omitKeys(withAggregate(expr, agg), dropped)
+    const valued = COLUMNLESS_AGGREGATIONS.has(agg) || next.of ? next : { ...next, of: { kind: "column" as const, name: "" } }
+    onChange(agg === "rank" || agg === "dense_rank" ? { ...valued, descending: false } : valued)
+  }
   return (
     <>
       <Sentence>
         <span className="flex-1 basis-32 min-w-0">
           <SelectField
             value={expr.agg}
-            options={WINDOW_AGGREGATIONS.filter((a) => a.value === expr.agg || aggregationTakes(a.value, expr.column ? schema.typeOf(expr.column) : null))}
-            onChange={(agg) => {
-              const next = omitKeys(withAggregate(expr, agg), ["descending"])
-              onChange(agg === "rank" || agg === "dense_rank" ? { ...next, descending: false } : next)
-            }}
+            options={WINDOW_AGGREGATIONS.filter((a) => a.value === expr.agg || aggregationTakes(a.value, ofType))}
+            onChange={setAggregate}
             ariaLabel="Window aggregate"
           />
         </span>
-        {!COLUMNLESS_AGGREGATIONS.has(expr.agg) && (
-          <>
-            <Words>of</Words>
-            <span className="flex-1 basis-28 min-w-0">
-              <ColumnPicker value={expr.column} onCommit={(column) => onChange({ ...expr, column })} suggestions={ctx.columns} ariaLabel="Window column" />
+        {expr.of && (
+          // An expression's editor takes the full width, so its "of" starts the line with it.
+          <span className={`flex flex-1 min-w-0 gap-1.5 ${expr.of.kind === "expr" ? "basis-full items-start" : "basis-28 items-center"}`}>
+            <span className={expr.of.kind === "expr" ? "pt-1" : undefined}>
+              <Words>of</Words>
             </span>
-          </>
+            <span className="flex-1 min-w-0">
+              <OperandField
+                value={expr.of}
+                onChange={(of) => onChange({ ...expr, of })}
+                sources={["column"]}
+                literalTypes={[]}
+                columns={ctx.columns}
+                variables={[]}
+                ariaLabel="Window value"
+                renderExpression={nestedExpression(ctx, depth + 1)}
+              />
+            </span>
+          </span>
         )}
       </Sentence>
       {expr.agg === "quantile" && <QuantileField value={expr.quantile} onChange={(quantile) => onChange({ ...expr, quantile })} ariaLabel="Window quantile" />}
@@ -733,7 +803,39 @@ function WindowEditor({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "wi
           {orderBy.length > 0 && expr.over.length === 0 && <Hint>Ordering needs at least one group column; sort the frame instead.</Hint>}
         </RowList>
       </Field>
+      {REDUCING_AGGREGATIONS.has(expr.agg) && (
+        <MoreOptions used={expr.where !== undefined}>
+          <RowFilter where={expr.where} onChange={(where) => onChange(where ? { ...expr, where } : omitKeys(expr, ["where"]))} ctx={ctx} label="Window" />
+        </MoreOptions>
+      )}
     </>
+  )
+}
+
+/** "Only rows where…": an aggregate's optional row filter, its conditions under a "When" lead. */
+function RowFilter({ where, onChange, ctx, label }: { where: ConditionGroup | undefined; onChange: (next: ConditionGroup | undefined) => void; ctx: StepFormContext; label: string }) {
+  if (!where) {
+    return <QuietAction onClick={() => onChange({ match: "all", conditions: [defaultCondition()] })} className="justify-self-start">Only rows where…</QuietAction>
+  }
+  return (
+    <div className="grid gap-1.5 pl-2" style={{ borderLeft: "2px solid var(--border)" }}>
+      <ConditionList
+        conditions={where.conditions}
+        match={where.match}
+        onChange={(conditions, match) => onChange({ match, conditions })}
+        columns={ctx.columns}
+        variables={ctx.variables}
+        ariaLabel={`${label} filter`}
+        lead="when"
+      />
+      <button
+        type="button"
+        onClick={() => onChange(undefined)}
+        className="quiet-action focus-ring justify-self-start rounded px-1 py-0.5 -ml-1 text-[11px] font-medium"
+      >
+        Aggregate every row
+      </button>
+    </div>
   )
 }
 
@@ -763,6 +865,28 @@ function ConcatEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { ty
         </span>
       </Sentence>
     </>
+  )
+}
+
+/** A sum across two or more parts, each a column or any expression. */
+function SumAcrossEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "sum_horizontal" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {
+  const operandProps = anyOperand(ctx, depth + 1)
+  return (
+    <Field label="Sum of">
+      <RowList
+        rows={expr.parts}
+        onChange={(parts) => onChange({ ...expr, parts })}
+        label="Part"
+        addLabel="Add part"
+        min={2}
+        create={(): Operand => ({ kind: "column", name: "" })}
+        renderRow={(part, set, index) => (
+          <div className="flex-1 basis-40 min-w-0">
+            <OperandField value={part} onChange={set} ariaLabel={`Part ${index + 1}`} {...operandProps} />
+          </div>
+        )}
+      />
+    </Field>
   )
 }
 
@@ -1039,28 +1163,7 @@ function AggregationRow({ entry, index, onChange, onRemove, ctx, boxed, showFilt
         {onRemove && <RowRemove label={`Remove aggregation ${index + 1}`} onClick={onRemove} />}
       </div>
       {entry.agg === "quantile" && <QuantileField value={entry.quantile} onChange={(quantile) => onChange({ ...entry, quantile })} ariaLabel={`${label} quantile`} />}
-      {showFilter && (entry.where ? (
-        <div className="grid gap-1.5 pl-2" style={{ borderLeft: "2px solid var(--border)" }}>
-          <ConditionList
-            conditions={entry.where.conditions}
-            match={entry.where.match}
-            onChange={(conditions, match) => onChange({ ...entry, where: { match, conditions } })}
-            columns={ctx.columns}
-            variables={ctx.variables}
-            ariaLabel={`${label} filter`}
-            lead="when"
-          />
-          <button
-            type="button"
-            onClick={() => onChange(omitKeys(entry, ["where"]))}
-            className="quiet-action focus-ring justify-self-start rounded px-1 py-0.5 -ml-1 text-[11px] font-medium"
-          >
-            Aggregate every row
-          </button>
-        </div>
-      ) : (
-        <QuietAction onClick={() => onChange({ ...entry, where: { match: "all", conditions: [defaultCondition()] } })} className="justify-self-start">Only rows where…</QuietAction>
-      ))}
+      {showFilter && <RowFilter where={entry.where} onChange={(where) => onChange(where ? { ...entry, where } : omitKeys(entry, ["where"]))} ctx={ctx} label={label} />}
     </Wrapper>
   )
 }

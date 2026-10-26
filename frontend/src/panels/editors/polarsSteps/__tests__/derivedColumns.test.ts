@@ -231,4 +231,44 @@ describe("unknown columns", () => {
   it("reads the columns a step names, leaving out blanks", () => {
     expect(columnsReadBy({ id: "g", kind: "group_by", keys: ["region", ""], aggregations: [{ column: "premium", agg: "sum", name: "t" }, { column: "", agg: "len", name: "n" }] })).toEqual(["region", "premium"])
   })
+
+  it("reads the columns in an operand argument, never a plain-value one", () => {
+    const capped: Step = {
+      id: "c",
+      kind: "with_column",
+      name: "t",
+      expr: { type: "function", fn: "clip", operand: { kind: "column", name: "premium" }, args: [{ kind: "column", name: "flor" }, { kind: "literal", type: "number", value: 1 }] },
+    }
+    expect(columnsReadBy(capped)).toEqual(["premium", "flor"])
+    expect(unknownColumnsOf(capped, columnsBeforeStep(SOURCE, [source("quotes"), capped], 1), SOURCE)).toEqual(["flor"])
+  })
+
+  it("reads the columns every if-then branch tests and gives", () => {
+    const banded: Step = {
+      id: "b",
+      kind: "with_column",
+      name: "band",
+      expr: {
+        type: "conditional",
+        branches: [
+          { match: "all", conditions: [{ column: "premium", operator: "is_null" }], then: { kind: "literal", type: "number", value: 0 } },
+          { match: "all", conditions: [{ column: "regoin", operator: "is_null" }], then: { kind: "column", name: "base" } },
+        ],
+        otherwise: { kind: "column", name: "premium" },
+      },
+    }
+    expect(columnsReadBy(banded)).toEqual(["premium", "regoin", "base"])
+  })
+
+  it("reads the columns a sum across adds up", () => {
+    const total: Step = { id: "s", kind: "with_column", name: "t", expr: { type: "sum_horizontal", parts: [{ kind: "column", name: "premium" }, { kind: "column", name: "lod" }] } }
+    expect(unknownColumnsOf(total, columnsBeforeStep(SOURCE, [source("quotes"), total], 1), SOURCE)).toEqual(["lod"])
+  })
+
+  it("reads the columns a window's row filter tests", () => {
+    const where = { match: "all" as const, conditions: [{ column: "chanel", operator: "is_null" as const }] }
+    const filtered: Step = { id: "w", kind: "with_column", name: "t", expr: { type: "window", agg: "sum", of: { kind: "column", name: "premium" }, over: ["region"], where } }
+    expect(columnsReadBy(filtered)).toEqual(["premium", "region", "chanel"])
+    expect(unknownColumnsOf(filtered, columnsBeforeStep(SOURCE, [source("quotes"), filtered], 1), SOURCE)).toEqual(["chanel"])
+  })
 })
