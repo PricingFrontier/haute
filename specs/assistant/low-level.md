@@ -3063,13 +3063,14 @@ stays authoritative) remain readable. It then reads the start binding:
   `src/haute/_json_shred/_source_proof.py`: a native file revision or a stat,
   never content) of every file the digest signs, cached model files and the
   contracts (or absence markers) beside them included, keyed by the resolved path. For a snapshot-backed input
-  that is the generation pointer and also the original local source file, whose
+  that is the generation pointer and also the original local source files, whose
   content the identity signs through `source_signature`: `runtime_input_signed_paths`
-  lists it through `signed_source_file` (`src/haute/_input_providers.py`, the
-  path `source_signature` hashes, resolved from configuration with one existence
-  check) while it exists, so editing it without refreshing the snapshot changes
+  lists them through `signed_source_files` (`src/haute/_input_providers.py`, the
+  files `source_signature` hashes, resolved from configuration with a listing of the
+  files) while they exist, so editing one without refreshing the snapshot changes
   its token, and a source that is gone, which the identity signs as `missing`,
-  is listed nowhere, so its return or disappearance changes the path set;
+  is listed nowhere, so its return or disappearance changes the path set; a direct
+  Parquet folder or glob pattern lists each file it names the same way;
 - `identity_components`, the parts of that identity that are not files and cost
   only configuration reads (and the source file's existence check above): the
   resolved path of every signed file (the key set
@@ -3431,7 +3432,7 @@ defect in the check never fails a dry-run.
   (`routes/input_cache.py`, which the status route now calls, so a running build
   or preparation reports `building` without reading the store);
   `input_preparation_running`; `runtime_input_signed_paths` and the public
-  `mlflow_backend_signature` (`execution.py`); `signed_source_file`
+  `mlflow_backend_signature` (`execution.py`); `signed_source_files`
   (`_input_providers.py`); `freshness_record`
   (`_json_shred/_source_proof.py`); `rating_table_lookup` and
   `apply_rating_table_lookup` (`_rating.py`, which `_apply_rating_table` now

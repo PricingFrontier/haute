@@ -215,7 +215,10 @@
    version <n> (run <id>)` (`model_source_line`), so the deployed version behind an alias is
    known after the alias moves.
    A retained file-backed Parquet input is derived direct (`data_input_is_direct`) and
-   bundles its validated source file. Every other retained Data Input is snapshot-backed;
+   bundles its validated source file. A direct path that names several files (a folder or a
+   glob pattern) is refused with a `DeployError` naming the configured path, since one file
+   is bundled: the remedy is one file, or mode `"read"`, which snapshots the files and
+   bundles the snapshot. Every other retained Data Input is snapshot-backed;
    its ready snapshot acquires a `SourceCacheStore.lease()` that
    is retained by `ResolvedDeploy` until dispatch completes, and records provider,
    identity, generation, signature, checksum, row/column counts, and creation time as

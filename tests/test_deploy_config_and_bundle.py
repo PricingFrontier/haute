@@ -267,6 +267,24 @@ class TestBundledPathsAreAbsolute:
 
         assert collect_artifacts(graph, [], pipeline_dir) == {"lookup__lookup.parquet": source}
 
+    @pytest.mark.parametrize("pattern", ["parts/*.parquet", "parts"], ids=["glob", "folder"])
+    def test_a_direct_parquet_glob_or_folder_is_refused_naming_it(
+        self, tmp_path: Path, pattern: str
+    ) -> None:
+        """Deploy bundles one direct Parquet file; several are refused with the remedy."""
+        pipeline_dir = tmp_path / "project"
+        (pipeline_dir / "parts").mkdir(parents=True)
+        pl.DataFrame({"a": [1]}).write_parquet(pipeline_dir / "parts" / "a.parquet")
+        pl.DataFrame({"a": [2]}).write_parquet(pipeline_dir / "parts" / "b.parquet")
+        graph = _make_datasource_graph("lookup", pattern)
+
+        with pytest.raises(DeployError) as raised:
+            collect_artifacts(graph, [], pipeline_dir)
+
+        message = str(raised.value)
+        assert repr(pattern) in message
+        assert 'mode "read"' in message
+
     def test_collect_artifacts_resolves_against_pipeline_dir_not_cwd(
         self,
         tmp_path: Path,

@@ -261,6 +261,28 @@ class TestPreviewRuntimeFileInvalidation:
         results2 = execute_graph(graph)
         assert [row["x"] for row in results2["src"].preview] == [5, 6]
 
+    @pytest.mark.parametrize("pattern", ["parts/*.parquet", "parts"], ids=["glob", "folder"])
+    def test_a_rewritten_file_of_a_direct_glob_or_folder_recomputes_preview(
+        self, tmp_path, pattern
+    ):
+        """A direct Parquet glob or folder is signed by the files it matches."""
+        parts = tmp_path / "parts"
+        parts.mkdir()
+        _write_parquet(parts / "a.parquet", [1, 2])
+        _write_parquet(parts / "b.parquet", [3])
+        graph = _parquet_graph(tmp_path / pattern)
+
+        results1 = execute_graph(graph)
+        assert sorted(row["x"] for row in results1["src"].preview) == [1, 2, 3]
+
+        _write_parquet(parts / "b.parquet", [9])
+        results2 = execute_graph(graph)
+        assert sorted(row["x"] for row in results2["src"].preview) == [1, 2, 9]
+
+        _write_parquet(parts / "c.parquet", [4])
+        results3 = execute_graph(graph)
+        assert sorted(row["x"] for row in results3["src"].preview) == [1, 2, 4, 9]
+
     def test_external_file_change_recomputes_preview(self, tmp_path):
         """Replacing an externalFile's content must flow into the next preview."""
         data = tmp_path / "data.parquet"

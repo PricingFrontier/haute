@@ -25,7 +25,7 @@ from haute._execution_context import (
     current_execution_context,
 )
 from haute._hashing import content_hash_bytes
-from haute._json_shred._source_proof import file_signature
+from haute._json_shred._source_proof import file_signature, files_signature, source_files
 from haute._map_columns import map_entries_frame
 from haute._polars_io_registry import (
     PolarsIoConfigError,
@@ -217,28 +217,41 @@ def source_signature(
     *,
     base_dir: str | Path | None = None,
 ) -> str | None:
-    """Return a verified local-file signature when the provider has one."""
+    """Return a verified local-file signature when the provider has one.
+
+    One file is signed by its content and a folder or glob pattern by every file it
+    names (:func:`haute._json_shred._source_proof.files_signature`); a path that names
+    no file is ``"missing"``.
+    """
     path = _local_source_path(config, base_dir)
     if path is None:
         return None
-    if not path.is_file():
+    files = _named_source_files(config, path)
+    if not files:
         return "missing"
-    return file_signature(path).source_signature
+    if path.is_file():
+        return file_signature(path).source_signature
+    return files_signature(files)
 
 
-def signed_source_file(
+def signed_source_files(
     config: Mapping[str, Any],
     *,
     base_dir: str | Path | None = None,
-) -> Path | None:
-    """The file whose content :func:`source_signature` signs, or ``None`` when it signs none.
+) -> tuple[Path, ...]:
+    """The files whose content :func:`source_signature` signs, empty when it signs none.
 
-    A provider without a local signature, and a source file that is gone
-    (signed as ``"missing"``), have none. Configuration and one existence
-    check: the file's content is never read.
+    A provider without a local signature, and a source that names no file (signed
+    as ``"missing"``), have none. Configuration and a listing of the files: no
+    file's content is read.
     """
     path = _local_source_path(config, base_dir)
-    return path if path is not None and path.is_file() else None
+    return () if path is None else _named_source_files(config, path)
+
+
+def _named_source_files(config: Mapping[str, Any], path: Path) -> tuple[Path, ...]:
+    arguments = config.get("arguments") or {}
+    return source_files(path, glob=arguments.get("glob", True) is not False)
 
 
 @dataclass(slots=True)

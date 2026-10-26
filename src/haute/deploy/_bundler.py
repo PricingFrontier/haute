@@ -399,6 +399,19 @@ def _resolve_direct_parquet_source(
         validated.get("path", ""), pipeline_dir, project_root, node_id, "path"
     )
     if not source_path.is_file():
+        from haute._json_shred._source_proof import source_files
+
+        glob = (validated.get("arguments") or {}).get("glob", True) is not False
+        if source_files(source_path, glob=glob):
+            raise DeployError(
+                f"Data Input node {node_id!r} reads several Parquet files "
+                f"({validated['path']!r}), and deploy bundles a direct Parquet source as "
+                'one file. Point it at one file, or give the Data Input mode "read" in the '
+                "pipeline file: Haute then copies the files into a snapshot, which deploys.",
+                node_id=node_id,
+                field="path",
+                path=str(source_path),
+            )
         raise DeployError(
             f"Data Input node {node_id!r} direct Parquet source does not exist: {source_path}",
             node_id=node_id,

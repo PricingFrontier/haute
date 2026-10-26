@@ -71,17 +71,23 @@ relationship is recorded in `specs/ownership.toml`.
   `unremovable`.
 - `source_signature` is the shared content signature
   (`_json_shred._source_proof.file_signature`, `xxh64:<digest>:<size>`), so an unchanged file
-  is hashed once per process whatever asks, and a proof made under a native revision is
+  is hashed once per process whatever asks. A folder or glob pattern is signed by every file
+  it names (`_source_proof.source_files`: every file under a folder, every match of a
+  pattern with `**` across folders, hidden files included, a pattern's characters literal
+  when the `glob` argument is `false`) as `xxh64-files:<digest>:<count>`
+  (`_source_proof.files_signature`, the digest over each file's path and its own
+  signature), so adding, removing, renaming or rewriting one makes the snapshot stale; a
+  path that names no file is `missing`. A proof made under a native revision is
   reused across processes from its durable record
   ([caching](../caching/low-level.md#durable-source-proofs)). Reuse follows the one freshness guarantee in the
   [caching](../caching/low-level.md) specification: a native revision where the platform has
   one, otherwise a stat trusted only for a file modified at least two seconds earlier,
   because a filesystem stamps mtimes at its own granularity and a same-size rewrite inside
   that window would otherwise keep a stale signature (git's racy-index rule).
-  `signed_source_file` names the file `source_signature` hashes: a `file` provider's
-  anchored path while it exists, otherwise `None` (another provider, or a source that is
-  gone and signs as `missing`), from configuration and one existence check, never the
-  content. The assistant's data check records that file's freshness token
+  `signed_source_files` names the files `source_signature` hashes: the files a `file`
+  provider's anchored path names, otherwise none (another provider, or a source that names
+  no file and signs as `missing`), from configuration and a listing of the files, never
+  their content. The assistant's data check records those files' freshness tokens
   ([assistant](../assistant/low-level.md)).
 - `DatabaseSnapshotBuilder` validates a read query and yields Arrow record batches with one
   stable schema from an existing SQLite database.

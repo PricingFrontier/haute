@@ -281,8 +281,10 @@ writes a table, for the data-point `building` probe. Schema inference stays on
   digest.
   `resolve(point, demand)` returns a `PointResolution` (kind, state, demand, data version,
   build key, and the node-output identity/generation or input identity/generation id):
-  - `data_input`, direct Parquet: `current`; the version hashes the resolved path, its size
-    and `mtime_ns` (or `missing`), and the node's lineage fingerprint.
+  - `data_input`, direct Parquet: `current`; the version hashes the resolved path, the size
+    and `mtime_ns` of every file it names (`signed_source_files`, one for a file, each file
+    of a folder or glob pattern; `missing` when it names none), and the node's lineage
+    fingerprint.
   - `data_input`, snapshot-backed: `SourceCacheStore.status(identity, source_signature)`;
     `ready` with `stale` freshness is `stale`, other `ready` is `current`, `corrupt` is
     `corrupt`, anything else `missing`; the version hashes the generation id and lineage.
