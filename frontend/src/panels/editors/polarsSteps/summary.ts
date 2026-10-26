@@ -82,7 +82,8 @@ function exprParts(expr: Expr): SummaryPart[] {
       const subject = COLUMNLESS_AGGREGATIONS.has(expr.agg) ? [text(label)] : [text(label), op("of"), column(expr.column)]
       const over = expr.over.length ? [op("over"), ...list(expr.over, (name) => [column(name)])] : [op("over all rows")]
       const order = expr.orderBy?.length ? [op("ordered by"), ...list(expr.orderBy, (k) => [column(k.column), ...(k.descending ? [op("desc")] : [])])] : []
-      return [...subject, ...over, ...order]
+      const filter = expr.where ? [op("where"), ...conditionsParts(expr.where.conditions, expr.where.match)] : []
+      return [...subject, ...filter, ...over, ...order]
     }
     case "concat":
       return [code(`join(${expr.parts.map((part) => partsText(operandParts(part))).join(", ")})`)]

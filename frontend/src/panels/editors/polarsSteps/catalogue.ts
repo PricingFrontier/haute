@@ -124,6 +124,9 @@ export const PIVOT_AGGREGATIONS: Array<{ value: PivotAggregation; label: string 
   { value: "count", label: "count (non-null)" },
   { value: "len", label: "row count" },
 ]
+/** Aggregates that reduce a group to one value: the only ones a window's row filter applies to. */
+export const REDUCING_AGGREGATIONS: ReadonlySet<WindowAggregation> = new Set<WindowAggregation>(AGGREGATIONS.map((a) => a.value))
+
 /** Window aggregates that take no input column. */
 export const COLUMNLESS_AGGREGATIONS: ReadonlySet<WindowAggregation> = new Set<WindowAggregation>(["len", "row_number"])
 
@@ -626,6 +629,10 @@ export function exprProblem(value: unknown, where: string, depth = 1): string | 
       if (typeof expr.column !== "string" && !(columnless && expr.column === undefined)) return `${where} is missing its aggregate.`
       if (expr.descending !== undefined && typeof expr.descending !== "boolean") return `${where} has a malformed rank direction.`
       if (expr.quantile !== undefined && typeof expr.quantile !== "number") return `${where} has a malformed quantile.`
+      if (expr.where !== undefined) {
+        const filter = rowFilterProblem(expr.where, where)
+        if (filter) return filter
+      }
       const over = stringListProblem(expr.over, `${where} over`)
       if (over || expr.orderBy === undefined) return over
       const order = rowsProblem(expr.orderBy, [["column", "string"]], `${where} order`)
@@ -744,6 +751,14 @@ export function stepProblem(step: unknown): string | null {
   }
 }
 
+/** A row filter (`{match, conditions}`) on an aggregation or a window. */
+function rowFilterProblem(value: unknown, where: string): string | null {
+  if (!isShape(value, "object")) return `${where} has a malformed row filter.`
+  const group = value as Record<string, unknown>
+  if (typeof group.match !== "string") return `${where} has a malformed row filter.`
+  return conditionsProblem(group.conditions, `${where} filter`)
+}
+
 function aggregationsProblem(entries: Array<Record<string, unknown>>, where: string): string | null {
   for (const [index, entry] of entries.entries()) {
     const label = `${where} aggregation ${index + 1}`
@@ -755,10 +770,7 @@ function aggregationsProblem(entries: Array<Record<string, unknown>>, where: str
     }
     if (typeof entry.column !== "string" || typeof entry.name !== "string") return `${label} is missing "column" or "name".`
     if (entry.where !== undefined) {
-      if (!isShape(entry.where, "object")) return `${label} has a malformed row filter.`
-      const group = entry.where as Record<string, unknown>
-      if (typeof group.match !== "string") return `${label} has a malformed row filter.`
-      const problem = conditionsProblem(group.conditions, `${label} filter`)
+      const problem = rowFilterProblem(entry.where, label)
       if (problem) return problem
     }
   }
@@ -813,7 +825,8 @@ function canonicalExpr(expr: Expr): Expr {
   switch (expr.type) {
     case "window": {
       const orderBy = expr.orderBy?.map((k) => ({ column: k.column, descending: k.descending ?? false }))
-      return { ...expr, column: expr.column ?? "", ...(orderBy ? { orderBy } : {}) }
+      const where = expr.where ? { where: { ...expr.where, conditions: expr.where.conditions.map(canonicalCondition) } } : {}
+      return { ...expr, column: expr.column ?? "", ...(orderBy ? { orderBy } : {}), ...where }
     }
     case "concat":
       return { ...expr, parts: expr.parts.map(canonicalOperand), separator: expr.separator ?? "" }

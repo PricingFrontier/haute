@@ -199,6 +199,7 @@ export function exprColumns(expr: Expr): string[] {
         ...(COLUMNLESS_AGGREGATIONS.has(expr.agg) || typeof expr.column !== "string" ? [] : [expr.column]),
         ...expr.over,
         ...(expr.orderBy ?? []).map((k) => k.column),
+        ...conditionColumns(expr.where?.conditions ?? []),
       ]
     case "concat":
       return expr.parts.flatMap(operandColumns)

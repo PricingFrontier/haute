@@ -1382,19 +1382,31 @@ class _Renderer:
 
     def _window(self, expr: Mapping[str, Any], label: str) -> str:
         self._keys(
-            expr, ("type", "agg", "column", "over", "orderBy", "descending", "quantile"), label
+            expr,
+            ("type", "agg", "column", "over", "orderBy", "descending", "quantile", "where"),
+            label,
         )
         over = self._str_list(expr.get("over"), f"{label} over", allow_empty=True)
         agg = self._choice(expr.get("agg"), WINDOW_AGGREGATIONS, f"{label} aggregation")
         descending = expr.get("descending", False)
         if not isinstance(descending, bool):
             raise self.fail(f"{label} descending must be true or false.")
+        where = expr.get("where")
+        if where is not None and agg not in AGGREGATIONS:
+            # Filtering changes a partition's length, which a positional
+            # aggregate must keep to give each row its value.
+            raise self.fail(
+                f"{label} row filter needs an aggregate of the whole group, such as sum or "
+                f"mean; {agg!r} gives a value per row."
+            )
         if agg == "row_number":
             # The idiom analysts write; the cardinality classifier recognises
             # a range bounded by ``pl.len()`` as one value per row.
             base = "pl.int_range(1, pl.len() + 1)"
         elif agg in AGGREGATIONS:
-            base = self._aggregate(expr.get("column"), agg, label, quantile=expr.get("quantile"))
+            base = self._aggregate(
+                expr.get("column"), agg, label, quantile=expr.get("quantile"), where=where
+            )
         else:
             column = self._column(expr.get("column"), f"{label} column")
             base = {

@@ -81,6 +81,14 @@ describe("stepProblem", () => {
     )
   })
 
+  it("checks a window's row filter like an aggregation's", () => {
+    const window = (where: unknown): Step => ({ id: "w", kind: "with_column", name: "s", expr: { type: "window", agg: "sum", column: "a", over: ["k"], where } as never })
+    expect(stepProblem(window({ match: "all", conditions: [{ column: "k", operator: "is_null" }] }))).toBeNull()
+    expect(stepProblem(window("rows"))).toMatch(/malformed row filter/)
+    expect(stepProblem(window({ conditions: [] }))).toMatch(/malformed row filter/)
+    expect(stepProblem(window({ match: "all", conditions: [{ column: 3 }] }))).toMatch(/condition 1 is malformed/)
+  })
+
   it("accepts nested expressions up to the renderer's depth and refuses them in literal-only positions", () => {
     const nested = (depth: number): Operand => {
       let operand: Operand = { kind: "literal", type: "number", value: 1 }

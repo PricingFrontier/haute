@@ -89,6 +89,8 @@ export type Expr =
       descending?: boolean
       /** The quantile in [0, 1] (`quantile` only). */
       quantile?: number
+      /** Aggregate only the rows matching these conditions (plain aggregates only, plain values only). */
+      where?: ConditionGroup
     }
   | { type: "concat"; parts: Operand[]; separator: string }
 

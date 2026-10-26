@@ -236,6 +236,41 @@ describe("step forms only build schema-valid payloads", () => {
     expect(latest.expr).toEqual({ type: "window", agg: "quantile", column: "premium", over: ["region"], quantile: 0.5 })
   })
 
+  it("a window's row filter sits under More options for the plain aggregates and goes with a positional one", () => {
+    const spy = vi.fn()
+    const step: Step = { id: "w", kind: "with_column", name: "t", expr: { type: "window", agg: "sum", column: "premium", over: ["region"] } }
+    render(<Stateful initial={step} spy={spy} />)
+    expect(screen.queryByRole("button", { name: /Only rows where/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "More options" }))
+    fireEvent.click(screen.getByRole("button", { name: /Only rows where/ }))
+    // Like an aggregation's filter, its conditions take plain values only.
+    expect(optionValues(screen.getByLabelText("Window filter condition 1 value kind"))).toEqual(["number", "text", "boolean", "date", "column", "variable"])
+    fireEvent.change(screen.getByRole("combobox", { name: "Window filter condition 1 column" }), { target: { value: "region" } })
+    fireEvent.blur(screen.getByRole("combobox", { name: "Window filter condition 1 column" }))
+    let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toEqual({
+      type: "window",
+      agg: "sum",
+      column: "premium",
+      over: ["region"],
+      where: { match: "all", conditions: [{ column: "region", operator: "eq", value: { kind: "literal", type: "number", value: 0 } }] },
+    })
+    expect(stepProblem(latest)).toBeNull()
+    expect(summarizeStep(latest)).toBe("t = sum of premium where region equals 0 over region")
+    fireEvent.change(screen.getByLabelText("Window aggregate"), { target: { value: "cum_sum" } })
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toEqual({ type: "window", agg: "cum_sum", column: "premium", over: ["region"] })
+    expect(screen.queryByRole("button", { name: "More options" })).not.toBeInTheDocument()
+  })
+
+  it("opens a window's More options by itself when it saved a row filter", () => {
+    const where = { match: "all" as const, conditions: [{ column: "region", operator: "eq" as const, value: { kind: "literal" as const, type: "text" as const, value: "north" } }] }
+    const step: Step = { id: "w", kind: "with_column", name: "t", expr: { type: "window", agg: "mean", column: "premium", over: [], where } }
+    render(<StepForm step={step} onChange={vi.fn()} ctx={ctx} />)
+    expect(screen.getByRole("button", { name: "More options" })).toHaveAttribute("aria-expanded", "true")
+    expect(screen.getByRole("button", { name: "Aggregate every row" })).toBeInTheDocument()
+  })
+
   it("text joins keep at least two parts and a separator", () => {
     const spy = vi.fn()
     const step: Step = {

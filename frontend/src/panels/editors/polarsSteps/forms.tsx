@@ -33,6 +33,7 @@ import {
   JOIN_VALIDATED_HOW,
   MAX_EXPR_DEPTH,
   PIVOT_AGGREGATIONS,
+  REDUCING_AGGREGATIONS,
   WINDOW_AGGREGATIONS,
   aggregationTakes,
   canonicalStep,
@@ -86,6 +87,7 @@ import type {
   CastEntry,
   CastStep,
   ColumnAggregation,
+  ConditionGroup,
   DropStep,
   DtypeAggregation,
   ConcatStep,
@@ -685,7 +687,8 @@ function WindowEditor({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "wi
             value={expr.agg}
             options={WINDOW_AGGREGATIONS.filter((a) => a.value === expr.agg || aggregationTakes(a.value, expr.column ? schema.typeOf(expr.column) : null))}
             onChange={(agg) => {
-              const next = omitKeys(withAggregate(expr, agg), ["descending"])
+              // A positional aggregate keeps one value per row, so a row filter cannot apply.
+              const next = omitKeys(withAggregate(expr, agg), REDUCING_AGGREGATIONS.has(agg) ? ["descending"] : ["descending", "where"])
               onChange(agg === "rank" || agg === "dense_rank" ? { ...next, descending: false } : next)
             }}
             ariaLabel="Window aggregate"
@@ -733,7 +736,39 @@ function WindowEditor({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "wi
           {orderBy.length > 0 && expr.over.length === 0 && <Hint>Ordering needs at least one group column; sort the frame instead.</Hint>}
         </RowList>
       </Field>
+      {REDUCING_AGGREGATIONS.has(expr.agg) && (
+        <MoreOptions used={expr.where !== undefined}>
+          <RowFilter where={expr.where} onChange={(where) => onChange(where ? { ...expr, where } : omitKeys(expr, ["where"]))} ctx={ctx} label="Window" />
+        </MoreOptions>
+      )}
     </>
+  )
+}
+
+/** "Only rows where…": an aggregate's optional row filter, its conditions under a "When" lead. */
+function RowFilter({ where, onChange, ctx, label }: { where: ConditionGroup | undefined; onChange: (next: ConditionGroup | undefined) => void; ctx: StepFormContext; label: string }) {
+  if (!where) {
+    return <QuietAction onClick={() => onChange({ match: "all", conditions: [defaultCondition()] })} className="justify-self-start">Only rows where…</QuietAction>
+  }
+  return (
+    <div className="grid gap-1.5 pl-2" style={{ borderLeft: "2px solid var(--border)" }}>
+      <ConditionList
+        conditions={where.conditions}
+        match={where.match}
+        onChange={(conditions, match) => onChange({ match, conditions })}
+        columns={ctx.columns}
+        variables={ctx.variables}
+        ariaLabel={`${label} filter`}
+        lead="when"
+      />
+      <button
+        type="button"
+        onClick={() => onChange(undefined)}
+        className="quiet-action focus-ring justify-self-start rounded px-1 py-0.5 -ml-1 text-[11px] font-medium"
+      >
+        Aggregate every row
+      </button>
+    </div>
   )
 }
 
@@ -1039,28 +1074,7 @@ function AggregationRow({ entry, index, onChange, onRemove, ctx, boxed, showFilt
         {onRemove && <RowRemove label={`Remove aggregation ${index + 1}`} onClick={onRemove} />}
       </div>
       {entry.agg === "quantile" && <QuantileField value={entry.quantile} onChange={(quantile) => onChange({ ...entry, quantile })} ariaLabel={`${label} quantile`} />}
-      {showFilter && (entry.where ? (
-        <div className="grid gap-1.5 pl-2" style={{ borderLeft: "2px solid var(--border)" }}>
-          <ConditionList
-            conditions={entry.where.conditions}
-            match={entry.where.match}
-            onChange={(conditions, match) => onChange({ ...entry, where: { match, conditions } })}
-            columns={ctx.columns}
-            variables={ctx.variables}
-            ariaLabel={`${label} filter`}
-            lead="when"
-          />
-          <button
-            type="button"
-            onClick={() => onChange(omitKeys(entry, ["where"]))}
-            className="quiet-action focus-ring justify-self-start rounded px-1 py-0.5 -ml-1 text-[11px] font-medium"
-          >
-            Aggregate every row
-          </button>
-        </div>
-      ) : (
-        <QuietAction onClick={() => onChange({ ...entry, where: { match: "all", conditions: [defaultCondition()] } })} className="justify-self-start">Only rows where…</QuietAction>
-      ))}
+      {showFilter && <RowFilter where={entry.where} onChange={(where) => onChange(where ? { ...entry, where } : omitKeys(entry, ["where"]))} ctx={ctx} label={label} />}
     </Wrapper>
   )
 }

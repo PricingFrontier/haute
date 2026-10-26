@@ -940,12 +940,15 @@ def window(
     over: list[str],
     order_by: list[tuple[str, bool]] | None = None,
     descending: bool | None = None,
+    where: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     expr: dict[str, Any] = {"type": "window", "agg": agg, "column": column, "over": over}
     if order_by is not None:
         expr["orderBy"] = [{"column": c, "descending": d} for c, d in order_by]
     if descending is not None:
         expr["descending"] = descending
+    if where is not None:
+        expr["where"] = {"match": "all", "conditions": where}
     return step(f"w_{name}", "with_column", name=name, expr=expr)
 
 
@@ -2709,6 +2712,133 @@ def test_generated_reshaping_code_stays_inside_the_lineage_model() -> None:
     )
     windowed = analyze_polars_lineage(nested_window, schema, demanded_output=["dev"])
     assert windowed.supported and windowed.demands_by_input == {"rows": frozenset({"a", "g"})}
+
+
+# ---------------------------------------------------------------------------
+# Window row filters and values, operand arguments, divide, branches, sum across
+# ---------------------------------------------------------------------------
+
+_WEB = [cond("channel", "eq", value=text("web"))]
+
+
+@pytest.mark.parametrize(
+    ("kind_step", "expected"),
+    [
+        (
+            window("web_total", "sum", "premium", ["region"], where=_WEB),
+            "df = df.with_columns(\n"
+            '    pl.col("premium")\n'
+            '    .filter(pl.col("channel") == "web")\n'
+            "    .sum()\n"
+            '    .over(["region"])\n'
+            '    .alias("web_total")\n'
+            ")",
+        ),
+        (
+            window("web_quotes", "len", "", ["region"], where=_WEB),
+            "df = df.with_columns(\n"
+            '    (pl.col("channel") == "web").sum().over(["region"]).alias("web_quotes")\n'
+            ")",
+        ),
+        (
+            window("first_web", "first", "premium", ["region"], [("qid", False)], where=_WEB),
+            "df = df.with_columns(\n"
+            '    pl.col("premium")\n'
+            '    .filter(pl.col("channel") == "web")\n'
+            "    .first()\n"
+            '    .over(["region"], order_by=["qid"], descending=False)\n'
+            '    .alias("first_web")\n'
+            ")",
+        ),
+    ],
+    ids=["filtered-sum", "filtered-row-count", "filtered-ordered-first"],
+)
+def test_expression_additions_render(kind_step: dict[str, Any], expected: str) -> None:
+    rendered = render_polars_steps([source(), kind_step], ["quotes"], start="input")
+    assert step_text(rendered, 1) == expected
+
+
+@pytest.mark.parametrize(
+    ("kind_step", "fragment"),
+    [
+        (
+            window("cs", "cum_sum", "premium", ["region"], [("qid", False)], where=_WEB),
+            "row filter needs an aggregate of the whole group, such as sum or mean; "
+            "'cum_sum' gives a value per row",
+        ),
+        (
+            window("rn", "row_number", "", ["region"], [("qid", False)], where=_WEB),
+            "'row_number' gives a value per row",
+        ),
+        (
+            window(
+                "t",
+                "sum",
+                "premium",
+                ["region"],
+                where=[cond("premium", "gt", value=ex(binary(col("a"), "*", num(2))))],
+            ),
+            "must be a plain value, column or variable here",
+        ),
+    ],
+    ids=["positional-aggregate", "row-number", "nested-filter-operand"],
+)
+def test_expression_additions_reject(kind_step: dict[str, Any], fragment: str) -> None:
+    with pytest.raises(PolarsStepError) as exc_info:
+        render_polars_steps([source(), kind_step], ["quotes"], start="input")
+    assert exc_info.value.step_index == 1
+    assert fragment in exc_info.value.message
+
+
+def test_a_window_row_filter_aggregates_only_the_passing_rows() -> None:
+    frame = pl.DataFrame(
+        {
+            "region": ["n", "n", "n", "s", "s"],
+            "qid": [3, 1, 2, 4, 5],
+            "channel": ["web", "broker", "web", "broker", None],
+            "premium": [100.0, 50.0, 25.0, 30.0, 20.0],
+        }
+    )
+    out = _run_steps(
+        [
+            source(),
+            window("web_total", "sum", "premium", ["region"], where=_WEB),
+            window("web_mean", "mean", "premium", ["region"], where=_WEB),
+            window("web_quotes", "len", "", ["region"], where=_WEB),
+            window("first_web", "first", "premium", ["region"], [("qid", False)], where=_WEB),
+        ],
+        frame,
+    )
+    # A partition with no passing row aggregates no rows: 0 for sum and the
+    # counts, null otherwise; the missing channel never passes.
+    assert out["web_total"].to_list() == [125.0, 125.0, 125.0, 0.0, 0.0]
+    assert out["web_mean"].to_list() == [62.5, 62.5, 62.5, None, None]
+    assert out["web_quotes"].to_list() == [2, 2, 2, 0, 0]
+    assert out["first_web"].to_list() == [25.0, 25.0, 25.0, None, None]
+
+
+def test_generated_expression_additions_stay_inside_the_lineage_model() -> None:
+    """Each addition's generated shape is one the lineage and cardinality models prove."""
+    from haute._column_lineage import analyze_polars_cardinality, analyze_polars_lineage
+
+    schema = {"rows": frozenset({"region", "qid", "channel", "premium", "spare"})}
+    cases = {
+        "filtered window": (
+            window("t", "sum", "premium", ["region"], where=_WEB),
+            {"premium", "channel", "region"},
+        ),
+        "filtered row count": (
+            window("t", "len", "", ["region"], where=_WEB),
+            {"channel", "region"},
+        ),
+    }
+    for name, (kind_step, demanded) in cases.items():
+        code = render_polars_steps([source("rows"), kind_step], ["rows"], start="input").code
+        lineage = analyze_polars_lineage(code, schema, demanded_output=["t"])
+        assert lineage.supported, (name, lineage.reason)
+        assert lineage.demands_by_input == {"rows": frozenset(demanded)}, name
+        bound = analyze_polars_cardinality(code, {"rows": 100})
+        assert bound.supported and bound.output_upper_bound == 100, (name, bound.reason)
 
 
 def test_a_start_only_program_previews_the_input_unchanged(tmp_path: Path) -> None:
