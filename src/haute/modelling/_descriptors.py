@@ -299,7 +299,8 @@ def native_objective(descriptor: AlgorithmDescriptor, objective: str) -> tuple[s
     regression objective gets the identity link: the library's own prediction
     does not depend on it, and a trace whose contributions do not rebuild the
     prediction is refused. A binary objective Haute does not train gives no
-    positive-class probability to score, so it is refused.
+    positive-class probability to score, and a ranking objective orders rows
+    within groups rather than pricing each, so both are refused.
     """
     from haute.errors import ConfigError
 
@@ -307,6 +308,13 @@ def native_objective(descriptor: AlgorithmDescriptor, objective: str) -> tuple[s
         for loss in losses.values():
             if loss.objective == objective:
                 return task, loss.link
+    if objective.startswith(("rank", "lambdarank", "xendcg", "xe_ndcg")):
+        raise ConfigError(
+            f"A {descriptor.label} model trained with ranking objective {objective!r} orders "
+            "rows within groups rather than pricing each; Haute scores regression and binary "
+            "classification models.",
+            objective=objective,
+        )
     if objective.startswith("binary"):
         supported = sorted(
             loss.objective for loss in descriptor.losses.get("classification", {}).values()

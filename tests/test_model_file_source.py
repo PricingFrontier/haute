@@ -1047,8 +1047,24 @@ def test_what_a_model_trained_outside_haute_cannot_be_scored_for_is_refused(
     estimator.fit(frame.select(FEATURES), three)
     (project / "multi.tboost").write_text(estimator.to_json(), encoding="utf-8")
 
+    ranked = xgb.train(
+        {"objective": "rank:ndcg", "verbosity": 0},
+        xgb.DMatrix(pdf, label=three, group=[frame.height], enable_categorical=True),
+        num_boost_round=2,
+    )
+    ranked.set_attr(haute_offset="none")
+    ranked.save_model(str(project / "ranked.ubj"))
+    lgb.train(
+        {"objective": "lambdarank", "verbosity": -1, "min_data_in_leaf": 5},
+        lgb.Dataset(pdf, label=three, group=[frame.height]),
+        num_boost_round=2,
+    ).save_model(str(project / "ranked.lgbm"))
+
     for name in ("multi.ubj", "multi.lgbm"):
         with pytest.raises(ConfigError, match="more than one value per row"):
+            load_local_model(str(project / name))
+    for name in ("ranked.ubj", "ranked.lgbm"):
+        with pytest.raises(ConfigError, match="ranking objective"):
             load_local_model(str(project / name))
     with pytest.raises(ConfigError, match="binary:logitraw.*no positive-class probability"):
         load_local_model(str(project / "raw.ubj"), "classification")
