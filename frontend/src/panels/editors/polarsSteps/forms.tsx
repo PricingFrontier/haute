@@ -90,6 +90,7 @@ import type {
   CastStep,
   ColumnAggregation,
   ConditionGroup,
+  ConditionalBranch,
   DropStep,
   DtypeAggregation,
   ConcatStep,
@@ -655,31 +656,68 @@ function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: 
         </>
       )
     case "conditional":
-      return (
-        <>
-          <ConditionList
-            conditions={expr.conditions}
-            match={expr.match}
-            onChange={(conditions, match) => onChange({ ...expr, conditions, match })}
-            columns={ctx.columns}
-            variables={ctx.variables}
-            ariaLabel="If"
-            renderExpression={operandProps.renderExpression}
-            lead="when"
-          />
-          <Field label="Then">
-            <OperandField value={expr.then} onChange={(then) => onChange({ ...expr, then })} ariaLabel="Then value" {...operandProps} />
-          </Field>
-          <Field label="Otherwise">
-            <OperandField value={expr.otherwise} onChange={(otherwise) => onChange({ ...expr, otherwise })} ariaLabel="Otherwise value" {...operandProps} />
-          </Field>
-        </>
-      )
+      return <ConditionalEditor expr={expr} onChange={onChange} ctx={ctx} operandProps={operandProps} />
     case "window":
       return <WindowEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
     case "concat":
       return <ConcatEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
   }
+}
+
+/** An if-then: its branches in order, each a condition list and a Then value, then the Otherwise value. */
+function ConditionalEditor({
+  expr,
+  onChange,
+  ctx,
+  operandProps,
+}: {
+  expr: Extract<Expr, { type: "conditional" }>
+  onChange: (next: Expr) => void
+  ctx: StepFormContext
+  operandProps: ReturnType<typeof anyOperand>
+}) {
+  const many = expr.branches.length > 1
+  const Wrapper = many ? RowGroup : PlainRow
+  const setBranch = (index: number, next: ConditionalBranch) => onChange({ ...expr, branches: expr.branches.map((b, i) => (i === index ? next : b)) })
+  const addBranch = () => {
+    // A new branch tests the previous branch's first column and starts from a value of its Then's type.
+    const last = expr.branches[expr.branches.length - 1]
+    const then = last.then.kind === "literal" ? defaultLiteral(last.then.type) : literal("number", 0)
+    onChange({ ...expr, branches: [...expr.branches, { match: "all", conditions: [defaultCondition(last.conditions[0]?.column ?? "")], then }] })
+  }
+  return (
+    <>
+      {expr.branches.map((branch, index) => {
+        const name = index === 0 ? "If" : `Branch ${index + 1}`
+        return (
+          <Wrapper key={index} label={`Branch ${index + 1}`}>
+            <div className="flex items-start gap-1.5">
+              <div className="grid flex-1 gap-1.5 min-w-0">
+                <ConditionList
+                  conditions={branch.conditions}
+                  match={branch.match}
+                  onChange={(conditions, match) => setBranch(index, { ...branch, conditions, match })}
+                  columns={ctx.columns}
+                  variables={ctx.variables}
+                  ariaLabel={name}
+                  renderExpression={operandProps.renderExpression}
+                  lead={index === 0 ? "when" : "otherwiseWhen"}
+                />
+                <Field label="Then">
+                  <OperandField value={branch.then} onChange={(then) => setBranch(index, { ...branch, then })} ariaLabel={index === 0 ? "Then value" : `${name} then value`} {...operandProps} />
+                </Field>
+              </div>
+              {many && <RowRemove label={`Remove branch ${index + 1}`} onClick={() => onChange({ ...expr, branches: expr.branches.filter((_, i) => i !== index) })} />}
+            </div>
+          </Wrapper>
+        )
+      })}
+      <QuietAction onClick={addBranch} className="justify-self-start">Add branch</QuietAction>
+      <Field label="Otherwise">
+        <OperandField value={expr.otherwise} onChange={(otherwise) => onChange({ ...expr, otherwise })} ariaLabel="Otherwise value" {...operandProps} />
+      </Field>
+    </>
+  )
 }
 
 function WindowEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "window" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {

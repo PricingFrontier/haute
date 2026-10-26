@@ -243,6 +243,23 @@ describe("unknown columns", () => {
     expect(unknownColumnsOf(capped, columnsBeforeStep(SOURCE, [source("quotes"), capped], 1), SOURCE)).toEqual(["flor"])
   })
 
+  it("reads the columns every if-then branch tests and gives", () => {
+    const banded: Step = {
+      id: "b",
+      kind: "with_column",
+      name: "band",
+      expr: {
+        type: "conditional",
+        branches: [
+          { match: "all", conditions: [{ column: "premium", operator: "is_null" }], then: { kind: "literal", type: "number", value: 0 } },
+          { match: "all", conditions: [{ column: "regoin", operator: "is_null" }], then: { kind: "column", name: "base" } },
+        ],
+        otherwise: { kind: "column", name: "premium" },
+      },
+    }
+    expect(columnsReadBy(banded)).toEqual(["premium", "regoin", "base"])
+  })
+
   it("reads the columns a window's row filter tests", () => {
     const where = { match: "all" as const, conditions: [{ column: "chanel", operator: "is_null" as const }] }
     const filtered: Step = { id: "w", kind: "with_column", name: "t", expr: { type: "window", agg: "sum", of: { kind: "column", name: "premium" }, over: ["region"], where } }

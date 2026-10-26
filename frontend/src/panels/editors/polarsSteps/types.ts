@@ -75,13 +75,15 @@ export type FunctionName =
 
 export type OrderKey = { column: string; descending: boolean }
 export type ConditionGroup = { match: MatchMode; conditions: Condition[] }
+/** One if-then branch: a row takes `then` when these conditions hold and no earlier branch's did. */
+export type ConditionalBranch = ConditionGroup & { then: Operand }
 
 export type Expr =
   | { type: "operand"; operand: Operand; text?: string }
   /** `text` is the formula exactly as typed, kept for display; the renderer ignores it. */
   | { type: "binary"; left: Operand; op: BinaryOperator; right: Operand; text?: string }
   | { type: "function"; fn: FunctionName; operand: Operand; args: FunctionArgValue[]; text?: string }
-  | { type: "conditional"; match: MatchMode; conditions: Condition[]; then: Operand; otherwise: Operand }
+  | { type: "conditional"; branches: ConditionalBranch[]; otherwise: Operand }
   | {
       type: "window"
       agg: WindowAggregation

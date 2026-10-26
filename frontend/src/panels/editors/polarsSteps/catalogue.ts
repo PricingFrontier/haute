@@ -367,7 +367,7 @@ export function exprTypeProblem(expr: Expr, typeOf: (name: string) => string | n
     case "binary":
       return operandProblem(expr.left) ?? operandProblem(expr.right)
     case "conditional":
-      return operandProblem(expr.then) ?? operandProblem(expr.otherwise)
+      return expr.branches.map((b) => operandProblem(b.then)).find((problem) => problem !== null) ?? operandProblem(expr.otherwise)
     case "concat":
       return expr.parts.map(operandProblem).find((problem) => problem !== null) ?? null
     case "window": {
@@ -444,7 +444,7 @@ export function defaultExpr(type: Expr["type"], column = ""): Expr {
     case "function":
       return { type, fn: "abs", operand, args: [] }
     case "conditional":
-      return { type, match: "all", conditions: [defaultCondition(column)], then: literal("number", 1), otherwise: literal("number", 0) }
+      return { type, branches: [{ match: "all", conditions: [defaultCondition(column)], then: literal("number", 1) }], otherwise: literal("number", 0) }
     case "window":
       return { type, agg: "sum", of: operand, over: [] }
     case "concat":
@@ -637,13 +637,19 @@ export function exprProblem(value: unknown, where: string, depth = 1): string | 
         }
       }
       return operandProblem(expr.operand, where, depth)
-    case "conditional":
-      if (typeof expr.match !== "string") return `${where} is missing its match mode.`
-      return (
-        conditionsProblem(expr.conditions, where, depth)
-        ?? operandProblem(expr.then, `${where} then branch`, depth)
-        ?? operandProblem(expr.otherwise, `${where} otherwise branch`, depth)
-      )
+    case "conditional": {
+      if (!Array.isArray(expr.branches) || expr.branches.length === 0) return `${where} is missing its branches.`
+      for (const [index, raw] of expr.branches.entries()) {
+        // One branch is the whole if-then; several are named by their place.
+        const label = expr.branches.length === 1 ? where : `${where} branch ${index + 1}`
+        if (!isShape(raw, "object")) return `${label} is malformed.`
+        const branch = raw as Record<string, unknown>
+        if (typeof branch.match !== "string") return `${label} is missing its match mode.`
+        const problem = conditionsProblem(branch.conditions, label, depth) ?? operandProblem(branch.then, `${label} then value`, depth)
+        if (problem) return problem
+      }
+      return operandProblem(expr.otherwise, `${where} otherwise value`, depth)
+    }
     case "window": {
       // The renderer defaults an order key's `descending` to false, and the
       // forms canonicalise it.
@@ -863,8 +869,7 @@ function canonicalExpr(expr: Expr): Expr {
     case "conditional":
       return {
         ...expr,
-        conditions: expr.conditions.map(canonicalCondition),
-        then: canonicalOperand(expr.then),
+        branches: expr.branches.map((b) => ({ ...b, conditions: b.conditions.map(canonicalCondition), then: canonicalOperand(b.then) })),
         otherwise: canonicalOperand(expr.otherwise),
       }
     case "operand":

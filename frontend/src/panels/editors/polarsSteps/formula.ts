@@ -395,7 +395,7 @@ export function withoutFormulaText(expr: Expr): Expr {
     case "operand":
       return { type: "operand", operand: strip(expr.operand) }
     case "conditional":
-      return { ...expr, then: strip(expr.then), otherwise: strip(expr.otherwise) }
+      return { ...expr, branches: expr.branches.map((b) => ({ ...b, then: strip(b.then) })), otherwise: strip(expr.otherwise) }
     case "concat":
       return { ...expr, parts: expr.parts.map(strip) }
     case "window":

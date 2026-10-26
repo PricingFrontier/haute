@@ -143,9 +143,13 @@ GOLDEN_STEPS: list[dict[str, Any]] = [
         name="band",
         expr={
             "type": "conditional",
-            "match": "any",
-            "conditions": [cond("gross", "ge", value=num(500))],
-            "then": text("high"),
+            "branches": [
+                {
+                    "match": "any",
+                    "conditions": [cond("gross", "ge", value=num(500))],
+                    "then": text("high"),
+                }
+            ],
             "otherwise": text("low"),
         },
     ),
@@ -666,9 +670,13 @@ def test_variable_receiver_and_then_branch_render_as_expressions() -> None:
             name="y",
             expr={
                 "type": "conditional",
-                "match": "all",
-                "conditions": [cond("premium", "gt", value=var("rate"))],
-                "then": var("rate"),
+                "branches": [
+                    {
+                        "match": "all",
+                        "conditions": [cond("premium", "gt", value=var("rate"))],
+                        "then": var("rate"),
+                    }
+                ],
                 "otherwise": col("premium"),
             },
         ),
@@ -1136,9 +1144,13 @@ def window(
                 name="k",
                 expr={
                     "type": "conditional",
-                    "match": "all",
-                    "conditions": [cond("a", "eq", value=num(1))],
-                    "then": col("b"),
+                    "branches": [
+                        {
+                            "match": "all",
+                            "conditions": [cond("a", "eq", value=num(1))],
+                            "then": col("b"),
+                        }
+                    ],
                     "otherwise": null(),
                 },
             ),
@@ -1520,9 +1532,13 @@ def test_extended_vocabulary_executes(tmp_path: Path) -> None:
             name="masked",
             expr={
                 "type": "conditional",
-                "match": "all",
-                "conditions": [cond("region", "eq", value=text("north"))],
-                "then": col("premium"),
+                "branches": [
+                    {
+                        "match": "all",
+                        "conditions": [cond("region", "eq", value=text("north"))],
+                        "then": col("premium"),
+                    }
+                ],
                 "otherwise": null(),
             },
         ),
@@ -1806,9 +1822,13 @@ def fn(name: str, operand: dict[str, Any], *args: dict[str, Any]) -> dict[str, A
                     ex(
                         {
                             "type": "conditional",
-                            "match": "all",
-                            "conditions": [cond("region", "eq", value=text("north"))],
-                            "then": col("premium"),
+                            "branches": [
+                                {
+                                    "match": "all",
+                                    "conditions": [cond("region", "eq", value=text("north"))],
+                                    "then": col("premium"),
+                                }
+                            ],
                             "otherwise": ex(binary(col("premium"), "*", num(-1))),
                         }
                     ),
@@ -2095,9 +2115,13 @@ def test_nested_expressions_execute(tmp_path: Path) -> None:
                 ex(
                     {
                         "type": "conditional",
-                        "match": "all",
-                        "conditions": [cond("region", "eq", value=text("north"))],
-                        "then": col("premium"),
+                        "branches": [
+                            {
+                                "match": "all",
+                                "conditions": [cond("region", "eq", value=text("north"))],
+                                "then": col("premium"),
+                            }
+                        ],
                         "otherwise": ex(binary(col("premium"), "*", num(-1))),
                     }
                 ),
@@ -2724,6 +2748,25 @@ def test_generated_reshaping_code_stays_inside_the_lineage_model() -> None:
 
 _WEB = [cond("channel", "eq", value=text("web"))]
 _CAP = {"kind": "constant", "name": "cap"}
+_NEGATIVE_CAP = ex(binary(num(0), "-", col("cap")))
+
+
+def branch(
+    conditions: list[dict[str, Any]], then: dict[str, Any], match: str = "all"
+) -> dict[str, Any]:
+    return {"match": match, "conditions": conditions, "then": then}
+
+
+def branches(*arms: dict[str, Any], otherwise: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "conditional", "branches": list(arms), "otherwise": otherwise}
+
+
+#: The IRPM clip as an if-then: the cap above, its negative below, the value between.
+_CAPPED = branches(
+    branch([cond("irpm", "gt", value=col("cap"))], col("cap")),
+    branch([cond("irpm", "lt", value=_NEGATIVE_CAP)], _NEGATIVE_CAP),
+    otherwise=col("irpm"),
+)
 
 
 @pytest.mark.parametrize(
@@ -2817,6 +2860,17 @@ _CAP = {"kind": "constant", "name": "cap"}
             '    .alias("t")\n'
             ")",
         ),
+        (
+            step("b", "with_column", name="t", expr=_CAPPED),
+            "df = df.with_columns(\n"
+            '    pl.when(pl.col("irpm") > pl.col("cap"))\n'
+            '    .then(pl.col("cap"))\n'
+            '    .when(pl.col("irpm") < pl.lit(0) - pl.col("cap"))\n'
+            '    .then(pl.lit(0) - pl.col("cap"))\n'
+            '    .otherwise(pl.col("irpm"))\n'
+            '    .alias("t")\n'
+            ")",
+        ),
     ],
     ids=[
         "filtered-sum",
@@ -2830,6 +2884,7 @@ _CAP = {"kind": "constant", "name": "cap"}
         "clip-between-plain-values",
         "divide-by-a-column",
         "divide-by-a-formula",
+        "if-then-with-two-branches",
     ],
 )
 def test_expression_additions_render(kind_step: dict[str, Any], expected: str) -> None:
@@ -2881,6 +2936,42 @@ def test_expression_additions_render(kind_step: dict[str, Any], expected: str) -
             step("r", "with_column", name="t", expr=fn("round", col("a"), col("places"))),
             "round argument 1 must be a plain value or a constant",
         ),
+        (
+            step("b", "with_column", name="t", expr=branches(otherwise=num(0))),
+            "Expression needs at least one branch",
+        ),
+        (
+            step("b", "with_column", name="t", expr=branches(branch([], num(1)), otherwise=num(0))),
+            "Add at least one condition",
+        ),
+        (
+            step(
+                "b",
+                "with_column",
+                name="t",
+                expr={
+                    "type": "conditional",
+                    "match": "all",
+                    "conditions": [cond("a", "is_null")],
+                    "then": num(1),
+                    "otherwise": num(0),
+                },
+            ),
+            "Unknown field(s) ['conditions', 'match', 'then'] in Expression",
+        ),
+        (
+            step(
+                "b",
+                "with_column",
+                name="t",
+                expr=branches(
+                    branch([cond("a", "is_null")], num(1)),
+                    branch([cond("a", "nope")], num(2)),
+                    otherwise=num(0),
+                ),
+            ),
+            "Expression branch 2 condition 1 operator must be one of",
+        ),
     ],
     ids=[
         "positional-aggregate",
@@ -2894,6 +2985,10 @@ def test_expression_additions_render(kind_step: dict[str, Any], expected: str) -
         "clip-to-text",
         "fill-null-with-null",
         "round-to-a-column",
+        "if-then-without-branches",
+        "if-then-branch-without-conditions",
+        "if-then-in-the-old-shape",
+        "if-then-later-branch-names-itself",
     ],
 )
 def test_expression_additions_reject(kind_step: dict[str, Any], fragment: str) -> None:
@@ -3001,6 +3096,19 @@ def test_divide_is_missing_where_the_divisor_is_zero_or_missing() -> None:
     assert plain[:4] == [2.5, float("inf"), None, None] and math.isnan(plain[4])
 
 
+def test_a_row_takes_the_first_branch_whose_conditions_hold() -> None:
+    frame = pl.DataFrame({"irpm": [0.4, -0.4, 0.1, None], "cap": [0.25] * 4})
+    out = _run_steps([source(), step("b", "with_column", name="t", expr=_CAPPED)], frame)
+    assert out["t"].to_list() == [0.25, -0.25, 0.1, None]
+    overlapping = branches(
+        branch([cond("irpm", "gt", value=num(0))], text("positive")),
+        branch([cond("irpm", "gt", value=num(0.3))], text("large")),
+        otherwise=text("other"),
+    )
+    out = _run_steps([source(), step("b", "with_column", name="t", expr=overlapping)], frame)
+    assert out["t"].to_list() == ["positive", "other", "positive", "other"]
+
+
 def test_a_constant_in_an_operand_argument_is_checked_against_the_argument_types() -> None:
     rendered = render_polars_steps(
         [source(), step("c", "with_column", name="t", expr=fn("fill_null", col("a"), _CAP))],
@@ -3033,6 +3141,19 @@ def test_generated_expression_additions_stay_inside_the_lineage_model() -> None:
         "divide": (
             step("d", "with_column", name="t", expr=fn("divide", col("premium"), col("qid"))),
             {"premium", "qid"},
+        ),
+        "if-then branches": (
+            step(
+                "b",
+                "with_column",
+                name="t",
+                expr=branches(
+                    branch([cond("premium", "gt", value=col("qid"))], col("qid")),
+                    branch([cond("channel", "is_null")], num(0)),
+                    otherwise=col("premium"),
+                ),
+            ),
+            {"premium", "qid", "channel"},
         ),
         "clip between columns": (
             step(
@@ -3230,9 +3351,13 @@ def test_executor_runs_every_step_kind(tmp_path: Path) -> None:
                 name="band",
                 expr={
                     "type": "conditional",
-                    "match": "all",
-                    "conditions": [cond("premium", "ge", value=num(500))],
-                    "then": text("north"),
+                    "branches": [
+                        {
+                            "match": "all",
+                            "conditions": [cond("premium", "ge", value=num(500))],
+                            "then": text("north"),
+                        }
+                    ],
                     "otherwise": text("low"),
                 },
             ),
@@ -6252,9 +6377,13 @@ def test_fill_and_branch_values_take_every_constant_type() -> None:
                 name="band",
                 expr={
                     "type": "conditional",
-                    "match": "all",
-                    "conditions": [cond("x", "gt", value=num(1))],
-                    "then": const("b"),
+                    "branches": [
+                        {
+                            "match": "all",
+                            "conditions": [cond("x", "gt", value=num(1))],
+                            "then": const("b"),
+                        }
+                    ],
                     "otherwise": text("low"),
                 },
             ),

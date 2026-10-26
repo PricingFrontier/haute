@@ -76,7 +76,17 @@ function exprParts(expr: Expr): SummaryPart[] {
     case "function":
       return [code(expr.fn), ...operandParts(expr.operand), ...expr.args.flatMap((arg) => [sep(","), ...operandParts(arg)])]
     case "conditional":
-      return [text("if"), ...conditionsParts(expr.conditions, expr.match), text("then"), ...operandParts(expr.then), text("else"), ...operandParts(expr.otherwise)]
+      return [
+        ...expr.branches.flatMap((b, index) => [
+          ...(index === 0 ? [text("if")] : [sep(","), text("else if")]),
+          ...conditionsParts(b.conditions, b.match),
+          text("then"),
+          ...operandParts(b.then),
+        ]),
+        ...(expr.branches.length > 1 ? [sep(",")] : []),
+        text("else"),
+        ...operandParts(expr.otherwise),
+      ]
     case "window": {
       const label = WINDOW_AGGREGATIONS.find((a) => a.value === expr.agg)?.label ?? expr.agg
       const subject = COLUMNLESS_AGGREGATIONS.has(expr.agg) ? [text(label)] : [text(label), op("of"), ...operandParts(expr.of)]

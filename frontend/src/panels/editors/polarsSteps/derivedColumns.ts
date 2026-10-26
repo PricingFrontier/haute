@@ -192,7 +192,7 @@ export function exprColumns(expr: Expr): string[] {
     case "function":
       return [...operandColumns(expr.operand), ...expr.args.flatMap(operandColumns)]
     case "conditional":
-      return [...conditionColumns(expr.conditions), ...operandColumns(expr.then), ...operandColumns(expr.otherwise)]
+      return [...expr.branches.flatMap((b) => [...conditionColumns(b.conditions), ...operandColumns(b.then)]), ...operandColumns(expr.otherwise)]
     case "window":
       return [
         ...operandColumns(expr.of),

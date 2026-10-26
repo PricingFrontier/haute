@@ -1375,11 +1375,22 @@ class _Renderer:
             ]
             return template.format(*rendered_args, r=receiver)
         if kind == "conditional":
-            self._keys(expr, ("type", "match", "conditions", "then", "otherwise"), label)
-            conditions = self._conditions(expr, label)
-            then = self._operand(expr.get("then"), f"{label} then", expr=True)
+            self._keys(expr, ("type", "branches", "otherwise"), label)
+            branches = expr.get("branches")
+            if not isinstance(branches, list) or not branches:
+                raise self.fail(f"{label} needs at least one branch.")
+            # A row takes the first branch whose conditions hold, as Polars'
+            # chained when/then gives it; one branch keeps its plain labels.
+            chain = "pl"
+            for i, raw in enumerate(branches):
+                where = label if len(branches) == 1 else f"{label} branch {i + 1}"
+                branch = self._object(raw, where)
+                self._keys(branch, ("match", "conditions", "then"), where)
+                conditions = self._conditions(branch, where)
+                then = self._operand(branch.get("then"), f"{where} then", expr=True)
+                chain += f".when({conditions}).then({then})"
             otherwise = self._operand(expr.get("otherwise"), f"{label} otherwise", expr=True)
-            return f"pl.when({conditions}).then({then}).otherwise({otherwise})"
+            return f"{chain}.otherwise({otherwise})"
         if kind == "window":
             return self._window(expr, label)
         if kind == "concat":

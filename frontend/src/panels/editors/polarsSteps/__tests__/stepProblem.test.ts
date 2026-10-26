@@ -16,7 +16,7 @@ describe("stepProblem", () => {
       { id: "s", kind: "source", input: "quotes" },
       { id: "f", kind: "filter", match: "all", conditions: [{ column: "a", operator: "is_null" }] },
       { id: "w", kind: "with_column", name: "n", expr: { type: "function", fn: "round", operand: col("a"), args: [{ kind: "literal", type: "number", value: 2 }] } },
-      { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", match: "any", conditions: [{ column: "a", operator: "is_null" }], then: col("a"), otherwise: col("b") } },
+      { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", branches: [{ match: "any", conditions: [{ column: "a", operator: "is_null" }], then: col("a") }], otherwise: col("b") } },
       { id: "g", kind: "group_by", keys: ["k"], aggregations: [{ column: "a", agg: "sum", name: "s" }] },
       { id: "j", kind: "join", input: "rates", how: "left", leftOn: ["k"], rightOn: ["k"], suffix: "_r", maintainOrder: "left_right" },
       { id: "fn", kind: "fill_null", columns: [], fill: { kind: "strategy", strategy: "forward" } },
@@ -34,7 +34,7 @@ describe("stepProblem", () => {
         id: "nl",
         kind: "with_column",
         name: "m",
-        expr: { type: "conditional", match: "all", conditions: [{ column: "a", operator: "matches", value: { kind: "literal", type: "text", value: "^c" } }], then: col("a"), otherwise: { kind: "literal", type: "null", value: null } },
+        expr: { type: "conditional", branches: [{ match: "all", conditions: [{ column: "a", operator: "matches", value: { kind: "literal", type: "text", value: "^c" } }], then: col("a") }], otherwise: { kind: "literal", type: "null", value: null } },
       },
       {
         id: "gw",
@@ -180,7 +180,10 @@ describe("stepProblem", () => {
 
   it.each([
     ["function without args", { id: "w", kind: "with_column", name: "n", expr: { type: "function", fn: "round", operand: col("a") } }, /function arguments/],
-    ["conditional without conditions", { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", match: "all", then: col("a"), otherwise: col("b") } }, /conditions/],
+    ["conditional without conditions", { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", branches: [{ match: "all", then: col("a") }], otherwise: col("b") } }, /conditions/],
+    ["conditional without branches", { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", branches: [], otherwise: col("b") } }, /missing its branches/],
+    ["conditional in the old shape", { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", match: "all", conditions: [], then: col("a"), otherwise: col("b") } }, /missing its branches/],
+    ["later branch without a match", { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", branches: [{ match: "all", conditions: [], then: col("a") }, { conditions: [], then: col("a") }], otherwise: col("b") } }, /branch 2 is missing its match mode/],
     ["aggregation without name", { id: "g", kind: "group_by", keys: ["k"], aggregations: [{ column: "a", agg: "sum" }] }, /missing "column" or "name"/],
     ["filter without conditions", { id: "f", kind: "filter", match: "all" }, /conditions/],
     [

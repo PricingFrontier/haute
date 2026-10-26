@@ -232,9 +232,7 @@ describe("step forms only build schema-valid payloads", () => {
       name: "masked",
       expr: {
         type: "conditional",
-        match: "all",
-        conditions: [{ column: "region", operator: "eq", value: { kind: "literal", type: "text", value: "north" } }],
-        then: { kind: "column", name: "premium" },
+        branches: [{ match: "all", conditions: [{ column: "region", operator: "eq", value: { kind: "literal", type: "text", value: "north" } }], then: { kind: "column", name: "premium" } }],
         otherwise: { kind: "literal", type: "number", value: 0 },
       },
     }
@@ -966,9 +964,7 @@ describe("step forms only build schema-valid payloads", () => {
       name: "band",
       expr: {
         type: "conditional",
-        match: "all",
-        conditions: [{ column: "premium", operator: "gt", value: { kind: "literal", type: "number", value: 100 } }],
-        then: { kind: "literal", type: "text", value: "high" },
+        branches: [{ match: "all", conditions: [{ column: "premium", operator: "gt", value: { kind: "literal", type: "number", value: 100 } }], then: { kind: "literal", type: "text", value: "high" } }],
         otherwise: { kind: "literal", type: "text", value: "low" },
       },
     }
@@ -977,14 +973,41 @@ describe("step forms only build schema-valid payloads", () => {
     expect(screen.getByLabelText("If condition 1 column")).toHaveValue("premium")
     fireEvent.change(screen.getByLabelText("Then value value"), { target: { value: "top" } })
     fireEvent.blur(screen.getByLabelText("Then value value"))
-    expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>).expr).toMatchObject({ then: { kind: "literal", type: "text", value: "top" } })
+    expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>).expr).toMatchObject({ branches: [{ then: { kind: "literal", type: "text", value: "top" } }] })
     fireEvent.change(screen.getByLabelText("Otherwise value kind"), { target: { value: "column" } })
     expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>).expr).toMatchObject({ otherwise: { kind: "column", name: "" } })
     fireEvent.click(screen.getByRole("button", { name: "Add condition" }))
     const latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
-    expect(latest.expr).toMatchObject({ type: "conditional", conditions: [expect.anything(), { column: "", operator: "eq" }] })
+    expect(latest.expr).toMatchObject({ type: "conditional", branches: [{ conditions: [expect.anything(), { column: "", operator: "eq" }] }] })
     expect(screen.getByLabelText("If match")).toHaveValue("all")
     expect(summarizeStep(latest)).toBe("band = if premium is greater than 100 and column equals 0 then 'top' else column")
+  })
+
+  it("an if-then adds later branches, led by Otherwise, when, and removes them", () => {
+    const spy = vi.fn()
+    const high = { match: "all" as const, conditions: [{ column: "premium", operator: "gt" as const, value: { kind: "literal" as const, type: "number" as const, value: 100 } }], then: { kind: "literal" as const, type: "text" as const, value: "high" } }
+    const step: Step = { id: "b", kind: "with_column", name: "band", expr: { type: "conditional", branches: [high], otherwise: { kind: "literal", type: "text", value: "low" } } }
+    render(<Stateful initial={step} spy={spy} />)
+    expect(screen.queryByRole("button", { name: /Remove branch/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Add branch" }))
+    let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    // The new branch tests the previous branch's column and starts from a value of its Then's type.
+    expect(latest.expr).toEqual({
+      type: "conditional",
+      branches: [high, { match: "all", conditions: [{ column: "premium", operator: "eq", value: { kind: "literal", type: "number", value: 0 } }], then: { kind: "literal", type: "text", value: "" } }],
+      otherwise: { kind: "literal", type: "text", value: "low" },
+    })
+    expect(within(screen.getByRole("group", { name: "Branch 2" })).getByText("Otherwise, when")).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText("Branch 2 then value value"), { target: { value: "mid" } })
+    fireEvent.blur(screen.getByLabelText("Branch 2 then value value"))
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(stepProblem(latest)).toBeNull()
+    expect(summarizeStep(latest)).toBe("band = if premium is greater than 100 then 'high', else if premium equals 0 then 'mid', else 'low'")
+    fireEvent.click(screen.getByRole("button", { name: "Remove branch 1" }))
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toMatchObject({ branches: [{ conditions: [{ operator: "eq" }], then: { value: "mid" } }] })
+    expect(screen.queryByRole("button", { name: /Remove branch/ })).not.toBeInTheDocument()
+    expect(screen.queryByText("Otherwise, when")).not.toBeInTheDocument()
   })
 })
 
@@ -1219,7 +1242,7 @@ describe("forms read as sentences", () => {
       id: "w",
       kind: "with_column",
       name: "band",
-      expr: { type: "conditional", match: "all", conditions, then: { kind: "literal", type: "number", value: 1 }, otherwise: { kind: "literal", type: "number", value: 0 } },
+      expr: { type: "conditional", branches: [{ match: "all", conditions, then: { kind: "literal", type: "number", value: 1 } }], otherwise: { kind: "literal", type: "number", value: 0 } },
     })],
     ["an aggregation's row filter", "Aggregation 1 filter", (conditions: Array<{ column: string; operator: "is_null" }>): Step => ({
       id: "g",
