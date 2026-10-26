@@ -908,7 +908,9 @@ endpoint.
   rows it scored, those without an exposure and a missing column, and the
   executor sets `ExecutionProvenance.full_term_notes()` as each node's
   `NodeResult.notes`, kept in the preview cache beside the outputs so a cached
-  preview says the same; a non-numeric or
+  preview says the same, and a snapshot of the scored output records the tally's
+  facts (`node_output.full_term`, see [caching](../caching/low-level.md)) so a
+  preview seeded from it says the same without scoring; a non-numeric or
   non-finite explanation offset raises `ModelExplanationError` before CatBoost
   is called.
 - **Pyfunc feature discovery uses the supported MLflow signature API.**

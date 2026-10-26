@@ -1416,6 +1416,12 @@ class _PlannedCaptures:
                 explicit=False,
                 profile=plan.decision.profile,
                 unshaped_columns=unshaped_columns,
+                # Read now: the write above is what scored a lazy Model Score.
+                full_term=(
+                    self.execution_context.provenance.full_term_facts(node_id)
+                    if self.execution_context is not None
+                    else None
+                ),
             )
         except SourceCacheCorruptError as exc:
             # The publication rule reports corruption rather than repairing it,

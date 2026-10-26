@@ -612,6 +612,31 @@ def parse_unshaped_columns(raw: object) -> tuple[tuple[str, str], ...] | None:
     return tuple(pairs)
 
 
+def parse_full_term(raw: object) -> tuple[str, int, int, bool] | None:
+    """A Model Score generation's full-policy-term facts, or None when it recorded none.
+
+    The exposure column, the rows scored, those scored without an exposure, and
+    whether the column was missing: a preview seeded from the generation never
+    rescores it, so it gives the note from these.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping) or set(raw) != {"column", "rows", "empty", "missing"}:
+        raise ValueError("full-term facts must name column, rows, empty and missing")
+    column, rows, empty, missing = raw["column"], raw["rows"], raw["empty"], raw["missing"]
+    if (
+        not isinstance(column, str)
+        or not isinstance(missing, bool)
+        or not isinstance(rows, int)
+        or not isinstance(empty, int)
+        or isinstance(rows, bool)
+        or isinstance(empty, bool)
+        or not 0 <= empty <= rows
+    ):
+        raise ValueError("full-term facts are malformed")
+    return column, rows, empty, missing
+
+
 @dataclass(frozen=True, slots=True)
 class NodeSnapshotGeneration:
     """One validated node-output generation and its freshness facts."""
@@ -1208,6 +1233,7 @@ class NodeSnapshotStore(SourceCacheStore):
             if identity.digest in dependencies:
                 raise ValueError("node-output generation depends on its own identity")
             unshaped = parse_unshaped_columns(facts.get("unshaped_columns"))
+            parse_full_term(facts.get("full_term"))
         except (TypeError, ValueError) as exc:
             raise SourceCacheCorruptError("node-output generation metadata is corrupt") from exc
         return columns, dependencies, unshaped
@@ -1608,8 +1634,10 @@ class NodeSnapshotStore(SourceCacheStore):
         dependencies: Mapping[str, str],
         profile: ExecutionProfile | str,
         unshaped_columns: Sequence[tuple[str, str]] | None = None,
+        full_term: Mapping[str, Any] | None = None,
     ) -> SourceCacheMetadata:
         slot, signature = NodeSnapshotSlot.from_identity(identity)
+        parse_full_term(full_term)
         parts = describe_parts(artifact.directory, digests=artifact.digests)
         schema = scan_parts(artifact.parts()).collect_schema()
         schema_columns = {name: str(dtype) for name, dtype in schema.items()}
@@ -1652,6 +1680,7 @@ class NodeSnapshotStore(SourceCacheStore):
                     if unshaped_columns is not None
                     else {}
                 ),
+                **({"full_term": dict(full_term)} if full_term is not None else {}),
             },
         )
 
@@ -1699,6 +1728,7 @@ class NodeSnapshotStore(SourceCacheStore):
         profile: ExecutionProfile | str,
         refresh: bool = False,
         unshaped_columns: Sequence[tuple[str, str]] | None = None,
+        full_term: Mapping[str, Any] | None = None,
     ) -> NodeSnapshotPublication:
         """Publish *artifact* under the publication rule and lease what was published.
 
@@ -1707,7 +1737,8 @@ class NodeSnapshotStore(SourceCacheStore):
         once it publishes, automatic captures are brought back within their
         budget (`enforce_automatic_budget`).
         The writer always continues from its own data: on ``superseded`` the
-        returned handle owns the artifact.
+        returned handle owns the artifact. *full_term* is a Model Score's
+        full-policy-term facts (`parse_full_term`), recorded beside its output.
         """
         if refresh and not explicit:
             raise ValueError("only an explicit build can refresh a node-output snapshot")
@@ -1723,6 +1754,7 @@ class NodeSnapshotStore(SourceCacheStore):
             dependencies=dependencies,
             profile=profile,
             unshaped_columns=unshaped_columns,
+            full_term=full_term,
         )
         atomic_write_text(artifact.directory / "meta.json", canonical_json(metadata.to_dict()))
         generation_id = metadata.generation_id

@@ -346,6 +346,7 @@ def _build_node_snapshot(
                     if request.node_id in unshaped_frames
                     else None
                 ),
+                full_term=execution_context.provenance.full_term_facts(request.node_id),
                 refresh=request.refresh,
             )
         except BaseException:

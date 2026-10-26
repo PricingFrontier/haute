@@ -1245,6 +1245,82 @@ def test_the_preview_notes_an_exposure_it_priced_as_a_full_policy_term(
     assert notes("blanks.parquet") == counted
 
 
+def test_a_preview_seeded_from_a_scored_snapshot_keeps_its_note(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A snapshot of the scored output carries the count; reading it scores nothing."""
+    from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+    from haute.executor import _preview_cache, execute_graph
+
+    model_path = train(project, "catboost", loss="Poisson", iterations=10, depth=2)
+    (project / "main.py").write_text("# pipeline\n", encoding="utf-8")
+    data(seed=31).head(10).with_columns(
+        exposure=pl.when(pl.int_range(pl.len()) < 4).then(None).otherwise(pl.col("exposure"))
+    ).write_parquet(project / "quotes.parquet")
+    score = {
+        "sourceType": "file",
+        "model_path": model_path.name,
+        "task": "regression",
+        "output_column": "pred",
+    }
+    source = {"inputType": "file", "format": "parquet", "mode": "scan", "path": "quotes.parquet"}
+    graph = PipelineGraph(
+        nodes=[
+            GraphNode(id=node_id, data=NodeData(label=node_id, nodeType=kind, config=config))
+            for node_id, kind, config in (
+                ("src", NodeType.DATA_INPUT, source),
+                ("ms", NodeType.MODEL_SCORE, score),
+                ("sorted", NodeType.POLARS, {"code": "df = ms.sort('age')"}),
+            )
+        ],
+        edges=[
+            GraphEdge(id="a", source="src", target="ms"),
+            GraphEdge(id="b", source="ms", target="sorted"),
+        ],
+        preamble="import polars as pl",
+        source_file=str(project / "main.py"),
+    )
+
+    def preview(target: str) -> Any:
+        _preview_cache.clear()
+        return execute_graph(
+            graph, target_node_id=target, source="batch", row_limit=200, shared_snapshots=True
+        )
+
+    counted = ["4 of the 10 rows scored had no 'exposure' and were scored as a full policy term."]
+    # The sort below reads the whole scored output, so the scorer's output is captured.
+    first = preview("sorted")
+    assert first["ms"].notes == counted, first["ms"].error
+
+    def no_scoring(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("the seeded preview scored again")
+
+    monkeypatch.setattr("haute._model_scorer._full_term_offset", no_scoring)
+    seeded = preview("ms")
+    assert seeded["ms"].status == "ok", seeded["ms"].error
+    assert seeded["ms"].notes == counted
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        ["exposure", 10, 4, False],
+        {"column": "exposure", "rows": 10, "empty": 4},
+        {"column": None, "rows": 10, "empty": 4, "missing": False},
+        {"column": "exposure", "rows": True, "empty": 0, "missing": False},
+        {"column": "exposure", "rows": 10, "empty": 11, "missing": False},
+        {"column": "exposure", "rows": 10, "empty": 4, "missing": "no"},
+    ],
+)
+def test_a_snapshot_s_malformed_full_term_facts_are_corrupt(raw: object) -> None:
+    """The store reads a refusal here as a corrupt generation, never as no note."""
+    from haute._node_snapshots import parse_full_term
+
+    assert parse_full_term(None) is None
+    with pytest.raises(ValueError, match="full-term facts"):
+        parse_full_term(raw)
+
+
 def test_the_note_reads_a_model_score_fed_by_one_table_of_several(project: Path) -> None:
     """A parent that emits several tables feeds the scorer one of them, by its port."""
     import json

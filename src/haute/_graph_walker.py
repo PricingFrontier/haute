@@ -1142,6 +1142,7 @@ class _Walk:
     def _read_seed(self, node_id: str, seed: _Frame) -> _NodeFrame:
         """A seed's frame is its leased generation: nothing is built or checked for it."""
         self.column_cache[(node_id, None)] = _columns_of(seed)
+        self._restore_full_term(node_id)
         if not self.display:
             logger.info("lazy_seed_hit", node_id=node_id)
             if self.context is not None:
@@ -1160,6 +1161,17 @@ class _Walk:
         )
         names = self._describe(node_id, node, seed, seed, seeded=True) if self.display else None
         return _NodeFrame(frame=seed, boundary=boundary, seeded=True, output_names=names)
+
+    def _restore_full_term(self, node_id: str) -> None:
+        """A seeded Model Score says what its scoring filled, though nothing rescores it."""
+        if self.plan is None or self.context is None:
+            return
+        facts = self.plan.seed_full_term(node_id)
+        if facts is not None:
+            column, rows, empty, missing = facts
+            self.context.provenance.full_term_tally(node_id).record(
+                column, rows=rows, empty=empty, missing=missing
+            )
 
     def _stage_scored_capture(self, node_id: str) -> NodeSnapshotArtifact | None:
         """A batch Model Score whose output is its scored file writes it into its capture.

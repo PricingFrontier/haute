@@ -1187,6 +1187,18 @@ class FullTermTally:
             self.rows += rows
             self.empty += empty
 
+    def facts(self) -> dict[str, Any] | None:
+        """What was recorded, for a snapshot of the node's output to carry; None if nothing."""
+        with self._lock:
+            if self.column is None:
+                return None
+            return {
+                "column": self.column,
+                "rows": self.rows,
+                "empty": self.empty,
+                "missing": self.missing,
+            }
+
     def notes(self) -> list[str]:
         """The note the node's preview shows, or none when every row had its exposure."""
         with self._lock:
@@ -1267,6 +1279,12 @@ class ExecutionProvenance:
         """The tally *node_id*'s scorer records what it priced as a full policy term in."""
         with self._lock:
             return self._full_term.setdefault(node_id, FullTermTally())
+
+    def full_term_facts(self, node_id: str) -> dict[str, Any] | None:
+        """What *node_id*'s scorer recorded, for its snapshot to carry; None if nothing."""
+        with self._lock:
+            tally = self._full_term.get(node_id)
+        return None if tally is None else tally.facts()
 
     def full_term_notes(self) -> dict[str, list[str]]:
         """Each node's full-policy-term note, for the nodes that have one."""
