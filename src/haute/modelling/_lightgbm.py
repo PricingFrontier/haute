@@ -65,6 +65,10 @@ class LightGBMModel:
     #: A model trained outside Haute: the category values LightGBM recorded
     #: where they are not strings.
     native_levels: dict[str, list[Any]] = field(default_factory=dict, compare=False)
+    #: A model trained outside Haute is priced by LightGBM's own ``predict``, so
+    #: the response transform it recorded (a non-unit sigmoid, ``reg_sqrt``)
+    #: applies; Haute's own models add their offset to the raw score instead.
+    native_response: bool = field(default=False, compare=False)
 
     # -- ScoringModel-facing surface ------------------------------------
     @property
@@ -103,6 +107,11 @@ class LightGBMModel:
 
     def predict_response(self, frame: pl.DataFrame) -> np.ndarray:
         """Response-scale predictions; the positive-class probability for classifiers."""
+        if self.native_response:
+            return np.asarray(
+                self.booster.predict(self.encoded(frame), num_threads=self._threads()),
+                dtype=np.float64,
+            )
         return np.asarray(_inverse_link(self.link, self.predict_margin(frame)), dtype=np.float64)
 
     def predict(self, frame: pl.DataFrame) -> np.ndarray:
@@ -236,6 +245,7 @@ class LightGBMModel:
             link=link,
             class_labels=(0, 1) if task == "classification" else None,
             native_levels=native,
+            native_response=True,
         )
 
     def objective(self) -> str:

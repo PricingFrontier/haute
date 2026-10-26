@@ -1108,3 +1108,57 @@ def test_an_xgboost_model_trained_outside_haute_declares_its_margin(project: Pat
     booster.save_model(str(stamped_dir / "bad.ubj"))
     with pytest.raises(ConfigError, match="'haute_offset' attribute is 'exposure:sqrt'"):
         score(FileModelSource(model_path="stamped/bad.ubj"), frame)
+
+
+@pytest.mark.parametrize(
+    ("params", "task"),
+    [
+        ({"objective": "binary", "sigmoid": 2.0}, "classification"),
+        ({"objective": "regression", "reg_sqrt": True}, "regression"),
+    ],
+    ids=["sigmoid-2", "reg-sqrt"],
+)
+def test_a_lightgbm_model_trained_outside_haute_keeps_its_response_transform(
+    project: Path, params: dict[str, Any], task: str
+) -> None:
+    """LightGBM's own predict applies the transform it recorded; a link alone would not."""
+    import lightgbm as lgb
+
+    from haute._model_scorer import ModelScorer
+
+    frame = data(seed=28)
+    claims = frame["claims"].to_numpy()
+    label = (claims > 0).astype(int) if task == "classification" else claims * 40.0
+    booster = lgb.train(
+        {**params, "num_leaves": 4, "min_data_in_leaf": 5, "verbosity": -1},
+        lgb.Dataset(native_frame(frame), label=label),
+        num_boost_round=10,
+    )
+    booster.save_model(str(project / "transform.lgbm"))
+
+    scored = (
+        ModelScorer(
+            model_source=FileModelSource(model_path="transform.lgbm"),
+            task=task,
+            output_col="pred",
+        )
+        .score(frame.lazy())
+        .collect()
+    )
+
+    column = "pred_proba" if task == "classification" else "pred"
+    np.testing.assert_allclose(scored[column], booster.predict(native_frame(frame)), rtol=1e-9)
+    # The trace explains through the link, which does not rebuild this price: it refuses.
+    from haute._model_explainability import (
+        ModelExplanationError,
+        explain_model_score_from_config,
+    )
+
+    with pytest.raises(ModelExplanationError, match="inverse link does not reproduce"):
+        explain_model_score_from_config(
+            {"sourceType": "file", "model_path": "transform.lgbm", "task": task},
+            frame.row(0, named=True),
+            {"pred": float(scored["pred"][0])},
+            prediction_column="pred",
+            prediction_value=float(scored["pred"][0]),
+        )

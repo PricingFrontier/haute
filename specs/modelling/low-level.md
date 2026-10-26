@@ -2207,7 +2207,9 @@ used for staged input.
   the categorical features `params["categorical_feature"]` names with their levels from
   `pandas_categorical` (a categorical feature trained on integer codes, with no levels recorded,
   scores from the input's numeric codes), task and link from the objective, class labels 0 and
-  1, and no offset.
+  1, and no offset. Such a model (`native_response`) is priced by LightGBM's own `predict`, so
+  its recorded response transform (a non-unit `sigmoid`, `reg_sqrt`) applies; its margin and
+  contributions stay raw scores, and a trace whose link does not rebuild that price is refused.
 - `LightGBMAlgorithm.fit` resolves the loss through the `lightgbm` descriptor, rejects feature
   weights and classification offsets, supplies `gbdt`, the job seed, the thread allotment
   (`num_threads`), `tweedie_variance_power` and positional `monotone_constraints`, builds train
