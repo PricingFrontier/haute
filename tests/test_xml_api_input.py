@@ -342,3 +342,14 @@ def test_single_scalar_xml_elements_join_their_repeated_list(tmp_path: Path) -> 
     )
 
     assert tables["tag"] == [{"value": "a"}, {"value": "b"}, {"value": "c"}]
+
+
+def test_a_single_element_inside_a_wrapper_element_is_a_one_row_list(tmp_path: Path) -> None:
+    tables = _xml_tables(
+        tmp_path,
+        "<quotes><quote><id>1</id><drivers><driver><age>30</age></driver>"
+        "<driver><age>40</age></driver></drivers></quote>"
+        "<quote><id>2</id><drivers><driver><age>50</age></driver></drivers></quote></quotes>",
+    )
+
+    assert tables["driver"] == [{"age": "30"}, {"age": "40"}, {"age": "50"}]
