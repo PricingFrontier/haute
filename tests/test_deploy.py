@@ -883,6 +883,10 @@ class TestBundler:
             seen["download"] = backend
             return real_download(run_id, artifact_path, pipeline_dir, backend=backend)
 
+        def spy_contract(backend, run_id, artifact):
+            # The fake backend has no store to list: the run logged no contract.
+            seen["contract"] = backend
+
         graph = _g(
             {
                 "nodes": [
@@ -909,12 +913,14 @@ class TestBundler:
                 new=spy_resolve_registered,
             ),
             patch("haute.deploy._bundler._download_model_artifact", new=spy_download),
+            patch("haute.deploy._bundler._run_contract", new=spy_contract),
         ):
             artifacts = collect_artifacts(graph, [], tmp_path)
 
         assert resolutions == ["local"]
         assert seen["registered"] is backend_a
         assert seen["download"] is backend_a
+        assert seen["contract"] is backend_a
 
         bundled = artifacts["ms_one_backend__model.cbm"]
         assert bundled.read_bytes() == seeded.read_bytes()

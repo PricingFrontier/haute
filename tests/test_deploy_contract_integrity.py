@@ -383,6 +383,10 @@ class TestFeatureContractBundled:
     :class:`FeatureMismatchError`.
     """
 
+    @pytest.fixture(autouse=True)
+    def _project(self, haute_scratch: Path) -> None:
+        """The local MLflow folder a run is listed in sits under the test's own project."""
+
     def test_bundler_writes_feature_contract_artifact(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
