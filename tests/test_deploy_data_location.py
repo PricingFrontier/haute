@@ -10,6 +10,7 @@ node the quote output does not depend on, so off that path it may live anywhere.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -217,5 +218,65 @@ def test_hive_folder_ships(project: Path) -> None:
         pl.read_parquet(part).drop("region").write_parquet(part)
 
     resolved = _deploy(project, make_file_input_config("files/data/rates"))
+
+    assert _scored(resolved) == {1: 1.1, 2: 1.2}
+
+
+def _link(link: Path, folder: Path) -> None:
+    """Make *link* a link to *folder*: a junction on Windows, which needs no privilege."""
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(folder), str(link))
+    else:
+        link.symlink_to(folder, target_is_directory=True)
+
+
+@pytest.mark.parametrize("path", ["linked/rates.parquet", "linked/*.parquet"], ids=["file", "glob"])
+def test_linked_outside_data_refused(project: Path, path: str) -> None:
+    """A link inside the pipeline folder to data outside it does not ship that data."""
+    _rates(project / "data" / "rates.parquet", {"N": 1.1, "S": 1.2})
+    _link(project / "rating" / "files" / "data" / "linked", project / "data")
+
+    with pytest.raises(DeployError) as raised:
+        _deploy(project, make_file_input_config(f"files/data/{path}"))
+
+    assert "'rates'" in str(raised.value)
+
+
+@pytest.mark.parametrize("change", ["uncapped", "deleted"])
+def test_stale_reuse_refused(project: Path, monkeypatch: pytest.MonkeyPatch, change: str) -> None:
+    """A snapshot preparation could only reuse is not shipped.
+
+    The file changed where no memory cap can contain a rebuild, or it is gone.
+    """
+    rates = project / "rating" / "files" / "data" / "rates.csv"
+    _rates(rates, {"N": 1.1, "S": 1.2})
+    _deploy(project, make_file_input_config("files/data/rates.csv")).close()
+    if change == "deleted":
+        rates.unlink()
+    else:
+        _rates(rates, {"N": 2.1, "S": 2.2})
+        monkeypatch.setattr("haute._input_preparation.current_native_memory_backend", lambda: None)
+        monkeypatch.setattr("haute._input_preparation.process_memory_caps_supported", lambda: False)
+
+    with pytest.raises(DeployError) as raised:
+        _deploy(project, make_file_input_config("files/data/rates.csv"))
+
+    assert "'rates'" in str(raised.value)
+    assert "files/data/rates.csv" in str(raised.value)
+
+
+def test_scan_arguments_ship(project: Path) -> None:
+    """A Parquet folder ships read with its scan's own arguments."""
+    folder = project / "rating" / "files" / "data" / "rates"
+    _rates(folder / "rates.parquet", {"N": 1.1, "S": 1.2})
+    _rates(folder / "x_rates.parquet", {"N": 9.0, "S": 9.0})
+
+    resolved = _deploy(
+        project,
+        make_file_input_config("files/data/rates", arguments={"hidden_file_prefix": "x_"}),
+    )
 
     assert _scored(resolved) == {1: 1.1, 2: 1.2}

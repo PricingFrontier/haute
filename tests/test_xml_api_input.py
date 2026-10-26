@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from haute._api_input_schema import ApiInputSchemaError, is_json_api_input_path
+from haute._input_providers import InputSnapshotMissingError
 from haute._json_shred._cache import load_v2_api_source
 from haute._json_shred._inference import infer_v2_schema_from_data
 from haute._json_shred._records import _iter_xml_records, _xml_element_value, _xml_local_name
@@ -353,3 +354,39 @@ def test_a_single_element_inside_a_wrapper_element_is_a_one_row_list(tmp_path: P
     )
 
     assert tables["driver"] == [{"age": "30"}, {"age": "40"}, {"age": "50"}]
+
+
+def test_a_table_built_before_singleton_lists_is_not_read_as_current(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A snapshot built under the previous shred semantics never answers for the source.
+
+    Before single elements became lists, quote 2's one driver was dropped, so a table
+    built then disagrees with a build today (``SHRED_SEMANTICS_VERSION``).
+    """
+    from haute._json_shred import _records, _shred, _snapshots
+
+    with monkeypatch.context() as previous:
+        previous.setattr(_snapshots, "SHRED_SEMANTICS_VERSION", 1)
+        previous.setattr(
+            _shred,
+            "file_records",
+            lambda path, config, *, stats=None: _records._iter_records(path, stats=stats),
+        )
+        assert _xml_tables(tmp_path, _SINGLETON_DRIVERS)["driver"] == [
+            {"age": "30"},
+            {"age": "40"},
+        ]
+
+    data_path = tmp_path / "quotes.xml"
+    config = infer_v2_schema_from_data(data_path)
+    for table in config["tables"]:
+        table["emit"] = True
+    config = {"path": str(data_path), "contract": "opaque", **config}
+    original_root = _get_project_root()
+    set_project_root(tmp_path)
+    try:
+        with pytest.raises(InputSnapshotMissingError):
+            load_v2_api_source(str(data_path), config, read_snapshots=True)
+    finally:
+        set_project_root(original_root)

@@ -252,13 +252,15 @@ v2 config and returns the source file (resolved) with its emitting tables in
 schema order. Each table's store identity (`haute._source_cache.SourceCacheIdentity`,
 provider `api_input`) has the descriptor
 `{path: <resolved source file>, table: {path: <table path>, columns: [[name,
-column path, type], ...selected columns in config order]}, shred_version: 1}`.
+column path, type], ...selected columns in config order]}, shred_version: 2}`.
 Sibling tables and the port label are not part of it: editing one table moves only
 that table's identity, and two tables with identical specifications share one.
 `group_digest` hashes the source path with the node's distinct table digests and
 keys node-level work (single-flight, route jobs). `shred_version`
 (`SHRED_SEMANTICS_VERSION`) is raised whenever the walk or the frame it writes
-changes, so older generations stop matching.
+changes, so older generations stop matching. Version 2 is the walk that reads XML's
+single elements at a declared array as one-element lists and counts a skip for every
+table at or below a non-list there.
 
 **Freshness** — `api_input_source_signature(path)` is the table generations'
 `source_signature`: `xxh64:<digest>:<size>` from the shared

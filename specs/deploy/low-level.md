@@ -218,13 +218,19 @@
    retained file or lakehouse Data Input that is not a request input (`_resolve_path`, as
    bundling resolves it) and raises a `DeployError` naming the node, the configured path and
    the pipeline folder (`config.pipeline_file.parent`, shown relative to the project root)
-   for one outside that folder, with the remedy `<folder>/files/data`. Then
+   for one outside that folder, with the remedy `<folder>/files/data`. The path counts as
+   outside when, followed through links, it or any file it names (`named_source_files`,
+   resolved) lies outside the resolved folder. Then
    `prepare_shipped_snapshots` admits a `LAZY_SINK` execution context
    (`deploy_input_snapshots`) and runs `prepare_input_snapshots` over exactly those inputs'
    snapshot configurations, each path as deploy resolved it, inside the runtime project-root
    scope: a missing snapshot is built and a stale one refreshed in a hard-capped worker;
    database and Databricks inputs and the request input are not prepared, and a failure
-   raises its `InputPreparationError`. `shipped_snapshot_config` names what each Data Input
+   raises its `InputPreparationError`. A record whose `warning_code` is
+   `cap_unavailable_stale_reused` (a changed file this host cannot rebuild inside a cap) or
+   `source_unavailable` (the file is gone) raises a `DeployError` naming the node and its
+   configured path, since its snapshot predates the file. A lakehouse snapshot's freshness
+   is `unknown`, which preparation reuses, so it ships as last imported. `shipped_snapshot_config` names what each Data Input
    ships: `None` for a direct Parquet source of one file (`data_input_is_direct`), which
    bundles its validated source file; for a direct path naming several files (a folder or a
    glob pattern, `named_source_files`) the configuration with mode `"read"`, whose snapshot
@@ -1010,8 +1016,11 @@ what they cover:
   cache-miss regressions (container target bundles the warning, Databricks refuses).
 - **`test_deploy_data_location.py`** — a project with its pipeline in `rating/`: a Parquet or
   CSV the quote output reads from the project's `data/` is refused naming the node, the
-  path and the folder, while one read only off the path to the quote output (a dangling
-  branch, or a source switch's non-live input) is not shipped; a CSV in the pipeline folder deploys from an empty cache and an edited one
+  path and the folder, and so is one reached through a link (a junction on Windows) inside
+  the folder, as a file or a glob, while one read only off the path to the quote output (a
+  dangling branch, or a source switch's non-live input) is not shipped; a snapshot
+  preparation could only reuse (the file edited with no memory cap, or deleted) is refused;
+  a direct Parquet folder ships read with its scan's own `hidden_file_prefix`; a CSV in the pipeline folder deploys from an empty cache and an edited one
   ships its new rows; a direct Parquet glob ships every file and a partitioned folder its
   partition column, each scored from the bundled artefacts.
 - **`test_deploy_quote_input_tables.py`** — a deployed Quote Input with a quote table

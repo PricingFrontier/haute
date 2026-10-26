@@ -473,7 +473,10 @@ def refuse_data_outside_pipeline_folder(
     one could not score. A deployment drops every node the quote output does not
     depend on (the pruned graph no longer holds it: a training or optimisation branch, a
     data export, a source switch's non-live input), so those may read from anywhere.
+    Each file is judged where it lies, so a link inside the folder to data outside it
+    is refused too.
     """
+    from haute._input_providers import named_source_files
     from haute._project_layout import PIPELINE_FILES_FOLDER
 
     folder = pipeline_dir.resolve()
@@ -481,9 +484,9 @@ def refuse_data_outside_pipeline_folder(
     shown = folder.relative_to(root).as_posix() if folder.is_relative_to(root) else folder.name
     for node_id, validated in _shipped_file_inputs(graph, input_node_ids):
         raw_path = validated.get("path", "")
-        if _resolve_path(raw_path, pipeline_dir, project_root, node_id, "path").is_relative_to(
-            folder
-        ):
+        source = _resolve_path(raw_path, pipeline_dir, project_root, node_id, "path")
+        read = (source.resolve(), *named_source_files(validated, source))
+        if all(path.is_relative_to(folder) for path in read):
             continue
         raise DeployError(
             f"Data Input node {node_id!r} reads {raw_path!r}, outside the pipeline folder "
@@ -505,20 +508,24 @@ def prepare_shipped_snapshots(
     A clean checkout (CI) holds no input snapshot, and an edited file leaves its
     snapshot stale, so deploy prepares them itself, as an execution's automatic
     preparation does: a missing snapshot is built, a stale one refreshed, inside a
-    hard memory cap. Database and Databricks inputs, and the request input's sample,
-    are left alone.
+    hard memory cap. A snapshot preparation could only reuse, its file gone or no cap
+    to refresh it in, is refused rather than shipped. A lakehouse table's changes
+    cannot be detected, so its snapshot ships as last imported, and database and
+    Databricks inputs, and the request input's sample, are left alone.
     """
     from haute._execution_admission import create_admitted_execution_context
     from haute._execution_context import ExecutionProfile
     from haute._input_preparation import prepare_input_snapshots
 
     shipped: dict[str, dict[str, Any]] = {}
+    configured: dict[str, str] = {}
     for node_id, validated in _shipped_file_inputs(graph, input_node_ids):
         snapshot_config = shipped_snapshot_config(node_id, validated, pipeline_dir, project_root)
         if snapshot_config is not None:
             # The path as deploy resolves it, so the snapshot prepared is the one bundled.
             source = _resolve_path(validated["path"], pipeline_dir, project_root, node_id, "path")
             shipped[node_id] = {**snapshot_config, "path": str(source)}
+            configured[node_id] = validated["path"]
     if not shipped:
         return
     node_map = {
@@ -528,7 +535,7 @@ def prepare_shipped_snapshots(
         operation="deploy_input_snapshots", profile=ExecutionProfile.LAZY_SINK
     )
     try:
-        prepare_input_snapshots(
+        records = prepare_input_snapshots(
             list(shipped),
             node_map,
             profile=ExecutionProfile.LAZY_SINK,
@@ -538,6 +545,27 @@ def prepare_shipped_snapshots(
         )
     finally:
         context.release_admission(preserve_primary_error=True)
+    for record in records:
+        reason = _UNSHIPPABLE_REUSE.get(record.warning_code or "")
+        if reason is not None:
+            raw_path = configured[record.node_id]
+            raise DeployError(
+                f"Data Input node {record.node_id!r} reads {raw_path!r}, which {reason}, so "
+                "deploy would ship the data as it was when its snapshot was built.",
+                node_id=record.node_id,
+                field="path",
+                path=raw_path,
+            )
+
+
+# Preparation reuses a snapshot it could not prove current; deploy never ships one.
+_UNSHIPPABLE_REUSE = {
+    "cap_unavailable_stale_reused": (
+        "changed since its snapshot was built, and this machine cannot install the memory "
+        "cap rebuilding the snapshot needs"
+    ),
+    "source_unavailable": "no longer exists",
+}
 
 
 def _resolve_path(

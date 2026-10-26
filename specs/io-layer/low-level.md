@@ -141,7 +141,10 @@ platforms, and on Windows with long paths on, nothing is renamed.
 ### Canonical Data Input
 
 1. `validate_data_input_config()` rejects inactive fields, invalid modes, unsafe raw URIs,
-   unknown arguments, and missing required provider fields. Structural, branch, mode, and
+   unknown arguments, and missing required provider fields. Arguments are judged by the
+   callable a build calls: a configured `read` by the scanner when `snapshot_input_plan`
+   prefers it (every argument scanner-accepted, so a scanner-only argument such as
+   Parquet's `hidden_file_prefix` is valid there), otherwise by the mode's own callable. Structural, branch, mode, and
    argument rules are always strict. Presence of required locator values (file/lakehouse
    `path`, Databricks `http_path`/`table`, database locator and `query`) is a separate
    completeness concern: with `require_complete=False` the validator returns those gaps as

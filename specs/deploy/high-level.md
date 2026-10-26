@@ -192,13 +192,17 @@ source) the quote output depends on, after pruning, must live inside the pipelin
 versions it and CI checks it out. One outside it, such as the project's local `data/`, is
 never shipped: resolution refuses the deployment naming the node, its configured path and
 the folder, with the remedy (move the file into `<folder>/files/data`, or keep the input
-off the path to the quote output). Pruning drops every node the quote output does not
+off the path to the quote output). Each file is judged where it lies, so a link inside the
+folder to data outside it is refused too. Pruning drops every node the quote output does not
 depend on (a training or optimisation branch, a data export, a source switch's non-live
 input), so a Data Input off that path may read from anywhere. Inside the folder the data
 always ships:
 resolution builds a missing snapshot and refreshes a stale one before bundling, as an
 execution's automatic preparation does, so a clean checkout in CI deploys it and an edited
-file never ships its old copy. The request input's sample, Load File nodes and model files
+file never ships its old copy. A snapshot preparation could only reuse, its file gone or no
+memory cap to rebuild it in, is refused rather than shipped. A lakehouse table's changes
+cannot be detected (the Data Input's Import picks them up), so its snapshot ships as last
+imported. The request input's sample, Load File nodes and model files
 are outside this rule.
 `dataOutput` is a scoring pass-through
 and its writer is never invoked; persistence-only branches outside the served
