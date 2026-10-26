@@ -384,8 +384,13 @@ class TestFeatureContractBundled:
     """
 
     @pytest.fixture(autouse=True)
-    def _project(self, haute_scratch: Path) -> None:
-        """The local MLflow folder a run is listed in sits under the test's own project."""
+    def _project(self, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The local MLflow folder a run is listed in sits under the test's own project.
+
+        A tracking URI another test left in the environment would move it.
+        """
+        for name in ("MLFLOW_TRACKING_URI", "DATABRICKS_MLFLOW_HOST", "DATABRICKS_MLFLOW_TOKEN"):
+            monkeypatch.delenv(name, raising=False)
 
     def test_bundler_writes_feature_contract_artifact(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
