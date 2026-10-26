@@ -25,6 +25,8 @@ describe("formula text", () => {
     "fill_null(premium, base * 1.1)",
     "clip(irpm, 0 - cap, cap)",
     "clip(irpm, -0.25, 0.25)",
+    "divide(premium, limit)",
+    "divide(premium, limit - excess) * 100",
     "replace(region, 'north', 'N')",
     "`my column` + 1",
     "'text' + region",

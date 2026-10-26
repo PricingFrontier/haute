@@ -243,6 +243,7 @@ export const FUNCTIONS: Array<{ value: FunctionName; label: string; args: Functi
   { value: "log", label: "natural log", args: [] },
   { value: "exp", label: "exponential", args: [] },
   { value: "clip", label: "clip between", args: ["number_operand", "number_operand"] },
+  { value: "divide", label: "divide, missing where the divisor is zero", args: ["number_operand"] },
   { value: "fill_null", label: "fill missing with", args: ["scalar_operand"] },
   { value: "cast", label: "cast to type", args: ["dtype"] },
   { value: "upper", label: "upper case", args: [] },
@@ -321,7 +322,7 @@ const NUMERIC_FAMILIES: ReadonlySet<CastFamily> = new Set<CastFamily>(["integer"
 export function functionTakes(fn: FunctionName, dtype: string | null): boolean {
   const family = castFamily(dtype)
   if (family === null) return true
-  if (fn === "log" || fn === "exp") return NUMERIC_FAMILIES.has(family)
+  if (fn === "log" || fn === "exp" || fn === "divide") return NUMERIC_FAMILIES.has(family)
   if (fn === "to_date" || fn === "to_datetime" || fn === "try_to_date" || fn === "try_to_datetime") return family === "text"
   return true
 }
@@ -344,7 +345,7 @@ export function exprTypeProblem(expr: Expr, typeOf: (name: string) => string | n
       const family = castFamily(dtype)
       if (family === null || dtype === null) return null
       if (!functionTakes(expr.fn, dtype)) {
-        return expr.fn === "log" || expr.fn === "exp"
+        return expr.fn === "log" || expr.fn === "exp" || expr.fn === "divide"
           ? `${expr.fn}() takes numbers, and ${name} is ${dtype}.`
           : `${expr.fn}() parses text, and ${name} is ${dtype}.`
       }

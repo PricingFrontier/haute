@@ -443,6 +443,8 @@ FUNCTIONS: dict[str, tuple[tuple[str, ...], str]] = {
     "exp": ((), "{r}.exp()"),
     "round": (("integer",), "{r}.round({0})"),
     "clip": (("number_operand", "number_operand"), "{r}.clip({0}, {1})"),
+    # Null where the divisor is zero or missing; `/` keeps Polars' inf and NaN.
+    "divide": (("number_operand",), "pl.when({0} != 0).then({r} / {0})"),
     "fill_null": (("scalar_operand",), "{r}.fill_null({0})"),
     "cast": (("dtype",), "{r}.cast(pl.{0})"),
     "upper": ((), "{r}.str.to_uppercase()"),

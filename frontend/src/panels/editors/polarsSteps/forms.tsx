@@ -310,6 +310,7 @@ function formulaCompletions(draft: string, caret: number, columns: string[], var
 const ARG_LABELS: Record<string, string[]> = {
   round: ["Decimal places"],
   clip: ["Minimum", "Maximum"],
+  divide: ["Divisor"],
   fill_null: ["Fill with"],
   cast: ["Type"],
   try_cast: ["Type"],

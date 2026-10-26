@@ -186,7 +186,12 @@ describe("step forms only build schema-valid payloads", () => {
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
     expect(latest.expr).toMatchObject({ args: [{ kind: "expr", expr: { type: "binary", text: "" } }, { kind: "column", name: "region" }] })
     expect(stepProblem(latest)).toBeNull()
-    // fill_null takes text and true/false too, and plain-value arguments stay plain.
+    // divide's divisor takes a number or any operand; fill_null takes text and
+    // true/false too; plain-value arguments stay plain.
+    fireEvent.change(screen.getByLabelText("Function"), { target: { value: "divide" } })
+    expect(optionValues(screen.getByLabelText("Divisor kind"))).toEqual(["number", "column", "variable", "expr"])
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toMatchObject({ fn: "divide", args: [{ kind: "literal", type: "number", value: 0 }] })
     fireEvent.change(screen.getByLabelText("Function"), { target: { value: "fill_null" } })
     expect(optionValues(screen.getByLabelText("Fill with kind"))).toEqual(["number", "text", "boolean", "column", "variable", "expr"])
     fireEvent.change(screen.getByLabelText("Function"), { target: { value: "round" } })
@@ -1392,6 +1397,10 @@ describe("steps offer only what Polars 2 runs on the column types the editor kno
     fireEvent.change(box, { target: { value: "log(region)" } })
     fireEvent.blur(box)
     expect(screen.getByText("log() takes numbers, and region is String.")).toBeInTheDocument()
+
+    fireEvent.change(box, { target: { value: "divide(region, 2)" } })
+    fireEvent.blur(box)
+    expect(screen.getByText("divide() takes numbers, and region is String.")).toBeInTheDocument()
 
     fireEvent.change(box, { target: { value: "try_to_date(start, '%Y-%m-%d')" } })
     fireEvent.blur(box)

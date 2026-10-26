@@ -67,7 +67,7 @@ export type JoinMaintainOrder = "none" | "left" | "right" | "left_right" | "righ
 export type FillStrategy = "forward" | "backward" | "min" | "max" | "mean" | "zero" | "one"
 export type FunctionName =
   | "abs" | "floor" | "ceil" | "sqrt" | "log" | "exp"
-  | "round" | "clip" | "fill_null" | "cast"
+  | "round" | "clip" | "divide" | "fill_null" | "cast"
   | "upper" | "lower" | "strip" | "length"
   | "replace" | "replace_all" | "replace_regex" | "slice" | "split_part" | "extract"
   | "year" | "month" | "day" | "weekday" | "offset_by" | "total_days"

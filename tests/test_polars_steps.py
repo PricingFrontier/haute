@@ -6,6 +6,7 @@ import ast
 import contextlib
 import datetime as dt
 import json
+import math
 import pickle
 import re
 import subprocess
@@ -2797,6 +2798,25 @@ _CAP = {"kind": "constant", "name": "cap"}
             step("f", "with_column", name="t", expr=fn("clip", col("a"), num(-1), num(1))),
             'df = df.with_columns(pl.col("a").clip(-1, 1).alias("t"))',
         ),
+        (
+            step("d", "with_column", name="t", expr=fn("divide", col("premium"), col("lim"))),
+            "df = df.with_columns(\n"
+            '    pl.when(pl.col("lim") != 0).then(pl.col("premium") / pl.col("lim")).alias("t")\n'
+            ")",
+        ),
+        (
+            step(
+                "d",
+                "with_column",
+                name="t",
+                expr=fn("divide", col("p"), ex(binary(col("a"), "-", col("b")))),
+            ),
+            "df = df.with_columns(\n"
+            '    pl.when(pl.col("a") - pl.col("b") != 0)\n'
+            '    .then(pl.col("p") / (pl.col("a") - pl.col("b")))\n'
+            '    .alias("t")\n'
+            ")",
+        ),
     ],
     ids=[
         "filtered-sum",
@@ -2808,6 +2828,8 @@ _CAP = {"kind": "constant", "name": "cap"}
         "clip-by-a-constant-and-a-variable",
         "fill-null-from-a-column",
         "clip-between-plain-values",
+        "divide-by-a-column",
+        "divide-by-a-formula",
     ],
 )
 def test_expression_additions_render(kind_step: dict[str, Any], expected: str) -> None:
@@ -2961,6 +2983,24 @@ def test_clip_and_fill_null_take_columns_and_expressions() -> None:
     assert out["filled"].to_list() == [2.0, 2.0, 6.0, 4.0]
 
 
+def test_divide_is_missing_where_the_divisor_is_zero_or_missing() -> None:
+    frame = pl.DataFrame(
+        {"premium": [10.0, 10.0, 10.0, None, 0.0], "lim": [4.0, 0.0, None, 2.0, 0.0]}
+    )
+    out = _run_steps(
+        [
+            source(),
+            step("d", "with_column", name="rate", expr=fn("divide", col("premium"), col("lim"))),
+            step("p", "with_column", name="plain", expr=binary(col("premium"), "/", col("lim"))),
+        ],
+        frame,
+    )
+    assert out["rate"].to_list() == [2.5, None, None, None, None]
+    # `/` stays Polars' division: infinite for x / 0 and NaN for 0 / 0.
+    plain = out["plain"].to_list()
+    assert plain[:4] == [2.5, float("inf"), None, None] and math.isnan(plain[4])
+
+
 def test_a_constant_in_an_operand_argument_is_checked_against_the_argument_types() -> None:
     rendered = render_polars_steps(
         [source(), step("c", "with_column", name="t", expr=fn("fill_null", col("a"), _CAP))],
@@ -2989,6 +3029,10 @@ def test_generated_expression_additions_stay_inside_the_lineage_model() -> None:
         "window of a formula": (
             window("t", "sum", ex(binary(col("premium"), "*", col("qid"))), ["region"]),
             {"premium", "qid", "region"},
+        ),
+        "divide": (
+            step("d", "with_column", name="t", expr=fn("divide", col("premium"), col("qid"))),
+            {"premium", "qid"},
         ),
         "clip between columns": (
             step(

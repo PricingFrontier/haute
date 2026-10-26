@@ -582,8 +582,8 @@ category, a duration a number, binary data text, text anything but true/false, a
 number or date becomes a category directly), the same table the renderer holds
 (`CAST_REFUSALS`, checked against Polars by a test); a formula casting a known text
 column to a date, or a category to anything but text, is refused with the function to
-use instead; std and var are not offered for a duration, and log and exp only for
-numbers and true/false. A numeric "is one of" records the kind of number its column
+use instead; std and var are not offered for a duration, and log, exp and divide only
+for numbers and true/false. A numeric "is one of" records the kind of number its column
 holds, from the column's type: `integer` renders its values as whole numbers
 (`[100, 300]`), `float` as floats (`[100.0, 300.0]`), and `decimal` as exact decimals
 parsed from their text, so a list of whole numbers matches a float column and `0.1`
