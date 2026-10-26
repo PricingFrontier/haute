@@ -493,15 +493,34 @@ def test_empty_string_categories_fail_before_fitting(tmp_path: Path) -> None:
     assert not list(tmp_path.glob("*.lgbm"))
 
 
-def test_a_model_without_the_haute_record_is_refused(tmp_path: Path) -> None:
+def test_a_model_without_the_haute_record_loads_from_what_lightgbm_records(
+    tmp_path: Path,
+) -> None:
+    rows = np.random.default_rng(0).random((20, 2))
     booster = lgb.train(
         {"objective": "regression", "verbosity": -1, "min_data_in_leaf": 2},
-        lgb.Dataset(np.random.default_rng(0).random((20, 2)), label=np.arange(20.0)),
+        lgb.Dataset(rows, label=np.arange(20.0)),
         num_boost_round=2,
     )
     path = tmp_path / "foreign.lgbm"
     booster.save_model(str(path))
-    with pytest.raises(HauteValidationError, match="not a LightGBM model Haute trained"):
+
+    model = LightGBMModel.load(path)
+
+    assert (model.features, model.task, model.link) == (
+        ["Column_0", "Column_1"],
+        "regression",
+        "identity",
+    )
+    assert model.offset_column is None
+    frame = pl.DataFrame({"Column_0": rows[:, 0], "Column_1": rows[:, 1]})
+    np.testing.assert_allclose(model.predict(frame), booster.predict(rows))
+
+
+def test_a_model_with_two_haute_records_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "doubled.lgbm"
+    path.write_text("haute:{}\nhaute:{}\n", encoding="utf-8")
+    with pytest.raises(HauteValidationError, match="holds 2 'haute:' records"):
         LightGBMModel.load(path)
 
 

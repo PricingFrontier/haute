@@ -538,7 +538,10 @@ def test_gamma_deviance_can_drive_an_xgboost_study() -> None:
     assert kwargs["tuning"]["metric"] == "gamma_deviance"
 
 
-def test_a_model_without_the_haute_record_is_refused(tmp_path: Path) -> None:
+def test_a_foreign_model_without_feature_names_is_refused(tmp_path: Path) -> None:
+    """Without names Haute cannot tell which input column each feature reads."""
+    from haute.errors import ConfigError
+
     booster = xgb.train(
         {"objective": "reg:squarederror", "verbosity": 0},
         xgb.DMatrix(np.random.default_rng(0).random((20, 2)), label=np.arange(20.0)),
@@ -546,7 +549,7 @@ def test_a_model_without_the_haute_record_is_refused(tmp_path: Path) -> None:
     )
     path = tmp_path / "foreign.ubj"
     booster.save_model(str(path))
-    with pytest.raises(HauteValidationError, match="not an XGBoost model Haute trained"):
+    with pytest.raises(ConfigError, match="records no feature names"):
         XGBoostModel.load(path)
 
 

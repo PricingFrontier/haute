@@ -1784,10 +1784,9 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
   `RMSE` fit with an offset; every bag's every round reaches the progress callback (so a
   cancellation during a later bag stops the fit), and through `_FitRounds` with a still clock
   four bags boosted to the ceiling send only the first and the final round; `save`/`load` round-trips predictions exactly through plain
-  t-boost as well; and `load`, through a project file and through an MLflow run, refuses a
-  document without the record, each malformed record field, a multiclass classifier, a record
-  whose task, link, features or categorical set disagree with the native model, and an
-  offset under a non-log link.
+  t-boost as well; and `load`, through a project file and through an MLflow run, refuses
+  each malformed record field, a multiclass classifier, a record whose task, link, features or
+  categorical set disagree with the native model, and an offset under a non-log link.
 - `test_algorithms_coverage.py` — targeted coverage of `_algorithms.py` /
   `_training_job.py` paths not hit elsewhere (platform-specific RSS reads, CatBoost and
   MLflow mocked out via `unittest.mock`).
@@ -2148,7 +2147,18 @@ used for staged input.
   `haute` booster attribute of the `.ubj`. It exposes `matrix`, `predict_margin`,
   `predict_response`, `predict` (original labels for classifiers, by the `> 0.5` rule),
   `predict_proba`, `contributions` (native `pred_contribs`, bias carrying the offset), `save`,
-  `load` (which refuses a booster without the `haute` record) and `objective`.
+  `load` and `objective`. A booster without the `haute` record, one trained outside Haute,
+  loads from what XGBoost records itself (`_native_record`): `feature_names` (a booster without
+  them is refused), the categories `get_categories(export_to_arrow=True)` stored for each
+  categorical feature (a categorical feature with none stored scores from the numeric codes the
+  input supplies, the booster's `feature_types` passed to every `DMatrix`), task and link from
+  the objective (`native_objective`), class labels 0 and 1, and no offset.
+- `native_objective(descriptor, objective)` in `src/haute/modelling/_descriptors.py` gives the
+  task and link a native objective has under a family's losses, for a model trained outside
+  Haute: a binary objective is a classifier with a logit link, any other objective Haute does not
+  train is a regression with an identity link (prediction does not depend on it; a trace whose
+  contributions do not reconstruct the prediction is refused), and a multi-class or ranking
+  objective is refused, because Haute scores one output per row.
 - `XGBoostAlgorithm.fit` resolves the loss through the `xgboost` descriptor, rejects feature
   weights and classification offsets, supplies `hist`, the job seed, the thread allotment and
   `tweedie_variance_power`, trains with the validation partition as the early-stopping set, and
@@ -2187,8 +2197,13 @@ used for staged input.
   the `.lgbm` model text (LightGBM's loader ignores it). It exposes `encoded`, `baseline`,
   `predict_margin` (`raw_score=True` output plus the transformed offset), `predict_response`,
   `predict`, `predict_proba`, `contributions` (native `pred_contrib`, the adapter adding the
-  offset to the bias column), `save`, `load` (which refuses text without exactly one `haute:`
-  record) and `objective` (the model text's `objective=` line).
+  offset to the bias column), `save`, `load` (which refuses text with more than one `haute:`
+  record) and `objective` (the model text's `objective=` line). Text without the record, a model
+  trained outside Haute, loads from what LightGBM records (`_native_record`): `feature_name()`,
+  the categorical features `params["categorical_feature"]` names with their levels from
+  `pandas_categorical` (a categorical feature trained on integer codes, with no levels recorded,
+  scores from the input's numeric codes), task and link from the objective, class labels 0 and
+  1, and no offset.
 - `LightGBMAlgorithm.fit` resolves the loss through the `lightgbm` descriptor, rejects feature
   weights and classification offsets, supplies `gbdt`, the job seed, the thread allotment
   (`num_threads`), `tweedie_variance_power` and positional `monotone_constraints`, builds train
@@ -2300,7 +2315,10 @@ used for staged input.
   round with the mean `train_deviance` and `eval_deviance` over the bags whose curves reach it),
   and the table report computed on the fit's own rows.
 - `TBoostModel` holds the estimator with the record's features, levels, task, link, offset
-  column and link, and class labels. Its margin is `predict_raw(prepared)` (or
+  column and link, and class labels. A document without the record, a model trained outside
+  Haute, loads from what t-boost records (`_native_record`): `feature_names_in_`, the
+  categorical features `cat_indices` names (t-boost scores their values as strings itself), task
+  from the estimator, link from the objective, class labels from `classes_`, and no offset. Its margin is `predict_raw(prepared)` (or
   `decision_function` for a classifier) plus the transformed offset; the response is the
   inverse link of the margin (`predict(prepared)` times the offset under a log link,
   `predict_proba[:, 1]` for a classifier); `predict` gives original labels for a classifier by

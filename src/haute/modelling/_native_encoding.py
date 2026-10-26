@@ -83,3 +83,31 @@ def encode_frame(
         else:
             columns[name] = series.cast(pl.Float64).to_numpy()
     return pd.DataFrame(columns, columns=list(features))
+
+
+def native_categories(
+    levels: Mapping[str, Sequence[Any]],
+) -> tuple[dict[str, list[str | None]], dict[str, list[Any]]]:
+    """Recorded category values as the string levels Haute encodes, and the originals.
+
+    A library trained outside Haute can record non-string categories (integer
+    vehicle groups); Haute reads every categorical input as text, so it encodes
+    against their string forms and :func:`restore_native_categories` puts the
+    library's own values back. Only features whose values differ are returned.
+    """
+    strings: dict[str, list[str | None]] = {}
+    native: dict[str, list[Any]] = {}
+    for name, values in levels.items():
+        strings[name] = [None if value is None else str(value) for value in values]
+        if any(value is not None and not isinstance(value, str) for value in values):
+            native[name] = list(values)
+    return strings, native
+
+
+def restore_native_categories(encoded: Any, native: Mapping[str, Sequence[Any]]) -> Any:
+    """Rename encoded categoricals back to the values their library recorded, codes kept."""
+    for name, values in native.items():
+        encoded[name] = encoded[name].cat.rename_categories(
+            [value for value in values if value is not None]
+        )
+    return encoded

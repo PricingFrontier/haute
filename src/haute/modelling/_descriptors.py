@@ -291,6 +291,34 @@ GLM = AlgorithmDescriptor(
     engine_module="rustystats",
 )
 
+
+def native_objective(descriptor: AlgorithmDescriptor, objective: str) -> tuple[str, Link]:
+    """The task and link a native objective has, for a model trained outside Haute.
+
+    An objective Haute trains takes its loss's task and link. Any other
+    regression objective gets the identity link: the library's own prediction
+    does not depend on it, and a trace whose contributions do not rebuild the
+    prediction is refused. A binary objective Haute does not train gives no
+    positive-class probability to score, so it is refused.
+    """
+    from haute.errors import ConfigError
+
+    for task, losses in descriptor.losses.items():
+        for loss in losses.values():
+            if loss.objective == objective:
+                return task, loss.link
+    if objective.startswith("binary"):
+        supported = sorted(
+            loss.objective for loss in descriptor.losses.get("classification", {}).values()
+        )
+        raise ConfigError(
+            f"A {descriptor.label} classifier trained with objective {objective!r} gives no "
+            f"positive-class probability; Haute scores one trained with {', '.join(supported)}.",
+            objective=objective,
+        )
+    return "regression", "identity"
+
+
 XGBOOST = AlgorithmDescriptor(
     key="xgboost",
     label="XGBoost",

@@ -76,7 +76,10 @@ A model file scores with the feature contract saved beside it: `<model name>.fea
 or else `feature_contract.json` in the same folder. **Save model to file** writes the
 first. The contract names the model's features, categories and offset, so keep it next to
 the model when you copy the model elsewhere in the project. XGBoost, LightGBM, t-boost and
-EBM files describe their own inputs and offset. An EBM file also records the
+EBM files describe their own inputs and offset. An XGBoost, LightGBM or t-boost model trained
+outside Haute scores too, from what its own file records, with no offset: save an XGBoost
+booster as `.ubj` and a LightGBM model's text as `.lgbm`. A multi-class or ranking model, and
+an XGBoost model saved without feature names, cannot be scored. An EBM file also records the
 `interpret-core` version it was trained with, and loads only under that version; a
 contract for a different loss is refused rather than scored. A category the
 model never saw still scores; see [Values the model was not trained on](#values-the-model-was-not-trained-on).

@@ -52,7 +52,7 @@ not an inventory of all active work; see [Not scheduled](#not-scheduled).
 | F | 16 | Containment | `SBX-R01` | 9 | M | The remaining path comparisons, after the project context has deleted the resolvers that held many of them. |
 | F | 17 | Dead code | `ENGQ-R01` | 16 | M | After the refactors have deleted what they replace; adds knip to the frontend lint. |
 | F | 18 | Test organisation | `ENGQ-R05` | 17 | L | Last, so the suite is reorganised once, under the risk-based coverage rule. Several PRs, by component. |
-| I | 21 | Models trained outside Haute | `MSC-06`, then `MSC-05` | — | L | External XGBoost and LightGBM files first, as decided; pyfunc files after, on the same file source. |
+| I | 21 | Models trained outside Haute | `MSC-06`, then `MSC-05` | — | M | Generic suffixes and the XGBoost missing-value sentinel first; pyfunc files after, on the same file source. |
 | J | 23 | Remaining Polars 2 evidence | `PL2-17`, `PL2-18` | — | L | Reverify the training overhead and width calibration, operator evidence at `10m`, and worker baselines. Apply only the policy changes those measurements justify. |
 
 Sizes are rough: M is a day or so, L several days or more than one PR.
@@ -64,9 +64,9 @@ date its entry records; raise an objection before its round starts.
 
 - `SUB-R01`: `@pipeline.instance` and `instanceOf` are rejected; **Create
   Instance** makes a one-node submodel with a second occurrence.
-- `MSC-06`: Model Scoring scores XGBoost and LightGBM files trained outside
-  Haute, under a contract drafted in the editor that declares missing-value
-  and offset semantics; unsupported objectives and response transforms fail.
+- `MSC-06`: Model Scoring reads XGBoost and LightGBM files saved under their
+  libraries' generic suffixes (`.json`, `.txt`), and a contract can declare an
+  XGBoost model's missing-value sentinel.
 - `MSC-05`: Local pyfunc packages are executable imports requiring explicit
   trust of their content digest. Inspection does not execute package code;
   changed contents require a new trust decision.

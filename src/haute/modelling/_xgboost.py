@@ -21,14 +21,19 @@ from typing import Any
 import numpy as np
 import polars as pl
 
-from haute.errors import HauteValidationError
+from haute.errors import ConfigError, HauteValidationError
 from haute.modelling._algorithm_base import (
     BaseAlgorithm,
     Contributions,
     FitResult,
     IterationCallback,
 )
-from haute.modelling._native_encoding import encode_frame, fit_categorical_levels
+from haute.modelling._native_encoding import (
+    encode_frame,
+    fit_categorical_levels,
+    native_categories,
+    restore_native_categories,
+)
 from haute.modelling._shap import require_feature_order
 
 _META_ATTRIBUTE = "haute"
@@ -49,6 +54,11 @@ class XGBoostModel:
     offset_link: str | None = None
     class_labels: tuple[Any, Any] | None = None
     threads: int | None = field(default=None, compare=False)
+    #: A booster trained outside Haute: the category values XGBoost recorded
+    #: where they are not strings, and its feature types where a categorical
+    #: feature recorded no categories (it scores the input's numeric codes).
+    native_levels: dict[str, list[Any]] = field(default_factory=dict, compare=False)
+    feature_types: list[str] | None = field(default=None, compare=False)
 
     # -- ScoringModel-facing surface ------------------------------------
     @property
@@ -71,7 +81,10 @@ class XGBoostModel:
 
         from haute.modelling._algorithms import _extract_offset_baseline
 
-        encoded = encode_frame(frame, self.features, self.categorical_levels, unseen="missing")
+        encoded = restore_native_categories(
+            encode_frame(frame, self.features, self.categorical_levels, unseen="missing"),
+            self.native_levels,
+        )
         margin = None
         if self.offset_column is not None:
             margin = _extract_offset_baseline(
@@ -85,6 +98,7 @@ class XGBoostModel:
             label=label,
             weight=weight,
             base_margin=margin,
+            feature_types=self.feature_types,
             enable_categorical=True,
             nthread=self.threads or -1,
         )
@@ -150,10 +164,7 @@ class XGBoostModel:
         booster.set_param({"device": "cpu"})
         raw = booster.attr(_META_ATTRIBUTE)
         if not raw:
-            raise HauteValidationError(
-                f"{path} is not an XGBoost model Haute trained (no '{_META_ATTRIBUTE}' record); "
-                "retrain it in Haute."
-            )
+            return cls._native_record(booster, Path(path).name)
         meta = json.loads(raw)
         labels = meta.get("class_labels")
         return cls(
@@ -165,6 +176,57 @@ class XGBoostModel:
             offset_column=meta.get("offset_column"),
             offset_link=meta.get("offset_link"),
             class_labels=(labels[0], labels[1]) if labels is not None else None,
+        )
+
+    @classmethod
+    def _native_record(cls, booster: Any, name: str) -> XGBoostModel:
+        """A booster trained outside Haute, read from what XGBoost records itself.
+
+        Its features, their types and the categories stored for each
+        categorical feature; task and link from its objective; no offset.
+        """
+        from haute.modelling._descriptors import XGBOOST, native_objective
+
+        features = list(booster.feature_names or [])
+        if not features:
+            raise ConfigError(
+                f"{name} records no feature names, so Haute cannot tell which input column "
+                "each feature reads; save the booster after training it on a named DataFrame.",
+                model_path=name,
+            )
+        learner = json.loads(booster.save_config())["learner"]
+        shape = learner["learner_model_param"]
+        if int(shape.get("num_class", "0")) > 1 or int(shape.get("num_target", "1")) > 1:
+            raise ConfigError(
+                f"{name} predicts more than one value per row; Haute scores regression and "
+                "binary classification models.",
+                model_path=name,
+            )
+        task, link = native_objective(XGBOOST, str(learner["objective"]["name"]))
+        types = list(booster.feature_types or [])
+        stored = booster.get_categories(export_to_arrow=True)
+        recorded = (
+            {}
+            if stored.empty()
+            else {
+                feature: values.to_pylist()
+                for feature, values in stored.to_arrow()
+                if values is not None
+            }
+        )
+        categorical = [f for f, kind in zip(features, types, strict=False) if kind == "c"]
+        levels, native = native_categories(
+            {feature: recorded[feature] for feature in categorical if feature in recorded}
+        )
+        return cls(
+            booster=booster,
+            features=features,
+            categorical_levels=levels,
+            task=task,
+            link=link,
+            class_labels=(0, 1) if task == "classification" else None,
+            native_levels=native,
+            feature_types=types if any(f not in recorded for f in categorical) else None,
         )
 
     def objective(self) -> str:

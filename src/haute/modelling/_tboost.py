@@ -352,40 +352,32 @@ class TBoostModel:
         binary 0/1 classifier, the link of its objective, the offset's link, the
         feature order and the categorical set.
         """
-        import t_boost
-        from t_boost import SerializationError, TBoostClassifier, TBoostRegressor
 
         name = Path(path).name
         text = Path(path).read_text(encoding="utf-8")
         document = json.loads(text)
         metadata = document.get("metadata") if isinstance(document, dict) else None
-        if not isinstance(metadata, dict) or not isinstance(metadata.get(RECORD_KEY), dict):
+        raw_record = metadata.get(RECORD_KEY) if isinstance(metadata, dict) else None
+        if raw_record is not None and not isinstance(raw_record, dict):
             raise HauteValidationError(
-                f"{name} is not a t-boost model Haute trained (no {RECORD_KEY!r} record in its "
-                "metadata); retrain it in Haute."
+                f"{name}: the t-boost model's {RECORD_KEY!r} record is not an object; retrain it "
+                "in Haute."
             )
-        record = _validated_record(metadata[RECORD_KEY], name)
-        estimator_name = document.get("estimator")
+        estimator_name = document.get("estimator") if isinstance(document, dict) else None
         if estimator_name not in _ESTIMATOR_TASKS or document.get("kind") != "single":
             raise ConfigError(
                 f"{name} holds a {estimator_name!r} model of kind {document.get('kind')!r}; "
                 "Haute scores single-output t-boost regressors and binary classifiers."
             )
+        if raw_record is None:
+            return cls._native_record(text, document, name)
+        record = _validated_record(raw_record, name)
         if _ESTIMATOR_TASKS[estimator_name] != record["task"]:
             raise ConfigError(
                 f"{name} holds a {estimator_name} but its record describes a {record['task']} "
                 "model; retrain it in Haute."
             )
-        estimator_class = (
-            TBoostRegressor if estimator_name == "TBoostRegressor" else TBoostClassifier
-        )
-        try:
-            estimator = estimator_class.from_json(text)
-        except SerializationError as exc:
-            raise ConfigError(
-                f"t-boost {t_boost.__version__} cannot read {name}: {exc}. Install the "
-                "t-boost version it was trained with, or retrain it."
-            ) from exc
+        estimator = _native_estimator(text, document, name)
         model = cls(
             estimator=estimator,
             features=record["features"],
@@ -399,6 +391,40 @@ class TBoostModel:
         # t-boost omits ``cat_indices`` for a model with no categorical feature.
         model.validate_native(document.get("cat_indices", []), name)
         return model
+
+    @classmethod
+    def _native_record(cls, text: str, document: dict[str, Any], name: str) -> TBoostModel:
+        """A model trained outside Haute, read from what t-boost records itself.
+
+        Its features, its categorical features (t-boost scores their values as
+        strings itself), task from the estimator, link from its objective,
+        labels from its classes; no offset.
+        """
+        from haute.modelling._descriptors import TBOOST, native_objective
+
+        estimator = _native_estimator(text, document, name)
+        features = list(estimator.feature_names_in_)
+        task = _ESTIMATOR_TASKS[str(document["estimator"])]
+        objective_task, link = native_objective(TBOOST, str(estimator.objective))
+        if objective_task != task:
+            link = "logit" if task == "classification" else "identity"
+        labels = None
+        if task == "classification":
+            classes = list(estimator.classes_)
+            if len(classes) != 2:
+                raise ConfigError(
+                    f"{name} is a {len(classes)}-class classifier; Haute scores binary ones.",
+                    model_path=name,
+                )
+            labels = (classes[0], classes[1])
+        return cls(
+            estimator=estimator,
+            features=features,
+            categorical_levels={features[i]: [] for i in document.get("cat_indices", [])},
+            task=task,
+            link=link,
+            class_labels=labels,
+        )
 
     def validate_native(self, cat_indices: Any, name: str) -> None:
         """Refuse a native estimator that is not the model the record describes."""
@@ -439,6 +465,23 @@ class TBoostModel:
                 f"{name}: the t-boost model's categorical features do not match its record; "
                 "retrain it in Haute."
             )
+
+
+def _native_estimator(text: str, document: dict[str, Any], name: str) -> Any:
+    """The t-boost estimator a ``.tboost`` document holds, read by plain t-boost."""
+    import t_boost
+    from t_boost import SerializationError, TBoostClassifier, TBoostRegressor
+
+    estimator_class = (
+        TBoostRegressor if document["estimator"] == "TBoostRegressor" else TBoostClassifier
+    )
+    try:
+        return estimator_class.from_json(text)
+    except SerializationError as exc:
+        raise ConfigError(
+            f"t-boost {t_boost.__version__} cannot read {name}: {exc}. Install the "
+            "t-boost version it was trained with, or retrain it."
+        ) from exc
 
 
 def _validated_record(record: dict[str, Any], name: str) -> dict[str, Any]:

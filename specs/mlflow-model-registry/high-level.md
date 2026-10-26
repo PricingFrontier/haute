@@ -153,6 +153,16 @@ Out of scope (owned elsewhere):
   leaves null, scores the same way, for every model family: an exposure of one
   under a log link, an additive offset of zero otherwise. A zero or negative
   exposure is still refused.
+- A model trained outside Haute scores like any other, with no contract and no
+  offset: a CatBoost or GLM file describes itself, and an XGBoost (`.ubj`),
+  LightGBM (`.lgbm`) or t-boost (`.tboost`) file without the record Haute
+  writes into it loads from what its library records (features, categorical
+  features and their levels, objective, classes). Two cases cannot be scored
+  and are refused naming the cause: a multi-class or ranking objective, and an
+  XGBoost booster that records no feature names. An `.ebm` file without
+  Haute's record is refused too: it is a bare pickle whose `interpret-core`
+  version nothing records, and an EBM logged through MLflow's sklearn flavor
+  scores as a pyfunc directory instead.
 - A file-sourced model is cached in memory by its resolved path, `task` and
   the byte identity of the contract it scores under, gated on the model
   file's freshness token, in the same cache the deploy scorer serves bundled

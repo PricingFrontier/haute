@@ -850,16 +850,32 @@ def test_a_malformed_record_is_refused(
         load_local_model(str(path))
 
 
-def test_a_record_with_extra_keys_or_none_at_all_is_refused(tmp_path: Path) -> None:
+def test_a_record_with_extra_keys_is_refused_and_none_at_all_reads_t_boost(
+    tmp_path: Path,
+) -> None:
     path, document = _saved(tmp_path)
+    haute = TBoostModel.load(path)
     document["metadata"]["haute"]["extra"] = 1
     _rewrite(path, document)
     with pytest.raises(ConfigError, match="has keys"):
         TBoostModel.load(path)
+    document["metadata"]["haute"] = "not an object"
+    _rewrite(path, document)
+    with pytest.raises(HauteValidationError, match="record is not an object"):
+        TBoostModel.load(path)
     document["metadata"] = {}
     _rewrite(path, document)
-    with pytest.raises(HauteValidationError, match="not a t-boost model Haute trained"):
-        TBoostModel.load(path)
+
+    native = TBoostModel.load(path)
+
+    # The file says the same as Haute's record, but for the offset.
+    assert (native.features, native.task, native.link) == (
+        haute.features,
+        haute.task,
+        haute.link,
+    )
+    assert set(native.categorical_levels) == set(haute.categorical_levels)
+    assert native.offset_column is None
 
 
 def test_a_record_that_disagrees_with_the_native_model_is_refused(tmp_path: Path) -> None:

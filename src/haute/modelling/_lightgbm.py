@@ -21,14 +21,19 @@ from typing import Any
 import numpy as np
 import polars as pl
 
-from haute.errors import HauteValidationError
+from haute.errors import ConfigError, HauteValidationError
 from haute.modelling._algorithm_base import (
     BaseAlgorithm,
     Contributions,
     FitResult,
     IterationCallback,
 )
-from haute.modelling._native_encoding import encode_frame, fit_categorical_levels
+from haute.modelling._native_encoding import (
+    encode_frame,
+    fit_categorical_levels,
+    native_categories,
+    restore_native_categories,
+)
 from haute.modelling._shap import require_feature_order
 
 _META_PREFIX = "haute:"
@@ -57,6 +62,9 @@ class LightGBMModel:
     offset_link: str | None = None
     class_labels: tuple[Any, Any] | None = None
     threads: int | None = field(default=None, compare=False)
+    #: A model trained outside Haute: the category values LightGBM recorded
+    #: where they are not strings.
+    native_levels: dict[str, list[Any]] = field(default_factory=dict, compare=False)
 
     # -- ScoringModel-facing surface ------------------------------------
     @property
@@ -69,7 +77,10 @@ class LightGBMModel:
 
     def encoded(self, frame: pl.DataFrame) -> Any:
         """Features as pandas with contract-order categoricals."""
-        return encode_frame(frame, self.features, self.categorical_levels, unseen="missing")
+        return restore_native_categories(
+            encode_frame(frame, self.features, self.categorical_levels, unseen="missing"),
+            self.native_levels,
+        )
 
     def baseline(self, frame: pl.DataFrame) -> np.ndarray | None:
         """The transformed offset each row's raw score starts from."""
@@ -162,10 +173,12 @@ class LightGBMModel:
 
         text = Path(path).read_bytes().decode("utf-8")
         records = [line for line in text.splitlines() if line.startswith(_META_PREFIX)]
-        if len(records) != 1:
+        if not records:
+            return cls._native_record(text, Path(path).name)
+        if len(records) > 1:
             raise HauteValidationError(
-                f"{path} is not a LightGBM model Haute trained (no '{_META_PREFIX}' record); "
-                "retrain it in Haute."
+                f"{path} holds {len(records)} '{_META_PREFIX}' records, not one; retrain it in "
+                "Haute."
             )
         meta = json.loads(records[0][len(_META_PREFIX) :])
         labels = meta.get("class_labels")
@@ -180,17 +193,60 @@ class LightGBMModel:
             class_labels=(labels[0], labels[1]) if labels is not None else None,
         )
 
+    @classmethod
+    def _native_record(cls, text: str, name: str) -> LightGBMModel:
+        """A model trained outside Haute, read from what LightGBM records itself.
+
+        Its features, its categorical features with the levels ``pandas_categorical``
+        recorded (one trained on integer codes records none and scores the input's
+        codes), task and link from its objective; no offset.
+        """
+        import lightgbm as lgb
+
+        from haute.modelling._descriptors import LIGHTGBM, native_objective
+
+        booster = lgb.Booster(model_str=text)
+        if booster.num_model_per_iteration() > 1:
+            raise ConfigError(
+                f"{name} predicts more than one value per row; Haute scores regression and "
+                "binary classification models.",
+                model_path=name,
+            )
+        features = list(booster.feature_name())
+        declared = booster.params.get("categorical_feature") or []
+        if isinstance(declared, str):
+            declared = [part for part in declared.split(",") if part]
+        categorical = [
+            features[int(item)] if str(item).isdigit() else str(item) for item in declared
+        ]
+        recorded = booster.pandas_categorical or []
+        if recorded and len(recorded) != len(categorical):
+            raise ConfigError(
+                f"{name} records levels for {len(recorded)} of its {len(categorical)} categorical "
+                "features, so Haute cannot tell which levels belong to which feature.",
+                model_path=name,
+            )
+        levels, native = native_categories(dict(zip(categorical, recorded, strict=False)))
+        task, link = native_objective(LIGHTGBM, _text_objective(text))
+        return cls(
+            booster=booster,
+            features=features,
+            categorical_levels=levels,
+            task=task,
+            link=link,
+            class_labels=(0, 1) if task == "classification" else None,
+            native_levels=native,
+        )
+
     def objective(self) -> str:
         """The objective recorded in the model text (``objective=poisson`` → ``poisson``)."""
-        line = next(
-            (
-                line
-                for line in self.booster.model_to_string().splitlines()
-                if line.startswith("objective=")
-            ),
-            "objective=",
-        )
-        return line.partition("=")[2].split(" ")[0]
+        return _text_objective(self.booster.model_to_string())
+
+
+def _text_objective(text: str) -> str:
+    """The objective a LightGBM model text records (``objective=binary sigmoid:1`` → ``binary``)."""
+    line = next((line for line in text.splitlines() if line.startswith("objective=")), "objective=")
+    return line.partition("=")[2].split(" ")[0]
 
 
 class LightGBMAlgorithm(BaseAlgorithm):

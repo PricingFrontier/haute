@@ -790,3 +790,237 @@ def test_a_model_and_its_logged_contract_are_read_from_one_resolved_backend(
 
     assert bound.scoring_model.offset_column == "exposure"
     assert bound.contract_path is not None
+
+
+# ---------------------------------------------------------------------------
+# Native models trained outside Haute score from what their libraries record
+# ---------------------------------------------------------------------------
+
+
+def native_frame(frame: pl.DataFrame) -> Any:
+    """The training rows as pandas, region a categorical as the libraries take it."""
+    pdf = frame.select(FEATURES).to_pandas()
+    pdf["region"] = pdf["region"].astype("category")
+    return pdf
+
+
+def external_model(directory: Path, library: str, task: str) -> tuple[Path, Any]:
+    """A model trained through *library*'s own API, and its own predict function."""
+    frame = data(seed=21)
+    target = (
+        frame["claims"].to_numpy()
+        if task == "regression"
+        else (frame["claims"].to_numpy() > 0).astype(int)
+    )
+    if library == "xgboost":
+        import xgboost as xgb
+
+        objective = "count:poisson" if task == "regression" else "binary:logistic"
+        booster = xgb.train(
+            {"objective": objective, "max_depth": 2, "verbosity": 0},
+            xgb.DMatrix(native_frame(frame), label=target, enable_categorical=True),
+            num_boost_round=10,
+        )
+        path = directory / "ext.ubj"
+        booster.save_model(str(path))
+
+        def predict(rows: pl.DataFrame) -> Any:
+            return booster.predict(xgb.DMatrix(native_frame(rows), enable_categorical=True))
+
+        return path, predict
+    if library == "lightgbm":
+        import lightgbm as lgb
+
+        objective = "poisson" if task == "regression" else "binary"
+        booster = lgb.train(
+            {"objective": objective, "num_leaves": 4, "min_data_in_leaf": 5, "verbosity": -1},
+            lgb.Dataset(native_frame(frame), label=target),
+            num_boost_round=10,
+        )
+        path = directory / "ext.lgbm"
+        booster.save_model(str(path))
+        return path, lambda rows: booster.predict(native_frame(rows))
+    from t_boost import TBoostClassifier, TBoostRegressor
+
+    estimator = (
+        TBoostRegressor(n_trees=30, objective="poisson")
+        if task == "regression"
+        else TBoostClassifier(n_trees=30)
+    )
+    estimator.fit(frame.select(FEATURES), target)
+    path = directory / "ext.tboost"
+    path.write_text(estimator.to_json(), encoding="utf-8")
+    if task == "regression":
+        return path, lambda rows: estimator.predict(rows.select(FEATURES))
+    return path, lambda rows: estimator.predict_proba(rows.select(FEATURES))[:, 1]
+
+
+LIBRARIES = ["xgboost", "lightgbm", "tboost"]
+
+
+@pytest.mark.parametrize("kind", SOURCES)
+@pytest.mark.parametrize("library", LIBRARIES)
+def test_a_model_trained_outside_haute_scores_as_its_library_predicts(
+    project: Path, library: str, kind: str
+) -> None:
+    from haute._model_explainability import explain_model_score_from_config
+
+    model_path, native = external_model(project, library, "regression")
+    source = source_for(kind, model_path, None)
+    frame = data(seed=22)
+
+    scored = score(source, frame)
+
+    np.testing.assert_allclose(scored, native(frame), rtol=1e-6)
+    if kind == "file":
+        row = frame.head(1)
+        explanation = explain_model_score_from_config(
+            {"sourceType": "file", "model_path": model_path.name, "task": "regression"},
+            row.row(0, named=True),
+            {"pred": float(scored[0])},
+            prediction_column="pred",
+            prediction_value=float(scored[0]),
+        )
+        assert explanation is not None
+        assert explanation["prediction_value"] == pytest.approx(float(scored[0]), rel=1e-5)
+
+
+@pytest.mark.parametrize("library", LIBRARIES)
+def test_a_classifier_trained_outside_haute_scores_its_positive_class(
+    project: Path, library: str
+) -> None:
+    from haute._model_scorer import ModelScorer
+
+    model_path, native = external_model(project, library, "classification")
+    frame = data(seed=23)
+
+    scored = (
+        ModelScorer(
+            model_source=FileModelSource(model_path=model_path.name),
+            task="classification",
+            output_col="pred",
+        )
+        .score(frame.lazy())
+        .collect()
+    )
+
+    np.testing.assert_allclose(scored["pred_proba"], native(frame), rtol=1e-6)
+    np.testing.assert_array_equal(scored["pred"], (native(frame) > 0.5).astype(int))
+
+
+def test_integer_categories_a_library_recorded_score_from_their_text(project: Path) -> None:
+    """Haute reads categoricals as text; the library's own integer levels are put back."""
+    import lightgbm as lgb
+    import pandas as pd
+    import xgboost as xgb
+
+    rng = np.random.default_rng(24)
+    groups = rng.choice([3, 7, 11], 300)
+    pdf = pd.DataFrame({"age": rng.uniform(18, 80, 300), "group": pd.Categorical(groups)})
+    label = (groups == 7) * 2.0 + rng.uniform(size=300)
+    lgbm = lgb.train(
+        {"objective": "regression", "num_leaves": 4, "min_data_in_leaf": 5, "verbosity": -1},
+        lgb.Dataset(pdf, label=label),
+        num_boost_round=10,
+    )
+    lgbm.save_model(str(project / "groups.lgbm"))
+    booster = xgb.train(
+        {"objective": "reg:squarederror", "max_depth": 2, "verbosity": 0},
+        xgb.DMatrix(pdf, label=label, enable_categorical=True),
+        num_boost_round=10,
+    )
+    booster.save_model(str(project / "groups.ubj"))
+    rows = pl.DataFrame({"age": [30.0, 30.0, 30.0], "group": ["3", "7", "11"]})
+    native_rows = pd.DataFrame({"age": [30.0] * 3, "group": pd.Categorical([3, 7, 11])})
+
+    np.testing.assert_allclose(
+        score(FileModelSource(model_path="groups.lgbm"), rows), lgbm.predict(native_rows)
+    )
+    np.testing.assert_allclose(
+        score(FileModelSource(model_path="groups.ubj"), rows),
+        booster.predict(xgb.DMatrix(native_rows, enable_categorical=True)),
+        rtol=1e-6,
+    )
+    # The category the input names, not its position: 7 scores above 3 and 11.
+    scored = score(FileModelSource(model_path="groups.lgbm"), rows)
+    assert scored[1] > max(scored[0], scored[2])
+
+
+def test_categories_trained_as_codes_score_from_the_input_codes(project: Path) -> None:
+    """A categorical feature that recorded no levels reads the input's numeric codes."""
+    import lightgbm as lgb
+    import pandas as pd
+    import xgboost as xgb
+
+    rng = np.random.default_rng(25)
+    codes = rng.choice([0, 1, 2], 300)
+    pdf = pd.DataFrame({"age": rng.uniform(18, 80, 300), "code": codes})
+    label = (codes == 1) * 2.0 + rng.uniform(size=300)
+    lgbm = lgb.train(
+        {"objective": "regression", "num_leaves": 4, "min_data_in_leaf": 5, "verbosity": -1},
+        lgb.Dataset(pdf, label=label, categorical_feature=["code"]),
+        num_boost_round=10,
+    )
+    lgbm.save_model(str(project / "codes.lgbm"))
+    booster = xgb.train(
+        {"objective": "reg:squarederror", "max_depth": 2, "verbosity": 0},
+        xgb.DMatrix(
+            pdf.astype(float), label=label, feature_types=["float", "c"], enable_categorical=True
+        ),
+        num_boost_round=10,
+    )
+    booster.save_model(str(project / "codes.ubj"))
+    rows = pl.DataFrame({"age": [30.0, 30.0, 30.0], "code": [0.0, 1.0, 2.0]})
+    native_rows = rows.to_pandas()
+
+    np.testing.assert_allclose(
+        score(FileModelSource(model_path="codes.lgbm"), rows), lgbm.predict(native_rows)
+    )
+    np.testing.assert_allclose(
+        score(FileModelSource(model_path="codes.ubj"), rows),
+        booster.predict(
+            xgb.DMatrix(native_rows, feature_types=["float", "c"], enable_categorical=True)
+        ),
+        rtol=1e-6,
+    )
+
+
+def test_what_a_model_trained_outside_haute_cannot_be_scored_for_is_refused(
+    project: Path,
+) -> None:
+    """More than one output per row, or a classifier with no probability to score."""
+    import lightgbm as lgb
+    import xgboost as xgb
+    from t_boost import TBoostClassifier
+
+    from haute._mlflow_io import load_local_model
+
+    frame = data(seed=26)
+    pdf = native_frame(frame)
+    three = np.random.default_rng(26).choice([0, 1, 2], frame.height)
+    xgb.train(
+        {"objective": "multi:softprob", "num_class": 3, "verbosity": 0},
+        xgb.DMatrix(pdf, label=three, enable_categorical=True),
+        num_boost_round=2,
+    ).save_model(str(project / "multi.ubj"))
+    lgb.train(
+        {"objective": "multiclass", "num_class": 3, "verbosity": -1},
+        lgb.Dataset(pdf, label=three),
+        num_boost_round=2,
+    ).save_model(str(project / "multi.lgbm"))
+    xgb.train(
+        {"objective": "binary:logitraw", "verbosity": 0},
+        xgb.DMatrix(pdf, label=three > 0, enable_categorical=True),
+        num_boost_round=2,
+    ).save_model(str(project / "raw.ubj"))
+    estimator = TBoostClassifier(n_trees=10)
+    estimator.fit(frame.select(FEATURES), three)
+    (project / "multi.tboost").write_text(estimator.to_json(), encoding="utf-8")
+
+    for name in ("multi.ubj", "multi.lgbm"):
+        with pytest.raises(ConfigError, match="more than one value per row"):
+            load_local_model(str(project / name))
+    with pytest.raises(ConfigError, match="binary:logitraw.*no positive-class probability"):
+        load_local_model(str(project / "raw.ubj"), "classification")
+    with pytest.raises(ConfigError, match="multi.tboost|3-class classifier"):
+        load_local_model(str(project / "multi.tboost"), "classification")
