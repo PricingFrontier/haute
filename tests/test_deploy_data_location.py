@@ -72,6 +72,18 @@ def _deploy(
     *training_path* adds a branch the quote output does not read; *batch_path* routes the
     quotes through a source switch whose non-live input reads that file.
     """
+    _write_pipeline(project, rates, training_path=training_path, batch_path=batch_path)
+    return _resolve(project)
+
+
+def _write_pipeline(
+    project: Path,
+    rates: dict[str, Any],
+    *,
+    training_path: str | None = None,
+    batch_path: str | None = None,
+) -> Path:
+    """Write the pipeline :func:`_deploy` deploys into ``rating/`` and return its file."""
     quotes = "request" if batch_path is None else "switch"
     nodes = [
         _node("request", NodeType.API_INPUT, {"path": "quotes.parquet"}),
@@ -112,6 +124,10 @@ def _deploy(
         target = project / "rating" / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
+    return project / "rating" / "main.py"
+
+
+def _resolve(project: Path) -> ResolvedDeploy:
     return resolve_config(
         DeployConfig(
             pipeline_file=project / "rating" / "main.py", project_dir=project, model_name="m"
@@ -287,4 +303,59 @@ def test_scan_arguments_ship(project: Path) -> None:
         make_file_input_config("files/data/rates", arguments={"hidden_file_prefix": "x_"}),
     )
 
+    assert _scored(resolved) == {1: 1.1, 2: 1.2}
+
+
+def test_cached_node_output_not_shipped(project: Path) -> None:
+    """A node output cached when the pipeline ran in the editor is never deployed.
+
+    The pricing node's cached output here disagrees with the data (every factor 9.0), and
+    the editor would read it as that node's current output; the deployment neither
+    bundles it nor reads it, and prices from the data it ships.
+    """
+    from haute._data_points import DataPointResolver
+    from haute._execution_context import ExecutionProfile
+    from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
+    from haute._seed_plans import SeedPlanRequest, resolve_seed_plan
+    from haute.parser import parse_pipeline_file
+
+    _rates(project / "rating" / "files" / "data" / "rates.parquet", {"N": 1.1, "S": 1.2})
+    graph = parse_pipeline_file(
+        _write_pipeline(project, make_file_input_config("files/data/rates.parquet"))
+    )
+    store = NodeSnapshotStore(project)
+    resolver = DataPointResolver(graph, source="live", store=store)
+    identity = resolver.node_output_slot("priced").identity(
+        resolver.node_output_signature("priced")
+    )
+    artifact = store.stage_node_output(identity)
+    pl.DataFrame({"quote_id": [1, 2], "region": ["N", "S"], "factor": [9.0, 9.0]}).write_parquet(
+        artifact.part_path(0)
+    )
+    with store.publish_node_output(
+        identity,
+        artifact,
+        columns=NodeSnapshotColumns.all(),
+        dependencies={},
+        explicit=False,
+        profile=ExecutionProfile.TRAINING_PREP,
+    ):
+        pass
+    cached = store.latest_generation(identity)
+    assert cached is not None
+    assert cached.lazy_frame.collect()["factor"].to_list() == [9.0, 9.0]
+    cached_folder = cached.generation.metadata_path.parent.resolve()
+    editor_run = resolve_seed_plan(
+        SeedPlanRequest(
+            graph=graph, target_node_id="out", source="live", profile=ExecutionProfile.TRAINING_PREP
+        ),
+        store=store,
+    )
+    assert "priced" in editor_run.seeds
+
+    resolved = _resolve(project)
+
+    assert not any(
+        Path(path).resolve().is_relative_to(cached_folder) for path in resolved.artifacts.values()
+    )
     assert _scored(resolved) == {1: 1.1, 2: 1.2}

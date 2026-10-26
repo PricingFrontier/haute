@@ -199,7 +199,10 @@ input), so a Data Input off that path may read from anywhere. Inside the folder 
 always ships:
 resolution builds a missing snapshot and refreshes a stale one before bundling, as an
 execution's automatic preparation does, so a clean checkout in CI deploys it and an edited
-file never ships its old copy. A snapshot preparation could only reuse, its file gone or no
+file never ships its old copy. No node output cached when the pipeline ran in the editor
+(a preview's, Explore's, or what training and optimisation seed from) is shipped or read:
+the dry run and the deployment compute every node from the data and models deploy ships.
+A snapshot preparation could only reuse, its file gone or no
 memory cap to rebuild it in, is refused rather than shipped. A lakehouse table's changes
 cannot be detected (the Data Input's Import picks them up), so its snapshot ships as last
 imported. The request input's sample, Load File nodes and model files

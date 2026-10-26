@@ -1021,7 +1021,10 @@ what they cover:
   lies through it, while one read only off the path to the quote output (a
   dangling branch, or a source switch's non-live input) is not shipped; a snapshot
   preparation could only reuse (the file edited with no memory cap, or deleted) is refused;
-  a direct Parquet folder ships read with its scan's own `hidden_file_prefix`; a CSV in the pipeline folder deploys from an empty cache and an edited one
+  a direct Parquet folder ships read with its scan's own `hidden_file_prefix`; a node
+  output cached for the pricing node under the editor's own identity (a seed plan for the
+  output seeds from it) is neither bundled nor read, the deployment pricing from the
+  shipped data; a CSV in the pipeline folder deploys from an empty cache and an edited one
   ships its new rows; a direct Parquet glob ships every file and a partitioned folder its
   partition column, each scored from the bundled artefacts.
 - **`test_deploy_quote_input_tables.py`** — a deployed Quote Input with a quote table
