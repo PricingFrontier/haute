@@ -273,3 +273,72 @@ def test_nested_element_child_tail_text_is_mixed_content(tmp_path) -> None:
 
     with pytest.raises(ApiInputSchemaError, match="mixed text and child elements"):
         _xml_element_value(element)
+
+
+_SINGLETON_DRIVERS = """<quotes>
+  <quote><id>1</id><driver><age>30</age></driver><driver><age>40</age></driver></quote>
+  <quote><id>2</id><driver><age>50</age></driver></quote>
+  <quote><id>3</id></quote>
+</quotes>
+"""
+
+
+def _xml_tables(tmp_path: Path, source: str, config: dict | None = None) -> dict[str, list]:
+    data_path = tmp_path / "quotes.xml"
+    data_path.write_text(source, encoding="utf-8")
+    if config is None:
+        config = infer_v2_schema_from_data(data_path)
+        for table in config["tables"]:
+            table["emit"] = True
+    config = {"path": str(data_path), "contract": "opaque", **config}
+    original_root = _get_project_root()
+    set_project_root(tmp_path)
+    try:
+        build_test_api_input_snapshots(data_path, config)
+        frames = load_v2_api_source(str(data_path), config, read_snapshots=True)
+        return {label: frame.collect().to_dicts() for label, frame in frames.items()}
+    finally:
+        set_project_root(original_root)
+
+
+def test_a_single_xml_element_where_another_quote_repeats_it_is_a_one_row_list(
+    tmp_path: Path,
+) -> None:
+    data_path = tmp_path / "quotes.xml"
+    data_path.write_text(_SINGLETON_DRIVERS, encoding="utf-8")
+
+    inferred = infer_v2_schema_from_data(data_path)
+
+    assert [table["path"] for table in inferred["tables"]] == ["$[:]", "$[:].driver[:]"]
+    assert [column["path"] for column in inferred["tables"][0]["columns"]] == ["$[:].id"]
+    tables = _xml_tables(tmp_path, _SINGLETON_DRIVERS)
+    assert tables["driver"] == [{"age": "30"}, {"age": "40"}, {"age": "50"}]
+
+
+def test_a_schema_keeps_singleton_elements_as_lists_in_a_later_file(tmp_path: Path) -> None:
+    learned = tmp_path / "learned"
+    learned.mkdir()
+    (learned / "quotes.xml").write_text(_SINGLETON_DRIVERS, encoding="utf-8")
+    schema = infer_v2_schema_from_data(learned / "quotes.xml")
+    for table in schema["tables"]:
+        table["emit"] = True
+
+    tables = _xml_tables(
+        tmp_path,
+        "<quotes><quote><id>7</id><driver><age>61</age></driver>"
+        "<owner><driver><age>9</age></driver></owner></quote>"
+        "<quote><id>8</id><driver><age>62</age></driver></quote></quotes>",
+        schema,
+    )
+
+    assert tables["driver"] == [{"age": "61"}, {"age": "62"}]
+
+
+def test_single_scalar_xml_elements_join_their_repeated_list(tmp_path: Path) -> None:
+    tables = _xml_tables(
+        tmp_path,
+        "<quotes><quote><id>1</id><tag>a</tag><tag>b</tag></quote>"
+        "<quote><id>2</id><tag>c</tag></quote></quotes>",
+    )
+
+    assert tables["tag"] == [{"value": "a"}, {"value": "b"}, {"value": "c"}]

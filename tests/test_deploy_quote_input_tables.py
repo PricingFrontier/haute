@@ -211,6 +211,8 @@ def test_ports_receive_their_declared_types_and_one_quote_scores_alone(sample):
             [{"quote_id": 1, "region": "N", "drivers": [{"age": 30}, "x"]}],
             "1 in 'drivers'",
         ),
+        ([{"quote_id": 1, "region": "N", "drivers": {"age": 30}}], "1 in 'drivers'"),
+        ([{"quote_id": 1, "region": "N", "drivers": "x"}], "1 in 'drivers'"),
         ([{"quote_id": "one", "region": "N", "drivers": []}], "column 'quote_id'"),
     ],
 )

@@ -1000,8 +1000,8 @@ what they cover:
 - **`test_deploy_quote_input_tables.py`** — a deployed Quote Input with a quote table
   and a drivers table (BUG-31): each port receives its own table's rows and declared
   types and the answer equals the editor's for the same quotes; a quote that is not an
-  object, a driver of the wrong shape and a value of the wrong type are refused naming the
-  table or column; drivers nested under their quote, a drivers aggregate joined back and
+  object, a driver of the wrong shape, drivers given as one object or a scalar instead of
+  a list, and a value of the wrong type are refused naming the table or column; drivers nested under their quote, a drivers aggregate joined back and
   a drivers' mean answer a batch quote by quote (BUG-38), each quote as alone, where one
   frame would give each quote the drivers' mean over both, two quotes sharing a key each
   other's drivers, and a key a node's own column step rewrites the other quote's

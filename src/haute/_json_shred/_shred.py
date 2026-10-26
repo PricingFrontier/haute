@@ -22,7 +22,7 @@ from haute._api_input_schema import (
     parse_table_path,
     validate_v2_schema,
 )
-from haute._json_shred._records import ShredSkipStats, _ShredExecutionProgress
+from haute._json_shred._records import RecordFormat, ShredSkipStats, _ShredExecutionProgress
 from haute._logging import get_logger
 
 logger = get_logger(component="json_shred")
@@ -402,6 +402,7 @@ def shred_to_buffers(
     v2_config: dict[str, Any],
     *,  # pragma: no mutate
     stats: ShredSkipStats | None = None,  # pragma: no mutate
+    record_format: RecordFormat = "json",
     _table_specs: tuple[_EmittingTableSpec, ...] | None = None,  # pragma: no mutate
     _row_sink: Callable[[str, _Row], None] | None = None,  # pragma: no mutate
     _emitted_counts: dict[str, int] | None = None,  # pragma: no mutate
@@ -423,6 +424,12 @@ def shred_to_buffers(
     every array element dropped at an emitting table's depth because its
     shape mismatched that table (W2 item 2.7); cache builds and direct runtime
     materialisation both pass one through :func:`_shred_data_file`.
+
+    A value that is not a list where the schema declares an array is counted
+    against every table at or below that array, since all their rows from it are
+    lost; a missing key or a null is no array. Records read from XML
+    (*record_format*) are the exception: XML repeats an element to make a list,
+    so one element there is a one-element list.
     """
     progress = _ShredExecutionProgress.current()
     progress.checkpoint("json_shred_before_rows")
@@ -476,6 +483,19 @@ def shred_to_buffers(
                 obj_prefix = []
             else:
                 obj_prefix.append(key)
+
+    # The emitting tables at or below each array position: a value that is not a
+    # list there loses every row they would have taken from it.
+    labels_at_or_below = {
+        child_pos: tuple(
+            label
+            for label, segments, _cols in emit_tables
+            if segments[: len(child_pos)] == child_pos
+        )
+        for descents in descents_by_pos.values()
+        for _obj_prefix, _array_key, child_pos in descents
+    }
+    wraps_single_elements = record_format == "xml"
 
     # The public path retains its historic per-table buffers.  Direct runtime
     # loading supplies a sink, so the walk instead hands each row to its bounded
@@ -532,9 +552,16 @@ def shred_to_buffers(
 
     def _walk_array(arr: Any, pos: tuple[PathSeg, ...], ancestors: tuple[Any, ...]) -> None:
         # Iterate the array at ``pos``, emitting a row per element. A missing
-        # key or non-array value yields nothing.
+        # key or a null yields nothing; one XML element is a one-element list;
+        # any other value that is not a list is a counted shape mismatch.
         if not isinstance(arr, list):
-            return
+            if arr is None:
+                return
+            if not wraps_single_elements:
+                for label in labels_at_or_below[pos]:
+                    _count_row_skip(label)
+                return
+            arr = [arr]
         for item in arr:
             if item is None:
                 # A null *element* is a real value for a scalar child table (its
