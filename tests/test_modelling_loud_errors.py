@@ -53,7 +53,8 @@ class TestModelScoreColumnDetectionLoud:
         feature columns, and an unavailable explicit destination would be
         silently bypassed during planning.
         """
-        from haute._builders import _model_score_columns
+        from haute._contracts import get_column_contract
+        from haute._types import NodeType
 
         config: dict[str, Any] = {
             "sourceType": "run",
@@ -66,7 +67,7 @@ class TestModelScoreColumnDetectionLoud:
         model = MagicMock(spec=ScoringModel, run_contract_path=None)
         model.feature_names = ["a", "b"]
         with patch("haute._mlflow_io.load_mlflow_model", return_value=model) as mock_load:
-            produced, referenced = _model_score_columns(config)
+            produced, referenced = get_column_contract(NodeType.MODEL_SCORE, config)
 
         assert produced == {"pred"}
         assert referenced == {"a", "b"}
