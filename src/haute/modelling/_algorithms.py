@@ -103,13 +103,15 @@ def catboost_offset_link(loss_function: str | None) -> str:
     return "log" if name in _LOG_LINK_CATBOOST_LOSSES else "identity"
 
 
-def full_term_offset(link: str | None) -> float:
-    """The offset of a full policy term: an exposure of one under a log link, else zero.
+def full_term_offset(link: str | None) -> float | None:
+    """The offset of a full policy term: an exposure of one under a log link.
 
     A quote is priced for a full policy term, so scoring reads a missing or
-    null offset as this value; training and evaluation never do.
+    null exposure as one; training and evaluation never do. An additive offset
+    is a base premium, not an exposure, so it has none (``None``): scoring
+    requires it.
     """
-    return 1.0 if link == "log" else 0.0
+    return 1.0 if link == "log" else None
 
 
 def offset_baseline(values: Any, *, column: str, link: str, context: str) -> np.ndarray:

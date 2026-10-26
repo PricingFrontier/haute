@@ -4041,24 +4041,28 @@ class TestBundledModelContractInputs:
         )
         from haute.deploy._scorer import _attach_bundled_model_contract_inputs
 
-        scoring_model = MagicMock(
-            feature_names=["x"],
-            offset_column="exposure",
-        )
-
-        with patch(
-            "haute.deploy._scorer.load_local_model_cached",
-            return_value=scoring_model,
-        ):
-            result = _attach_bundled_model_contract_inputs(
-                self._graph(),
-                {"ms__model.cbm": "model.cbm"},
-                {"ms"},
+        def annotated(link: str) -> dict:
+            scoring_model = MagicMock(
+                feature_names=["x"], offset_column="exposure", offset_link=link
             )
+            with patch(
+                "haute.deploy._scorer.load_local_model_cached",
+                return_value=scoring_model,
+            ):
+                result = _attach_bundled_model_contract_inputs(
+                    self._graph(),
+                    {"ms__model.cbm": "model.cbm"},
+                    {"ms"},
+                )
+            return result.node_map["ms"].data.config
 
-        config = result.node_map["ms"].data.config
-        assert config[_DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY] == ["x"]
-        assert config[_DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY] == ["exposure"]
+        exposure = annotated("log")
+        assert exposure[_DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY] == ["x"]
+        assert exposure[_DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY] == ["exposure"]
+        # An additive offset is a base premium, a required input.
+        premium = annotated("identity")
+        assert premium[_DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY] == ["x", "exposure"]
+        assert premium[_DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY] == []
 
 
 class TestRemapArtifact:

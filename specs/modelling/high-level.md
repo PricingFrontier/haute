@@ -326,8 +326,9 @@ Invariants that always hold:
   never silently computed at baseline zero. The offset is a strictly positive exposure
   multiplier under a log link (a log-link GLM, CatBoost `Poisson` or `Tweedie`) and an
   additive term otherwise, for both algorithms. Scoring a quote in Model Scoring is
-  different: a quote is priced for a full policy term, so there a missing or null offset
-  is an exposure of one (see the MLflow model registry specification).
+  different: a quote is priced for a full policy term, so there a missing or null exposure
+  (a log-link offset) is an exposure of one; an additive offset, a base premium, is still
+  required (see the MLflow model registry specification).
 - Optional diagnostics (SHAP, partial dependence, GLM inference statistics) can fail
   independently without aborting the run; failures are recorded and surfaced, not
   swallowed.
@@ -826,7 +827,7 @@ browser without a server or JS bundle.
   actual value.
 - During training and evaluation, a prediction missing a required offset column raises
   rather than silently scoring without the offset's effect; Model Scoring prices a missing
-  or null offset as a full policy term.
+  or null exposure as a full policy term and still refuses a missing additive offset.
 - If every row supplied to a metric or diagnostic is non-finite, computation raises
   rather than returning an empty or NaN result that could be mistaken for a valid
   (if poor) evaluation.

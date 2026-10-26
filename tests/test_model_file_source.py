@@ -246,6 +246,33 @@ def test_metadata_and_contract_that_disagree_are_refused(project: Path, kind: st
         load_scoring_model(source, "regression", feature_contract_path=contract_path)
 
 
+def test_a_missing_or_empty_additive_offset_is_refused_and_the_trace_too(project: Path) -> None:
+    """An additive offset is a base premium, not an exposure: it has no default."""
+    from haute._model_explainability import (
+        ModelExplanationError,
+        explain_model_score_from_config,
+    )
+
+    model_path = external_catboost(project, offset=True)
+    write_contract(model_path, offset="exposure", link="identity")
+    source = FileModelSource(model_path=model_path.name)
+    frame = data(seed=19)
+
+    # The bound contract's check names the absent offset before scoring starts.
+    with pytest.raises(FeatureMismatchError, match="offset_column: expected='exposure'"):
+        score(source, frame.drop("exposure"))
+    with pytest.raises(HauteValidationError, match="1 rows are empty"):
+        score(source, frame.with_columns(pl.lit(None, dtype=pl.Float64).alias("exposure")).head(1))
+    with pytest.raises(ModelExplanationError, match="exposure"):
+        explain_model_score_from_config(
+            {"sourceType": "file", "model_path": model_path.name, "task": "regression"},
+            frame.drop("exposure").row(0, named=True),
+            {"pred": 1.0},
+            prediction_column="pred",
+            prediction_value=1.0,
+        )
+
+
 @pytest.mark.parametrize("kind", SOURCES)
 def test_a_missing_declared_offset_input_scores_as_a_full_policy_term(
     project: Path, kind: str

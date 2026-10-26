@@ -100,10 +100,11 @@ features its own file names.
 
 Scoring checks the input against the model's features before it runs: a missing feature
 or a numeric column where the model expects a categorical one fails with an error listing
-what is wrong, rather than predicting from mismatched data. The offset a model was trained
-with is optional: a quote is priced for a full policy term, so a missing exposure column, or
-a row whose exposure is empty, scores as an exposure of one (and a missing additive offset
-as zero). An exposure of zero or less is still refused. A model with a feature contract also refuses a column whose type
+what is wrong, rather than predicting from mismatched data. An exposure offset (one the
+model applies through a log link) is optional: a quote is priced for a full policy term, so a
+missing exposure column, or a row whose exposure is empty, scores as an exposure of one. An
+exposure of zero or less is still refused. An additive offset, such as a base premium the
+model adds to, is required: a missing column or an empty value fails, naming it. A model with a feature contract also refuses a column whose type
 differs from training, such as whole numbers where it was trained on decimals, with the
 same error a deployed pipeline gives. The order the input's columns arrive in does not
 matter.

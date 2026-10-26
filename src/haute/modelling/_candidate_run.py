@@ -297,6 +297,7 @@ def build_candidate_run(
         target_type=contract.target_type,
         offset_name=contract.offset_column or "",
         offset_type="Float64" if contract.offset_column else "",
+        offset_link=contract.offset_link or "",
     )
 
     params: dict[str, Any] = {

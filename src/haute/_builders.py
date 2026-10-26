@@ -1127,22 +1127,24 @@ def _build_modelling(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
 
 def _model_score_inputs(
-    produced: set[str], features: Iterable[str], offset_column: object
+    produced: set[str], features: Iterable[str], offset_column: object, offset_link: object
 ) -> Contract:
-    """A scorer reads its features, and its offset only where the input has it.
+    """A scorer reads its features, and its exposure only where the input has it.
 
-    A quote is priced for a full policy term, so a missing offset is filled at
-    scoring; projection keeps a present one so pruning never drops it.
+    A quote is priced for a full policy term, so a missing exposure (a log-link
+    offset) is filled at scoring; projection keeps a present one so pruning
+    never drops it. An additive offset is a base premium and a required input.
     """
     offset = (
         frozenset({offset_column})
         if isinstance(offset_column, str) and offset_column
         else frozenset()
     )
+    optional = offset if offset_link == "log" else frozenset()
     return Contract(
-        inputs=frozenset(features) - offset,
+        inputs=(frozenset(features) | offset) - optional,
         outputs=frozenset(produced),
-        optional_inputs=offset,
+        optional_inputs=optional,
     )
 
 
@@ -1191,7 +1193,9 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract | Contract:
             # A Haute-trained binary classifier always scores its positive-class
             # probability; a prediction-only classifier records no class labels.
             produced = {*produced, f"{out}_proba"}
-        return _model_score_inputs(produced, contract.features, contract.offset_column)
+        return _model_score_inputs(
+            produced, contract.features, contract.offset_column, contract.offset_link
+        )
 
     if _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY in config:
         # The deploy scorer annotates its in-memory graph copy from the
@@ -1253,7 +1257,10 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract | Contract:
     )
     if scoring_model.feature_names:
         return _model_score_inputs(
-            produced, scoring_model.feature_names, getattr(scoring_model, "offset_column", None)
+            produced,
+            scoring_model.feature_names,
+            getattr(scoring_model, "offset_column", None),
+            getattr(scoring_model, "offset_link", None),
         )
     return produced, None
 

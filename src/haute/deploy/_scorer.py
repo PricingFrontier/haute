@@ -435,10 +435,14 @@ def _attach_bundled_model_contract_inputs(
                 node_id=node.id,
             )
 
-        # A request without the offset is priced for a full policy term, so the
-        # offset is read where the request has it and never required.
-        deploy_inputs = [column for column in feature_names if column != offset_column]
-        optional_inputs = [offset_column] if offset_column is not None else []
+        # A request without an exposure (a log-link offset) is priced for a full
+        # policy term, so it is read where the request has it and never required;
+        # an additive offset is a base premium and a required input.
+        exposure = offset_column if scoring_model.offset_link == "log" else None
+        deploy_inputs = [column for column in feature_names if column != exposure]
+        if offset_column is not None and offset_column != exposure:
+            deploy_inputs.append(offset_column)
+        optional_inputs = [exposure] if exposure is not None else []
         nodes.append(
             node.with_config(
                 {

@@ -86,8 +86,8 @@
   `None` on either side means opaque for that side. `OPAQUE_CONTRACT = (None, None)` is the
   explicit "declared opaque" sentinel, distinct from "no contract registered at all".
   `Contract` mirrors it and adds `optional_inputs`: columns a node reads when its input has
-  them and never requires (a Model Score's offset, which a quote without it prices as a full
-  policy term). The tuple form folds them into the referenced side, so projection keeps them
+  them and never requires (a Model Score's exposure offset, which a quote without it prices as
+  a full policy term; an additive offset stays a required input). The tuple form folds them into the referenced side, so projection keeps them
   where they exist; `Contract.inputs`, which the boundary check enforces, excludes them. A
   registered callback returns the tuple, or a `Contract` when it has optional inputs.
 - **`NODE_REGISTRY`** (`src/haute/_registry.py`, populated on the execution side via

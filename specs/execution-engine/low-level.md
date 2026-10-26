@@ -813,7 +813,7 @@ is removed from the edge projections and the capture is written without it. A mi
 capture-only column never fails otherwise-valid runtime execution; a missing
 runtime-required column still raises the typed contract mismatch at the first proven
 boundary. A column in the plan's `optional_columns` (one a node reads only where it exists,
-such as a Model Score's offset) is demanded like any other, so projection keeps it where a
+such as a Model Score's exposure offset) is demanded like any other, so projection keeps it where a
 parent has it, but it is never runtime-required: an edge whose parent lacks it drops it from
 the projection instead of failing.
 

@@ -711,14 +711,17 @@ def explain_native_prediction(
 
 
 def _full_term_row(input_row: dict[str, Any], scoring_model: Any) -> dict[str, Any]:
-    """The traced row with a missing or null offset at its full-term value, as scoring reads it."""
+    """The traced row with a missing or null exposure at its full-term value, as scoring reads it.
+
+    An additive offset has none: the explainer refuses a row without it, as scoring does.
+    """
     offset_column = getattr(scoring_model, "offset_column", None)
     if not offset_column or input_row.get(offset_column) is not None:
         return input_row
     from haute.modelling._algorithms import full_term_offset
 
-    offset_link = getattr(scoring_model, "offset_link", None)
-    return {**input_row, offset_column: full_term_offset(offset_link)}
+    neutral = full_term_offset(getattr(scoring_model, "offset_link", None))
+    return input_row if neutral is None else {**input_row, offset_column: neutral}
 
 
 def explain_model_score_from_config(

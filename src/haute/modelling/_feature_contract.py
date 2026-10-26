@@ -512,9 +512,12 @@ def assert_schema_matches_contract(schema: pl.Schema, expected: FeatureContract)
             "MISSING" if dtype is None else contract_dtype_name(dtype, column=name)
         )
     categorical_features = [name for name in expected.features if feature_types[name] == "String"]
-    # The offset is optional: a quote without it is priced for a full policy
-    # term, so its presence is never a mismatch.
+    # An exposure is optional: a quote without it is priced for a full policy
+    # term. An additive offset (a base premium) the input lacks fails the diff
+    # by name.
     offset_column = expected.offset_column or None
+    if offset_column and expected.offset_link != "log" and schema.get(offset_column) is None:
+        offset_column = None
     actual = build_contract(
         features=list(expected.features),
         feature_types=feature_types,

@@ -346,6 +346,7 @@ def _log_model_with_signature(
         task=task,
         offset_name=metadata.offset_name or None,
         offset_type=metadata.offset_type or "Float64",
+        offset_link=metadata.offset_link or None,
     )
 
     from haute.modelling._model_export import MODEL_FILE_SUFFIXES

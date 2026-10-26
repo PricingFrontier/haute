@@ -31,7 +31,7 @@ from haute._model_source import BoundModel, ModelSource, require_model_source
 from haute._polars_dtypes import refuse_wide_integers
 from haute._polars_utils import bounded_collect_batches
 from haute._types import _Frame
-from haute.errors import ConfigError
+from haute.errors import ConfigError, HauteValidationError
 from haute.errors import FeatureMismatchError as FeatureMismatchError
 
 if TYPE_CHECKING:
@@ -260,9 +260,10 @@ def _validate_features_uncached(
     schema_order = schema.names()
     available = set(schema_order)
     expected = scoring_model.feature_names
-    # The trained-with offset is never a missing input: scoring prices a quote
-    # without it for a full policy term (``_full_term_offset``). A GLM lists it
-    # among its required columns, so it stays usable.
+    # The trained-with offset is never a missing feature: scoring prices a quote
+    # without an exposure for a full policy term and refuses a missing additive
+    # offset itself (``_full_term_offset``). A GLM lists it among its required
+    # columns, so it stays usable.
     offset_column = _declared_offset_column(scoring_model)
 
     missing = [f for f in expected if f not in available and f != offset_column]
@@ -606,10 +607,11 @@ def _require_positive_log_link_offset(
 def _full_term_offset(
     frame: pl.DataFrame, offset_column: str | None, offset_link: str | None
 ) -> pl.DataFrame:
-    """The frame scoring reads, with a missing or null offset at its full-term value.
+    """The frame scoring reads, with a missing or null exposure at its full-term value.
 
     A quote is priced for a full policy term: a missing exposure is one, which
-    adds nothing to a log-link model, and a missing additive offset is zero.
+    adds nothing to a log-link model. An additive offset is a base premium
+    with no full-term value, so a missing, null or non-finite one is refused.
     Scoring reads this copy and attaches predictions to the caller's frame, so
     the caller's own columns are never filled.
     """
@@ -618,11 +620,34 @@ def _full_term_offset(
     from haute.modelling._algorithms import full_term_offset
 
     neutral = full_term_offset(offset_link)
+    if neutral is None:
+        _require_additive_offset(frame, offset_column)
+        return frame
     if offset_column not in frame.columns:
         return frame.with_columns(pl.lit(neutral, dtype=pl.Float64).alias(offset_column))
     if frame.get_column(offset_column).null_count() == 0:
         return frame
     return frame.with_columns(pl.col(offset_column).cast(pl.Float64).fill_null(neutral))
+
+
+def _require_additive_offset(frame: pl.DataFrame, offset_column: str) -> None:
+    """Refuse a missing, null or non-finite additive offset: a base premium has no default."""
+    if offset_column not in frame.columns:
+        raise FeatureMismatchError(
+            f"Scoring input is missing the model's offset column {offset_column!r}. The "
+            "model adds it to every prediction (a base premium, not an exposure), so it has "
+            "no default; provide the column.",
+            missing=[offset_column],
+            offset_column=offset_column,
+        )
+    values = frame.get_column(offset_column).cast(pl.Float64)
+    invalid = values.null_count() + int((~values.drop_nulls().is_finite()).sum())
+    if invalid:
+        raise HauteValidationError(
+            f"Scoring: offset column {offset_column!r} must be a finite number in every row, "
+            f"but {invalid:,} rows are empty or not finite. The model adds it to every "
+            "prediction (a base premium, not an exposure), so it has no default."
+        )
 
 
 def _catboost_baseline_pool(

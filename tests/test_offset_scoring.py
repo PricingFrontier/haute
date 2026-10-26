@@ -526,7 +526,9 @@ class TestTrainingMetricsIncludeOffset:
 
 
 class TestOffsetInSignatureAndContract:
-    def test_build_signature_declares_offset_input(self) -> None:
+    @pytest.mark.parametrize(("link", "required"), [("log", False), ("identity", True)])
+    def test_build_signature_declares_offset_input(self, link: str, required: bool) -> None:
+        """An exposure is optional (a full policy term without it); a base premium is not."""
         sig = build_signature(
             features=["age"],
             feature_types={"age": "Float64"},
@@ -536,8 +538,11 @@ class TestOffsetInSignatureAndContract:
             task="regression",
             offset_name="exposure",
             offset_type="Float64",
+            offset_link=link,
         )
         assert "exposure" in sig.inputs.input_names()
+        (spec,) = [spec for spec in sig.inputs.inputs if spec.name == "exposure"]
+        assert spec.required is required
 
     def test_build_signature_rejects_offset_shadowing_feature(self) -> None:
         with pytest.raises(ValueError, match="offset"):
@@ -873,7 +878,7 @@ class TestPyfuncScorerOffset:
     self-describe an offset, so the offset rides via the contract.
     """
 
-    def _model(self) -> object:
+    def _model(self, link: str = "log") -> object:
         from haute._mlflow_io import ScoringModel
 
         # offset_column set, but NOT in feature_names — the case that
@@ -883,8 +888,40 @@ class TestPyfuncScorerOffset:
             feature_names=["age"],
             flavor="pyfunc",
             offset_column="exposure",
-            offset_link="log",
+            offset_link=link,
         )
+
+    @pytest.mark.parametrize("row_limit", [None, 2])
+    def test_a_missing_additive_offset_is_refused(self, row_limit: int | None) -> None:
+        """An additive offset is a base premium, not an exposure: it has no default."""
+        from haute._model_scorer import _run_score_pipeline
+
+        with pytest.raises(FeatureMismatchError, match="offset column 'exposure'.*base premium"):
+            _run_score_pipeline(
+                self._model("identity"),
+                self._frame().drop("exposure").lazy(),
+                task="regression",
+                output_col="prediction",
+                row_limit=row_limit,
+            ).collect()
+
+    @pytest.mark.parametrize("value", [None, float("nan"), float("inf")])
+    def test_an_empty_or_non_finite_additive_offset_is_refused(self, value: float | None) -> None:
+        from haute._model_scorer import _run_score_pipeline
+
+        frame = self._frame().with_columns(
+            pl.when(pl.int_range(pl.len()) == 1)
+            .then(pl.lit(value, dtype=pl.Float64))
+            .otherwise(pl.col("exposure"))
+            .alias("exposure")
+        )
+        with pytest.raises(HauteValidationError, match="1 rows are empty or not finite"):
+            _run_score_pipeline(
+                self._model("identity"),
+                frame.lazy(),
+                task="regression",
+                output_col="prediction",
+            ).collect()
 
     def _frame(self) -> pl.DataFrame:
         return pl.DataFrame({"age": [10.0, 20.0, 30.0], "exposure": [2.0, 3.0, 4.0]})
@@ -1055,6 +1092,7 @@ class TestDeployScorerOffset:
             target_type="Float64",
             task="regression",
             offset_column="exposure",
+            offset_link="log",
         )
         contract_path = haute_scratch / CONTRACT_FILENAME
         save_contract(contract, contract_path)

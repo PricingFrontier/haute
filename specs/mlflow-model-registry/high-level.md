@@ -149,10 +149,12 @@ Out of scope (owned elsewhere):
   against the features its own file names. A CatBoost
   model with no declaration scores with no offset, the full-policy-term basis
   a quote is priced on (an exposure of one adds nothing to a log-link model).
-  A declared offset whose column the scoring input lacks, or whose value a row
-  leaves null, scores the same way, for every model family: an exposure of one
-  under a log link, an additive offset of zero otherwise. A zero or negative
-  exposure is still refused.
+  A declared exposure (a log-link offset) whose column the scoring input lacks,
+  or whose value a row leaves null, scores the same way, for every model family:
+  as an exposure of one. A zero or negative exposure is still refused. An
+  additive (identity-link) offset is a base premium, not an exposure, so it has
+  no full-term value: a missing column, or a null or non-finite value, is
+  refused naming it.
 - A model trained outside Haute scores like any other, with no contract and no
   offset: a CatBoost or GLM file describes itself, and an XGBoost (`.ubj`),
   LightGBM (`.lgbm`) or t-boost (`.tboost`) file without the record Haute
@@ -223,10 +225,11 @@ Out of scope (owned elsewhere):
 - Before a prediction is attempted, the input schema is checked against
   the model's declared features: every feature must be present, with
   categorical columns presented as non-numeric — and, if the model declares a trained-with
-  offset/exposure column, that column must also be present. A model bound to a
+  additive offset, that column must also be present (a missing exposure scores as a
+  full policy term). A model bound to a
   feature contract is first checked against it exactly as the deploy scorer checks
   a request: a feature missing or typed differently from training (integer and
-  float widths collapse, String and Categorical are one) or a declared offset
+  float widths collapse, String and Categorical are one) or a declared additive offset
   column absent is refused with the deploy scorer's message, in the preview, a
   batch run and the trace alike. Any of these failing raises
   before prediction runs; schema-validation results are memoised for repeated
@@ -329,9 +332,10 @@ Out of scope (owned elsewhere):
   order: a reordered input can never misalign them, and is never refused. A
   missing feature would silently produce a wrong-but-plausible prediction
   rather than an error, so feature presence and categorical dtype are checked
-  before any `predict()` call (a missing offset is not a mismatch: it scores as
-  a full policy term), and a multiclass `predict_proba` output is rejected
-  rather than arbitrarily picking one class's column.
+  before any `predict()` call (a missing exposure is not a mismatch: it scores
+  as a full policy term; a missing additive offset is), and a multiclass
+  `predict_proba` output is rejected rather than arbitrarily picking one
+  class's column.
 - **The model family registry lives in its own leaf module.**
   `_model_flavors.py` has no dependency on the rest of `haute` (loaders and
   offset readers are bound lazily by module path), specifically so that
@@ -435,9 +439,9 @@ Out of scope (owned elsewhere):
   model are treated as a programming or library-contract error, not
   corruption — they are never retried and propagate immediately with
   their real stack trace.
-- A scoring input that fails the feature contract (missing features or a
-  categorical column with numeric dtype): `FeatureMismatchError` with the
-  relevant expected/actual context. A categorical
+- A scoring input that fails the feature contract (missing features, a
+  categorical column with numeric dtype, or a missing additive offset):
+  `FeatureMismatchError` with the relevant expected/actual context. A categorical
   value is never such a failure.
 - An unsupported or misspelled scoring flavor reaching `score_frame()`:
   `ConfigError` — never silently treated as pyfunc.
