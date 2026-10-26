@@ -62,7 +62,7 @@ function conditionsParts(conditions: Condition[], match: "all" | "any"): Summary
 }
 
 function exprParts(expr: Expr): SummaryPart[] {
-  if (expr.type === "operand" || expr.type === "binary" || expr.type === "function") {
+  if (expr.type === "operand" || expr.type === "binary" || expr.type === "function" || expr.type === "sum_horizontal") {
     // A formula typed as text is summarised exactly as typed; otherwise as
     // the formula grammar would print it.
     if (typeof expr.text === "string") return expr.text.length > 0 ? [code(expr.text)] : [missing("formula")]
@@ -97,6 +97,8 @@ function exprParts(expr: Expr): SummaryPart[] {
     }
     case "concat":
       return [code(`join(${expr.parts.map((part) => partsText(operandParts(part))).join(", ")})`)]
+    case "sum_horizontal":
+      return [code(`sum_horizontal(${expr.parts.map((part) => partsText(operandParts(part))).join(", ")})`)]
   }
 }
 

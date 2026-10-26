@@ -201,6 +201,7 @@ export function exprColumns(expr: Expr): string[] {
         ...conditionColumns(expr.where?.conditions ?? []),
       ]
     case "concat":
+    case "sum_horizontal":
       return expr.parts.flatMap(operandColumns)
   }
 }

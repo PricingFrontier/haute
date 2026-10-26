@@ -16,7 +16,7 @@ import type { GlobalConstantType } from "../../../utils/globalConstants"
 import { ALL_CONSTANT_TYPES, useFittingConstants } from "./useFittingConstants"
 import { completionMatches } from "./completion"
 import { exprColumns, type ColumnInfo } from "./derivedColumns"
-import { FormulaError, callAtCaret, displayFormula, formulaText, functionNamed, parseFormula, renameColumnInFormula, typedAsFormula } from "./formula"
+import { FormulaError, callAtCaret, displayFormula, formulaText, parseFormula, renameColumnInFormula, typedAsFormula } from "./formula"
 import {
   AGGREGATION_OPTIONS,
   BINARY_OPERATORS,
@@ -26,6 +26,7 @@ import {
   DEFAULT_JOIN_ORDER,
   DTYPE_OPTIONS,
   FILL_STRATEGY_OPTIONS,
+  FORMULA_FUNCTIONS,
   FUNCTIONS,
   JOIN_HOW_OPTIONS,
   JOIN_MAINTAIN_ORDER,
@@ -225,6 +226,7 @@ const EXPR_TYPES: Array<{ value: Expr["type"]; label: string }> = [
   { value: "conditional", label: "If-then" },
   { value: "window", label: "Window" },
   { value: "concat", label: "Join text" },
+  { value: "sum_horizontal", label: "Sum across" },
 ]
 
 /** The "Computed as" select: choosing a type starts a fresh expression of that type. */
@@ -301,9 +303,9 @@ function formulaCompletions(draft: string, caret: number, columns: string[], var
         : { value: `var:${name}`, label: name, note: "variable" },
     ),
     ...constantEntries,
-    ...FUNCTIONS.filter((f) => f.value.startsWith(lower) && f.value !== lower).map((f) => ({ value: `fn:${f.value}`, label: f.value, note: f.label === f.value ? null : f.label, mark: "ƒ" })),
+    ...FORMULA_FUNCTIONS.filter((f) => f.value.startsWith(lower) && f.value !== lower).map((f) => ({ value: `fn:${f.value}`, label: f.value, note: f.label === f.value ? null : f.label, mark: "ƒ" })),
   ]
-  const exact = columns.includes(prefix) || variables.includes(prefix) || constants.includes(prefix) || functionNamed(prefix) !== undefined ? prefix : null
+  const exact = columns.includes(prefix) || variables.includes(prefix) || constants.includes(prefix) || FORMULA_FUNCTIONS.some((f) => f.value === lower) ? prefix : null
   return { prefix, entries, exact }
 }
 
@@ -661,6 +663,8 @@ function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: 
       return <WindowEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
     case "concat":
       return <ConcatEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
+    case "sum_horizontal":
+      return <SumAcrossEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
   }
 }
 
@@ -858,6 +862,28 @@ function ConcatEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { ty
         </span>
       </Sentence>
     </>
+  )
+}
+
+/** A sum across two or more parts, each a column or any expression. */
+function SumAcrossEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "sum_horizontal" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {
+  const operandProps = anyOperand(ctx, depth + 1)
+  return (
+    <Field label="Sum of">
+      <RowList
+        rows={expr.parts}
+        onChange={(parts) => onChange({ ...expr, parts })}
+        label="Part"
+        addLabel="Add part"
+        min={2}
+        create={(): Operand => ({ kind: "column", name: "" })}
+        renderRow={(part, set, index) => (
+          <div className="flex-1 basis-40 min-w-0">
+            <OperandField value={part} onChange={set} ariaLabel={`Part ${index + 1}`} {...operandProps} />
+          </div>
+        )}
+      />
+    </Field>
   )
 }
 

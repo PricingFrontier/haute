@@ -181,6 +181,8 @@ describe("stepProblem", () => {
   it.each([
     ["function without args", { id: "w", kind: "with_column", name: "n", expr: { type: "function", fn: "round", operand: col("a") } }, /function arguments/],
     ["conditional without conditions", { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", branches: [{ match: "all", then: col("a") }], otherwise: col("b") } }, /conditions/],
+    ["sum across without parts", { id: "s", kind: "with_column", name: "t", expr: { type: "sum_horizontal" } }, /missing its parts/],
+    ["sum across with a malformed part", { id: "s", kind: "with_column", name: "t", expr: { type: "sum_horizontal", parts: [col("a"), "b"] } }, /part 2 is missing its value/],
     ["conditional without branches", { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", branches: [], otherwise: col("b") } }, /missing its branches/],
     ["conditional in the old shape", { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", match: "all", conditions: [], then: col("a"), otherwise: col("b") } }, /missing its branches/],
     ["later branch without a match", { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", branches: [{ match: "all", conditions: [], then: col("a") }, { conditions: [], then: col("a") }], otherwise: col("b") } }, /branch 2 is missing its match mode/],

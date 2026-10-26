@@ -324,6 +324,31 @@ describe("step forms only build schema-valid payloads", () => {
     expect(screen.getByRole("button", { name: "Aggregate every row" })).toBeInTheDocument()
   })
 
+  it("a sum across keeps two or more parts, as a structured expression or typed as a formula", () => {
+    const spy = vi.fn()
+    const step: Step = { id: "s", kind: "with_column", name: "total", expr: { type: "binary", left: { kind: "column", name: "premium" }, op: "*", right: { kind: "literal", type: "number", value: 1 }, text: "" } }
+    render(<Stateful initial={step} spy={spy} />)
+    fireEvent.change(screen.getByLabelText("Expression type"), { target: { value: "sum_horizontal" } })
+    let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toEqual({ type: "sum_horizontal", parts: [{ kind: "column", name: "" }, { kind: "column", name: "" }] })
+    expect(screen.queryByRole("button", { name: "Remove part 1" })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Add part" }))
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toMatchObject({ parts: [{}, {}, {}] })
+    expect(stepProblem(latest)).toBeNull()
+    cleanup()
+    // Typed in the formula box it stays a formula, completed like any function.
+    render(<Stateful initial={step} spy={spy} />)
+    const box = screen.getByLabelText("Formula")
+    fireEvent.change(box, { target: { value: "sum_h", selectionStart: 5 } })
+    expect(screen.getByRole("option", { name: /sum_horizontal/ })).toHaveTextContent("sum across columns, skipping missing values")
+    fireEvent.change(box, { target: { value: "sum_horizontal(premium, region)" } })
+    fireEvent.blur(box)
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toEqual({ type: "sum_horizontal", parts: [{ kind: "column", name: "premium" }, { kind: "column", name: "region" }], text: "sum_horizontal(premium, region)" })
+    expect(summarizeStep(latest)).toBe("total = sum_horizontal(premium, region)")
+  })
+
   it("text joins keep at least two parts and a separator", () => {
     const spy = vi.fn()
     const step: Step = {

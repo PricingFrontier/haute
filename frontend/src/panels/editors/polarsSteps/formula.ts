@@ -10,7 +10,8 @@
  * written `date('2024-01-01')`, and functions take the catalogue's names in
  * any case (the kept text spells them as the catalogue does) with their extra
  * arguments as plain values, except an operand argument (clip's bounds,
- * fill_null's value), which is any formula. A pipeline global constant is its bare name
+ * fill_null's value), which is any formula; `sum_horizontal(a, b, ...)` sums
+ * two or more formulas. A pipeline global constant is its bare name
  * (or `global_constants.<name>`), also as an extra argument; a bare name is an
  * earlier variable first, then one of the `constants` given, then a column, and
  * backticks always name a column. The editor leaves out of `constants` any
@@ -19,7 +20,7 @@
  * Expression types text cannot express (windows, conditionals, text joins)
  * make `formulaText` return null, and the structured editor takes over.
  */
-import { CAST_DTYPES, FUNCTIONS, OPERAND_ARGUMENT_LITERALS, isOperandArgument, literal, type FunctionArg } from "./catalogue"
+import { CAST_DTYPES, FORMULA_FUNCTIONS, FUNCTIONS, OPERAND_ARGUMENT_LITERALS, SUM_HORIZONTAL, isOperandArgument, literal, type FunctionArg } from "./catalogue"
 import type { BinaryOperator, CastDtype, Expr, FunctionArgValue, FunctionName, LiteralOperand, Operand } from "./types"
 
 const PRECEDENCE: Record<BinaryOperator, number> = { "+": 1, "-": 1, "*": 2, "/": 2, "//": 2, "%": 2, "**": 3 }
@@ -273,8 +274,9 @@ class Parser {
       this.expect(")", "date() takes one date.")
       return { type: "operand", operand: literal("date", value.value) }
     }
+    if (name.toLowerCase() === SUM_HORIZONTAL.value) return this.sumAcross(token)
     const spec = functionNamed(name)
-    if (!spec) throw new FormulaError(`Unknown function "${name}". Functions: ${FUNCTIONS.map((f) => f.value).join(", ")}.`, token.start)
+    if (!spec) throw new FormulaError(`Unknown function "${name}". Functions: ${FORMULA_FUNCTIONS.map((f) => f.value).join(", ")}.`, token.start)
     this.calls.push({ start: token.start, end: token.end, name: spec.value })
     const operand = asOperand(this.additive())
     const args: FunctionArgValue[] = []
@@ -285,6 +287,19 @@ class Parser {
     }
     this.expect(")", spec.args.length === 0 ? `Expected ")" after ${this.previous()}: ${spec.value}() takes one argument.` : count)
     return { type: "function", fn: spec.value as FunctionName, operand, args }
+  }
+
+  /** `sum_horizontal(a, b, ...)`, its opening bracket taken: two or more formulas. */
+  private sumAcross(token: Extract<Token, { kind: "name" }>): Expr {
+    this.calls.push({ start: token.start, end: token.end, name: SUM_HORIZONTAL.value })
+    const parts = [asOperand(this.additive())]
+    while (this.isPunct(this.peek(), ",")) {
+      this.take()
+      parts.push(asOperand(this.additive()))
+    }
+    this.expect(")", `Expected ")" after ${this.previous()}.`)
+    if (parts.length < 2) throw new FormulaError("sum_horizontal() takes two or more values.", token.start)
+    return { type: "sum_horizontal", parts }
   }
 
   /** An operand argument: any formula, its plain values of the argument's types only. */
@@ -375,8 +390,8 @@ export function parseFormula(text: string, variables: readonly string[] = [], co
 }
 
 /** Expression types a formula can produce and therefore carry the typed text. */
-function isFormulaType(expr: Expr): expr is Extract<Expr, { type: "operand" | "binary" | "function" }> {
-  return expr.type === "operand" || expr.type === "binary" || expr.type === "function"
+function isFormulaType(expr: Expr): expr is Extract<Expr, { type: "operand" | "binary" | "function" | "sum_horizontal" }> {
+  return expr.type === "operand" || expr.type === "binary" || expr.type === "function" || expr.type === "sum_horizontal"
 }
 
 /** Whether the expression was typed as a formula (it carries its text). */
@@ -400,6 +415,8 @@ export function withoutFormulaText(expr: Expr): Expr {
       return { ...expr, parts: expr.parts.map(strip) }
     case "window":
       return expr.of ? { ...expr, of: strip(expr.of) } : expr
+    case "sum_horizontal":
+      return { type: "sum_horizontal", parts: expr.parts.map(strip) }
   }
 }
 
@@ -519,6 +536,11 @@ function exprText(expr: Expr, variables: ReadonlySet<string>, constants: Readonl
       })
       if (args.some((arg) => arg === null)) return null
       return `${expr.fn}(${[receiver, ...args].join(", ")})`
+    }
+    case "sum_horizontal": {
+      // Each part sits between commas, so it needs no brackets.
+      const parts = expr.parts.map((part) => (part.kind === "expr" ? exprText(part.expr, variables, constants) : operandText(part, variables, null, constants)))
+      return parts.some((part) => part === null) ? null : `${SUM_HORIZONTAL.value}(${parts.join(", ")})`
     }
     default:
       return null

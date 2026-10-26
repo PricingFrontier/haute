@@ -27,6 +27,8 @@ describe("formula text", () => {
     "clip(irpm, -0.25, 0.25)",
     "divide(premium, limit)",
     "divide(premium, limit - excess) * 100",
+    "sum_horizontal(load_a, load_b, claims * 0.1)",
+    "1 + sum_horizontal(load_a, load_b)",
     "replace(region, 'north', 'N')",
     "`my column` + 1",
     "'text' + region",
@@ -185,6 +187,20 @@ describe("operand arguments", () => {
   })
 })
 
+describe("sum_horizontal", () => {
+  it("sums two or more formulas as its own expression type, kept as typed", () => {
+    const parsed = parseFormula("SUM_HORIZONTAL(a, b * 2)")
+    expect(parsed).toEqual({ type: "sum_horizontal", parts: [col("a"), ex(binary(col("b"), "*", num(2)))], text: "sum_horizontal(a, b * 2)" })
+    expect(displayFormula(parsed)).toBe("sum_horizontal(a, b * 2)")
+    expect(formulaText({ type: "sum_horizontal", parts: [col("a"), ex({ type: "window", agg: "sum", of: col("b"), over: [] })] })).toBeNull()
+  })
+
+  it("needs two or more values", () => {
+    expect(() => parseFormula("sum_horizontal(a)")).toThrow("sum_horizontal() takes two or more values.")
+    expect(() => parseFormula("sum_horizontal()")).toThrow(FormulaError)
+  })
+})
+
 describe("renameColumnInFormula", () => {
   it("renames column references only, never quoted text, functions, keywords or variables", () => {
     expect(renameColumnInFormula('replace(primium, "primium", "discount")', "primium", "premium")).toBe('replace(premium, "primium", "discount")')
@@ -203,6 +219,7 @@ describe("renameColumnInFormula", () => {
   it("renames a column inside an operand argument", () => {
     expect(renameColumnInFormula("clip(irpm, -cap, cap) + round(cap, 2)", "cap", "limit")).toBe("clip(irpm, -limit, limit) + round(limit, 2)")
     expect(renameColumnInFormula("fill_null(a, (b + 1) * 2)", "b", "base")).toBe("fill_null(a, (base + 1) * 2)")
+    expect(renameColumnInFormula("sum_horizontal(a, b, b * 2)", "b", "base")).toBe("sum_horizontal(a, base, base * 2)")
   })
 })
 

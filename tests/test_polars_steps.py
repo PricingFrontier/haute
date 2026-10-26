@@ -2761,6 +2761,10 @@ def branches(*arms: dict[str, Any], otherwise: dict[str, Any]) -> dict[str, Any]
     return {"type": "conditional", "branches": list(arms), "otherwise": otherwise}
 
 
+def sum_across(*parts: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "sum_horizontal", "parts": list(parts)}
+
+
 #: The IRPM clip as an if-then: the cap above, its negative below, the value between.
 _CAPPED = branches(
     branch([cond("irpm", "gt", value=col("cap"))], col("cap")),
@@ -2871,6 +2875,17 @@ _CAPPED = branches(
             '    .alias("t")\n'
             ")",
         ),
+        (
+            step(
+                "sa",
+                "with_column",
+                name="t",
+                expr=sum_across(col("a"), col("b"), ex(binary(col("c"), "*", num(2)))),
+            ),
+            "df = df.with_columns(\n"
+            '    pl.sum_horizontal(pl.col("a"), pl.col("b"), pl.col("c") * 2).alias("t")\n'
+            ")",
+        ),
     ],
     ids=[
         "filtered-sum",
@@ -2885,6 +2900,7 @@ _CAPPED = branches(
         "divide-by-a-column",
         "divide-by-a-formula",
         "if-then-with-two-branches",
+        "sum-across",
     ],
 )
 def test_expression_additions_render(kind_step: dict[str, Any], expected: str) -> None:
@@ -2972,6 +2988,19 @@ def test_expression_additions_render(kind_step: dict[str, Any], expected: str) -
             ),
             "Expression branch 2 condition 1 operator must be one of",
         ),
+        (
+            step("sa", "with_column", name="t", expr=sum_across(col("a"))),
+            "Expression sum across needs at least two parts",
+        ),
+        (
+            step(
+                "sa",
+                "with_column",
+                name="t",
+                expr={**sum_across(col("a"), col("b")), "text": 3},
+            ),
+            "Expression formula text must be a string",
+        ),
     ],
     ids=[
         "positional-aggregate",
@@ -2989,6 +3018,8 @@ def test_expression_additions_render(kind_step: dict[str, Any], expected: str) -
         "if-then-branch-without-conditions",
         "if-then-in-the-old-shape",
         "if-then-later-branch-names-itself",
+        "sum-across-one-part",
+        "sum-across-with-malformed-text",
     ],
 )
 def test_expression_additions_reject(kind_step: dict[str, Any], fragment: str) -> None:
@@ -3109,6 +3140,16 @@ def test_a_row_takes_the_first_branch_whose_conditions_hold() -> None:
     assert out["t"].to_list() == ["positive", "other", "positive", "other"]
 
 
+def test_a_sum_across_skips_missing_parts() -> None:
+    frame = pl.DataFrame({"a": [1.0, None, None], "b": [2.0, None, 3.0]})
+    out = _run_steps(
+        [source(), step("sa", "with_column", name="t", expr=sum_across(col("a"), col("b")))],
+        frame,
+    )
+    # A row whose parts are all missing sums to 0, as Fill missing (0) and a formula would.
+    assert out["t"].to_list() == [3.0, 0.0, 3.0]
+
+
 def test_a_constant_in_an_operand_argument_is_checked_against_the_argument_types() -> None:
     rendered = render_polars_steps(
         [source(), step("c", "with_column", name="t", expr=fn("fill_null", col("a"), _CAP))],
@@ -3154,6 +3195,15 @@ def test_generated_expression_additions_stay_inside_the_lineage_model() -> None:
                 ),
             ),
             {"premium", "qid", "channel"},
+        ),
+        "sum across": (
+            step(
+                "sa",
+                "with_column",
+                name="t",
+                expr=sum_across(col("premium"), ex(binary(col("qid"), "*", num(2)))),
+            ),
+            {"premium", "qid"},
         ),
         "clip between columns": (
             step(

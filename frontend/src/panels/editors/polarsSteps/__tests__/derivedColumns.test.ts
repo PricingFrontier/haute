@@ -260,6 +260,11 @@ describe("unknown columns", () => {
     expect(columnsReadBy(banded)).toEqual(["premium", "regoin", "base"])
   })
 
+  it("reads the columns a sum across adds up", () => {
+    const total: Step = { id: "s", kind: "with_column", name: "t", expr: { type: "sum_horizontal", parts: [{ kind: "column", name: "premium" }, { kind: "column", name: "lod" }] } }
+    expect(unknownColumnsOf(total, columnsBeforeStep(SOURCE, [source("quotes"), total], 1), SOURCE)).toEqual(["lod"])
+  })
+
   it("reads the columns a window's row filter tests", () => {
     const where = { match: "all" as const, conditions: [{ column: "chanel", operator: "is_null" as const }] }
     const filtered: Step = { id: "w", kind: "with_column", name: "t", expr: { type: "window", agg: "sum", of: { kind: "column", name: "premium" }, over: ["region"], where } }

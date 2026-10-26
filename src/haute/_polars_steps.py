@@ -1406,6 +1406,18 @@ class _Renderer:
                 for i, part in enumerate(parts)
             ]
             return f"pl.concat_str([{', '.join(rendered_parts)}], separator={separator!r})"
+        if kind == "sum_horizontal":
+            self._keys(expr, ("type", "parts", "text"), label)
+            self._formula_text(expr, label)
+            parts = expr.get("parts")
+            if not isinstance(parts, list) or len(parts) < 2:
+                raise self.fail(f"{label} sum across needs at least two parts.")
+            rendered_parts = [
+                self._operand(part, f"{label} part {i + 1}", expr=True)
+                for i, part in enumerate(parts)
+            ]
+            # Polars skips missing parts, so a row with every part missing sums to 0.
+            return f"pl.sum_horizontal({', '.join(rendered_parts)})"
         raise self.fail(f"Unknown expression type {kind!r}.")
 
     def _window(self, expr: Mapping[str, Any], label: str) -> str:

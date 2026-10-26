@@ -100,6 +100,8 @@ export type Expr =
       where?: ConditionGroup
     }
   | { type: "concat"; parts: Operand[]; separator: string }
+  /** `pl.sum_horizontal`: missing parts are skipped, so a row with every part missing sums to 0. */
+  | { type: "sum_horizontal"; parts: Operand[]; text?: string }
 
 export type StepBase = { id: string }
 

@@ -270,6 +270,11 @@ export const FUNCTIONS: Array<{ value: FunctionName; label: string; args: Functi
 ]
 
 /** The format a text column's dates start from: ISO dates, and ISO date and time. */
+/** The sum across columns, a formula function of two or more values that is its own expression type. */
+export const SUM_HORIZONTAL = { value: "sum_horizontal", label: "sum across columns, skipping missing values" } as const
+/** Every function a formula can call: the catalogue's, then the sum across. */
+export const FORMULA_FUNCTIONS: ReadonlyArray<{ value: string; label: string }> = [...FUNCTIONS, SUM_HORIZONTAL]
+
 export const DATE_FORMAT_DEFAULTS: Record<"Date" | "Datetime", string> = {
   Date: "%Y-%m-%d",
   Datetime: "%Y-%m-%d %H:%M:%S",
@@ -369,6 +374,7 @@ export function exprTypeProblem(expr: Expr, typeOf: (name: string) => string | n
     case "conditional":
       return expr.branches.map((b) => operandProblem(b.then)).find((problem) => problem !== null) ?? operandProblem(expr.otherwise)
     case "concat":
+    case "sum_horizontal":
       return expr.parts.map(operandProblem).find((problem) => problem !== null) ?? null
     case "window": {
       if (expr.of?.kind !== "column") return expr.of ? operandProblem(expr.of) : null
@@ -449,6 +455,8 @@ export function defaultExpr(type: Expr["type"], column = ""): Expr {
       return { type, agg: "sum", of: operand, over: [] }
     case "concat":
       return { type, parts: [operand, { kind: "column", name: "" }], separator: " " }
+    case "sum_horizontal":
+      return { type, parts: [operand, { kind: "column", name: "" }] }
   }
 }
 
@@ -684,6 +692,14 @@ export function exprProblem(value: unknown, where: string, depth = 1): string | 
         if (problem) return problem
       }
       return null
+    case "sum_horizontal":
+      if (expr.text !== undefined && typeof expr.text !== "string") return `${where} has malformed formula text.`
+      if (!Array.isArray(expr.parts)) return `${where} is missing its parts.`
+      for (const [index, part] of expr.parts.entries()) {
+        const problem = operandProblem(part, `${where} part ${index + 1}`, depth)
+        if (problem) return problem
+      }
+      return null
     default:
       return `${where} has an unknown expression type.`
   }
@@ -866,6 +882,8 @@ function canonicalExpr(expr: Expr): Expr {
     }
     case "concat":
       return { ...expr, parts: expr.parts.map(canonicalOperand), separator: expr.separator ?? "" }
+    case "sum_horizontal":
+      return { ...expr, parts: expr.parts.map(canonicalOperand) }
     case "conditional":
       return {
         ...expr,
