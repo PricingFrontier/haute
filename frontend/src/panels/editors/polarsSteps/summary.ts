@@ -79,7 +79,7 @@ function exprParts(expr: Expr): SummaryPart[] {
       return [text("if"), ...conditionsParts(expr.conditions, expr.match), text("then"), ...operandParts(expr.then), text("else"), ...operandParts(expr.otherwise)]
     case "window": {
       const label = WINDOW_AGGREGATIONS.find((a) => a.value === expr.agg)?.label ?? expr.agg
-      const subject = COLUMNLESS_AGGREGATIONS.has(expr.agg) ? [text(label)] : [text(label), op("of"), column(expr.column)]
+      const subject = COLUMNLESS_AGGREGATIONS.has(expr.agg) ? [text(label)] : [text(label), op("of"), ...operandParts(expr.of)]
       const over = expr.over.length ? [op("over"), ...list(expr.over, (name) => [column(name)])] : [op("over all rows")]
       const order = expr.orderBy?.length ? [op("ordered by"), ...list(expr.orderBy, (k) => [column(k.column), ...(k.descending ? [op("desc")] : [])])] : []
       const filter = expr.where ? [op("where"), ...conditionsParts(expr.where.conditions, expr.where.match)] : []

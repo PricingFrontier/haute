@@ -6,7 +6,7 @@
  * step, so a name outside it is unknown there; `exact` says it also holds
  * nothing else, so a step's column change can be stated.
  */
-import { COLUMNLESS_AGGREGATIONS, stepProblem } from "./catalogue"
+import { stepProblem } from "./catalogue"
 import type { Condition, Expr, JoinStep, Operand, Step } from "./types"
 
 /** A column as the preview reports it. */
@@ -194,9 +194,8 @@ export function exprColumns(expr: Expr): string[] {
     case "conditional":
       return [...conditionColumns(expr.conditions), ...operandColumns(expr.then), ...operandColumns(expr.otherwise)]
     case "window":
-      // A columnless aggregate (a row count, a row number) may be saved without its column.
       return [
-        ...(COLUMNLESS_AGGREGATIONS.has(expr.agg) || typeof expr.column !== "string" ? [] : [expr.column]),
+        ...operandColumns(expr.of),
         ...expr.over,
         ...(expr.orderBy ?? []).map((k) => k.column),
         ...conditionColumns(expr.where?.conditions ?? []),

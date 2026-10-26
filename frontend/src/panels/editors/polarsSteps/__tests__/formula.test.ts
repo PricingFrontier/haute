@@ -126,8 +126,8 @@ describe("formula text", () => {
   })
 
   it("has no text for expressions the formula grammar cannot express", () => {
-    expect(formulaText({ type: "window", agg: "mean", column: "premium", over: ["region"] })).toBeNull()
-    expect(formulaText(binary(col("premium"), "-", ex({ type: "window", agg: "mean", column: "premium", over: ["region"] })))).toBeNull()
+    expect(formulaText({ type: "window", agg: "mean", of: { kind: "column", name: "premium" }, over: ["region"] })).toBeNull()
+    expect(formulaText(binary(col("premium"), "-", ex({ type: "window", agg: "mean", of: { kind: "column", name: "premium" }, over: ["region"] })))).toBeNull()
     expect(formulaText({ type: "concat", parts: [col("a"), col("b")], separator: "-" })).toBeNull()
   })
 

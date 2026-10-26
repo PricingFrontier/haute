@@ -1670,7 +1670,10 @@
         "expr": {
           "type": "window",
           "agg": "mean",
-          "column": "premium",
+          "of": {
+            "kind": "column",
+            "name": "premium"
+          },
           "over": [
             "region"
           ]
@@ -1683,7 +1686,10 @@
         "expr": {
           "type": "window",
           "agg": "median",
-          "column": "premium",
+          "of": {
+            "kind": "column",
+            "name": "premium"
+          },
           "over": [
             "region",
             "channel"
@@ -1697,7 +1703,10 @@
         "expr": {
           "type": "window",
           "agg": "dense_rank",
-          "column": "premium",
+          "of": {
+            "kind": "column",
+            "name": "premium"
+          },
           "over": [
             "region"
           ],
@@ -1720,7 +1729,6 @@
         "expr": {
           "type": "window",
           "agg": "row_number",
-          "column": "claim_id",
           "over": [
             "policy_id"
           ],
@@ -1743,7 +1751,10 @@
         "expr": {
           "type": "window",
           "agg": "cum_sum",
-          "column": "amount",
+          "of": {
+            "kind": "column",
+            "name": "amount"
+          },
           "over": [
             "policy_id"
           ],
@@ -1794,7 +1805,10 @@
         "expr": {
           "type": "window",
           "agg": "shift",
-          "column": "premium",
+          "of": {
+            "kind": "column",
+            "name": "premium"
+          },
           "over": [
             "policy_id"
           ],
@@ -2570,7 +2584,10 @@
         "expr": {
           "type": "window",
           "agg": "forward_fill",
-          "column": "premium",
+          "of": {
+            "kind": "column",
+            "name": "premium"
+          },
           "over": [
             "policy_id"
           ],
@@ -2621,7 +2638,10 @@
         "expr": {
           "type": "window",
           "agg": "median",
-          "column": "premium",
+          "of": {
+            "kind": "column",
+            "name": "premium"
+          },
           "over": [
             "region"
           ]
@@ -2657,7 +2677,10 @@
         "expr": {
           "type": "window",
           "agg": "median",
-          "column": "premium",
+          "of": {
+            "kind": "column",
+            "name": "premium"
+          },
           "over": []
         }
       },
@@ -2865,7 +2888,6 @@
         "expr": {
           "type": "window",
           "agg": "row_number",
-          "column": "claim_id",
           "over": [
             "policy_id"
           ]
@@ -2966,7 +2988,10 @@
         "expr": {
           "type": "window",
           "agg": "sum",
-          "column": "quote_count",
+          "of": {
+            "kind": "column",
+            "name": "quote_count"
+          },
           "over": [
             "region"
           ]
@@ -2996,7 +3021,10 @@
         "expr": {
           "type": "window",
           "agg": "sum",
-          "column": "quote_count",
+          "of": {
+            "kind": "column",
+            "name": "quote_count"
+          },
           "over": []
         }
       },
@@ -3241,7 +3269,10 @@
         "expr": {
           "type": "window",
           "agg": "sum",
-          "column": "current_premium_total",
+          "of": {
+            "kind": "column",
+            "name": "current_premium_total"
+          },
           "over": []
         }
       },
@@ -3670,7 +3701,10 @@
         "expr": {
           "type": "window",
           "agg": "median",
-          "column": "premium",
+          "of": {
+            "kind": "column",
+            "name": "premium"
+          },
           "over": [
             "region",
             "age_band"
@@ -3761,7 +3795,6 @@
         "expr": {
           "type": "window",
           "agg": "row_number",
-          "column": "quote_id",
           "over": [
             "region"
           ]

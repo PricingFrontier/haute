@@ -28,9 +28,10 @@ import keyword
 import math
 import re
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from functools import partial
 from types import MappingProxyType
 from typing import Any, Literal
 
@@ -792,7 +793,11 @@ def _expression_refusal(node: object, schema: pl.Schema) -> str | None:
                 if remedy is not None:
                     return remedy
         if "agg" in node:
-            remedy = _duration_spread(node.get("column"), node.get("agg"), schema)
+            column = node.get("column")
+            of = node.get("of")
+            if isinstance(of, Mapping) and of.get("kind") == "column":
+                column = of.get("name")
+            remedy = _duration_spread(column, node.get("agg"), schema)
             if remedy is not None:
                 return remedy
         children: Sequence[object] = list(node.values())
@@ -1271,18 +1276,19 @@ class _Renderer:
 
     def _aggregate(
         self,
-        column: object,
+        receiver: Callable[[], str],
         agg: object,
         label: str,
         *,
         quantile: object = None,
         where: object = None,
     ) -> str:
+        """Render *agg* of the value *receiver* renders, which a row count never reads."""
         name, call = self._aggregate_call(agg, label, quantile)
         if where is None:
             if name == "len":
                 return "pl.len()"
-            return f"{self._column(column, f'{label} column')}{call}"
+            return f"{receiver()}{call}"
         where_group = self._object(where, f"{label} where")
         self._keys(where_group, ("match", "conditions"), f"{label} where")
         self.plain_operands += 1
@@ -1292,7 +1298,7 @@ class _Renderer:
             self.plain_operands -= 1
         if name == "len":
             return f"({predicate}).sum()"
-        return f"{self._column(column, f'{label} column')}.filter({predicate}){call}"
+        return f"{receiver()}.filter({predicate}){call}"
 
     def _aggregate_call(self, agg: object, label: str, quantile: object) -> tuple[str, str]:
         """Return the aggregate name and its rendered method call."""
@@ -1383,7 +1389,7 @@ class _Renderer:
     def _window(self, expr: Mapping[str, Any], label: str) -> str:
         self._keys(
             expr,
-            ("type", "agg", "column", "over", "orderBy", "descending", "quantile", "where"),
+            ("type", "agg", "of", "over", "orderBy", "descending", "quantile", "where"),
             label,
         )
         over = self._str_list(expr.get("over"), f"{label} over", allow_empty=True)
@@ -1399,16 +1405,25 @@ class _Renderer:
                 f"{label} row filter needs an aggregate of the whole group, such as sum or "
                 f"mean; {agg!r} gives a value per row."
             )
+        if agg in ("len", "row_number"):
+            if "of" in expr:
+                raise self.fail(f"{label} {agg!r} takes no value to aggregate; remove its 'of'.")
+        elif "of" not in expr:
+            raise self.fail(f"{label} needs a value to aggregate: a column or an expression.")
         if agg == "row_number":
             # The idiom analysts write; the cardinality classifier recognises
             # a range bounded by ``pl.len()`` as one value per row.
             base = "pl.int_range(1, pl.len() + 1)"
         elif agg in AGGREGATIONS:
             base = self._aggregate(
-                expr.get("column"), agg, label, quantile=expr.get("quantile"), where=where
+                partial(self._window_value, expr.get("of"), label),
+                agg,
+                label,
+                quantile=expr.get("quantile"),
+                where=where,
             )
         else:
-            column = self._column(expr.get("column"), f"{label} column")
+            column = self._window_value(expr.get("of"), label)
             base = {
                 "cum_sum": f"{column}.cum_sum()",
                 "shift": f"{column}.shift(1)",
@@ -1442,6 +1457,13 @@ class _Renderer:
         if len(set(flags)) > 1:
             raise self.fail(f"{label} order columns must all share one direction.")
         return f"{base}.over({over!r}, order_by={columns!r}, descending={flags[0]!r})"
+
+    def _window_value(self, value: object, label: str) -> str:
+        """A window's value: a column, or a nested expression (a formula in brackets)."""
+        operand = self._object(value, f"{label} value")
+        if operand.get("kind") not in ("column", "expr"):
+            raise self.fail(f"{label} value must be a column or an expression.")
+        return self._operand(operand, f"{label} value", expr=True)
 
     def _function_arg(self, value: object, expected: str, label: str) -> str:
         operand = self._object(value, label)
@@ -1638,7 +1660,7 @@ class _Renderer:
                 raise self.fail(f"Aggregation name {name!r} is used more than once.")
             names.add(name)
             aggregate = self._aggregate(
-                entry.get("column"),
+                partial(self._column, entry.get("column"), f"{label} column"),
                 entry.get("agg"),
                 label,
                 quantile=entry.get("quantile"),

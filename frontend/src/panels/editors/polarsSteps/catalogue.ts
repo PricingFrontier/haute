@@ -363,10 +363,13 @@ export function exprTypeProblem(expr: Expr, typeOf: (name: string) => string | n
       return operandProblem(expr.then) ?? operandProblem(expr.otherwise)
     case "concat":
       return expr.parts.map(operandProblem).find((problem) => problem !== null) ?? null
-    case "window":
-      return aggregationTakes(expr.agg, expr.column ? typeOf(expr.column) : null)
+    case "window": {
+      if (expr.of?.kind !== "column") return expr.of ? operandProblem(expr.of) : null
+      const name = expr.of.name
+      return aggregationTakes(expr.agg, name ? typeOf(name) : null)
         ? null
-        : `${expr.agg} takes numbers, and ${expr.column} is a duration: turn it into days first (total_days).`
+        : `${expr.agg} takes numbers, and ${name} is a duration: turn it into days first (total_days).`
+    }
   }
 }
 
@@ -435,7 +438,7 @@ export function defaultExpr(type: Expr["type"], column = ""): Expr {
     case "conditional":
       return { type, match: "all", conditions: [defaultCondition(column)], then: literal("number", 1), otherwise: literal("number", 0) }
     case "window":
-      return { type, agg: "sum", column, over: [] }
+      return { type, agg: "sum", of: operand, over: [] }
     case "concat":
       return { type, parts: [operand, { kind: "column", name: "" }], separator: " " }
   }
@@ -622,11 +625,18 @@ export function exprProblem(value: unknown, where: string, depth = 1): string | 
         ?? operandProblem(expr.otherwise, `${where} otherwise branch`, depth)
       )
     case "window": {
-      // The renderer ignores `column` for columnless aggregates, defaults an
-      // order key's `descending` to false, and the forms canonicalise both.
+      // The renderer defaults an order key's `descending` to false, and the
+      // forms canonicalise it.
       if (typeof expr.agg !== "string") return `${where} is missing its aggregate.`
-      const columnless = COLUMNLESS_AGGREGATIONS.has(expr.agg as WindowAggregation)
-      if (typeof expr.column !== "string" && !(columnless && expr.column === undefined)) return `${where} is missing its aggregate.`
+      if (COLUMNLESS_AGGREGATIONS.has(expr.agg as WindowAggregation)) {
+        if (expr.of !== undefined) return `${where} counts rows and takes no value.`
+      } else {
+        if (!isShape(expr.of, "object")) return `${where} is missing the value it aggregates.`
+        const of = expr.of as Record<string, unknown>
+        if (of.kind !== "column" && of.kind !== "expr") return `${where} aggregates a column or an expression.`
+        const problem = operandProblem(of, `${where} value`, depth)
+        if (problem) return problem
+      }
       if (expr.descending !== undefined && typeof expr.descending !== "boolean") return `${where} has a malformed rank direction.`
       if (expr.quantile !== undefined && typeof expr.quantile !== "number") return `${where} has a malformed quantile.`
       if (expr.where !== undefined) {
@@ -788,8 +798,8 @@ function fillProblem(value: unknown, where: string): string | null {
 /**
  * The step with every optional-on-the-backend field filled in, so forms and
  * summaries can read canonical shapes: a null literal carries `value: null`,
- * a window always has a `column` and each order key a `descending`, and a
- * concat has a `separator`. Only steps `stepProblem` accepts are canonicalised.
+ * a window's order key a `descending`, and a concat a `separator`. Only steps
+ * `stepProblem` accepts are canonicalised.
  */
 export function canonicalStep(step: Step): Step {
   switch (step.kind) {
@@ -826,7 +836,7 @@ function canonicalExpr(expr: Expr): Expr {
     case "window": {
       const orderBy = expr.orderBy?.map((k) => ({ column: k.column, descending: k.descending ?? false }))
       const where = expr.where ? { where: { ...expr.where, conditions: expr.where.conditions.map(canonicalCondition) } } : {}
-      return { ...expr, column: expr.column ?? "", ...(orderBy ? { orderBy } : {}), ...where }
+      return { ...expr, ...(expr.of ? { of: canonicalOperand(expr.of) } : {}), ...(orderBy ? { orderBy } : {}), ...where }
     }
     case "concat":
       return { ...expr, parts: expr.parts.map(canonicalOperand), separator: expr.separator ?? "" }

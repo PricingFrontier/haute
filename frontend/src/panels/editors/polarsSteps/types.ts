@@ -81,7 +81,8 @@ export type Expr =
   | {
       type: "window"
       agg: WindowAggregation
-      column: string
+      /** The value aggregated: a column or a nested expression; absent for a row count and a row number. */
+      of?: Operand
       over: string[]
       /** Row order within each partition; needs at least one `over` column. */
       orderBy?: OrderKey[]

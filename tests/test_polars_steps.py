@@ -643,7 +643,7 @@ def test_free_code_validation_never_executes_the_snippet(tmp_path: Path) -> None
                 "x",
                 "with_column",
                 name="n",
-                expr={"type": "window", "agg": "sum", "column": "a", "over": ["k"]},
+                expr={"type": "window", "agg": "sum", "of": col("a"), "over": ["k"]},
             ),
             'df = df.with_columns(pl.col("a").sum().over(["k"]).alias("n"))',
         ),
@@ -936,13 +936,16 @@ def null() -> dict[str, Any]:
 def window(
     name: str,
     agg: str,
-    column: str,
+    of: str | dict[str, Any] | None,
     over: list[str],
     order_by: list[tuple[str, bool]] | None = None,
     descending: bool | None = None,
     where: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    expr: dict[str, Any] = {"type": "window", "agg": agg, "column": column, "over": over}
+    """A window step; *of* names a column, or is an operand, or None for a count."""
+    expr: dict[str, Any] = {"type": "window", "agg": agg, "over": over}
+    if of is not None:
+        expr["of"] = col(of) if isinstance(of, str) else of
     if order_by is not None:
         expr["orderBy"] = [{"column": c, "descending": d} for c, d in order_by]
     if descending is not None:
@@ -959,7 +962,7 @@ def window(
             window(
                 "rn",
                 "row_number",
-                "quote_id",
+                None,
                 ["region"],
                 [("premium", False), ("quote_id", False)],
             ),
@@ -1009,7 +1012,7 @@ def window(
             window("tot", "sum", "premium", []),
             'df = df.with_columns(pl.col("premium").sum().alias("tot"))',
         ),
-        (window("n", "len", "premium", []), 'df = df.with_columns(pl.len().alias("n"))'),
+        (window("n", "len", None, []), 'df = df.with_columns(pl.len().alias("n"))'),
         (
             step(
                 "x",
@@ -1248,7 +1251,7 @@ def test_window_quantile_renders() -> None:
             expr={
                 "type": "window",
                 "agg": "quantile",
-                "column": "premium",
+                "of": col("premium"),
                 "over": ["region"],
                 "quantile": 0.9,
             },
@@ -1268,12 +1271,12 @@ def test_window_quantile_renders() -> None:
     ("kind_step", "index", "fragment"),
     [
         (
-            window("rn", "row_number", "q", ["r"], [("a", False), ("b", True)]),
+            window("rn", "row_number", None, ["r"], [("a", False), ("b", True)]),
             1,
             "share one direction",
         ),
-        (window("rn", "row_number", "q", [], [("a", False)]), 1, "sort the frame instead"),
-        (window("rn", "row_number", "q", ["r"], []), 1, "at least one column"),
+        (window("rn", "row_number", None, [], [("a", False)]), 1, "sort the frame instead"),
+        (window("rn", "row_number", None, ["r"], []), 1, "at least one column"),
         (
             step(
                 "x",
@@ -1439,8 +1442,8 @@ def test_extended_vocabulary_executes(tmp_path: Path) -> None:
     by_qid = [("qid", False)]
     steps = [
         source("policies"),
-        window("rn", "row_number", "", ["region"], by_qid),
-        window("rn_desc", "row_number", "", ["region"], [("qid", True)]),
+        window("rn", "row_number", None, ["region"], by_qid),
+        window("rn_desc", "row_number", None, ["region"], [("qid", True)]),
         window("cs", "cum_sum", "premium", ["region"], by_qid),
         window("prev", "shift", "premium", ["region"], by_qid),
         window("rk", "dense_rank", "premium", ["region"], descending=True),
@@ -1455,7 +1458,7 @@ def test_extended_vocabulary_executes(tmp_path: Path) -> None:
             expr={
                 "type": "window",
                 "agg": "quantile",
-                "column": "premium",
+                "of": col("premium"),
                 "over": ["region"],
                 "quantile": 0.25,
             },
@@ -1785,7 +1788,7 @@ def fn(name: str, operand: dict[str, Any], *args: dict[str, Any]) -> dict[str, A
                 expr=binary(
                     col("premium"),
                     "-",
-                    ex({"type": "window", "agg": "mean", "column": "premium", "over": ["region"]}),
+                    ex({"type": "window", "agg": "mean", "of": col("premium"), "over": ["region"]}),
                 ),
             ),
             "df = df.with_columns(\n"
@@ -2069,7 +2072,7 @@ def test_nested_expressions_execute(tmp_path: Path) -> None:
             expr=binary(
                 col("premium"),
                 "-",
-                ex({"type": "window", "agg": "mean", "column": "premium", "over": ["region"]}),
+                ex({"type": "window", "agg": "mean", "of": col("premium"), "over": ["region"]}),
             ),
         ),
         step(
@@ -2425,7 +2428,7 @@ def test_reshaping_and_dtype_selectors_render(kind_step: dict[str, Any], expecte
             "not the pattern '*'",
         ),
         (
-            window("rn", "row_number", "", ["g"], [("^measure_.*$", False)]),
+            window("rn", "row_number", None, ["g"], [("^measure_.*$", False)]),
             "not the pattern",
         ),
         (
@@ -2705,7 +2708,7 @@ def test_generated_reshaping_code_stays_inside_the_lineage_model() -> None:
             "with_column",
             name="dev",
             expr=binary(
-                col("a"), "-", ex({"type": "window", "agg": "mean", "column": "a", "over": ["g"]})
+                col("a"), "-", ex({"type": "window", "agg": "mean", "of": col("a"), "over": ["g"]})
             ),
         ),
         step("sel", "select", columns=["dev"]),
@@ -2735,7 +2738,7 @@ _WEB = [cond("channel", "eq", value=text("web"))]
             ")",
         ),
         (
-            window("web_quotes", "len", "", ["region"], where=_WEB),
+            window("web_quotes", "len", None, ["region"], where=_WEB),
             "df = df.with_columns(\n"
             '    (pl.col("channel") == "web").sum().over(["region"]).alias("web_quotes")\n'
             ")",
@@ -2750,8 +2753,34 @@ _WEB = [cond("channel", "eq", value=text("web"))]
             '    .alias("first_web")\n'
             ")",
         ),
+        (
+            window("loaded", "sum", ex(binary(col("lim"), "*", col("load"))), ["q"], where=_WEB),
+            "df = df.with_columns(\n"
+            '    (pl.col("lim") * pl.col("load"))\n'
+            '    .filter(pl.col("channel") == "web")\n'
+            "    .sum()\n"
+            '    .over(["q"])\n'
+            '    .alias("loaded")\n'
+            ")",
+        ),
+        (
+            window("run", "cum_sum", ex(fn("abs", col("x"))), ["q"], [("qid", False)]),
+            "df = df.with_columns(\n"
+            '    pl.col("x")\n'
+            "    .abs()\n"
+            "    .cum_sum()\n"
+            '    .over(["q"], order_by=["qid"], descending=False)\n'
+            '    .alias("run")\n'
+            ")",
+        ),
     ],
-    ids=["filtered-sum", "filtered-row-count", "filtered-ordered-first"],
+    ids=[
+        "filtered-sum",
+        "filtered-row-count",
+        "filtered-ordered-first",
+        "filtered-sum-of-a-formula",
+        "running-total-of-a-function",
+    ],
 )
 def test_expression_additions_render(kind_step: dict[str, Any], expected: str) -> None:
     rendered = render_polars_steps([source(), kind_step], ["quotes"], start="input")
@@ -2767,7 +2796,7 @@ def test_expression_additions_render(kind_step: dict[str, Any], expected: str) -
             "'cum_sum' gives a value per row",
         ),
         (
-            window("rn", "row_number", "", ["region"], [("qid", False)], where=_WEB),
+            window("rn", "row_number", None, ["region"], [("qid", False)], where=_WEB),
             "'row_number' gives a value per row",
         ),
         (
@@ -2780,8 +2809,25 @@ def test_expression_additions_render(kind_step: dict[str, Any], expected: str) -
             ),
             "must be a plain value, column or variable here",
         ),
+        (window("n", "len", "premium", []), "'len' takes no value to aggregate; remove its 'of'"),
+        (
+            window("rn", "row_number", "qid", ["region"]),
+            "'row_number' takes no value to aggregate; remove its 'of'",
+        ),
+        (window("t", "sum", None, []), "needs a value to aggregate: a column or an expression"),
+        (window("t", "sum", num(1), []), "value must be a column or an expression"),
+        (window("t", "mean", var("rate"), []), "value must be a column or an expression"),
     ],
-    ids=["positional-aggregate", "row-number", "nested-filter-operand"],
+    ids=[
+        "positional-aggregate",
+        "row-number",
+        "nested-filter-operand",
+        "row-count-with-a-value",
+        "row-number-with-a-value",
+        "sum-without-a-value",
+        "literal-value",
+        "variable-value",
+    ],
 )
 def test_expression_additions_reject(kind_step: dict[str, Any], fragment: str) -> None:
     with pytest.raises(PolarsStepError) as exc_info:
@@ -2804,7 +2850,7 @@ def test_a_window_row_filter_aggregates_only_the_passing_rows() -> None:
             source(),
             window("web_total", "sum", "premium", ["region"], where=_WEB),
             window("web_mean", "mean", "premium", ["region"], where=_WEB),
-            window("web_quotes", "len", "", ["region"], where=_WEB),
+            window("web_quotes", "len", None, ["region"], where=_WEB),
             window("first_web", "first", "premium", ["region"], [("qid", False)], where=_WEB),
         ],
         frame,
@@ -2815,6 +2861,28 @@ def test_a_window_row_filter_aggregates_only_the_passing_rows() -> None:
     assert out["web_mean"].to_list() == [62.5, 62.5, 62.5, None, None]
     assert out["web_quotes"].to_list() == [2, 2, 2, 0, 0]
     assert out["first_web"].to_list() == [25.0, 25.0, 25.0, None, None]
+
+
+def test_a_window_aggregates_an_expression() -> None:
+    frame = pl.DataFrame(
+        {
+            "q": [1, 1, 2],
+            "lim": [100.0, 200.0, 50.0],
+            "load": [0.01, 0.02, 0.5],
+            "channel": ["web", "broker", "web"],
+        }
+    )
+    loaded = ex(binary(col("lim"), "*", col("load")))
+    out = _run_steps(
+        [
+            source(),
+            window("loaded", "sum", loaded, ["q"]),
+            window("web_loaded", "sum", loaded, ["q"], where=_WEB),
+        ],
+        frame,
+    )
+    assert out["loaded"].to_list() == [5.0, 5.0, 25.0]
+    assert out["web_loaded"].to_list() == [1.0, 1.0, 25.0]
 
 
 def test_generated_expression_additions_stay_inside_the_lineage_model() -> None:
@@ -2828,8 +2896,12 @@ def test_generated_expression_additions_stay_inside_the_lineage_model() -> None:
             {"premium", "channel", "region"},
         ),
         "filtered row count": (
-            window("t", "len", "", ["region"], where=_WEB),
+            window("t", "len", None, ["region"], where=_WEB),
             {"channel", "region"},
+        ),
+        "window of a formula": (
+            window("t", "sum", ex(binary(col("premium"), "*", col("qid"))), ["region"]),
+            {"premium", "qid", "region"},
         ),
     }
     for name, (kind_step, demanded) in cases.items():
@@ -3031,7 +3103,7 @@ def test_executor_runs_every_step_kind(tmp_path: Path) -> None:
                 "x",
                 "with_column",
                 name="tot",
-                expr={"type": "window", "agg": "sum", "column": "premium", "over": ["region"]},
+                expr={"type": "window", "agg": "sum", "of": col("premium"), "over": ["region"]},
             ),
         ],
         "functions": [
@@ -6400,8 +6472,20 @@ def test_the_cast_table_is_what_polars_refuses() -> None:
             "std takes numbers, and 'wait' is a duration, which Polars 2 refuses: turn it "
             "into days first, as total_days(wait).",
         ),
+        (
+            [source(), window("spread", "var", "wait", ["k"])],
+            pl.LazyFrame({"k": ["a", "a"], "wait": [dt.timedelta(days=1), dt.timedelta(days=3)]}),
+            "var takes numbers, and 'wait' is a duration, which Polars 2 refuses: turn it "
+            "into days first, as total_days(wait).",
+        ),
     ],
-    ids=["text-to-date", "category-to-number", "formula-try-cast-to-date", "std-of-a-duration"],
+    ids=[
+        "text-to-date",
+        "category-to-number",
+        "formula-try-cast-to-date",
+        "std-of-a-duration",
+        "window-var-of-a-duration",
+    ],
 )
 def test_a_refusal_polars_2_makes_only_on_rows_names_its_step(
     steps: list[dict[str, Any]], frame: pl.LazyFrame, remedy: str

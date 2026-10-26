@@ -234,7 +234,7 @@ describe("unknown columns", () => {
 
   it("reads the columns a window's row filter tests", () => {
     const where = { match: "all" as const, conditions: [{ column: "chanel", operator: "is_null" as const }] }
-    const filtered: Step = { id: "w", kind: "with_column", name: "t", expr: { type: "window", agg: "sum", column: "premium", over: ["region"], where } }
+    const filtered: Step = { id: "w", kind: "with_column", name: "t", expr: { type: "window", agg: "sum", of: { kind: "column", name: "premium" }, over: ["region"], where } }
     expect(columnsReadBy(filtered)).toEqual(["premium", "region", "chanel"])
     expect(unknownColumnsOf(filtered, columnsBeforeStep(SOURCE, [source("quotes"), filtered], 1), SOURCE)).toEqual(["chanel"])
   })

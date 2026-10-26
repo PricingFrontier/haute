@@ -215,30 +215,52 @@ describe("step forms only build schema-valid payloads", () => {
 
   it("window expressions offer the window-only aggregates, an in-group order, and a rank direction", () => {
     const spy = vi.fn()
-    const step: Step = { id: "w", kind: "with_column", name: "rn", expr: { type: "window", agg: "sum", column: "premium", over: ["region"] } }
+    const step: Step = { id: "w", kind: "with_column", name: "rn", expr: { type: "window", agg: "sum", of: { kind: "column", name: "premium" }, over: ["region"] } }
     render(<Stateful initial={step} spy={spy} />)
     expect(optionValues(screen.getByLabelText("Window aggregate"))).toContain("row_number")
     fireEvent.change(screen.getByLabelText("Window aggregate"), { target: { value: "row_number" } })
-    expect(screen.queryByLabelText("Window column")).not.toBeInTheDocument()
+    // A row number aggregates no value, so its value goes and a later aggregate starts an empty one.
+    expect(screen.queryByRole("group", { name: "Window value" })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Add order column" }))
     fireEvent.change(screen.getByLabelText("Window order direction"), { target: { value: "desc" } })
     let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
-    expect(latest.expr).toEqual({ type: "window", agg: "row_number", column: "premium", over: ["region"], orderBy: [{ column: "", descending: true }] })
+    expect(latest.expr).toEqual({ type: "window", agg: "row_number", over: ["region"], orderBy: [{ column: "", descending: true }] })
     fireEvent.click(screen.getByRole("button", { name: "Remove window order 1" }))
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
-    expect(latest.expr).toEqual({ type: "window", agg: "row_number", column: "premium", over: ["region"] })
+    expect(latest.expr).toEqual({ type: "window", agg: "row_number", over: ["region"] })
     fireEvent.change(screen.getByLabelText("Window aggregate"), { target: { value: "dense_rank" } })
     fireEvent.change(screen.getByLabelText("Rank order"), { target: { value: "desc" } })
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
-    expect(latest.expr).toEqual({ type: "window", agg: "dense_rank", column: "premium", over: ["region"], descending: true })
+    expect(latest.expr).toEqual({ type: "window", agg: "dense_rank", of: { kind: "column", name: "" }, over: ["region"], descending: true })
     fireEvent.change(screen.getByLabelText("Window aggregate"), { target: { value: "quantile" } })
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
-    expect(latest.expr).toEqual({ type: "window", agg: "quantile", column: "premium", over: ["region"], quantile: 0.5 })
+    expect(latest.expr).toEqual({ type: "window", agg: "quantile", of: { kind: "column", name: "" }, over: ["region"], quantile: 0.5 })
+  })
+
+  it("a window aggregates a column or an expression", () => {
+    const spy = vi.fn()
+    const step: Step = { id: "w", kind: "with_column", name: "t", expr: { type: "window", agg: "sum", of: { kind: "column", name: "premium" }, over: ["region"] } }
+    render(<Stateful initial={step} spy={spy} />)
+    expect(optionValues(screen.getByLabelText("Window value kind"))).toEqual(["column", "expr"])
+    fireEvent.change(screen.getByLabelText("Window value kind"), { target: { value: "expr" } })
+    expect(screen.getByRole("group", { name: "Window value expression" })).toBeInTheDocument()
+    const formula = screen.getByLabelText("Formula")
+    fireEvent.change(formula, { target: { value: "premium * rate" } })
+    fireEvent.blur(formula)
+    const latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toEqual({
+      type: "window",
+      agg: "sum",
+      of: { kind: "expr", expr: { type: "binary", left: { kind: "column", name: "premium" }, op: "*", right: { kind: "variable", name: "rate" }, text: "premium * rate" } },
+      over: ["region"],
+    })
+    expect(stepProblem(latest)).toBeNull()
+    expect(summarizeStep(latest)).toBe("t = sum of (premium * rate) over region")
   })
 
   it("a window's row filter sits under More options for the plain aggregates and goes with a positional one", () => {
     const spy = vi.fn()
-    const step: Step = { id: "w", kind: "with_column", name: "t", expr: { type: "window", agg: "sum", column: "premium", over: ["region"] } }
+    const step: Step = { id: "w", kind: "with_column", name: "t", expr: { type: "window", agg: "sum", of: { kind: "column", name: "premium" }, over: ["region"] } }
     render(<Stateful initial={step} spy={spy} />)
     expect(screen.queryByRole("button", { name: /Only rows where/ })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "More options" }))
@@ -251,7 +273,7 @@ describe("step forms only build schema-valid payloads", () => {
     expect(latest.expr).toEqual({
       type: "window",
       agg: "sum",
-      column: "premium",
+      of: { kind: "column", name: "premium" },
       over: ["region"],
       where: { match: "all", conditions: [{ column: "region", operator: "eq", value: { kind: "literal", type: "number", value: 0 } }] },
     })
@@ -259,13 +281,13 @@ describe("step forms only build schema-valid payloads", () => {
     expect(summarizeStep(latest)).toBe("t = sum of premium where region equals 0 over region")
     fireEvent.change(screen.getByLabelText("Window aggregate"), { target: { value: "cum_sum" } })
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
-    expect(latest.expr).toEqual({ type: "window", agg: "cum_sum", column: "premium", over: ["region"] })
+    expect(latest.expr).toEqual({ type: "window", agg: "cum_sum", of: { kind: "column", name: "premium" }, over: ["region"] })
     expect(screen.queryByRole("button", { name: "More options" })).not.toBeInTheDocument()
   })
 
   it("opens a window's More options by itself when it saved a row filter", () => {
     const where = { match: "all" as const, conditions: [{ column: "region", operator: "eq" as const, value: { kind: "literal" as const, type: "text" as const, value: "north" } }] }
-    const step: Step = { id: "w", kind: "with_column", name: "t", expr: { type: "window", agg: "mean", column: "premium", over: [], where } }
+    const step: Step = { id: "w", kind: "with_column", name: "t", expr: { type: "window", agg: "mean", of: { kind: "column", name: "premium" }, over: [], where } }
     render(<StepForm step={step} onChange={vi.fn()} ctx={ctx} />)
     expect(screen.getByRole("button", { name: "More options" })).toHaveAttribute("aria-expanded", "true")
     expect(screen.getByRole("button", { name: "Aggregate every row" })).toBeInTheDocument()
@@ -888,7 +910,7 @@ describe("step forms only build schema-valid payloads", () => {
       name: "share",
       expr: {
         type: "binary",
-        left: { kind: "expr", expr: { type: "window", agg: "sum", column: "premium", over: ["region"] } },
+        left: { kind: "expr", expr: { type: "window", agg: "sum", of: { kind: "column", name: "premium" }, over: ["region"] } },
         op: "/",
         right: { kind: "literal", type: "number", value: 12 },
       },

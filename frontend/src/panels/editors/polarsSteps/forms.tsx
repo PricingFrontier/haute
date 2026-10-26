@@ -83,6 +83,7 @@ import { StepSchemaContext, UNKNOWN_SCHEMA, schemaFor, useStepSchema, type StepS
 import { useCompletionList, type Completion } from "./useCompletionList"
 import type {
   AggregationSpec,
+  WindowAggregation,
   CastDtype,
   CastEntry,
   CastStep,
@@ -668,37 +669,51 @@ function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: 
         </>
       )
     case "window":
-      return <WindowEditor expr={expr} onChange={onChange} ctx={ctx} />
+      return <WindowEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
     case "concat":
       return <ConcatEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
   }
 }
 
-function WindowEditor({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "window" }>; onChange: (next: Expr) => void; ctx: StepFormContext }) {
+function WindowEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "window" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {
   const schema = useStepSchema()
   const isRank = expr.agg === "rank" || expr.agg === "dense_rank"
   const orderBy = expr.orderBy ?? []
   const setOrder = (next: typeof orderBy) => onChange(next.length ? { ...expr, orderBy: next } : omitKeys(expr, ["orderBy"]))
+  const ofType = expr.of?.kind === "column" && expr.of.name ? schema.typeOf(expr.of.name) : null
+  const setAggregate = (agg: WindowAggregation) => {
+    // A positional aggregate keeps one value per row, so a row filter cannot
+    // apply; a row count and a row number aggregate no value.
+    const dropped = ["descending", ...(REDUCING_AGGREGATIONS.has(agg) ? [] : ["where"]), ...(COLUMNLESS_AGGREGATIONS.has(agg) ? ["of"] : [])]
+    const next = omitKeys(withAggregate(expr, agg), dropped)
+    const valued = COLUMNLESS_AGGREGATIONS.has(agg) || next.of ? next : { ...next, of: { kind: "column" as const, name: "" } }
+    onChange(agg === "rank" || agg === "dense_rank" ? { ...valued, descending: false } : valued)
+  }
   return (
     <>
       <Sentence>
         <span className="flex-1 basis-32 min-w-0">
           <SelectField
             value={expr.agg}
-            options={WINDOW_AGGREGATIONS.filter((a) => a.value === expr.agg || aggregationTakes(a.value, expr.column ? schema.typeOf(expr.column) : null))}
-            onChange={(agg) => {
-              // A positional aggregate keeps one value per row, so a row filter cannot apply.
-              const next = omitKeys(withAggregate(expr, agg), REDUCING_AGGREGATIONS.has(agg) ? ["descending"] : ["descending", "where"])
-              onChange(agg === "rank" || agg === "dense_rank" ? { ...next, descending: false } : next)
-            }}
+            options={WINDOW_AGGREGATIONS.filter((a) => a.value === expr.agg || aggregationTakes(a.value, ofType))}
+            onChange={setAggregate}
             ariaLabel="Window aggregate"
           />
         </span>
-        {!COLUMNLESS_AGGREGATIONS.has(expr.agg) && (
+        {expr.of && (
           <>
             <Words>of</Words>
-            <span className="flex-1 basis-28 min-w-0">
-              <ColumnPicker value={expr.column} onCommit={(column) => onChange({ ...expr, column })} suggestions={ctx.columns} ariaLabel="Window column" />
+            <span className={`flex-1 min-w-0 ${expr.of.kind === "expr" ? "basis-full" : "basis-28"}`}>
+              <OperandField
+                value={expr.of}
+                onChange={(of) => onChange({ ...expr, of })}
+                sources={["column"]}
+                literalTypes={[]}
+                columns={ctx.columns}
+                variables={[]}
+                ariaLabel="Window value"
+                renderExpression={nestedExpression(ctx, depth + 1)}
+              />
             </span>
           </>
         )}

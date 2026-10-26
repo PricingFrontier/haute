@@ -389,8 +389,8 @@ export function withoutFormulaText(expr: Expr): Expr {
       return { ...expr, then: strip(expr.then), otherwise: strip(expr.otherwise) }
     case "concat":
       return { ...expr, parts: expr.parts.map(strip) }
-    default:
-      return expr
+    case "window":
+      return expr.of ? { ...expr, of: strip(expr.of) } : expr
   }
 }
 
