@@ -506,10 +506,13 @@ def _widen_sandbox_root(
     so that ``validate_project_path`` accepts paths in ``/tmp``.
     Source snapshots still need writable project-local storage, so stores
     opened against that synthetic filesystem root are redirected to this
-    test's temp directory.
+    test's temp directory, and so is the local MLflow destination's default
+    runs folder, which would otherwise be the drive's own ``/mlruns``
+    (refused on Linux, created at ``C:\\mlruns`` on Windows).
     Restores the original root afterwards.
     """
     from haute._source_cache import SourceCacheStore
+    from haute.modelling import _mlflow_settings
 
     original = _get_project_root()
     widened_root = Path("/").resolve()
@@ -534,6 +537,12 @@ def _widen_sandbox_root(
         )
 
     monkeypatch.setattr(SourceCacheStore, "__init__", init_with_writable_cache)
+    resolve_local = _mlflow_settings._resolve_local
+
+    def resolve_local_under_writable_root(stored: Any, root: Path) -> Any:
+        return resolve_local(stored, cache_root if Path(root).resolve() == widened_root else root)
+
+    monkeypatch.setattr(_mlflow_settings, "_resolve_local", resolve_local_under_writable_root)
     set_project_root(widened_root)
     yield
     set_project_root(original)
