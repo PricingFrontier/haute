@@ -37,6 +37,9 @@ from haute.modelling._native_encoding import (
 from haute.modelling._shap import require_feature_order
 
 _META_ATTRIBUTE = "haute"
+#: The booster attribute an analyst stamps on a model trained outside Haute to
+#: declare its margin: ``"none"``, or ``"<column>:<link>"`` (``log``/``identity``).
+OFFSET_STAMP = "haute_offset"
 _DEFAULT_ROUNDS = 1000
 _DEFAULT_EARLY_STOPPING = 50
 
@@ -59,6 +62,9 @@ class XGBoostModel:
     #: feature recorded no categories (it scores the input's numeric codes).
     native_levels: dict[str, list[Any]] = field(default_factory=dict, compare=False)
     feature_types: list[str] | None = field(default=None, compare=False)
+    #: False for a booster trained outside Haute that no ``haute_offset`` stamp
+    #: or contract has declared: XGBoost cannot say whether it used a margin.
+    offset_declared: bool = field(default=True, compare=False)
 
     # -- ScoringModel-facing surface ------------------------------------
     @property
@@ -183,7 +189,8 @@ class XGBoostModel:
         """A booster trained outside Haute, read from what XGBoost records itself.
 
         Its features, their types and the categories stored for each
-        categorical feature; task and link from its objective; no offset.
+        categorical feature; task and link from its objective; and the offset
+        its ``haute_offset`` stamp declares, or none declared yet.
         """
         from haute.modelling._descriptors import XGBOOST, native_objective
 
@@ -214,6 +221,7 @@ class XGBoostModel:
                 if values is not None
             }
         )
+        offset_column, offset_link, declared = _stamped_offset(booster.attr(OFFSET_STAMP), name)
         categorical = [f for f, kind in zip(features, types, strict=False) if kind == "c"]
         levels, native = native_categories(
             {feature: recorded[feature] for feature in categorical if feature in recorded}
@@ -224,14 +232,33 @@ class XGBoostModel:
             categorical_levels=levels,
             task=task,
             link=link,
+            offset_column=offset_column,
+            offset_link=offset_link,
             class_labels=(0, 1) if task == "classification" else None,
             native_levels=native,
             feature_types=types if any(f not in recorded for f in categorical) else None,
+            offset_declared=declared,
         )
 
     def objective(self) -> str:
         config = json.loads(self.booster.save_config())
         return str(config["learner"]["objective"]["name"])
+
+
+def _stamped_offset(stamp: str | None, name: str) -> tuple[str | None, str | None, bool]:
+    """The ``(column, link, declared)`` offset a ``haute_offset`` stamp declares."""
+    if stamp is None:
+        return None, None, False
+    if stamp == "none":
+        return None, None, True
+    column, _, link = stamp.rpartition(":")
+    if not column or link not in ("log", "identity"):
+        raise ConfigError(
+            f"{name}: its {OFFSET_STAMP!r} attribute is {stamp!r}; stamp 'none', "
+            "'<column>:log' for an exposure margin or '<column>:identity' for an additive one.",
+            model_path=name,
+        )
+    return column, link, True
 
 
 class _XGBoostProgress:

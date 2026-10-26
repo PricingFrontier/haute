@@ -22,7 +22,8 @@
   (`str`, the flavor of the registered family that loaded it),
   `offset_column` (`str | None`), `offset_link` (`log`, `identity` or
   `None`), `offset_declared` (`bool`; `False` only for a CatBoost model
-  whose metadata does not declare its offset and that no contract has bound
+  whose metadata does not declare its offset, or an XGBoost model trained
+  outside Haute without the `haute_offset` stamp, that no contract has bound
   yet) and `run_contract_path` (`str | None`: the local copy of the contract
   an MLflow run logged beside a native model `load_mlflow_model` loaded, read
   from that same run; `None` for a run that logged none, a pyfunc model and
@@ -296,16 +297,23 @@ the model exactly as a file source's sibling and a deployed bundle's contract do
 `bind_feature_contract(scoring_model, contract, *, model_name)` (`_mlflow_io.py`)
 is the one binding rule. A contract with a model identity runs
 `verify_contract_identity`. For the offset, a model that declares its own
-(every family except an undeclared CatBoost) must agree with the contract: a
-contract `offset_column` that differs from the model's, or a non-null contract
-`offset_link` that differs from the model's, raises `ConfigError`; pyfunc is
-exempt, because its contract is its only offset description. An undeclared
-CatBoost model takes the contract's declaration: a null `offset_column`
-declares no offset, a named one with an `offset_link` declares that offset, and
-a named one without a link raises `ConfigError` naming the model and the
-remedy; with no contract at all it scores with no offset, the full-policy-term
-basis a quote is priced on. Binding returns a new `ScoringModel` sharing the raw
-model and never mutates the carrier it was given, which a cache may hold.
+(every family except an undeclared CatBoost or XGBoost model) must agree with
+the contract: a contract `offset_column` that differs from the model's, or a
+non-null contract `offset_link` that differs from the model's, raises
+`ConfigError`; pyfunc is exempt, because its contract is its only offset
+description. An undeclared model takes the contract's declaration: a null
+`offset_column` declares no offset, a named one with an `offset_link` declares
+that offset (on the carrier, and for an XGBoost model on its wrapper too, which
+applies its own margin), and a named one without a link raises `ConfigError`
+naming the model and the remedy. With no contract at all an undeclared CatBoost
+model scores with no offset, the full-policy-term basis a quote is priced on (a
+CatBoost model trained with a baseline predicts the same with none as with a
+zero one), while an undeclared XGBoost model is refused, naming the stamp and
+the contract that declare it: XGBoost scores a model trained with a margin from
+its `base_score` when none is supplied, which is not the zero margin of a full
+term, and the file cannot tell whether a margin was used. Binding returns a new
+`ScoringModel` sharing the raw model (or a copy of its wrapper) and never mutates
+the carrier it was given, which a cache may hold.
 
 For a file source the contract the model scores under is resolved once, by
 `model_contract_path`, and every consumer feeds that same path to binding

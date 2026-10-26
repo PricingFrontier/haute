@@ -161,7 +161,11 @@ Out of scope (owned elsewhere):
   writes into it loads from what its library records (features, categorical
   features and their levels, objective, classes). Two cases cannot be scored
   and are refused naming the cause: a multi-class or ranking objective, and an
-  XGBoost booster that records no feature names. An `.ebm` file without
+  XGBoost booster that records no feature names. An XGBoost model must also
+  declare whether it was trained with a margin, because XGBoost scores one
+  from its `base_score` when no margin is supplied and the file cannot tell:
+  by a `haute_offset` attribute stamped on the booster before saving, or by a
+  feature contract. Without either it is refused, naming both. An `.ebm` file without
   Haute's record is refused too: it is a bare pickle whose `interpret-core`
   version nothing records, and an EBM logged through MLflow's sklearn flavor
   scores as a pyfunc directory instead.

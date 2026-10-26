@@ -550,8 +550,9 @@ class ScoringModel:
     scoring never silently proceeds on an offset-0/absent basis.
 
     ``offset_declared`` is ``False`` only for a CatBoost model whose file does
-    not record whether it was trained with an offset; :func:`bind_feature_contract`
-    takes the declaration from its contract or refuses it. Scoring reads the
+    not record whether it was trained with an offset, or an XGBoost model
+    trained outside Haute without the ``haute_offset`` stamp;
+    :func:`bind_feature_contract` takes the declaration from its contract. Scoring reads the
     offset from this carrier, never the raw model, so a contract-bound offset
     applies to a raw model a cache may share.
 
@@ -967,6 +968,31 @@ def _offset_transform(link: str | None) -> str | None:
     return "log" if link == "log" else "identity"
 
 
+def _declare_offset(
+    scoring_model: ScoringModel, offset_column: str | None, offset_link: str | None
+) -> ScoringModel:
+    """The carrier with a contract-declared offset; a wrapper adding its own margin gets it too."""
+    if not model_family(scoring_model.flavor).self_describing:
+        return scoring_model.with_offset(offset_column, offset_link)
+    import dataclasses
+
+    wrapper = dataclasses.replace(
+        scoring_model.raw_model,
+        offset_column=offset_column,
+        offset_link=offset_link,
+        offset_declared=True,
+    )
+    return ScoringModel(
+        model=wrapper,
+        feature_names=scoring_model.feature_names,
+        cat_feature_names=scoring_model.cat_feature_names,
+        flavor=scoring_model.flavor,
+        offset_column=offset_column,
+        offset_link=offset_link,
+        run_contract_path=scoring_model.run_contract_path,
+    )
+
+
 def bind_feature_contract(
     scoring_model: ScoringModel, contract: FeatureContract | None, *, model_name: str
 ) -> ScoringModel:
@@ -975,40 +1001,55 @@ def bind_feature_contract(
     A contract that records a model identity must describe the loaded model.
     A model that declares its own offset must agree with the contract's; a
     pyfunc model, whose contract is its only offset description, takes the
-    contract's. A CatBoost model whose file does not declare its offset takes
-    the contract's declaration: a null ``offset_column`` declares no offset, a
-    named one with an ``offset_link`` declares that offset; with no contract it
-    scores with no offset, the full-policy-term basis a quote is priced on (an
-    exposure of one adds nothing to a log-link model). Returns the carrier
+    contract's. A model whose file does not declare its offset (a CatBoost
+    model, or an XGBoost model trained outside Haute) takes the contract's
+    declaration: a null ``offset_column`` declares no offset, a named one with
+    an ``offset_link`` declares that offset. With no contract an undeclared
+    CatBoost model scores with no offset, the full-policy-term basis a quote is
+    priced on (it predicts the same with no baseline as with a zero one), and
+    an undeclared XGBoost model is refused: XGBoost scores a model trained with
+    a margin from its ``base_score`` when none is supplied. Returns the carrier
     to score (a new one when the offset changes); *scoring_model* itself, which
     a cache may hold, is never mutated.
 
     Raises:
-        ConfigError: the identity or the offset disagree, or the contract of a
-            CatBoost model that declares no offset names an offset column
-            without its link.
+        ConfigError: the identity or the offset disagree, the contract of a
+            model that declares no offset names an offset column without its
+            link, or an undeclared XGBoost model has no contract.
     """
     from haute.errors import ConfigError
 
     if contract is not None and contract.model is not None:
         verify_contract_identity(contract.model, scoring_model)
     if not scoring_model.offset_declared:
+        label = model_family(scoring_model.flavor).label
         remedy = (
             "Save a feature contract beside the model that declares its offset "
             "(offset_column with offset_link 'log' or 'identity', or offset_column null "
             "for a model trained without one), or retrain it with this version of Haute."
         )
         if contract is None:
+            if scoring_model.flavor == "xgboost":
+                raise ConfigError(
+                    f"XGBoost model {model_name} was trained outside Haute and does not say "
+                    "whether it was trained with a margin (base_margin); XGBoost scores such a "
+                    "model from its base_score when no margin is given, which is not a full "
+                    "policy term. Declare it before saving: "
+                    'booster.set_attr(haute_offset="none") for no margin, or '
+                    'booster.set_attr(haute_offset="exposure:log") for log-exposure margins '
+                    f'("<column>:identity" for an additive one). {remedy}',
+                    model=model_name,
+                )
             return scoring_model.with_offset(None, None)
         if contract.offset_column is not None and contract.offset_link is None:
             raise ConfigError(
-                f"The feature contract of CatBoost model {model_name} names offset column "
+                f"The feature contract of {label} model {model_name} names offset column "
                 f"{contract.offset_column!r} but not how it enters the model "
                 f"(offset_link). {remedy}",
                 model=model_name,
                 offset_column=contract.offset_column,
             )
-        return scoring_model.with_offset(contract.offset_column, contract.offset_link)
+        return _declare_offset(scoring_model, contract.offset_column, contract.offset_link)
     if contract is None:
         return scoring_model
     if scoring_model.flavor == "pyfunc":
@@ -1197,6 +1238,7 @@ def _wrapper_scoring_model(model: Any, task: str, flavor: str) -> ScoringModel:
         flavor=flavor,
         offset_column=model.offset_column,
         offset_link=model.offset_link,
+        offset_declared=getattr(model, "offset_declared", True),
     )
 
 

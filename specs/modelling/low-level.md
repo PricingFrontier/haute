@@ -2152,7 +2152,11 @@ used for staged input.
   them is refused), the categories `get_categories(export_to_arrow=True)` stored for each
   categorical feature (a categorical feature with none stored scores from the numeric codes the
   input supplies, the booster's `feature_types` passed to every `DMatrix`), task and link from
-  the objective (`native_objective`), class labels 0 and 1, and no offset.
+  the objective (`native_objective`), class labels 0 and 1, and its offset from the
+  `haute_offset` booster attribute an analyst stamps before saving (`"none"`, or
+  `"<column>:<link>"` with link `log` or `identity`; another value is refused). Without
+  the stamp the offset is undeclared (`offset_declared` false) and a contract must
+  declare it (MLflow model registry specification).
 - `native_objective(descriptor, objective)` in `src/haute/modelling/_descriptors.py` gives the
   task and link a native objective has under a family's losses, for a model trained outside
   Haute: a binary objective is a classifier with a logit link, any other objective Haute does not

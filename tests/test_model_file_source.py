@@ -848,6 +848,7 @@ def external_model(directory: Path, library: str, task: str) -> tuple[Path, Any]
             xgb.DMatrix(native_frame(frame), label=target, enable_categorical=True),
             num_boost_round=10,
         )
+        booster.set_attr(haute_offset="none")
         path = directory / "ext.ubj"
         booster.save_model(str(path))
 
@@ -956,6 +957,7 @@ def test_integer_categories_a_library_recorded_score_from_their_text(project: Pa
         xgb.DMatrix(pdf, label=label, enable_categorical=True),
         num_boost_round=10,
     )
+    booster.set_attr(haute_offset="none")
     booster.save_model(str(project / "groups.ubj"))
     rows = pl.DataFrame({"age": [30.0, 30.0, 30.0], "group": ["3", "7", "11"]})
     native_rows = pd.DataFrame({"age": [30.0] * 3, "group": pd.Categorical([3, 7, 11])})
@@ -996,6 +998,7 @@ def test_categories_trained_as_codes_score_from_the_input_codes(project: Path) -
         ),
         num_boost_round=10,
     )
+    booster.set_attr(haute_offset="none")
     booster.save_model(str(project / "codes.ubj"))
     rows = pl.DataFrame({"age": [30.0, 30.0, 30.0], "code": [0.0, 1.0, 2.0]})
     native_rows = rows.to_pandas()
@@ -1051,3 +1054,57 @@ def test_what_a_model_trained_outside_haute_cannot_be_scored_for_is_refused(
         load_local_model(str(project / "raw.ubj"), "classification")
     with pytest.raises(ConfigError, match="multi.tboost|3-class classifier"):
         load_local_model(str(project / "multi.tboost"), "classification")
+
+
+def test_an_xgboost_model_trained_outside_haute_declares_its_margin(project: Path) -> None:
+    """XGBoost scores a margin-trained model from base_score when no margin is given,
+    so such a model loads only once a stamp or a contract says how it was trained."""
+    import xgboost as xgb
+
+    frame = data(seed=27)
+    booster = xgb.train(
+        {"objective": "count:poisson", "max_depth": 2, "verbosity": 0},
+        xgb.DMatrix(
+            native_frame(frame),
+            label=frame["claims"].to_numpy(),
+            base_margin=np.log(frame["exposure"].to_numpy()),
+            enable_categorical=True,
+        ),
+        num_boost_round=10,
+    )
+
+    def native(rows: pl.DataFrame, margin: Any) -> Any:
+        return booster.predict(
+            xgb.DMatrix(native_frame(rows), base_margin=margin, enable_categorical=True)
+        )
+
+    unstamped = project / "ext.ubj"
+    booster.save_model(str(unstamped))
+    with pytest.raises(ConfigError, match=r'set_attr\(haute_offset="none"\)'):
+        score(FileModelSource(model_path=unstamped.name), frame)
+
+    stamped_dir = project / "stamped"
+    stamped_dir.mkdir()
+    booster.set_attr(haute_offset="exposure:log")
+    booster.save_model(str(stamped_dir / "ext.ubj"))
+    stamped = FileModelSource(model_path="stamped/ext.ubj")
+    np.testing.assert_allclose(
+        score(stamped, frame), native(frame, np.log(frame["exposure"].to_numpy())), rtol=1e-6
+    )
+    # A quote without exposure is a full policy term: a zero margin, not base_score.
+    np.testing.assert_allclose(
+        score(stamped, frame.drop("exposure")), native(frame, np.zeros(frame.height)), rtol=1e-6
+    )
+
+    # A contract declares the same margin for the unstamped file; the wrapper applies it.
+    write_contract(unstamped, offset="exposure", link="log")
+    np.testing.assert_allclose(
+        score(FileModelSource(model_path=unstamped.name), frame),
+        native(frame, np.log(frame["exposure"].to_numpy())),
+        rtol=1e-6,
+    )
+
+    booster.set_attr(haute_offset="exposure:sqrt")
+    booster.save_model(str(stamped_dir / "bad.ubj"))
+    with pytest.raises(ConfigError, match="'haute_offset' attribute is 'exposure:sqrt'"):
+        score(FileModelSource(model_path="stamped/bad.ubj"), frame)

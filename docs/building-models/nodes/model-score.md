@@ -78,7 +78,13 @@ first. The contract names the model's features, categories and offset, so keep i
 the model when you copy the model elsewhere in the project. XGBoost, LightGBM, t-boost and
 EBM files describe their own inputs and offset. An XGBoost, LightGBM or t-boost model trained
 outside Haute scores too, from what its own file records, with no offset: save an XGBoost
-booster as `.ubj` and a LightGBM model's text as `.lgbm`. A multi-class or ranking model, and
+booster as `.ubj` and a LightGBM model's text as `.lgbm`. An XGBoost model must say whether
+it was trained with a margin (`base_margin`), because the file cannot tell and XGBoost
+scores such a model wrongly without one. Before saving, run
+`booster.set_attr(haute_offset="none")` for a model trained without a margin, or
+`booster.set_attr(haute_offset="exposure:log")` for one trained with log-exposure margins
+(`"premium:identity"` for an additive one); a feature contract that declares the offset
+works too. A multi-class or ranking model, and
 an XGBoost model saved without feature names, cannot be scored. An EBM file also records the
 `interpret-core` version it was trained with, and loads only under that version; a
 contract for a different loss is refused rather than scored. A category the
