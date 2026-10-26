@@ -41,6 +41,7 @@ from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute._mlflow_utils import (
     ResolvedBackend,
+    allow_file_store_if_local,
     mlflow_fluent_operation,
     resolve_mlflow_source,
     set_tracking_uri_preserving_env,
@@ -1490,7 +1491,12 @@ def _resolve_artifact_local(
     exactly one thread downloads while the others wait, then find the
     file via the in-lock re-check — no thundering herd, and the move can
     never land on a file another thread is concurrently writing.
+
+    A local backend's file store is opted into first: a process that has
+    opened no client for it (a deploy whose other artifacts are cached)
+    would otherwise have MLflow refuse the download.
     """
+    allow_file_store_if_local(backend.tracking_uri, backend.mode)
     with _disk_cache_run_in_use(run_id):
         return _resolve_artifact_local_in_use(mlflow, backend, run_id, artifact_path)
 

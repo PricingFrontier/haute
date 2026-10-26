@@ -738,3 +738,64 @@ def _api_score_graph(config: dict) -> PipelineGraph:
             ],
         }
     )
+
+
+def _local_run_with_contract(project: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, str]:
+    """A local MLflow run that logged ``model.cbm`` and its contract, seen from a new process.
+
+    MLflow keeps the store it opened per URI, so it is dropped, and the file-store
+    opt-in creating the run needed is unset: a new deploy process has neither.
+    """
+    from mlflow.tracking import MlflowClient
+    from mlflow.tracking._tracking_service.registry import TrackingStoreRegistry
+
+    from haute._mlflow_utils import resolve_backend
+
+    monkeypatch.chdir(project)
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+    backend = resolve_backend("", project_root=project)
+    logged = project / "logged"
+    logged.mkdir()
+    (logged / "model.cbm").write_bytes(b"model")
+    (logged / model_contract_filename("model")).write_text('{"logged": true}', encoding="utf-8")
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+    client = MlflowClient(tracking_uri=backend.tracking_uri)
+    run = client.create_run(client.create_experiment("contracts"))
+    client.log_artifact(run.info.run_id, str(logged / "model.cbm"))
+    client.log_artifact(run.info.run_id, str(logged / model_contract_filename("model")))
+    client.set_terminated(run.info.run_id)
+    TrackingStoreRegistry._get_store_with_resolved_uri.cache_clear()
+    monkeypatch.delenv("MLFLOW_ALLOW_FILE_STORE")
+    return backend, run.info.run_id
+
+
+def test_a_model_downloads_from_a_local_store_a_new_process_has_not_opened(
+    haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A download from a local backend opts into MLflow's file store itself."""
+    from haute.deploy._bundler import _download_model_artifact
+
+    backend, run_id = _local_run_with_contract(haute_scratch, monkeypatch)
+
+    model = _download_model_artifact(run_id, "model.cbm", haute_scratch, backend=backend)
+
+    assert model.read_bytes() == b"model"
+
+
+def test_a_cached_model_s_contract_downloads_from_a_local_store_not_yet_opened(
+    haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deploy whose model is cached has opened no client before the contract download."""
+    from haute.deploy._bundler import _run_contract
+
+    backend, run_id = _local_run_with_contract(haute_scratch, monkeypatch)
+    cached_model = _artifact_cache_path(
+        haute_scratch / ".cache" / "models", backend.digest, run_id, "model.cbm"
+    )
+    cached_model.parent.mkdir(parents=True)
+    cached_model.write_bytes(b"model")
+
+    contract = _run_contract(backend, run_id, "model.cbm")
+
+    assert contract is not None
+    assert contract.read_text(encoding="utf-8") == '{"logged": true}'
