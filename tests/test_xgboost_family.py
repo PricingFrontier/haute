@@ -538,6 +538,28 @@ def test_gamma_deviance_can_drive_an_xgboost_study() -> None:
     assert kwargs["tuning"]["metric"] == "gamma_deviance"
 
 
+def test_a_foreign_regression_objective_haute_does_not_train_scores_as_xgboost_does(
+    tmp_path: Path,
+) -> None:
+    import pandas as pd
+
+    rows = pd.DataFrame({"age": np.random.default_rng(1).uniform(18, 80, 50)})
+    booster = xgb.train(
+        {"objective": "reg:pseudohubererror", "verbosity": 0},
+        xgb.DMatrix(rows, label=rows["age"] / 10),
+        num_boost_round=3,
+    )
+    path = tmp_path / "huber.ubj"
+    booster.save_model(str(path))
+
+    model = XGBoostModel.load(path)
+
+    assert (model.task, model.link, model.offset_column) == ("regression", "identity", None)
+    np.testing.assert_allclose(
+        model.predict(pl.from_pandas(rows)), booster.predict(xgb.DMatrix(rows)), rtol=1e-6
+    )
+
+
 def test_a_foreign_model_without_feature_names_is_refused(tmp_path: Path) -> None:
     """Without names Haute cannot tell which input column each feature reads."""
     from haute.errors import ConfigError
