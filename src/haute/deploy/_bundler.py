@@ -325,20 +325,23 @@ def _collect_static_data_input(
 ) -> None:
     """Collect a retained canonical Data Input for deployment.
 
-    Direct file-backed Parquet scans bundle their canonical source. Every
-    other Data Input bundles a leased snapshot generation, keeping its exact
-    verified parquet and metadata files alive during bundle construction.
+    A direct Parquet source of one file bundles that file. Every other Data Input,
+    a direct Parquet folder or glob included, bundles a leased snapshot generation
+    (:func:`shipped_snapshot_config`), keeping its exact verified parquet and
+    metadata files alive during bundle construction.
     """
-    from haute._polars_io_registry import data_input_is_direct, validate_data_input_config
+    from haute._polars_io_registry import validate_data_input_config
     from haute._source_cache import SourceCacheCorruptError
     from haute.errors import DeployError
 
     try:
-        validated = validate_data_input_config(config)
-        if data_input_is_direct(validated):
+        validated = shipped_snapshot_config(
+            node_id, validate_data_input_config(config), pipeline_dir, project_root
+        )
+        if validated is None:
             source_path = _resolve_direct_parquet_source(
                 node_id,
-                validated,
+                config,
                 pipeline_dir,
                 project_root,
             )
@@ -399,18 +402,6 @@ def _resolve_direct_parquet_source(
         validated.get("path", ""), pipeline_dir, project_root, node_id, "path"
     )
     if not source_path.is_file():
-        from haute._input_providers import named_source_files
-
-        if named_source_files(validated, source_path):
-            raise DeployError(
-                f"Data Input node {node_id!r} reads several Parquet files "
-                f"({validated['path']!r}), and deploy bundles a direct Parquet source as "
-                'one file. Point it at one file, or give the Data Input mode "read" in the '
-                "pipeline file: Haute then copies the files into a snapshot, which deploys.",
-                node_id=node_id,
-                field="path",
-                path=str(source_path),
-            )
         raise DeployError(
             f"Data Input node {node_id!r} direct Parquet source does not exist: {source_path}",
             node_id=node_id,
@@ -429,6 +420,123 @@ def _resolve_direct_parquet_source(
             path=str(source_path),
         ) from exc
     return source_path
+
+
+_FILE_INPUT_TYPES = frozenset({"file", "lakehouse"})
+
+
+def shipped_snapshot_config(
+    node_id: str, validated: dict[str, Any], pipeline_dir: Path, project_root: Path
+) -> dict[str, Any] | None:
+    """The configuration whose input snapshot deploy ships for a Data Input, or ``None``.
+
+    ``None`` for a direct Parquet source of one file, which ships that file. A direct
+    Parquet folder or glob pattern ships a snapshot read from every file it names
+    (mode ``"read"``), so a folder's partition columns and every file reach the
+    deployment; every other Data Input ships its own snapshot.
+    """
+    from haute._input_providers import named_source_files
+    from haute._polars_io_registry import data_input_is_direct
+
+    if not data_input_is_direct(validated):
+        return validated
+    source_path = _resolve_path(
+        validated.get("path", ""), pipeline_dir, project_root, node_id, "path"
+    )
+    if source_path.is_file() or not named_source_files(validated, source_path):
+        return None
+    return {**validated, "mode": "read"}
+
+
+def _shipped_file_inputs(
+    graph: PipelineGraph, input_node_ids: list[str]
+) -> list[tuple[str, dict[str, Any]]]:
+    """The retained file-based Data Inputs deploy ships: each one but a request input."""
+    from haute._polars_io_registry import validate_data_input_config
+
+    return [
+        (node.id, validate_data_input_config(node.data.config))
+        for node in graph.nodes
+        if node.data.nodeType == NodeType.DATA_INPUT
+        and node.id not in input_node_ids
+        and node.data.config.get("inputType") in _FILE_INPUT_TYPES
+    ]
+
+
+def refuse_data_outside_pipeline_folder(
+    graph: PipelineGraph, input_node_ids: list[str], pipeline_dir: Path, project_root: Path
+) -> None:
+    """Refuse a file the quote output reads that lies outside the pipeline folder.
+
+    Deploy ships only data stored in the pipeline folder (``rating/``); a file outside
+    it, such as the project's local ``data/``, is never shipped, so a deployment reading
+    one could not score. Inputs off the path to the quote output, which the pruned
+    graph no longer holds (model training, optimisation), may read from anywhere.
+    """
+    from haute._project_layout import PIPELINE_FILES_FOLDER
+
+    folder = pipeline_dir.resolve()
+    root = project_root.resolve()
+    shown = folder.relative_to(root).as_posix() if folder.is_relative_to(root) else folder.name
+    for node_id, validated in _shipped_file_inputs(graph, input_node_ids):
+        raw_path = validated.get("path", "")
+        if _resolve_path(raw_path, pipeline_dir, project_root, node_id, "path").is_relative_to(
+            folder
+        ):
+            continue
+        raise DeployError(
+            f"Data Input node {node_id!r} reads {raw_path!r}, outside the pipeline folder "
+            f"{shown!r}, and the quote output depends on it. Deploy ships only data stored "
+            f"in the pipeline folder: move the file into {shown}/{PIPELINE_FILES_FOLDER}/data, "
+            "or take this input off the path to the quote output (model training and "
+            "optimisation may read data from anywhere).",
+            node_id=node_id,
+            field="path",
+            path=raw_path,
+        )
+
+
+def prepare_shipped_snapshots(
+    graph: PipelineGraph, input_node_ids: list[str], pipeline_dir: Path, project_root: Path
+) -> None:
+    """Build or refresh the snapshot of every file-based Data Input deploy ships.
+
+    A clean checkout (CI) holds no input snapshot, and an edited file leaves its
+    snapshot stale, so deploy prepares them itself, as an execution's automatic
+    preparation does: a missing snapshot is built, a stale one refreshed, inside a
+    hard memory cap. Database and Databricks inputs, and the request input's sample,
+    are left alone.
+    """
+    from haute._execution_admission import create_admitted_execution_context
+    from haute._execution_context import ExecutionProfile
+    from haute._input_preparation import prepare_input_snapshots
+
+    shipped: dict[str, dict[str, Any]] = {}
+    for node_id, validated in _shipped_file_inputs(graph, input_node_ids):
+        snapshot_config = shipped_snapshot_config(node_id, validated, pipeline_dir, project_root)
+        if snapshot_config is not None:
+            # The path as deploy resolves it, so the snapshot prepared is the one bundled.
+            source = _resolve_path(validated["path"], pipeline_dir, project_root, node_id, "path")
+            shipped[node_id] = {**snapshot_config, "path": str(source)}
+    if not shipped:
+        return
+    node_map = {
+        node_id: graph.node_map[node_id].with_config(config) for node_id, config in shipped.items()
+    }
+    context = create_admitted_execution_context(
+        operation="deploy_input_snapshots", profile=ExecutionProfile.LAZY_SINK
+    )
+    try:
+        prepare_input_snapshots(
+            list(shipped),
+            node_map,
+            profile=ExecutionProfile.LAZY_SINK,
+            execution_context=context,
+            base_dir=pipeline_dir,
+            schema_only=False,
+        )
+    finally:
+        context.release_admission(preserve_primary_error=True)
 
 
 def _resolve_path(

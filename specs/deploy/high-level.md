@@ -181,8 +181,23 @@ that artefact at request time. This is the same
 scoring path used by pre-deploy dry-runs, golden test-quote validation, the generated
 FastAPI container, and the MLflow `pyfunc` model — deploy has exactly one scoring engine,
 not one per target. Retained snapshot-backed `dataInput` nodes scan the exact immutable
-generation bundled during resolution. A canonical direct Parquet input bundles and scans
-that configured Parquet file without first copying it through the source cache.
+generation bundled during resolution. A canonical direct Parquet input of one file bundles
+and scans that file without first copying it through the source cache; a direct Parquet
+folder or glob pattern bundles a snapshot read from every file it names, so a folder's
+partition columns ship.
+
+**Only data in the pipeline folder ships.** A file-based Data Input (a file or lakehouse
+source) the quote output depends on, after pruning, must live inside the pipeline folder
+(`rating/` in a new project; the folder holding `[project].pipeline`), where the project
+versions it and CI checks it out. One outside it, such as the project's local `data/`, is
+never shipped: resolution refuses the deployment naming the node, its configured path and
+the folder, with the remedy (move the file into `<folder>/files/data`, or keep the input
+off the path to the quote output). Inputs off that path, which pruning removes (model
+training, optimisation), may read from anywhere. Inside the folder the data always ships:
+resolution builds a missing snapshot and refreshes a stale one before bundling, as an
+execution's automatic preparation does, so a clean checkout in CI deploys it and an edited
+file never ships its old copy. The request input's sample, Load File nodes and model files
+are outside this rule.
 `dataOutput` is a scoring pass-through
 and its writer is never invoked; persistence-only branches outside the served
 output's ancestry are pruned.

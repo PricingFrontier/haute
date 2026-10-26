@@ -214,12 +214,22 @@
    the manifest, and printed by both deploy targets as `Model <node>: <model> @<alias> ->
    version <n> (run <id>)` (`model_source_line`), so the deployed version behind an alias is
    known after the alias moves.
-   A retained file-backed Parquet input is derived direct (`data_input_is_direct`) and
-   bundles its validated source file. A direct path that names several files (a folder or a
-   glob pattern) is refused with a `DeployError` naming the configured path, since one file
-   is bundled: the remedy is one file, or mode `"read"`, which snapshots the files and
-   bundles the snapshot. Every other retained Data Input is snapshot-backed;
-   its ready snapshot acquires a `SourceCacheStore.lease()` that
+   Before collection, `refuse_data_outside_pipeline_folder` resolves the path of every
+   retained file or lakehouse Data Input that is not a request input (`_resolve_path`, as
+   bundling resolves it) and raises a `DeployError` naming the node, the configured path and
+   the pipeline folder (`config.pipeline_file.parent`, shown relative to the project root)
+   for one outside that folder, with the remedy `<folder>/files/data`. Then
+   `prepare_shipped_snapshots` admits a `LAZY_SINK` execution context
+   (`deploy_input_snapshots`) and runs `prepare_input_snapshots` over exactly those inputs'
+   snapshot configurations, each path as deploy resolved it, inside the runtime project-root
+   scope: a missing snapshot is built and a stale one refreshed in a hard-capped worker;
+   database and Databricks inputs and the request input are not prepared, and a failure
+   raises its `InputPreparationError`. `shipped_snapshot_config` names what each Data Input
+   ships: `None` for a direct Parquet source of one file (`data_input_is_direct`), which
+   bundles its validated source file; for a direct path naming several files (a folder or a
+   glob pattern, `named_source_files`) the configuration with mode `"read"`, whose snapshot
+   reads every file with a folder's partition columns; otherwise the configuration itself.
+   Every snapshot it names acquires a `SourceCacheStore.lease()` that
    is retained by `ResolvedDeploy` until dispatch completes, and records provider,
    identity, generation, signature, checksum, row/column counts, and creation time as
    manifest provenance. Then, before anything below reads an artefact, `record_digests`
@@ -794,7 +804,8 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 - **Pipeline-relative path resolution wins within the project**
   (`_bundler.py::_resolve_path`): local paths use
   `resolve_runtime_file_path(..., prefer="pipeline", enforce_project_root=True)`.
-  A pipeline-relative existing file wins over a project-root peer, while an absolute,
+  A pipeline-relative existing file (or a glob pattern matching a file) wins over a
+  project-root peer, while an absolute,
   traversal, or symlink-resolved path outside the project raises `DeployError` before
   copy/load. Every accepted path is absolute, so the manifest never bakes in a
   re-resolution-dependent pointer.
@@ -997,6 +1008,12 @@ what they cover:
   graph spawning nothing, and both failure mappings (`IsolatedWorkerMemoryLimitUnsupportedError`
   and a child `BatchScoreError`) surfacing as `DeployError`. `tests/test_deploy_internals.py` adds the two `resolve_config`
   cache-miss regressions (container target bundles the warning, Databricks refuses).
+- **`test_deploy_data_location.py`** — a project with its pipeline in `rating/`: a Parquet or
+  CSV the quote output reads from the project's `data/` is refused naming the node, the
+  path and the folder, while one read only off the path to the quote output is not
+  shipped; a CSV in the pipeline folder deploys from an empty cache and an edited one
+  ships its new rows; a direct Parquet glob ships every file and a partitioned folder its
+  partition column, each scored from the bundled artefacts.
 - **`test_deploy_quote_input_tables.py`** — a deployed Quote Input with a quote table
   and a drivers table (BUG-31): each port receives its own table's rows and declared
   types and the answer equals the editor's for the same quotes; a quote that is not an

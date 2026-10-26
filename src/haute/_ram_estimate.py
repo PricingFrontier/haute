@@ -552,13 +552,17 @@ def _parquet_metadata(path: str) -> tuple[int, int]:
 
 
 def _parquet_files(path: str | Sequence[Path]) -> list[Path]:
-    """The files a Parquet source reads: one path, a list of parts, or a parts pattern."""
+    """The files a Parquet source reads: a list of parts, or the files a path names.
+
+    A path names one file, every file under a folder or every file a pattern matches
+    (:func:`haute._json_shred._source_proof.source_files`, the rule a source's
+    freshness signature lists them by).
+    """
+    from haute._json_shred._source_proof import source_files
+
     if not isinstance(path, str):
         return [Path(part) for part in path]
-    candidate = Path(path)
-    if any(marker in candidate.name for marker in "*?["):
-        return sorted(candidate.parent.glob(candidate.name))
-    return [candidate]
+    return list(source_files(Path(path)))
 
 
 def _detailed_parquet_metadata(path: str | Sequence[Path]) -> _DetailedSourceMetadata:

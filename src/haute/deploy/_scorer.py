@@ -273,8 +273,9 @@ def artifact_identity_fingerprint(artifact_paths: Mapping[str, str] | None) -> s
 def _bundled_input_artifact(node: GraphNode, remap: Mapping[str, str]) -> str | list[str] | None:
     """The bundled artifact scoring reads in place of *node*'s configured path, if any.
 
-    A direct Parquet Data Input or a Load File node ships its file; a snapshot-backed
-    Data Input ships its snapshot's Parquet parts.
+    A Load File node, and a direct Parquet Data Input of one file, ship their file;
+    every other Data Input, a direct Parquet folder or glob included, ships its
+    snapshot's Parquet parts.
     """
     if not remap:
         return None
@@ -285,10 +286,10 @@ def _bundled_input_artifact(node: GraphNode, remap: Mapping[str, str]) -> str | 
         return None
     from haute._polars_io_registry import data_input_is_direct
 
-    if data_input_is_direct(config):
-        return _remap_artifact(node.id, config, remap, "path")
     prefix = f"{node.id}__snapshot.part-"
     parts = sorted(key for key in remap if key.startswith(prefix) and key.endswith(".parquet"))
+    if data_input_is_direct(config) and not parts:
+        return _remap_artifact(node.id, config, remap, "path")
     return [remap[key] for key in parts] or None
 
 

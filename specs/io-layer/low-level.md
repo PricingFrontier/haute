@@ -167,8 +167,9 @@ platforms, and on Windows with long paths on, nothing is renamed.
    project root, Windows backslashes read as separators, neither candidate leaving the
    runtime project root, as deploy validates and bundles it; a pipeline directory outside
    the runtime project is its own root, as `_infer_project_root` treats a pipeline outside
-   the selected project. A path found in neither place keeps the first candidate inside
-   the root, and one with no candidate inside raises `RuntimePathOutsideProjectError`)
+   the selected project. A glob pattern is found where it matches a path. A path found in
+   neither place keeps the first candidate inside the root, and one with no candidate
+   inside raises `RuntimePathOutsideProjectError`)
    and returns the registry's
    `scan_parquet` lazy scan without creating or consulting a source snapshot.
 5. Snapshot creation calls `build_input_snapshot()`, selects a provider builder, creates a

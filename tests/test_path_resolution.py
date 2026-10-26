@@ -82,6 +82,24 @@ def test_prefer_uses_value_equality_for_non_interned_strings(tmp_path: Path) -> 
     assert resolved == (pipeline_dir / "data.json").resolve()
 
 
+@pytest.mark.parametrize("prefer", ["project", "pipeline"])
+def test_a_glob_pattern_resolves_where_it_matches_a_file(tmp_path: Path, prefer: str) -> None:
+    project_root = tmp_path / "project"
+    pipeline_dir = project_root / "rating"
+    (pipeline_dir / "files" / "data").mkdir(parents=True)
+    (pipeline_dir / "files" / "data" / "a.parquet").write_bytes(b"x")
+
+    resolved = resolve_runtime_file_path(
+        "files/data/*.parquet",
+        project_root=project_root,
+        pipeline_dir=pipeline_dir,
+        prefer=prefer,  # type: ignore[arg-type]
+        enforce_project_root=True,
+    )
+
+    assert resolved == pipeline_dir / "files" / "data" / "*.parquet"
+
+
 def test_missing_candidates_return_deterministic_preferred_path(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     pipeline_dir = project_root / "pipelines"

@@ -237,7 +237,10 @@ reaches node code exactly as the preamble made it.
    ordinary file on Linux and macOS. Rejecting everywhere keeps one project
    behaving the same on every machine instead of failing only after it moves.
    The match is on the exact stem before the first dot, so `CONTRACT.json` and
-   `COM10.json` remain ordinary names.
+   `COM10.json` remain ordinary names. Of the project-root and pipeline-directory
+   candidates for a relative path, one that exists wins (a glob pattern exists where it
+   matches a path, so a relative pattern anchors to the folder holding its files);
+   when both or neither do, the caller's `prefer` decides.
 3. `walk_graph` runs under
    `runtime_project_root_scoped`. The decorator accepts the declared `graph`
    argument positionally or by keyword and rejects a missing/non-`PipelineGraph`
