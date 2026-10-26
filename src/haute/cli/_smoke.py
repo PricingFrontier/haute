@@ -76,8 +76,8 @@ def handle_smoke(config: SmokeConfig) -> None:
     if transport.kind == "databricks":
         if not endpoint_name:
             click.echo(
-                "Error: No endpoint name configured. "
-                "Set endpoint_name or endpoint_suffix in haute.toml.",
+                "Error: No endpoint name configured. Set endpoint_name in the [deploy] "
+                "table of haute.toml, or pass --endpoint-suffix to test the staging endpoint.",
                 err=True,
             )
             raise SystemExit(1)

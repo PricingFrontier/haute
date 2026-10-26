@@ -129,6 +129,11 @@ describe("GitPanel", () => {
     await resetGitStoreForTests()
     // Switches record undoable VC entries on the graph store's history stacks.
     useGraphStore.setState({ dirty: false, undoStack: [], redoStack: [], vcBusy: false })
+    // The workbench form's unsaved edits guard a switch as the canvas's do: a
+    // test that marks them, stubbing the form's reload, must not leave the next
+    // test's switch asking first.
+    useWorkbenchStore.setState({ formDirty: false })
+    useWorkbenchFormStore.setState({ reload: useWorkbenchFormStore.getInitialState().reload })
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
     mockSetWorkingBranch.mockResolvedValue({})
     mockGetMilestones.mockResolvedValue(milestones)

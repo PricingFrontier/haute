@@ -34,6 +34,7 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
+from haute._file_ops import PATH_TOO_LONG_REMEDIATION
 from haute._input_preparation import (
     InputPreparationOutcome,
     InputPreparationRequest,
@@ -64,6 +65,7 @@ from haute._source_cache import (
 from haute._worker_isolation import (
     WorkerTerminalReason,
     isolated_worker_failure_is_memory,
+    isolated_worker_failure_is_path_too_long,
     isolated_worker_memory_detail,
     run_isolated_worker,
     worker_config_for_memory_policy,
@@ -542,12 +544,20 @@ def _admitted_eager_failure(
             error_code="build_timed_out" if timed_out else "build_cancelled",
             phase="cancelled",
         )
+    message, error_code = _build_failure(exc)
     return _AdmittedEagerWorkerError(
         terminal="error",
-        message="Input snapshot build failed.",
-        error_code="build_failed",
+        message=message,
+        error_code=error_code,
         phase="failed",
     )
+
+
+def _build_failure(exc: BaseException) -> tuple[str, str]:
+    """The message and error code of a build that failed, neither naming a path."""
+    if isolated_worker_failure_is_path_too_long(exc):
+        return PATH_TOO_LONG_REMEDIATION, "path_too_long"
+    return "Input snapshot build failed.", "build_failed"
 
 
 def _supervise_admitted_eager_build(
@@ -887,12 +897,13 @@ def _run_build(
                 elapsed_seconds=time.monotonic() - started_at,
             )
         else:
+            message, error_code = _build_failure(exc)
             lifecycle.transition(
                 job_id,
                 to="error",
-                message="Input snapshot build failed.",
+                message=message,
                 fields={
-                    "error_code": "build_failed",
+                    "error_code": error_code,
                     "progress": {
                         **_progress_payload(store.require_job(job_id)).model_dump(
                             exclude={"elapsed_seconds"}
@@ -928,12 +939,13 @@ def _run_build(
             error_type=type(exc).__name__,
             error=_provider_error_diagnostic(exc, config),
         )
+        message, error_code = _build_failure(exc)
         lifecycle.transition(
             job_id,
             to="error",
-            message="Input snapshot build failed.",
+            message=message,
             fields={
-                "error_code": "build_failed",
+                "error_code": error_code,
                 "progress": {
                     **_progress_payload(store.require_job(job_id)).model_dump(
                         exclude={"elapsed_seconds"}

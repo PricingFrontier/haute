@@ -423,7 +423,26 @@ and writes `.python-version` with it when the project has none. An unreadable
 `ProjectPythonError`, which `handle_init` reports as a CLI error before writing any file.
 So uv's local environment, every CI job and the deployed model
 (see [deploy](../deploy/low-level.md)) run one Python.
-`ci_files(target, ci, workbench=..., python_version=...)` returns exactly the files of the
+The staging deploy, smoke and impact steps' generators also take `staging_suffix` (default
+`DEFAULT_STAGING_ENDPOINT_SUFFIX`, `-staging`, which the scaffolded `[ci.staging]
+endpoint_suffix` records and `CIConfig` defaults to; `haute ci update` passes the recorded
+one): `_pin_staging_suffix` moves each `--endpoint-suffix` to it. It raises `ValueError` with
+`staging_suffix_problem`'s reason for an empty suffix, which would deploy staging over
+production, or one holding anything but ASCII letters, digits, `-` and `_`, the characters a
+Databricks endpoint name takes, which also keeps the value inert in the generated YAML and
+shell.
+The production generators take `production_environment` (`[ci.production] environment`,
+`CIConfig.production_environment`, default empty): when it is set, GitHub's `deploy-production`
+job and GitLab's `deploy-production` job name it as their `environment`, and Azure DevOps'
+production deployment names it in place of `production`; when it is empty, the GitHub and
+GitLab jobs name no environment and Azure DevOps keeps `production`. The name is written
+quoted, so one such as `true` or `001` stays a string. `_production_environment` raises
+`ValueError` with `production_environment_problem`'s reason for a value that is not a
+string, or one that is not an ASCII letter or digit followed by up to 254 letters, digits,
+`-` and `_`. That is a name every provider reads as one environment, inert in the generated
+YAML; a dot is refused because Azure DevOps reads `a.b` as resource `b` of environment `a`.
+`staging_suffix_problem` likewise refuses a suffix that is not a string.
+`ci_files(target, ci, workbench=..., python_version=..., staging_suffix=..., production_environment=...)` returns exactly the files of the
 chosen `ci` value, path to content (`"none"` has none, an unknown provider raises), which
 `handle_init` and `haute ci update` both write through `write_generated_files`; on `--force`
 `handle_init` first calls
@@ -702,11 +721,12 @@ it on the reading node instead of aborting the walk, and every other run propaga
   strategy nests `env:` at 18 spaces (so keys need 20). `azure_devops_yml` calls the helper
   twice with different `indent` values for this reason — sharing one indent across both call
   sites would under-indent the production secrets block into unparseable YAML.
-- **Azure DevOps approval boundary.** The workflow's `environment: production`
-  block only names the environment; its approval check is configured in the
-  Azure DevOps portal, not emitted by `_scaffold.py`. A freshly scaffolded
-  project's production stage runs unapproved until an operator configures that
-  check out of band.
+- **Approval boundary.** A generated workflow only names an environment
+  (Azure DevOps always, `production` by default; GitHub and GitLab when
+  `[ci.production] environment` is set); its approval check is configured in
+  the provider, not emitted by `_scaffold.py`. A freshly scaffolded project's
+  production deploy runs unapproved until an operator configures that check,
+  and on GitHub or GitLab until the project also names the environment.
 
 ## Error handling
 

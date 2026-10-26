@@ -529,9 +529,10 @@ class TestSmokeErrorStyleIsProjectConvention:
     ) -> None:
         """The user-facing error must still be clear and actionable.
 
-        Swapping the error-raising style must NOT weaken the message.
-        It should still name ``endpoint_name`` / ``endpoint_suffix`` /
-        ``haute.toml`` so the user knows exactly what to fix.
+        Swapping the error-raising style must NOT weaken the message. It names
+        what the user can set: ``endpoint_name`` in ``[deploy]``, or the
+        ``--endpoint-suffix`` option. ``haute.toml`` has no suffix that smoke
+        reads, so the message must not send the user looking for one.
         """
         monkeypatch.chdir(tmp_path)
         _write_smoke_toml(
@@ -555,6 +556,9 @@ class TestSmokeErrorStyleIsProjectConvention:
         assert "endpoint" in output_lower, (
             f"Error must name 'endpoint' so the user knows what's missing. Output:\n{result.output}"
         )
+        assert "endpoint_name in the [deploy] table of haute.toml" in result.output
+        assert "--endpoint-suffix" in result.output
+        assert "endpoint_suffix in haute.toml" not in result.output
 
 
 # ---------------------------------------------------------------------------

@@ -278,8 +278,10 @@ Connector, cancellation, deadline, and schema failures abort staging and preserv
 previous pointer.
 
 Automatic preparation surfaces its outcome as `InputPreparationError` with a stable reason
-code (`cap_unavailable`, `build_failed`, `memory_limited`, `cancelled`, `timed_out`)
-and the node's identity digest; a host that cannot install the required
+code (`cap_unavailable`, `build_failed`, `memory_limited`, `cancelled`, `timed_out`,
+`path_too_long`) and the node's identity digest. `path_too_long` is a cache path Windows refused
+for its length: a project in a folder with a long path, while Windows' long paths are off. A
+host that cannot install the required
 native cap is refused typed rather than built without one. It is a public contract error:
 synchronous routes answer HTTP 422 with its payload, and background jobs record the
 `memory_limited` terminal state for `memory_limited` and the contract-error fields

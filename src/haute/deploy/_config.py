@@ -149,14 +149,23 @@ class SafetyConfig:
     min_approvers: int = 2
 
 
+#: The suffix a staging deploy appends to the endpoint, model and experiment names when
+#: ``[ci.staging]`` records none, as ``haute init`` writes it. The generated workflows pass
+#: the recorded suffix to the staging deploy, smoke and impact steps.
+DEFAULT_STAGING_ENDPOINT_SUFFIX = "-staging"
+
+
 @dataclass
 class CIConfig:
     """CI/CD settings from [ci] in haute.toml."""
 
     provider: str = "github"
-    staging_endpoint_suffix: str = "-staging"
+    staging_endpoint_suffix: str = DEFAULT_STAGING_ENDPOINT_SUFFIX
     staging_endpoint_url: str = ""
     production_endpoint_url: str = ""
+    # The environment the generated production job runs under, whose reviewers gate it;
+    # empty names none, which works on every plan (``haute._scaffold.ci_files``).
+    production_environment: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +205,7 @@ _VALID_TOML_SCHEMA: dict[str, set[str] | dict[str, set[str]]] = {
     "ci": {
         "_self": {"provider"},
         "staging": {"endpoint_suffix", "endpoint_url"},
-        "production": {"endpoint_url"},
+        "production": {"endpoint_url", "environment"},
     },
     "server": {"host"},
     "assistant": {
@@ -386,9 +395,12 @@ class DeployConfig:
 
         ci_config = CIConfig(
             provider=ci_raw.get("provider", "github"),
-            staging_endpoint_suffix=ci_staging.get("endpoint_suffix", "-staging"),
+            staging_endpoint_suffix=ci_staging.get(
+                "endpoint_suffix", DEFAULT_STAGING_ENDPOINT_SUFFIX
+            ),
             staging_endpoint_url=ci_staging.get("endpoint_url", ""),
             production_endpoint_url=ci_raw.get("production", {}).get("endpoint_url", ""),
+            production_environment=ci_raw.get("production", {}).get("environment", ""),
         )
 
         config = cls(

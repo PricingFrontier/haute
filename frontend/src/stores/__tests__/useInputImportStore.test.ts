@@ -58,7 +58,10 @@ function toasted(text: string): boolean {
 
 describe("startInputImport", () => {
   beforeEach(() => {
-    vi.clearAllMocks()
+    // Reset, not just clear: clearing keeps a mock's answers, so a refusal one
+    // test sets up (mockRejectedValue, or a once-answer it left unused) would
+    // refuse the next test's Stop and leave that import running.
+    vi.resetAllMocks()
     useInputImportStore.setState({ runs: {} })
     useNodeWorkStore.setState({ running: {} })
     useNodeDataStore.getState().reset()
@@ -73,6 +76,8 @@ describe("startInputImport", () => {
       forced: true,
       build_class: "bounded",
     })
+    // A Stop's cancellation is accepted unless the test refuses it.
+    vi.mocked(cancelInputCacheJob).mockResolvedValue(cancelled)
   })
   afterEach(() => vi.useRealTimers())
 
