@@ -8,7 +8,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import orjson
 
@@ -138,6 +138,7 @@ _InferenceLevel = tuple[PathSeg, ...]
 
 
 _InferenceObjectPath = tuple[str, ...]
+_Evidence = TypeVar("_Evidence")
 
 
 @dataclass
@@ -362,8 +363,112 @@ def _infer_jsonl_in_parallel(data_path: Path, ranges: list[tuple[int, int]]) -> 
     return merged
 
 
-def _assemble_inference_schema(state: _InferenceState) -> dict[str, Any]:
+def _array_parent(level: _InferenceLevel) -> tuple[_InferenceLevel, _InferenceObjectPath]:
+    """The level that holds the array *level*, and the array's object path within it."""
+    start = max(
+        (index + 1 for index, (_key, is_array) in enumerate(level[:-1]) if is_array), default=0
+    )
+    return level[:start], tuple(key for key, _is_array in level[start:])
+
+
+def _within(object_path: _InferenceObjectPath, path: _InferenceObjectPath) -> bool:
+    return len(object_path) > len(path) and object_path[: len(path)] == path
+
+
+def _nested_levels(
+    store: dict[_InferenceLevel, _Evidence], nested: _InferenceLevel
+) -> list[_InferenceLevel]:
+    return [level for level in store if len(level) > len(nested) and level[: len(nested)] == nested]
+
+
+def _held_once(state: _InferenceState, parent: _InferenceLevel, path: _InferenceObjectPath) -> bool:
+    """Whether *path* at *parent* also held one object or scalar instead of a list."""
+    if any(
+        object_path == path or _within(object_path, path)
+        for object_path in state.levels.get(parent, {})
+    ):
+        return True
+    if any(_within(object_path, path) for object_path in state.null_leaves.get(parent, {})):
+        return True
+    nested = parent + tuple((key, False) for key in path)
+    return bool(_nested_levels(state.levels, nested) or _nested_levels(state.scalar_levels, nested))
+
+
+def _fold_into_array(
+    state: _InferenceState,
+    parent: _InferenceLevel,
+    path: _InferenceObjectPath,
+    level: _InferenceLevel,
+) -> None:
+    """Move the evidence of *path* held once at *parent* into its array *level*."""
+    width = len(path)
+    moved = _InferenceState()
+    columns = state.levels.get(parent, {})
+    for object_path in [op for op in columns if op == path or _within(op, path)]:
+        observed = columns.pop(object_path)
+        if object_path == path:
+            moved.scalar_levels[level] = _widen_type(moved.scalar_levels.get(level), observed)
+        else:
+            moved.levels.setdefault(level, {})[object_path[width:]] = observed
+    nulls = state.null_leaves.get(parent, {})
+    for object_path in [op for op in nulls if _within(op, path)]:
+        del nulls[object_path]
+        moved.null_leaves.setdefault(level, {})[object_path[width:]] = None
+    containers = state.container_paths.get(parent, set())
+    for object_path in [op for op in containers if _within(op, path)]:
+        containers.discard(object_path)
+        moved.container_paths.setdefault(level, set()).add(object_path[width:])
+
+    # Arrays inside the one object sit at levels under its object hops.
+    nested = parent + tuple((key, False) for key in path)
+
+    def rekey(store: dict[_InferenceLevel, _Evidence]) -> dict[_InferenceLevel, _Evidence]:
+        return {
+            level + inner[len(nested) :]: store.pop(inner)
+            for inner in _nested_levels(store, nested)
+        }
+
+    moved.levels.update(rekey(state.levels))
+    moved.scalar_levels.update(rekey(state.scalar_levels))
+    moved.container_paths.update(rekey(state.container_paths))
+    moved.null_leaves.update(rekey(state.null_leaves))
+    state.merge(moved)
+
+
+def _fold_single_values_into_arrays(state: _InferenceState) -> list[_InferenceLevel]:
+    """Where a key holds a list in some records and one value in others, the list wins.
+
+    XML makes a list only by repeating an element, so a quote with one ``<driver>``
+    holds an object where another holds a list. Its columns, nested arrays and null
+    leaves join the child table, as a shred wraps that one element, instead of also
+    folding into the parent as dotted columns that would address the same data twice
+    and fail the build. Shallowest arrays first, since folding one can move evidence
+    into a deeper array that also held one value. Returns the folded array levels.
+    """
+    folded: list[_InferenceLevel] = []
+    while True:
+        arrays = sorted(
+            {level for level in (*state.levels, *state.scalar_levels) if level},
+            key=lambda level: (len(level), level),
+        )
+        mixed = next((level for level in arrays if _held_once(state, *_array_parent(level))), None)
+        if mixed is None:
+            return folded
+        _fold_into_array(state, *_array_parent(mixed), mixed)
+        folded.append(mixed)
+
+
+def _assemble_inference_schema(
+    state: _InferenceState, *, record_format: _records.RecordFormat = "json"
+) -> dict[str, Any]:
     """Convert accumulated evidence into the public v2 inference payload."""
+    mixed_arrays = _fold_single_values_into_arrays(state)
+    if mixed_arrays and record_format == "json":
+        logger.warning(
+            "json_schema_mixed_shape",
+            paths=[make_table_path(level) for level in mixed_arrays],
+            action="an object or scalar at these arrays is a counted skip",
+        )
     levels = state.levels
     scalar_levels = state.scalar_levels
 
@@ -530,4 +635,6 @@ def _infer_v2_schema_uncached(
             return _assemble_inference_schema(state)
 
     records = _records._iter_records_for_inference(source_path, sample_size=sample_size)
-    return _assemble_inference_schema(_infer_records(records))
+    return _assemble_inference_schema(
+        _infer_records(records), record_format=_records.record_format(source_path)
+    )

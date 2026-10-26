@@ -234,6 +234,15 @@ def _version(kind: PointKind, payload: object) -> str:
     return f"{kind}:{hashlib.sha256(canonical_json(payload).encode('utf-8')).hexdigest()}"
 
 
+def _file_version(path: Path) -> dict[str, object]:
+    """One source file's size and mtime; a file removed since it was listed is missing."""
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return {"path": str(path), "missing": True}
+    return {"path": str(path), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
 def _lineage_fingerprint(graph: PipelineGraph, node_id: str, memo: GraphFingerprintMemo) -> str:
     from haute._graph_utils import upstream_subgraph
 
@@ -363,7 +372,11 @@ class DataPointResolver:
     # ------------------------------------------------------------- kinds
 
     def _resolve_data_input(self, point: DataPoint, demand: NodeSnapshotColumns) -> PointResolution:
-        from haute._input_providers import source_cache_identity, source_signature
+        from haute._input_providers import (
+            signed_source_files,
+            source_cache_identity,
+            source_signature,
+        )
         from haute._polars_io_registry import anchor_config_source_path, data_input_is_direct
 
         node = _node(self.graph, point.producer_node_id)
@@ -373,11 +386,10 @@ class DataPointResolver:
         if data_input_is_direct(config):
             anchored = anchor_config_source_path(config, Path(base_dir or Path.cwd()))
             path = Path(str(anchored["path"])).resolve()
-            try:
-                stat = path.stat()
-                file_version: object = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
-            except FileNotFoundError:
-                file_version = "missing"
+            # A folder or glob pattern is versioned by every file it names.
+            file_version: object = [
+                _file_version(file) for file in signed_source_files(config, base_dir=base_dir)
+            ] or "missing"
             return PointResolution(
                 point=point,
                 kind="data_input",

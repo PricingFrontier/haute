@@ -665,7 +665,11 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
         runtime_project_root_scope,
     )
     from haute._project import resolve_pipeline_file
-    from haute.deploy._bundler import collect_artifacts
+    from haute.deploy._bundler import (
+        collect_artifacts,
+        prepare_shipped_snapshots,
+        refuse_data_outside_pipeline_folder,
+    )
     from haute.deploy._request_frame import request_frame_schema
     from haute.deploy._request_rows import record_digests, request_rows
     from haute.deploy._schema import (
@@ -784,6 +788,10 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
                         field=field_name,
                         path=raw_path,
                     ) from exc
+        # Only data in the pipeline folder ships, from a snapshot that is current.
+        refuse_data_outside_pipeline_folder(pruned_graph, deploy_inputs, pipeline_dir, project_root)
+        with runtime_project_root_scope(config.pipeline_file, project_root=project_root):
+            prepare_shipped_snapshots(pruned_graph, deploy_inputs, pipeline_dir, project_root)
         artifacts = collect_artifacts(
             pruned_graph,
             deploy_inputs,

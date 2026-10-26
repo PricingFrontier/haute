@@ -332,6 +332,35 @@ def test_a_direct_parquet_data_input_is_current_and_versioned_by_its_file(projec
         assert leased.scan.collect()["region"].to_list() == ["east"]
 
 
+def test_a_direct_parquet_glob_is_versioned_by_every_file_it_matches(project: Path) -> None:
+    parts = project / "parts"
+    parts.mkdir()
+    frame = pl.DataFrame({"policy_id": [1], "premium": [1.0], "region": ["east"]})
+    frame.write_parquet(parts / "a.parquet")
+    frame.write_parquet(parts / "b.parquet")
+    graph = _graph(project)
+    graph = graph.model_copy(
+        update={
+            "nodes": [
+                node.with_config({**node.data.config, "path": str(parts / "*.parquet")})
+                if node.id == "source"
+                else node
+                for node in graph.nodes
+            ]
+        }
+    )
+    point = DataPoint("source", None)
+
+    first = DataPointResolver(graph, source="live").resolve(point, ALL)
+    frame.with_columns(pl.lit("west").alias("region")).write_parquet(parts / "b.parquet")
+    second = DataPointResolver(graph, source="live").resolve(point, ALL)
+    (parts / "a.parquet").unlink()
+    third = DataPointResolver(graph, source="live").resolve(point, ALL)
+
+    assert first.state == second.state == third.state == "current"
+    assert len({first.data_version, second.data_version, third.data_version}) == 3
+
+
 def _run_frame(graph: PipelineGraph, node_id: str) -> pl.DataFrame:
     from haute.execution import canonical_dataframe_execution_graph, execute_lazy_graph
     from haute.executor import _build_node_fn

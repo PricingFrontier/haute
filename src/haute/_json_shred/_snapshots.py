@@ -44,7 +44,7 @@ logger = get_logger(component="json_shred")
 API_INPUT_PROVIDER: Final = "api_input"
 # Raised whenever a change to the shred walk or the frame it writes would make
 # an existing generation disagree with a fresh build of the same table.
-SHRED_SEMANTICS_VERSION: Final = 1
+SHRED_SEMANTICS_VERSION: Final = 2
 # The scratch directory one build shreds into. Its children are named like
 # staging directories so the store's stale-staging sweep reclaims a build that
 # died, and its leading dot keeps it out of the cache inventory.

@@ -598,22 +598,26 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
         if node.data.nodeType != NodeType.DATA_INPUT:
             continue
         try:
-            from haute._polars_io_registry import (
-                data_input_is_direct,
-                validate_data_input_config,
-            )
+            from haute._polars_io_registry import validate_data_input_config
             from haute._sandbox import _get_project_root
+            from haute.deploy._bundler import (
+                _resolve_direct_parquet_source,
+                shipped_snapshot_config,
+            )
 
-            config = validate_data_input_config(node.data.config)
-            if data_input_is_direct(config):
-                from haute.deploy._bundler import _resolve_direct_parquet_source
-
-                project_root = (
-                    resolved.config.project_dir or resolved.config.pipeline_file.parent
-                ).resolve()
+            project_root = (
+                resolved.config.project_dir or resolved.config.pipeline_file.parent
+            ).resolve()
+            snapshot_config = shipped_snapshot_config(
+                node.id,
+                validate_data_input_config(node.data.config),
+                resolved.config.pipeline_file.parent,
+                project_root,
+            )
+            if snapshot_config is None:
                 _resolve_direct_parquet_source(
                     node.id,
-                    config,
+                    node.data.config,
                     resolved.config.pipeline_file.parent,
                     project_root,
                 )
@@ -622,7 +626,9 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
             from haute._input_providers import source_cache_identity
             from haute._source_cache import SourceCacheStore
 
-            identity = source_cache_identity(config, base_dir=resolved.config.pipeline_file.parent)
+            identity = source_cache_identity(
+                snapshot_config, base_dir=resolved.config.pipeline_file.parent
+            )
             SourceCacheStore(_get_project_root()).open_generation(identity)
         except Exception as exc:
             logger.exception(

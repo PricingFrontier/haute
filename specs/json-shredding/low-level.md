@@ -252,13 +252,15 @@ v2 config and returns the source file (resolved) with its emitting tables in
 schema order. Each table's store identity (`haute._source_cache.SourceCacheIdentity`,
 provider `api_input`) has the descriptor
 `{path: <resolved source file>, table: {path: <table path>, columns: [[name,
-column path, type], ...selected columns in config order]}, shred_version: 1}`.
+column path, type], ...selected columns in config order]}, shred_version: 2}`.
 Sibling tables and the port label are not part of it: editing one table moves only
 that table's identity, and two tables with identical specifications share one.
 `group_digest` hashes the source path with the node's distinct table digests and
 keys node-level work (single-flight, route jobs). `shred_version`
 (`SHRED_SEMANTICS_VERSION`) is raised whenever the walk or the frame it writes
-changes, so older generations stop matching.
+changes, so older generations stop matching. Version 2 is the walk that reads XML's
+single elements at a declared array as one-element lists and counts a skip for every
+table at or below a non-list there.
 
 **Freshness** — `api_input_source_signature(path)` is the table generations'
 `source_signature`: `xxh64:<digest>:<size>` from the shared
@@ -403,7 +405,17 @@ the skip/conservation accounting.
    then descends into each child array via `_walk_array`, which iterates the array
    and recurses into `_emit_at` per element (a `None` element is a real row for a
    scalar table, a counted skip for an object table; a nested list is a counted
-   shape mismatch, never fabricated as a null scalar row). Declared string columns
+   shape mismatch, never fabricated as a null scalar row). A missing key or a null
+   at the array position yields nothing. Any other value that is not a list there
+   counts one row skip against every emitting table at or below the position
+   (`labels_at_or_below`); a served request is JSON, so `shred_request` refuses
+   such a value naming the table. An XML file's records reach the walk through
+   `file_records(data_path, v2_config, stats=None)` (both file shreds in
+   `_writer.py`, and a deploy's sample quote), which for an `.xml` source
+   (`_records.record_format`, by suffix) applies `single_element_lists(v2_config)`:
+   each single element present at an emitting table's array path becomes a
+   one-element list, in place, since XML repeats an element to make a list; a
+   missing or null value and everything off those paths are left alone. Declared string columns
    use the shared deterministic JSON-scalar renderer; dict/list values remain
    shape values and are rejected or counted rather than stringified.
 5. A `_row_sink`, when given, receives each row as a tuple of values in declared
@@ -583,13 +595,22 @@ planning, so an admitted execution sizes the generation it will read.
    parallel output byte-for-byte identical to serial output, including column
    and table ordering. Worker failures use the same structured reconstruction
    envelope as parallel table builds.
-4. Table assembly, per observed level, in `(array_depth, len, tuple)` sort order:
+4. Single values fold into their arrays (`_fold_single_values_into_arrays`): a level
+   whose array key also held one object or scalar at its parent level (the parent's
+   columns, null leaves or nested levels under that key's object hops) takes that
+   evidence (a scalar's type into `scalar_levels`, an object's leaves, null leaves,
+   containers and nested levels re-keyed under the array level, merged with
+   `_InferenceState.merge`), shallowest array first and repeated until none is left,
+   so a key never yields both parent columns and a child table. For JSON the folded
+   arrays are logged as `json_schema_mixed_shape`; for XML they are the singleton
+   rule.
+5. Table assembly, per observed level, in `(array_depth, len, tuple)` sort order:
    a level only ever seen as a scalar array becomes a one-column `$value` table
    (`_SCALAR_VALUE_COLUMN`); otherwise its object-folded columns are named via
    `_assign_column_names` (bare leaf where unique, else the underscore-joined full
    path, with a final numeric-suffix dedup pass) and typed via the widened
    `levels` map. Only the root level defaults `emit=True`.
-5. Label assignment — inferred `label`s are B4-valid identifiers, never raw
+6. Label assignment — inferred `label`s are B4-valid identifiers, never raw
    table paths (`path`/`displayPath` still carry the path). The root level is
    labelled `quote_info`; every other level is labelled by its innermost array key
    through `derive_identifier_label(raw)` (`src/haute/_api_input_schema.py`): the
@@ -796,13 +817,20 @@ Shred / inference / table snapshots (the `_json_shred/` package):
   a descendant object table does not suppress that object's rows, and that each
   compiled row reader equals per-column `_resolve_leaf` resolution (shared prefixes,
   a leaf that is also another column's prefix, ancestor and `$value` sources,
-  string coercion, and the first crossing column in declared order).
+  string coercion, and the first crossing column in declared order); an object and
+  a scalar where an array is declared each count one skip in that table and in the
+  table below it, while a missing, null or empty array counts nothing.
 - `tests/test_v2_object_nesting_inference.py` — the 2026-06-17 object-nesting
-  transparency ruling, end to end through inference/shred/grammar agreement.
+  transparency ruling, end to end through inference/shred/grammar agreement; a key
+  held as a list and as one object (with a nested array and a null-only field) or
+  one scalar infers one child table and no parent columns.
 - `tests/test_scalar_array_and_inference.py` — scalar-array-as-its-own-child-table
   regression coverage, plus non-mocked exercise of `infer_v2_schema_from_data`.
 - `tests/test_xml_api_input.py` — XML record normalisation, inference, table
-  build/read values, and fail-loud rejection of DTD/entity declarations.
+  build/read values, and fail-loud rejection of DTD/entity declarations; a single
+  `<driver>` beside repeated ones infers one child table and keeps its row, a later
+  file of single elements keeps its rows under that schema while the same tag under
+  another parent does not join the table, and single scalar elements join their list.
 - `tests/test_json_shred_parallel.py` — byte-range splitting (exact tiling, no
   record split, order preserved) and serial-equivalence of parallel inference
   and build: identical inferred schema ordering, late-field discovery and type

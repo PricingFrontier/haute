@@ -214,9 +214,28 @@
    the manifest, and printed by both deploy targets as `Model <node>: <model> @<alias> ->
    version <n> (run <id>)` (`model_source_line`), so the deployed version behind an alias is
    known after the alias moves.
-   A retained file-backed Parquet input is derived direct (`data_input_is_direct`) and
-   bundles its validated source file. Every other retained Data Input is snapshot-backed;
-   its ready snapshot acquires a `SourceCacheStore.lease()` that
+   Before collection, `refuse_data_outside_pipeline_folder` resolves the path of every
+   retained file or lakehouse Data Input that is not a request input (`_resolve_path`, as
+   bundling resolves it) and raises a `DeployError` naming the node, the configured path and
+   the pipeline folder (`config.pipeline_file.parent`, shown relative to the project root)
+   for one outside that folder, with the remedy `<folder>/files/data`. The path counts as
+   outside when, followed through links, it or any file it names (`named_source_files`,
+   resolved) lies outside the resolved folder. Then
+   `prepare_shipped_snapshots` admits a `LAZY_SINK` execution context
+   (`deploy_input_snapshots`) and runs `prepare_input_snapshots` over exactly those inputs'
+   snapshot configurations, each path as deploy resolved it, inside the runtime project-root
+   scope: a missing snapshot is built and a stale one refreshed in a hard-capped worker;
+   database and Databricks inputs and the request input are not prepared, and a failure
+   raises its `InputPreparationError`. A record whose `warning_code` is
+   `cap_unavailable_stale_reused` (a changed file this host cannot rebuild inside a cap) or
+   `source_unavailable` (the file is gone) raises a `DeployError` naming the node and its
+   configured path, since its snapshot predates the file. A lakehouse snapshot's freshness
+   is `unknown`, which preparation reuses, so it ships as last imported. `shipped_snapshot_config` names what each Data Input
+   ships: `None` for a direct Parquet source of one file (`data_input_is_direct`), which
+   bundles its validated source file; for a direct path naming several files (a folder or a
+   glob pattern, `named_source_files`) the configuration with mode `"read"`, whose snapshot
+   reads every file with a folder's partition columns; otherwise the configuration itself.
+   Every snapshot it names acquires a `SourceCacheStore.lease()` that
    is retained by `ResolvedDeploy` until dispatch completes, and records provider,
    identity, generation, signature, checksum, row/column counts, and creation time as
    manifest provenance. Then, before anything below reads an artefact, `record_digests`
@@ -791,7 +810,8 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 - **Pipeline-relative path resolution wins within the project**
   (`_bundler.py::_resolve_path`): local paths use
   `resolve_runtime_file_path(..., prefer="pipeline", enforce_project_root=True)`.
-  A pipeline-relative existing file wins over a project-root peer, while an absolute,
+  A pipeline-relative existing file (or a glob pattern matching a file) wins over a
+  project-root peer, while an absolute,
   traversal, or symlink-resolved path outside the project raises `DeployError` before
   copy/load. Every accepted path is absolute, so the manifest never bakes in a
   re-resolution-dependent pointer.
@@ -994,11 +1014,26 @@ what they cover:
   graph spawning nothing, and both failure mappings (`IsolatedWorkerMemoryLimitUnsupportedError`
   and a child `BatchScoreError`) surfacing as `DeployError`. `tests/test_deploy_internals.py` adds the two `resolve_config`
   cache-miss regressions (container target bundles the warning, Databricks refuses).
+- **`test_deploy_data_location.py`** — a project with its pipeline in `rating/`: a Parquet or
+  CSV the quote output reads from the project's `data/` is refused naming the node, the
+  path and the folder, and so is one reached through a link (a junction on Windows) inside
+  the folder, as a file, a glob under the link, or a glob inside the folder whose match
+  lies through it, while one read only off the path to the quote output (a
+  dangling branch, or a source switch's non-live input) is not shipped; a snapshot
+  preparation could only reuse (the file edited with no memory cap, or deleted) is refused;
+  a direct Parquet folder ships read with its scan's own `hidden_file_prefix`; a node
+  output cached for the pricing node under the editor's own identity (a seed plan for the
+  output seeds from it) is neither bundled nor read, the deployment pricing from the
+  shipped data; a CSV in the pipeline folder deploys from an empty cache and an edited one
+  ships its new rows; a direct Parquet glob ships every file and a partitioned folder its
+  partition column, each scored from the bundled artefacts.
 - **`test_deploy_quote_input_tables.py`** — a deployed Quote Input with a quote table
   and a drivers table (BUG-31): each port receives its own table's rows and declared
   types and the answer equals the editor's for the same quotes; a quote that is not an
-  object, a driver of the wrong shape and a value of the wrong type are refused naming the
-  table or column; drivers nested under their quote, a drivers aggregate joined back and
+  object, a driver of the wrong shape, drivers given as one object or a scalar instead of
+  a list, and a value of the wrong type are refused naming the table or column; an XML
+  sample's single `<drivers>` element reaches the dry run as a list of one, the JSON shape
+  a served request takes; drivers nested under their quote, a drivers aggregate joined back and
   a drivers' mean answer a batch quote by quote (BUG-38), each quote as alone, where one
   frame would give each quote the drivers' mean over both, two quotes sharing a key each
   other's drivers, and a key a node's own column step rewrites the other quote's

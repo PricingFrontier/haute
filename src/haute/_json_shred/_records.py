@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
-from typing import Any, NoReturn, cast
+from typing import Any, Literal, NoReturn, cast
 from xml.parsers import expat
 
 import orjson
@@ -401,6 +401,19 @@ def _iter_xml_records(data_path: Path) -> Iterator[dict[str, Any]]:
         yield {_xml_local_name(root.tag): value}
 
 
+RecordFormat = Literal["json", "xml"]
+
+
+def record_format(data_path: Path) -> RecordFormat:
+    """The format *data_path*'s records are read from, by its suffix.
+
+    XML has no array syntax: it repeats an element to make a list, so one element
+    where a schema declares an array is a one-element list. JSON (and JSONL) says
+    which values are arrays.
+    """
+    return "xml" if data_path.suffix.lower() == ".xml" else "json"
+
+
 def _iter_records(
     data_path: Path,
     *,  # pragma: no mutate
@@ -425,10 +438,10 @@ def _iter_records(
             stats.count_record_skip()
 
     record_limit = _structured_input_record_limit()
-    suffix = data_path.suffix.lower()
-    if suffix == ".xml":
+    if record_format(data_path) == "xml":
         yield from _iter_xml_records(data_path)
         return
+    suffix = data_path.suffix.lower()
     if suffix in (".jsonl", ".ndjson"):
         with data_path.open("rb", buffering=_JSONL_READ_BUFFER_BYTES) as f:
             while raw_line := f.readline(record_limit + 1):

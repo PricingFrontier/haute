@@ -181,9 +181,9 @@ def _read_sample_row(graph: PipelineGraph, input_node_ids: list[str]) -> DeployI
     try:
         resolved_path = _resolve_pipeline_path(graph, path) if path else ""
         if quote_input_with_tables(node):
-            from haute._json_shred._records import _iter_records
+            from haute._json_shred._shred import file_records
 
-            first = next(iter(_iter_records(Path(resolved_path))), None)
+            first = next(file_records(Path(resolved_path), config), None)
             if first is None:
                 raise ValueError("the sample holds no quote")
             return QuoteRequest((first,))

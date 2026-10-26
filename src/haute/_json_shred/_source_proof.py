@@ -18,18 +18,19 @@ granularity keeps its size and mtime.
 from __future__ import annotations
 
 import ctypes
+import glob as glob_module
 import hashlib
 import json
 import os
 import stat as stat_module
 import time
-from collections.abc import Hashable
+from collections.abc import Hashable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from haute._file_ops import atomic_write_bytes
-from haute._hashing import HASH_ALGO, content_hash
+from haute._hashing import HASH_ALGO, content_hash, content_hash_bytes
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 
@@ -396,6 +397,47 @@ def _signature(path: Path) -> FileSignature:
     if _strong_file_revision(path) == revision:
         _write_proof_record(record_path, path, revision, signature)
     return signature
+
+
+_GLOB_CHARACTERS = frozenset("*?[")
+
+
+def source_files(path: Path, *, glob: bool = True) -> tuple[Path, ...]:
+    """The files a local source *path* names, resolved and sorted; empty when it names none.
+
+    A file names itself, a folder every file under it, and a pattern (unless *glob* is
+    off, when its characters are literal) every file it matches, ``**`` across folders.
+    Hidden files are included: signing a file Polars skips can only make a snapshot
+    stale, while leaving out one it reads would keep a stale snapshot fresh. Listing
+    reads no file's content.
+    """
+    if path.is_file():
+        return (path.resolve(),)
+    if path.is_dir():
+        candidates = list(path.rglob("*"))
+    elif glob and not _GLOB_CHARACTERS.isdisjoint(str(path)):
+        candidates = [
+            Path(match)
+            for match in glob_module.glob(str(path), recursive=True, include_hidden=True)
+        ]
+    else:
+        return ()
+    return tuple(sorted({file.resolve() for file in candidates if file.is_file()}, key=str))
+
+
+def files_signature(files: Sequence[Path]) -> str:
+    """The content signature of several files, ``<algorithm>-files:<digest>:<count>``.
+
+    The digest covers each file's path and its own :func:`file_signature`, so adding,
+    removing, renaming or rewriting any one of them changes it; each file is hashed once
+    per unchanged freshness token, as a single file is.
+    """
+    # Imported here: haute._cache imports this module.
+    from haute._cache import canonical_json
+
+    entries = [[str(file), file_signature(file).source_signature] for file in files]
+    digest = content_hash_bytes(canonical_json(entries).encode("utf-8"))
+    return f"{HASH_ALGO}-files:{digest}:{len(entries)}"
 
 
 def clear_file_signatures() -> None:

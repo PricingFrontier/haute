@@ -225,6 +225,49 @@ class TestInferenceIgnoresObjectBranching:
         # The path always carries the full address regardless of the name.
         assert cols["breakdown_cover_selected"] == "$[:].breakdown_cover.selected"
 
+    def test_a_key_held_as_a_list_and_as_one_object_is_one_child_table(
+        self, tmp_path: Path
+    ) -> None:
+        # The list wins: the one object's fields, its nested array and a field seen
+        # only as null all join the child tables, never dotted columns at the root,
+        # which would address the same data twice and fail the build.
+        records = [
+            {"id": 1, "drivers": [{"age": 30, "claims": [{"amount": 5}]}, {"age": 40}]},
+            {"id": 2, "drivers": {"age": 50, "licence": None, "claims": {"amount": 7}}},
+        ]
+        schema = infer_v2_schema_from_data(_write(tmp_path, records))
+
+        assert _table_paths(schema) == {"$[:]", "$[:].drivers[:]", "$[:].drivers[:].claims[:]"}
+        assert _columns_of(schema, "$[:]") == {"id": "$[:].id"}
+        assert _columns_of(schema, "$[:].drivers[:]") == {
+            "age": "$[:].drivers[:].age",
+            "licence": "$[:].drivers[:].licence",
+        }
+        assert _columns_of(schema, "$[:].drivers[:].claims[:]") == {
+            "amount": "$[:].drivers[:].claims[:].amount"
+        }
+
+    def test_one_object_holding_only_nulls_joins_the_list_table(self, tmp_path: Path) -> None:
+        # Its only evidence is a null field, which still belongs to the child table.
+        records = [{"id": 1, "drivers": [{"age": 30}]}, {"id": 2, "drivers": {"licence": None}}]
+        schema = infer_v2_schema_from_data(_write(tmp_path, records))
+
+        assert _table_paths(schema) == {"$[:]", "$[:].drivers[:]"}
+        assert _columns_of(schema, "$[:]") == {"id": "$[:].id"}
+        assert _columns_of(schema, "$[:].drivers[:]") == {
+            "age": "$[:].drivers[:].age",
+            "licence": "$[:].drivers[:].licence",
+        }
+
+    def test_a_key_held_as_a_list_and_as_one_scalar_is_one_scalar_table(
+        self, tmp_path: Path
+    ) -> None:
+        schema = infer_v2_schema_from_data(_write(tmp_path, [{"tags": ["a", "b"]}, {"tags": 3}]))
+
+        assert _table_paths(schema) == {"$[:]", "$[:].tags[:]"}
+        tags = next(table for table in schema["tables"] if table["path"] == "$[:].tags[:]")
+        assert [column["type"] for column in tags["columns"]] == ["str"]
+
     def test_inference_emits_colon_never_star(self, tmp_path: Path) -> None:
         rec = {"proposer": {"claims": [{"amount": 1}]}, "drivers": [{"x": 1}]}
         schema = infer_v2_schema_from_data(_write(tmp_path, [rec]))

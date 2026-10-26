@@ -99,7 +99,8 @@ tables' columns ([workbench](../workbench/high-level.md)). A Quote Input whose s
 JSON, JSONL or XML reads a served request as the editor reads its sample: the quotes, as they
 were sent, are shredded in memory through its tables by the shared shredder, each port
 receiving its own table's rows in its declared types, and its dry run reads its sample's
-first quote the same way. Where a build counts a skipped row, a served request is refused
+first quote the same way (an XML sample's single elements at the tables' arrays read as
+lists of one, the JSON shape a served request takes). Where a build counts a skipped row, a served request is refused
 instead, naming the table (HTTP 422 from a container): a quote that is not an object, an
 array element whose shape does not fit its table, or a value that does not fit its column's
 type would otherwise be answered without it ([JSON shredding](../json-shredding/high-level.md)).
@@ -180,8 +181,32 @@ that artefact at request time. This is the same
 scoring path used by pre-deploy dry-runs, golden test-quote validation, the generated
 FastAPI container, and the MLflow `pyfunc` model — deploy has exactly one scoring engine,
 not one per target. Retained snapshot-backed `dataInput` nodes scan the exact immutable
-generation bundled during resolution. A canonical direct Parquet input bundles and scans
-that configured Parquet file without first copying it through the source cache.
+generation bundled during resolution. A canonical direct Parquet input of one file bundles
+and scans that file without first copying it through the source cache; a direct Parquet
+folder or glob pattern bundles a snapshot read from every file it names, so a folder's
+partition columns ship.
+
+**Only data in the pipeline folder ships.** A file-based Data Input (a file or lakehouse
+source) the quote output depends on, after pruning, must live inside the pipeline folder
+(`rating/` in a new project; the folder holding `[project].pipeline`), where the project
+versions it and CI checks it out. One outside it, such as the project's local `data/`, is
+never shipped: resolution refuses the deployment naming the node, its configured path and
+the folder, with the remedy (move the file into `<folder>/files/data`, or keep the input
+off the path to the quote output). Each file is judged where it lies, so a link inside the
+folder to data outside it is refused too. Pruning drops every node the quote output does not
+depend on (a training or optimisation branch, a data export, a source switch's non-live
+input), so a Data Input off that path may read from anywhere. Inside the folder the data
+always ships:
+resolution builds a missing snapshot and refreshes a stale one before bundling, as an
+execution's automatic preparation does, so a clean checkout in CI deploys it and an edited
+file never ships its old copy. No node output cached when the pipeline ran in the editor
+(a preview's, Explore's, or what training and optimisation seed from) is shipped or read:
+the dry run and the deployment compute every node from the data and models deploy ships.
+A snapshot preparation could only reuse, its file gone or no
+memory cap to rebuild it in, is refused rather than shipped. A lakehouse table's changes
+cannot be detected (the Data Input's Import picks them up), so its snapshot ships as last
+imported. The request input's sample, Load File nodes and model files
+are outside this rule.
 `dataOutput` is a scoring pass-through
 and its writer is never invoked; persistence-only branches outside the served
 output's ancestry are pruned.

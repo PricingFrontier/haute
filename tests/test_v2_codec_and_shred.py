@@ -33,6 +33,7 @@ from haute._json_shred import _shred
 from haute._json_shred._cache import load_v2_api_source
 from haute._json_shred._shred import (
     _SCALAR_VALUE_LEAF,
+    ShredSkipStats,
     _coerce_scalar,
     _compile_row_reader,
     _resolve_leaf,
@@ -908,3 +909,74 @@ def test_reader_fails_loud_when_per_column_resolution_does_not_cross(
 
     with pytest.raises(RuntimeError, match="per-column resolution does not cross"):
         read_row({"a": [{"x": 1}]}, ())
+
+
+def _drivers_and_claims_v2() -> dict[str, Any]:
+    return {
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": "quotes",
+                "emit": True,
+                "columns": [
+                    {"name": "quote_id", "path": "$[:].quote_id", "type": "int", "selected": True}
+                ],
+            },
+            {
+                "path": "$[:].drivers[:]",
+                "label": "drivers",
+                "emit": True,
+                "columns": [
+                    {"name": "age", "path": "$[:].drivers[:].age", "type": "int", "selected": True}
+                ],
+            },
+            {
+                "path": "$[:].drivers[:].claims[:]",
+                "label": "claims",
+                "emit": True,
+                "columns": [
+                    {
+                        "name": "amount",
+                        "path": "$[:].drivers[:].claims[:].amount",
+                        "type": "int",
+                        "selected": True,
+                    }
+                ],
+            },
+        ]
+    }
+
+
+def test_a_value_that_is_not_a_list_at_a_declared_array_is_counted_at_and_below_it() -> None:
+    """An object or a scalar where the schema declares an array is a counted mismatch.
+
+    Each table at or below the array loses its rows from that value, and each counts
+    one skip, so a build logs the loss and a served request refuses it.
+    """
+    stats = ShredSkipStats()
+    records = [
+        {"quote_id": 1, "drivers": [{"age": 30, "claims": [{"amount": 5}]}]},
+        {"quote_id": 2, "drivers": [{"age": 40}]},
+        {"quote_id": 3, "drivers": {"age": 50, "claims": [{"amount": 7}]}},
+        {"quote_id": 4, "drivers": "x"},
+    ]
+
+    buffers = shred_to_buffers(records, _drivers_and_claims_v2(), stats=stats)
+
+    assert [row["quote_id"] for row in buffers["quotes"]] == [1, 2, 3, 4]
+    assert buffers["drivers"] == [{"age": 30}, {"age": 40}]
+    assert buffers["claims"] == [{"amount": 5}]
+    assert stats.skipped_rows_by_table == {"drivers": 2, "claims": 2}
+
+
+@pytest.mark.parametrize("drivers", [None, [], "absent"], ids=["null", "empty", "absent"])
+def test_a_missing_null_or_empty_array_loses_nothing(drivers: object) -> None:
+    stats = ShredSkipStats()
+    record: dict[str, Any] = {"quote_id": 1}
+    if drivers != "absent":
+        record["drivers"] = drivers
+
+    buffers = shred_to_buffers([record], _drivers_and_claims_v2(), stats=stats)
+
+    assert buffers["drivers"] == []
+    assert stats.skipped_rows_by_table == {}

@@ -740,7 +740,10 @@ their independently initiated calls share one process-wide proof behind an uncha
 freshness token, and a restarted process reuses the durable record of a proof made under a
 native revision ([caching](../caching/low-level.md#durable-source-proofs)). A file's runtime record is `{path, exists, is_file, size, mtime_ns,
 hash_algo: "xxh64", content_hash}` from that signature; a missing path or a directory is
-signed by its stat. A structured `apiInput` record also signs each emitting table's
+signed by its stat. A direct Parquet Data Input whose path is a folder or glob pattern
+also signs every file it names (`_source_proof.source_files`) as `path:<n>`, so a
+rewritten, added or removed file changes the identity although the folder's own stat or a
+pattern that names no single path does not. A structured `apiInput` record also signs each emitting table's
 generation pointer (`snapshot_pointer:<label>`), so publishing a new generation of any
 table changes the identity even when the source is unchanged. This is a versioned
 `RUNTIME_GRAPH_INPUT` byte-layout change. The first observation or any token movement

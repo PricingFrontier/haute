@@ -955,6 +955,26 @@ def test_a_build_request_naming_a_profile_is_rejected(client: TestClient) -> Non
     assert response.status_code == 422
 
 
+def test_arguments_that_are_not_an_object_are_a_bad_request(client: TestClient) -> None:
+    """A read's arguments are checked to be an object before its build is planned."""
+    response = client.post(
+        "/api/input-cache/status",
+        json={
+            "schema_version": 1,
+            "config": {
+                "inputType": "file",
+                "format": "parquet",
+                "mode": "read",
+                "path": "input.parquet",
+                "arguments": ["x"],
+            },
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"].startswith("invalid_input_config:")
+
+
 def test_unsupported_database_scheme_is_rejected_before_job_creation(
     client: TestClient,
 ) -> None:

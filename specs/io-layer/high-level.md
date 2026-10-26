@@ -152,7 +152,9 @@ meanwhile by another process is reused rather than reported as a failure. Execut
 and preview caches key a snapshot-backed input by its
 generation pointer and its current source signature, so a mutated source misses every
 cache and reaches preparation, and a refreshed generation changes the pointer and
-therefore every later key.
+therefore every later key. A source that is a folder or a glob pattern is signed by every
+file it names, snapshot-backed or read directly, so adding, removing or rewriting one of
+them is a mutation of the source.
 
 A snapshot build inspects its source completely. A format that needs a declared schema in
 bounded profiles (CSV) is built with a declaration when one is configured and otherwise

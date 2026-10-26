@@ -77,8 +77,9 @@ admitted execution reads them, and canvas execution reads only the published
 generations, projected to the columns it demands, never the raw source. A deployed
 Quote Input shreds each served request the same way, in memory
 (`_shred.py::shred_request`), and refuses the request where a build would count a
-skip: a quote that is not an object or an array element whose shape does not fit its
-table raises `ApiInputSchemaError` naming the table, since a deployed answer must not
+skip: a quote that is not an object, an array element whose shape does not fit its
+table, or an object or scalar where the schema declares an array raises
+`ApiInputSchemaError` naming the table, since a deployed answer must not
 lose a quote's rows silently ([deploy](../deploy/high-level.md)). Generated
 standalone code runs without a project store and shreds its source in-process
 through the same parsed table specs, type checks, skip accounting and conservation
@@ -133,7 +134,13 @@ XML is converted to the same object/list/scalar record shape before inference or
 shredding. Element namespaces are removed from field names; attributes become
 fields; leaf text is the scalar value (or a `value` field when attributes are also
 present); repeated same-name children become lists, while a single child remains a
-single value. A document whose root contains repeated same-name object children
+single value. XML has no other way to say a value is a list, so where a schema declares
+an array a single element is a one-element list: a quote with one `<driver>` keeps its
+driver row beside a quote with two. Inference decides this by the element's structural
+path, never its tag name alone: a path that repeats in any record is an array, its
+single occurrences join that child table rather than also folding into the parent as
+columns, and the schema records the array, so a later file holding only single
+elements still shreds them as rows. A document whose root contains repeated same-name object children
 uses those children as its top-level records. Haute validates that classification
 with a bounded first pass, then streams and releases each child during the emitting
 pass. Otherwise the complete root is one logical record and is admitted only when
@@ -144,7 +151,13 @@ or the synthetic `value` field are rejected rather than interpreted ambiguously.
 Every array element the shred sees is accounted for: it either becomes a row in some
 table, or is counted as a skip against that table (its shape didn't match — an
 object where a scalar was expected, or vice versa), or — for a non-object top-level
-record — is counted as a skipped record. No element silently disappears.
+record — is counted as a skipped record. A JSON object or scalar where the schema
+declares an array is counted as a skip against every table at or below that array,
+since all their rows from it are lost; a missing key, a null and an empty array hold
+no elements and count nothing. Where a JSON key holds a list in some records and one
+object or scalar in others, inference keeps the child table, logs the key as mixed
+(`json_schema_mixed_shape`), and the shred counts the single values. No element
+silently disappears.
 
 **V2 schema and output document.** A v2 apiInput is recognised only by a
 `tables` list. Each table has a non-empty label — unique case-insensitively,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import glob
 import os
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -179,7 +180,8 @@ def resolve_runtime_file_path(
     Relative paths come from the GUI file browser, which reports paths from
     the Haute project root.  Pipelines may live in a subdirectory, so we also
     support pipeline-relative paths as a fallback.  Existing files win over
-    missing candidates; if both candidates exist, ``prefer`` decides.
+    missing candidates, a glob pattern existing where it matches a file; if
+    both candidates exist, ``prefer`` decides.
     """
     root = _infer_project_root(project_root=project_root, source_file=source_file)
     normalised_path = _normalise_path_text(raw_path)
@@ -230,13 +232,23 @@ def resolve_runtime_file_path(
             deduped.append(candidate)
 
     for candidate in deduped:
-        if candidate.exists():
+        if _exists_or_matches(candidate):
             return candidate
 
     if deduped:
         return deduped[0]
 
     raise RuntimePathOutsideProjectError(f"Path {raw_path!r} resolves outside the project root")
+
+
+def _exists_or_matches(candidate: Path) -> bool:
+    """Whether *candidate* exists, or is a glob pattern matching at least one path."""
+    if candidate.exists():
+        return True
+    text = str(candidate)
+    if not any(marker in text for marker in "*?["):
+        return False
+    return next(glob.iglob(text, recursive=True, include_hidden=True), None) is not None
 
 
 def resolve_graph_source_path(raw_path: str, source_file: str | Path) -> str:

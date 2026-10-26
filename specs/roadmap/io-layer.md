@@ -14,7 +14,6 @@ continues from the September 2026 review's packages, which are retired.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| IO-R03 | Planned | P1 | A glob or folder Data Input signs the files it matches, so a rewritten file makes its snapshot stale, and a parquet glob either deploys or is refused at resolution with its reason. |
 | IO-R04 | Planned | P2 | A generation whose directory is gone is reported missing, not corrupt, and a generation is retired by rename-and-defer instead of a bare `rmtree` under the lock. |
 | IO-R05 | Planned | P2 | The registry and the engine anchor a relative config path the same way, and the specification states one rule. |
 | IO-R06 | Planned | P3 | A snapshot build validates its generation outside the store-wide lease lock, and the cache-usage endpoint stops walking every generation per preview. |
@@ -22,39 +21,6 @@ continues from the September 2026 review's packages, which are retired.
 | IO-R08 | Planned | P3 | The supervised-build mechanism exists once, and the IO layer's write-only fields are gone. |
 
 ## Planned improvements
-
-### IO-R03 — Glob and folder inputs are signed
-**Why:** `source_signature` returns `"missing"` for any path that is not a single file,
-and the stat-gated runtime fingerprint returns `{"exists": False}`, so for a glob or
-folder Data Input the snapshot's recorded signature and the live one are both
-`"missing"`; `status()` compares them equal and reports the snapshot `fresh` forever
-(reproduced: a parquet glob scans 3 rows summing to 60, one file is rewritten, the live
-scan gives 2028 while the snapshot stays fresh). Every preview, training run and trace
-then reads stale data without a diagnostic. In deploy, `data_input_is_direct` is true for
-a parquet glob and `_resolve_direct_parquet_source` then refuses it as a source that
-"does not exist", so a parquet glob cannot be deployed at all, while a CSV glob's
-snapshot is bundled and reported fresh forever. `_data_points.py` catches only
-`FileNotFoundError` around `path.stat()`.
-
-**Plan:** Expand the pattern (sorted) and sign the list of matched files with each file's
-size, mtime and content digest (the single-file `xxh64:` signature per file), so adding,
-removing or rewriting a file changes the signature; make the runtime fingerprint do the
-same. In deploy, accept a glob as a direct source where Polars scans it, or refuse it at
-`resolve_config` with a message naming the pattern and the fix. Catch `OSError` where the
-stat is read.
-
-**Acceptance:** The reproduction reports `stale` after one matched file is rewritten and
-`fresh` again after a rebuild; adding a file to the folder is `stale`; a parquet-glob
-Data Input either deploys and serves or fails resolution with a message naming the
-pattern.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_input_providers.py::source_signature`;
-`src/haute/execution.py::_stat_gated_runtime_path_fingerprint`;
-`src/haute/_source_cache.py::SourceCacheStore.status`;
-`src/haute/deploy/_bundler.py::_resolve_direct_parquet_source`;
-`src/haute/_data_points.py`.
 
 ### IO-R04 — Missing is not corrupt, and retirement defers
 **Why:** `_metadata_from_path` raises `SourceCacheGenerationMissingError` when a

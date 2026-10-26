@@ -294,7 +294,7 @@ def _shred_data_file_to_direct_spill(
 
         def _counted_records() -> Iterator[dict[str, Any]]:
             nonlocal record_count
-            for record in _records._iter_records(data_path, stats=skip_stats):
+            for record in _shred.file_records(data_path, v2_config, stats=skip_stats):
                 record_count += 1
                 yield record
 
@@ -356,7 +356,7 @@ def _write_tables_streaming(
 
         def _counted_records() -> Iterator[dict[str, Any]]:
             nonlocal record_count
-            for record in _records._iter_records(data_path, stats=skip_stats):
+            for record in _shred.file_records(data_path, v2_config, stats=skip_stats):
                 record_count += 1
                 yield record
 

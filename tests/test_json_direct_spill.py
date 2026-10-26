@@ -153,8 +153,8 @@ def test_streaming_cache_writer_preserves_primary_failure_and_cleanup_evidence(
 
     monkeypatch.setattr(_writer, "_BoundedParquetRowGroupWriter", FailingCloseWriter)
     monkeypatch.setattr(
-        _records,
-        "_iter_records",
+        _shred,
+        "file_records",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("source failed")),
     )
 

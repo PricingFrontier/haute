@@ -18,7 +18,7 @@ from haute._input_providers import (
     build_input_snapshot,
     recording_schema_tiers,
     resolve_data_input,
-    signed_source_file,
+    signed_source_files,
     source_cache_identity,
     source_signature,
 )
@@ -569,7 +569,7 @@ def test_lakehouse_freshness_is_unknown_without_a_provider_version_token(
     }
 
     assert source_signature(config, base_dir=tmp_path) is None
-    assert signed_source_file(config, base_dir=tmp_path) is None
+    assert signed_source_files(config, base_dir=tmp_path) == ()
 
 
 def test_snapshot_reader_lease_survives_refresh_until_execution_context_closes(
@@ -642,3 +642,91 @@ def test_derived_snapshot_plan_retains_lease_without_execution_context(
     del derived
     gc.collect()
     assert not first.directory.exists()
+
+
+@pytest.mark.parametrize(
+    ("fmt", "path", "arguments"),
+    [
+        ("csv", "parts/*.csv", {"schema": {"amount": "int64"}}),
+        ("parquet", "parts/*.parquet", {}),
+        ("parquet", "parts", {}),
+    ],
+    ids=["csv-glob", "parquet-glob", "parquet-folder"],
+)
+def test_a_glob_or_folder_snapshot_goes_stale_when_its_files_change(
+    tmp_path: Path, fmt: str, path: str, arguments: dict[str, object]
+) -> None:
+    parts = tmp_path / "parts"
+    parts.mkdir()
+
+    def write(name: str, amounts: list[int]) -> None:
+        frame = pl.DataFrame({"amount": amounts})
+        if fmt == "csv":
+            frame.write_csv(parts / f"{name}.csv")
+        else:
+            frame.write_parquet(parts / f"{name}.parquet")
+
+    write("a", [10, 20])
+    write("b", [30])
+    config = {
+        "inputType": "file",
+        "format": fmt,
+        "mode": "read" if fmt == "parquet" else "scan",
+        "path": path,
+        "arguments": arguments,
+    }
+    store = SourceCacheStore(tmp_path)
+    identity = source_cache_identity(config, base_dir=tmp_path)
+
+    def freshness() -> str:
+        signature = source_signature(config, base_dir=tmp_path)
+        return store.status(identity, source_signature=signature).freshness
+
+    def total() -> int:
+        frame = resolve_data_input(config, store=store, base_dir=tmp_path).collect()
+        return int(frame["amount"].sum())
+
+    def build(*, refresh: bool = False) -> None:
+        build_input_snapshot(
+            config,
+            store=store,
+            base_dir=tmp_path,
+            profile=ExecutionProfile.LAZY_SINK,
+            refresh=refresh,
+        )
+
+    build()
+    assert (freshness(), total()) == ("fresh", 60)
+    assert signed_source_files(config, base_dir=tmp_path) == (
+        (parts / f"a.{fmt}").resolve(),
+        (parts / f"b.{fmt}").resolve(),
+    )
+
+    write("b", [1998])
+    assert freshness() == "stale"
+    build(refresh=True)
+    assert (freshness(), total()) == ("fresh", 2028)
+
+    write("c", [1])
+    assert freshness() == "stale"
+
+
+def test_a_glob_that_matches_nothing_signs_as_missing(tmp_path: Path) -> None:
+    (tmp_path / "parts").mkdir()
+    config = {"inputType": "file", "format": "csv", "mode": "scan", "path": "parts/*.csv"}
+
+    assert source_signature(config, base_dir=tmp_path) == "missing"
+    assert signed_source_files(config, base_dir=tmp_path) == ()
+
+
+def test_a_literal_path_with_glob_off_is_not_expanded(tmp_path: Path) -> None:
+    pl.DataFrame({"amount": [1]}).write_csv(tmp_path / "a.csv")
+    config = {
+        "inputType": "file",
+        "format": "csv",
+        "mode": "scan",
+        "path": "*.csv",
+        "arguments": {"glob": False},
+    }
+
+    assert source_signature(config, base_dir=tmp_path) == "missing"
