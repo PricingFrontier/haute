@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
@@ -577,15 +578,23 @@ class TestFeatureContractBundled:
             {"sourceType": "run", "run_id": "run_bare", "artifact_path": "xgb.ubj"}
         )
 
+        # The run's listing completes and names no contract. The client is handed
+        # over rather than opened, so no tracking store is touched.
+        listing = MagicMock()
+        listing.list_artifacts.return_value = []
+
+        def open_run(**kwargs: Any) -> tuple[Any, ...]:
+            return kwargs["run_id"], None, MagicMock(), listing, kwargs["backend"]
+
         with (
             patch(
                 "haute._mlflow_io._resolve_artifact_local",
                 new=self._unlogged_contract(model_contract_filename("xgb")),
             ),
-            # The run's listing completes and names no contract.
-            patch("mlflow.tracking.MlflowClient.list_artifacts", return_value=[]),
+            patch("haute._mlflow_utils.resolve_mlflow_source", new=open_run),
         ):
             artifacts = collect_artifacts(graph, ["api_in"], tmp_path)
+        listing.list_artifacts.assert_called_once()
 
         assert f"ms__{CONTRACT_FILENAME}" not in artifacts
         served = score_graph(
