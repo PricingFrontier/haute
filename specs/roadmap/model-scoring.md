@@ -41,15 +41,15 @@ file defaults to a family.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | MSC-05 | Planned | P3 | Model Scoring scores an MLflow pyfunc model saved in the project. |
-| MSC-06 | Planned | P2 | An XGBoost or LightGBM model trained outside Haute scores under a declared contract. |
+| MSC-06 | Planned | P3 | XGBoost and LightGBM files saved under their libraries' generic suffixes score, and an XGBoost model's missing-value sentinel can be declared. |
 | MSC-07 | Deferred | P3 | ONNX models score in Model Scoring. |
-| MSC-08 | Planned | P2 | Every scoring path compares a bound contract's dtypes with the live frame, and a model's explanation is decided from the loaded family, not the configured path. |
-| MSC-09 | Planned | P3 | Loader errors keep their meaning: a Haute refusal is not retried as corruption, a transport failure is not a missing contract, a CatBoost metadata failure is not swallowed, and the EBM offset link comes from the contract. |
+| MSC-09 | Planned | P3 | Loader errors keep their meaning: a Haute refusal is not retried as corruption and a CatBoost metadata failure is not swallowed. |
+| MSC-10 | Planned | P3 | A model records whether its offset is an exposure or a base premium, so only an exposure scores as a full policy term when a quote leaves it out. |
 
 ## Planned improvements
 
-`MSC-05` and `MSC-06` each build on the file source on their own. `MSC-08`
-and `MSC-09` come from the
+`MSC-05` and `MSC-06` each build on the file source on their own. `MSC-09`
+comes from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md).
 Each family they add is one registration in the model family registry
 (`src/haute/_model_flavors.py`).
@@ -80,8 +80,13 @@ bundles; it does not broaden Load File's restricted unpickler or silently
 change existing MLflow-source trust behaviour.
 
 The input signature must describe supported named tabular columns; an absent
-or unsupported signature is refused. Offsets and categorical domains come
-only from a feature contract, as for a registry pyfunc. The package digest
+or unsupported signature is refused. Offsets come only from a feature
+contract, as for a registry pyfunc. Pyfunc scoring from any source reads a
+signature input marked optional (`ColSpec.required` false) as optional, passing
+it when the input has it: today `_extract_pyfunc_features` reads every
+signature input as required, so a Haute model's logged pyfunc artifact, chosen
+by its artifact path, refuses a quote without an exposure that its native
+artifact prices as a full policy term. The package digest
 covers sorted relative file names and their bytes, including `MLmodel`, code,
 pickles, data and requirement files; added and removed files change it too.
 All package members and local model, artifact and code paths declared by
@@ -104,7 +109,9 @@ before implementation.
 
 **Acceptance:** Explicitly trusted pyfunc regressor and classifier packages
 score in the preview, in a standalone run and in a deployed bundle, with
-predictions equal to the model's own `predict`. A harmless fixture records
+predictions equal to the model's own `predict`. A Haute model scored through
+its logged pyfunc artifact, given input without its exposure, prices as its
+native artifact does. A harmless fixture records
 whether its deserialization hook or `load_context` ran: browsing and
 inspection leave both untouched, and absent or mismatched trust refuses
 scoring and bundling without running either. Verify this with warm model and
@@ -126,122 +133,34 @@ missing from or incompatible with the image are each refused with the reason.
 `specs/sandbox-security/high-level.md` (trusted code and untrusted artifacts);
 `src/haute/deploy/_container.py` (`_ARTIFACT_EXT_TO_DEPS`).
 
-### MSC-06 — A native model trained outside Haute scores under a declared contract
-**Why:** A CatBoost `.cbm` trained outside Haute scores only under a contract
-that declares its offset or no offset, because its file records no baseline.
-A GLM file describes itself. An XGBoost or LightGBM file trained
-outside Haute is refused, because Haute's wrappers read the features,
-categorical encoding, task, link and offset from a record Haute writes into
-the file. The refusal is right: the
-code each categorical level maps to, the link and the offset cannot be guessed
-without risking plausible but wrong prices. Teams with existing XGBoost and
-LightGBM models therefore have no route in short of retraining in Haute or
-wrapping the model as pyfunc (`MSC-05`). Decided on 3 October 2026: Model
-Scoring supports these files.
+### MSC-06 — Generic suffixes and a declared missing-value sentinel
+**Why:** XGBoost, LightGBM and t-boost files trained outside Haute already score
+from what their libraries record, with no contract and no offset (26 October
+2026). Two gaps remain. The libraries save to generic extensions (XGBoost to
+`.json` or `.ubj`, LightGBM usually to `.txt`), and Haute recognises a model by
+its suffix, so an analyst must re-save an XGBoost JSON model as `.ubj` (XGBoost
+picks its parser by extension) or rename LightGBM text to `.lgbm`. And XGBoost
+records no missing-value sentinel: a model trained with `missing=-999` is scored
+with NaN as its only missing value, so a `-999` in the input is read as a number.
 
-**Plan:** Register an external XGBoost and an external LightGBM family in the
-model family registry, each needing a feature contract. The libraries save to generic
-extensions (XGBoost to `.json` or `.ubj`, LightGBM usually to `.txt`), so the
-suffix alone does not decide the family: the node records the family the
-analyst chose, loading checks that the file really is that library's model,
-and a `.ubj` file carrying Haute's record still loads as a Haute model. A
-model trained through either library's scikit-learn interface comes in through
-its saved booster. The contract is drafted in the editor from what the file
-records, completed by the analyst and saved beside the model, with its model
-identity marked as external. Whatever the file records must agree with the
-contract: XGBoost's feature names, types and saved categories; LightGBM's
-feature names, categorical levels and missing-value flags; and the objective,
-its response-transform parameters, task and link. A categorical feature whose
-level-to-code mapping the file does not record is refused.
+**Plan:** Let the node record the family the analyst chose, so a `.json` or
+`.txt` file loads as that library's model once loading checks that it really
+is one; a `.ubj` file carrying Haute's record still loads as a Haute model. An
+optional contract field declares the XGBoost missing-value policy used to
+construct its training DMatrix (NaN only, or NaN plus a finite numeric
+sentinel), applied when building prediction and contribution matrices.
 
-An external XGBoost contract must explicitly declare the missing-value policy
-used to construct its training DMatrix: NaN only, or NaN plus a finite numeric
-sentinel. Null inputs are missing; ordinary values, including a sentinel-looking
-value under the NaN-only policy, retain their numeric meaning. The same
-declared policy is applied when building prediction and contribution matrices.
-A saved booster does not recover this policy, so the draft marks it unresolved until
-the analyst supplies it. Missing or invalid declarations fail; external files
-never inherit Haute's training defaults. Honour LightGBM's saved missing-value
-flags and refuse a combination the adapter cannot reproduce.
+**Acceptance:** An XGBoost model saved as `.json` and a LightGBM model saved as
+`.txt` score from a project file and an MLflow run, matching each library's own
+predictions; a file that is not the chosen library's model is refused by name.
+An XGBoost model trained with `missing=-999` and a declared sentinel scores
+sentinel, null and ordinary rows as its native reference does.
 
-Initial objective support is limited to the built-in regression and binary
-objective/link combinations Haute already implements. Where the file cannot
-establish whether training used a built-in objective, the contract must
-explicitly declare built-in, custom or unknown objective provenance. External
-XGBoost always needs this declaration: a custom callback is not saved, and
-the saved objective name can still be an allowed built-in name. The editor
-leaves provenance unresolved until the analyst supplies it; custom, unknown
-or omitted provenance is refused. This is a declaration of training semantics,
-not a claim that the native artifact can verify an analyst's assertion.
-For declared built-in objectives, inspect the full saved objective and its
-prediction-affecting parameters and require agreement with the contract. In this
-package LightGBM requires unit sigmoid and `reg_sqrt=false`; a non-default
-sigmoid (including `sigmoid=2`), square-root response transform, custom or
-unknown objective, multiclass or multi-output model is refused with the
-unsupported setting named. The component specification enumerates the exact
-accepted combinations and parameters before code changes. No unsupported
-transform is reduced to identity, log or unit logit.
-
-Binary labels in negative/positive order come from the contract. Every
-external contract explicitly declares an offset column and its transform, or
-no offset. The offset transform is separate from the response link: an already
-transformed margin uses an identity offset transform even for a log-response
-model. The objective cannot reveal whether training used `base_margin` or
-`init_score`. Missing offset declarations and missing declared offset inputs
-fail. The trace explains accepted models through each library's native
-contributions with the same missing policy, response transform and offset as
-prediction. Update the feature contract and MLflow model registry high- and
-low-level specifications first, including serialization, hashing and
-validation of these declarations.
-
-**Acceptance:** Models trained through each library's own APIs cover numeric
-and categorical input, regression and binary classification, and offset and
-explicit no-offset declarations. Score the saved models from a project file
-and an MLflow run in the preview, a standalone run and a deployed bundle.
-Independent reference calculations use the native library, never Haute's
-wrapper, encoder or offset helper:
-
-- For XGBoost, build a DMatrix with the training category mapping and declared
-  missing policy. Supply the independently transformed row offset as
-  `base_margin` when declared; it replaces the native base score, so do not
-  add that score again. Compare native response predictions with Haute's
-  regression output or positive-class probability as appropriate.
-- For LightGBM, obtain native raw predictions, add the independently
-  transformed row offset once when declared, then apply the supported
-  response transform. For a log-link exposure model this is
-  `exp(native_raw + log(exposure))`, not ordinary `Booster.predict`.
-- Use nonconstant, nonunit offsets. Assert the original binary labels and
-  positive-class probabilities separately: the positive label applies when
-  `p > 0.5`, with the negative label at a tie. Reconstruct the same served
-  prediction from trace contributions, bias, offset and response transform.
-
-Round-trip an XGBoost model trained with `missing=-999`, with sentinel, null
-and ordinary-valued rows, and a NaN-only-policy model where `-999` is ordinary
-data. Each matches its own native reference. Omitted or invalid missing-value
-policies fail. LightGBM `sigmoid=2` and `reg_sqrt=true` models fail naming the
-unsupported transform instead of producing default-transform predictions.
-Save an XGBoost model trained with a custom objective callback while retaining
-an allowed saved name such as `reg:squarederror`. Inspection must leave its
-objective provenance unresolved; absent, custom or unknown declarations each
-refuse scoring. A model known to have used the built-in objective scores only
-after that provenance is declared and the remaining contract checks pass.
-A contract that disagrees with the file, a file that is not the chosen
-library's model, an unsupported objective or output shape, a categorical
-feature with no recorded mapping, and absent offset declarations or inputs
-are each refused by name. A frontend test drafts a contract, keeps missing-value
-semantics and objective provenance unresolved until supplied, and saves the
-completed declarations.
-
-**Dependencies:** None. It extends the file source and contract binding
-(`src/haute/_mlflow_io.py::bind_feature_contract`).
+**Dependencies:** None.
 
 **Evidence:** `src/haute/modelling/_xgboost.py::XGBoostModel`;
 `src/haute/modelling/_lightgbm.py::LightGBMModel`;
-`src/haute/modelling/_feature_contract.py::FeatureContract`;
-`src/haute/_mlflow_io.py::verify_contract_identity`;
-`tests/test_lightgbm_family.py` (native offset-inclusive reference);
-`tests/test_xgboost_family.py` (native prediction references);
-[XGBoost model IO: custom objective and metric](https://xgboost.readthedocs.io/en/release_3.1.0/tutorials/saving_model.html#custom-objective-and-metric).
+`src/haute/_model_flavors.py::family_for_artifact`.
 
 ### MSC-07 — ONNX models score in Model Scoring
 **Why:** ONNX is the common export format across frameworks, and the
@@ -250,8 +169,7 @@ dependency, no user has asked for it, and pyfunc (`MSC-05`) covers Python
 models first.
 
 **Plan:** If reopened, register an ONNX family in the model family registry: input names
-from the graph, a required feature contract for categorical domains, task and
-offset, `onnxruntime` as an optional extra, and probability outputs mapped to
+from the graph, a required feature contract for task and offset, `onnxruntime` as an optional extra, and probability outputs mapped to
 the binary positive-class rule.
 
 **Acceptance:** An ONNX regressor and classifier converted from another
@@ -264,33 +182,6 @@ extra.
 **Evidence:** `src/haute/deploy/_container.py` (`_ARTIFACT_EXT_TO_DEPS`);
 `frontend/src/panels/editors/ModelScoreEditor.tsx`.
 
-### MSC-08 — Dtypes checked on every path, explanation decided after loading
-**Why:** Outside deploy, a bound contract's `feature_types` and `target_type`
-are never compared with the scoring frame: the preview, batch and trace paths
-check feature names, their relative order and "categorical supplied as
-numeric" only, so an `Int64` feature trained as `String` (or a `Date` arriving
-as `String`) is cast and scored where the deploy scorer's
-`assert_contracts_match` refuses it. The trace decides whether a model has an
-explanation from the configured artifact path before loading: a
-registered-model source, or a run source that leaves `artifact_path` blank for
-auto-discovery, resolves to the directory family and shows no explanation even
-when the discovered artifact is a native file that loads with one.
-
-**Plan:** Compare the contract's `feature_types` with the live schema in
-`_validate_features` when a contract is bound, using the deploy helper's logic;
-decide the explanation after loading (the `family.explanation is None` check
-exists) and drop the pre-load gate.
-
-**Acceptance:** An `Int64` feature trained as `String` is refused in the
-preview with the deploy scorer's message; a registered native model shows its
-explanation in the trace.
-
-**Dependencies:** `DEP-R07` binds the run's contract on every path.
-
-**Evidence:** `src/haute/_model_scorer.py::_validate_features_uncached`;
-`src/haute/deploy/_scorer.py`;
-`src/haute/_model_explainability.py::_source_requests_supported_explanation`.
-
 ### MSC-09 — Loader errors keep their meaning
 **Why:** `_load_with_bounded_retry` re-raises only `AttributeError`,
 `TypeError`, `KeyError`, `ConfigError` and `ArtifactVersionMismatchError`, so a
@@ -298,25 +189,39 @@ readable model the loader refuses with `HauteValidationError` or
 `FeatureMismatchError` (a `.ubj`, `.lgbm` or `.tboost` without Haute's record,
 a contract whose hash fails) is treated as a corrupt download: deleted,
 re-downloaded and reported as persistently corrupt with the real reason only in
-the last error. `_resolve_run_contract` rewraps every failure, an
-authentication or transport error included, as "Run has no feature contract",
-so an infrastructure failure reads as a missing artifact. `catboost_class_labels`
-swallows a failed metadata read and falls back to `classes_`, against the
-module's rule and in a branch `_wrap_catboost` already makes dead. The EBM
-loader derives `offset_link` from `identity.link` instead of the contract's own
-field.
+the last error. `catboost_class_labels` swallows a failed metadata read and
+falls back to `classes_`, against the module's rule and in a branch
+`_wrap_catboost` already makes dead.
 
 **Plan:** Re-raise every `HauteError` and `HauteValidationError` and retry only
-on non-Haute exceptions; catch only the not-found shape in the contract fetch;
-remove the metadata `try/except`; read `contract.offset_link`.
+on non-Haute exceptions; remove the metadata `try/except`.
 
 **Acceptance:** A `.ubj` without Haute's record fails once with its own message
-and no re-download; a 401 from the artifact store reaches
-`classify_mlflow_error`; the dead branch and the second source of truth are
-gone.
+and no re-download; the dead branch is gone.
 
 **Dependencies:** None.
 
 **Evidence:** `src/haute/_mlflow_io.py::_load_with_bounded_retry`;
-`src/haute/_mlflow_io.py::_resolve_run_contract`;
-`src/haute/_mlflow_io.py::catboost_class_labels`; `src/haute/modelling/_ebm.py`.
+`src/haute/_mlflow_io.py::catboost_class_labels`.
+
+### MSC-10 — An offset's role is recorded at training
+**Why:** Scoring treats every log-link offset as an exposure: a quote that leaves one out,
+or sends it empty, is priced for a full policy term (an exposure of one). A log-link offset
+can also be a base premium a model multiplies (an existing tariff, or another model's
+prediction); left out, it is silently priced as one instead of refused. Only an additive
+offset is known to be a base premium today, and the documentation asks the analyst to give a
+log-link base premium in every quote.
+
+**Plan:** Training records the offset's role (exposure or base premium) beside its column
+and link, in Haute's model record and the feature contract, and a model trained outside
+Haute declares it the way it declares its offset. Scoring fills only an exposure; a missing
+or empty base premium is refused, whatever its link.
+
+**Acceptance:** A log-link base-premium model refuses a quote without its premium, naming
+it, in the preview, a pipeline, the trace and a deployed request; a log-link exposure model
+still prices one as a full policy term.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/modelling/_algorithms.py::full_term_offset`;
+`src/haute/_model_scorer.py::_full_term_offset`.

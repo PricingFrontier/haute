@@ -854,7 +854,6 @@ class TestSaveSimpleGraph:
         metadata = {
             "selected_columns": ["_category", "_id"],
             "column_renames": {"_category": "category", "_id": "id"},
-            "categorical_levels": {"category": ["low", "high", None]},
         }
         config = {**metadata, "contract": "opaque"}
         nodes = [source, _make_node("result", "result", node_type, config)]
@@ -896,7 +895,7 @@ class TestSaveSimpleGraph:
         for save_index in range(3):
             if save_index == 2:
                 # Clearing saved settings must remove their old effects, too.
-                metadata = {"selected_columns": [], "column_renames": {}, "categorical_levels": {}}
+                metadata = {"selected_columns": [], "column_renames": {}}
                 graph.node_map["result"].data.config.update(metadata)
                 expected_preview = source.data.config["records"]
             saved = service.save(

@@ -6035,6 +6035,8 @@ def test_deploy_pyfunc_predict_creates_admitted_live_context(monkeypatch) -> Non
     model._artifact_paths = {}
     model._output_fields = None
     model._request_rows = RequestRows("in_request_order")
+    model._omittable = frozenset()
+    model._input_schema = {"feature": pl.Float64()}
     expected_result = pl.DataFrame({"score": [0.25]})
 
     with patch("haute.deploy._scorer.score_graph", return_value=expected_result) as score:

@@ -90,9 +90,8 @@ def mock_mlflow_deploy():
     ):
         for name in _AMBIENT_MLFLOW_DATABRICKS_ENV:
             os.environ.pop(name, None)
-        registered = MagicMock()
-        registered.version = "1"
-        m_client.return_value.search_model_versions.return_value = [registered]
+        # log_model answers with the version it registered.
+        m_log_model.return_value.registered_model_version = 1
         # Deploy logs through a destination-bound client: an active experiment
         # and the run it creates.
         m_client.return_value.get_experiment_by_name.return_value = MagicMock(
@@ -161,10 +160,11 @@ class TestArtifactCopy:
 
         staged: dict[str, bytes] = {}
 
-        def read_staged(**kwargs: object) -> None:
+        def read_staged(**kwargs: object) -> MagicMock:
             artifacts = kwargs["artifacts"]
             assert isinstance(artifacts, dict)
             staged.update({name: Path(path).read_bytes() for name, path in artifacts.items()})
+            return MagicMock(registered_model_version=1)
 
         with mock_mlflow_deploy() as mocks:
             mocks.log_model.side_effect = read_staged
@@ -182,28 +182,31 @@ class TestArtifactCopy:
 class TestVersionSelection:
     """When the registry already has versions (line 138), the max is selected."""
 
-    def test_latest_version_is_max_of_existing(self, deploy_pipeline_file: Path) -> None:
+    def test_a_concurrent_registration_does_not_change_the_served_version(
+        self, deploy_pipeline_file: Path
+    ) -> None:
+        """The version served is the one this deploy's log_model registered.
+
+        Another job registering the same name in between owns the registry's
+        highest version; serving that would price on another model.
+        """
         from haute.deploy._mlflow import deploy_to_mlflow
 
         resolved = _make_resolved(pipeline_file=deploy_pipeline_file)
-
-        v1 = MagicMock()
-        v1.version = "1"
-        v3 = MagicMock()
-        v3.version = "3"
-        v2 = MagicMock()
-        v2.version = "2"
+        competing = MagicMock()
+        competing.version = "9"
 
         with (
             mock_mlflow_deploy() as mocks,
-            patch("haute.deploy._mlflow.search_versions", return_value=[v1, v3, v2]),
+            patch("haute.deploy._mlflow.search_versions", return_value=[competing]) as search,
         ):
+            mocks.log_model.return_value.registered_model_version = 7
             result = deploy_to_mlflow(resolved)
 
-        assert result.model_version == 3
-        assert result.model_uri.endswith("/3")
-        # Endpoint creation must receive the same resolved version.
-        assert mocks.create_or_update_endpoint.call_args.kwargs["model_version"] == 3
+        assert result.model_version == 7
+        assert result.model_uri.endswith("/7")
+        assert mocks.create_or_update_endpoint.call_args.kwargs["model_version"] == 7
+        search.assert_not_called()
 
     def test_no_versions_fails_instead_of_synthesising_one(
         self, deploy_pipeline_file: Path
@@ -213,10 +216,8 @@ class TestVersionSelection:
 
         resolved = _make_resolved(pipeline_file=deploy_pipeline_file)
 
-        with (
-            mock_mlflow_deploy(),
-            patch("haute.deploy._mlflow.search_versions", return_value=[]),
-        ):
+        with mock_mlflow_deploy() as mocks:
+            mocks.log_model.return_value.registered_model_version = None
             with pytest.raises(DeployError, match="registered model version") as exc_info:
                 deploy_to_mlflow(resolved)
 

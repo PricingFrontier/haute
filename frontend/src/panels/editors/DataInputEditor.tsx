@@ -14,7 +14,6 @@ const INPUT_COMMON_KEYS = [
   "inputMapping",
   "selected_columns",
   "column_renames",
-  "categorical_levels",
   "contract",
   "code",
   // Post-load steps survive a provider or format change exactly as code does.

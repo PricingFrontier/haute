@@ -28,7 +28,7 @@ from haute._polars_dtypes import (
 )
 from haute._polars_environment import polars_process_environment, polars_spill_root
 from haute._project_python import deployed_python_version
-from haute.deploy._config import ResolvedDeploy
+from haute.deploy._config import DEFAULT_CATALOG, DEFAULT_SCHEMA, ResolvedDeploy
 from haute.deploy._databricks_serving import (
     ServingEndpointError,
     endpoint_update_state,
@@ -186,7 +186,7 @@ def _deploy_to_mlflow(
                 set_tracking_uri_preserving_env(mlflow, tracking_uri)
                 mlflow.set_registry_uri(registry_uri)
                 with mlflow.start_run(run_id=run_id):
-                    mlflow.pyfunc.log_model(
+                    model_info = mlflow.pyfunc.log_model(
                         name="model",
                         registered_model_name=uc_model_name,
                         **model_arguments,
@@ -196,18 +196,18 @@ def _deploy_to_mlflow(
             client.set_terminated(run_id, status)
             shutil.rmtree(staging, ignore_errors=True)
 
-        _log(f"Model logged. Fetching registered version for {uc_model_name}...")
-        # 6. Get the registered model version
-        versions = search_versions(client, uc_model_name)
-        if not versions:
+        # 6. The version this call registered. The registry's highest could be another
+        # job's registration of the same name, which would then be served.
+        if model_info.registered_model_version is None:
             raise DeployError(
                 "MLflow did not return a registered model version after logging. "
                 "Refusing to deploy a synthetic version.",
                 registered_model=uc_model_name,
             )
-        latest_version = max(versions, key=lambda v: int(v.version)).version
+        model_version = int(model_info.registered_model_version)
+        _log(f"Model logged as version {model_version} of {uc_model_name}")
 
-        model_uri = f"models:/{uc_model_name}/{latest_version}"
+        model_uri = f"models:/{uc_model_name}/{model_version}"
 
         _log(f"Model URI: {model_uri}")
 
@@ -215,7 +215,7 @@ def _deploy_to_mlflow(
         endpoint_url = _create_or_update_serving_endpoint(
             config=config,
             uc_model_name=uc_model_name,
-            model_version=int(latest_version),
+            model_version=model_version,
             progress=_log,
         )
 
@@ -223,12 +223,12 @@ def _deploy_to_mlflow(
             "deploy_completed",
             model_name=model_name,
             model_uri=model_uri,
-            version=int(latest_version),
+            version=model_version,
             endpoint=config.effective_endpoint_name,
         )
         return DeployResult(
             model_name=model_name,
-            model_version=int(latest_version),
+            model_version=model_version,
             model_uri=model_uri,
             endpoint_url=endpoint_url,
             manifest_path=manifest_path,
@@ -240,8 +240,8 @@ def _deploy_to_mlflow(
 
 def get_deploy_status(
     model_name: str,
-    catalog: str = "main",
-    schema: str = "default",
+    catalog: str = DEFAULT_CATALOG,
+    schema: str = DEFAULT_SCHEMA,
 ) -> dict[str, str | int]:
     """Query MLflow Model Registry for current model versions and status.
 
@@ -327,6 +327,7 @@ def _pyfunc_model_arguments(
                 resolved.config.project_dir or resolved.config.pipeline_file.parent
             ),
             haute.requirement,
+            resolved,
         ),
     }
 
@@ -367,7 +368,7 @@ def _build_signature(resolved: ResolvedDeploy) -> object:
             raise unsupported(col_name, dtype_str)
         return DataType[name]
 
-    def _to_colspecs(schema: dict[str, str]) -> list[ColSpec]:
+    def _to_colspecs(schema: dict[str, str], omittable: frozenset[str]) -> list[ColSpec]:
         specs = []
         for col_name, dtype_str in schema.items():
             try:
@@ -380,35 +381,43 @@ def _build_signature(resolved: ResolvedDeploy) -> object:
                 )
             kind = mlflow_type(dtype, col_name=col_name, dtype_str=dtype_str)
             table = isinstance(dtype, pl.Struct | pl.List)
-            specs.append(ColSpec(type=kind, name=col_name, required=not table))
+            # A quote may leave out an exposure (a full policy term), never a rating factor.
+            optional = table or col_name in omittable
+            specs.append(ColSpec(type=kind, name=col_name, required=not optional))
         return specs
 
-    input_schema = Schema(_to_colspecs(resolved.input_schema))  # type: ignore[arg-type]
-    output_schema = Schema(_to_colspecs(resolved.output_schema))  # type: ignore[arg-type]
+    input_schema = Schema(
+        _to_colspecs(resolved.input_schema, frozenset(resolved.omittable_inputs))  # type: ignore[arg-type]
+    )
+    output_schema = Schema(_to_colspecs(resolved.output_schema, frozenset()))  # type: ignore[arg-type]
     return ModelSignature(inputs=input_schema, outputs=output_schema)
 
 
-def _pip_requirements(haute_requirement: str) -> list[str]:
-    """Build pip requirements for the deployed model.
+#: The distributions the served model imports itself, pinned to this environment's:
+#: Model Serving builds the model's container only with ``mlflow`` in it, a Polars release
+#: can change a pipeline's results and memory, and the pyfunc boundary is pandas and NumPy.
+_SERVED_RUNTIME = ("mlflow", "polars", "pandas", "numpy")
+
+
+def _pip_requirements(haute_requirement: str, resolved: ResolvedDeploy) -> list[str]:
+    """Build pip requirements for the deployed model, each pinned and named once.
 
     Haute is the one that validated the deploy (``haute.deploy._served_haute``): a
-    release pinned by version, or a wheel the model carries. MLflow and Polars are
-    pinned to the deploying environment's versions: Model Serving needs ``mlflow``
-    itself in the environment to build the model's container, and a Polars release can
-    change the results a pipeline gives and the memory it takes. Haute brings its own
-    model engines, so no node adds one.
+    release pinned by version, or a wheel the model carries. The served runtime and the
+    engine each bundled artefact loads under are pinned to the versions installed here,
+    as a container image pins them: a model loaded under another engine release than
+    the one that trained it can fail to load or price differently.
     """
-    import mlflow
-    import polars
+    from haute.deploy._container import _pinned_dockerfile_dependency, _pinned_extra_dockerfile_deps
 
-    return [
-        haute_requirement,
-        f"mlflow=={mlflow.__version__}",
-        f"polars=={polars.__version__}",
+    pinned = [
+        *(_pinned_dockerfile_dependency(name, name) for name in _SERVED_RUNTIME),
+        *_pinned_extra_dockerfile_deps(resolved),
     ]
+    return [haute_requirement, *dict.fromkeys(pinned)]
 
 
-def _conda_env(python_version: str, haute_requirement: str) -> dict:
+def _conda_env(python_version: str, haute_requirement: str, resolved: ResolvedDeploy) -> dict:
     """Build a conda environment dict for Databricks Model Serving.
 
     Databricks Model Serving builds the container from it. Python is the project's
@@ -420,7 +429,7 @@ def _conda_env(python_version: str, haute_requirement: str) -> dict:
         "dependencies": [
             f"python={python_version}",
             "pip",
-            {"pip": _pip_requirements(haute_requirement)},
+            {"pip": _pip_requirements(haute_requirement, resolved)},
         ],
         "name": "mlflow-env",
     }
@@ -658,6 +667,12 @@ def _check_databricks_connectivity(
         urllib.request.urlopen(req, timeout=timeout)  # noqa: S310
         _log("Databricks workspace reachable")
     except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise DeployError(
+                f"Databricks returned 401 Unauthorized. "
+                f"Check that your DATABRICKS_RATING_TOKEN is valid and has not expired. "
+                f"Host: {host}"
+            ) from exc
         if exc.code == 403:
             raise DeployError(
                 f"Databricks returned 403 Forbidden. "

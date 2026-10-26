@@ -72,7 +72,6 @@ _IO_UNIVERSAL_KEYS = {
     "inputMapping",
     "selected_columns",
     "column_renames",
-    "categorical_levels",
     "contract",
 }
 #: Editor-state keys a stepped Data Input carries in memory (never persisted

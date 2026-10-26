@@ -21,9 +21,13 @@
   (ordered `list[str]`), `cat_feature_names` (`frozenset[str]`), `flavor`
   (`str`, the flavor of the registered family that loaded it),
   `offset_column` (`str | None`), `offset_link` (`log`, `identity` or
-  `None`) and `offset_declared` (`bool`; `False` only for a CatBoost model
-  whose metadata does not declare its offset and that no contract has bound
-  yet). Exposes `predict()`
+  `None`), `offset_declared` (`bool`; `False` only for a CatBoost model
+  whose metadata does not declare its offset, or an XGBoost model trained
+  outside Haute without the `haute_offset` stamp, that no contract has bound
+  yet) and `run_contract_path` (`str | None`: the local copy of the contract
+  an MLflow run logged beside a native model `load_mlflow_model` loaded, read
+  from that same run; `None` for a run that logged none, a pyfunc model and
+  any model not loaded from MLflow). Exposes `predict()`
   (flattened `np.ndarray`), `predict_proba()` (`np.ndarray | None`), and
   `raw_model` (property). No `__getattr__` proxying — every caller goes
   through this declared surface. Scoring reads the offset column and link
@@ -89,10 +93,7 @@
   empty for a family stored as a directory, MLflow pyfunc), `load_file`
   (`(path, task, *, contract_path, source) -> ScoringModel`, present exactly
   when it has suffixes), `algorithm` (the Haute training algorithm whose
-  models load as it, or `None`), `requires_contract` (the file loads only
-  under its feature contract: an explicit or sibling contract locally, the
-  contract logged beside it in a run, and the contract's bytes join its cache
-  identity — EBM), `self_describing` (a Haute wrapper that encodes its own
+  models load as it, or `None`), `self_describing` (a Haute wrapper that encodes its own
   inputs, applies its own offset and labels binary predictions; its contract
   identity is checked against its native objective — XGBoost, LightGBM,
   EBM, t-boost), `predict_frame` (`polars` | `tabular` | `pandas`, see Control flow),
@@ -143,11 +144,14 @@
   `source_names`, `source` (`"live"` → eager, anything else → batched),
   `row_limit` (set for preview and trace; scores through the row-local scan
   regardless of `source`), `required_output_columns`, `feature_contract_path`,
-  `_declared_categorical_levels`, `reuse_loaded_model` (plus a private
+  `reuse_loaded_model` (plus a private
   `_scoring_model` slot and lock, used only when pinning a model instance
   to the scorer for a reused streaming session).
 - **`ModelExplanationError(RuntimeError)`** (`_model_explainability.py`)
-  — every explanation failure mode raises this.
+  — every explanation failure mode raises this. Its `method` names the
+  explanation that failed (the loaded family's), which
+  `explain_model_score_from_config` sets on every failure it raises; the trace
+  labels a failure with it (`model_explanation` when it is `None`).
 - **Cache key shapes:**
   - Model cache key: `_model_cache_key(...)` →
     `(source_type, run_id, artifact_path, task, artifact_fingerprint,
@@ -255,20 +259,23 @@ it to its contract:
 - **Run and registered.** It passes the source's fields to `load_mlflow_model`
   (a run source passes no version) and is the only caller of
   `load_mlflow_model` in the package. The contract is the explicit
-  `feature_contract_path`; without one, a model whose offset is undeclared
-  (`offset_declared` false) is bound to the contract the run logged beside the
-  model artifact. The model and that contract come from one concrete run:
-  `resolve_run_artifact` resolves a registered version, alias or `latest` (and
-  an absent artifact path) once, the model is reloaded from that run when the
-  source was not already one run and artifact, and
-  `run_logged_contract_path(run_id, artifact_path, backend)` reads the
-  contract beside it through the disk cache (`_resolve_run_contract`, raising
-  a `ConfigError` naming the run when there is none). The destination resolves
-  to one `ResolvedBackend` at the start, and the model load
-  (`load_mlflow_model(..., backend=)`), `resolve_run_artifact(..., backend=)` and
-  `run_logged_contract_path(..., backend=)` all use it. An alias that moves, or a
-  settings change, between the reads therefore cannot pair one version's or one
-  backend's model with another's contract.
+  `feature_contract_path`; without one, a native model (a family with a file
+  loader) is bound to the contract its run logged beside the model artifact
+  when there is one (the loaded carrier's `run_contract_path`), as the deploy
+  bundler ships it; a model whose run logged none, and a pyfunc model
+  directory, score unbound, checked against the features the model names.
+  `load_mlflow_model` reads that contract with the model, from the run it
+  resolved a registered version, alias or `latest` (and an absent artifact
+  path) to once, through the disk cache (`_run_contract_if_logged`). Absence
+  is decided only by a completed listing of the contract's directory in the
+  run, after its download fails, and is recorded in the disk cache as a marker
+  where the contract would sit (`artifact.absent`), so the fast path and a
+  disk-cache-only load see it; a download that fails while the listing names
+  the contract, and a failed listing, are raised, never read as absence. The
+  destination resolves to one `ResolvedBackend` at the
+  start, which the load (`load_mlflow_model(..., backend=)`) uses for both
+  reads. An alias that moves, or a settings change, during the load therefore
+  cannot pair one version's or one backend's model with another's contract.
 - **File.** `resolve_model_file(model_path, base_dir)` resolves the path through
   `resolve_runtime_file_path` (project preferred, pipeline directory
   `base_dir`, project root enforced) and raises `ConfigError` naming the file
@@ -284,27 +291,33 @@ it to its contract:
 `load_bound_model` returns a `BoundModel` (`scoring_model`, `contract_path`):
 the bound carrier and the contract it was bound to, whether the node's own or
 the one a run logged. `load_scoring_model` returns its `scoring_model`.
-`ModelScorer` scores through `load_bound_model` and enforces categorical value
-domains from that `contract_path`, so a run-logged contract constrains
-categories exactly as a file source's sibling and a deployed bundle's contract
-do.
+`ModelScorer` scores through `load_bound_model`, so a run-logged contract binds
+the model exactly as a file source's sibling and a deployed bundle's contract do.
 
 `bind_feature_contract(scoring_model, contract, *, model_name)` (`_mlflow_io.py`)
 is the one binding rule. A contract with a model identity runs
 `verify_contract_identity`. For the offset, a model that declares its own
-(every family except an undeclared CatBoost) must agree with the contract: a
-contract `offset_column` that differs from the model's, or a non-null contract
-`offset_link` that differs from the model's, raises `ConfigError`; pyfunc is
-exempt, because its contract is its only offset description. An undeclared
-CatBoost model takes the contract's declaration: a null `offset_column`
-declares no offset, a named one with an `offset_link` declares that offset, and
-a named one without a link, or no contract at all, raises `ConfigError` naming
-the model and the remedy. Binding returns a new `ScoringModel` sharing the raw
-model and never mutates the carrier it was given, which a cache may hold.
+(every family except an undeclared CatBoost or XGBoost model) must agree with
+the contract: a contract `offset_column` that differs from the model's, or a
+non-null contract `offset_link` that differs from the model's, raises
+`ConfigError`; pyfunc is exempt, because its contract is its only offset
+description. An undeclared model takes the contract's declaration: a null
+`offset_column` declares no offset, a named one with an `offset_link` declares
+that offset (on the carrier, and for an XGBoost model on its wrapper too, which
+applies its own margin), and a named one without a link raises `ConfigError`
+naming the model and the remedy. With no contract at all an undeclared CatBoost
+model scores with no offset, the full-policy-term basis a quote is priced on (a
+CatBoost model trained with a baseline predicts the same with none as with a
+zero one), while an undeclared XGBoost model is refused, naming the stamp and
+the contract that declare it: XGBoost scores a model trained with a margin from
+its `base_score` when none is supplied, which is not the zero margin of a full
+term, and the file cannot tell whether a margin was used. Binding returns a new
+`ScoringModel` sharing the raw model (or a copy of its wrapper) and never mutates
+the carrier it was given, which a cache may hold.
 
 For a file source the contract the model scores under is resolved once, by
-`model_contract_path`, and every consumer feeds that same path to binding,
-categorical-domain enforcement and the offset: the builder and
+`model_contract_path`, and every consumer feeds that same path to binding
+and the offset: the builder and
 `score_from_config` hand it to `ModelScorer` as its `feature_contract_path`,
 and column planning reads its features and offset. A discovered sibling is
 therefore enforced exactly as an explicit contract is.
@@ -320,7 +333,10 @@ load or bind is never cached.
 The builder (`ModelScorer`), the planner (`_model_score_columns`),
 `score_from_config` and `explain_model_score_from_config` all load through
 `load_scoring_model`, so every context loads and binds the same model for the
-same config. The deploy bundler parses the source to decide what to bundle, and
+same config. `explain_model_score_from_config` decides whether a model has an
+explanation after loading it, from the family it loaded as: a registered model
+or a run whose artifact is discovered explains as its native family does, and a
+pyfunc model has none. The deploy bundler parses the source to decide what to bundle, and
 the deploy scorer's passthrough guard parses it to decide whether a node
 without a bundled artifact can be served; a source that does not parse is
 refused there as a `DeployError` chained from the parse failure.
@@ -361,16 +377,17 @@ the scoring errors and the route returns them as `400`.
      trip). Check the in-memory cache; on a hit, record a hit and return
      immediately.
    - **File-loaded families** (every family with a `load_file`) first check
-     whether the disk-cached file (and, for a `requires_contract` family, its
-     cached contract) already exists under the backend's digest partition;
+     whether the disk-cached file and the cached contract its run logged
+     beside it (or the marker recording that the run logged none) already
+     exist under the backend's digest partition;
      if so, compute
      `_local_artifact_fingerprint` from that file (a stat-gated memo, so an
      unchanged file is cheap), build the key with that fingerprint, and
      check the in-memory cache. On a hit, record a hit and return; on a
      miss, acquire the per-artifact lock, re-check the memory cache (a
      concurrent caller may have finished while this one waited), then load
-     directly from the disk-cached file, populate the memory cache, and
-     return.
+     directly from the disk-cached file, record the cached contract, if any,
+     as its `run_contract_path`, populate the memory cache, and return.
    - In both native and pyfunc cases, if the disk-cached file vanishes
      between the existence check and acquiring the lock (a concurrent
      corrupt-retry deleted it), or the file was never disk-cached to begin
@@ -388,9 +405,11 @@ the scoring errors and the route returns them as `400`.
 4. Check the memory cache again under the resolved key; on a hit, return.
 5. Acquire the per-`(backend digest, run_id, artifact)` lock; re-check the
    cache (single-flight); on a hit, return. Otherwise record a miss, then load:
-   file-loaded families go through `_load_with_bounded_retry`, which calls
-   the family's `load_file` (with the run's contract for a
-   `requires_contract` family); the directory family loads via MLflow's
+   file-loaded families go through `_load_with_bounded_retry`, which reads
+   the contract the run logged beside the artifact, if any
+   (`_run_contract_if_logged`), calls the family's `load_file` and records the
+   contract as the carrier's `run_contract_path`; the
+   directory family loads via MLflow's
    pyfunc flavor (`_load_pyfunc_model` + `_wrap_pyfunc`). For a file-loaded
    family, the bounded retry may have deleted
    and re-downloaded the artifact, so the fingerprint is re-derived after
@@ -488,8 +507,7 @@ call through (directly or via the `_score_eager`/`_score_batched_standalone`
 thin delegates). Validates that `flavor` is registered (raises
 `ConfigError` naming the registered flavors otherwise), normalises `required_output_columns` into a
 `ScoreWriteProjection` if given (mutually exclusive with passing
-`write_projection` directly), normalises categorical level declarations
-to the feature set, then dispatches to `_score_batched_unified` (`batch=
+`write_projection` directly), then dispatches to `_score_batched_unified` (`batch=
 True`) or `_score_eager_unified` (`batch=False`).
 The delegates receive `offset_column` on every call, including `None`; there is
 no reduced-arity path for earlier delegate signatures.
@@ -498,8 +516,7 @@ no reduced-arity path for earlier delegate signatures.
   column (explicit argument wins over the model's self-description),
   requires it present if set, prunes the collection to exactly what the
   write projection needs (or the full schema if none), collects once via
-  `streaming_collect`, validates declared categorical value domains
-  against that exact materialisation, prepares the predict frame,
+  `streaming_collect`, prepares the predict frame,
   supplies the CatBoost baseline `Pool` if applicable, predicts, appends
   the proba column for classification when supported, and projects the
   result.
@@ -511,8 +528,8 @@ no reduced-arity path for earlier delegate signatures.
   projection still applies. A limit Polars pushes to the scan bounds prediction
   to the rows the limited result reads, a projection without the prediction
   predicts nothing, and an aggregation over the prediction predicts every row.
-  Each scored batch goes through `_score_collected_frame` (categorical domain
-  validation, predict-frame preparation, the CatBoost baseline `Pool`,
+  Each scored batch goes through `_score_collected_frame` (predict-frame
+  preparation, the CatBoost baseline `Pool`,
   prediction, the proba column) and is cast strictly to output dtypes fixed
   before any row is scored by `_resolve_score_dtypes`: `_declared_score_dtypes`
   gives `Float64` for every regression and CatBoost classification's
@@ -555,8 +572,8 @@ no reduced-arity path for earlier delegate signatures.
 ### Batched chunk loop — `_batch_score_to_parquet` (`_model_scorer.py`)
 
 Reads the input parquet via `pyarrow.parquet.ParquetFile.iter_batches`
-(`_SCORE_BATCH_SIZE` = 500,000 rows/chunk). Per chunk: validates
-categorical domains, prepares the predict frame (offset column riding
+(`_SCORE_BATCH_SIZE` = 500,000 rows/chunk). Per chunk: prepares the predict
+frame (offset column riding
 along for pyfunc/rustystats, or supplied as a CatBoost Pool baseline),
 predicts, appends the proba column if applicable, applies the write
 projection, and writes the chunk as its own part file (`part_name(i)`, Polars
@@ -585,10 +602,16 @@ the uncached validator run. **Errors are never cached** — a
 untouched so a later call against the same (fixed) schema re-validates
 rather than replaying a stale exception.
 
-For live/eager value-domain validation, `_run_score_pipeline` derives the
-materialised validation frame from the union of model features, categorical
-columns, offset requirements, and the write projection. Unrelated wide-frame
-columns are not collected merely to validate categorical levels.
+Before it, `_run_score_pipeline` checks the input schema against the feature
+contract the model is bound to, when `ModelScorer` passes one (the bound
+model's `contract_path`, read through `load_contract_cached`), with
+`assert_schema_matches_contract` (`modelling/_feature_contract.py`), the
+helper the deploy scorer's `_assert_runtime_contract_matches` calls. It rebuilds
+the live contract in the bound contract's feature order from
+`contract_dtype_name` of each column (`MISSING` for an absent one), counts the
+String features categorical, keeps the offset column only when the input
+carries it, and diffs it with `assert_contracts_match`, so a preview, batch or
+trace refuses a dtype drift with the deploy scorer's exact message.
 
 ### Explanation — `explain_catboost_prediction` /
 `explain_rustystats_glm_prediction` (`_model_explainability.py`)
@@ -864,18 +887,44 @@ endpoint.
   part of the predict frame itself (`_offset_predict_features`); a
   `baseline` family (CatBoost) never receives it as a feature column — it is supplied as a
   numeric `Pool` baseline, because CatBoost only applies a baseline
-  passed inside a `Pool`, never through a bare matrix `predict()`. A missing,
-  null, non-numeric, or non-finite explanation offset raises
-  `ModelExplanationError` before CatBoost is called.
+  passed inside a `Pool`, never through a bare matrix `predict()`. Every
+  family scores a frame whose missing exposure column (a log-link offset), or
+  null values in it, take the full-term exposure of one (`full_term_offset` in
+  `src/haute/modelling/_algorithms.py`; `_full_term_offset` in
+  `_model_scorer.py` fills a copy for the eager, row-local and batched paths
+  alike, predictions attach to the caller's frame, so its own columns are never
+  filled, and a present exposure column survives input pruning). An additive
+  (identity-link) offset has no full-term value: `_full_term_offset` refuses a
+  missing column (`FeatureMismatchError`) and a null or non-finite value
+  (`HauteValidationError`), so a null never reaches a prediction as NaN.
+  `explain_model_score_from_config` fills a traced row's missing exposure the
+  same way, so the trace explains the price the scorer gave, and adds
+  `notes` to the explanation saying the row was priced as a full policy term.
+  The preview's note comes from what scoring filled, before any display
+  projection: `ModelScorer.score` sets the node's `FullTermTally` (from
+  `ExecutionProvenance.full_term_tally(node_id)`, `src/haute/_execution_context.py`)
+  in a context variable each scoring path reads as it starts (a row-local scan's
+  callbacks record into the tally it captured), `_full_term_offset` records the
+  rows it scored, those without an exposure and a missing column, and the
+  executor sets `ExecutionProvenance.full_term_notes()` as each node's
+  `NodeResult.notes`, kept in the preview cache beside the outputs so a cached
+  preview says the same, and a snapshot of the scored output records the tally's
+  facts (`node_output.full_term`, see [caching](../caching/low-level.md)) so a
+  preview seeded from it says the same without scoring; a non-numeric or
+  non-finite explanation offset raises `ModelExplanationError` before CatBoost
+  is called.
 - **Pyfunc feature discovery uses the supported MLflow signature API.**
   `_extract_pyfunc_features` reads `signature.inputs.input_names()`; Haute's
   MLflow dependency floor is 3.11 and no older list-shaped signature adapter
   is retained.
-- **Feature order is checked only relatively.** Extra columns elsewhere
-  in the input schema are fine; what's enforced is that the model's own
-  features appear in the schema in the same relative order they were
-  declared in training (`_validate_features_uncached`'s
-  `actual_order_by_position` check).
+- **Feature order is never checked.** `_validate_features_uncached` checks
+  presence and categorical dtype, and `assert_schema_matches_contract` a bound
+  contract's dtypes, and the usable features come back in the model's
+  own order; every scoring path selects that list from the input before
+  predicting, so a GLM (whose RustyStats feature list is alphabetical) or any
+  other model scores input columns in whatever order they arrive. The deployed
+  contract check likewise rebuilds the live contract in the bundled contract's
+  feature order.
 - **The batch scorer's zero-row output dtype is derived from model metadata
   where available, never assumed from the task alone.** CatBoost classification
   uses `classes_` for hard labels and raises if that metadata is absent; other
@@ -929,13 +978,13 @@ endpoint.
 | Model file or run artifact with a suffix no family registers | `ConfigError` naming the registered suffixes (`supported_suffixes`) | `family_for_artifact`, called by `load_local_model`, the `load_mlflow_model` fast and full paths, the deploy bundler and the trace explanation, before any download. |
 | Local path naming the directory family (a pyfunc model) | `ConfigError` (it loads only from MLflow) | `load_local_model`. |
 | CatBoost model metadata cannot be read | `ConfigError` naming the model source (chained from the read failure) | `_wrap_catboost`; re-raised immediately by `_load_with_bounded_retry`. |
-| CatBoost offset undeclared by metadata and contract, a contract offset column without its `offset_link` for such a model, or a model/contract offset disagreement | `ConfigError` naming the model and the remedy | `bind_feature_contract`, for file, run, registered and deployed models alike. |
-| A run or registered CatBoost model with undeclared offset and no contract logged beside it | `ConfigError` naming the run | `run_logged_contract_path` (`_resolve_run_contract`). |
+| A contract offset column without its `offset_link` for a CatBoost model whose metadata declares no offset, or a model/contract offset disagreement | `ConfigError` naming the model and the remedy | `bind_feature_contract`, for file, run, registered and deployed models alike. |
+| A run's contract download fails while a listing names it, or the listing fails | The download or listing error, re-raised (retried by `_load_with_bounded_retry`) | `_run_contract_if_logged`. |
 | File source with a missing model file, an explicit contract that does not exist, or a path outside the project | `ConfigError` naming the file / `RuntimePathOutsideProjectError` | `resolve_model_file`, `model_contract_path`; also `GET /api/model-file` as `400`. |
 | Corrupt/unloadable artifact after bounded retry | `RuntimeError` (chained `from last_err`) | `_load_with_bounded_retry`. |
 | Bug in load dispatch (bad attribute/type/key) | `AttributeError` / `TypeError` / `KeyError` | Re-raised immediately from `_load_with_bounded_retry`, never retried. |
 | Invalid disk-cache run_id/artifact_path | `ValueError` | `_validate_disk_cache_run_id` / `_validate_artifact_path`, called from `_artifact_cache_path` before any I/O. |
-| Feature/order/categorical/offset mismatch | `FeatureMismatchError` | `_validate_features_uncached` / `_require_offset_column`; propagates through `ModelScorer.score()` uncaught (no rewrap of other exception types — see `_run_score_pipeline` docstring). |
+| Feature/categorical/offset mismatch, or a dtype that differs from the bound contract | `FeatureMismatchError` | `assert_schema_matches_contract` (with a bound contract, first) / `_validate_features_uncached` / `_require_offset_column`; propagates through `ModelScorer.score()` uncaught (no rewrap of other exception types — see `_run_score_pipeline` docstring). |
 | Unsupported scoring flavor | `ConfigError` | `score_frame()`, at the top of dispatch. |
 | Unregistered flavor in predict-frame prep or a registry lookup | `ValueError` naming the registered flavors | `_prepare_predict_frame`, `model_family`. |
 | Duplicate family flavor or suffix | `ValueError` | `register_model_family`, at import for the built-ins. |
@@ -961,7 +1010,7 @@ plain `RuntimeError`, not a `HauteError` subclass.
 - `tests/test_model_families.py` verifies the registry: a stub family registered with one call loads and scores from a local file, loads from a run artifact both named and by discovery, appears in the suffix list and maps to its deploy distributions; an unrecognised suffix fails locally and from a run with a `ConfigError` naming the supported suffixes; artifact paths resolve to their family (case, separators, directories); the built-in registrations are exactly `_SUPPORTED_FLAVORS`; duplicates are refused; every training descriptor's suffix is its family's; and `frontend/src/utils/modelFamilies.json` equals `model_family_fixture()`.
 - `tests/test_model_source.py` verifies the parsed source: each invalid config (no run ID, no registered model, no model path, an unknown `sourceType`, a version beside an alias) fails with the same `ConfigError` through the builder, `score_from_config` and the trace explanation; the parser's defaults; the deploy passthrough guard chaining the parse failure; and that `load_mlflow_model` is called only from `_model_source.py`.
 - `tests/test_model_family_acceptance.py` verifies that, for every native family, a model saved with its contract scores through a file source in the preview, in a standalone run (`score_from_config`) and in a deployed bundle with the predictions of the same model scored from its MLflow run.
-- `tests/test_model_file_source.py` verifies the file source and contract binding: a GLM file scores as its run does; an external CatBoost model trained with a nonzero, nonconstant baseline and saved without Haute metadata matches native prediction through a `Pool` baseline under a contract declaring its offset, and the trace reconstructs that prediction; an explicit no-offset contract scores; an undeclared offset, a model/contract disagreement and a missing declared offset input each fail for file, run and registered sources; a missing file, an unsupported suffix, a path outside the project and an EBM without its contract each fail naming the file; the trace explains a file-sourced CatBoost, GLM and XGBoost prediction; `GET /api/model-file` reports a saved model's family, task, features, offset and contract; and the bundler copies a file source's model and contract and bundles an undeclared run CatBoost's logged contract; scoring and bundling pick the project file over a same-named one in the pipeline directory; a registered model and its logged contract come from one run when the alias moves between the reads; a run-logged contract enforces its categorical domains; a sibling contract symlinked outside the project is refused by scoring and bundling; and a backslash `model_path` bundles and serves under one key. `tests/test_preview_snapshot_seeding.py` verifies that replacing the model file or changing its sibling contract stops a downstream join capture from being seeded.
+- `tests/test_model_file_source.py` verifies the file source and contract binding: a GLM file scores as its run does; an external CatBoost model trained with a nonzero, nonconstant baseline and saved without Haute metadata matches native prediction through a `Pool` baseline under a contract declaring its offset, and the trace reconstructs that prediction; an explicit no-offset contract scores; an undeclared offset and a missing declared exposure score as a full policy term, and a missing additive offset and a model/contract disagreement fail, for file, run and registered sources; a missing file, an unsupported suffix, a path outside the project and an EBM without its contract each fail naming the file; the trace explains a file-sourced CatBoost, GLM and XGBoost prediction; `GET /api/model-file` reports a saved model's family, task, features, offset and contract; and the bundler copies a file source's model and contract and bundles an undeclared run CatBoost's logged contract; scoring and bundling pick the project file over a same-named one in the pipeline directory; a registered model and its logged contract come from one run when the alias moves between the reads; a run-logged contract scores values the model never saw; a run or registered model whose run logged no contract scores against its own features, and loads from the disk cache alone once previewed; a sibling contract symlinked outside the project is refused by scoring and bundling; and a backslash `model_path` bundles and serves under one key. `tests/test_preview_snapshot_seeding.py` verifies that replacing the model file or changing its sibling contract stops a downstream join capture from being seeded.
 - `tests/test_runtime_input_cache_invalidation.py` verifies file-source freshness with warm model, preview and trace caches and a downstream snapshot: replacing the model at the same path, changing only the discovered sibling contract, adding a higher-priority sibling contract, and changing an explicit contract each return the new predictions or refusal and leave the old snapshot not current; deleting the model or its required contract raises a named error.
 - `tests/test_scoring_path_unified.py` verifies explicit flavor dispatch, unified scoring regression guards, structural invariants, wrapper dispatch, and eager/batch equivalence.
 - `tests/test_scoring_prep_perf.py` verifies prediction-frame preparation correctness, pyfunc named-frame dispatch, downstream passthrough, edge cases, and benchmark behavior.
@@ -1148,8 +1197,8 @@ to a live MLflow tracking server.
   all-null row and raises for a CatBoost classifier without `classes_`. `TestRowLocalScanScoring` scores a real CatBoost model through the scan:
   a limit predicts only the limited rows, an aggregation predicts every row, a
   projection without the prediction predicts nothing, predictions and dtypes
-  match eager scoring for regression and classification, and an undeclared
-  categorical level raises through `streaming_collect`.
+  match eager scoring for regression and classification, and a categorical
+  level the training rows never held scores.
 - **`tests/test_scenario_fanout_sink.py`** — the input-sink cap:
   `streaming_chunk_size_cap` semantics (it lowers the Polars value but not the
   setting, never raises it, restores an unset value unset, keeps the smallest of
@@ -1206,6 +1255,6 @@ to a live MLflow tracking server.
 codegen and execution-engine components respectively and are not detailed
 here.
 
-Known coverage gaps: none. Empty-batch schema behavior, minimal live
-categorical-validation projection, and the absence of an unbenchmarked
+Known coverage gaps: none. Empty-batch schema behavior and the absence of an
+unbenchmarked
 contiguity conversion all have direct regression coverage.

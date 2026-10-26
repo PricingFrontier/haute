@@ -109,6 +109,7 @@ def build_manifest(resolved: ResolvedDeploy) -> dict[str, Any]:
         "output_node_id": resolved.output_node_id,
         "output_fields": config.output_fields,
         "input_schema": resolved.input_schema,
+        "omittable_inputs": resolved.omittable_inputs,
         "output_schema": resolved.output_schema,
         "execution_policy": resolved.execution_policy,
         "artifacts": {name: path.as_posix() for name, path in resolved.artifacts.items()},

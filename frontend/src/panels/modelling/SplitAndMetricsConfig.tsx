@@ -1,5 +1,6 @@
 import { ConfigSection, SavedValueOption } from "../../components/form"
 import type { EvaluationPreview } from "../../api/types"
+import { fractionToPercent } from "../../utils/formatValue"
 import { evaluationConfigurationIssues } from "../../utils/trainingObjective"
 import { NumberField } from "./NumberField"
 import { EvaluationAllocation } from "./EvaluationAllocation"
@@ -266,7 +267,7 @@ export function SplitAndMetricsConfig({
               <span>Validation set (%)</span>
               <NumberField
                 label="Validation set (%)"
-                value={validationFraction * 100}
+                value={fractionToPercent(validationFraction)}
                 min={0}
                 max={100}
                 exclusiveMin
@@ -349,7 +350,7 @@ export function SplitAndMetricsConfig({
             <span>Test set (%)</span>
             <NumberField
               label="Test set (%)"
-              value={testFraction * 100}
+              value={fractionToPercent(testFraction)}
               min={0}
               max={100}
               exclusiveMax

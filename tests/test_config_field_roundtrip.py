@@ -564,7 +564,7 @@ def test_removed_exclude_field_is_refused_when_a_saved_sidecar_carries_it(tmp_pa
     assert raised.value.context["removed_config_keys"] == ["exclude"]
 
 
-@pytest.mark.parametrize("field", ["selected_columns", "column_renames", "categorical_levels"])
+@pytest.mark.parametrize("field", ["selected_columns", "column_renames"])
 def test_roundtrip_oracle_rejects_dropped_fields(field):
     graph = next(_examples())[1]
     _, parsed, _ = _roundtrip(graph)

@@ -273,7 +273,7 @@ describe("useWebSocketSync - WS sync must not corrupt undo history (#8)", () => 
       id: "local-columns",
       data: {
         label: "Local columns", nodeType: "polars",
-        config: { selected_columns: ["city"], column_renames: { city: "Municipality" }, categorical_levels: { city: ["London", "Paris"] } },
+        config: { selected_columns: ["city"], column_renames: { city: "Municipality" } },
       },
     }
     graphStore.dirty = true

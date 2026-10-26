@@ -2,7 +2,7 @@
 
 TDD suite covering items:
 
-* #1  — Feature / categorical order mismatch raises at score time
+* #1  — A reordered input scores as the training order does (features by name)
 * #2  — MLflow signature is logged and round-trips through the feature contract
 * #13 — Categorical type mismatch raises FeatureMismatchError (no silent cast)
 * #15 — GLM column selection preserves categorical metadata across save/load
@@ -90,68 +90,48 @@ def _train_tiny_catboost(
 
 
 # ===========================================================================
-# Item #1 — Feature / categorical order mismatch between training and scoring
+# Item #1 — Feature / categorical order between training and scoring
 # ===========================================================================
 
 
-class TestFeatureOrderMismatchAtScore:
+class TestFeatureOrderAtScore:
     """Training features ordered one way, score input ordered another way.
 
-    The scorer must raise :class:`FeatureMismatchError` rather than silently
-    reorder columns or mis-index the categorical positions fed into the
-    CatBoost Pool.
+    Every scoring path selects the model's features by name, in the model's
+    own order, before predicting, so a reordered input scores exactly as the
+    training order does: CatBoost's positional categorical indices still
+    describe the same columns.
     """
 
-    def test_score_with_reordered_features_raises(
-        self, mixed_train_df: pl.DataFrame, tmp_path: Path
+    def test_reordered_features_score_as_in_training_order(
+        self, mixed_train_df: pl.DataFrame
     ) -> None:
         pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         from haute._mlflow_io import ScoringModel, _wrap_catboost
-        from haute._model_scorer import _run_score_pipeline
 
         # Train with a deliberate, non-alphabetic feature order.
         train_features = ["region", "age", "vehicle_value"]
-        cat_features = ["region"]
         model = _train_tiny_catboost(
             mixed_train_df,
             features=train_features,
-            cat_features=cat_features,
+            cat_features=["region"],
         )
-
         scoring_model: ScoringModel = _wrap_catboost(model, source="test model")
         assert list(scoring_model.feature_names) == train_features, (
             "Pre-check: CatBoost must remember training feature order"
         )
 
-        # Score with a different column order.  The scorer is expected to
-        # treat the training order as load-bearing for CatBoost (categorical
-        # indices are positional), so a reorder must be detected and surfaced.
-        reordered = mixed_train_df.select(["age", "vehicle_value", "region"])
-        scoring_lf = reordered.head(5).lazy()
+        rows = mixed_train_df.head(5)
+        assert _predictions(scoring_model, rows.select(["age", "vehicle_value", "region"])) == (
+            _predictions(scoring_model, rows.select(train_features))
+        )
 
-        with pytest.raises(FeatureMismatchError) as exc_info:
-            _run_score_pipeline(
-                scoring_model,
-                scoring_lf,
-                task="regression",
-                output_col="pred",
-                source="live",
-            )
-
-        msg = str(exc_info.value).lower()
-        assert "order" in msg or "feature" in msg
-
-    def test_score_with_cat_at_wrong_position_raises(self, mixed_train_df: pl.DataFrame) -> None:
-        """Moving the categorical column to a different index is a mismatch.
-
-        In CatBoost the categorical set is stored as *indices* into the
-        feature vector.  If the incoming column order shifts ``region`` from
-        position 0 to position 2 the indices no longer describe the same
-        columns — silent reordering here produces wrong predictions.
-        """
+    def test_a_moved_categorical_column_scores_as_in_training_order(
+        self, mixed_train_df: pl.DataFrame
+    ) -> None:
+        """``region`` arriving last instead of first keeps its categorical index."""
         pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         from haute._mlflow_io import _wrap_catboost
-        from haute._model_scorer import _run_score_pipeline
 
         train_features = ["region", "age", "vehicle_value"]
         model = _train_tiny_catboost(
@@ -161,17 +141,21 @@ class TestFeatureOrderMismatchAtScore:
         )
         scoring_model = _wrap_catboost(model, source="test model")
 
-        # Build scoring data with all the right columns but wrong order.
-        bad_order = mixed_train_df.select(["vehicle_value", "age", "region"]).head(4)
+        rows = mixed_train_df.head(4)
+        assert _predictions(scoring_model, rows.select(["vehicle_value", "age", "region"])) == (
+            _predictions(scoring_model, rows.select(train_features))
+        )
 
-        with pytest.raises(FeatureMismatchError):
-            _run_score_pipeline(
-                scoring_model,
-                bad_order.lazy(),
-                task="regression",
-                output_col="pred",
-                source="live",
-            )
+
+def _predictions(scoring_model: Any, rows: pl.DataFrame) -> list[float]:
+    """Score *rows* through the shared scoring pipeline, as every path does."""
+    from haute._model_scorer import _run_score_pipeline
+
+    scored = _run_score_pipeline(
+        scoring_model, rows.lazy(), task="regression", output_col="pred", source="live"
+    )
+    frame = scored.collect() if isinstance(scored, pl.LazyFrame) else scored
+    return frame["pred"].to_list()
 
 
 # ===========================================================================

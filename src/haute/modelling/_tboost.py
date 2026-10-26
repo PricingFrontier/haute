@@ -16,8 +16,8 @@ and how it enters the margin, and the binary class labels) in t-boost's
 ``metadata`` slot, so plain t-boost still loads it and no pickle is involved.
 
 A categorical value the fit never saw is scored by t-boost itself, in the
-cell its ``unknown_category`` policy names (Haute sets it); validation rows
-holding such values are logged, never refused. t-boost refuses temporal columns,
+cell its ``unknown_category`` policy names (Haute sets it); Haute reports such
+values and never refuses them. t-boost refuses temporal columns,
 so Haute casts every non-categorical feature to ``Float64``, as for the other
 families.
 """
@@ -36,7 +36,6 @@ from typing import Any
 import numpy as np
 import polars as pl
 
-from haute._logging import get_logger
 from haute.errors import ConfigError, HauteValidationError
 from haute.modelling._algorithm_base import (
     BaseAlgorithm,
@@ -46,8 +45,6 @@ from haute.modelling._algorithm_base import (
 )
 from haute.modelling._native_encoding import fit_categorical_levels
 from haute.modelling._shap import require_feature_order
-
-logger = get_logger(component="tboost")
 
 RECORD_KEY = "haute"
 #: Where t-boost scores a categorical value the fit never saw: the axis's pooled
@@ -212,16 +209,6 @@ class TBoostModel:
             )
         return pl.DataFrame(columns)
 
-    def unseen_values(self, frame: pl.DataFrame) -> pl.DataFrame:
-        """t-boost's count of *frame*'s categorical values the fit never saw.
-
-        One row per ``feature`` and ``value`` with its ``rows``, compared with
-        t-boost's fitted levels, not the contract's levels, which may be a
-        declared domain wider than the training rows.
-        """
-        with _float32_features_accepted():
-            return pl.DataFrame(self.estimator.unseen_values(self.prepared(frame)))
-
     def baseline(self, frame: pl.DataFrame) -> np.ndarray | None:
         """The transformed offset each row's margin starts from.
 
@@ -365,40 +352,32 @@ class TBoostModel:
         binary 0/1 classifier, the link of its objective, the offset's link, the
         feature order and the categorical set.
         """
-        import t_boost
-        from t_boost import SerializationError, TBoostClassifier, TBoostRegressor
 
         name = Path(path).name
         text = Path(path).read_text(encoding="utf-8")
         document = json.loads(text)
         metadata = document.get("metadata") if isinstance(document, dict) else None
-        if not isinstance(metadata, dict) or not isinstance(metadata.get(RECORD_KEY), dict):
+        raw_record = metadata.get(RECORD_KEY) if isinstance(metadata, dict) else None
+        if raw_record is not None and not isinstance(raw_record, dict):
             raise HauteValidationError(
-                f"{name} is not a t-boost model Haute trained (no {RECORD_KEY!r} record in its "
-                "metadata); retrain it in Haute."
+                f"{name}: the t-boost model's {RECORD_KEY!r} record is not an object; retrain it "
+                "in Haute."
             )
-        record = _validated_record(metadata[RECORD_KEY], name)
-        estimator_name = document.get("estimator")
+        estimator_name = document.get("estimator") if isinstance(document, dict) else None
         if estimator_name not in _ESTIMATOR_TASKS or document.get("kind") != "single":
             raise ConfigError(
                 f"{name} holds a {estimator_name!r} model of kind {document.get('kind')!r}; "
                 "Haute scores single-output t-boost regressors and binary classifiers."
             )
+        if raw_record is None:
+            return cls._native_record(text, document, name)
+        record = _validated_record(raw_record, name)
         if _ESTIMATOR_TASKS[estimator_name] != record["task"]:
             raise ConfigError(
                 f"{name} holds a {estimator_name} but its record describes a {record['task']} "
                 "model; retrain it in Haute."
             )
-        estimator_class = (
-            TBoostRegressor if estimator_name == "TBoostRegressor" else TBoostClassifier
-        )
-        try:
-            estimator = estimator_class.from_json(text)
-        except SerializationError as exc:
-            raise ConfigError(
-                f"t-boost {t_boost.__version__} cannot read {name}: {exc}. Install the "
-                "t-boost version it was trained with, or retrain it."
-            ) from exc
+        estimator = _native_estimator(text, document, name)
         model = cls(
             estimator=estimator,
             features=record["features"],
@@ -412,6 +391,40 @@ class TBoostModel:
         # t-boost omits ``cat_indices`` for a model with no categorical feature.
         model.validate_native(document.get("cat_indices", []), name)
         return model
+
+    @classmethod
+    def _native_record(cls, text: str, document: dict[str, Any], name: str) -> TBoostModel:
+        """A model trained outside Haute, read from what t-boost records itself.
+
+        Its features, its categorical features (t-boost scores their values as
+        strings itself), task from the estimator, link from its objective,
+        labels from its classes; no offset.
+        """
+        from haute.modelling._descriptors import TBOOST, native_objective
+
+        estimator = _native_estimator(text, document, name)
+        features = list(estimator.feature_names_in_)
+        task = _ESTIMATOR_TASKS[str(document["estimator"])]
+        objective_task, link = native_objective(TBOOST, str(estimator.objective))
+        if objective_task != task:
+            link = "logit" if task == "classification" else "identity"
+        labels = None
+        if task == "classification":
+            classes = list(estimator.classes_)
+            if len(classes) != 2:
+                raise ConfigError(
+                    f"{name} is a {len(classes)}-class classifier; Haute scores binary ones.",
+                    model_path=name,
+                )
+            labels = (classes[0], classes[1])
+        return cls(
+            estimator=estimator,
+            features=features,
+            categorical_levels={features[i]: [] for i in document.get("cat_indices", [])},
+            task=task,
+            link=link,
+            class_labels=labels,
+        )
 
     def validate_native(self, cat_indices: Any, name: str) -> None:
         """Refuse a native estimator that is not the model the record describes."""
@@ -452,6 +465,23 @@ class TBoostModel:
                 f"{name}: the t-boost model's categorical features do not match its record; "
                 "retrain it in Haute."
             )
+
+
+def _native_estimator(text: str, document: dict[str, Any], name: str) -> Any:
+    """The t-boost estimator a ``.tboost`` document holds, read by plain t-boost."""
+    import t_boost
+    from t_boost import SerializationError, TBoostClassifier, TBoostRegressor
+
+    estimator_class = (
+        TBoostRegressor if document["estimator"] == "TBoostRegressor" else TBoostClassifier
+    )
+    try:
+        return estimator_class.from_json(text)
+    except SerializationError as exc:
+        raise ConfigError(
+            f"t-boost {t_boost.__version__} cannot read {name}: {exc}. Install the "
+            "t-boost version it was trained with, or retrain it."
+        ) from exc
 
 
 def _validated_record(record: dict[str, Any], name: str) -> dict[str, Any]:
@@ -516,20 +546,6 @@ def _validated_record(record: dict[str, Any], name: str) -> dict[str, Any]:
         "offset_link": offset_link,
         "class_labels": class_labels,
     }
-
-
-def _log_unseen_validation_values(model: TBoostModel, eval_df: pl.DataFrame) -> None:
-    """Log each feature whose validation values the training rows never held."""
-    unseen = model.unseen_values(eval_df)
-    for (feature,), rows in unseen.group_by("feature", maintain_order=True):
-        logger.warning(
-            "tboost_validation_values_not_in_training",
-            feature=feature,
-            values=rows.height,
-            rows=int(rows.get_column("rows").sum()),
-            examples=rows.get_column("value").head(5).to_list(),
-            scored_as=UNKNOWN_CATEGORY,
-        )
 
 
 def _rows_kwargs(
@@ -673,9 +689,7 @@ class TBoostAlgorithm(BaseAlgorithm):
         model = TBoostModel(
             estimator=None,
             features=list(features),
-            categorical_levels=fit_categorical_levels(
-                train_df, cat_features, kwargs.get("categorical_levels")
-            ),
+            categorical_levels=fit_categorical_levels(train_df, cat_features),
             task=task,
             link=native.link,
             offset_column=offset,
@@ -721,8 +735,6 @@ class TBoostAlgorithm(BaseAlgorithm):
             estimator.fit(features_frame, label, **fit_kwargs, callbacks=progress)
         progress.finish()
         model.estimator = estimator
-        if eval_df is not None:
-            _log_unseen_validation_values(model, eval_df)
         model.fit_tables = model.table_report(train_df)
         reason = str(estimator.stopping_reason_)
         if reason not in _STOPPING_REASONS:
@@ -734,10 +746,6 @@ class TBoostAlgorithm(BaseAlgorithm):
             rounds_configured=n_trees,
             rounds_fitted=int(estimator.n_trees_),
             stopping_reason=_STOPPING_REASONS[reason],
-            # No fitted level list for the contract: an unseen value is t-boost's to
-            # score (UNKNOWN_CATEGORY), so the contract keeps only a declared domain,
-            # which scoring still enforces.
-            categorical_levels=None,
         )
 
     def predict(

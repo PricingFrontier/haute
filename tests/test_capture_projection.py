@@ -323,7 +323,7 @@ class TestGetColumnContract:
         assert referenced is None
 
     def test_model_score_with_loadable_model(self):
-        mock_model = MagicMock()
+        mock_model = MagicMock(run_contract_path=None)
         mock_model.feature_names = ["feat_a", "feat_b", "feat_c"]
 
         with patch("haute._mlflow_io.load_mlflow_model", return_value=mock_model):
@@ -624,7 +624,7 @@ class TestComputeNeededColumns:
 
     def test_model_score_features_propagate(self):
         """Model features propagate upstream; output column doesn't."""
-        mock_model = MagicMock()
+        mock_model = MagicMock(run_contract_path=None)
         mock_model.feature_names = ["feat_a", "feat_b"]
 
         nodes = [

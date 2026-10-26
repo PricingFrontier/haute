@@ -1081,6 +1081,14 @@ class SeedPlan:
         facts = self._generations[seed.identity.digest].metadata.node_output or {}
         return parse_unshaped_columns(facts.get("unshaped_columns"))
 
+    def seed_full_term(self, node_id: str) -> tuple[str, int, int, bool] | None:
+        """The seeded Model Score's full-policy-term facts from when it scored, if recorded."""
+        from haute._node_snapshots import parse_full_term
+
+        seed = self.decision.seeds[node_id]
+        facts = self._generations[seed.identity.digest].metadata.node_output or {}
+        return parse_full_term(facts.get("full_term"))
+
     def seed_frame(self, node_id: str) -> pl.LazyFrame:
         """The leased generation a seeded node reads, projected to its demand.
 

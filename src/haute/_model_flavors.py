@@ -82,9 +82,6 @@ class ModelFamily:
             MLflow URI.
         algorithm: The Haute training algorithm whose models load as this
             family, or ``None`` when Haute does not train it.
-        requires_contract: The file loads only with its feature contract: an
-            explicit or sibling contract locally, the contract logged beside it
-            in a run, and the contract's bytes join its cache identity.
         self_describing: The loaded model is a Haute wrapper that encodes its
             own inputs, applies its own offset and labels binary predictions;
             its contract identity is checked against its native objective.
@@ -102,7 +99,6 @@ class ModelFamily:
     suffixes: tuple[str, ...]
     load_file: ModelFileLoader | None
     algorithm: str | None
-    requires_contract: bool
     self_describing: bool
     predict_frame: PredictFrame
     offset_input: OffsetInput
@@ -265,7 +261,6 @@ for _family in (
         suffixes=(".cbm",),
         load_file=_lazy(_MLFLOW_IO, "_load_catboost_file"),
         algorithm="catboost",
-        requires_contract=False,
         self_describing=False,
         predict_frame="tabular",
         offset_input="baseline",
@@ -280,7 +275,6 @@ for _family in (
         suffixes=(".rsglm",),
         load_file=_lazy(_MLFLOW_IO, "_load_rustystats_file"),
         algorithm="glm",
-        requires_contract=False,
         self_describing=False,
         predict_frame="polars",
         offset_input="column",
@@ -295,7 +289,6 @@ for _family in (
         suffixes=(".ubj",),
         load_file=_lazy(_MLFLOW_IO, "_load_xgboost_file"),
         algorithm="xgboost",
-        requires_contract=False,
         self_describing=True,
         predict_frame="polars",
         offset_input="column",
@@ -310,7 +303,6 @@ for _family in (
         suffixes=(".lgbm",),
         load_file=_lazy(_MLFLOW_IO, "_load_lightgbm_file"),
         algorithm="lightgbm",
-        requires_contract=False,
         self_describing=True,
         predict_frame="polars",
         offset_input="column",
@@ -325,7 +317,6 @@ for _family in (
         suffixes=(".ebm",),
         load_file=_lazy(_MLFLOW_IO, "_load_ebm_file"),
         algorithm="ebm",
-        requires_contract=True,
         self_describing=True,
         predict_frame="polars",
         offset_input="column",
@@ -340,7 +331,6 @@ for _family in (
         suffixes=(".tboost",),
         load_file=_lazy(_MLFLOW_IO, "_load_tboost_file"),
         algorithm="tboost",
-        requires_contract=False,
         self_describing=True,
         predict_frame="polars",
         offset_input="column",
@@ -356,7 +346,6 @@ for _family in (
         suffixes=(),
         load_file=None,
         algorithm=None,
-        requires_contract=False,
         self_describing=False,
         predict_frame="pandas",
         offset_input="column",

@@ -222,8 +222,17 @@ class TestCatBoostPredictOffset:
         from unittest.mock import MagicMock, patch
 
         from haute._mlflow_io import _load_with_bounded_retry
+        from haute._mlflow_utils import ResolvedBackend
 
         model_path = self._save_with_unreadable_metadata(haute_scratch, monkeypatch)
+        monkeypatch.setattr("haute._mlflow_io._disk_cache_root", lambda: haute_scratch / "cache")
+        backend = ResolvedBackend(
+            mode="local",
+            tracking_uri="file:///mlruns",
+            registry_uri="file:///mlruns",
+            identity="local:mlruns|registry=file:///mlruns",
+            digest="0123456789abcdef",
+        )
 
         with (
             patch(
@@ -233,13 +242,15 @@ class TestCatBoostPredictOffset:
         ):
             _load_with_bounded_retry(
                 mlflow_mod=MagicMock(),
-                backend=MagicMock(),
+                client=MagicMock(),
+                backend=backend,
                 run_id="run-7",
                 artifact="model.cbm",
                 flavor="catboost",
                 task="regression",
             )
-        assert resolve.call_count == 1
+        # The model and the contract its run logged, each read once: never retried.
+        assert resolve.call_count == 2
 
     def test_predict_missing_offset_column_fails_loud(self) -> None:
         pytest.importorskip("catboost", reason="catboost optional dependency not installed")
@@ -393,27 +404,27 @@ class TestTrainingMetricsIncludeOffset:
         assert np.isfinite(result.metrics["rmse"])
 
     @pytest.mark.parametrize(
-        ("loss_function", "params", "link"),
+        ("loss_function", "variance_power", "link"),
         [
-            (None, {"loss_function": "Poisson"}, "log"),
-            ("Tweedie", {}, "log"),
-            (None, {}, "identity"),
-            ("RMSE", {"loss_function": "Poisson"}, "identity"),
+            ("Poisson", None, "log"),
+            ("Tweedie", 1.5, "log"),
+            (None, None, "identity"),
+            ("RMSE", None, "identity"),
         ],
     )
     def test_catboost_offset_link_follows_the_loss_the_fit_uses(
-        self, loss_function: str | None, params: dict, link: str
+        self, loss_function: str | None, variance_power: float | None, link: str
     ) -> None:
         """The training baseline and the link stamped on the model both follow
-        the effective loss, whether it is a job setting or a ``params`` key."""
+        the job's loss setting (``params`` cannot name one)."""
         from haute.modelling._training_job import TrainingJob
 
         job = TrainingJob(
             name="cb_link",
             data=_freq_frame(n=10),
             target="claim_count",
-            params=params,
             loss_function=loss_function,
+            variance_power=variance_power,
             offset="exposure",
         )
         assert job._offset_link() == link
@@ -446,7 +457,7 @@ class TestTrainingMetricsIncludeOffset:
         params = (
             {"terms": {"age": {"type": "linear"}}, "family": "poisson"}
             if algorithm == "glm"
-            else {"iterations": 5, "depth": 2, "verbose": 0, "loss_function": "Poisson"}
+            else {"iterations": 5, "depth": 2, "verbose": 0}
         )
         job = TrainingJob(
             name=f"{algorithm}_bad_exposure",
@@ -454,6 +465,7 @@ class TestTrainingMetricsIncludeOffset:
             target="claim_count",
             algorithm=algorithm,
             params=params,
+            loss_function="Poisson" if algorithm == "catboost" else None,
             offset="exposure",
             metrics=["rmse"],
             output_dir=str(haute_scratch),
@@ -496,7 +508,8 @@ class TestTrainingMetricsIncludeOffset:
             data=df,
             target="y",
             offset="base",
-            params={"iterations": 60, "depth": 3, "verbose": 0, "loss_function": "RMSE"},
+            params={"iterations": 60, "depth": 3, "verbose": 0},
+            loss_function="RMSE",
             metrics=["rmse"],
             output_dir=str(haute_scratch),
         )
@@ -513,7 +526,9 @@ class TestTrainingMetricsIncludeOffset:
 
 
 class TestOffsetInSignatureAndContract:
-    def test_build_signature_declares_offset_input(self) -> None:
+    @pytest.mark.parametrize(("link", "required"), [("log", False), ("identity", True)])
+    def test_build_signature_declares_offset_input(self, link: str, required: bool) -> None:
+        """An exposure is optional (a full policy term without it); a base premium is not."""
         sig = build_signature(
             features=["age"],
             feature_types={"age": "Float64"},
@@ -523,8 +538,11 @@ class TestOffsetInSignatureAndContract:
             task="regression",
             offset_name="exposure",
             offset_type="Float64",
+            offset_link=link,
         )
         assert "exposure" in sig.inputs.input_names()
+        (spec,) = [spec for spec in sig.inputs.inputs if spec.name == "exposure"]
+        assert spec.required is required
 
     def test_build_signature_rejects_offset_shadowing_feature(self) -> None:
         with pytest.raises(ValueError, match="offset"):
@@ -595,13 +613,12 @@ class TestOffsetInSignatureAndContract:
             "features": ["age", "region"],
             "feature_types": {"age": "Int64", "region": "String"},
             "categorical_features": ["region"],
-            "categorical_levels": {},
             "target_name": "ClaimCount",
             "target_type": "Int64",
             "task": "regression",
             "offset_column": None,
             "offset_link": None,
-            "contract_version": 3,
+            "contract_version": 4,
             "model": None,
         }
         import hashlib
@@ -653,18 +670,24 @@ def _glm_scoring_model(haute_scratch: Path):
 
 
 class TestCanvasScorerOffset:
-    def test_glm_scoring_missing_offset_column_fails_loud(self, haute_scratch: Path) -> None:
+    def test_glm_scoring_without_its_offset_prices_a_full_policy_term(
+        self, haute_scratch: Path
+    ) -> None:
         pytest.importorskip("rustystats", reason="rustystats optional dependency not installed")
         from haute._model_scorer import _run_score_pipeline
 
         df, scoring_model = _glm_scoring_model(haute_scratch)
-        with pytest.raises(FeatureMismatchError):
-            _run_score_pipeline(
-                scoring_model,
-                df.drop("exposure", "claim_count").lazy(),
-                task="regression",
-                output_col="prediction",
+
+        def scored(frame: pl.DataFrame) -> pl.DataFrame:
+            return _run_score_pipeline(
+                scoring_model, frame.lazy(), task="regression", output_col="prediction"
             ).collect()
+
+        without = scored(df.drop("exposure", "claim_count"))
+        full_term = scored(df.drop("claim_count").with_columns(exposure=pl.lit(1.0)))
+        np.testing.assert_allclose(without["prediction"], full_term["prediction"], rtol=1e-12)
+        # Scoring fills its own copy: the output gains no exposure column.
+        assert "exposure" not in without.columns
 
     @pytest.mark.parametrize("source", ["live", "batch"])
     def test_scoring_refuses_non_positive_log_link_exposure(
@@ -747,7 +770,10 @@ class TestCanvasScorerOffset:
         expected = algo.predict(model, df, ["age", "region"], offset="exposure")
         np.testing.assert_allclose(scored, expected, rtol=1e-6)
 
-    def test_catboost_scoring_missing_offset_column_fails_loud(self, haute_scratch: Path) -> None:
+    @pytest.mark.parametrize("source", ["live", "batch"])
+    def test_catboost_scoring_without_its_offset_prices_a_full_policy_term(
+        self, haute_scratch: Path, source: str
+    ) -> None:
         pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         from haute._mlflow_io import load_local_model
         from haute._model_scorer import _run_score_pipeline
@@ -758,13 +784,24 @@ class TestCanvasScorerOffset:
         algo.save(model, model_path)
         scoring_model = load_local_model(str(model_path), "regression")
 
-        with pytest.raises(FeatureMismatchError, match="exposure"):
-            _run_score_pipeline(
-                scoring_model,
-                df.drop("exposure", "claim_count").lazy(),
-                task="regression",
-                output_col="prediction",
-            ).collect()
+        def scored(frame: pl.DataFrame) -> np.ndarray:
+            return (
+                _run_score_pipeline(
+                    scoring_model,
+                    frame.lazy(),
+                    task="regression",
+                    output_col="prediction",
+                    source=source,
+                )
+                .collect()["prediction"]
+                .to_numpy()
+            )
+
+        np.testing.assert_allclose(
+            scored(df.drop("exposure", "claim_count")),
+            scored(df.drop("claim_count").with_columns(exposure=pl.lit(1.0))),
+            rtol=1e-12,
+        )
 
     @staticmethod
     def _score_raw_catboost(model: object, df: pl.DataFrame) -> pl.DataFrame:
@@ -841,7 +878,7 @@ class TestPyfuncScorerOffset:
     self-describe an offset, so the offset rides via the contract.
     """
 
-    def _model(self) -> object:
+    def _model(self, link: str = "log") -> object:
         from haute._mlflow_io import ScoringModel
 
         # offset_column set, but NOT in feature_names — the case that
@@ -851,7 +888,40 @@ class TestPyfuncScorerOffset:
             feature_names=["age"],
             flavor="pyfunc",
             offset_column="exposure",
+            offset_link=link,
         )
+
+    @pytest.mark.parametrize("row_limit", [None, 2])
+    def test_a_missing_additive_offset_is_refused(self, row_limit: int | None) -> None:
+        """An additive offset is a base premium, not an exposure: it has no default."""
+        from haute._model_scorer import _run_score_pipeline
+
+        with pytest.raises(FeatureMismatchError, match="offset column 'exposure'.*base premium"):
+            _run_score_pipeline(
+                self._model("identity"),
+                self._frame().drop("exposure").lazy(),
+                task="regression",
+                output_col="prediction",
+                row_limit=row_limit,
+            ).collect()
+
+    @pytest.mark.parametrize("value", [None, float("nan"), float("inf")])
+    def test_an_empty_or_non_finite_additive_offset_is_refused(self, value: float | None) -> None:
+        from haute._model_scorer import _run_score_pipeline
+
+        frame = self._frame().with_columns(
+            pl.when(pl.int_range(pl.len()) == 1)
+            .then(pl.lit(value, dtype=pl.Float64))
+            .otherwise(pl.col("exposure"))
+            .alias("exposure")
+        )
+        with pytest.raises(HauteValidationError, match="1 rows are empty or not finite"):
+            _run_score_pipeline(
+                self._model("identity"),
+                frame.lazy(),
+                task="regression",
+                output_col="prediction",
+            ).collect()
 
     def _frame(self) -> pl.DataFrame:
         return pl.DataFrame({"age": [10.0, 20.0, 30.0], "exposure": [2.0, 3.0, 4.0]})
@@ -876,18 +946,22 @@ class TestPyfuncScorerOffset:
         np.testing.assert_allclose(scored, expected, rtol=1e-10)
 
     @pytest.mark.parametrize("row_limit", [None, 2])
-    def test_missing_offset_fails_loud(self, row_limit: int | None) -> None:
+    def test_a_missing_offset_is_a_full_policy_term(self, row_limit: int | None) -> None:
         from haute._model_scorer import _run_score_pipeline
 
         df = self._frame().drop("exposure")
-        with pytest.raises(FeatureMismatchError, match="exposure"):
-            _run_score_pipeline(
-                self._model(),
-                df.lazy(),
-                task="regression",
-                output_col="prediction",
-                row_limit=row_limit,
-            ).collect()
+        scored = _run_score_pipeline(
+            self._model(),
+            df.lazy(),
+            task="regression",
+            output_col="prediction",
+            row_limit=row_limit,
+        ).collect()
+
+        np.testing.assert_allclose(
+            scored["prediction"].to_numpy(), df["age"].to_numpy()[: scored.height] * 0.1
+        )
+        assert "exposure" not in scored.columns
 
     @pytest.mark.parametrize(
         "required_output_columns", [None, frozenset({"prediction"})], ids=["all", "narrow"]
@@ -1018,6 +1092,7 @@ class TestDeployScorerOffset:
             target_type="Float64",
             task="regression",
             offset_column="exposure",
+            offset_link="log",
         )
         contract_path = haute_scratch / CONTRACT_FILENAME
         save_contract(contract, contract_path)
@@ -1027,28 +1102,32 @@ class TestDeployScorerOffset:
         }
         return df, algo, model, contract_path, artifact_paths
 
-    def test_deploy_payload_missing_offset_fails_loud(self, haute_scratch: Path) -> None:
-        """A payload without the offset column must be rejected loud.
-
-        The column-contract planner (which reads the bundled feature
-        contract's ``offset_column``) rejects the graph before scoring even
-        starts; the runtime contract check and feature validation back it
-        up at score time.  Any of those layers raising is a pass — what is
-        forbidden is a silent offset-absent score.
-        """
+    def test_a_deploy_payload_without_its_offset_prices_a_full_policy_term(
+        self, haute_scratch: Path
+    ) -> None:
+        """A quote is priced for a full policy term: no exposure, or an empty one, is one."""
         pytest.importorskip("rustystats", reason="rustystats optional dependency not installed")
         from haute.deploy._scorer import score_graph
-        from haute.errors import ContractMismatchError
 
-        df, _algo, _model, contract_path, artifact_paths = self._bundle(haute_scratch)
-        with pytest.raises((FeatureMismatchError, ContractMismatchError)):
-            score_graph(
+        df, algo, model, contract_path, artifact_paths = self._bundle(haute_scratch)
+        full_term = algo.predict(
+            model, df.with_columns(exposure=pl.lit(1.0)), ["age"], offset="exposure"
+        )
+
+        def served(payload: pl.DataFrame) -> np.ndarray:
+            return score_graph(
                 graph=self._graph(contract_path),
-                input_df=df.drop("exposure", "claim_count"),
+                input_df=payload,
                 input_node_ids=["api_in"],
                 output_node_id="output",
                 artifact_paths=artifact_paths,
-            )
+            )["prediction"].to_numpy()
+
+        np.testing.assert_allclose(served(df.drop("exposure", "claim_count")), full_term, rtol=1e-8)
+        empty = df.drop("claim_count").with_columns(
+            pl.lit(None, dtype=pl.Float64).alias("exposure")
+        )
+        np.testing.assert_allclose(served(empty), full_term, rtol=1e-8)
 
     def test_deploy_served_score_includes_offset(self, haute_scratch: Path) -> None:
         pytest.importorskip("rustystats", reason="rustystats optional dependency not installed")

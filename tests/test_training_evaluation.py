@@ -642,7 +642,7 @@ def test_real_selection_fits_stream_their_rounds_without_mixing_final_loss_histo
         target="y",
         output_dir=str(tmp_path),
         metrics=["rmse"],
-        params={"iterations": 6, "depth": 2, "random_seed": 9},
+        params={"iterations": 6, "depth": 2},
         evaluation=evaluation(validation=validation),
     )
     events: list[tuple[str, float]] = []
@@ -696,7 +696,7 @@ def test_real_holdout_fit_can_be_saved_without_refit(
         target="y",
         output_dir=str(tmp_path),
         metrics=["rmse"],
-        params={"iterations": 12, "depth": 2, "random_seed": 9},
+        params={"iterations": 12, "depth": 2},
         evaluation=evaluation(validation={"method": "single", "size": 0.2}, test=test_fraction),
         refit_on_development=False,
     )

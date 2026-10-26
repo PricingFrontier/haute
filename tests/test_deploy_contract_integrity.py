@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
@@ -32,6 +34,7 @@ from haute.modelling._feature_contract import (
     load_contract,
     save_contract,
 )
+from haute.modelling._training_job import model_contract_filename
 from tests._deploy_helpers import artifact_digests
 from tests.conftest import make_output_config
 
@@ -41,13 +44,17 @@ FIXTURE_DIR = Path("tests/fixtures")
 PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
 
 
-def _write_cached_model(tmp_path: Path, run_id: str, artifact_path: str) -> Path:
+def _auto_backend_digest() -> str:
     from haute._mlflow_utils import resolve_backend
 
     # The bundler resolves the auto backend for a node without a destination,
-    # so the pre-populated file must sit in that backend's digest partition.
+    # so a pre-populated file must sit in that backend's digest partition.
+    return resolve_backend("").digest
+
+
+def _write_cached_model(tmp_path: Path, run_id: str, artifact_path: str) -> Path:
     cached = _artifact_cache_path(
-        tmp_path / ".cache" / "models", resolve_backend("").digest, run_id, artifact_path
+        tmp_path / ".cache" / "models", _auto_backend_digest(), run_id, artifact_path
     )
     cached.parent.mkdir(parents=True, exist_ok=True)
     # The bundler reads a CatBoost model's offset declaration: a real model that
@@ -388,10 +395,16 @@ class TestFeatureContractBundled:
 
         monkeypatch.chdir(tmp_path)
 
-        # Pre-populate the MLflow disk cache and write a fake contract
-        # alongside the model artifact as training-time would.
-        cached_model = _write_cached_model(tmp_path, "run_contract", "model.cbm")
-        cache_dir = cached_model.parent
+        # Pre-populate the MLflow disk cache with the model and the contract
+        # training logs beside it.
+        _write_cached_model(tmp_path, "run_contract", "model.cbm")
+        logged_contract = _artifact_cache_path(
+            tmp_path / ".cache" / "models",
+            _auto_backend_digest(),
+            "run_contract",
+            model_contract_filename("model"),
+        )
+        logged_contract.parent.mkdir(parents=True, exist_ok=True)
 
         training_contract = build_contract(
             features=["age", "region"],
@@ -401,7 +414,7 @@ class TestFeatureContractBundled:
             target_type="Int64",
             task="regression",
         )
-        save_contract(training_contract, cache_dir / CONTRACT_FILENAME)
+        save_contract(training_contract, logged_contract)
 
         graph = PipelineGraph.model_validate(
             {
@@ -423,15 +436,8 @@ class TestFeatureContractBundled:
         )
 
         artifacts = collect_artifacts(graph, [], tmp_path)
-        # Must bundle the feature contract alongside the .cbm; the key name
-        # is not fixed but the filename must be feature_contract.json.
-        contract_paths = [p for p in artifacts.values() if p.name == CONTRACT_FILENAME]
-        assert contract_paths, (
-            f"Bundle must include {CONTRACT_FILENAME}; got: "
-            f"{sorted(p.name for p in artifacts.values())}"
-        )
-        # Hash matches the training contract.
-        loaded = load_contract(contract_paths[0])
+        # The contract is bundled under the key the deploy scorer looks up.
+        loaded = load_contract(artifacts[f"ms_contract__{CONTRACT_FILENAME}"])
         assert_contracts_match(training_contract, loaded)
 
     def test_scorer_raises_when_runtime_contract_mismatches(self, tmp_path: Path) -> None:
@@ -518,6 +524,137 @@ class TestFeatureContractBundled:
                 },
             )
 
+    def test_a_deployed_xgboost_model_refuses_a_request_whose_feature_dtype_drifted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An MLflow model whose file describes itself still ships its run's contract."""
+        from haute.deploy._bundler import collect_artifacts
+        from haute.deploy._scorer import score_graph
+
+        monkeypatch.chdir(tmp_path)
+        self._seed_xgboost_run(tmp_path, "run_xgb")
+        graph = _api_score_graph(
+            {"sourceType": "run", "run_id": "run_xgb", "artifact_path": "xgb.ubj"}
+        )
+
+        artifacts = collect_artifacts(graph, ["api_in"], tmp_path)
+        assert f"ms__{CONTRACT_FILENAME}" in artifacts
+        paths = {key: str(path) for key, path in artifacts.items()}
+
+        def serve(age: pl.Series) -> pl.DataFrame:
+            frame = pl.DataFrame({"region": ["north", "east"], "age": age})
+            return score_graph(
+                graph=graph,
+                input_df=frame,
+                input_node_ids=["api_in"],
+                output_node_id="output",
+                artifact_paths=paths,
+            )
+
+        assert serve(pl.Series([30.0, 41.0])).height == 2
+        # Trained as Float64; a request framed from JSON integers is Int64.
+        with pytest.raises(FeatureMismatchError, match="contract mismatch: feature_types"):
+            serve(pl.Series([30, 41]))
+
+    def test_a_run_that_logged_no_contract_deploys_against_the_model_features(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A model trained outside Haute deploys and serves as the preview scores it."""
+        from haute.deploy._bundler import collect_artifacts
+        from haute.deploy._scorer import score_graph
+
+        monkeypatch.chdir(tmp_path)
+        self._seed_xgboost_run(tmp_path, "run_bare", with_contract=False)
+        graph = _api_score_graph(
+            {"sourceType": "run", "run_id": "run_bare", "artifact_path": "xgb.ubj"}
+        )
+
+        # The run's listing completes and names no contract. The client is handed
+        # over rather than opened, so no tracking store is touched.
+        listing = MagicMock()
+        listing.list_artifacts.return_value = []
+
+        def open_run(**kwargs: Any) -> tuple[Any, ...]:
+            return kwargs["run_id"], None, MagicMock(), listing, kwargs["backend"]
+
+        with (
+            patch(
+                "haute._mlflow_io._resolve_artifact_local",
+                new=self._unlogged_contract(model_contract_filename("xgb")),
+            ),
+            patch("haute._mlflow_utils.resolve_mlflow_source", new=open_run),
+        ):
+            artifacts = collect_artifacts(graph, ["api_in"], tmp_path)
+        listing.list_artifacts.assert_called_once()
+
+        assert f"ms__{CONTRACT_FILENAME}" not in artifacts
+        served = score_graph(
+            graph=graph,
+            input_df=pl.DataFrame({"region": ["north", "east"], "age": [30.0, 41.0]}),
+            input_node_ids=["api_in"],
+            output_node_id="output",
+            artifact_paths={key: str(path) for key, path in artifacts.items()},
+        )
+        assert served.height == 2
+
+    @staticmethod
+    def _unlogged_contract(contract_artifact: str):  # type: ignore[no-untyped-def]
+        """The disk-cache reader, failing to download *contract_artifact* as a run without it."""
+        from haute import _mlflow_io
+
+        resolve = _mlflow_io._resolve_artifact_local
+
+        def read(mlflow_mod, backend, run_id, artifact):  # type: ignore[no-untyped-def]
+            if artifact == contract_artifact:
+                raise FileNotFoundError(artifact)
+            return resolve(mlflow_mod, backend, run_id, artifact)
+
+        return read
+
+    @staticmethod
+    def _seed_xgboost_run(tmp_path: Path, run_id: str, *, with_contract: bool = True) -> None:
+        """Train an XGBoost model and seed the disk cache with what its run logged."""
+        import numpy as np
+
+        from haute.modelling._training_job import TrainingJob
+
+        rng = np.random.default_rng(3)
+        n = 200
+        job = TrainingJob(
+            name="xgb",
+            data=pl.DataFrame(
+                {
+                    "region": rng.choice(["east", "north", "south"], n).tolist(),
+                    "age": rng.uniform(18, 80, n),
+                    "severity": rng.gamma(2.0, 500, n),
+                }
+            ),
+            target="severity",
+            algorithm="xgboost",
+            loss_function="RMSE",
+            params={"num_boost_round": 5, "max_depth": 2},
+            metrics=["rmse"],
+            output_dir=str(tmp_path / "train"),
+            evaluation={
+                "schema_version": 1,
+                "strategy": "random",
+                "seed": 3,
+                "validation": {"method": "none"},
+            },
+            feature_columns=["region", "age"],
+        )
+        model_path = Path(job.run().model_path)
+        logged = [model_path]
+        if with_contract:
+            logged.append(model_path.with_name(model_contract_filename("xgb")))
+        for source in logged:
+            cached = _artifact_cache_path(
+                tmp_path / ".cache" / "models", _auto_backend_digest(), run_id, source.name
+            )
+            target = tmp_path / cached.relative_to(tmp_path.resolve())
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read_bytes())
+
     def test_training_writes_contract_next_to_model(
         self,
         tmp_path: Path,
@@ -560,8 +697,6 @@ class TestFeatureContractBundled:
         )
         result = job.run()
 
-        from haute.modelling._training_job import model_contract_filename
-
         contract_path = Path(tmp_path) / model_contract_filename("contract_model")
         assert contract_path.is_file(), (
             f"Training must write {model_contract_filename('contract_model')} next to "
@@ -573,3 +708,95 @@ class TestFeatureContractBundled:
         assert set(contract.categorical_features) == set(result.cat_features)
         assert contract.task == "regression"
         assert contract.target_name == "ClaimCount"
+
+
+def _api_score_graph(config: dict) -> PipelineGraph:
+    """An API input scored by one Model Scoring node ``ms`` into the output."""
+    return PipelineGraph.model_validate(
+        {
+            "nodes": [
+                {
+                    "id": "api_in",
+                    "data": {"label": "api_in", "nodeType": "apiInput", "config": {}},
+                },
+                {
+                    "id": "ms",
+                    "data": {"label": "ms", "nodeType": "modelScore", "config": dict(config)},
+                },
+                {
+                    "id": "output",
+                    "data": {
+                        "label": "output",
+                        "nodeType": "output",
+                        "config": make_output_config(["prediction"]),
+                    },
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "api_in", "target": "ms", "sourceHandle": "api_in"},
+                {"id": "e2", "source": "ms", "target": "output"},
+            ],
+        }
+    )
+
+
+def _local_run_with_contract(project: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, str]:
+    """A local MLflow run that logged ``model.cbm`` and its contract, seen from a new process.
+
+    MLflow keeps the store it opened per URI, so it is dropped, and the file-store
+    opt-in creating the run needed is unset: a new deploy process has neither.
+    """
+    from mlflow.tracking import MlflowClient
+    from mlflow.tracking._tracking_service.registry import TrackingStoreRegistry
+
+    from haute._mlflow_utils import resolve_backend
+
+    monkeypatch.chdir(project)
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+    backend = resolve_backend("", project_root=project)
+    logged = project / "logged"
+    logged.mkdir()
+    (logged / "model.cbm").write_bytes(b"model")
+    (logged / model_contract_filename("model")).write_text('{"logged": true}', encoding="utf-8")
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+    client = MlflowClient(tracking_uri=backend.tracking_uri)
+    run = client.create_run(client.create_experiment("contracts"))
+    client.log_artifact(run.info.run_id, str(logged / "model.cbm"))
+    client.log_artifact(run.info.run_id, str(logged / model_contract_filename("model")))
+    client.set_terminated(run.info.run_id)
+    TrackingStoreRegistry._get_store_with_resolved_uri.cache_clear()
+    monkeypatch.delenv("MLFLOW_ALLOW_FILE_STORE")
+    return backend, run.info.run_id
+
+
+def test_a_model_downloads_from_a_local_store_a_new_process_has_not_opened(
+    haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A download from a local backend opts into MLflow's file store itself."""
+    from haute.deploy._bundler import _download_model_artifact
+
+    backend, run_id = _local_run_with_contract(haute_scratch, monkeypatch)
+
+    model = _download_model_artifact(run_id, "model.cbm", haute_scratch, backend=backend)
+
+    assert model.read_bytes() == b"model"
+
+
+def test_a_cached_model_s_contract_downloads_from_a_local_store_not_yet_opened(
+    haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deploy whose model is cached has opened no client before the contract download."""
+    from haute.deploy._bundler import _run_contract
+
+    backend, run_id = _local_run_with_contract(haute_scratch, monkeypatch)
+    cached = _artifact_cache_path(
+        haute_scratch / ".cache" / "models", backend.digest, run_id, "model.cbm"
+    )
+    cached_model = haute_scratch / cached.relative_to(haute_scratch.resolve())
+    cached_model.parent.mkdir(parents=True)
+    cached_model.write_bytes(b"model")
+
+    contract = _run_contract(backend, run_id, "model.cbm")
+
+    assert contract is not None
+    assert contract.read_text(encoding="utf-8") == '{"logged": true}'

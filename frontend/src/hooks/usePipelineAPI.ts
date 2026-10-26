@@ -350,10 +350,14 @@ function applyPreviewSchemaMapsToNodes(nodes: Node[], result: NodeResult, source
   })
 }
 
-function applyPreviewResultColumnsToNodes(nodes: Node[], nodeId: string, result: NodeResult, source: string, structuralVersion: number): Node[] {
+export function applyPreviewResultColumnsToNodes(nodes: Node[], nodeId: string, result: NodeResult, source: string, structuralVersion: number): Node[] {
   const mapped = applyPreviewSchemaMapsToNodes(nodes, result, source, structuralVersion)
-  if (!result.columns || result.node_columns?.[nodeId]) return mapped
-  return applyPreviewColumnsToNodes(mapped, nodeId, result.columns as ColumnDef[], result, source, structuralVersion)
+  const withColumns = !result.columns || result.node_columns?.[nodeId]
+    ? mapped
+    : applyPreviewColumnsToNodes(mapped, nodeId, result.columns as ColumnDef[], result, source, structuralVersion)
+  // The previewed node's notes (a Model Score's full-policy-term note), however its columns came.
+  const notes = result.notes ?? []
+  return withColumns.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, _notes: notes } } : n))
 }
 
 function canvasNodeStatuses(result: NodeResult, requestedNodeId: string): Record<string, NodeStatus> {
@@ -399,8 +403,8 @@ function invalidateStaleColumnStashes(nodes: Node[], activeSource: string): Node
   if (!nodes.some(isStale)) return nodes
   return nodes.map((n) => {
     if (!isStale(n)) return n
-    const { _columns, _availableColumns, _schemaWarnings, _columnsSource, _columnsStructuralVersion, ...rest } = n.data
-    void _columns; void _availableColumns; void _schemaWarnings; void _columnsSource; void _columnsStructuralVersion
+    const { _columns, _availableColumns, _schemaWarnings, _notes, _columnsSource, _columnsStructuralVersion, ...rest } = n.data
+    void _columns; void _availableColumns; void _schemaWarnings; void _notes; void _columnsSource; void _columnsStructuralVersion
     return { ...n, data: rest }
   })
 }

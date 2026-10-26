@@ -1334,6 +1334,7 @@ def _preview_response_from_results(
         timings=timings,
         memory=memory,
         schema_warnings=node_result.schema_warnings,
+        notes=node_result.notes,
         node_statuses=node_statuses,
         node_columns=node_columns,
         node_available_columns=node_available_columns,

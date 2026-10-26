@@ -558,5 +558,5 @@ identity and effective parameters, `positive_class` included. A generated Model 
 suffix-agnostic: its decorator scores through `score_from_config`, which selects the configured
 artifact, and the loader dispatches `.cbm`, `.rsglm`,
 `.ubj`, `.lgbm`, `.ebm` and `.tboost` to their flavors, so an XGBoost, LightGBM, EBM or t-boost model scores
-through the same adapter as the GUI; an EBM also needs the feature contract saved beside it.
+through the same adapter as the GUI.
 

@@ -707,11 +707,6 @@ class TestConfigRoundtrip:
                     values=column_name_strategy,
                     max_size=5,
                 ),
-                "categorical_levels": st.dictionaries(
-                    keys=column_name_strategy,
-                    values=st.lists(st.one_of(st.none(), column_name_strategy), max_size=4),
-                    max_size=4,
-                ),
                 "contract": st.text(
                     alphabet=string.ascii_letters + string.digits + "-",
                     min_size=0,

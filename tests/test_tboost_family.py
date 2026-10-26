@@ -359,10 +359,6 @@ def test_an_unseen_level_scores_like_the_pooled_rare_levels() -> None:
     contributions = model.contributions(rows)
     column = contributions.terms.index(("make",))
     assert contributions.values[0, column] == pytest.approx(contributions.values[1, column])
-    unseen = model.unseen_values(rows)
-    assert unseen.select("feature", "value", "rows").to_dicts() == [
-        {"feature": "make", "value": "never-seen", "rows": 1}
-    ]
 
 
 def test_with_nothing_pooled_an_unseen_level_scores_in_the_default_cell() -> None:
@@ -388,36 +384,24 @@ def test_with_nothing_pooled_an_unseen_level_scores_in_the_default_cell() -> Non
     assert np.isfinite(model.predict(nulls)).all()
 
 
-def test_validation_rows_with_values_the_training_rows_lack_train_and_are_logged(
-    tmp_path: Path,
-) -> None:
-    from structlog.testing import capture_logs
-
+def test_validation_rows_with_values_the_training_rows_lack_still_train(tmp_path: Path) -> None:
     rng = np.random.default_rng(5)
     # A many-levelled feature: a random split leaves some levels in validation only.
     data = frame(900).with_columns(
         make=pl.Series([f"M{i}" for i in rng.integers(0, 400, 900)]),
     )
-    with capture_logs() as logs:
-        _job, result = train(
-            tmp_path,
-            target="claims",
-            loss="Poisson",
-            offset="exposure",
-            data=data,
-            feature_columns=["region", "age", "make"],
-        )
+    _job, result = train(
+        tmp_path,
+        target="claims",
+        loss="Poisson",
+        offset="exposure",
+        data=data,
+        feature_columns=["region", "age", "make"],
+    )
     assert result.diagnostics_errors == []
-    unseen = [
-        entry for entry in logs if entry["event"] == "tboost_validation_values_not_in_training"
-    ]
-    assert unseen and all(entry["feature"] == "make" for entry in unseen)
-    assert all(entry["scored_as"] == "rare" and entry["rows"] >= 1 for entry in unseen)
 
 
 def test_saved_models_score_unseen_levels_through_their_contract(tmp_path: Path) -> None:
-    from haute.errors import FeatureMismatchError
-
     data = frame(3000, seed=4)
     _job, result = train(
         tmp_path,
@@ -427,9 +411,6 @@ def test_saved_models_score_unseen_levels_through_their_contract(tmp_path: Path)
         data=data,
         params={**FAST, "learning_rate": 0.1},
     )
-    contract = load_contract(Path(result.model_path).parent / model_contract_filename("tb"))
-    # Undeclared categoricals carry no domain, so scoring leaves unseen values to t-boost.
-    assert "region" not in contract.categorical_levels
     scoring = load_local_model(result.model_path)
     unseen = data.head(5).with_columns(pl.lit("mars").alias("region"))
     scored = score_frame(
@@ -439,36 +420,8 @@ def test_saved_models_score_unseen_levels_through_their_contract(tmp_path: Path)
         cat_feature_names=scoring.cat_feature_names,
         flavor="tboost",
         offset_column=scoring.offset_column,
-        categorical_levels=contract.categorical_levels,
     ).collect()["prediction"]
     np.testing.assert_allclose(scored.to_numpy(), scoring.raw_model.predict(unseen), rtol=1e-12)
-
-    # A declared domain is schema: a value outside it still fails at scoring.
-    declared_root = tmp_path / "declared"
-    _job, declared = train(
-        declared_root,
-        target="claims",
-        loss="Poisson",
-        offset="exposure",
-        data=data,
-        params={**FAST, "learning_rate": 0.1},
-        categorical_levels={"region": [*LEVELS, "west", None]},
-    )
-    declared_contract = load_contract(
-        Path(declared.model_path).parent / model_contract_filename("tb")
-    )
-    assert declared_contract.categorical_levels["region"] == [*LEVELS, "west", None]
-    declared_scoring = load_local_model(declared.model_path)
-    with pytest.raises(FeatureMismatchError):
-        score_frame(
-            model=declared_scoring.raw_model,
-            lf=unseen.lazy(),
-            features=declared_scoring.feature_names,
-            cat_feature_names=declared_scoring.cat_feature_names,
-            flavor="tboost",
-            offset_column=declared_scoring.offset_column,
-            categorical_levels=declared_contract.categorical_levels,
-        ).collect()
 
 
 def test_a_model_without_categorical_features_saves_and_loads(tmp_path: Path) -> None:
@@ -478,21 +431,6 @@ def test_a_model_without_categorical_features_saves_and_loads(tmp_path: Path) ->
     model.save(path)
     assert "cat_indices" not in json.loads(path.read_text(encoding="utf-8"))
     assert np.array_equal(TBoostModel.load(path).predict(data), model.predict(data))
-
-
-def test_a_declared_domain_does_not_hide_validation_values_the_training_rows_lack() -> None:
-    from structlog.testing import capture_logs
-
-    data = frame()
-    declared = {"region": [*LEVELS, "west", None]}
-    validation = frame(200, seed=3).with_columns(
-        region=pl.when(pl.col("age") < 40).then(pl.lit("west")).otherwise(pl.col("region"))
-    )
-    with capture_logs() as logs:
-        model = fit_adapter(data, categorical_levels=declared, eval_df=validation).model
-    entries = [e for e in logs if e["event"] == "tboost_validation_values_not_in_training"]
-    assert [(e["feature"], e["examples"]) for e in entries] == [("region", ["west"])]
-    assert model.unseen_values(validation).get_column("value").to_list() == ["west"]
 
 
 def test_reordered_categories_score_identically() -> None:
@@ -912,16 +850,32 @@ def test_a_malformed_record_is_refused(
         load_local_model(str(path))
 
 
-def test_a_record_with_extra_keys_or_none_at_all_is_refused(tmp_path: Path) -> None:
+def test_a_record_with_extra_keys_is_refused_and_none_at_all_reads_t_boost(
+    tmp_path: Path,
+) -> None:
     path, document = _saved(tmp_path)
+    haute = TBoostModel.load(path)
     document["metadata"]["haute"]["extra"] = 1
     _rewrite(path, document)
     with pytest.raises(ConfigError, match="has keys"):
         TBoostModel.load(path)
+    document["metadata"]["haute"] = "not an object"
+    _rewrite(path, document)
+    with pytest.raises(HauteValidationError, match="record is not an object"):
+        TBoostModel.load(path)
     document["metadata"] = {}
     _rewrite(path, document)
-    with pytest.raises(HauteValidationError, match="not a t-boost model Haute trained"):
-        TBoostModel.load(path)
+
+    native = TBoostModel.load(path)
+
+    # The file says the same as Haute's record, but for the offset.
+    assert (native.features, native.task, native.link) == (
+        haute.features,
+        haute.task,
+        haute.link,
+    )
+    assert set(native.categorical_levels) == set(haute.categorical_levels)
+    assert native.offset_column is None
 
 
 def test_a_record_that_disagrees_with_the_native_model_is_refused(tmp_path: Path) -> None:
@@ -998,10 +952,15 @@ def test_an_mlflow_run_artifact_loads_and_serves_through_the_shared_pyfunc(
     document = json.loads(model_path.read_text(encoding="utf-8"))
     document["metadata"]["haute"]["link"] = "identity"
     _rewrite(broken, document)
+    # Each run logs the contract beside its model, as training does.
+    contract = model_path.parent / model_contract_filename("tb")
+    broken_contract = broken.with_name(model_contract_filename("model"))
+    broken_contract.write_bytes(contract.read_bytes())
     with mlflow_fluent_operation():
         set_tracking_uri_preserving_env(mlflow, resolve_tracking_backend("")[0])
         with mlflow.start_run() as run:
             mlflow.log_artifact(str(model_path))
+            mlflow.log_artifact(str(contract))
             mlflow.pyfunc.log_model(
                 name="model",
                 loader_module="haute.modelling._native_pyfunc",
@@ -1009,6 +968,7 @@ def test_an_mlflow_run_artifact_loads_and_serves_through_the_shared_pyfunc(
             )
         with mlflow.start_run() as broken_run:
             mlflow.log_artifact(str(broken))
+            mlflow.log_artifact(str(broken_contract))
         served = mlflow.pyfunc.load_model(f"runs:/{run.info.run_id}/model").predict(
             data.to_pandas()
         )

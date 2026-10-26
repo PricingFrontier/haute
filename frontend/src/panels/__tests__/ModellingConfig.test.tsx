@@ -660,6 +660,17 @@ describe("ModellingConfig", () => {
       expect(screen.getAllByText(/objective is managed elsewhere/).length).toBeGreaterThan(0)
     })
 
+    it("CatBoost's editor refuses the loss and seed Haute sets (MOD-R04)", () => {
+      renderConfig({
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", params: {} },
+      })
+      const textarea = screen.getByLabelText("CatBoost hyperparameters JSON")
+      fireEvent.change(textarea, { target: { value: '{"loss_function":"RMSE"}' } })
+      expect(screen.getAllByText(/loss_function is managed elsewhere/).length).toBeGreaterThan(0)
+      fireEvent.change(textarea, { target: { value: '{"random_seed":7}' } })
+      expect(screen.getAllByText(/random_seed is managed elsewhere/).length).toBeGreaterThan(0)
+    })
+
     it("LightGBM's editor refuses a Haute-owned key (MOD-F03)", () => {
       renderConfig({
         config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "lightgbm", params: {} },

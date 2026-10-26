@@ -81,13 +81,19 @@ def _validate_base_image_pinning(base_image: str) -> None:
     )
 
 
+#: The Unity Catalog catalog and schema a model registers under when haute.toml
+#: names none; deploy and status read the same defaults.
+DEFAULT_CATALOG = "main"
+DEFAULT_SCHEMA = "pricing"
+
+
 @dataclass
 class DatabricksConfig:
     """Typed Databricks-specific settings from [deploy.databricks] in haute.toml."""
 
     experiment_name: str = "/Shared/haute/default"
-    catalog: str = "main"
-    schema: str = "pricing"
+    catalog: str = DEFAULT_CATALOG
+    schema: str = DEFAULT_SCHEMA
     serving_workload_size: str = "Small"
     serving_scale_to_zero: bool = True
 
@@ -558,6 +564,8 @@ class ResolvedDeploy:
     artifact_digests: dict[str, str]
     """Each artefact's content digest, recorded before anything read it."""
     execution_policy: dict[str, Any] = field(default_factory=dict)
+    omittable_inputs: list[str] = field(default_factory=list)
+    """The request columns a quote may leave out: each bundled model's exposure."""
     removed_node_ids: list[str] = field(default_factory=list)
     snapshot_provenance: dict[str, dict[str, Any]] = field(default_factory=dict)
     model_sources: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -658,6 +666,7 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
     )
     from haute._project import resolve_pipeline_file
     from haute.deploy._bundler import collect_artifacts
+    from haute.deploy._request_frame import request_frame_schema
     from haute.deploy._request_rows import record_digests, request_rows
     from haute.deploy._schema import (
         DeployBatchRuntime,
@@ -798,6 +807,15 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
         # admitted, never one outside the project.
         with runtime_project_root_scope(config.pipeline_file, project_root=project_root):
             input_schema = infer_input_schema(pruned_graph, deploy_inputs[0])
+            from haute.deploy._scorer import reads_records
+
+            if not reads_records(pruned_graph, deploy_inputs):
+                # A flat Quote Input's request is framed by this schema: a type a JSON
+                # request cannot carry is refused before anything is built.
+                request_frame_schema(input_schema)
+            from haute.deploy._scorer import omittable_request_columns
+
+            omittable_inputs = omittable_request_columns(pruned_graph, artifact_paths, input_schema)
             # Plan the served batch strategy first: it needs only the one-row
             # sample, and a target that scores batches in process must refuse an
             # unprovable group-by before the schema dry-run tries to run one.
@@ -870,6 +888,7 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
         project_modules=project_modules,
         request_rows=rows,
         artifact_digests=artifact_digests,
+        omittable_inputs=omittable_inputs,
         execution_policy=execution_policy,
         removed_node_ids=removed_ids,
         snapshot_provenance=snapshot_provenance,

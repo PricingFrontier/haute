@@ -363,6 +363,7 @@ export function makeTrainEstimate(
     was_downsampled: false,
     warning: null,
     gpu_vram_estimated_mb: null,
+    gpu_vram_rows: null,
     gpu_vram_available_mb: null,
     gpu_warning: null,
     unavailable: null,

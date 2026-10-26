@@ -7,6 +7,7 @@ import { effectiveMetrics } from "../../utils/trainingObjective"
 import { toggleButtonStyle } from "./styles"
 import { FailoverHelp } from "./FailoverHelp"
 import { GLM_FAMILY_LINKS, isGlmFamily, type GlmFamily } from "./glmFamilies"
+import { METRIC_OPTIONS, metricCompatible, metricObjective } from "./metricOptions"
 import { ColumnSelector } from "./ColumnSelector"
 import { modelColumnChoices } from "./modelColumns"
 import WeightOffsetFields from "./WeightOffsetFields"
@@ -14,16 +15,19 @@ import useToastStore from "../../stores/useToastStore"
 
 type Column = { name: string; dtype: string }
 
-/** Display order and labels; the families and their links come from GLM_FAMILY_LINKS. */
-const FAMILY_LABELS: Record<GlmFamily, { label: string; hint: string; metrics: string[] }> = {
-  poisson: { label: "Poisson", hint: "Claim frequency", metrics: ["gini", "poisson_deviance"] },
-  gamma: { label: "Gamma", hint: "Claim severity", metrics: ["gini", "rmse"] },
-  tweedie: { label: "Tweedie", hint: "Pure premium", metrics: ["gini", "tweedie_deviance"] },
-  gaussian: { label: "Gaussian", hint: "Linear regression", metrics: ["gini", "rmse"] },
-  binomial: { label: "Binomial", hint: "Binary outcomes", metrics: ["auc", "logloss"] },
-  quasipoisson: { label: "Quasi-Poisson", hint: "Overdispersed counts", metrics: ["gini", "poisson_deviance"] },
-  quasibinomial: { label: "Quasi-Binomial", hint: "Overdispersed binary outcomes", metrics: ["auc", "logloss"] },
-  negbinomial: { label: "Neg. Binomial", hint: "Overdispersed counts (explicit theta)", metrics: ["gini", "poisson_deviance"] },
+/**
+ * Display order and labels; the families and their links come from GLM_FAMILY_LINKS,
+ * and a family's default metrics from the backend's (effectiveMetrics).
+ */
+const FAMILY_LABELS: Record<GlmFamily, { label: string; hint: string }> = {
+  poisson: { label: "Poisson", hint: "Claim frequency" },
+  gamma: { label: "Gamma", hint: "Claim severity" },
+  tweedie: { label: "Tweedie", hint: "Pure premium" },
+  gaussian: { label: "Gaussian", hint: "Linear regression" },
+  binomial: { label: "Binomial", hint: "Binary outcomes" },
+  quasipoisson: { label: "Quasi-Poisson", hint: "Overdispersed counts" },
+  quasibinomial: { label: "Quasi-Binomial", hint: "Overdispersed binary outcomes" },
+  negbinomial: { label: "Neg. Binomial", hint: "Overdispersed counts (explicit theta)" },
 }
 const FAMILIES = (Object.keys(GLM_FAMILY_LINKS) as GlmFamily[]).map((value) => ({ value, ...FAMILY_LABELS[value] }))
 
@@ -42,16 +46,6 @@ const THETA_HELP =
   "over theta on the node's training data; the result is filled in for you to " +
   "accept or adjust."
 
-const GLM_METRICS = [
-  { value: "gini", label: "Gini" },
-  { value: "rmse", label: "RMSE" },
-  { value: "mae", label: "MAE" },
-  { value: "poisson_deviance", label: "Poisson Dev." },
-  { value: "tweedie_deviance", label: "Tweedie Dev." },
-  { value: "r2", label: "R²" },
-  { value: "auc", label: "AUC" },
-  { value: "logloss", label: "Logloss" },
-]
 
 export type GLMTargetConfigProps = {
   config: Record<string, unknown>
@@ -81,6 +75,7 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
   const link = configField(config, "link", "")
   const intercept = configField(config, "intercept", true)
   const metrics = effectiveMetrics(config)
+  const metricBasis = metricObjective({ ...config, algorithm: "glm" })
   const links: readonly string[] = isGlmFamily(family) ? GLM_FAMILY_LINKS[family] : []
   const canonicalLink = links[0]
   const linkUnavailable = link !== "" && !links.includes(link)
@@ -155,7 +150,7 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
                     onUpdate({
                       family: f.value,
                       link: "",  // reset to canonical
-                      metrics: f.metrics,
+                      metrics: effectiveMetrics({ algorithm: "glm", family: f.value }),
                     })
                   }}
                   className="px-2.5 py-1 rounded-md text-xs font-mono transition-colors"
@@ -313,19 +308,30 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
         <div>
           <h3 className="text-[14px] font-semibold" style={{ color: "var(--text-primary)" }}>Metrics</h3>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {GLM_METRICS.map(m => {
+            {METRIC_OPTIONS.map(m => {
               const selected = metrics.includes(m.value)
+              const compatible = metricCompatible(m.value, metricBasis.task, metricBasis.objective)
               return (
                 <button
                   key={m.value}
+                  aria-pressed={selected}
+                  disabled={!compatible}
+                  title={
+                    compatible
+                      ? undefined
+                      : metricBasis.objective
+                        ? `${m.label} is not available with the ${metricBasis.objective} family`
+                        : "Choose a family to enable compatible metrics"
+                  }
                   onClick={() => {
+                    if (!compatible) return
                     const newMetrics = selected
                       ? metrics.filter(x => x !== m.value)
                       : [...metrics, m.value]
                     onUpdate("metrics", newMetrics)
                   }}
-                  className="px-2.5 py-1 rounded-md text-xs font-mono transition-colors"
-                  style={toggleButtonStyle(selected)}
+                  className="px-2.5 py-1 rounded-md text-xs font-mono transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+                  style={toggleButtonStyle(compatible && selected)}
                 >
                   {m.label}
                 </button>

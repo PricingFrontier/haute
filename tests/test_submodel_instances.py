@@ -1370,7 +1370,6 @@ def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_binding
                             config={
                                 "selected_columns": ["_id", "premium"],
                                 "column_renames": {"_id": "identifier"},
-                                "categorical_levels": {"premium": ["low", "high", None]},
                             },
                         ),
                         _node("local_output", config={"instanceOf": "local_input"}),
@@ -1415,11 +1414,10 @@ def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_binding
     definition = (reparsed.submodels or {})["definition_scoring"]
     assert {
         key: definition.graph.node_map["local_input"].data.config[key]
-        for key in ("selected_columns", "column_renames", "categorical_levels")
+        for key in ("selected_columns", "column_renames")
     } == {
         "selected_columns": ["_id", "premium"],
         "column_renames": {"_id": "identifier"},
-        "categorical_levels": {"premium": ["low", "high", None]},
     }
     assert [port.name for port in definition.input_ports] == ["policy"]
     assert [port.name for port in definition.output_ports] == ["premium"]
@@ -1469,11 +1467,10 @@ def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_binding
     renamed_definition = (renamed.submodels or {})["definition_scoring"]
     assert {
         key: renamed_definition.graph.node_map["local_input"].data.config[key]
-        for key in ("selected_columns", "column_renames", "categorical_levels")
+        for key in ("selected_columns", "column_renames")
     } == {
         "selected_columns": ["_id", "premium"],
         "column_renames": {"_id": "identifier"},
-        "categorical_levels": {"premium": ["low", "high", None]},
     }
     assert {
         (edge.source, edge.target, edge.sourceHandle, edge.targetHandle) for edge in renamed.edges
@@ -1561,7 +1558,6 @@ def test_grouping_stores_local_positions_and_flatten_restores_authored_positions
                 config={
                     "selected_columns": ["_id", "premium"],
                     "column_renames": {"_id": "identifier"},
-                    "categorical_levels": {"premium": ["low", "high", None]},
                 },
             ),
             _node("child_b", x=500, y=600),
@@ -1587,7 +1583,6 @@ def test_grouping_stores_local_positions_and_flatten_restores_authored_positions
     assert definition.graph.node_map["child_a"].data.config == {
         "selected_columns": ["_id", "premium"],
         "column_renames": {"_id": "identifier"},
-        "categorical_levels": {"premium": ["low", "high", None]},
     }
 
     dissolved = flatten_graph(
@@ -1605,7 +1600,6 @@ def test_grouping_stores_local_positions_and_flatten_restores_authored_positions
     assert dissolved.node_map[qualified_runtime_node_id(occurrence.id, "child_a")].data.config == {
         "selected_columns": ["_id", "premium"],
         "column_renames": {"_id": "identifier"},
-        "categorical_levels": {"premium": ["low", "high", None]},
     }
 
 
@@ -1613,7 +1607,6 @@ def test_flattened_column_metadata_is_shared_per_definition_and_deeply_copied() 
     column_metadata = {
         "selected_columns": ["_id", "premium"],
         "column_renames": {"_id": "identifier"},
-        "categorical_levels": {"premium": ["low", "high", None]},
     }
     scoring = _definition(
         graph=PipelineGraph(
@@ -1650,7 +1643,7 @@ def test_flattened_column_metadata_is_shared_per_definition_and_deeply_copied() 
     assert scoring_b.data.config == column_metadata
     assert independent_node.data.config == {"selected_columns": ["other"]}
 
-    scoring_a.data.config["categorical_levels"]["premium"].append("platinum")
+    scoring_a.data.config["selected_columns"].append("platinum")
     assert scoring.graph.node_map["local_input"].data.config == column_metadata
     assert scoring_b.data.config == column_metadata
     assert independent_node.data.config == {"selected_columns": ["other"]}
@@ -1658,7 +1651,6 @@ def test_flattened_column_metadata_is_shared_per_definition_and_deeply_copied() 
     edited_metadata = {
         "selected_columns": ["_id", "risk_band"],
         "column_renames": {"risk_band": "risk_tier"},
-        "categorical_levels": {"risk_band": ["low", "medium", "high", None]},
     }
     graph.submodels["definition_scoring"].graph.node_map[
         "local_input"

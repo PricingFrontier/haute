@@ -52,11 +52,11 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/modelling/__init__.py` | Public API surface: `FitResult`, `MLflowLogResult`, `TrainingJob`, `TrainResult`, `generate_training_script`, `log_experiment`. |
 | `src/haute/modelling/_descriptors.py` | `AlgorithmDescriptor` and `NativeLoss` per family, `DESCRIPTORS`, the Haute loss vocabulary `HAUTE_LOSSES`, `algorithm_descriptor()`, parameter validation, refit projection (`project_refit_params`, `refit_descriptor`, `tuning_family`, `round_ceiling`), the `training_threads()` allotment, and `capability_fixture()`. Imports no engine. |
 | `src/haute/modelling/_algorithm_base.py` | `BaseAlgorithm`, `FitResult` and `IterationCallback`, shared by every adapter without importing the registry. |
-| `src/haute/modelling/_native_encoding.py` | Shared categorical encoding for the native-dataset families: `fit_categorical_levels`, `unseen_categorical_values` and `encode_frame`. |
+| `src/haute/modelling/_native_encoding.py` | Shared categorical encoding for the native-dataset families: `fit_categorical_levels` and `encode_frame`. |
 | `src/haute/modelling/_xgboost.py` | The XGBoost adapter: `XGBoostModel` (self-describing booster wrapper) and `XGBoostAlgorithm`. |
 | `src/haute/modelling/_gpu.py` | XGBoost GPU capability: `GpuStatus`, `xgboost_cuda_build`, `booster_device`, the once-per-process `xgboost_gpu_status` probe, `require_xgboost_gpu` and `verify_trained_on_gpu`. |
 | `src/haute/modelling/_lightgbm.py` | The LightGBM adapter: `LightGBMModel` (self-describing model-text wrapper) and `LightGBMAlgorithm`. |
-| `src/haute/modelling/_ebm.py` | The EBM adapter: `EBMModel` (the estimator plus its contract facts, and the term report) and `EBMAlgorithm`. |
+| `src/haute/modelling/_ebm.py` | The EBM adapter: `EBMModel` (the estimator plus the facts its file records, and the term report) and `EBMAlgorithm`. |
 | `src/haute/modelling/_tboost.py` | The t-boost adapter: `TBoostModel` (the estimator plus its `haute` record, and the table report) and `TBoostAlgorithm`. |
 | `src/haute/modelling/_algorithms.py` | `BaseAlgorithm` ABC (re-exported from the base module), `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
 | `src/haute/modelling/_rustystats.py` | `GLMAlgorithm` implementing `BaseAlgorithm` via RustyStats; `prepare_glm_design()` (frame-dtype validation, reference-level translation, interaction resolution); `glm_fit_kwargs()` (fixed or cross-validated penalty, solver controls, robust standard errors); `GLMAlgorithm.glm_result()` over `glm_inference`, `glm_coefficient_rows`, `glm_relativity_rows`, `glm_fit_statistics`, `glm_smooth_term_rows`, and `glm_regularization_summary`; `estimate_glm_dispersion()` profile-likelihood estimation. |
@@ -70,7 +70,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/modelling/_row_order.py` | The canonical row order every positional selection in training is taken over. `canonical_row_order` refines a run id one column at a time, most significant first (`row_order_columns`: the identity columns, then the rest in the frame's order): a stable sort by (run id, column) followed by a new run id wherever either changes, stopping once every row is distinct or the columns run out. `frame_row_order` reads the columns of an in-memory frame; `scan_row_order` reads them one collect at a time from a lazy frame through the caller's collect, so a training stage keeps its name and its execution context. The result is an array of source positions in canonical order. |
 | `src/haute/modelling/_metrics.py` | Primary metric functions and diagnostic data computation (double lift, AvE, residuals, actual-vs-predicted, Lorenz, PDP). |
 | `src/haute/modelling/_shap.py` | The SHAP diagnostics every SHAP-capable family shares: `shap_sample` (the seeded, shuffled sample of at most `SHAP_SAMPLE_ROWS` = 5,000 diagnostics rows, drawn over their canonical order) and `shap_diagnostics`, which turns the algorithm's per-row SHAP matrix into `ShapViews`: the mean-absolute summary, the beeswarm (`BEESWARM_ROWS` = 2,000 rows, `BEESWARM_FEATURES` = 20 features) and the per-feature curves (`CURVE_BANDS` = 20 numeric bands, `CURVE_LEVELS` = 30 categorical levels). |
-| `src/haute/modelling/_feature_contract.py` | `FeatureContract` build/save/load/cache, contract comparison, and categorical-level normalisation/validation. |
+| `src/haute/modelling/_feature_contract.py` | `FeatureContract` build/save/load/cache and contract comparison. |
 | `src/haute/modelling/_signature.py` | `build_signature()` — MLflow `ModelSignature` construction with loud dtype/metadata validation, structural Date/parameterised-Datetime mapping, and the explicit no-lossy-Decimal policy. |
 | `src/haute/modelling/_candidate_run.py` | The candidate-run contract builder shared by canvas and scripted logging (`CANDIDATE_RUN_CONTRACT_VERSION`, `training_identity_sha256`, `CandidateProvenance` capture including git state, `CandidateArtifacts.require_files`, `build_candidate_run`); see [mlflow-model-registry](../mlflow-model-registry/low-level.md#candidate-run-contract). |
 | `src/haute/modelling/_native_pyfunc.py` | The MLflow pyfunc for every Haute-trained native model: `package_native_model` copies the model file and its feature contract into one package, and `_load_pyfunc` returns `NativePyfuncModel`, which checks the model against the contract identity and scores through haute's own `load_local_model` + `score_frame` path, returning the label and positive-class probability for classification. |
@@ -159,11 +159,11 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   semantics, deterministic baseline/winner selection, validation-row-weighted final
   tree count, and strict digest-linked artifacts.
 - **`FeatureContract`** (`_feature_contract.py`, frozen dataclass) — `features`,
-  `feature_types`, `categorical_features`, `categorical_levels`, `target_name`,
+  `feature_types`, `categorical_features`, `target_name`,
   `target_type`, `task`, `contract_hash` (sha256 of canonical compact JSON over every
   other field), `offset_column: str | None`, `offset_link: str | None`. Serialized
-  contracts always contain every one of those fields, including an empty
-  `categorical_levels` object and a nullable `offset_column` and `offset_link`.
+  contracts always contain every one of those fields, including a nullable
+  `offset_column` and `offset_link`. A contract holds no list of category values.
   `offset_link` (`log` or `identity`) says how the offset enters the model's raw score.
   It is null when `offset_column` is null, and may be null beside a named column only
   for a model that applies its own offset (a pyfunc, or a family whose file records
@@ -201,8 +201,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   `mlflow_destination` (`""` = the local folder, else `"databricks"|"server"|"local"`;
   any other value is rejected when logging resolves it),
   `output_dir`, `loss_function`, `variance_power`, `offset`,
-  `monotone_constraints`, `feature_weights`, and a normalised
-  `_declared_categorical_levels`. Internal clones additionally receive an
+  `monotone_constraints` and `feature_weights`. Internal clones additionally receive an
   `evaluation_plan`, optional validation `fit_index`, and the orchestrator's
   precomputed `plan_source_sha256`; those arguments are never accepted from node
   JSON. The `split` argument is a private test seam rejected by the public config
@@ -210,9 +209,18 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   supplying `evaluation` together with `split` fails instead of silently
   ignoring either contract. Canonical `tuning` and internal `evaluation_plan` inputs
   require an explicit canonical `evaluation`. A contract-dtype
-  snapshot (`_contract_feature_dtypes`, `_contract_categorical_levels`,
+  snapshot (`_contract_feature_dtypes`,
   `_contract_target_dtype`, `_contract_offset_dtype`) is populated inside `_prepare_data`
-  and consumed by `_save_artifacts` and `_log_to_mlflow`.
+  and consumed by `_save_artifacts` and `_log_to_mlflow`; a feature or target missing from it
+  raises `HauteValidationError` naming it, never a guessed `Float64`.
+  `TrainingJob.__init__` refuses a `Tweedie` loss without `variance_power` for every tree
+  family (before parameter validation) and, after it, a `tweedie_deviance` metric without a
+  variance power; a Tweedie GLM's `variance_power` defaults to its `var_power`.
+  `resolve_loss_function` raises for a Tweedie loss without a power, and `compute_metrics`
+  for a `tweedie_deviance` metric without one (`_tweedie_deviance` takes the power as a
+  required keyword). A CatBoost fit takes the job's seed as `random_seed` (`_fit_seed`: the
+  evaluation's seed, or 0 for a temporal plan or none), as the other families take it as
+  `seed`.
 - **Modelling-node algorithm config** — CatBoost constructor hyperparameters are the
   contents of top-level `params`, with CatBoost Tweedie power in top-level
   `variance_power`. The editor's starter `params` for a new CatBoost node include
@@ -257,6 +265,9 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   the final feature list, and accepts only canonical numeric contract dtypes
   (`Int64`/`Float64`). The resulting validated mapping is passed unchanged to
   CatBoost's feature-index translation.
+- **CatBoost pool width** — `_build_pool` raises `HauteValidationError` naming any
+  requested feature missing from the frame, so its categorical indices always describe the
+  features the model was asked to train on.
 - **CatBoost numeric array handoff** — `_build_pool` calls
   `_prepare_predict_frame(..., flavor="catboost")`, which returns a multi-column
   numeric Polars frame as a Fortran-contiguous `Float32` NumPy matrix and passes it
@@ -337,9 +348,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 
 1. `POST /api/modelling/train` → `src/haute/routes/modelling.py::train_model` →
    `TrainService.start(body)`.
-2. `TrainService.start`: locate the modelling node in the graph; merge declared
-   `categorical_levels` from the node and its upstream ancestors
-   (`_declared_categorical_levels_for_training`); `_validate_config` (target set,
+2. `TrainService.start`: locate the modelling node in the graph; `_validate_config` (target set,
    algorithm registered, canonical `evaluation` and optional `tuning` parsed,
    the removed `split`/`cross_validation` rejected by the one check
    `src/haute/modelling/_train_config.py::reject_removed_evaluation_fields`, the configured
@@ -685,8 +694,18 @@ experiment logs nothing.
    stubbed to a placeholder value so its own gate doesn't fire) any other
    incomplete part of the training objective.
 3. Under `_start_lock`, reject if a job is already running (shared with training —
-   `_check_no_concurrent_jobs` does not distinguish job type) and create the job
-   record (`job_type="dispersion_estimate"`).
+   `_check_no_concurrent_jobs` does not distinguish job type), create the job
+   record (`job_type="dispersion_estimate"`) and register its cancellation token in the
+   `CancellableJobRegistry`. The route then returns the job id: `_spawn_preparation`, the
+   owned-thread starter `start()` uses too, runs `_prepare_and_launch_dispersion` in
+   `haute-dispersion-prep-<job id>`, and a thread that cannot start fails the job and the
+   request with a 500. The admitted preparation context carries the registered token, so
+   `cancel_dispersion` during preparation stops the preparation worker, whose owner then
+   releases admission and the registry entry. A preparation failure lands in the job through
+   `_record_preparation_failure`, shared with training: a cancellation takes the token's
+   reason, an admission or memory failure is `memory_limited` (507), an `HTTPException` keeps
+   its `contract_error`/`error` parts, and anything else is `error` with `_friendly_error`'s
+   curated "Dispersion estimation of …" message (the raw text stays in `error`).
 4. `_estimate_ram` and `_execute_and_sink` reuse the exact same helpers `start()` uses
    to materialise the node's training frame — same pipeline execution, projection, and
    seeded row sampling — so the profiled data matches what a real training run would
@@ -1323,8 +1342,9 @@ potentially large copy on its threadpool.
   `haute_offset_link` records the transform beside `haute_offset_column`, and a model
   recording a column without a link is refused. A fit without an offset stamps an empty
   `haute_offset_column` (and no link), so every model Haute trains declares its offset;
-  an absent key leaves the offset undeclared, and scoring then needs a contract that
-  declares it (see the MLflow model registry specification). The job's offset link and the link
+  an absent key leaves the offset undeclared, and scoring then takes the declaration from
+  a contract, or scores with no offset when none declares it (see the MLflow model
+  registry specification). The job's offset link and the link
   stamped at fit both follow the effective loss (`TrainingJob._catboost_loss_function`).
 - GLM prediction keeps the offset column inside the frame handed to RustyStats rather
   than transforming it in Python — RustyStats owns the fit-time offset transform (e.g.
@@ -1350,10 +1370,9 @@ potentially large copy on its threadpool.
 - The feature contract is hashed over sorted, separator-compact canonical JSON but
   written to disk pretty-printed — human-reviewable on disk, byte-deterministic for
   hashing.
-- `categorical_levels` domains are explicit metadata and are never inferred from
-  observed row values; `validate_categorical_value_domains` only checks observed rows
-  against a declared domain and raises `FeatureMismatchError` with example offending
-  values when violated.
+- No scoring path checks a categorical value against a list: each family scores a
+  value its training rows never held through its own mechanism, and nothing records or
+  reports it.
 - Feature contracts are written only to each model's canonical companion path.
 - Column-projection pushdown (`_glm_select_columns` / `_catboost_select_columns` /
   `_training_required_columns_by_node`) bounds parquet-read memory: GLM reads only its
@@ -1387,7 +1406,7 @@ rows/features) and retry.
   incomplete node still saves.
 - **`FeatureMismatchError`** (`haute.errors.HauteError` subclass) — feature-contract
   structural problems: missing/unknown top-level fields, wrong field types, hash
-  mismatch (edited/corrupted file), invalid `categorical_levels` declarations, and
+  mismatch (edited/corrupted file), and
   train-vs-score disagreement via `assert_contracts_match` (names the offending field
   and shows expected vs. actual).
 - **GLM result diagnostics** — `GLMAlgorithm.glm_result` catches each failing GLM
@@ -1739,8 +1758,8 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
   service's publication and proves their nulls survive.
 - `test_tboost_family.py` trains real t-boost models and proves: each loss reaches its native
   objective and link (Tweedie with the job's variance power), a model saved through
-  `TrainingJob` scores an unseen level through its real contract with `score_frame` while a
-  declared domain still refuses a value outside it, a model with no categorical feature (whose
+  `TrainingJob` scores an unseen level through its real contract with `score_frame`, a
+  model with no categorical feature (whose
   document has no `cat_indices`) saves and loads, a classification offset and
   feature weights fail before fitting, and a feature name with `:` trains and explains; with a
   log-link offset the response is the rate times the offset and the margin is the raw score
@@ -1754,9 +1773,8 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
   the loss history is the per-round bag mean of `evals_result_`; contributions plus bias rebuild the margin for every row and per-feature
   Shapley values sum to the same total; a categorical value outside the fitted levels scores
   exactly as a level t-boost pooled into `<rare>` does, in the default cell when the axis
-  pooled nothing (`unseen_cell`), and a null in the missing level; `unseen_values` counts it; a training run whose validation
-  rows hold levels the training rows lack completes and logs
-  `tboost_validation_values_not_in_training`, including a level a declared domain lists; a fit is identical across thread allotments for a seed; a group plan's column, which is not a
+  pooled nothing (`unseen_cell`), and a null in the missing level; a training run whose validation
+  rows hold levels the training rows lack completes; a fit is identical across thread allotments for a seed; a group plan's column, which is not a
   feature, reaches the selection and final fits as `groups`; a model with no tables (t-boost's
   `intercept` placeholder) has no terms, an empty table report and still explains; the table report's scores, read at the cell each row's feature
   values select (right-closed numeric intervals, categorical member levels, row-major axes,
@@ -1766,10 +1784,9 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
   `RMSE` fit with an offset; every bag's every round reaches the progress callback (so a
   cancellation during a later bag stops the fit), and through `_FitRounds` with a still clock
   four bags boosted to the ceiling send only the first and the final round; `save`/`load` round-trips predictions exactly through plain
-  t-boost as well; and `load`, through a project file and through an MLflow run, refuses a
-  document without the record, each malformed record field, a multiclass classifier, a record
-  whose task, link, features or categorical set disagree with the native model, and an
-  offset under a non-log link.
+  t-boost as well; and `load`, through a project file and through an MLflow run, refuses
+  each malformed record field, a multiclass classifier, a record whose task, link, features or
+  categorical set disagree with the native model, and an offset under a non-log link.
 - `test_algorithms_coverage.py` — targeted coverage of `_algorithms.py` /
   `_training_job.py` paths not hit elsewhere (platform-specific RSS reads, CatBoost and
   MLflow mocked out via `unittest.mock`).
@@ -1905,7 +1922,10 @@ The implementation seams are:
   `estimate_training` returns it as `TrainEstimateResponse.unavailable`
   (`{reason, blocking_node_id}`, null when available) with `estimated_mb`, `training_mb`
   and `bytes_per_row` null, and skips the GPU VRAM check. `safe_row_limit` still reports
-  the user's row limit. `TrainEstimateResponse` and `parseTrainEstimateResponse` both
+  the user's row limit. An available GPU estimate sizes VRAM at
+  `_training_rows(total_rows, safe_row_limit)` (`_training_preparation.py`, the count
+  `_check_gpu_vram_before_launch` also uses) and reports it as `gpu_vram_rows`, null exactly
+  when `gpu_vram_estimated_mb` is. `TrainEstimateResponse` and `parseTrainEstimateResponse` both
   reject a memory figure beside a reason, a missing figure without one, a row total that
   disagrees with the reason, and a downsampling verdict, warning or VRAM field on an
   unavailable estimate.
@@ -2091,7 +2111,8 @@ used for staged input.
   job's allotment, and `device` (the `cuda:N` an XGBoost GPU fit trained on, else `None`);
   `TrainResult.fit_evidence` records those threads, else the job's, and the device when set; the response validates it as
   `FitEvidencePayload`, and `build_candidate_run` logs it as `fit_*` parameters.
-- `FeatureContract` has `contract_version` 3 and `model: ModelIdentity | None`. `ModelIdentity`
+- `FeatureContract` has `contract_version` 4, no category-value list, and
+  `model: ModelIdentity | None`. `ModelIdentity`
   holds `algorithm`, `link`, `engine_name`, `engine_version`, `haute_version`, `loss`,
   `glm_family`, `variance_power`, `class_labels` (`(negative, positive)`), and
   `native_feature_names`; `load_contract` validates every field.
@@ -2113,18 +2134,35 @@ used for staged input.
   `IterationCallback` live in `src/haute/modelling/_algorithm_base.py`, so an adapter module can
   subclass them without importing `_algorithms` (which registers every adapter).
 - `src/haute/modelling/_native_encoding.py` is the shared categorical encoding:
-  `fit_categorical_levels` takes declared levels, else the training frame's sorted distinct
-  non-null values with `None` appended when nulls occur; `encode_frame` builds pandas categoricals
-  whose categories are the non-null levels in stored order, so a null is the native missing code
-  and a literal `"__missing__"` is an ordinary level, and it raises `HauteValidationError`
-  naming the feature and values for anything outside the levels. `FitResult.categorical_levels`
-  carries the fitted levels into the feature contract.
+  `fit_categorical_levels` takes the training frame's sorted distinct non-null values,
+  with `None` appended when nulls occur; the model file records them, never the feature
+  contract. `encode_frame` builds pandas categoricals whose categories are the non-null levels
+  in stored order, so a null is the native missing code and a literal `"__missing__"` is an
+  ordinary level. It never raises for a value outside the levels: with `unseen="missing"`
+  (LightGBM, XGBoost) such a value becomes the native missing code, and with
+  `unseen="label"` (EBM) the categories gain the outside values, sorted, after the levels,
+  so the fitted levels keep their codes and EBM reads the label into its unknown bin.
 - `XGBoostModel` in `src/haute/modelling/_xgboost.py` wraps the booster with its feature order,
   categorical levels, task, link, offset column and link, and class labels, persisted as the
   `haute` booster attribute of the `.ubj`. It exposes `matrix`, `predict_margin`,
   `predict_response`, `predict` (original labels for classifiers, by the `> 0.5` rule),
   `predict_proba`, `contributions` (native `pred_contribs`, bias carrying the offset), `save`,
-  `load` (which refuses a booster without the `haute` record) and `objective`.
+  `load` and `objective`. A booster without the `haute` record, one trained outside Haute,
+  loads from what XGBoost records itself (`_native_record`): `feature_names` (a booster without
+  them is refused), the categories `get_categories(export_to_arrow=True)` stored for each
+  categorical feature (a categorical feature with none stored scores from the numeric codes the
+  input supplies, the booster's `feature_types` passed to every `DMatrix`), task and link from
+  the objective (`native_objective`), class labels 0 and 1, and its offset from the
+  `haute_offset` booster attribute an analyst stamps before saving (`"none"`, or
+  `"<column>:<link>"` with link `log` or `identity`; another value is refused). Without
+  the stamp the offset is undeclared (`offset_declared` false) and a contract must
+  declare it (MLflow model registry specification).
+- `native_objective(descriptor, objective)` in `src/haute/modelling/_descriptors.py` gives the
+  task and link a native objective has under a family's losses, for a model trained outside
+  Haute: a binary objective is a classifier with a logit link, any other objective Haute does not
+  train is a regression with an identity link (prediction does not depend on it; a trace whose
+  contributions do not reconstruct the prediction is refused), and a multi-class or ranking
+  objective is refused, because Haute scores one output per row.
 - `XGBoostAlgorithm.fit` resolves the loss through the `xgboost` descriptor, rejects feature
   weights and classification offsets, supplies `hist`, the job seed, the thread allotment and
   `tweedie_variance_power`, trains with the validation partition as the early-stopping set, and
@@ -2163,8 +2201,15 @@ used for staged input.
   the `.lgbm` model text (LightGBM's loader ignores it). It exposes `encoded`, `baseline`,
   `predict_margin` (`raw_score=True` output plus the transformed offset), `predict_response`,
   `predict`, `predict_proba`, `contributions` (native `pred_contrib`, the adapter adding the
-  offset to the bias column), `save`, `load` (which refuses text without exactly one `haute:`
-  record) and `objective` (the model text's `objective=` line).
+  offset to the bias column), `save`, `load` (which refuses text with more than one `haute:`
+  record) and `objective` (the model text's `objective=` line). Text without the record, a model
+  trained outside Haute, loads from what LightGBM records (`_native_record`): `feature_name()`,
+  the categorical features `params["categorical_feature"]` names with their levels from
+  `pandas_categorical` (a categorical feature trained on integer codes, with no levels recorded,
+  scores from the input's numeric codes), task and link from the objective, class labels 0 and
+  1, and no offset. Such a model (`native_response`) is priced by LightGBM's own `predict`, so
+  its recorded response transform (a non-unit `sigmoid`, `reg_sqrt`) applies; its margin and
+  contributions stay raw scores, and a trace whose link does not rebuild that price is refused.
 - `LightGBMAlgorithm.fit` resolves the loss through the `lightgbm` descriptor, rejects feature
   weights and classification offsets, supplies `gbdt`, the job seed, the thread allotment
   (`num_threads`), `tweedie_variance_power` and positional `monotone_constraints`, builds train
@@ -2196,33 +2241,33 @@ used for staged input.
   (`eval_df` is never used) with `outer_bags=1`, `inner_bags=0`, `validation_size=0`,
   `early_stopping_rounds=0`, `n_jobs=1`, the job seed, `feature_types` (`nominal` for contract
   categoricals), positional `monotone_constraints`, and interaction pairs as index pairs.
-  Categoricals go through the shared `encode_frame`, so an unseen or empty-string value fails
-  (EBM itself would score an unseen value as zero). EBM's own `callback` starts a multiprocessing
+  Categoricals go through the shared `encode_frame` with `unseen="label"`, so an unseen value
+  scores in EBM's unknown bin (zero, the book average) and never in its missing bin, and an
+  empty-string training value fails. A loaded EBM reads each categorical feature's levels
+  from its estimator's own bins (`bins_`), the contract naming which features are
+  categorical. EBM's own `callback` starts a multiprocessing
   `SharedMemoryManager`, so progress is reported in rounds before and after the fit. The result
   carries `rounds_configured = max_rounds`, `rounds_fitted = None`, `stopping_reason = "none"`,
   `threads = 1` and `term_update_steps` from `best_iteration_`.
-- `EBMModel` holds the estimator with the contract's features, levels, task, link, offset and
-  class labels. Its margin is `eval_terms` plus `intercept_` plus the transformed offset; the
+- `EBMModel` holds the estimator with its features, levels, task, link, offset and class
+  labels. Its margin is `eval_terms` plus `intercept_` plus the transformed offset; the
   served response is the native `predict(init_score=…)` or `predict_proba[:, 1]`. `contributions`
   returns one value per term (`term_features_`, an interaction one term); `term_report` returns
   each term's name, features, kind, importance (`term_importances`), axes (missing bin first,
   then categories or continuous bin ranges with their cuts, the unknown bin dropped) and scores,
-  and feeds `TrainResult.ebm_terms` and the importances. `save` is `joblib.dump` of the
-  estimator. `load(path, contract)` requires an `ebm` model identity whose `engine_version` is
-  the installed `interpret-core` version (else `ArtifactVersionMismatchError`, before
-  unpickling), unpickles with `restricted_joblib_load`, and `validate` checks the exact class
-  for the task, `feature_names_in_`, `n_features_in_`, `feature_types_in_`, finite scores and
-  intercept, and 0/1 classes; `validate_identity` then refuses a contract whose loss, link or
-  Tweedie variance power is not the estimator's objective, because the contract decides how the
-  offset enters and how labels are read.
-- `load_local_model(path, task, *, contract_path=None)` loads an `.ebm` under `contract_path`
-  or the contract beside it (`model_contract_candidates`: `{stem}.feature_contract.json`, then a
-  package's `feature_contract.json`); an MLflow run load fetches the contract logged beside the
-  artifact with `_resolve_run_contract`, because the artifact cache keeps each artifact in its
-  own directory. Both in-process caches key an EBM by its contract's identity as well as its
-  model bytes (`_ebm_identity_fingerprint` for MLflow loads, including the disk-cache fast
-  path; the bundled contract's stat-gated fingerprint in the deployed scorer), so replacing only
-  the contract reloads the model.
+  and feeds `TrainResult.ebm_terms` and the importances. `save` writes one line,
+  `haute-ebm:` and the JSON `metadata()` (`engine_version`, the installed `interpret-core`
+  version; `features`; `categorical_features`; `task`; `link`; `offset_column`;
+  `offset_link`; `class_labels`), then `joblib.dump` of the estimator. `load(path)` reads that
+  line (at most `_RECORD_LIMIT` bytes) before anything is unpickled and refuses a file without
+  it (`ConfigError`, retrain it in Haute) or whose `engine_version` is not the installed
+  `interpret-core` version (`ArtifactVersionMismatchError`), unpickles the rest with
+  `restricted_joblib_load(path, offset=)`, and `validate` checks the exact class for the task,
+  `feature_names_in_`, `n_features_in_`, `feature_types_in_`, finite scores and intercept, and
+  0/1 classes against the record. A feature contract, when the model has one, binds it like
+  any other self-describing model (`bind_feature_contract`: identity, objective and offset).
+- `load_local_model(path, task, *, contract_path=None)` loads an `.ebm` from the file alone;
+  an explicit, sibling or run-logged contract binds it as it binds every family.
 - The `ebm` descriptor allows `max_rounds` (required, positive), `learning_rate`, `max_bins`,
   `max_interaction_bins`, `interactions`, `min_samples_leaf`, `min_hessian`, `max_leaves`,
   `smoothing_rounds`, `interaction_smoothing_rounds`, `greedy_ratio`, `cyclic_progress`,
@@ -2254,11 +2299,7 @@ used for staged input.
   against the levels (t-boost scores a value it never saw under `unknown_category`, which
   Haute owns and sets to `UNKNOWN_CATEGORY` = `rare`), and casts every other feature
   to `Float64`, so a Date or
-  Boolean feature is numeric exactly as `encode_frame` makes it. `unseen_values(frame)` is
-  t-boost's `unseen_values` frame (`feature`, `value`, `rows`), which compares with t-boost's
-  fitted levels, not the contract's levels (a declared domain may be wider); after a fit with
-  validation rows, `_log_unseen_validation_values` logs `tboost_validation_values_not_in_training`
-  per feature with the value count, the rows, up to five examples and the policy. `_rows_kwargs` builds one
+  Boolean feature is numeric exactly as `encode_frame` makes it. `_rows_kwargs` builds one
   frame's arguments, the same for the training and the evaluation rows: the offset column is
   t-boost's `exposure` (the exponent of the log baseline) under a log link and its link-scale
   `offset` under the identity link. t-boost's `PrecisionWarning` about its float32 features is
@@ -2275,13 +2316,15 @@ used for staged input.
   `rounds_configured = n_trees`, `rounds_fitted = n_trees_` (the largest per-bag kept count),
   `stopping_reason` mapped from t-boost's `stopping_reason_` (`early_stopping` → `validation`,
   `max_trees` → `none`, `no_split` → `native_exhaustion`; any other value fails),
-  `best_iteration = None`, `categorical_levels = None` (so the contract keeps only a declared
-  domain, which scoring enforces, and an undeclared feature's unseen values reach t-boost's
-  `unknown_category` policy), a `loss_history` from `_loss_history(evals_result_)` (one row per
+  `best_iteration = None` (every unseen value reaches t-boost's `unknown_category`
+  policy), a `loss_history` from `_loss_history(evals_result_)` (one row per
   round with the mean `train_deviance` and `eval_deviance` over the bags whose curves reach it),
   and the table report computed on the fit's own rows.
 - `TBoostModel` holds the estimator with the record's features, levels, task, link, offset
-  column and link, and class labels. Its margin is `predict_raw(prepared)` (or
+  column and link, and class labels. A document without the record, a model trained outside
+  Haute, loads from what t-boost records (`_native_record`): `feature_names_in_`, the
+  categorical features `cat_indices` names (t-boost scores their values as strings itself), task
+  from the estimator, link from the objective, class labels from `classes_`, and no offset. Its margin is `predict_raw(prepared)` (or
   `decision_function` for a classifier) plus the transformed offset; the response is the
   inverse link of the margin (`predict(prepared)` times the offset under a log link,
   `predict_proba[:, 1]` for a classifier); `predict` gives original labels for a classifier by

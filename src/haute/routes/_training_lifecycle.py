@@ -130,7 +130,6 @@ from haute.routes._training_preparation import (
     TrainingPreparationRequest,
     _check_gpu_vram,
     _clamp_row_limit,
-    _declared_categorical_levels_for_training,
     _find_modelling_node,
     _gpu_vram_http_exception,
     _http_failure_job_parts,
@@ -139,6 +138,7 @@ from haute.routes._training_preparation import (
     _seeded_training_sample,
     _training_projection_keep_columns,
     _training_required_columns_by_node,
+    _training_rows,
     create_training_parquet_path,
     estimate_training_memory,
     preparation_failure_outcome,
@@ -318,14 +318,6 @@ class TrainService:
         """
         node = _find_modelling_node(body.graph, body.node_id)
         config = node.data.config
-        declared_categorical_levels = _declared_categorical_levels_for_training(
-            body.graph,
-            body.node_id,
-            config,
-        )
-        if declared_categorical_levels:
-            config = {**config, "categorical_levels": declared_categorical_levels}
-
         self._validate_config(config)
         # Cheap pre-check so a busy server does not run the schema build first;
         # the authoritative check repeats under the start lock.
@@ -353,30 +345,45 @@ class TrainService:
         self._training_jobs.register_latest(
             (_TRAINING_JOB_TYPE, job_id), job_id, execution_token=cancellation_token
         )
+        self._spawn_preparation(
+            job_id,
+            lambda: self._prepare_and_launch_training(
+                job_id, body, body.node_id, config, cancellation_token
+            ),
+            kind="training",
+            operation_noun="Training",
+        )
+        return TrainResponse(status="started", job_id=job_id)
 
-        def prepare() -> None:
+    def _spawn_preparation(
+        self,
+        job_id: str,
+        prepare: Callable[[], None],
+        *,
+        kind: str,
+        operation_noun: str,
+    ) -> None:
+        """Run *prepare* in the job's owned preparation thread, so the request returns at once.
+
+        The job's cancellation token is already registered, so the returned id
+        can cancel preparation. A thread that cannot start fails the job and
+        raises a 500.
+        """
+
+        def run() -> None:
             try:
-                self._prepare_and_launch_training(
-                    job_id, body, body.node_id, config, cancellation_token
-                )
+                prepare()
             except Exception:
                 # The preparation owner converts expected failures to terminal
                 # job state itself. This final boundary prevents teardown/store
                 # infrastructure races from escaping as an unhandled daemon-thread
                 # exception while still leaving a server-side diagnostic.
-                logger.exception(
-                    "training_preparation_thread_failed",
-                    job_id=job_id,
-                )
+                logger.exception(f"{kind}_preparation_thread_failed", job_id=job_id)
             finally:
                 with self._preparation_threads_lock:
                     self._preparation_threads.pop(job_id, None)
 
-        thread = threading.Thread(
-            target=prepare,
-            name=f"haute-training-prep-{job_id}",
-            daemon=True,
-        )
+        thread = threading.Thread(target=run, name=f"haute-{kind}-prep-{job_id}", daemon=True)
         with self._preparation_threads_lock:
             self._preparation_threads[job_id] = thread
         try:
@@ -385,21 +392,14 @@ class TrainService:
             with self._preparation_threads_lock:
                 self._preparation_threads.pop(job_id, None)
             self._training_jobs.release(job_id)
-            logger.exception(
-                "training_preparation_thread_start_failed",
-                job_id=job_id,
+            logger.exception(f"{kind}_preparation_thread_start_failed", job_id=job_id)
+            message = (
+                f"{operation_noun} preparation failed to start. Check the server logs for details."
             )
             self._lifecycle.transition(
-                job_id,
-                to="error",
-                message="Training preparation failed to start. Check the server logs for details.",
-                fields={"error": str(exc)},
+                job_id, to="error", message=message, fields={"error": str(exc)}
             )
-            raise HTTPException(
-                status_code=500,
-                detail="Training preparation failed to start. Check the server logs for details.",
-            ) from exc
-        return TrainResponse(status="started", job_id=job_id)
+            raise HTTPException(status_code=500, detail=message) from exc
 
     def evaluation_preview(
         self,
@@ -669,7 +669,32 @@ class TrainService:
                 execution_context=execution_context,
             )
             worker_owns_cleanup = True
-        except ExecutionCancelledError:
+        except Exception as exc:
+            self._record_preparation_failure(
+                job_id, exc, kind="training", operation_noun="Training", config=config
+            )
+        finally:
+            if not worker_owns_cleanup:
+                if execution_context is not None:
+                    execution_context.release_admission(preserve_primary_error=True)
+                self._training_jobs.release(job_id)
+
+    def _record_preparation_failure(
+        self,
+        job_id: str,
+        exc: Exception,
+        *,
+        kind: str,
+        operation_noun: str,
+        config: Mapping[str, Any],
+    ) -> None:
+        """Land a preparation failure in the job, as every preparation owner does.
+
+        A cancellation takes the token's reason, an admission or memory failure
+        is ``memory_limited``, an ``HTTPException`` keeps its parts, and anything
+        else is a curated ``error`` (the raw text stays in ``error``).
+        """
+        if isinstance(exc, ExecutionCancelledError):
             reason = self._training_jobs.cancellation_reason(job_id) or "cancelled"
             self._lifecycle.transition(
                 job_id,
@@ -677,23 +702,22 @@ class TrainService:
                 message="Cancelled" if reason == "cancelled" else reason,
                 elapsed_seconds=_job_elapsed_seconds(self._store.require_job(job_id)),
             )
-        except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
+        elif isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
             self._persist_preparation_http_failure(job_id, _memory_limit_http_exception(exc))
-        except HTTPException as exc:
+        elif isinstance(exc, HTTPException):
             self._persist_preparation_http_failure(job_id, exc)
-        except Exception as exc:
-            logger.exception("training_preparation_failed", job_id=job_id)
+        else:
+            logger.exception(f"{kind}_preparation_failed", job_id=job_id)
             self._lifecycle.transition(
                 job_id,
                 to="error",
-                message=_friendly_error(exc, context=_training_context_phrase(config)),
+                message=_friendly_error(
+                    exc,
+                    operation_noun=operation_noun,
+                    context=_training_context_phrase(config),
+                ),
                 fields={"error": str(exc)},
             )
-        finally:
-            if not worker_owns_cleanup:
-                if execution_context is not None:
-                    execution_context.release_admission(preserve_primary_error=True)
-                self._training_jobs.release(job_id)
 
     def _persist_preparation_http_failure(self, job_id: str, exc: HTTPException) -> None:
         message, fields = _http_failure_job_parts(exc, job_id=job_id)
@@ -760,9 +784,11 @@ class TrainService:
     ) -> DispersionEstimateResponse:
         """Estimate a GLM dispersion parameter on the node's training data.
 
-        Materialises the training frame exactly as ``start()`` would (same
-        pipeline execution, projection, and seeded row sampling), then runs
-        a profile-likelihood search in a supervised spawn worker. The estimate is
+        Validates the request, registers the job's cancellation token and returns
+        its id at once; the job's owned preparation thread then materialises the
+        training frame exactly as ``start()`` would (same pipeline execution,
+        projection, and seeded row sampling) and runs a profile-likelihood search
+        in a supervised spawn worker. The estimate is
         an explicit user action: the resolved value lands in the node config
         where the training-objective gate requires it — never as a hidden
         default (RustyStats refuses to fit Negative Binomial without theta and
@@ -788,10 +814,34 @@ class TrainService:
                 "timeout": config.get("timeout", _default_train_timeout()),
             }
             job_id = self._store.create_job(initial_job)
+            cancellation_token = ExecutionCancellationToken()
+            self._training_jobs.register_latest(
+                (_DISPERSION_JOB_TYPE, job_id), job_id, execution_token=cancellation_token
+            )
 
+        self._spawn_preparation(
+            job_id,
+            lambda: self._prepare_and_launch_dispersion(
+                job_id, body, config, preamble_ns, cancellation_token
+            ),
+            kind="dispersion",
+            operation_noun="Dispersion estimation",
+        )
+        return DispersionEstimateResponse(status="started", job_id=job_id)
+
+    def _prepare_and_launch_dispersion(
+        self,
+        job_id: str,
+        body: DispersionEstimateRequest,
+        config: dict[str, Any],
+        preamble_ns: dict[str, Any] | None,
+        cancellation_token: ExecutionCancellationToken,
+    ) -> None:
+        """Prepare the estimate's frame and launch its worker in the owned thread."""
         execution_context: ExecutionContext | None = None
-        launch_started = False
+        worker_owns_cleanup = False
         try:
+            cancellation_token.throw_if_cancelled("dispersion_preparation", job_id=job_id)
             ram_est = self._estimate_ram(
                 body.graph,
                 body.node_id,
@@ -799,6 +849,7 @@ class TrainService:
                 job_id,
                 source=body.source,
             )
+            cancellation_token.throw_if_cancelled("dispersion_memory_estimate", job_id=job_id)
             if ram_est.warning:
                 self._store.update_job(job_id, warning=ram_est.warning)
             row_limit = _clamp_row_limit(ram_est.safe_row_limit, config.get("row_limit"))
@@ -813,6 +864,7 @@ class TrainService:
                 operation="dispersion_estimate",
                 profile=ExecutionProfile.TRAINING_PREP,
                 job_id=job_id,
+                cancellation_token=cancellation_token,
                 wait_out_holders=_EVALUATION_PREVIEW_HOLDERS,
                 wait_seconds=_EVALUATION_PREVIEW_WAIT_SECONDS,
             )
@@ -840,37 +892,20 @@ class TrainService:
                 tmp_parquet,
                 execution_context=execution_context,
             )
-            launch_started = True
-        except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
-            http_exc = _memory_limit_http_exception(exc)
-            self._lifecycle.transition(
-                job_id,
-                to="memory_limited",
-                message=str(http_exc.detail),
-                fields={"error": str(http_exc.detail)},
-            )
-            raise http_exc from None
-        except HTTPException as exc:
-            self._lifecycle.transition(
-                job_id,
-                to="contract_error" if 400 <= exc.status_code < 500 else "error",
-                message=str(exc.detail),
-                fields={"error": str(exc.detail)},
-            )
-            raise
+            worker_owns_cleanup = True
         except Exception as exc:
-            self._lifecycle.transition(
+            self._record_preparation_failure(
                 job_id,
-                to="error",
-                message=str(exc),
-                fields={"error": str(exc)},
+                exc,
+                kind="dispersion",
+                operation_noun="Dispersion estimation",
+                config=config,
             )
-            raise
         finally:
-            if execution_context is not None and not launch_started:
-                execution_context.release_admission(preserve_primary_error=True)
-
-        return DispersionEstimateResponse(status="started", job_id=job_id)
+            if not worker_owns_cleanup:
+                if execution_context is not None:
+                    execution_context.release_admission(preserve_primary_error=True)
+                self._training_jobs.release(job_id)
 
     def dispersion_job(self, job_id: str) -> JobSnapshot:
         """Return a dispersion-estimation job, 404ing other job types."""
@@ -948,11 +983,6 @@ class TrainService:
     ) -> IsolatedSupervisorThread | None:
         stored_job = self._store.require_job(job_id)
         start_time, timeout_seconds = _worker_timing(stored_job, job_id=job_id)
-        self._training_jobs.register_latest(
-            (_DISPERSION_JOB_TYPE, job_id),
-            job_id,
-            execution_token=execution_context.cancellation_token,
-        )
         launch_cleanup = self._parent_worker_cleanup(
             job_id,
             execution_context=execution_context,
@@ -1453,7 +1483,7 @@ class TrainService:
             return
 
         try:
-            effective_rows = row_limit or (total_source_rows or 0)
+            effective_rows = _training_rows(total_source_rows, row_limit)
             vram_check = _check_gpu_vram(
                 effective_rows,
                 probe_columns,

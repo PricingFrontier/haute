@@ -5,6 +5,7 @@ import { resolve } from "node:path"
 import { expect, test, type Locator, type Page } from "@playwright/test"
 
 import { dispatchAppShortcut, dispatchNodeDoubleClick } from "./browserInteractions"
+import { scoreSavedModel } from "./modelScoring"
 import { e2eProjectRoot, resetE2eProject, unsetWorkingBranch } from "./projectIsolation"
 
 const ratingDir = resolve(e2eProjectRoot, "rating")
@@ -103,6 +104,12 @@ async function trainFamilyAndSaveModel(
   await expect(
     page.getByText(/Model trained - results in preview panel below/i),
   ).toBeVisible({ timeout: 120_000 })
+  await saveModelFile(page, name, suffix)
+}
+
+/** Save the trained model on the open modelling node to `rating/files/models/<name><suffix>`. */
+async function saveModelFile(page: Page, name: string, suffix: string): Promise<void> {
+  const panes = page.getByRole("tablist", { name: "Modelling panes" })
   await panes.getByRole("tab", { name: "Export", exact: true }).click()
   const modelFilePath = page.getByLabel("Filename or path *")
   await modelFilePath.fill(name)
@@ -145,7 +152,7 @@ test.describe("core browser flows", () => {
     await expect(nodeProperties.getByText(/\(raw_rows\)/i)).toBeVisible()
   })
 
-  test("runs a real modelling training job, keeps results when switching panels, and saves the model to a file", async ({ page }) => {
+  test("runs a real modelling training job, keeps results when switching panels, saves the model to a file, and scores it", async ({ page }) => {
     test.slow()
 
     await page.goto("/")
@@ -200,17 +207,11 @@ test.describe("core browser flows", () => {
     await expect(page.getByText("Model Info")).toBeVisible()
     await expect(page.getByText("Experiment tracking")).toHaveCount(0)
 
-    await modellingPanes.getByRole("tab", { name: "Export", exact: true }).click()
-    const modelFilePath = page.getByLabel("Filename or path *")
-    await modelFilePath.fill("browser_model")
-    await modelFilePath.press("Enter")
-    await expect(page.getByText("Destination: rating/files/models/browser_model.cbm")).toBeVisible()
-    await page.getByRole("button", { name: "Save model to file" }).click()
-    await expect(page.getByText("Saved model to rating/files/models/browser_model.cbm")).toBeVisible()
-    await expect(page.getByText("Feature contract: rating/files/models/browser_model.feature_contract.json")).toBeVisible()
+    await saveModelFile(page, "browser_model", ".cbm")
+    await scoreSavedModel(page, "browser_model.cbm")
   })
 
-  test("configures a GLM through the terms pane and trains it", async ({ page }) => {
+  test("configures a GLM through the terms pane, trains it, and scores it", async ({ page }) => {
     test.slow()
     await page.goto("/")
 
@@ -258,14 +259,17 @@ test.describe("core browser flows", () => {
     ).toBeVisible()
     await expect(page.getByText("I(mileage ** 2)")).toBeVisible()
     await expect(page.getByText("channel[T.direct]:bs(mileage, 1/9, k)")).toBeVisible()
+    await saveModelFile(page, "browser_glm", ".rsglm")
+    await scoreSavedModel(page, "browser_glm.rsglm")
   })
 
-  test("trains an XGBoost node and saves its model file", async ({ page }) => {
+  test("trains an XGBoost node, saves its model file, and scores it", async ({ page }) => {
     test.slow()
     await trainFamilyAndSaveModel(page, "xgboost", { num_boost_round: 20, eta: 0.3, max_depth: 3 }, ".ubj")
+    await scoreSavedModel(page, "browser_xgboost.ubj")
   })
 
-  test("trains a LightGBM node and saves its model file", async ({ page }) => {
+  test("trains a LightGBM node, saves its model file, and scores it", async ({ page }) => {
     test.slow()
     await trainFamilyAndSaveModel(
       page,
@@ -273,9 +277,10 @@ test.describe("core browser flows", () => {
       { num_iterations: 20, learning_rate: 0.3, num_leaves: 7, min_data_in_leaf: 3 },
       ".lgbm",
     )
+    await scoreSavedModel(page, "browser_lightgbm.lgbm")
   })
 
-  test("trains a t-boost node, saves its model file, and reads its rating tables", async ({ page }) => {
+  test("trains a t-boost node, saves its model file, reads its rating tables, and scores it", async ({ page }) => {
     test.slow()
     // The browser project trains on 30 rows: with no validation and t-boost's own
     // holdout off, the one fit keeps every round and so holds tables to read.
@@ -292,9 +297,10 @@ test.describe("core browser flows", () => {
     await expect(page.getByRole("img", { name: /^Table for / }).or(
       page.getByRole("table", { name: /^Table for / }),
     ).first()).toBeVisible()
+    await scoreSavedModel(page, "browser_tboost.tboost")
   })
 
-  test("chooses an EBM interaction, trains it, and reads the interaction surface", async ({ page }) => {
+  test("chooses an EBM interaction, trains it, reads the interaction surface, and scores it", async ({ page }) => {
     test.slow()
     addModellingNode("browser_ebm", "ebm", { max_rounds: 40, interactions: [] })
     await page.goto("/")
@@ -325,6 +331,8 @@ test.describe("core browser flows", () => {
     await expect(
       page.getByRole("table", { name: "Interaction surface for channel & mileage" }),
     ).toBeVisible()
+    await saveModelFile(page, "browser_ebm", ".ebm")
+    await scoreSavedModel(page, "browser_ebm.ebm")
   })
 
   test("persists node edits through save and reload", async ({ page }) => {

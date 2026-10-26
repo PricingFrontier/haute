@@ -38,6 +38,7 @@ function makeData(overrides: Partial<ModellingPreviewData> = {}): ModellingPrevi
     jobId: "job-123",
     nodeLabel: "Model Node",
     configHash: "abc123",
+    elapsedSeconds: null,
     ...overrides,
   }
 }
@@ -57,6 +58,12 @@ describe("ModellingPreview", () => {
     fireEvent.click(screen.getByRole("button", { name: "Use best as fixed parameters" }))
     await answerQuestion("confirm")
     expect(config()).toEqual({ params: tuning.final_params })
+  })
+
+  it("shows a completed result's own elapsed time (FMOU-R01)", () => {
+    const result = makeTrainResult({ tuning: makeTuningReport() })
+    render(<ModellingPreview data={makeData({ result, elapsedSeconds: 42.4 })} nodeId="n1" />)
+    expect(screen.getByText(/42.4s elapsed/)).toBeInTheDocument()
   })
 
   it("renders node label", () => {

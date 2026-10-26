@@ -557,12 +557,14 @@ def safe_joblib_load(path: str | Path) -> Any:
     return restricted_joblib_load(validate_project_path(path))
 
 
-def restricted_joblib_load(path: str | Path) -> Any:
+def restricted_joblib_load(path: str | Path, *, offset: int = 0) -> Any:
     """Deserialize a joblib file through the class allowlist, wherever it lives.
 
     :func:`safe_joblib_load` without the project-root check, for model files
     Haute's own loaders locate (training outputs, the MLflow artifact cache, an
     MLflow pyfunc package), which need not sit under the working directory.
+    The joblib stream starts *offset* bytes into the file (an ``.ebm`` file's
+    record comes first).
     """
     validated = Path(path).resolve()
 
@@ -595,6 +597,7 @@ def restricted_joblib_load(path: str | Path) -> Any:
 
     filename = str(validated)
     with open(validated, "rb") as raw_file:
+        raw_file.seek(offset)
         with validate_fileobject_and_memmap(raw_file, filename, None) as (
             file_object,
             mmap_mode,

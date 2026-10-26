@@ -43,7 +43,11 @@ def _clean_cache():
 
 
 def _fake_load_local(
-    path: str, task: str = "regression", *, source: str | None = None
+    path: str,
+    task: str = "regression",
+    *,
+    contract_path: str | None = None,
+    source: str | None = None,
 ) -> ScoringModel:
     """Loader stub whose model identity is the artifact file's bytes."""
     payload = Path(path).read_bytes().decode()
@@ -57,6 +61,19 @@ def _fake_load_local(
 def _write_artifact(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
+
+
+def _write_logged_contract(tmp_path: Path) -> None:
+    """Cache the contract the run logged beside the model, as a preview leaves it."""
+    _write_artifact(
+        _artifact_cache_path(
+            tmp_path / ".cache" / "models",
+            resolve_backend("").digest,
+            RUN_ID,
+            "model.feature_contract.json",
+        ),
+        b"{}",
+    )
 
 
 def _bump_mtime(path: Path) -> None:
@@ -86,6 +103,7 @@ class TestFastPathArtifactPerturbation:
             ARTIFACT,
         )
         _write_artifact(local, b"weights-v1")
+        _write_logged_contract(tmp_path)
 
         first = self._load()
         assert first.raw_model == "model:weights-v1"
@@ -111,6 +129,7 @@ class TestFastPathArtifactPerturbation:
             ARTIFACT,
         )
         _write_artifact(local, b"weights-v1")
+        _write_logged_contract(tmp_path)
 
         first = self._load()
         with patch(

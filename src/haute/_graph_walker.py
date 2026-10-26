@@ -369,6 +369,8 @@ class _WalkProjection:
     api_port_columns: Mapping[str, Mapping[str, frozenset[str] | None]]
     strategy_required: Mapping[str, set[str] | projection_planner.AllExceptColumns]
     boundary_operators: Mapping[str, str]
+    optional_columns: frozenset[str] = frozenset()
+    """Demanded columns a parent may lack (``ProjectionPlan.optional_columns``)."""
 
 
 @dataclass(slots=True)
@@ -863,6 +865,7 @@ class _Walk:
             ),
             strategy_required=planning_required,
             boundary_operators=operators,
+            optional_columns=plan.optional_columns,
         )
 
     def _plan_display_projection(self) -> _WalkProjection:
@@ -911,6 +914,7 @@ class _Walk:
                 relevant_edges=self.graph_plan.relevant_edges,
                 submodels=self.graph.submodels,
             ),
+            optional_columns=plan.optional_columns if plan is not None else frozenset(),
         )
 
     def _plan_strategy(
@@ -1138,6 +1142,7 @@ class _Walk:
     def _read_seed(self, node_id: str, seed: _Frame) -> _NodeFrame:
         """A seed's frame is its leased generation: nothing is built or checked for it."""
         self.column_cache[(node_id, None)] = _columns_of(seed)
+        self._restore_full_term(node_id)
         if not self.display:
             logger.info("lazy_seed_hit", node_id=node_id)
             if self.context is not None:
@@ -1156,6 +1161,17 @@ class _Walk:
         )
         names = self._describe(node_id, node, seed, seed, seeded=True) if self.display else None
         return _NodeFrame(frame=seed, boundary=boundary, seeded=True, output_names=names)
+
+    def _restore_full_term(self, node_id: str) -> None:
+        """A seeded Model Score says what its scoring filled, though nothing rescores it."""
+        if self.plan is None or self.context is None:
+            return
+        facts = self.plan.seed_full_term(node_id)
+        if facts is not None:
+            column, rows, empty, missing = facts
+            self.context.provenance.full_term_tally(node_id).record(
+                column, rows=rows, empty=empty, missing=missing
+            )
 
     def _stage_scored_capture(self, node_id: str) -> NodeSnapshotArtifact | None:
         """A batch Model Score whose output is its scored file writes it into its capture.
@@ -1380,6 +1396,8 @@ class _Walk:
         schema_columns = lazy_frame.collect_schema().names()
         missing = set(demand) - set(schema_columns)
         required = set(demand) if runtime_demand is not None else self._run_demand(edge)
+        # A column some node reads only where it exists is dropped, not required.
+        required -= self.projection.optional_columns
         if missing & required:
             raise ContractMismatchError(
                 "Columns required by a projection contract are missing from the parent frame.",

@@ -151,7 +151,8 @@ async def read_limited_json_body(
 
     try:
         return json.loads(b"".join(chunks))
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        # A body that is not UTF-8 is no more JSON than malformed text.
         raise RequestBodyParseError(operation=operation, reason="invalid_json") from exc
 
 

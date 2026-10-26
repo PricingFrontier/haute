@@ -28,7 +28,6 @@ const OUTPUT_COMMON_KEYS = [
   "inputMapping",
   "selected_columns",
   "column_renames",
-  "categorical_levels",
   "contract",
 ] as const
 

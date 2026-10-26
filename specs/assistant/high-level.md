@@ -1746,8 +1746,8 @@ of `src/haute/execution.py::dataframe_graph_input_identity` over the check's
 lineage under that scenario, which covers the input file signatures, published
 snapshot generation pointers, a file-sourced Apply Optimisation artifact and the
 preamble fingerprint that execution caches already sign, together with the
-identity of each local Model Scoring node's cached model file and an EBM's
-cached contract, which that identity does not sign; `freshness_tokens`, the
+identity of each local Model Scoring node's cached model file and the contract its
+run logged (or the record that it logged none), which that identity does not sign; `freshness_tokens`, the
 native revision or stat token of every file the source generation signs, which
 reading never touches a file's content, a snapshot-backed input's original
 source file included beside its generation pointer while that file exists (a
@@ -1770,7 +1770,7 @@ graph digest and the scenario they record equal those of the graph it shows. A
 scenario mismatch hides them with a note naming the checked scenario, because
 they describe another branch; within the same scenario, a changed or missing
 freshness token (a refreshed input, an edited or removed source file, a
-replaced model file or EBM contract) or a
+replaced model file or its contract) or a
 changed identity component (a destination moved to another tracking server or
 local folder while the old cached files stay untouched) keeps them visible,
 labelled as computed from earlier inputs. A change
@@ -1803,8 +1803,8 @@ offending node of the lineage in topological order, ties broken by node id:
    or an Apply Optimisation node whose artifact is not a local file. A Model
    Scoring node is local when it names an MLflow run (`sourceType` `run`) with a
    `run_id` and an `artifact_path` whose flavor loads from one file (not a
-   `pyfunc` directory), and that file, with an EBM's contract file, exists in the
-   disk model cache for the node's resolved destination: the files the preview's
+   `pyfunc` directory), and that file, with the contract its run logged (or the record
+   that it logged none), exists in the disk model cache for the node's resolved destination: the files the preview's
    fast path in `src/haute/_mlflow_io.py` loads with no tracking-server,
    registry or download call. A registered model (a `version` or `alias` the
    registry resolves on every load) and a `pyfunc` artifact are never local; a

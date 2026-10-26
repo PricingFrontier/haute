@@ -281,14 +281,17 @@ describe("ModelScoreEditor", () => {
 
   it("shows the server's refusal for a file the node cannot score", async () => {
     discovery.inspectModelFile.mockRejectedValue(
-      new Error("CatBoost model 'ext.cbm' does not record whether it was trained with an offset"),
+      new Error(
+        "The feature contract of CatBoost model 'ext.cbm' names offset column 'exposure' " +
+          "but not how it enters the model (offset_link)",
+      ),
     )
     render(
       <ModelScoreEditor {...defaultProps()} config={{ sourceType: "file", model_path: "ext.cbm" }} />,
     )
 
     expect(await screen.findByTestId("model-file-error")).toHaveTextContent(
-      "does not record whether it was trained with an offset",
+      "names offset column 'exposure' but not how it enters the model",
     )
     expect(screen.queryByTestId("model-score-recorded-task")).toBeNull()
   })

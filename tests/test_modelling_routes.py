@@ -22,7 +22,6 @@ from haute.projection import ProjectionRequest, plan
 from haute.routes._train_service import (
     TrainService,
     _clamp_row_limit,
-    _declared_categorical_levels_for_training,
     _friendly_error,
     _training_required_columns_by_node,
     _validate_glm_config_values,
@@ -244,55 +243,6 @@ def _inline_route_service(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(service._supervisor, "launch_protocol", capture_launch)
     monkeypatch.setattr("haute.routes.modelling._train_service", service)
     return service, launched
-
-
-class TestTrainingCategoricalLevelDeclarations:
-    def test_collects_source_declared_levels_through_transforms(self):
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "src",
-                        "data": {
-                            "label": "src",
-                            "nodeType": "dataInput",
-                            "config": make_file_input_config(
-                                "quotes.csv",
-                                categorical_levels={"region": ["north", "south"]},
-                            ),
-                        },
-                    },
-                    {
-                        "id": "prep",
-                        "data": {
-                            "label": "prep",
-                            "nodeType": "polars",
-                            "config": {"code": "df = df"},
-                        },
-                    },
-                    {
-                        "id": "train",
-                        "data": {
-                            "label": "train",
-                            "nodeType": "modelling",
-                            "config": {"target": "y", "algorithm": "catboost"},
-                        },
-                    },
-                ],
-                "edges": [
-                    {"id": "e1", "source": "src", "target": "prep"},
-                    {"id": "e2", "source": "prep", "target": "train"},
-                ],
-            }
-        )
-
-        levels = _declared_categorical_levels_for_training(
-            graph,
-            "train",
-            graph.node_map["train"].data.config,
-        )
-
-        assert levels == {"region": ["north", "south"]}
 
 
 def _xgboost_gpu_graph(data_path: str) -> dict:
@@ -2087,6 +2037,31 @@ class TestEstimateEndpoint:
         assert data.get("gpu_vram_estimated_mb") is not None
         assert data.get("gpu_warning") is not None
 
+    def test_estimate_sizes_gpu_vram_at_the_rows_training_uses(self, client, training_data):
+        """FMOU-R01: a row limit below the total sizes VRAM at the limited rows, and says so."""
+        from haute.routes import modelling
+
+        graph = _make_modelling_graph(
+            training_data,
+            params=_fast_training_params(task_type="GPU"),
+        )
+        for node in graph["nodes"]:
+            if node["id"] == "train":
+                node["data"]["config"]["row_limit"] = 10
+        with (
+            patch("haute._host_memory.available_vram_bytes", return_value=10**12),
+            patch(
+                "haute.routes.modelling._check_gpu_vram", wraps=modelling._check_gpu_vram
+            ) as vram_check,
+        ):
+            resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["total_rows"] > 10
+        assert vram_check.call_args.args[0] == 10
+        assert data["gpu_vram_rows"] == 10
+        assert data["gpu_vram_estimated_mb"] is not None
+
     def test_estimate_xgboost_gpu_vram_path(self, client, training_data):
         graph = _xgboost_gpu_graph(training_data)
         with patch("haute._host_memory.available_vram_bytes", return_value=1):
@@ -2238,10 +2213,12 @@ class TestEstimateEndpoint:
                     "training_mb": None,
                     "bytes_per_row": None,
                     "gpu_vram_estimated_mb": 12.0,
+                    "gpu_vram_rows": 100,
                     "unavailable": {"reason": "schema_unresolvable", "blocking_node_id": None},
                 },
                 "no GPU VRAM check",
             ),
+            ({"gpu_vram_estimated_mb": 12.0}, "states the rows it is sized at"),
             (
                 {
                     "estimated_mb": None,
@@ -4032,6 +4009,7 @@ class TestTrainingSinkProjection:
         service, launched = _inline_sink_service(monkeypatch)
 
         response = service.start_dispersion_estimate(body)
+        service._join_preparation(response.job_id)
         for thread in launched:
             thread.join(timeout=10)
 
@@ -4422,19 +4400,16 @@ class TestDispersionErrorPaths:
         body = DispersionEstimateRequest.model_validate(
             {"graph": graph, "node_id": "train", "param": "theta"}
         )
-        with (
-            patch.object(
-                TrainService,
-                "_execute_and_sink",
-                side_effect=HTTPException(status_code=422, detail="missing column"),
-            ),
-            pytest.raises(HTTPException) as exc_info,
+        with patch.object(
+            TrainService,
+            "_execute_and_sink",
+            side_effect=HTTPException(status_code=422, detail="missing column"),
         ):
-            service.start_dispersion_estimate(body)
-        assert exc_info.value.status_code == 422
-        (job_id,) = store.list_jobs()
-        job = store.require_job(job_id)
+            response = service.start_dispersion_estimate(body)
+            service._join_preparation(response.job_id)
+        job = store.require_job(response.job_id)
         assert job["status"] == "contract_error"
+        assert job["http_status_code"] == 422
         assert "missing column" in job["message"]
 
     def test_start_keeps_only_role_columns_because_glm_ignores_catboost_levers(
@@ -4491,6 +4466,7 @@ class TestDispersionErrorPaths:
             patch.object(service, "_launch_dispersion_background", return_value=object()),
         ):
             response = service.start_dispersion_estimate(body)
+            service._join_preparation(response.job_id)
 
         assert response.status == "started"
         assert captured["project_to_keep_columns"] is False
@@ -4504,19 +4480,20 @@ class TestDispersionErrorPaths:
         body = DispersionEstimateRequest.model_validate(
             {"graph": graph, "node_id": "train", "param": "theta"}
         )
-        with (
-            patch.object(
-                TrainService,
-                "_execute_and_sink",
-                side_effect=RuntimeError("sink exploded"),
-            ),
-            pytest.raises(RuntimeError),
+        with patch.object(
+            TrainService,
+            "_execute_and_sink",
+            side_effect=RuntimeError("sink exploded"),
         ):
-            service.start_dispersion_estimate(body)
-        (job_id,) = store.list_jobs()
-        job = store.require_job(job_id)
+            response = service.start_dispersion_estimate(body)
+            service._join_preparation(response.job_id)
+        job = store.require_job(response.job_id)
         assert job["status"] == "error"
-        assert "sink exploded" in job["message"]
+        # Curated as training's are: the raw text stays in the diagnostic field.
+        assert job["message"].startswith("Dispersion estimation of ")
+        assert "RuntimeError" in job["message"]
+        assert "sink exploded" not in job["message"]
+        assert "sink exploded" in job["error"]
 
     def test_start_maps_memory_limit_to_507(self, nb_training_data):
         from haute._execution_admission import ExecutionAdmissionError
@@ -4535,14 +4512,101 @@ class TestDispersionErrorPaths:
             rss_at_admission_bytes=2_000,
             reason="over budget",
         )
+        with patch.object(TrainService, "_execute_and_sink", side_effect=admission_error):
+            response = service.start_dispersion_estimate(body)
+            service._join_preparation(response.job_id)
+        job = store.require_job(response.job_id)
+        assert job["status"] == "memory_limited"
+        assert job["http_status_code"] == 507
+
+    def test_a_failure_before_admission_is_curated_and_frees_the_job(self, nb_training_data):
+        from haute.schemas import DispersionEstimateRequest
+
+        graph = _make_negbinomial_graph(nb_training_data)
+        store, service = self._service()
+        body = DispersionEstimateRequest.model_validate(
+            {"graph": graph, "node_id": "train", "param": "theta"}
+        )
+        from haute.routes import _training_lifecycle
+
+        admitted: list[str] = []
+        admit = _training_lifecycle.create_admitted_execution_context
+
+        def recording(**kwargs: Any) -> Any:
+            admitted.append(kwargs["operation"])
+            return admit(**kwargs)
+
         with (
-            patch.object(TrainService, "_execute_and_sink", side_effect=admission_error),
-            pytest.raises(HTTPException) as exc_info,
+            patch.object(service, "_estimate_ram", side_effect=RuntimeError("probe exploded")),
+            patch.object(_training_lifecycle, "create_admitted_execution_context", recording),
         ):
-            service.start_dispersion_estimate(body)
-        assert exc_info.value.status_code == 507
-        (job_id,) = store.list_jobs()
-        assert store.require_job(job_id)["status"] == "memory_limited"
+            response = service.start_dispersion_estimate(body)
+            service._join_preparation(response.job_id)
+
+        job = store.require_job(response.job_id)
+        assert job["status"] == "error"
+        assert job["message"].startswith("Dispersion estimation of ")
+        assert "probe exploded" in job["error"]
+        assert "dispersion_estimate" not in admitted
+        assert service._training_jobs.cancel(response.job_id) is False
+
+    def test_start_returns_the_job_before_preparation_and_cancel_reaches_it(self, nb_training_data):
+        """The id comes back at once; cancelling stops preparation and frees its slot."""
+        import threading
+
+        from haute.schemas import DispersionEstimateRequest
+
+        graph = _make_negbinomial_graph(nb_training_data)
+        store, service = self._service()
+        body = DispersionEstimateRequest.model_validate(
+            {"graph": graph, "node_id": "train", "param": "theta"}
+        )
+        released: list[bool] = []
+        tokens: list[object] = []
+
+        def admitted(**kwargs: object) -> ExecutionContext:
+            if kwargs["operation"] != "dispersion_estimate":
+                # The synchronous input-schema gate admits its own context.
+                return ExecutionContext(
+                    operation=str(kwargs["operation"]), profile=ExecutionProfile.TRAINING_PREP
+                )
+            tokens.append(kwargs["cancellation_token"])
+            return ExecutionContext(
+                operation="dispersion_estimate",
+                profile=ExecutionProfile.TRAINING_PREP,
+                cancellation_token=kwargs["cancellation_token"],  # type: ignore[arg-type]
+                admission_release=lambda: released.append(True),
+            )
+
+        preparation_entered = threading.Event()
+        release_preparation = threading.Event()
+
+        def blocked_sink(*_args: object, execution_context: ExecutionContext, **_kwargs: object):
+            preparation_entered.set()
+            assert release_preparation.wait(timeout=5)
+            execution_context.checkpoint(label="dispersion_materialisation")
+            raise AssertionError("cancelled materialisation continued")
+
+        with (
+            patch.object(service, "_estimate_ram", return_value=_ram_estimate()),
+            patch(
+                "haute.routes._training_lifecycle.create_admitted_execution_context",
+                side_effect=admitted,
+            ),
+            patch("haute.routes._training_lifecycle.bind_running_execution_metrics_publisher"),
+            patch.object(service, "_execute_and_sink", side_effect=blocked_sink),
+        ):
+            response = service.start_dispersion_estimate(body)
+            assert response.status == "started"
+            assert preparation_entered.wait(timeout=5)
+            assert service.cancel_dispersion(response.job_id)["status"] == "cancelled"
+            assert tokens and tokens[0].cancelled  # type: ignore[attr-defined]
+            release_preparation.set()
+            service._join_preparation(response.job_id)
+
+        assert store.require_job(response.job_id)["status"] == "cancelled"
+        assert released == [True]
+        assert service._training_jobs.cancel(response.job_id) is False
 
     def test_dispersion_timeout_marks_the_job_timed_out_and_late_completion_cannot_revive_it(
         self, client, nb_training_data, monkeypatch
@@ -4599,6 +4663,7 @@ class TestDispersionErrorPaths:
             patch("haute.routes._training_lifecycle._run_dispersion_process_job", standin_worker),
         ):
             resp = service.start_dispersion_estimate(body)
+            service._join_preparation(resp.job_id)
 
         assert resp.status == "started"
         job_id = resp.job_id
@@ -5060,3 +5125,17 @@ class TestClearModelCacheDirect:
             mock.assert_called_once_with("run_xyz")
             assert result.removed == 2
             assert result.run_id == "run_xyz"
+
+
+def _ram_estimate() -> RamEstimate:
+    """A RAM estimate that limits nothing."""
+    return RamEstimate(
+        safe_row_limit=None,
+        total_rows=100,
+        estimated_bytes=1_000,
+        available_bytes=10**9,
+        bytes_per_row=10.0,
+        was_downsampled=False,
+        warning=None,
+        probe_columns=3,
+    )

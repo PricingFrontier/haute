@@ -207,7 +207,12 @@ strip; it never falls through to CatBoost. Pane ownership:
   CatBoost has no separate task
   selector: choosing a loss derives and stores its regression/classification task, every supported
   loss remains visible, and metrics that are incompatible with the selected loss stay visible but
-  disabled. Selecting Tweedie directly reveals its variance-power slider; when no prior value is
+  disabled. Both families' metric pickers read one table
+  (`frontend/src/panels/modelling/metricOptions.ts`): each metric measures a regression or a
+  classification, and Tweedie deviance, measured at the model's own variance power, is offered
+  only for a Tweedie loss or family. Choosing a loss or a GLM family writes the metrics the
+  backend defaults to for that objective (`effectiveMetrics`), so a Gamma GLM headlines Gamma
+  deviance. Selecting Tweedie directly reveals its variance-power slider; when no prior value is
   stored, that selection writes the displayed 1.5 midpoint in the same update instead of showing
   an intermediate required-value warning action. It also shows the selected algorithm as read-only
   context. The gateway may set the algorithm only while it is unset; after selection, neither this
@@ -254,7 +259,9 @@ strip; it never falls through to CatBoost. Pane ownership:
   `one_hot_max_size: 10`, visible and editable in that JSON; Haute adds no hidden default, and
   nodes created earlier keep their parameters. A syntactically
   valid top-level object updates its corresponding config automatically, except that a
-  fixed-parameter object containing the Train-owned `task_type` key is rejected. Invalid,
+  fixed-parameter object containing the Train-owned `task_type` key, or a key the backend's
+  CatBoost descriptor reserves (its loss, metric, seed and training-file keys, read from
+  `algorithmCapabilities.json`), is rejected. Invalid,
   non-object, or reserved-key drafts remain local for that node and contribute only to the
   ordinary click-time Train validation banner while their strategy is selected. This preserves
   the complete CatBoost parameter surface without duplicating the algorithm library's evolving
@@ -286,7 +293,8 @@ strip; it never falls through to CatBoost. Pane ownership:
   the server can train on a CUDA GPU, otherwise disabled beside the server's reason, and
   always switchable back to CPU), row
   limit beside the RAM/VRAM estimate it modulates (an estimate the server cannot size
-  shows its reason in place of the missing figures, never a memory verdict),
+  shows its reason in place of the missing figures, never a memory verdict; the VRAM figure
+  is rescaled from the server's `gpu_vram_rows` to the rows training will use),
   staleness banner, Train/Cancel actions, click-time validation banner, live progress, completion
   badge and error card. Its read-only run summary names, for a CatBoost model whose selected
   features include String or Categorical columns, their encoding: "One-hot up to N levels,
@@ -355,7 +363,8 @@ so the diagnostics are in-sample, the validation fit's selection metrics (the me
 metric) lead instead, labelled "Validation, N rows" for holdout or "Validation (K-fold mean),
 N rows" for cross-validation, with the in-sample diagnostics beneath; a run without validation
 is unchanged. Then come the selection score and variability, baseline improvement, winning/final parameters,
-fit count/elapsed time and a bounded top-trial table. **Use best as fixed
+fit count/elapsed time (the completed job's own, from its terminal status, never a later
+run's clock) and a bounded top-trial table. **Use best as fixed
 parameters** asks for confirmation, atomically writes the reported fixed-parameter
 projection and disables tuning; an asynchronous result never mutates node config
 automatically.
@@ -629,8 +638,9 @@ this discrete solve a positive λ can sit beside positive slack.
   capability table to its word in that description, so a new family fails it until the
   description names it.
 - A classification objective on a target that is neither Boolean nor 0/1 shows a positive-class
-  field. It is required for a text target and optional for an integer target, whose value is
-  saved as a number. Predictions above 0.5 are labelled with the positive class.
+  field. It is required for a text target, and the Train guard refuses a text target without it;
+  it is optional for an integer target, whose value is saved as a number. Predictions above 0.5
+  are labelled with the positive class.
 - Every family but the GLM shares the Target, Features and Parameters panes and the JSON
   parameter editor (`usesSharedPanes`). An EBM's Features pane adds a pairwise-interaction
   control: "Let EBM choose" writes a count to `params.interactions`, "Choose pairs" a list of

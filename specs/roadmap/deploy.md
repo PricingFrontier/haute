@@ -13,11 +13,7 @@ MLflow target and the impact analysis. Current behaviour is specified in
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| DEP-R05 | Planned | P1 | Flat Quote Input uses checked manifest types; container framing errors return 422, and MLflow's public signature boundary is explicit. |
-| DEP-R06 | Planned | P1 | The Databricks model installs a target-compatible lock for the validated scoring runtime and every bundled engine. |
-| DEP-R07 | Planned | P1 | Every MLflow-sourced Model Score ships the feature contract its training run logged, or the deploy refuses. |
-| DEP-R08 | Planned | P1 | The MLflow target serves the version its own log call registered, treats a 401 as a credential problem, and shares one schema default. |
-| DEP-R09 | Planned | P2 | The container image installs a recorded dependency closure resolved for its target Python and platform. |
+| DEP-R09 | Planned | P2 | The container image and the Databricks model install a recorded dependency closure resolved for their target Python and platform. |
 | DEP-R10 | Planned | P2 | `haute.toml` values are typed at load, a malformed `[test_quotes] dir` is refused, and an unknown override key raises. |
 | DEP-R11 | Planned | P2 | Impact analysis fails on a row-count mismatch instead of pairing the wrong quotes, and a mistyped production URL is not a first deploy. |
 | DEP-R12A | Planned | P2 | Each build owns a fresh directory under the project and ships only its own artefacts. |
@@ -29,153 +25,17 @@ MLflow target and the impact analysis. Current behaviour is specified in
 
 ## Planned improvements
 
-`DEP-R05` to `DEP-R08` protect served results and come first. `DEP-R06` uses the
-target-resolution mechanism in `DEP-R09`; deliver that shared mechanism with it.
-`DEP-R12A` can proceed independently, coordinating edits to shared build code.
+`DEP-R09` locks every target's dependency closure with one resolver. `DEP-R12A` can
+proceed independently, coordinating edits to shared build code.
 
-### DEP-R05 — Served requests typed by the manifest schema
-**Why:** A flat Quote Input's served request is framed by Polars inference from the
-JSON values (`pl.DataFrame(rows)` in the generated `app.py` and `pl.DataFrame(rows,
-schema=None)` in the batch worker), not by the
-`input_schema` the manifest records: `30` and `30.0` give Int64 and Float64, a `null`
-gives a Null column, so a cast to String (`"30"` against `"30.0"`), a Banding level or
-a categorical model feature can differ from the dry run and the test quotes, which read
-the sample file's types. The specification says only that such a request is read "as
-one frame". A request Polars cannot frame at all (a list mixing an integer and a string)
-is answered 500 `deploy_internal_error` after the execution context was admitted, and
-that context is never released. The public MLflow path first enforces the logged
-`ModelSignature`, before `HauteModel.predict` converts the frame: a double signature
-refuses an int64 input in the validation probe. Identical unchecked inference on that
-public path is not established, and a cast inside `predict` cannot repair an earlier
-signature refusal. Polars `cast(strict=True)` also truncates `30.9` to Int64 `30`;
-strict casting alone does not establish lossless validation.
-
-**Plan:** Extract and extend the checked value rules in `_workbench_input._value`
-for reuse by flat Quote Input framing against `input_schema`. Refuse numeric strings,
-booleans in numeric columns, float-to-integer coercion and integer overflow; accept an
-integer in a float column only when the conversion is finite and preserves its exact
-value (test both representable and non-representable integers above 2^53). Preserve
-typed nulls at this input boundary; fitted model contracts can impose stricter null
-rules. Do not infer non-nullability from the sample file. Retain the shared date,
-string and boolean checks and specify the supported dtype mapping before implementation.
-
-Use this validator in the single-quote path, the admitted batch worker and the pyfunc
-request adapter. Preserve MLflow's public signature enforcement and document its
-stricter accepted-input subset; do not relax the signature to promise target parity.
-Keep batch framing inside its bounded worker. A size-capped single quote may be framed
-before admission; any failure after admission must release the context. Catch
-`UnicodeDecodeError` in `read_limited_json_body` as the `invalid_json` envelope. Define
-these rules and each target's error envelope in the deploy specification.
-
-**Acceptance:** Exercise `30`, `30.0`, `30.9`, `"30"`, `true`, null, integer range
-boundaries, integers on both sides of the exact-float boundary and mixed lists against
-each supported dtype through `/quote`, the batch worker and
-`mlflow.pyfunc.load_model(...).predict`. Container `30` for Float64 matches the dry run;
-`30.9` for Int64 is refused without truncation. Container refusals are 422 naming the
-column and leave no admitted context; MLflow signature refusals occur at the public
-boundary and are asserted separately. Accepted equivalent inputs score equally. Typed
-nulls keep the declared dtype; a body that is not UTF-8 is answered 422.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/deploy/_container.py::_generate_app_source` (the generated
-`/quote` route);
-`src/haute/deploy/_batch_scoring.py::score_batch_scoring_request` and
-`::prepare_batch_scoring` (the worker's frame and the schema only the dry run passes);
-`src/haute/deploy/_model_code.py::_request`;
-`src/haute/deploy/_request_limits.py::read_limited_json_body`;
-`src/haute/_workbench_input.py::read_quote` (the typed reader the tables path uses).
-
-### DEP-R06 — The Databricks environment pins the scoring runtime
-**Why:** The pyfunc model's environment pins `haute`, `mlflow` and `polars` and nothing
-else, so the model engines (xgboost, lightgbm, catboost, interpret-core, t-boost,
-rustystats) and pandas and numpy resolve at Model Serving build time within haute's
-dependency ranges, and the served model can load under a different engine release than
-the one that trained it. The container target pins each bundled artefact's engine for
-exactly this reason: a different engine version can fail to load the model or change
-its predictions. An importable model alone does not establish equivalent premiums.
-
-**Plan:** Build `_pip_requirements` with the shared target resolver in `DEP-R09`, using
-Model Serving's Linux platform and the conda environment's Python version. Preserve
-this target's existing full Haute dependency profile; sharing a resolver does not mean
-sharing the container's minimal root set. Include the
-pyfunc imports (`mlflow`, `pandas`, `numpy`), Haute's required runtime and each bundled
-engine, constrained to the validated deploying versions where available. pandas is
-already a direct Haute dependency, but the container list pins it only for pickle
-artefacts; copying that list alone is insufficient. Resolve platform-specific
-dependencies for the target and fail clearly if the pinned runtime is incompatible.
-
-**Acceptance:** The logged model's `conda_env` names every resolved runtime distribution,
-including pandas and every bundled engine, at its locked version. Install that
-environment on the target Python/platform, run `pip check`, load the logged model and
-score a representative request. Assert the installed versions against the lock;
-a test of the generated package list alone is insufficient.
-
-**Dependencies:** `DEP-R09` supplies the shared target resolver; ship its resolver with
-this package rather than deferring the P1 environment fix.
-
-**Evidence:** `src/haute/deploy/_mlflow.py::_pip_requirements` and `::_conda_env`;
-`src/haute/deploy/_model_code.py`; `pyproject.toml`;
-`src/haute/deploy/_container.py::runtime_versions`, `::_pinned_dockerfile_deps` and
-`::_pinned_extra_dockerfile_deps`.
-
-### DEP-R07 — Every MLflow-sourced model ships its training contract
-**Why:** Training logs a feature contract beside every model artefact, but the bundler
-fetches it from the run only for a family that loads under its contract (EBM) or a
-CatBoost model whose file does not declare its offset; for every other MLflow-sourced
-model it looks for a bare `feature_contract.json` beside the cached download, which
-training never writes, and logs that none was found. The deployed scorer then runs that
-node without a contract, so a served request is checked against the model's own feature
-names only: a dtype or a categorical level that drifted from training is not refused
-at the boundary. The specification says bundling carries each model's feature contract
-and that the scorer binds each model to it exactly as the preview does.
-
-**Plan:** Fetch the run's contract (`_resolve_run_contract`) for every MLflow-sourced
-Model Score and bundle it under the node's contract key; refuse the deploy, naming the
-node and the run, when the run logged none. Make the editor's preview bind the same
-contract so the two keep agreeing.
-
-**Acceptance:** A deployed pipeline with an MLflow-sourced XGBoost model refuses a
-request whose categorical value is outside the training levels with the contract
-mismatch error; a run without a contract fails resolution naming it.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/deploy/_bundler.py::collect_artifacts` and
-`::_bundle_feature_contract`; `src/haute/_mlflow_io.py::_resolve_run_contract` and
-`::_run_contract_artifact`; `src/haute/deploy/_scorer.py::_score_graph_lazy` (the
-contract-less `model_score_fn` branch); `src/haute/modelling/_mlflow_log.py` (the
-contract logged with every candidate).
-
-### DEP-R08 — The MLflow target's version, credential and default
-**Why:** After `mlflow.pyfunc.log_model` the registered version is found by searching the
-registry and taking the maximum, so a concurrent registration of the same Unity Catalog
-model name from another job would be served instead; `log_model` returns the version it
-registered. The connectivity pre-check treats every HTTP error but 403 as "workspace
-reachable", so an expired token (401) passes and fails later inside MLflow with a less
-direct message. `get_deploy_status` defaults the schema to `default` while
-`DatabricksConfig` defaults it to `pricing`.
-
-**Plan:** Read `ModelInfo.registered_model_version` from the log call; treat 401 like
-403; take the schema from the one `DatabricksConfig` default. This P1 prevents serving
-another job's model; it does not decide which concurrent deploy updates an endpoint last.
-
-**Acceptance:** A competing registration between logging and endpoint update does not
-change the served version: it and the deploy result use this call's returned version;
-a 401 from the pre-check fails with the credential message; the two defaults are one
-constant.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/deploy/_mlflow.py::_deploy_to_mlflow`,
-`::_check_databricks_connectivity` and `::get_deploy_status`;
-`src/haute/deploy/_config.py::DatabricksConfig`.
-
-### DEP-R09 — The container's dependency closure is pinned
+### DEP-R09 — Every target's dependency closure is locked
 **Why:** The Dockerfile pins the scoring-runtime distributions and the artefacts' engines
 to the deploying environment's versions, but their transitive dependencies (starlette,
 anyio, h11, typing-extensions, ...) resolve at image build time, so two builds of one
-deploy can differ, against the specification's reproducibility rationale.
+deploy can differ, against the specification's reproducibility rationale. The Databricks
+model's environment pins the same way (haute, mlflow, Polars, pandas, NumPy and each
+bundled engine), and the rest of haute's closure resolves at Model Serving's build within
+haute's ranges, from a host whose platform may not be the target's.
 
 **Plan:** Use one resolver for container, pyfunc and hosted-app dependency locks, with
 explicit root requirements for each target. Preserve the
@@ -208,6 +68,12 @@ another package's missing dependency/version conflict. `pip check` remains appro
 for the full pyfunc/hosted-app profiles, but its non-zero status for these declared
 container omissions is not itself a runtime failure.
 
+For the Databricks model, the logged `conda_env` names every resolved runtime
+distribution at its locked version, resolved for Model Serving's Linux platform and the
+environment's Python; install it on that target, run `pip check`, load the logged model,
+score a representative request and assert the installed versions against the lock (a
+test of the generated package list alone is insufficient).
+
 Compare normalised installed distributions with the lock, accounting explicitly for
 the bundled Haute wheel and base-image tooling. An engine-free pricing pipeline passes
 in the minimal container without installing editor/training stacks; removing a required
@@ -219,7 +85,8 @@ in the target installation, not just identical install command text.
 **Dependencies:** None.
 
 **Evidence:** `src/haute/deploy/_container.py::_generate_dockerfile` and
-`::_pinned_dockerfile_deps`.
+`::_pinned_dockerfile_deps`; `src/haute/deploy/_mlflow.py::_pip_requirements` and
+`::_conda_env`.
 
 Resolver reference: [uv platform-specific resolution](https://docs.astral.sh/uv/concepts/resolution/).
 
@@ -301,7 +168,7 @@ the other's bundle or a user's pre-existing directory. Running from another cwd 
 generated build files under the resolved project. P2 addresses this isolation gap;
 reassess as P1 if shared-checkout concurrent deployment is an advertised workflow.
 
-**Dependencies:** None; coordinate edits to shared build code with `DEP-R05` to
+**Dependencies:** None; coordinate edits to shared build code with `DEP-R09` to
 `DEP-R11` without delaying isolation behind those packages.
 
 **Evidence:** `src/haute/deploy/_container.py::build_and_push_image` and

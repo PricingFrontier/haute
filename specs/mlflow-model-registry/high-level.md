@@ -63,9 +63,12 @@ In scope:
   this component's own dispatch helpers.
 - Preparing an input DataFrame into the shape each flavor's `predict`
   expects (numpy/pandas dtype and categorical handling).
-- Feature-contract validation at score time: presence, relative order,
-  categorical dtype and declared categorical value domains, plus enforcing a model's
-  trained-with offset/exposure column.
+- Feature-contract validation at score time: presence and categorical
+  dtype, plus enforcing a model's trained-with offset/exposure column, and,
+  for a model bound to a feature contract, every feature's dtype against
+  training, the check a deployed bundle runs. A
+  categorical value is never checked: the model scores a value its training rows never
+  held through its own mechanism.
 - Eager (in-memory) and batched (disk, chunked-parquet) scoring, and an
   output/input column write-projection that can prune both to exactly
   what a caller needs.
@@ -135,16 +138,43 @@ Out of scope (owned elsewhere):
 - A loaded model is bound to the feature contract it scores under before
   anything scores it. A contract that records a model identity must describe
   the loaded model. A CatBoost file records no baseline of its own, so its
-  offset must be declared: by the `haute_offset_column` metadata Haute stamps
-  at fit (an empty value declares no offset), or by a contract whose
-  `offset_column` names the column and whose `offset_link` (`log` or
-  `identity`) says how it enters the raw score, or whose `offset_column` is
-  null. A model whose metadata and contract disagree is refused. A run or
-  registered CatBoost model without the metadata and without an explicit
-  contract is bound to the contract the run logged beside it. A CatBoost model
-  with no declaration is refused, never scored from baseline zero, and a
-  declared offset column missing from the scoring input fails before
-  prediction.
+  offset is declared by the `haute_offset_column` metadata Haute stamps at fit
+  (an empty value declares no offset), or by a contract whose `offset_column`
+  names the column and whose `offset_link` (`log` or `identity`) says how it
+  enters the raw score, or whose `offset_column` is null. A model whose
+  metadata and contract disagree is refused. A run or
+  registered native model without an explicit contract is bound to the
+  contract its run logged beside it when the run logged one, so the preview
+  binds what a deployed bundle ships; a model whose run logged none scores
+  against the features its own file names. A CatBoost
+  model with no declaration scores with no offset, the full-policy-term basis
+  a quote is priced on (an exposure of one adds nothing to a log-link model).
+  A declared exposure (a log-link offset) whose column the scoring input lacks,
+  or whose value a row leaves null, scores the same way, for every model family:
+  as an exposure of one. A zero or negative exposure is still refused. An
+  additive (identity-link) offset is a base premium, not an exposure, so it has
+  no full-term value: a missing column, or a null or non-finite value, is
+  refused naming it. Because a renamed exposure column or a join that empties
+  some rows would otherwise annualise them unseen, the Model Score node's
+  preview carries a note (`NodeResult.notes`) naming the exposure column its
+  input lacks, or how many of the rows it scored had none (counted as scoring
+  fills them, so a preview showing only some columns still says so), and a traced row without one
+  says it was priced as a full policy term. Nothing fails, and a deployed quote
+  carries no note.
+- A model trained outside Haute scores like any other, with no contract and no
+  offset: a CatBoost or GLM file describes itself, and an XGBoost (`.ubj`),
+  LightGBM (`.lgbm`) or t-boost (`.tboost`) file without the record Haute
+  writes into it loads from what its library records (features, categorical
+  features and their levels, objective, classes). Two cases cannot be scored
+  and are refused naming the cause: a multi-class or ranking objective, and an
+  XGBoost booster that records no feature names. An XGBoost model must also
+  declare whether it was trained with a margin, because XGBoost scores one
+  from its `base_score` when no margin is supplied and the file cannot tell:
+  by a `haute_offset` attribute stamped on the booster before saving, or by a
+  feature contract. Without either it is refused, naming both. An `.ebm` file without
+  Haute's record is refused too: it is a bare pickle whose `interpret-core`
+  version nothing records, and an EBM logged through MLflow's sklearn flavor
+  scores as a pyfunc directory instead.
 - A file-sourced model is cached in memory by its resolved path, `task` and
   the byte identity of the contract it scores under, gated on the model
   file's freshness token, in the same cache the deploy scorer serves bundled
@@ -203,15 +233,21 @@ Out of scope (owned elsewhere):
   `CatBoostRegressor`, a RustyStats `GLMModel`, or an MLflow
   `PyFuncModel`.
 - Before a prediction is attempted, the input schema is checked against
-  the model's declared features: every feature must be present, in the
-  same relative order the model was trained with (categorical feature
-  indices are positional for CatBoost), with categorical columns
-  presented as non-numeric — and, if the model declares a trained-with
-  offset/exposure column, that column must also be present. Declared categorical
-  domains are then checked against the values in the exact materialised scoring frame.
-  Any of these failing raises before prediction runs; schema-validation results are
-  memoised for repeated model/schema pairs, while value-domain validation still runs
-  for each materialisation because values can change without a schema change.
+  the model's declared features: every feature must be present, with
+  categorical columns presented as non-numeric — and, if the model declares a trained-with
+  additive offset, that column must also be present (a missing exposure scores as a
+  full policy term). A model bound to a
+  feature contract is first checked against it exactly as the deploy scorer checks
+  a request: a feature missing or typed differently from training (integer and
+  float widths collapse, String and Categorical are one) or a declared additive offset
+  column absent is refused with the deploy scorer's message, in the preview, a
+  batch run and the trace alike. Any of these failing raises
+  before prediction runs; schema-validation results are memoised for repeated
+  model/schema pairs. The order the input's columns arrive in never matters: every
+  scoring path selects the model's features by name, in the model's own order, before
+  predicting. A value the training rows never held, or a null they did not hold,
+  is scored by the model's own mechanism and never refused (modelling high-level,
+  "Unseen categorical values").
 - Scoring runs either eagerly (the input is collected once, in memory,
   and predictions are appended to that same materialisation) or in
   batches (the input is written to a temp parquet file and predicted
@@ -222,9 +258,6 @@ Out of scope (owned elsewhere):
   the output write are pruned to that set (plus the model's own features
   and any declared offset column), avoiding materialising columns nobody
   asked for.
-- Live categorical validation materialises only the union of model features,
-  categorical columns, offset handling, and write-projection necessities;
-  unrelated columns in a wide input are not collected for that check.
 - An empty scoring batch produces a typed empty result without scoring a
   synthetic all-null row when the flavor exposes sufficient output metadata.
   CatBoost classification derives hard-label dtype from `classes_`; where a
@@ -304,14 +337,15 @@ Out of scope (owned elsewhere):
   object, still gets a cache hit, and a genuinely evicted contract
   doesn't leave stale validation results pinned forever.
 - **Fail loud on structural mismatches.** CatBoost's categorical feature
-  indices and offset baseline are positional/structural, not named —
-  scoring with reordered features or a missing offset would silently
-  produce a wrong-but-plausible prediction rather than an error. The
-  codebase's stated preference for loud failure over silent fallback is
-  applied deliberately hard here: feature order, categorical dtype, and
-  offset presence are all checked before any `predict()` call, and a
-  multiclass `predict_proba` output is rejected rather than arbitrarily
-  picking one class's column.
+  indices and offset baseline are positional/structural, not named, so the
+  scorer hands every model its features selected by name in the model's own
+  order: a reordered input can never misalign them, and is never refused. A
+  missing feature would silently produce a wrong-but-plausible prediction
+  rather than an error, so feature presence and categorical dtype are checked
+  before any `predict()` call (a missing exposure is not a mismatch: it scores
+  as a full policy term; a missing additive offset is), and a multiclass
+  `predict_proba` output is rejected rather than arbitrarily picking one
+  class's column.
 - **The model family registry lives in its own leaf module.**
   `_model_flavors.py` has no dependency on the rest of `haute` (loaders and
   offset readers are bound lazily by module path), specifically so that
@@ -395,20 +429,19 @@ Out of scope (owned elsewhere):
 - A model file or run artifact whose suffix no family registers:
   `ConfigError` naming the supported suffixes, raised before any download.
 - A CatBoost model whose metadata cannot be read: `ConfigError` naming the
-  model file or run artifact. An unreadable one is never taken to mean the
-  model has no offset, because the model would then score from baseline zero.
-- A CatBoost model whose offset is declared neither by its metadata nor by a
-  contract, a contract that names an offset column without its `offset_link`,
-  or metadata and a contract that disagree on the offset: `ConfigError` naming
-  the model and the remedy (save a contract beside it, or retrain). This holds
-  for file, run and registered sources; a model trained by an earlier Haute
-  without an offset and scored without its contract is refused where it was
-  once scored from baseline zero.
+  model file or run artifact, because a file whose metadata does not read is
+  not one to price from.
+- A contract that names an offset column without its `offset_link` for a
+  CatBoost model whose metadata declares no offset, or metadata and a contract
+  that disagree on the offset: `ConfigError` naming the model and the remedy
+  (save a contract beside it, or retrain). This holds for file, run and
+  registered sources. A CatBoost model whose offset neither its metadata nor a
+  contract declares is not an error: it scores with no offset.
 - A file source whose `model_path` is empty (`IncompleteModelSourceError`),
   resolves outside the project (`RuntimePathOutsideProjectError`), does not
   exist, or has a suffix no family registers; an explicit
-  `feature_contract_path` that does not exist; and an EBM without its
-  contract: each a `ConfigError` naming the file.
+  `feature_contract_path` that does not exist; and an `.ebm` file without the
+  record Haute writes at its head: each a `ConfigError` naming the file.
 - A model artifact that is still corrupt/unloadable after the one bounded
   retry: `RuntimeError` naming the run ID, artifact path, flavor, and the
   last underlying error.
@@ -416,10 +449,10 @@ Out of scope (owned elsewhere):
   model are treated as a programming or library-contract error, not
   corruption — they are never retried and propagate immediately with
   their real stack trace.
-- A scoring input that fails the feature contract (missing features,
-  wrong relative order, a categorical column with numeric dtype, an observed value outside a
-  declared categorical domain, or a missing offset column): `FeatureMismatchError` with the
-  relevant expected/actual context.
+- A scoring input that fails the feature contract (missing features, a
+  categorical column with numeric dtype, or a missing additive offset):
+  `FeatureMismatchError` with the relevant expected/actual context. A categorical
+  value is never such a failure.
 - An unsupported or misspelled scoring flavor reaching `score_frame()`:
   `ConfigError` — never silently treated as pyfunc.
 - A `predict_proba` output representing more than two classes, where only

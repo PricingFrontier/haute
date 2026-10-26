@@ -711,7 +711,6 @@ _UNIVERSAL_CONFIG_FIELD_CLASSIFICATIONS: Mapping[str, CacheConfigFieldClassifica
                 "inputMapping",
                 "selected_columns",
                 "column_renames",
-                "categorical_levels",
                 "contract",
             )
         }

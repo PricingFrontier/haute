@@ -71,7 +71,7 @@ XGBoost, LightGBM, t-boost and EBM it has three sections; the GLM's version is d
 | **Target column** | The column the model predicts. Pick it from the searchable list (**Select target…** until you do). Training is blocked with **Select a target column.** until it is set. |
 | **Objective** | The training loss, one button per loss the family supports (see the table above). Choosing a loss also sets the task (regression or classification) and switches on that loss's usual metrics; clicking the selected loss again clears it. Training is blocked until a loss is chosen, because an unset loss would silently train under the library default. MAE is not offered for t-boost or an EBM. |
 | **Variance power** | Shown for the **Tweedie** loss: a slider with a number box beside it, between 1 (Poisson) and 2 (Gamma), exclusive. A new Tweedie selection starts at 1.5. A saved value outside that range shows **Saved variance power must be greater than 1 and less than 2.** |
-| **Positive class** | Shown for a classification loss when the target is not Boolean: the label the model predicts the probability of. Predictions above 0.5 are labelled with it. For a numeric target the label reads **Positive class (only if the labels are not 0/1)**; for text labels it is required and shows **Choose which label is the positive class.** until set. |
+| **Positive class** | Shown for a classification loss when the target is not Boolean: the label the model predicts the probability of. Predictions above 0.5 are labelled with it. For a numeric target the label reads **Positive class (only if the labels are not 0/1)**; for text labels it is required and shows **Choose which label is the positive class.** until set, and training is blocked until it is. |
 
 Binary classification needs exactly two target classes. A Boolean or 0/1 target is
 positive at `True`/`1`; any other pair needs a **Positive class**. Every family labels a
@@ -82,7 +82,7 @@ prediction positive when its positive-class probability is above 0.5.
 | Field | What it does |
 |---|---|
 | **Weight column (optional)** | A numeric column that weights each row in the loss (for example exposure). **None** leaves rows unweighted. |
-| **Offset column (optional)** | A numeric column the model folds in through its link function. Under a log link (a log-link GLM, or a `Poisson`, `Gamma` or `Tweedie` loss) it is a strictly positive exposure multiplier: 2× exposure gives 2× the expected count, and null, zero, or negative values are refused when training and when scoring. Under any other link it is added to the prediction. A constant column of 1 is the unit basis under a log link. The offset column must be present when the model scores. Different from the weight, which weights the loss. With the **Logloss** loss, XGBoost, LightGBM, t-boost and EBM take no offset: training stops when it starts, asking you to remove the offset column. The info icon beside the label gives a shorter version of this. |
+| **Offset column (optional)** | A numeric column the model folds in through its link function. Under a log link (a log-link GLM, or a `Poisson`, `Gamma` or `Tweedie` loss) it is a strictly positive exposure multiplier: 2× exposure gives 2× the expected count, and null, zero, or negative values are refused when training. When the model scores, a missing exposure column or an empty value is an exposure of one (a full policy term), and zero or negative values are refused. Under any other link it is added to the prediction, and the column must be present, with no empty values, when the model scores. A constant column of 1 is the unit basis under a log link. Different from the weight, which weights the loss. With the **Logloss** loss, XGBoost, LightGBM, t-boost and EBM take no offset: training stops when it starts, asking you to remove the offset column. The info icon beside the label gives a shorter version of this. |
 
 One column plays one role: the target is never offered as the weight or offset, and the
 weight and offset lists hold numeric columns only.
@@ -92,7 +92,8 @@ weight and offset lists hold numeric columns only.
 The evaluation metrics, as toggle buttons: **Gini**, **RMSE**, **MAE**, **MSE**, **R²**,
 **Poisson Deviance**, **Tweedie Deviance**, **Gamma Deviance**, **AUC** and **Logloss**.
 Only the metrics that suit the chosen loss can be switched on: regression losses offer the
-first eight, classification losses **AUC** and **Logloss**. Hovering over a disabled metric
+first eight, classification losses **AUC** and **Logloss**. **Tweedie Deviance** is measured
+at the model's variance power, so only a **Tweedie** loss offers it. Hovering over a disabled metric
 says why (for example **AUC is not available with Poisson**, or **Choose an objective to
 enable compatible metrics**).
 
@@ -112,7 +113,7 @@ A GLM's **TARGET** pane reads **Algorithm Rustystats** and has these controls:
 | **Dispersion theta (required for Neg. Binomial)** | Negative Binomial only: a positive dispersion (variance = mean + mean²/theta). RustyStats refuses to fit without it. Type a value or click **Estimate from data**, which profiles the likelihood on the node's training data. A value of 0 or less shows **Theta must be greater than 0.** |
 | **Weight column (optional)**, **Offset column (optional)** | As above. |
 | **Intercept** | Whether to fit an intercept. Ticked by default. |
-| **Metrics** | **Gini**, **RMSE**, **MAE**, **Poisson Dev.**, **Tweedie Dev.**, **R²**, **AUC** and **Logloss**. |
+| **Metrics** | The same buttons as above, offered by family: **AUC** and **Logloss** for Binomial and Quasi-Binomial, the regression metrics for the others, and **Tweedie Deviance** for Tweedie only. Choosing a family switches on its usual metrics, Gamma deviance for **Gamma**. |
 
 If an estimate fails, the pane shows **Estimation failed:** and the reason.
 
@@ -268,7 +269,8 @@ For CatBoost, GPU training is set in the **TRAIN** pane rather than here.
 
 ??? info "CatBoost parameters"
     Any CatBoost constructor parameter can go in **Parameters JSON**, except the ones Haute
-    sets. The starting keys are:
+    sets: the loss and metric, threads, seed, class order and training-file output. The
+    starting keys are:
 
     | Key | Description |
     |---|---|
@@ -287,8 +289,8 @@ For CatBoost, GPU training is set in the **TRAIN** pane rather than here.
     `max_cat_to_onehot` and `max_cat_threshold`. Aliases such as `learning_rate` or
     `n_estimators` are refused with the canonical name; Haute sets the objective, threads,
     seed, categorical handling and offset. Categories are encoded against the levels the
-    model was trained on, so a value the model never saw fails instead of scoring as
-    missing.
+    model was trained on, and a value the model never saw scores as a missing value (see
+    [Values the model was not trained on](model-score.md#values-the-model-was-not-trained-on)).
 
 ??? info "LightGBM parameters"
     LightGBM trains CPU leaf-wise trees. **Parameters JSON** accepts `num_iterations`,
@@ -334,7 +336,7 @@ For CatBoost, GPU training is set in the **TRAIN** pane rather than here.
     scores the rate times the offset. Under RMSE the offset is added to the prediction as it
     is. Logloss takes no offset, and MAE and CrossEntropy are not available. A categorical
     value the model never saw, such as a make that only appears in the validation rows or
-    arrives after training, never fails unless the node declares that feature's levels (see **In the pipeline file**): t-boost scores it in its pooled rare level, like the levels too thin to model alone (the default level on a feature where nothing was pooled). t-boost scores numeric features as 32-bit floats. The `.tboost` file is t-boost's own JSON model with
+    arrives after training, never fails: t-boost scores it in its pooled rare level, like the levels too thin to model alone (the default level on a feature where nothing was pooled). t-boost scores numeric features as 32-bit floats. The `.tboost` file is t-boost's own JSON model with
     Haute's record in its metadata, so it describes its own inputs and offset, and plain
     t-boost (0.8 or later) can read it too.
 
@@ -354,9 +356,8 @@ For CatBoost, GPU training is set in the **TRAIN** pane rather than here.
     it for you. A monotone-constrained feature cannot take part in an interaction. MAE is
     not available.
 
-    An `.ebm` file is loaded only with the feature contract saved beside it, and only
-    under the exact `interpret-core` version that contract records; upgrading
-    `interpret-core` past a minor version means retraining.
+    An `.ebm` file loads only under the exact `interpret-core` version it records;
+    upgrading `interpret-core` past a minor version means retraining.
 
 **Tune parameters**
 
@@ -584,8 +585,7 @@ project root, and the model's extension (`.cbm`, `.ubj`, `.lgbm`, `.tboost`, `.e
 family) is added if you leave it off. The pane shows the **Destination:** before you save,
 refuses an extension that does not match the model format, and asks before replacing a file
 that already exists (**Replace existing file**). After saving it shows where the model and
-its **Feature contract** went. Keep an `.ebm` file's feature contract beside it: the model
-cannot load without it.
+its **Feature contract** went.
 
 The pane remembers where the result was last logged and saved, including after you reload
 the page while the server still holds the training result. After a server restart the pane
@@ -763,7 +763,6 @@ A Poisson claim-frequency GLM with an exposure offset:
     | `cv_seed` | The GLM penalty's cross-validation seed; the editor writes 42 when you choose a regularisation. |
     | `evaluation.seed` | The split seed; the editor writes 42. |
     | `evaluation.validation.window` | `"expanding"` for time-based cross-validation; the editor sets it. |
-    | `categorical_levels` | Declared category levels for categorical feature columns. They go into the model's feature contract, and scoring refuses a value outside them, for a t-boost model too. |
 
     `feature_columns` and `monotone_constraints` apply to the tree, t-boost and EBM
     families (`feature_weights` to CatBoost only) and are ignored for a GLM, whose features

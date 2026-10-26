@@ -19,7 +19,7 @@ from haute._column_lineage import ColumnLineageAnalysis, analyze_polars_lineage
 from haute._contracts import (
     _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY,
     Contract,
-    get_column_contract,
+    get_node_contract,
 )
 from haute._edge_join import (
     build_edge_join_kwargs,
@@ -672,6 +672,9 @@ class ProjectionPlan:
     materialisation_boundaries: frozenset[str] = frozenset()
     opaque_boundaries: frozenset[str] = frozenset()
     diagnostics: ProjectionDiagnostics = field(default_factory=ProjectionDiagnostics)
+    optional_columns: frozenset[str] = frozenset()
+    """Columns some node reads only where they exist (``Contract.optional_inputs``):
+    demanded so projection keeps them, but an edge whose parent lacks one drops it."""
 
     def __post_init__(self) -> None:
         if not isinstance(self.edge_demands, _EdgeIdentityMapping):
@@ -3270,6 +3273,7 @@ def with_api_input_port_projection_boundaries(
         needed_by_node=MappingProxyType(needed_by_node),
         edge_demands=projection_plan.edge_demands,
         materialisation_boundaries=projection_plan.materialisation_boundaries,
+        optional_columns=projection_plan.optional_columns,
         opaque_boundaries=projection_plan.opaque_boundaries | newly_opaque,
         diagnostics=ProjectionDiagnostics(
             opaque_reasons=MappingProxyType(opaque_reasons),
@@ -3341,7 +3345,7 @@ def _node_column_contract(node: GraphNode, node_type: NodeType, config: dict[str
     error. A refusal that wraps a dependency failure stays internal.
     """
     try:
-        return Contract.from_tuple(get_column_contract(node_type, config))
+        return get_node_contract(node_type, config)
     except HauteError as exc:
         if (
             node_type is not NodeType.MODEL_SCORE
@@ -3422,6 +3426,7 @@ def _pre_post_code_contract(
             contract = Contract(
                 inputs=scorer.inputs | (effective.inputs or frozenset()),
                 outputs=scorer.outputs,
+                optional_inputs=scorer.optional_inputs,
             )
         output_column = node.data.config.get("output_column", "prediction") or "prediction"
         probability = f"{output_column}_proba"
@@ -5235,6 +5240,9 @@ def compute_prepared_plan(
         edge_demands,
         node_reasons=node_reasons,
         edge_reasons=edge_reasons,
+        optional_columns=frozenset().union(
+            *(contract.optional_inputs for contract in effective_contracts.values())
+        ),
     )
 
 
@@ -5248,6 +5256,7 @@ def _freeze_plan(
     *,
     node_reasons: Mapping[str, ProjectionReason] | None = None,
     edge_reasons: Mapping[ProjectionEdgeKey, ProjectionReason] | None = None,
+    optional_columns: frozenset[str] = frozenset(),
 ) -> ProjectionPlan:
     frozen_needed = {
         node_id: _freeze_columns(columns) for node_id, columns in needed_by_node.items()
@@ -5277,6 +5286,7 @@ def _freeze_plan(
         edge_demands=_EdgeIdentityMapping(frozen_edges),
         opaque_boundaries=opaque_boundaries,
         diagnostics=diagnostics,
+        optional_columns=optional_columns,
     )
 
 
@@ -5407,6 +5417,7 @@ def with_runtime_inferred_streaming_edges(
         needed_by_node=MappingProxyType(needed_by_node),
         edge_demands=_EdgeIdentityMapping(edge_demands),
         materialisation_boundaries=projection_plan.materialisation_boundaries,
+        optional_columns=projection_plan.optional_columns,
         opaque_boundaries=(projection_plan.opaque_boundaries - resolved_parents),
         diagnostics=ProjectionDiagnostics(
             opaque_reasons=MappingProxyType(opaque_reasons),

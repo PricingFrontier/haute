@@ -120,3 +120,23 @@ describe("TrainingRunSummary categorical encoding", () => {
     expect(categoricalEncoding()).toBeNull()
   })
 })
+
+describe("TrainingRunSummary percentages", () => {
+  it("shows a stored fraction as a whole percentage (FMOU-R01)", () => {
+    render(
+      <TrainingRunSummary
+        config={catboostConfig({
+          evaluation: {
+            schema_version: 1,
+            strategy: "random",
+            seed: 42,
+            validation: { method: "single", size: 0.29 },
+          },
+        })}
+        columns={COLUMNS}
+        preview={null}
+      />,
+    )
+    expect(screen.getByText("71% training / 29% validation / 0% test")).toBeInTheDocument()
+  })
+})

@@ -119,13 +119,6 @@ class TestValidKeysRegistry:
         """apiInput configuration is defined by its table schema."""
         assert key in VALID_KEYS[NodeType.API_INPUT]
 
-    @pytest.mark.parametrize(
-        "node_type",
-        [NodeType.MODELLING, NodeType.MODEL_SCORE, NodeType.POLARS],
-    )
-    def test_categorical_levels_key_present_on_model_boundaries(self, node_type):
-        assert "categorical_levels" in VALID_KEYS[node_type]
-
 
 # ---------------------------------------------------------------------------
 # unrecognized_config_keys / reject_unrecognized_config_keys
@@ -459,7 +452,8 @@ class TestSharedColumnSettingsUniversal:
     """Shared authored column settings are accepted consistently across nodes."""
 
     def test_shared_column_settings_in_universal_keys(self):
-        assert {"selected_columns", "column_renames", "categorical_levels"} <= _UNIVERSAL_KEYS
+        assert {"selected_columns", "column_renames"} <= _UNIVERSAL_KEYS
+        assert "categorical_levels" not in _UNIVERSAL_KEYS
 
     @pytest.mark.parametrize("node_type", list(VALID_KEYS.keys()))
     @pytest.mark.parametrize(
@@ -467,7 +461,6 @@ class TestSharedColumnSettingsUniversal:
         [
             ("selected_columns", ["_id", "premium"]),
             ("column_renames", {"_id": "identifier"}),
-            ("categorical_levels", {"_category": ["low", "high", None]}),
         ],
     )
     def test_shared_column_settings_valid_for_all_node_types(self, node_type, key, value):
@@ -482,7 +475,6 @@ class TestSharedColumnSettingsUniversal:
         hints = get_type_hints(config_type)
         assert hints["selected_columns"] == list[str]
         assert hints["column_renames"] == dict[str, str]
-        assert hints["categorical_levels"] == dict[str, list[str | None]]
 
     def test_explore_config_allows_polars_code(self):
         """Explore can store the Polars snippet used to prepare analysis data."""
@@ -495,7 +487,6 @@ class TestSharedColumnSettingsUniversal:
             "charts": list[ExploreChartConfig],
             "selected_columns": list[str],
             "column_renames": dict[str, str],
-            "categorical_levels": dict[str, list[str | None]],
         }
         assert get_type_hints(ExploreChartConfig) == {
             "version": Literal[1],

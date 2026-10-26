@@ -209,9 +209,9 @@ function AveChart({ data }: { data: TrainAvePerFeatureRow }) {
         {selected && (
           <>
             <strong>{selected.label}</strong>
-            <span>Actual: {selected.avg_actual}</span>
-            <span>Expected: {selected.avg_predicted}</span>
-            <span>Exposure: {selected.exposure.toLocaleString()}</span>
+            <span>Actual: {formatChartNumber(selected.avg_actual)}</span>
+            <span>Expected: {formatChartNumber(selected.avg_predicted)}</span>
+            <span>Exposure: {formatChartNumber(selected.exposure)}</span>
           </>
         )}
       </ChartFocusDetail>
@@ -219,7 +219,12 @@ function AveChart({ data }: { data: TrainAvePerFeatureRow }) {
         summary="View bin values"
         ariaLabel="AvE bin values"
         headers={["Bin", "Actual", "Expected", "Exposure"]}
-        rows={bins.map((bin) => [bin.label, bin.avg_actual, bin.avg_predicted, bin.exposure.toLocaleString()])}
+        rows={bins.map((bin) => [
+          bin.label,
+          formatChartNumber(bin.avg_actual),
+          formatChartNumber(bin.avg_predicted),
+          formatChartNumber(bin.exposure),
+        ])}
       />
     </>
   )

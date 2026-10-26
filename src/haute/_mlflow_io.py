@@ -41,6 +41,7 @@ from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute._mlflow_utils import (
     ResolvedBackend,
+    allow_file_store_if_local,
     mlflow_fluent_operation,
     resolve_mlflow_source,
     set_tracking_uri_preserving_env,
@@ -409,40 +410,52 @@ def _model_cache_key(
 class DiskCachedRunModel:
     """Where the fast path of :func:`load_mlflow_model` finds one run artifact on disk.
 
-    The model file and, for an EBM, the contract it loads under, in the disk
-    model cache partition of one resolved backend.
+    The model file and the contract its run logged beside it, or the marker
+    recording that the run logged none, in the disk model cache partition of
+    one resolved backend.
     """
 
     artifact_path: str
     model_path: Path
-    contract_artifact: str | None = None
-    contract_path: Path | None = None
+    contract_artifact: str
+    contract_path: Path
 
     @property
     def files(self) -> tuple[Path, ...]:
-        return (
-            (self.model_path,)
-            if self.contract_path is None
-            else (
-                self.model_path,
-                self.contract_path,
-            )
-        )
+        """The model and its contract, or the marker of a run that logged none."""
+        if self.contract_path.is_file():
+            return (self.model_path, self.contract_path)
+        return (self.model_path, _contract_absent_marker(self.contract_path))
+
+    @property
+    def run_contract(self) -> str | None:
+        """The cached contract the run logged, or ``None`` when it logged none."""
+        return str(self.contract_path) if self.contract_path.is_file() else None
 
     def present(self) -> bool:
         """Whether every file the fast path loads exists (a stat, never a read)."""
         return all(path.is_file() for path in self.files)
 
     def fingerprint(self) -> str:
-        """The byte identity the in-process model cache keys this artifact by."""
-        if self.contract_path is None or self.contract_artifact is None:
-            return _local_artifact_fingerprint(self.artifact_path, str(self.model_path))
-        return _ebm_identity_fingerprint(
-            self.artifact_path,
-            str(self.model_path),
-            self.contract_artifact,
-            str(self.contract_path),
+        """The byte identity the in-process model cache keys this artifact by.
+
+        A model binds its contract on every load, so only the model's bytes count.
+        """
+        return _local_artifact_fingerprint(self.artifact_path, str(self.model_path))
+
+    def identity(self) -> str:
+        """The byte identity of what a load reads: the model, and its contract or marker."""
+        from haute.deploy._scorer import artifact_identity_fingerprint
+
+        model, contract = self.files
+        return artifact_identity_fingerprint(
+            {self.artifact_path: str(model), self.contract_artifact: str(contract)}
         )
+
+
+def _contract_absent_marker(contract_cache_path: Path) -> Path:
+    """Where the disk cache records that a run logged no contract beside a model."""
+    return contract_cache_path.with_name("artifact.absent")
 
 
 def _disk_cached_run_model(
@@ -454,9 +467,8 @@ def _disk_cached_run_model(
         return None
     root = _disk_cache_root()
     model_path = _artifact_cache_path(root, backend.digest, run_id, artifact_path)
-    if not family.requires_contract:
-        return DiskCachedRunModel(artifact_path, model_path)
-    # A contract-bound model is only as current as the contract it loads under.
+    # A run's model scores under the contract its run logged beside it, so it is
+    # only as current as that contract or the record that there is none.
     contract_artifact = _run_contract_artifact(artifact_path)
     return DiskCachedRunModel(
         artifact_path,
@@ -539,10 +551,15 @@ class ScoringModel:
     scoring never silently proceeds on an offset-0/absent basis.
 
     ``offset_declared`` is ``False`` only for a CatBoost model whose file does
-    not record whether it was trained with an offset; :func:`bind_feature_contract`
-    takes the declaration from its contract or refuses it. Scoring reads the
+    not record whether it was trained with an offset, or an XGBoost model
+    trained outside Haute without the ``haute_offset`` stamp;
+    :func:`bind_feature_contract` takes the declaration from its contract. Scoring reads the
     offset from this carrier, never the raw model, so a contract-bound offset
     applies to a raw model a cache may share.
+
+    ``run_contract_path`` is the local copy of the contract an MLflow run logged
+    beside a native model :func:`load_mlflow_model` loaded, read from that same
+    run; ``None`` for a run that logged none and for any other model.
     """
 
     __slots__ = (
@@ -553,6 +570,7 @@ class ScoringModel:
         "offset_column",
         "offset_link",
         "offset_declared",
+        "run_contract_path",
     )
 
     def __init__(
@@ -564,6 +582,7 @@ class ScoringModel:
         offset_column: str | None = None,
         offset_link: str | None = None,
         offset_declared: bool = True,
+        run_contract_path: str | None = None,
     ) -> None:
         self._model = model
         self.feature_names = feature_names
@@ -572,6 +591,7 @@ class ScoringModel:
         self.offset_column = offset_column
         self.offset_link = offset_link
         self.offset_declared = offset_declared
+        self.run_contract_path = run_contract_path
 
     def with_offset(self, offset_column: str | None, offset_link: str | None) -> ScoringModel:
         """A declared carrier sharing this raw model, with the given offset."""
@@ -582,6 +602,7 @@ class ScoringModel:
             flavor=self.flavor,
             offset_column=offset_column,
             offset_link=offset_link,
+            run_contract_path=self.run_contract_path,
         )
 
     @property
@@ -755,8 +776,8 @@ def _catboost_offset_column(model: Any) -> str | None:
 
     ``CatBoostAlgorithm.fit`` records the offset column name under
     ``CATBOOST_OFFSET_METADATA_KEY`` because the .cbm format has no native
-    baseline memory — without this, a served model would silently score
-    from baseline 0. ``None`` covers both an empty value (no offset) and an
+    baseline memory — without this, a served model would ignore the offset
+    it was trained with. ``None`` covers both an empty value (no offset) and an
     absent key (undeclared, see :func:`_catboost_offset_declared`); a failed
     metadata read propagates.
     """
@@ -920,8 +941,7 @@ def load_local_model(
     """Load a model from a local file path (e.g. bundled deploy artifact).
 
     The file's suffix selects its family in the registry, whose loader reads
-    it; a contract-bound family (EBM) loads under *contract_path* when given,
-    else the contract saved beside it.
+    it from the file alone; *contract_path* is the contract the caller binds.
 
     *source* names the model in errors (an MLflow run); the path otherwise.
 
@@ -949,6 +969,31 @@ def _offset_transform(link: str | None) -> str | None:
     return "log" if link == "log" else "identity"
 
 
+def _declare_offset(
+    scoring_model: ScoringModel, offset_column: str | None, offset_link: str | None
+) -> ScoringModel:
+    """The carrier with a contract-declared offset; a wrapper adding its own margin gets it too."""
+    if not model_family(scoring_model.flavor).self_describing:
+        return scoring_model.with_offset(offset_column, offset_link)
+    import dataclasses
+
+    wrapper = dataclasses.replace(
+        scoring_model.raw_model,
+        offset_column=offset_column,
+        offset_link=offset_link,
+        offset_declared=True,
+    )
+    return ScoringModel(
+        model=wrapper,
+        feature_names=scoring_model.feature_names,
+        cat_feature_names=scoring_model.cat_feature_names,
+        flavor=scoring_model.flavor,
+        offset_column=offset_column,
+        offset_link=offset_link,
+        run_contract_path=scoring_model.run_contract_path,
+    )
+
+
 def bind_feature_contract(
     scoring_model: ScoringModel, contract: FeatureContract | None, *, model_name: str
 ) -> ScoringModel:
@@ -957,42 +1002,55 @@ def bind_feature_contract(
     A contract that records a model identity must describe the loaded model.
     A model that declares its own offset must agree with the contract's; a
     pyfunc model, whose contract is its only offset description, takes the
-    contract's. A CatBoost model whose file does not declare its offset takes
-    the contract's declaration: a null ``offset_column`` declares no offset, a
-    named one with an ``offset_link`` declares that offset. Returns the carrier
+    contract's. A model whose file does not declare its offset (a CatBoost
+    model, or an XGBoost model trained outside Haute) takes the contract's
+    declaration: a null ``offset_column`` declares no offset, a named one with
+    an ``offset_link`` declares that offset. With no contract an undeclared
+    CatBoost model scores with no offset, the full-policy-term basis a quote is
+    priced on (it predicts the same with no baseline as with a zero one), and
+    an undeclared XGBoost model is refused: XGBoost scores a model trained with
+    a margin from its ``base_score`` when none is supplied. Returns the carrier
     to score (a new one when the offset changes); *scoring_model* itself, which
     a cache may hold, is never mutated.
 
     Raises:
-        ConfigError: the identity or the offset disagree, or a CatBoost
-            model's offset is declared by neither its file nor its contract.
+        ConfigError: the identity or the offset disagree, the contract of a
+            model that declares no offset names an offset column without its
+            link, or an undeclared XGBoost model has no contract.
     """
     from haute.errors import ConfigError
 
     if contract is not None and contract.model is not None:
         verify_contract_identity(contract.model, scoring_model)
     if not scoring_model.offset_declared:
+        label = model_family(scoring_model.flavor).label
         remedy = (
             "Save a feature contract beside the model that declares its offset "
             "(offset_column with offset_link 'log' or 'identity', or offset_column null "
             "for a model trained without one), or retrain it with this version of Haute."
         )
         if contract is None:
-            raise ConfigError(
-                f"CatBoost model {model_name} does not record whether it was trained with "
-                f"an offset, and no feature contract declares it. Scoring it without its "
-                f"offset would mis-price every row. {remedy}",
-                model=model_name,
-            )
+            if scoring_model.flavor == "xgboost":
+                raise ConfigError(
+                    f"XGBoost model {model_name} was trained outside Haute and does not say "
+                    "whether it was trained with a margin (base_margin); XGBoost scores such a "
+                    "model from its base_score when no margin is given, which is not a full "
+                    "policy term. Declare it before saving: "
+                    'booster.set_attr(haute_offset="none") for no margin, or '
+                    'booster.set_attr(haute_offset="exposure:log") for log-exposure margins '
+                    f'("<column>:identity" for an additive one). {remedy}',
+                    model=model_name,
+                )
+            return scoring_model.with_offset(None, None)
         if contract.offset_column is not None and contract.offset_link is None:
             raise ConfigError(
-                f"The feature contract of CatBoost model {model_name} names offset column "
+                f"The feature contract of {label} model {model_name} names offset column "
                 f"{contract.offset_column!r} but not how it enters the model "
                 f"(offset_link). {remedy}",
                 model=model_name,
                 offset_column=contract.offset_column,
             )
-        return scoring_model.with_offset(contract.offset_column, contract.offset_link)
+        return _declare_offset(scoring_model, contract.offset_column, contract.offset_link)
     if contract is None:
         return scoring_model
     if scoring_model.flavor == "pyfunc":
@@ -1039,8 +1097,8 @@ def load_local_model_cached(
 
     io_path = resolve_artifact_path(path)
     name = model_name or repr(Path(path).name)
-    # The contract decides an EBM's offset, labels and loss and an undeclared
-    # CatBoost model's offset: replacing only it must reload.
+    # The contract decides an undeclared CatBoost model's offset and is checked
+    # against every other model: replacing only it must reload.
     contract_identity = (
         artifact_identity_fingerprint({"contract": contract_path}) if contract_path else None
     )
@@ -1076,22 +1134,6 @@ def model_contract_candidates(path: str | Path) -> list[Path]:
     ]
 
 
-def _sibling_contract(path: str) -> Any:
-    """The feature contract saved with *path*; an EBM cannot load without one."""
-    from haute.errors import ConfigError
-    from haute.modelling._feature_contract import load_contract
-
-    for candidate in model_contract_candidates(path):
-        if candidate.is_file():
-            return load_contract(candidate)
-    raise ConfigError(
-        f"No feature contract was found beside {Path(path).name}. An EBM model loads only "
-        "with the contract it was trained with (saved next to it as "
-        f"{model_contract_candidates(path)[0].name}).",
-        model_path=str(path),
-    )
-
-
 def _run_contract_artifact(artifact: str) -> str:
     """The run-relative path of the contract logged beside *artifact*."""
     from pathlib import PurePosixPath
@@ -1099,130 +1141,49 @@ def _run_contract_artifact(artifact: str) -> str:
     return str(PurePosixPath(artifact).with_name(model_contract_candidates(artifact)[0].name))
 
 
-def _ebm_identity_fingerprint(
-    artifact: str, local_path: str, contract_artifact: str, contract_path: str
-) -> str:
-    """An EBM's cache identity: its model bytes and the contract it loads under."""
-    from haute.deploy._scorer import artifact_identity_fingerprint
+def _run_lists_artifact(client: MlflowClient, run_id: str, artifact: str) -> bool:
+    """Whether a completed listing of *artifact*'s directory in the run names it."""
+    from pathlib import PurePosixPath
 
-    return artifact_identity_fingerprint({artifact: local_path, contract_artifact: contract_path})
+    parent = str(PurePosixPath(artifact).parent)
+    listed = (
+        client.list_artifacts(run_id) if parent == "." else client.list_artifacts(run_id, parent)
+    )
+    return any(item.path == artifact for item in listed)
 
 
-def _loaded_artifact_fingerprint(
-    flavor: str,
+def _run_contract_if_logged(
     mlflow_mod: Any,
+    client: Callable[[], MlflowClient],
     backend: ResolvedBackend,
     run_id: str,
     artifact: str,
-    local_path: str,
-) -> str:
-    """The cache identity of a run artifact: its bytes, plus a contract-bound model's contract.
+) -> str | None:
+    """The local copy of the contract a run logged beside *artifact*, or ``None``.
 
-    Lookup and insertion both use this, so an entry is always found under the
-    key it was stored with.
+    A native model from a run scores under its contract when the run logged
+    one. Absence is read only from a completed listing of the run after the
+    download fails, and recorded beside where the contract would sit in the
+    disk cache, so the fast path and a disk-cache-only load see it; a failed
+    download of a contract the listing names, and a failed listing, propagate.
+    *client* is called only for that listing, so a cached contract or a
+    recorded absence never opens the tracking store.
     """
-    if not model_family(flavor).requires_contract:
-        return _local_artifact_fingerprint(artifact, local_path)
-    return _ebm_identity_fingerprint(
-        artifact,
-        local_path,
-        _run_contract_artifact(artifact),
-        _resolve_run_contract(mlflow_mod, backend, run_id, artifact),
-    )
-
-
-def _resolve_run_contract(
-    mlflow_mod: Any, backend: ResolvedBackend, run_id: str, artifact: str
-) -> str:
-    """Fetch the feature contract a run logged beside *artifact*.
-
-    An EBM loads only under it, and a CatBoost model whose file does not
-    declare its offset scores only under it.
-    """
-
-    from haute.errors import ConfigError
-
     contract_artifact = _run_contract_artifact(artifact)
-    try:
-        return _resolve_artifact_local(mlflow_mod, backend, run_id, contract_artifact)
-    except Exception as exc:
-        raise ConfigError(
-            f"Run {run_id} has no feature contract {contract_artifact} beside {artifact}, and "
-            f"this model scores only with the contract it was trained with ({exc}).",
-            run_id=run_id,
-            artifact_path=artifact,
-        ) from exc
-
-
-def _require_remote_loads(source_type: str) -> None:
-    """Refuse an MLflow lookup within :func:`disk_cache_only_model_loads`."""
-    if _DISK_CACHE_ONLY.get():
-        from haute.errors import ModelNotInDiskCacheError
-
-        raise ModelNotInDiskCacheError(
-            "The local model cache holds no feature contract for this model, and this "
-            "execution loads models only from that cache. Preview the Model Scoring node "
-            "in the editor, which fills it.",
-            source_type=source_type,
-        )
-
-
-def resolve_run_artifact(
-    *,
-    source_type: str,
-    run_id: str = "",
-    artifact_path: str = "",
-    registered_model: str = "",
-    version: str = "",
-    alias: str = "",
-    backend: ResolvedBackend,
-) -> tuple[str, str]:
-    """The concrete ``(run_id, artifact_path)`` a model source names right now.
-
-    A registered version, alias or ``latest`` resolves once against *backend*,
-    and an absent artifact path is discovered in the run, so both reads that
-    follow name the same run on the same backend.
-
-    Raises:
-        ModelNotInDiskCacheError: loads are limited to the disk cache.
-    """
-    _require_remote_loads(source_type)
-    if artifact_path:
-        _validate_artifact_path(artifact_path)
-    resolved_run_id, _version, _mlflow, client, _backend = resolve_mlflow_source(
-        source_type=source_type,
-        run_id=run_id,
-        registered_model=registered_model,
-        version=version,
-        backend=backend,
-        alias=alias,
-    )
-    return resolved_run_id, artifact_path or _find_model_artifact(client, resolved_run_id)[0]
-
-
-def run_logged_contract_path(*, run_id: str, artifact_path: str, backend: ResolvedBackend) -> str:
-    """The local copy of the contract a run logged beside its model artifact on *backend*.
-
-    Answered from the disk model cache when the contract is there; otherwise it
-    downloads into the same cache (not within :func:`disk_cache_only_model_loads`).
-
-    Raises:
-        ConfigError: the run logged no contract beside the model.
-        ModelNotInDiskCacheError: loads are limited to the disk cache and the
-            contract is not in it.
-    """
-    _validate_artifact_path(artifact_path)
-    cached = _artifact_cache_path(
-        _disk_cache_root(), backend.digest, run_id, _run_contract_artifact(artifact_path)
-    )
-    if cached.is_file():
-        return str(cached)
-    _require_remote_loads("run")
-    _run_id, _version, mlflow_mod, _client, _backend = resolve_mlflow_source(
-        source_type="run", run_id=run_id, backend=backend
-    )
     with _disk_cache_run_in_use(run_id):
-        return _resolve_run_contract(mlflow_mod, backend, run_id, artifact_path)
+        marker = _contract_absent_marker(
+            _artifact_cache_path(_disk_cache_root(), backend.digest, run_id, contract_artifact)
+        )
+        if marker.is_file():
+            return None
+        try:
+            return _resolve_artifact_local(mlflow_mod, backend, run_id, contract_artifact)
+        except Exception:
+            if _run_lists_artifact(client(), run_id, contract_artifact):
+                raise
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+        return None
 
 
 def _load_xgboost_file(
@@ -1248,15 +1209,12 @@ def _load_ebm_file(
 ) -> ScoringModel:
     """The EBM family's file loader.
 
-    An EBM file is the bare estimator and loads under its feature contract:
-    *contract_path* when the caller fetched it (the MLflow cache keeps
-    artifacts apart), else the one saved beside the model.
+    An EBM file records what its estimator alone does not say, so it loads
+    from the file alone.
     """
     from haute.modelling._ebm import EBMModel
-    from haute.modelling._feature_contract import load_contract
 
-    contract = load_contract(contract_path) if contract_path else _sibling_contract(path)
-    return _wrapper_scoring_model(EBMModel.load(path, contract), task, "ebm")
+    return _wrapper_scoring_model(EBMModel.load(path), task, "ebm")
 
 
 def _load_tboost_file(
@@ -1287,6 +1245,7 @@ def _wrapper_scoring_model(model: Any, task: str, flavor: str) -> ScoringModel:
         flavor=flavor,
         offset_column=model.offset_column,
         offset_link=model.offset_link,
+        offset_declared=getattr(model, "offset_declared", True),
     )
 
 
@@ -1532,7 +1491,12 @@ def _resolve_artifact_local(
     exactly one thread downloads while the others wait, then find the
     file via the in-lock re-check — no thundering herd, and the move can
     never land on a file another thread is concurrently writing.
+
+    A local backend's file store is opted into first: a process that has
+    opened no client for it (a deploy whose other artifacts are cached)
+    would otherwise have MLflow refuse the download.
     """
+    allow_file_store_if_local(backend.tracking_uri, backend.mode)
     with _disk_cache_run_in_use(run_id):
         return _resolve_artifact_local_in_use(mlflow, backend, run_id, artifact_path)
 
@@ -1697,6 +1661,7 @@ _LOAD_BACKOFF_JITTER_S = 0.1
 def _load_with_bounded_retry(
     *,
     mlflow_mod: Any,
+    client: MlflowClient,
     backend: ResolvedBackend,
     run_id: str,
     artifact: str,
@@ -1725,15 +1690,17 @@ def _load_with_bounded_retry(
             local_path = _resolve_artifact_local(mlflow_mod, backend, run_id, artifact)
             family = model_family(flavor)
             assert family.load_file is not None  # only file-loaded families retry here
-            contract_path: str | None = None
-            if family.requires_contract:
-                contract_path = _resolve_run_contract(mlflow_mod, backend, run_id, artifact)
-            return family.load_file(
+            contract_path = _run_contract_if_logged(
+                mlflow_mod, lambda: client, backend, run_id, artifact
+            )
+            scoring_model = family.load_file(
                 local_path,
                 task,
                 contract_path=contract_path,
                 source=f"MLflow run {run_id!r}, artifact {artifact!r}",
             )
+            scoring_model.run_contract_path = contract_path
+            return scoring_model
         except (AttributeError, TypeError, KeyError, ConfigError, ArtifactVersionMismatchError):
             # Programmer error — a missing attribute, wrong type, or
             # unknown dict key is a bug in our dispatch code (or a
@@ -1882,13 +1849,14 @@ def load_mlflow_model(
                 return cached
         else:
             with _disk_cache_run_in_use(run_id):
-                # An EBM is only as current as the contract it loads under, so
-                # its fast path needs the cached contract too.
+                # A run model is only as current as what its run logged beside
+                # it, so the fast path needs the cached contract, or the record
+                # that there is none.
                 cached_files = _disk_cached_run_model(backend, run_id, artifact_path)
                 assert cached_files is not None  # only a pyfunc has no cached file
                 local_path = cached_files.model_path
-                contract_local = cached_files.contract_path
                 if cached_files.present():
+                    contract_local = cached_files.run_contract
                     fast_key = _model_cache_key(
                         source_type=source_type,
                         run_id=run_id,
@@ -1923,17 +1891,13 @@ def load_mlflow_model(
                                 artifact_path=artifact_path,
                                 flavor=flavor,
                             )
-                            source = f"MLflow run {run_id!r}"
-                            scoring_model = (
-                                load_local_model(str(local_path), task=task, source=source)
-                                if contract_local is None
-                                else load_local_model(
-                                    str(local_path),
-                                    task=task,
-                                    contract_path=str(contract_local),
-                                    source=source,
-                                )
+                            scoring_model = load_local_model(
+                                str(local_path),
+                                task=task,
+                                contract_path=contract_local,
+                                source=f"MLflow run {run_id!r}",
                             )
+                            scoring_model.run_contract_path = contract_local
                             _model_cache.put(fast_key, scoring_model)
                             logger.info(
                                 "mlflow_model_loaded_from_disk_cache",
@@ -1960,9 +1924,9 @@ def load_mlflow_model(
             else f"registered model {registered_model!r}"
         )
         raise ModelNotInDiskCacheError(
-            f"The local model cache holds no model for {reference}, and this execution "
-            "loads models only from that cache. Preview the Model Scoring node in the "
-            "editor, which fills it.",
+            f"The local model cache does not hold {reference} ready to load, and this "
+            "execution loads models only from that cache. Preview the Model Scoring node "
+            "in the editor, which fills it.",
             source_type=source_type,
         )
 
@@ -2003,9 +1967,7 @@ def load_mlflow_model(
                 resolved_run_id,
                 resolved_artifact,
             )
-            artifact_fp = _loaded_artifact_fingerprint(
-                flavor, mlflow_mod, backend, resolved_run_id, resolved_artifact, local_artifact_path
-            )
+            artifact_fp = _local_artifact_fingerprint(resolved_artifact, local_artifact_path)
 
     cache_key = _model_cache_key(
         source_type=source_type,
@@ -2060,6 +2022,7 @@ def load_mlflow_model(
             with _disk_cache_run_in_use(resolved_run_id):
                 scoring_model = _load_with_bounded_retry(
                     mlflow_mod=mlflow_mod,
+                    client=client,
                     backend=backend,
                     run_id=resolved_run_id,
                     artifact=resolved_artifact,
@@ -2077,13 +2040,8 @@ def load_mlflow_model(
                     version=resolved_version,
                     artifact_path=resolved_artifact,
                     task=task,
-                    artifact_fingerprint=_loaded_artifact_fingerprint(
-                        flavor,
-                        mlflow_mod,
-                        backend,
-                        resolved_run_id,
-                        resolved_artifact,
-                        local_artifact_path,
+                    artifact_fingerprint=_local_artifact_fingerprint(
+                        resolved_artifact, local_artifact_path
                     ),
                     backend_identity=backend.identity,
                 )

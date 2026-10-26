@@ -46,6 +46,7 @@ from haute._mlflow_io import (
     _model_cache,
     _model_cache_key,
     _resolve_artifact_local,
+    _run_contract_artifact,
     load_mlflow_model,
 )
 from haute._mlflow_utils import ResolvedBackend, resolve_backend
@@ -75,13 +76,27 @@ def _clear_cache():
     _model_cache.clear()
 
 
+def _served_contract(artifact_uri: str, dst_path: str) -> str | None:
+    """Serve the feature contract a run logs beside every model; ``None`` for anything else.
+
+    The loader reads it with each native model; these fakes are about the
+    model's own download, so it never counts as one.
+    """
+    if not artifact_uri.endswith(".feature_contract.json"):
+        return None
+    out = Path(dst_path) / artifact_uri.rsplit("/", maxsplit=1)[-1]
+    out.write_bytes(b"{}")
+    return str(out)
+
+
 class _FakeTransport:
     """Deterministic slow fake of the ``mlflow.artifacts`` surface.
 
     Each download: records entry (per-call ``Event``), optionally blocks
     on a shared gate or barrier, then writes ``payload`` to the requested
     destination — exactly what ``download_artifacts`` does for a single
-    file artifact.
+    file artifact. The contract training logs beside each model is served
+    at once and outside the counts (see :func:`_served_contract`).
     """
 
     def __init__(
@@ -109,6 +124,9 @@ class _FakeTransport:
         *,
         tracking_uri: str | None = None,
     ) -> str:
+        contract = _served_contract(artifact_uri, dst_path)
+        if contract is not None:
+            return contract
         with self._mutex:
             call_index = self.calls
             self.calls += 1
@@ -125,7 +143,10 @@ class _FakeTransport:
 
 
 class _MappingTransport:
-    """Transport fake that returns bytes based on the requested artifact URI."""
+    """Transport fake that returns bytes based on the requested artifact URI.
+
+    The contract beside each model is served outside ``calls``.
+    """
 
     def __init__(self, payloads: dict[str, bytes]) -> None:
         self.payloads = payloads
@@ -139,6 +160,9 @@ class _MappingTransport:
         *,
         tracking_uri: str | None = None,
     ) -> str:
+        contract = _served_contract(artifact_uri, dst_path)
+        if contract is not None:
+            return contract
         self.calls.append(artifact_uri)
         artifact_path = artifact_uri.rsplit("/", maxsplit=1)[-1]
         if artifact_uri not in self.payloads:
@@ -408,6 +432,16 @@ def _seed_artifact(path: Path, payload: bytes) -> None:
     path.write_bytes(payload)
 
 
+def _seed_logged_contract(cache_root: Path, run_id: str, artifact_path: str) -> None:
+    """Cache the contract a run logged beside *artifact_path*, as a preview leaves it."""
+    _seed_artifact(
+        _artifact_cache_path(
+            cache_root, _local_backend().digest, run_id, _run_contract_artifact(artifact_path)
+        ),
+        b"{}",
+    )
+
+
 class TestArtifactDiskIdentity:
     """Disk cache identity is the full MLflow artifact path, not basename."""
 
@@ -607,6 +641,7 @@ class TestArtifactDiskIdentity:
         )
         active_path.parent.mkdir(parents=True)
         active_path.write_bytes(b"active")
+        _seed_logged_contract(cache_root, "run-active", "freq/model.cbm")
         inactive_path = _artifact_cache_path(
             cache_root, _local_backend().digest, "run-inactive", "model.cbm"
         )
@@ -885,6 +920,7 @@ class TestArtifactDiskIdentity:
         )
         cached_file.parent.mkdir(parents=True)
         cached_file.write_bytes(b"model")
+        _seed_logged_contract(cache_root, "run-fast", "model.cbm")
         active_seen: list[frozenset[str]] = []
         real_is_file = Path.is_file
         loaded_model = ScoringModel(_StubCatBoost(), ["a"], frozenset(), "catboost")
@@ -952,6 +988,7 @@ class TestLockAcquisitionRaces:
         )
         cached_file.parent.mkdir(parents=True)
         cached_file.write_bytes(b"bytes")
+        _seed_logged_contract(tmp_path / ".cache" / "models", "run-h", "model.cbm")
         winner_model = ScoringModel(_StubCatBoost(), ["a"], frozenset(), "catboost")
         fast_key = _model_cache_key(
             source_type="run",

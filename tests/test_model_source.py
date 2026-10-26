@@ -12,7 +12,7 @@ import ast
 import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import ANY, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -227,7 +227,7 @@ def test_the_parser_owns_the_source_defaults(config: dict[str, Any], expected: o
     assert parse_model_source(config) == expected
 
 
-@patch("haute._mlflow_io.load_mlflow_model")
+@patch("haute._mlflow_io.load_mlflow_model", return_value=MagicMock(run_contract_path=None))
 def test_a_run_source_loads_without_registry_fields(mock_load: Any) -> None:
     load_scoring_model(
         RunModelSource(run_id="abc", artifact_path="model.cbm", mlflow_destination="local"),
@@ -244,7 +244,7 @@ def test_a_run_source_loads_without_registry_fields(mock_load: Any) -> None:
     )
 
 
-@patch("haute._mlflow_io.load_mlflow_model")
+@patch("haute._mlflow_io.load_mlflow_model", return_value=MagicMock(run_contract_path=None))
 def test_a_registered_source_loads_by_alias(mock_load: Any) -> None:
     load_scoring_model(
         require_model_source(

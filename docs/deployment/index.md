@@ -206,6 +206,14 @@ This catches problems early: schema mismatches, missing model files, runtime err
 
 ---
 
+## What a quote must give
+
+A quote sent to a pipeline with a Quote Input must give every column the input's sample has: send `null` for a value the quote does not have. A quote that leaves a column out is refused with HTTP 422, naming the quote and the column, so a client that forgets a rating factor gets an error rather than a price. The one exception is an exposure that one of the pipeline's models applies (an offset under a log link): a quote may leave it out and is priced for a full policy term. A key the sample does not have is ignored.
+
+On Databricks, Model Serving turns a request's quotes into one table before Haute reads them, so a column is refused only when every quote in the request leaves it out. In a request with several quotes, a quote that leaves out a column another quote gives is read as if it sent `null`. Send each quote's full set of columns.
+
+---
+
 ## Requests with several quotes
 
 A request to a deployed pipeline can hold several quotes, sent as a JSON array. The answer then has one row per quote, in the order the quotes were sent, so the first row answers the first quote. `haute impact` sends quotes this way, in batches.

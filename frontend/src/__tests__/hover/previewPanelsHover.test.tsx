@@ -506,6 +506,7 @@ function makeModellingPreviewData(): ModellingPreviewData {
     jobId: "job-m1",
     nodeLabel: "Model Node",
     configHash: "abc",
+    elapsedSeconds: null,
   }
 }
 

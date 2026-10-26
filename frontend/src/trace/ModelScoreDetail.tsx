@@ -238,6 +238,9 @@ export function ModelScoreDetailBlock({ detail }: {
           </div>
         </TraceDetailSection>
       )}
+      {(explanation?.notes ?? []).map((note) => (
+        <div key={note} style={labelStyle} data-testid="model-score-note">{note}</div>
+      ))}
     </TraceDetailPanel>
   )
 }

@@ -207,8 +207,25 @@ CATBOOST = AlgorithmDescriptor(
     ),
     allowed_params=None,
     # ``thread_count`` belongs to the allotment; ``class_names`` would reorder
-    # the probability columns away from the job's positive = 1 encoding.
-    reserved_params=frozenset({"thread_count", "class_names"}),
+    # the probability columns away from the job's positive = 1 encoding. The
+    # node's loss owns the loss, objective and metric, the job owns the seed, and
+    # Haute decides whether CatBoost writes training files: each is refused by
+    # name rather than silently overwritten.
+    reserved_params=frozenset(
+        {
+            "thread_count",
+            "class_names",
+            "loss_function",
+            "objective",
+            "eval_metric",
+            "random_seed",
+            "random_state",
+            "allow_writing_files",
+            "train_dir",
+            "save_snapshot",
+            "snapshot_file",
+        }
+    ),
     tuning_reserved_params=frozenset(
         {
             "allow_writing_files",
@@ -273,6 +290,42 @@ GLM = AlgorithmDescriptor(
     suffix=".rsglm",
     engine_module="rustystats",
 )
+
+
+def native_objective(descriptor: AlgorithmDescriptor, objective: str) -> tuple[str, Link]:
+    """The task and link a native objective has, for a model trained outside Haute.
+
+    An objective Haute trains takes its loss's task and link. Any other
+    regression objective gets the identity link: the library's own prediction
+    does not depend on it, and a trace whose contributions do not rebuild the
+    prediction is refused. A binary objective Haute does not train gives no
+    positive-class probability to score, and a ranking objective orders rows
+    within groups rather than pricing each, so both are refused.
+    """
+    from haute.errors import ConfigError
+
+    for task, losses in descriptor.losses.items():
+        for loss in losses.values():
+            if loss.objective == objective:
+                return task, loss.link
+    if objective.startswith(("rank", "lambdarank", "xendcg", "xe_ndcg")):
+        raise ConfigError(
+            f"A {descriptor.label} model trained with ranking objective {objective!r} orders "
+            "rows within groups rather than pricing each; Haute scores regression and binary "
+            "classification models.",
+            objective=objective,
+        )
+    if objective.startswith("binary"):
+        supported = sorted(
+            loss.objective for loss in descriptor.losses.get("classification", {}).values()
+        )
+        raise ConfigError(
+            f"A {descriptor.label} classifier trained with objective {objective!r} gives no "
+            f"positive-class probability; Haute scores one trained with {', '.join(supported)}.",
+            objective=objective,
+        )
+    return "regression", "identity"
+
 
 XGBOOST = AlgorithmDescriptor(
     key="xgboost",

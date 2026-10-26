@@ -83,3 +83,6 @@ class ModelCardMetadata:
     # carry it — served predictions include the offset effect.
     offset_name: str = ""
     offset_type: str = ""
+    # How it enters the prediction: "log" for an exposure, which the signature
+    # marks optional (a missing one is a full policy term), else "identity".
+    offset_link: str = ""

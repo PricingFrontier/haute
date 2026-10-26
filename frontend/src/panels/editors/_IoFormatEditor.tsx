@@ -24,7 +24,6 @@ const INPUT_COMMON_KEYS = new Set([
   "inputMapping",
   "selected_columns",
   "column_renames",
-  "categorical_levels",
   "contract",
   "code",
   // Post-load steps and the editor state the step machinery writes beside them.
@@ -38,7 +37,6 @@ const OUTPUT_COMMON_KEYS = new Set([
   "inputMapping",
   "selected_columns",
   "column_renames",
-  "categorical_levels",
   "contract",
 ])
 

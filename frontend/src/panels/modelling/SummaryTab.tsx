@@ -22,6 +22,7 @@ import type {
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { MODEL_COLORS } from "../../theme/colors"
 import { diagnosticsSetLabel, validationMetricsLead } from "./diagnosticsSet"
+import { formatMetricValue } from "./metricOptions"
 import DiagnosticsIssues from "../DiagnosticsIssues"
 
 interface SummaryTabProps {
@@ -87,10 +88,6 @@ function regularizationRows(regularization: GlmRegularization): [string, string]
   return rows
 }
 
-function formatNumber(value: unknown): string {
-  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(4) : "N/A"
-}
-
 const CARD_GRID_STYLE = {
   gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))",
 }
@@ -153,7 +150,7 @@ function MetricsList({
               className="mt-0.5 break-all text-2xl font-semibold tabular-nums tracking-tight"
               style={{ color: "var(--text-primary)" }}
             >
-              {formatNumber(value)}
+              {formatMetricValue(value)}
             </dd>
           </div>
         ))}
@@ -225,10 +222,10 @@ function SelectionMetricsTable({ metrics }: { metrics: Record<string, Evaluation
             return (
               <tr key={name} style={{ color: "var(--text-primary)" }}>
                 <th className="py-1 pr-3 text-left font-medium">{name}</th>
-                <td className="px-2 py-1 text-right">{formatNumber(summary.mean)}</td>
-                <td className="px-2 py-1 text-right">{formatNumber(summary.stddev)}</td>
-                <td className="px-2 py-1 text-right">{formatNumber(summary.min)}</td>
-                <td className="px-2 py-1 text-right">{formatNumber(summary.max)}</td>
+                <td className="px-2 py-1 text-right">{formatMetricValue(summary.mean)}</td>
+                <td className="px-2 py-1 text-right">{formatMetricValue(summary.stddev)}</td>
+                <td className="px-2 py-1 text-right">{formatMetricValue(summary.min)}</td>
+                <td className="px-2 py-1 text-right">{formatMetricValue(summary.max)}</td>
                 <td className="pl-2 py-1 text-right">{summary.validation_rows.toLocaleString()}</td>
               </tr>
             )
@@ -468,7 +465,7 @@ export function SummaryTab({ result, onUseBestParameters, elapsedSeconds }: Summ
                         </td>
                         {selectionMetricNames.map((name) => (
                           <td key={name} className="pl-2 py-1 text-right">
-                            {formatNumber(fit.metrics[name])}
+                            {formatMetricValue(fit.metrics[name])}
                           </td>
                         ))}
                       </tr>
@@ -498,9 +495,9 @@ export function SummaryTab({ result, onUseBestParameters, elapsedSeconds }: Summ
               <div className="flex flex-wrap items-end justify-between gap-3">
                 <div>
                   <p className="text-xs font-medium" style={{ color: "var(--text-primary)" }}>
-                    Winning {tuning.metric}: {formatNumber(tuning.winner_objective)} · baseline{" "}
-                    {formatNumber(tuning.baseline_objective)} · improvement{" "}
-                    {formatNumber(tuning.improvement)}
+                    Winning {tuning.metric}: {formatMetricValue(tuning.winner_objective)} · baseline{" "}
+                    {formatMetricValue(tuning.baseline_objective)} · improvement{" "}
+                    {formatMetricValue(tuning.improvement)}
                   </p>
                   <p className="mt-0.5 text-xs" style={{ color: "var(--text-secondary)" }}>
                     {tuning.total_fit_count.toLocaleString()} total fits
@@ -574,7 +571,7 @@ export function SummaryTab({ result, onUseBestParameters, elapsedSeconds }: Summ
                         <th className="py-1 pr-3 text-left font-medium">{index + 1}</th>
                         <td className="px-2 py-1 text-right">{trial.trial_index}</td>
                         <td className="px-2 py-1 text-left">{trial.label}</td>
-                        <td className="px-2 py-1 text-right">{formatNumber(trial.objective)}</td>
+                        <td className="px-2 py-1 text-right">{formatMetricValue(trial.objective)}</td>
                       </tr>
                     ))}
                   </tbody>

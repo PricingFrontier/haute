@@ -166,15 +166,18 @@ def test_save_reload_is_bit_identical_and_scoring_matches_the_native_booster(
     np.testing.assert_allclose(scored.to_numpy(), native, rtol=1e-6)
 
 
-def test_reordered_categories_score_identically_and_unseen_ones_fail(tmp_path: Path) -> None:
+def test_reordered_categories_score_identically_and_unseen_ones_score_as_missing(
+    tmp_path: Path,
+) -> None:
     data = frame()
     _job, result = train(tmp_path, target="severity", loss="RMSE")
     model = XGBoostModel.load(result.model_path)
     base = model.predict(data)
     reordered = data.with_columns(pl.col("region").cast(pl.Enum(["south", "north", "east"])))
     assert np.array_equal(model.predict(reordered), base)
-    with pytest.raises(HauteValidationError, match="not trained on: 'mars'"):
-        model.predict(data.with_columns(pl.lit("mars").alias("region")))
+    unseen = model.predict(data.with_columns(pl.lit("mars").alias("region")))
+    missing = model.predict(data.with_columns(pl.lit(None, dtype=pl.String).alias("region")))
+    np.testing.assert_array_equal(unseen, missing)
 
 
 def test_nulls_score_as_missing_and_a_literal_missing_label_is_its_own_level(
@@ -535,7 +538,32 @@ def test_gamma_deviance_can_drive_an_xgboost_study() -> None:
     assert kwargs["tuning"]["metric"] == "gamma_deviance"
 
 
-def test_a_model_without_the_haute_record_is_refused(tmp_path: Path) -> None:
+def test_a_foreign_regression_objective_haute_does_not_train_scores_as_xgboost_does(
+    tmp_path: Path,
+) -> None:
+    import pandas as pd
+
+    rows = pd.DataFrame({"age": np.random.default_rng(1).uniform(18, 80, 50)})
+    booster = xgb.train(
+        {"objective": "reg:pseudohubererror", "verbosity": 0},
+        xgb.DMatrix(rows, label=rows["age"] / 10),
+        num_boost_round=3,
+    )
+    path = tmp_path / "huber.ubj"
+    booster.save_model(str(path))
+
+    model = XGBoostModel.load(path)
+
+    assert (model.task, model.link, model.offset_column) == ("regression", "identity", None)
+    np.testing.assert_allclose(
+        model.predict(pl.from_pandas(rows)), booster.predict(xgb.DMatrix(rows)), rtol=1e-6
+    )
+
+
+def test_a_foreign_model_without_feature_names_is_refused(tmp_path: Path) -> None:
+    """Without names Haute cannot tell which input column each feature reads."""
+    from haute.errors import ConfigError
+
     booster = xgb.train(
         {"objective": "reg:squarederror", "verbosity": 0},
         xgb.DMatrix(np.random.default_rng(0).random((20, 2)), label=np.arange(20.0)),
@@ -543,7 +571,7 @@ def test_a_model_without_the_haute_record_is_refused(tmp_path: Path) -> None:
     )
     path = tmp_path / "foreign.ubj"
     booster.save_model(str(path))
-    with pytest.raises(HauteValidationError, match="not an XGBoost model Haute trained"):
+    with pytest.raises(ConfigError, match="records no feature names"):
         XGBoostModel.load(path)
 
 

@@ -1329,6 +1329,7 @@ export interface TrainEstimateResponse {
   evaluation_preview?: EvaluationPreviewPayload;
   gpu_vram_available_mb: number | null;
   gpu_vram_estimated_mb: number | null;
+  gpu_vram_rows: number | null;
   gpu_warning: string | null;
   safe_row_limit: number | null;
   total_rows: number | null;

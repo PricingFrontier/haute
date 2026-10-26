@@ -42,6 +42,7 @@ from haute.routes._train_service import (
     _clamp_row_limit,
     _default_train_timeout,
     _find_modelling_node,
+    _training_rows,
     _VramCheck,
 )
 from haute.routes._training_artifacts import (
@@ -230,8 +231,9 @@ def _dispersion_status_response(job: Mapping[str, Any]) -> DispersionEstimateSta
 def estimate_dispersion(body: DispersionEstimateRequest) -> DispersionEstimateResponse:
     """Estimate a GLM dispersion parameter (NB theta / Tweedie var_power).
 
-    Materialises the node's training frame exactly as /train would, then
-    profiles the log-likelihood over the parameter in a background job.
+    Returns the job id once the request validates; the job then materialises
+    the node's training frame exactly as /train would and profiles the
+    log-likelihood over the parameter.
     The resolved value is returned for the user to accept into the config —
     the training-objective gate still requires an explicit value; this
     endpoint never sets one silently.
@@ -290,20 +292,21 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
         warning = None
         was_downsampled = False
 
-    # GPU VRAM estimation — use feature count (not total columns), since
-    # CatBoost and XGBoost only load features to the GPU.
-    # An unavailable estimate has no rows or columns to size VRAM from.
+    # GPU VRAM estimation — sized at the rows training will use (the user's and
+    # the RAM-safe limit applied) and the feature count (not total columns),
+    # since CatBoost and XGBoost only load features to the GPU. An unavailable
+    # estimate has no rows or columns to size VRAM from.
     vram_check = _VramCheck()
+    vram_rows = _training_rows(ram_est.total_rows, safe_limit)
     node_params = node.data.config.get("params", {})
     algorithm = str(node.data.config.get("algorithm", "catboost")).lower()
     xgboost_gpu = algorithm == "xgboost" and node.data.config.get("device") == "gpu"
     if ram_est.unavailable_reason is None and (
         xgboost_gpu or str(node_params.get("task_type", "")).upper() == "GPU"
     ):
-        effective_rows = ram_est.total_rows or 0
         n_features = max(len(selected_feature_columns(node.data.config)), 1)
         vram_check = _check_gpu_vram(
-            effective_rows,
+            vram_rows,
             n_features,
             node_params,
             algorithm="xgboost" if xgboost_gpu else "catboost",
@@ -352,6 +355,7 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
         was_downsampled=was_downsampled,
         warning=warning,
         gpu_vram_estimated_mb=vram_check.estimated_mb,
+        gpu_vram_rows=vram_rows if vram_check.estimated_mb is not None else None,
         gpu_vram_available_mb=vram_check.available_mb,
         gpu_warning=vram_check.warning,
         evaluation_preview=evaluation_preview_payload,

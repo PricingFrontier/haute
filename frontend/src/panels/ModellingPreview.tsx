@@ -34,6 +34,8 @@ export type ModellingPreviewData = {
   jobId: string
   nodeLabel: string
   configHash: string
+  /** The completed job's own elapsed time, from its terminal status. */
+  elapsedSeconds: number | null
 }
 
 interface ModellingPreviewProps {
@@ -233,7 +235,7 @@ export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewPr
         <SummaryTab
           result={result}
           onUseBestParameters={(params) => void fixBestParameters(params)}
-          elapsedSeconds={trainProgress?.elapsed_seconds}
+          elapsedSeconds={data.elapsedSeconds}
         />
       )}
       {activeTab === "coefficients" && <GLMCoefficientsTab result={result} />}

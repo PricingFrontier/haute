@@ -22,7 +22,8 @@ import {
 import { FeatureDiagnosticTab } from "./FeatureDiagnosticTab"
 import type { SharedFeatureBrowser } from "./useDiagnosticFeature"
 
-const levelLabel = (value: string | number | null) => (value === null ? "(missing)" : String(value))
+const levelLabel = (value: string | number | null) =>
+  value === null ? "(missing)" : typeof value === "number" ? formatChartNumber(value) : value
 
 export function PdpTab({
   result,
@@ -217,7 +218,7 @@ function PdpChart({ data }: { data: PdpFeatureRow }) {
               <strong>
                 {data.feature}: {levelLabel(selected.value)}
               </strong>
-              <span>Average prediction: {selected.avg_prediction}</span>
+              <span>Average prediction: {formatChartNumber(selected.avg_prediction)}</span>
             </>
           )}
         </div>
@@ -226,7 +227,7 @@ function PdpChart({ data }: { data: PdpFeatureRow }) {
         summary="View prediction values"
         ariaLabel="PDP values"
         headers={[data.feature, "Average prediction"]}
-        rows={data.grid.map((point) => [levelLabel(point.value), point.avg_prediction])}
+        rows={data.grid.map((point) => [levelLabel(point.value), formatChartNumber(point.avg_prediction)])}
       />
     </>
   )

@@ -75,26 +75,73 @@ file** wrote: CatBoost (`.cbm`), XGBoost (`.ubj`), LightGBM (`.lgbm`), t-boost
 A model file scores with the feature contract saved beside it: `<model name>.feature_contract.json`,
 or else `feature_contract.json` in the same folder. **Save model to file** writes the
 first. The contract names the model's features, categories and offset, so keep it next to
-the model when you copy the model elsewhere in the project. XGBoost, LightGBM and t-boost files describe their own inputs and offset. An EBM file is
-the bare estimator, so it loads only with the feature contract Model Training logged
-beside it, and only under the `interpret-core` version that contract records; a
-contract for a different loss or version is refused rather than scored. Categorical
-values an XGBoost, LightGBM or EBM model never saw fail instead of scoring as missing; a
-t-boost model scores them in its pooled rare level, like the levels too thin to model alone (the default level on a feature where nothing was pooled), unless its feature contract declares that feature's levels: scoring refuses a value outside declared levels.
+the model when you copy the model elsewhere in the project. XGBoost, LightGBM, t-boost and
+EBM files describe their own inputs and offset. An XGBoost, LightGBM or t-boost model trained
+outside Haute scores too, from what its own file records, with no offset: save an XGBoost
+booster as `.ubj` and a LightGBM model's text as `.lgbm`. An XGBoost model must say whether
+it was trained with a margin (`base_margin`), because the file cannot tell and XGBoost
+scores such a model wrongly without one. Before saving, run
+`booster.set_attr(haute_offset="none")` for a model trained without a margin, or
+`booster.set_attr(haute_offset="exposure:log")` for one trained with log-exposure margins
+(`"premium:identity"` for an additive one); a feature contract that declares the offset
+works too.
+
+Two things a model file from outside Haute cannot tell Haute, so check them yourself: a
+missing-value marker other than an empty value (an XGBoost model trained with
+`missing=-999` reads -999 in the input as a number, so prepare the input as you did for
+training), and a custom XGBoost objective, which XGBoost saves under the name of a built-in
+one. Compare a few of Haute's prices with your own before relying on them. An EBM saved
+outside Haute is not read: log it with MLflow's sklearn flavour instead, and it scores as
+an MLflow model. A multi-class or ranking model, and
+an XGBoost model saved without feature names, cannot be scored. An EBM file also records the
+`interpret-core` version it was trained with, and loads only under that version; a
+contract for a different loss is refused rather than scored. A category the
+model never saw still scores; see [Values the model was not trained on](#values-the-model-was-not-trained-on).
 
 A CatBoost model file does not record its own offset. Models trained by Haute record it
-in the model; for any other CatBoost model the feature contract must say whether the
-model was trained with an offset (its `offset_column` and `offset_link`, `log` for an
-exposure or `identity` for an additive term) or without one. A CatBoost model whose offset
-nothing declares is refused, whether it comes from a file, a run or the registry, because
-scoring it without its offset would mis-price every row. A contract that disagrees with
-what the model records is refused too. Run and registered models trained by an earlier
-Haute are scored with the contract the run logged beside the model.
+in the model; for any other CatBoost model a feature contract can say whether the model
+was trained with an offset (its `offset_column` and `offset_link`, `log` for an exposure
+or `identity` for an additive term) or without one. A CatBoost model whose offset nothing
+declares scores with no offset, whether it comes from a file, a run or the registry: a
+quote is priced for a full policy term, and an exposure of one adds nothing to a log-link
+model. A contract that disagrees with what the model records is refused.
 
-Scoring checks the input against the model's features before it runs: a missing feature,
-a missing offset column the model was trained with, features in a different order from
-training, or a numeric column where the model expects a categorical one fails with an error
-listing what is wrong, rather than predicting from mismatched data.
+A CatBoost, XGBoost, LightGBM, t-boost, EBM or GLM model from a run or the registry scores
+with the feature contract its training run logged beside it, in the editor and when
+deployed, so its input is checked against the features and types it was trained on. A
+model whose run logged no contract, such as one trained outside Haute, scores against the
+features its own file names.
+
+Scoring checks the input against the model's features before it runs: a missing feature
+or a numeric column where the model expects a categorical one fails with an error listing
+what is wrong, rather than predicting from mismatched data. An exposure offset (one the
+model applies through a log link) is optional: a quote is priced for a full policy term, so a
+missing exposure column, or a row whose exposure is empty, scores as an exposure of one. An
+exposure of zero or less is still refused. An additive offset, such as a base premium the
+model adds to, is required: a missing column or an empty value fails, naming it. Haute treats
+every log-link offset as an exposure, so give a base premium applied through a log link in
+every quote: one left out would be priced as a full policy term. A model with a feature contract also refuses a column whose type
+differs from training, such as whole numbers where it was trained on decimals, with the
+same error a deployed pipeline gives. The order the input's columns arrive in does not
+matter.
+
+### Values the model was not trained on
+
+A categorical value the model's training data never held, such as a new vehicle make or
+region code, never stops scoring, and neither does a missing value in a column that had
+none in training. Each model family scores the value its own way:
+
+| Family | A value it was not trained on scores |
+|---|---|
+| t-boost | in its pooled rare level, like the levels too thin to model alone (the default level on a feature where nothing was pooled) |
+| LightGBM | as a missing value. At LightGBM's default categorical settings that is also where its thinnest levels go |
+| XGBoost | as a missing value |
+| EBM | at zero, the average across the training data |
+| CatBoost | as a category with no history |
+| GLM | at the reference level for a categorical term (with any level **Levels** leaves out), and at the overall average for a target-encoding term |
+
+A feature that often meets new values suits a family that pools rare levels (t-boost,
+or LightGBM at its default settings) or a GLM target-encoding term.
 
 ## The TRANSFORM tab
 
@@ -142,7 +189,6 @@ Instances let you reuse the same scoring configuration with different inputs  - 
     | Key | What it does |
     |---|---|
     | `feature_contract_path` | An in-project feature-contract file the model scores with, in place of the one saved beside a model file, and bundled with the model when deploying. |
-    | `categorical_levels` | Declared category levels for categorical columns, checked against the model's feature contract when deploying. |
 
     The example above is stored as:
 

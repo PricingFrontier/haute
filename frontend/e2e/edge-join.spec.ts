@@ -292,7 +292,6 @@ function expectJoinTopology(graph: NormalizedGraph, join: GraphNode, base: strin
 
 const columnMetadata = {
   column_renames: { _id: "identifier", segment: "region" },
-  categorical_levels: { region: ["North", "South"] },
 }
 
 function seedColumnSettingsPipeline(nodeType: "polars" | "edgeJoin" | "dataInput"): void {
@@ -317,10 +316,10 @@ function seedColumnSettingsPipeline(nodeType: "polars" | "edgeJoin" | "dataInput
     `@pipeline.data_input(config="config/data_input/${name}.json")`,
     `def ${name}(): ...`, "",
   ]
-  // Renames and category declarations are authored configuration without a
+  // Renames are authored configuration without a
   // dedicated Columns-tab editor. Seed them, then verify real UI selection
   // edits preserve them across saves and reloads.
-  const metadataArgs = `column_renames=${JSON.stringify(columnMetadata.column_renames)}, categorical_levels=${JSON.stringify(columnMetadata.categorical_levels)}, contract="opaque"`
+  const metadataArgs = `column_renames=${JSON.stringify(columnMetadata.column_renames)}, contract="opaque"`
   const subjectFunction = nodeType === "dataInput" ? inputFunction("subject") : nodeType === "edgeJoin" ? [
     `@pipeline.edge_join(how="left", maintain_order="left_right", on=["_id"], ${metadataArgs})`,
     "def subject(raw_rows, lookup_rows): ...", "",

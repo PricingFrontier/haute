@@ -917,14 +917,30 @@ class TestModelFileSourceInvalidation:
         assert after[0] == pytest.approx(before[0] + 100.0)
         assert after[2] != before[2]
 
-    def test_removing_the_model_or_its_required_contract_fails_by_name(self, scoring):
+    def test_a_source_without_an_additive_offset_is_refused_naming_it(self, scoring):
+        """An additive offset is a base premium: the planner requires it."""
+        root, model, graph = scoring
+        _contract_file(model.with_name("freq.feature_contract.json"), offset="exposure")
+        data = root / "data.parquet"
+        pl.DataFrame({"age": [30.0]}).write_parquet(data)
+        _bump_mtime(data)
+
+        from haute.errors import ContractColumnsMissingError
+
+        with pytest.raises(ContractColumnsMissingError, match="'exposure'"):
+            execute_graph(graph(), target_node_id="ms")
+
+    def test_removing_the_contract_rescores_and_removing_the_model_fails_by_name(self, scoring):
         root, model, graph = scoring
         sibling = model.with_name("freq.feature_contract.json")
-        _contract_file(sibling, offset=None)
-        self._observe(graph())
+        _contract_file(sibling, offset="exposure")
+        before = self._observe(graph())
 
+        # With nothing declaring it, the model scores with no offset.
         sibling.unlink()
-        assert "does not record whether it was trained with an offset" in self._error(graph())
+        after = self._observe(graph())
+        assert after[0] == pytest.approx(before[0] - 100.0)
+        assert after[2] != before[2]
 
         _contract_file(sibling, offset=None)
         model.unlink()

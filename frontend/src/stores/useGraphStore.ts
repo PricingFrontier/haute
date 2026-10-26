@@ -385,6 +385,7 @@ const PANEL_CONTEXT_NODE_DATA_KEYS = [
   "_availableColumns",
   "_frameColumns",
   "_schemaWarnings",
+  "_notes",
 ] as const
 
 function panelContextNodeDataHash(data: Record<string, unknown>): string {

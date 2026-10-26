@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
-from typing import Any
 
 import polars as pl
-import pytest
 
 from haute._model_scorer import (
-    FeatureMismatchError,
     _clear_feature_validation_cache,
     _validate_features,
     _validate_features_uncached,
@@ -24,15 +21,9 @@ class _ScoringModel:
         self.cat_feature_names = frozenset(cat_feature_names)
 
 
-class _NoLinearIndexNames(list[str]):
-    def index(self, *_args: Any, **_kwargs: Any) -> int:  # type: ignore[override]
-        raise AssertionError("feature order lookup must not call list.index")
-
-
 class _SchemaLike:
-    def __init__(self, names: Iterable[str], *, forbid_linear_index: bool = False) -> None:
-        names_type = _NoLinearIndexNames if forbid_linear_index else list
-        self._names = names_type(names)
+    def __init__(self, names: Iterable[str]) -> None:
+        self._names = list(names)
 
     def names(self) -> list[str]:
         return self._names
@@ -47,7 +38,7 @@ class _SchemaLike:
             yield name, pl.Float64
 
 
-def test_feature_order_uses_precomputed_schema_positions_for_wide_inputs() -> None:
+def test_features_scattered_through_a_wide_input_validate_in_the_model_order() -> None:
     expected = [f"feature_{idx}" for idx in range(12)]
     schema_names: list[str] = []
     for idx, feature in enumerate(expected):
@@ -57,7 +48,7 @@ def test_feature_order_uses_precomputed_schema_positions_for_wide_inputs() -> No
 
     usable, missing = _validate_features_uncached(
         _ScoringModel(expected),
-        _SchemaLike(schema_names, forbid_linear_index=True),  # type: ignore[arg-type]
+        _SchemaLike(schema_names),  # type: ignore[arg-type]
     )
 
     assert usable == expected
@@ -65,7 +56,7 @@ def test_feature_order_uses_precomputed_schema_positions_for_wide_inputs() -> No
 
 
 def test_duplicate_schema_names_keep_first_position_semantics() -> None:
-    """Preserve the old list.index behaviour if a schema-like caller has duplicates."""
+    """A schema-like caller that repeats a name still finds every feature once."""
     usable, missing = _validate_features_uncached(
         _ScoringModel(["dup", "extra"]),
         _SchemaLike(["dup", "extra", "dup"]),  # type: ignore[arg-type]
@@ -75,31 +66,22 @@ def test_duplicate_schema_names_keep_first_position_semantics() -> None:
     assert missing == []
 
 
-def test_order_mismatch_still_reports_actual_relative_order() -> None:
-    with pytest.raises(FeatureMismatchError) as exc_info:
-        _validate_features_uncached(
-            _ScoringModel(["first", "second"]),
-            pl.Schema({"second": pl.Float64, "first": pl.Float64}),
-        )
+def test_a_reordered_input_validates_in_the_model_order() -> None:
+    """Scoring selects features by name, so the input's column order never matters."""
+    usable, missing = _validate_features_uncached(
+        _ScoringModel(["first", "second"]),
+        pl.Schema({"second": pl.Float64, "first": pl.Float64}),
+    )
 
-    assert exc_info.value.context["actual"] == ["second", "first"]
+    assert (usable, missing) == (["first", "second"], [])
 
 
-def test_schema_order_change_still_misses_validation_cache() -> None:
+def test_either_schema_order_validates_through_the_cache() -> None:
     model = _ScoringModel(["first", "second"])
     _clear_feature_validation_cache()
 
-    usable, missing = _validate_features(
-        model,
+    for schema in (
         pl.Schema({"first": pl.Float64, "second": pl.Float64}),
-    )
-    assert usable == ["first", "second"]
-    assert missing == []
-
-    with pytest.raises(FeatureMismatchError) as exc_info:
-        _validate_features(
-            model,
-            pl.Schema({"second": pl.Float64, "first": pl.Float64}),
-        )
-
-    assert exc_info.value.context["actual"] == ["second", "first"]
+        pl.Schema({"second": pl.Float64, "first": pl.Float64}),
+    ):
+        assert _validate_features(model, schema) == (["first", "second"], [])

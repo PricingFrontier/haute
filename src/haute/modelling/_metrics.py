@@ -102,6 +102,13 @@ def _prepare_metric_arrays(
     return y_true_arr, y_pred_arr, weight_arr, n_filtered, finite_mask
 
 
+#: The refusal for a Tweedie deviance requested without the power to measure it at.
+TWEEDIE_DEVIANCE_NEEDS_POWER = (
+    "tweedie_deviance needs a variance power: train with a Tweedie loss and its variance "
+    "power, or choose another metric."
+)
+
+
 def compute_metrics(
     y_true: np.ndarray,
     y_pred: np.ndarray,
@@ -126,8 +133,8 @@ def compute_metrics(
     Parameters
     ----------
     variance_power : float | None
-        If provided, passed to ``tweedie_deviance`` so the metric matches
-        the variance power the model was trained with (default 1.5).
+        The variance power the model was trained with, which ``tweedie_deviance``
+        is measured at; requesting that metric without one raises.
     """
     if metric_names is None:
         metric_names = ["gini", "rmse"]
@@ -141,7 +148,9 @@ def compute_metrics(
             raise HauteValidationError(
                 f"Unknown metric: {name}. Available: {list(_METRIC_REGISTRY.keys())}"
             )
-        if name.lower() == "tweedie_deviance" and variance_power is not None:
+        if name.lower() == "tweedie_deviance":
+            if variance_power is None:
+                raise HauteValidationError(TWEEDIE_DEVIANCE_NEEDS_POWER)
             results[name] = fn(y_true, y_pred, weight, variance_power=variance_power)
         else:
             results[name] = fn(y_true, y_pred, weight)
@@ -362,7 +371,8 @@ def _tweedie_deviance(
     y_true: np.ndarray,
     y_pred: np.ndarray,
     weight: np.ndarray | None,
-    variance_power: float = 1.5,
+    *,
+    variance_power: float,
 ) -> float:
     """Tweedie deviance — generalises Poisson (p=1) and Gamma (p=2)."""
     p = variance_power

@@ -295,6 +295,27 @@ def test_regression_scores_identically_on_every_path(
 
 
 @pytest.mark.parametrize("family", FAMILIES)
+def test_a_category_the_model_never_saw_scores_on_every_path(
+    tmp_path: Path, family: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = train(tmp_path, family, offset="exposure")
+    data = frame(seed=3).with_columns(
+        region=pl.when(pl.col("row") % 3 == 0)
+        .then(pl.lit("mars"))
+        .when(pl.col("row") % 3 == 1)
+        .then(pl.lit(None, dtype=pl.String))
+        .otherwise(pl.col("region"))
+    )
+    paths = every_path(result, data, "regression", tmp_path, monkeypatch)
+
+    reference = paths["eager"]["prediction"].to_numpy()
+    assert np.isfinite(reference).all()
+    for name, scored in paths.items():
+        assert scored.height == data.height, name
+        assert_close(scored["prediction"].to_numpy(), reference)
+
+
+@pytest.mark.parametrize("family", FAMILIES)
 def test_classification_labels_follow_the_probability_on_every_path(
     tmp_path: Path, family: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -628,8 +649,12 @@ def test_native_training_lifecycle_keeps_the_last_good_model(
 
 
 def test_only_a_haute_binary_contract_declares_the_probability_column(tmp_path: Path) -> None:
-    from haute._builders import _model_score_columns
+    from haute._contracts import get_column_contract
+    from haute._types import NodeType
     from haute.modelling._feature_contract import build_contract, save_contract
+
+    def produced(config: dict[str, str]) -> set[str] | None:
+        return get_column_contract(NodeType.MODEL_SCORE, config)[0]
 
     result = train(
         tmp_path,
@@ -643,8 +668,10 @@ def test_only_a_haute_binary_contract_declares_the_probability_column(tmp_path: 
     model_path = Path(result.model_path)
     haute_contract = model_path.parent / model_contract_filename(model_path.stem)
     config = {"task": "classification", "output_column": "pred"}
-    produced, _ = _model_score_columns({**config, "feature_contract_path": str(haute_contract)})
-    assert produced == {"pred", "pred_proba"}
+    assert produced({**config, "feature_contract_path": str(haute_contract)}) == {
+        "pred",
+        "pred_proba",
+    }
     # A contract without Haute class labels (a prediction-only classifier) promises none.
     bare = tmp_path / "bare.json"
     save_contract(
@@ -658,8 +685,8 @@ def test_only_a_haute_binary_contract_declares_the_probability_column(tmp_path: 
         ),
         bare,
     )
-    assert _model_score_columns({**config, "feature_contract_path": str(bare)})[0] == {"pred"}
-    assert _model_score_columns(config)[0] == {"pred"}
+    assert produced({**config, "feature_contract_path": str(bare)}) == {"pred"}
+    assert produced(config) == {"pred"}
 
 
 def test_a_prediction_only_classifier_deploys_its_labels(tmp_path: Path) -> None:

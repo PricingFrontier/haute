@@ -890,7 +890,6 @@ _EXPORT_DEFAULTED_KWARGS: dict[str, object] = {
     "offset": None,
     "monotone_constraints": None,
     "feature_weights": None,
-    "categorical_levels": None,
     "positive_class": None,
     "device": "cpu",
     "mlflow_experiment": None,
@@ -1022,6 +1021,119 @@ class TestGLMTermsEndToEnd:
             load_local_model(result.model_path).predict(df),
             rtol=1e-9,
         )
+
+    def test_a_category_the_glm_never_saw_scores_at_the_reference_level(self, tmp_path):
+        """A categorical term on a string and on an integer column, beside a
+        target-encoding term: a value the training rows never held scores at its
+        term's reference level, as RustyStats prices it, and is never refused."""
+        from haute._mlflow_io import load_local_model
+        from haute._model_scorer import score_frame
+        from haute.modelling._train_config import build_training_job_kwargs
+        from haute.modelling._training_job import TrainingJob
+
+        rng = np.random.default_rng(7)
+        n = 900
+        region = rng.choice(["A", "B", "C"], size=n)
+        area = rng.choice([1, 2, 3], size=n)
+        make = rng.choice(["m1", "m2", "m3", "m4"], size=n)
+        rate = np.exp(-1.0 + np.where(region == "B", 0.3, 0.0) + 0.1 * area)
+        df = pl.DataFrame(
+            {
+                "region": region,
+                "area": pl.Series(area, dtype=pl.Int64),
+                "make": make,
+                "y": rng.poisson(rate).astype(float),
+            }
+        )
+        config = {
+            "algorithm": "glm",
+            "target": "y",
+            "family": "poisson",
+            "terms": {
+                "region": {"type": "categorical"},
+                "area": {"type": "categorical"},
+                "make": {"type": "target_encoding"},
+            },
+            "evaluation": _random_evaluation(),
+        }
+        result = TrainingJob(
+            **build_training_job_kwargs(
+                {**config, "name": "levels", "output_dir": str(tmp_path)},
+                data=_write(df, tmp_path),
+            )
+        ).run()
+        scoring = load_local_model(result.model_path)
+        rows = pl.DataFrame(
+            {
+                "region": ["Z", "A", "B"],
+                "area": pl.Series([9, 1, 2], dtype=pl.Int64),
+                "make": ["m1", "m1", "m1"],
+            }
+        )
+        scored = score_frame(
+            model=scoring.raw_model,
+            lf=rows.lazy(),
+            features=list(scoring.feature_names),
+            cat_feature_names=scoring.cat_feature_names,
+            flavor=scoring.flavor,
+        ).collect()["prediction"]
+
+        predicted = scored.to_list()
+        # Both unseen values take their term's reference level (the first sorted).
+        assert predicted[0] == pytest.approx(predicted[1])
+        assert predicted[2] != pytest.approx(predicted[1])
+
+    def test_a_glm_scores_its_training_rows_in_any_column_order(self, tmp_path):
+        """RustyStats lists a GLM's features alphabetically; the scoring pipeline
+        selects them by name, so neither the training rows' own column order nor
+        a reversed one is refused, and both score identically."""
+        from haute._mlflow_io import load_local_model
+        from haute._model_scorer import _run_score_pipeline
+        from haute.modelling._train_config import build_training_job_kwargs
+        from haute.modelling._training_job import TrainingJob
+
+        rng = np.random.default_rng(3)
+        n = 400
+        df = pl.DataFrame(
+            {
+                "region": rng.choice(["A", "B", "C"], size=n),
+                "mileage": rng.uniform(1_000, 20_000, size=n),
+                "age": rng.uniform(18, 80, size=n),
+                "y": rng.normal(10.0, 1.0, size=n),
+            }
+        )
+        config = {
+            "algorithm": "glm",
+            "target": "y",
+            "family": "gaussian",
+            "terms": {
+                "region": {"type": "categorical"},
+                "mileage": {"type": "linear"},
+                "age": {"type": "linear"},
+            },
+            "evaluation": _random_evaluation(),
+        }
+        result = TrainingJob(
+            **build_training_job_kwargs(
+                {**config, "name": "ordered", "output_dir": str(tmp_path)},
+                data=_write(df, tmp_path),
+            )
+        ).run()
+        scoring = load_local_model(result.model_path)
+        assert list(scoring.feature_names) != [c for c in df.columns if c != "y"]
+
+        def score(frame: pl.DataFrame) -> np.ndarray:
+            return (
+                _run_score_pipeline(
+                    scoring, frame.lazy(), task="regression", output_col="p", source="live"
+                )
+                .collect()["p"]
+                .to_numpy()
+            )
+
+        as_trained = score(df)
+        assert len(as_trained) == n
+        np.testing.assert_array_equal(score(df.select(list(reversed(df.columns)))), as_trained)
 
     def test_exported_script_carries_the_offset_and_its_exposure_scaling(self, tmp_path):
         """Under the canonical log link an offset is a multiplier, so an export

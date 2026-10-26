@@ -70,6 +70,8 @@ export interface HauteNodeData extends Record<string, unknown> {
   _frameColumns?: Record<string, ColumnInfo[]>
   /** Schema warnings from last preview — set by usePipelineAPI */
   _schemaWarnings?: { column: string; status: string }[]
+  /** Notes from the last preview of this node (`NodeResult.notes`) — set by usePipelineAPI */
+  _notes?: string[]
   /** Active source the column stash (_columns/_availableColumns/_schemaWarnings)
    *  was captured under — set by usePipelineAPI. A stash whose source no longer
    *  matches the active source is stale and gets invalidated, never served. */

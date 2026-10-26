@@ -85,6 +85,11 @@
   `tuple[set[str] | None, set[str] | None]` — `(produced, referenced)`;
   `None` on either side means opaque for that side. `OPAQUE_CONTRACT = (None, None)` is the
   explicit "declared opaque" sentinel, distinct from "no contract registered at all".
+  `Contract` mirrors it and adds `optional_inputs`: columns a node reads when its input has
+  them and never requires (a Model Score's exposure offset, which a quote without it prices as
+  a full policy term; an additive offset stays a required input). The tuple form folds them into the referenced side, so projection keeps them
+  where they exist; `Contract.inputs`, which the boundary check enforces, excludes them. A
+  registered callback returns the tuple, or a `Contract` when it has optional inputs.
 - **`NODE_REGISTRY`** (`src/haute/_registry.py`, populated on the execution side via
   `haute._builders._register`) — the single
   source of truth mapping `NodeType → (exec builder callable, column_contract callback,
@@ -103,7 +108,7 @@
 - **`VALID_KEYS`** (`_config_validation.py`) — `dict[NodeType, frozenset[str]]`, precomputed
   at import time from each node type's config `TypedDict.__annotations__` plus
   `_UNIVERSAL_KEYS` (`instanceOf`, `inputMapping`, `selected_columns`, `column_renames`,
-  `categorical_levels`, `contract` — keys any node type may legitimately carry).
+  `contract` — keys any node type may legitimately carry).
 - **`NODE_TYPE_TO_FOLDER` / `FOLDER_TO_NODE_TYPE`** (`_config_io.py`) — the bidirectional
   map between a `NodeType` and its `config/<folder>/` sidecar directory name. 17 of the 21
   node types store external config (all except `edgeJoin`, `explore`, `submodel`, and
@@ -323,9 +328,10 @@ replaced.
 **Registry-driven contract lookup.** `haute._builders._register(node_type, columns=..., opaque=...,
 is_behavioural=...)` decorates roughly twenty per-type builder functions, registering both the
 exec builder and — mutually exclusive — either a column-contract callback or the `opaque=True`
-sentinel into `NODE_REGISTRY`. `haute._contracts.get_column_contract(node_type, config)`, called from
-`_config_builder._derive_parse_time_contract` during the parse-time contract cross-check,
-looks up and invokes the registered callback; a `NodeType` with none registered raises
+sentinel into `NODE_REGISTRY`. `haute._contracts.get_node_contract(node_type, config)`, called from
+`_config_builder._derive_parse_time_contract` during the parse-time contract cross-check (and by
+the executor, codegen and projection), looks up and invokes the registered callback and returns a
+`Contract`; `get_column_contract` returns its tuple form. A `NodeType` with none registered raises
 `KeyError` rather than silently falling back to opaque, so a new node type added without a
 contract registration is caught immediately.
 

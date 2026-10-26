@@ -3437,11 +3437,23 @@ class TestEnrichRatingStepRealConfig:
         assert "combined_outputs" not in result
 
 
+def _loads_a_model_without_explanation(monkeypatch) -> None:
+    """The node's model loads (as the preview just loaded it) and has no explanation."""
+    from haute._mlflow_io import ScoringModel
+
+    monkeypatch.setattr(
+        "haute._mlflow_io.load_mlflow_model",
+        lambda **_: ScoringModel(model=object(), feature_names=[], flavor="pyfunc"),
+    )
+
+
 class TestEnrichModelScoreRealConfig:
     """Tests for enrich_model_score with real Haute config."""
 
-    def test_source_type_run(self):
+    def test_source_type_run(self, monkeypatch):
         from haute._trace_enrichment import enrich_model_score
+
+        _loads_a_model_without_explanation(monkeypatch)
 
         config = {
             "output_column": "prediction",
@@ -3460,8 +3472,10 @@ class TestEnrichModelScoreRealConfig:
         assert result["model_identity"]["run_id"] == "abc123"
         assert result["model_identity"]["task"] == "regression"
 
-    def test_source_type_registered(self):
+    def test_source_type_registered(self, monkeypatch):
         from haute._trace_enrichment import enrich_model_score
+
+        _loads_a_model_without_explanation(monkeypatch)
 
         config = {
             "output_column": "score",
@@ -3618,7 +3632,9 @@ class TestEnrichModelScoreRealConfig:
         from haute._trace_enrichment import enrich_model_score
 
         def fake_explain(*args, **kwargs):
-            raise ModelExplanationError("broken GLM explanation")
+            raise ModelExplanationError(
+                "broken GLM explanation", method="rustystats_glm_contributions"
+            )
 
         monkeypatch.setattr(
             "haute._model_explainability.explain_model_score_from_config",
@@ -3644,14 +3660,11 @@ class TestEnrichModelScoreRealConfig:
         assert result["explanation"]["error"] == "broken GLM explanation"
 
     def test_explanation_error_handling_survives_unsupported_artifact(self, monkeypatch):
-        """Defensive: if the supported-config check and the metadata lookup
-        disagree at runtime, the outer enrich_model_score must still return a
-        well-formed ``model_score`` detail (not crash through the catch-all).
-
-        This pins the contract that ``explanation_error_metadata_for_config``
-        is on the error-handling path and may not raise — otherwise a future
-        edit could escalate an internal mismatch into "model score enrichment
-        failed: ..." and lose all the structured detail.
+        """Defensive: an explanation error that names no method (raised before
+        the model's family was known) still leaves a well-formed ``model_score``
+        detail, labelled generically, rather than crashing through the
+        catch-all into "model score enrichment failed: ..." and losing all the
+        structured detail.
         """
         from haute._model_explainability import ModelExplanationError
         from haute._trace_enrichment import enrich_model_score
@@ -3659,8 +3672,6 @@ class TestEnrichModelScoreRealConfig:
         def fake_explain(*args, **kwargs):
             raise ModelExplanationError("some failure")
 
-        # Force the metadata lookup to take its unreachable branch by giving
-        # it an artifact_path the supported-config check would never accept.
         monkeypatch.setattr(
             "haute._model_explainability.explain_model_score_from_config",
             fake_explain,

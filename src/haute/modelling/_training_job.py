@@ -8,7 +8,7 @@ import hashlib
 import os
 import tempfile
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, closing, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,6 +29,7 @@ from haute._polars_utils import bounded_collect_batches, streaming_collect
 from haute.errors import HauteError, HauteValidationError
 from haute.modelling._algorithms import (
     ALGORITHM_REGISTRY,
+    TWEEDIE_LOSS_NEEDS_POWER,
     IterationCallback,
     _malloc_trim,
     resolve_loss_function,
@@ -55,7 +56,7 @@ from haute.modelling._evaluation import (
 )
 from haute.modelling._evaluation import file_sha256 as evaluation_file_sha256
 from haute.modelling._feature_contract import ModelIdentity
-from haute.modelling._metrics import compute_metrics
+from haute.modelling._metrics import TWEEDIE_DEVIANCE_NEEDS_POWER, compute_metrics
 from haute.modelling._model_export import MODEL_FILE_SUFFIXES
 from haute.modelling._row_order import frame_row_order, scan_row_order
 from haute.modelling._shap import shap_diagnostics, shap_sample
@@ -479,7 +480,6 @@ class _PreparedData:
     # Feature dtype snapshot captured at data-prep time, used to build
     # the MLflow signature and the feature contract artifact.
     feature_dtypes: dict[str, str] = field(default_factory=dict)
-    categorical_levels: dict[str, list[str | None]] = field(default_factory=dict)
     target_dtype: str = ""
     target_null_count: int = 0
     offset_dtype: str = ""
@@ -610,7 +610,6 @@ class TrainingJob:
         offset: str | None = None,
         monotone_constraints: dict[str, int] | None = None,
         feature_weights: dict[str, float] | None = None,
-        categorical_levels: Mapping[str, Iterable[str | None]] | None = None,
         evaluation: Mapping[str, Any] | EvaluationConfig | None = None,
         tuning: Mapping[str, Any] | TuningConfig | None = None,
         refit_on_development: bool | None = None,
@@ -640,7 +639,16 @@ class TrainingJob:
         self.mlflow_destination = mlflow_destination
         self.output_dir = output_dir
         self.loss_function = loss_function
+        if (
+            algorithm == "glm"
+            and variance_power is None
+            and str(self.params.get("family", "")).lower() == "tweedie"
+        ):
+            # A Tweedie GLM's power is its var_power; its deviance is measured there.
+            variance_power = self.params.get("var_power")
         self.variance_power = variance_power
+        if algorithm != "glm" and loss_function == "Tweedie" and variance_power is None:
+            raise HauteValidationError(TWEEDIE_LOSS_NEEDS_POWER)
         if positive_class is not None and (
             isinstance(positive_class, float) or not isinstance(positive_class, (bool, int, str))
         ):
@@ -690,6 +698,10 @@ class TrainingJob:
             )
             if config_issue is not None:
                 raise HauteValidationError(config_issue)
+        if self.variance_power is None and any(
+            metric.lower() == "tweedie_deviance" for metric in self.metrics
+        ):
+            raise HauteValidationError(TWEEDIE_DEVIANCE_NEEDS_POWER)
         #: One thread allotment per job, passed to every engine that takes one.
         self.threads = training_threads()
         if split is not None and evaluation is not None:
@@ -786,12 +798,6 @@ class TrainingJob:
                     raise HauteValidationError("evaluation key cannot be a GLM term")
             if evaluation_key not in self.id_columns:
                 self.id_columns.append(evaluation_key)
-        from haute.modelling._feature_contract import normalise_categorical_levels
-
-        self._declared_categorical_levels = normalise_categorical_levels(
-            categorical_levels,
-        )
-
         # Parse split config
         if isinstance(split, SplitConfig):
             self.split_config = split
@@ -804,7 +810,6 @@ class TrainingJob:
         # ``_log_to_mlflow`` and the feature-contract artifact writer can
         # reach the exact dtypes the trainer saw.
         self._contract_feature_dtypes: dict[str, str] = {}
-        self._contract_categorical_levels: dict[str, list[str | None]] = {}
         self._contract_target_dtype: str = ""
         self._contract_offset_dtype: str = ""
         # Shared with the evaluation jobs cloned from this one.
@@ -874,7 +879,6 @@ class TrainingJob:
             # (MLflow signature, feature contract) see the same types the
             # trainer saw — not whatever the post-fit DataFrame reports.
             self._contract_feature_dtypes = dict(prepared.feature_dtypes)
-            self._contract_categorical_levels = dict(prepared.categorical_levels)
             self._contract_target_dtype = prepared.target_dtype
             self._contract_offset_dtype = prepared.offset_dtype
 
@@ -929,11 +933,6 @@ class TrainingJob:
                     train_result,
                     features=prepared.features,
                     cat_features=prepared.cat_features,
-                    categorical_levels=(
-                        train_result.fit_result.categorical_levels
-                        if getattr(train_result.fit_result, "categorical_levels", None) is not None
-                        else prepared.categorical_levels
-                    ),
                 )
 
             result = TrainResult(
@@ -1115,7 +1114,6 @@ class TrainingJob:
             offset=self.offset,
             monotone_constraints=self.monotone_constraints,
             feature_weights=self.feature_weights,
-            categorical_levels=self._declared_categorical_levels,
             evaluation=self.evaluation,
             tuning=self.tuning,
             refit_on_development=self.refit_on_development,
@@ -1174,11 +1172,6 @@ class TrainingJob:
                     for feature, dtype in prepared.feature_dtypes.items()
                     if feature in keep
                 },
-                categorical_levels={
-                    feature: levels
-                    for feature, levels in prepared.categorical_levels.items()
-                    if feature in keep
-                },
                 target_dtype=prepared.target_dtype,
                 target_null_count=prepared.target_null_count,
                 offset_dtype=prepared.offset_dtype,
@@ -1213,17 +1206,17 @@ class TrainingJob:
         return roles
 
     def _catboost_loss_function(self) -> str | None:
-        """The CatBoost ``loss_function`` the fit uses.
+        """The CatBoost ``loss_function`` the fit uses: the job's loss setting.
 
-        The job's loss setting wins over a ``loss_function`` inside ``params``,
-        exactly as the fit params are built, so the offset baseline and the
-        link stamped on the model always describe the same loss.
+        ``params`` cannot name one (Haute owns the key), so the offset baseline
+        and the link stamped on the model always describe this loss.
         """
-        resolved = resolve_loss_function(self.loss_function, self.task, self.variance_power)
-        if resolved:
-            return resolved
-        in_params = self.params.get("loss_function")
-        return str(in_params) if in_params else None
+        return resolve_loss_function(self.loss_function, self.task, self.variance_power)
+
+    @property
+    def _fit_seed(self) -> int:
+        """The seed every family fits with: the evaluation's, 0 for a temporal plan or none."""
+        return int(self.evaluation.seed or 0) if self.evaluation is not None else 0
 
     def _resolve_class_labels(
         self,
@@ -1776,7 +1769,6 @@ class TrainingJob:
                     prepared.cat_features,
                     prepared.total_rows,
                     prepared.feature_dtypes,
-                    prepared.categorical_levels,
                     prepared.target_dtype,
                     0,
                     prepared.offset_dtype,
@@ -2264,10 +2256,6 @@ class TrainingJob:
             feature_dtypes = {
                 f: contract_dtype_name(schema_df[f].dtype, column=f) for f in features
             }
-            categorical_levels = self._categorical_levels_for_contract(
-                features,
-                cat_features,
-            )
             target_dtype = (
                 contract_dtype_name(schema_df[self.target].dtype, column=self.target)
                 if self.target in schema_df.columns
@@ -2288,7 +2276,6 @@ class TrainingJob:
                 cat_features=cat_features,
                 total_rows=filtered_row_count,
                 feature_dtypes=feature_dtypes,
-                categorical_levels=categorical_levels,
                 target_dtype=target_dtype,
                 target_null_count=target_null_count,
                 offset_dtype=offset_dtype,
@@ -2464,6 +2451,7 @@ class TrainingJob:
             loss_function = self._catboost_loss_function()
             if loss_function:
                 fit_params["loss_function"] = loss_function
+            fit_params["random_seed"] = self._fit_seed
 
         # Read train partition
         _report("Loading training data", 0.2)
@@ -2499,9 +2487,8 @@ class TrainingJob:
                     "loss": self._haute_loss(),
                     "variance_power": self.variance_power,
                     "threads": self.threads,
-                    "categorical_levels": self._declared_categorical_levels or None,
                     "class_labels": self._class_labels,
-                    "seed": self.evaluation.seed if self.evaluation is not None else 0,
+                    "seed": self._fit_seed,
                     "device": self.device,
                     "groups": self._plan_group_column(),
                 }
@@ -3052,7 +3039,6 @@ class TrainingJob:
         *,
         features: list[str] | None = None,
         cat_features: list[str] | None = None,
-        categorical_levels: Mapping[str, Iterable[str | None]] | None = None,
     ) -> Path:
         """Save the trained model and its feature contract to disk.
 
@@ -3088,14 +3074,6 @@ class TrainingJob:
                 features=list(features),
                 feature_types=self._feature_dtypes_for_contract(features),
                 categorical_features=list(cat_features or []),
-                categorical_levels=(
-                    categorical_levels
-                    if categorical_levels is not None
-                    else self._categorical_levels_for_contract(
-                        features,
-                        list(cat_features or []),
-                    )
-                ),
                 target_name=self.target,
                 target_type=self._target_dtype_for_contract(),
                 task="classification" if self.task == "classification" else "regression",
@@ -3277,33 +3255,22 @@ class TrainingJob:
         features than we snapshotted — iterate ``features`` to preserve
         the training order.
         """
-        return {f: self._contract_feature_dtypes.get(f, "Float64") for f in features}
+        missing = [f for f in features if f not in self._contract_feature_dtypes]
+        if missing:
+            raise HauteValidationError(
+                f"No dtype was recorded for the features {', '.join(repr(f) for f in missing)}; "
+                "the feature contract never guesses one."
+            )
+        return {f: self._contract_feature_dtypes[f] for f in features}
 
     def _target_dtype_for_contract(self) -> str:
         """Return the target dtype seen at data-prep time."""
-        return self._contract_target_dtype or "Float64"
-
-    def _categorical_levels_for_contract(
-        self,
-        features: list[str],
-        cat_features: list[str],
-    ) -> dict[str, list[str | None]]:
-        """Return declared categorical domains for the model feature boundary."""
-        from haute.modelling._feature_contract import normalise_categorical_levels
-
-        if not self._declared_categorical_levels:
-            return {}
-        feature_set = set(features)
-        selected_levels = {
-            column: levels
-            for column, levels in self._declared_categorical_levels.items()
-            if column in feature_set
-        }
-        return normalise_categorical_levels(
-            selected_levels,
-            features=features,
-            categorical_features=cat_features,
-        )
+        if not self._contract_target_dtype:
+            raise HauteValidationError(
+                f"No dtype was recorded for the target {self.target!r}; the feature contract "
+                "never guesses one."
+            )
+        return self._contract_target_dtype
 
     @property
     def training_identity_sha256(self) -> str:
@@ -3333,7 +3300,6 @@ class TrainingJob:
                 "offset": self.offset,
                 "monotone_constraints": self.monotone_constraints,
                 "feature_weights": self.feature_weights,
-                "categorical_levels": self._declared_categorical_levels or None,
                 "positive_class": self.positive_class,
                 "device": self.device,
             }

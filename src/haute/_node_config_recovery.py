@@ -70,7 +70,6 @@ _UNIVERSAL = {
     "inputMapping": dict[str, str],
     "selected_columns": list[str],
     "column_renames": dict[str, str],
-    "categorical_levels": dict[str, list[str | None]],
     "contract": Any,
 }
 _STRUCTURAL = {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}

@@ -26,7 +26,7 @@ from haute._config_validation import (
     reject_unrecognized_config_keys,
     validate_node_config,
 )
-from haute._contracts import Contract, get_column_contract
+from haute._contracts import Contract, get_node_contract
 from haute._edge_join import normalise_edge_join_decorator_kwargs, require_edge_join_order
 from haute._explore_charts import validate_explore_charts
 from haute._explore_overview import validate_explore_overview
@@ -285,7 +285,7 @@ def _derive_parse_time_contract(node_type: NodeType, config: dict[str, Any]) -> 
         output = config.get("output_column", "prediction")
         outputs = frozenset({output} if output else {"prediction"})
         return Contract(inputs=None, outputs=outputs)
-    return Contract.from_tuple(get_column_contract(node_type, config))
+    return get_node_contract(node_type, config)
 
 
 def resolve_parse_time_contract(node_type: NodeType, config: dict[str, Any]) -> Contract:

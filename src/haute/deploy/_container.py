@@ -413,6 +413,7 @@ from haute.deploy._batch_scoring import (
     prepare_batch_scoring,
     score_batch_worker,
 )
+from haute.deploy._request_frame import frame_rows, request_frame_schema
 from haute.deploy._request_rows import RequestRows
 from haute.deploy._scorer import (
     QuoteRequest,
@@ -433,6 +434,10 @@ _input_node_ids = _manifest["input_node_ids"]
 # A Workbench Input, and a Quote Input with tables, read the quotes from the records as
 # sent, typing each value themselves; any other request input takes the rows as a frame.
 _reads_quotes = reads_records(_pruned_graph, _input_node_ids)
+# A flat Quote Input's rows are typed by the schema its sample recorded, never inferred.
+_request_schema = {{}} if _reads_quotes else request_frame_schema(_manifest["input_schema"])
+# The columns a quote may leave out: its exposures, priced as a full policy term.
+_omittable = frozenset() if _reads_quotes else frozenset(_manifest["omittable_inputs"])
 _output_node_id = _manifest["output_node_id"]
 # Whether a request of several quotes is answered in request order, or refused.
 _request_rows = RequestRows.from_manifest(_manifest["request_rows"])
@@ -676,7 +681,9 @@ async def _quote_batch(request: Request, rows: list):
             output_node_id=_output_node_id,
             artifact_paths=_artifact_paths,
             output_fields=_output_fields,
+            input_schema=None if _reads_quotes else _request_schema,
             request_rows=_request_rows,
+            omittable_inputs=_omittable,
         )
         outcome = await run_isolated_worker_async(
             score_batch_worker,
@@ -843,15 +850,25 @@ async def quote(request: Request) -> JSONResponse:
     if len(rows) > 1:
         return await _quote_batch(request, rows)
 
+    # The body is size-capped, so a single quote is framed before anything is admitted:
+    # a value its column does not hold is refused without holding a context.
+    try:
+        input_df = (
+            QuoteRequest(tuple(rows))
+            if _reads_quotes
+            else frame_rows(rows, _request_schema, omittable=_omittable)
+        )
+    except HauteError as exc:
+        if is_public_contract_error(exc):
+            return JSONResponse(status_code=422, content=exc.to_payload())
+        raise
+
     try:
         row_count = len(rows)
         execution_context = admit_deploy_execution(
             operation="deploy_quote",
             row_count=row_count,
         )
-        execution_context.checkpoint(label="before_deploy_request_dataframe")
-        input_df = QuoteRequest(tuple(rows)) if _reads_quotes else pl.DataFrame(rows)
-        execution_context.checkpoint(label="after_deploy_request_dataframe")
         if _wants_ndjson(request):
             plan = score_graph_lazy(
                 graph=_pruned_graph,
@@ -1069,9 +1086,9 @@ def _pinned_dockerfile_dependency(
     except PackageNotFoundError as exc:
         needed_by = f" (needed by {', '.join(required_by)})" if required_by else ""
         raise DeployError(
-            f"Cannot pin Dockerfile dependency {install_name!r}{needed_by}: "
-            f"installed distribution {distribution_name!r} was not found. The "
-            f"container is pinned to the versions installed in the deploying "
+            f"Cannot pin dependency {install_name!r}{needed_by}: "
+            f"installed distribution {distribution_name!r} was not found. A "
+            f"deployment is pinned to the versions installed in the deploying "
             f"environment, so install {distribution_name!r} here and re-run."
         ) from exc
     return f"{install_name}=={package_version}"

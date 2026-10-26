@@ -9,6 +9,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from haute.errors import HauteValidationError
 from haute.modelling._metrics import (
     _auc,
     _gini,
@@ -757,6 +758,12 @@ class TestComputeMetricsEdgeCases:
         y_pred = np.array([1.0, 2.0])
         with pytest.raises(ValueError, match="Unknown metric"):
             compute_metrics(y_true, y_pred, metric_names=["nonexistent_metric"])
+
+    def test_tweedie_deviance_without_a_variance_power_is_refused(self):
+        y_true = np.array([1.0, 0.0, 2.0])
+        y_pred = np.array([0.8, 0.2, 1.5])
+        with pytest.raises(HauteValidationError, match="tweedie_deviance needs a variance power"):
+            compute_metrics(y_true, y_pred, metric_names=["tweedie_deviance"])
 
     def test_tweedie_deviance_with_variance_power(self):
         y_true = np.array([1.0, 2.0, 3.0])

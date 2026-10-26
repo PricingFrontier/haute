@@ -2,22 +2,27 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 import polars as pl
 
 from haute._logging import get_logger
-from haute.errors import ConfigError, HauteValidationError
-
-if TYPE_CHECKING:
-    from haute._model_source import ModelSource
+from haute.errors import HauteValidationError
 
 logger = get_logger(component="model_explainability")
 
 
 class ModelExplanationError(RuntimeError):
-    """Raised when a model explanation cannot be computed correctly."""
+    """Raised when a model explanation cannot be computed correctly.
+
+    *method* names the explanation that failed when it is known: the loaded
+    family's, which :func:`explain_model_score_from_config` sets.
+    """
+
+    def __init__(self, message: str = "", *, method: str | None = None) -> None:
+        super().__init__(message)
+        self.method = method
 
 
 def _as_float(
@@ -705,50 +710,18 @@ def explain_native_prediction(
     }
 
 
-def _source_requests_supported_explanation(source: ModelSource) -> bool:
-    """Whether the family *source*'s artifact loads as registers an explanation.
+def _full_term_row(input_row: dict[str, Any], scoring_model: Any) -> dict[str, Any]:
+    """The traced row with a missing or null exposure at its full-term value, as scoring reads it.
 
-    Raises:
-        ConfigError: the artifact has a suffix no family registers.
+    An additive offset has none: the explainer refuses a row without it, as scoring does.
     """
-    from haute._model_flavors import family_for_artifact
-    from haute._model_source import FileModelSource
+    offset_column = getattr(scoring_model, "offset_column", None)
+    if not offset_column or input_row.get(offset_column) is not None:
+        return input_row
+    from haute.modelling._algorithms import full_term_offset
 
-    artifact = source.model_path if isinstance(source, FileModelSource) else source.artifact_path
-    return family_for_artifact(artifact).explanation is not None
-
-
-def explanation_error_metadata_for_config(config: dict[str, Any]) -> dict[str, str]:
-    """Return stable error metadata for the configured explanation method.
-
-    Caller (``enrich_model_score``) only invokes this after
-    :func:`explain_model_score_from_config` raised a
-    :class:`ModelExplanationError`, which happens only for a source whose
-    artifact path names a family that registers an explanation, so the
-    method is that family's registered one.
-
-    The function is on the *error-handling* path: it must always return a
-    well-formed dict even when ``_source_requests_supported_explanation`` and
-    this lookup disagree — otherwise an internal mismatch crashes the entire
-    trace step through the outer ``except Exception`` in ``enrich_model_score``.
-    Hit the unreachable branch with a ``logger.warning`` so a regression is
-    visible without poisoning the user's trace.
-    """
-    from haute._model_flavors import family_for_artifact
-
-    artifact_key = "model_path" if config.get("sourceType") == "file" else "artifact_path"
-    artifact_path = str(config.get(artifact_key, ""))
-    try:
-        method = family_for_artifact(artifact_path).explanation
-    except ConfigError:
-        method = None
-    if method is None:
-        logger.warning(
-            "explanation_error_metadata_unsupported_artifact",
-            artifact_path=artifact_path,
-        )
-        method = "model_explanation"
-    return {"type": method, "method": method}
+    neutral = full_term_offset(getattr(scoring_model, "offset_link", None))
+    return input_row if neutral is None else {**input_row, offset_column: neutral}
 
 
 def explain_model_score_from_config(
@@ -761,15 +734,18 @@ def explain_model_score_from_config(
 ) -> dict[str, Any] | None:
     """Load the configured model and return trace explanation detail.
 
-    ``None`` for a node with no source chosen or a model with no supported
-    explanation. A source config that does not parse raises its ``ConfigError``.
+    ``None`` for a node with no source chosen or a model whose family has no
+    explanation, decided from the model as loaded: a registered model or a run
+    whose artifact is discovered names no file to judge by. A source config
+    that does not parse raises its ``ConfigError``; a failed explanation raises
+    :class:`ModelExplanationError` naming the family's method.
     """
     from haute._builders import _configured_pipeline_dir
     from haute._model_flavors import model_family
     from haute._model_source import load_scoring_model, parse_model_source, scoring_contract_path
 
     source = parse_model_source(config)
-    if source is None or not _source_requests_supported_explanation(source):
+    if source is None:
         return None
 
     task = config.get("task", "regression")
@@ -783,29 +759,41 @@ def explain_model_score_from_config(
     effective_prediction = (
         prediction_value if prediction_value is not None else output_row.get(prediction_column)
     )
+    filled = _full_term_row(input_row, scoring_model)
+    notes = (
+        []
+        if filled is input_row
+        else [f"Priced as a full policy term: this row has no {scoring_model.offset_column!r}."]
+    )
     family = model_family(scoring_model.flavor)
     if family.explanation is None:
         return None
-    if family.self_describing:
-        return explain_native_prediction(
-            scoring_model,
-            input_row,
-            task=task,
-            prediction_value=effective_prediction,
-        )
-    if family.explanation == "catboost_shap":
-        return explain_catboost_prediction(
-            scoring_model,
-            input_row,
-            task=task,
-            prediction_value=effective_prediction,
-        )
-    if family.explanation == "rustystats_glm_contributions":
-        return explain_rustystats_glm_prediction(
-            scoring_model,
-            input_row,
-            prediction_value=effective_prediction,
-        )
+    explanation: dict[str, Any] | None = None
+    try:
+        if family.self_describing:
+            explanation = explain_native_prediction(
+                scoring_model,
+                filled,
+                task=task,
+                prediction_value=effective_prediction,
+            )
+        elif family.explanation == "catboost_shap":
+            explanation = explain_catboost_prediction(
+                scoring_model,
+                filled,
+                task=task,
+                prediction_value=effective_prediction,
+            )
+        elif family.explanation == "rustystats_glm_contributions":
+            explanation = explain_rustystats_glm_prediction(
+                scoring_model,
+                filled,
+                prediction_value=effective_prediction,
+            )
+    except ModelExplanationError as exc:
+        raise ModelExplanationError(str(exc), method=family.explanation) from exc
+    if explanation is not None:
+        return {**explanation, "notes": notes} if notes else explanation
     raise ValueError(
         f"Model family {family.flavor!r} registers explanation {family.explanation!r}, "
         "which no explainer implements."

@@ -25,7 +25,7 @@ from haute._config_builder import resolve_parse_time_contract
 from haute._config_validation import reject_removed_config_keys
 from haute._contracts import (
     Contract,
-    get_column_contract,
+    get_node_contract,
 )
 from haute._edge_join import resolve_edge_join_role_indices
 from haute._executable_names import executable_name_violations, format_name_violations
@@ -204,7 +204,7 @@ def _derive_contract_for_codegen(node: GraphNode) -> Contract:
     node_type = node.data.nodeType
     config = node.data.config
     try:
-        return Contract.from_tuple(get_column_contract(node_type, config))
+        return get_node_contract(node_type, config)
     except Exception as exc:
         if not _is_codegen_infra_error(exc):
             raise

@@ -304,13 +304,13 @@ def load_bound_model(
 
     *feature_contract_path* is the contract the node scores under (see
     :func:`scoring_contract_path`); a file source without one discovers the
-    contract saved beside the model, and a run or registered CatBoost model
-    whose offset its file does not declare is bound to the contract its run
-    logged beside it. That model and contract are read from one concrete run,
-    so an alias or ``latest`` that moves between the two reads cannot pair one
-    version's model with another version's contract. *base_dir* is the pipeline
-    directory relative file paths may also resolve against. The returned
-    contract path is the one scoring enforces categorical domains from.
+    contract saved beside the model, and a native model from a run or the
+    registry is bound to the contract its run logged beside it, the one a
+    deployed bundle ships (a pyfunc model directory scores unbound). That model
+    and contract are read from one concrete run, so an alias or ``latest`` that
+    moves between the two reads cannot pair one version's model with another
+    version's contract. *base_dir* is the pipeline directory relative file
+    paths may also resolve against.
     """
     from haute import _mlflow_io
     from haute.modelling._feature_contract import load_contract_cached
@@ -326,21 +326,13 @@ def load_bound_model(
 
     from haute._mlflow_utils import resolve_backend
 
-    # One backend for every read below: a settings change mid-load cannot pair
-    # one backend's model with another's contract.
+    # One backend for the load: a settings change mid-load cannot pair one
+    # backend's model with another's contract.
     backend = resolve_backend(source.mlflow_destination)
     scoring_model = _load_mlflow_source(source, task, backend)
-    contract_path = feature_contract_path
-    if contract_path is None and not scoring_model.offset_declared:
-        run_source = _concrete_run_source(source, backend)
-        if run_source != source:
-            scoring_model = _load_mlflow_source(run_source, task, backend)
-        if not scoring_model.offset_declared:
-            contract_path = _mlflow_io.run_logged_contract_path(
-                run_id=run_source.run_id,
-                artifact_path=run_source.artifact_path,
-                backend=backend,
-            )
+    # The loader read a native model's run contract from the run it resolved
+    # the model from; a pyfunc model directory carries none.
+    contract_path = feature_contract_path or scoring_model.run_contract_path
     contract = load_contract_cached(contract_path) if contract_path is not None else None
     bound = _mlflow_io.bind_feature_contract(
         scoring_model, contract, model_name=model_source_name(source)
@@ -371,34 +363,6 @@ def _load_mlflow_source(
         task=task,
         destination=source.mlflow_destination,
         backend=backend,
-    )
-
-
-def _concrete_run_source(
-    source: RunModelSource | RegisteredModelSource, backend: ResolvedBackend
-) -> RunModelSource:
-    """The source as one run and artifact, resolving a registered version or alias once."""
-    from haute import _mlflow_io
-
-    if isinstance(source, RunModelSource):
-        if source.artifact_path:
-            return source
-        run_id, artifact = _mlflow_io.resolve_run_artifact(
-            source_type=source.source_type,
-            run_id=source.run_id,
-            backend=backend,
-        )
-    else:
-        run_id, artifact = _mlflow_io.resolve_run_artifact(
-            source_type=source.source_type,
-            registered_model=source.registered_model,
-            version=source.version,
-            alias=source.alias,
-            artifact_path=source.artifact_path,
-            backend=backend,
-        )
-    return RunModelSource(
-        run_id=run_id, artifact_path=artifact, mlflow_destination=source.mlflow_destination
     )
 
 

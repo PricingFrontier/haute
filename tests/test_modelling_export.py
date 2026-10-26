@@ -570,16 +570,9 @@ class TestPreviouslyDroppedTrainingKwargs:
         script = generate_training_script(config, "d.parquet")
         assert "id_columns=['policy_id']" in script
 
-    def test_categorical_levels_rendered(self):
-        config = {**MINIMAL_CONFIG, "categorical_levels": {"region": ["north", "south"]}}
-        script = generate_training_script(config, "d.parquet")
-        assert "categorical_levels=" in script
-        assert "'region': ['north', 'south']" in script
-        compile(script, "<test>", "exec")
-
     def test_absent_optional_kwargs_stay_absent(self):
         script = generate_training_script(MINIMAL_CONFIG, "d.parquet")
-        for param in ["fold_column", "id_columns", "categorical_levels"]:
+        for param in ["fold_column", "id_columns"]:
             assert param not in script
         # Tree-model features are opt-in, so the selection is always written.
         assert "feature_columns=['age', 'region', 'risk_score']" in script

@@ -14,14 +14,12 @@ through :func:`workbench_request_frames`, from the records as they were sent.
 
 from __future__ import annotations
 
-import math
-import re
 from collections.abc import Mapping, Sequence
-from datetime import date
 from typing import Any
 
 import polars as pl
 
+from haute._json_values import JsonValueError, json_value
 from haute._workbench_form import QUOTE_DETAILS_ID
 from haute._workbench_tables import (
     IDENTITY_SHAPE,
@@ -34,7 +32,6 @@ from haute._workbench_tables import (
     request_columns,
 )
 
-_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 #: The quote's identity's names, in every table and in quote_details alike.
 _REFERENCE, _OPTION = (name for name, _ in IDENTITY_SHAPE)
 
@@ -174,14 +171,15 @@ def _rows(table: WorkbenchTable, part: object) -> list[Mapping[str, Any]]:
 
 
 def _frame(table: WorkbenchTable, rows: Sequence[Mapping[str, Any]]) -> pl.DataFrame:
+    schema = table.frame_schema
     columns = {
         column.name: [
-            _value(column, row.get(column.name), _spot(table, column, index))
+            _value(column, schema[column.name], row.get(column.name), _spot(table, column, index))
             for index, row in enumerate(rows)
         ]
         for column in table.columns
     }
-    return pl.DataFrame(columns, schema=table.frame_schema)
+    return pl.DataFrame(columns, schema=schema)
 
 
 def _spot(table: WorkbenchTable, column: WorkbenchColumn, index: int) -> str:
@@ -190,32 +188,16 @@ def _spot(table: WorkbenchTable, column: WorkbenchColumn, index: int) -> str:
     return f"{table.name}{row}.{column.name}"
 
 
-def _value(column: WorkbenchColumn, value: object, spot: str) -> Any:
-    """*value* as the column's type holds it, or a refusal naming *spot* and the type."""
-    if value is None:
-        return None
-    kind = column.type
-    if kind == "str":
-        fits = isinstance(value, str)
-    elif kind == "bool":
-        fits = isinstance(value, bool)
-    elif kind == "int":
-        fits = isinstance(value, int) and not isinstance(value, bool)
-    elif kind == "float":
-        fits = isinstance(value, int | float) and not isinstance(value, bool)
-        if fits:
-            value = float(value)  # type: ignore[arg-type]
-            fits = math.isfinite(value)
-    else:
-        fits = isinstance(value, str) and _ISO_DATE.fullmatch(value) is not None
-        if fits:
-            try:
-                value = date.fromisoformat(value)  # type: ignore[arg-type]
-            except ValueError:
-                fits = False
-    if not fits:
-        raise WorkbenchInputError(f"{spot} is {_shown(value)}, not {column.type!r}")
-    return value
+def _value(column: WorkbenchColumn, dtype: pl.DataType, value: object, spot: str) -> Any:
+    """*value* as the column's type holds it, or a refusal naming *spot* and the type.
+
+    The check is a flat Quote Input's request's too (:func:`json_value`): an integer within
+    the column's range, a float the column holds exactly, a string, a boolean, an ISO date.
+    """
+    try:
+        return json_value(value, dtype)
+    except JsonValueError:
+        raise WorkbenchInputError(f"{spot} is {_shown(value)}, not {column.type!r}") from None
 
 
 def _kind(value: object) -> str:

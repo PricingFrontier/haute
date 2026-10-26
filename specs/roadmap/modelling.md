@@ -11,8 +11,8 @@ six trained families (CatBoost, GLM through RustyStats, XGBoost, LightGBM,
 EBM and t-boost) are in scope only for what each backend exposes to a caller
 that must bound memory; their losses, tuning and evaluation are out of scope.
 The GLM distributions that `MOD-M01` names in its acceptance are the subject
-of that package, not a tuning choice. `MOD-R01` to `MOD-R06` come from the
-[25 October 2026 codebase review](codebase-review-2026-10-25.md) and are the
+of that package, not a tuning choice. `MOD-R03`, `MOD-R05` and `MOD-R06` come from
+the [25 October 2026 codebase review](codebase-review-2026-10-25.md) and are the
 exception to that scope: they cover what the review found in the fits, the
 contracts and the training lifecycle.
 
@@ -56,10 +56,7 @@ something this page settles.
 |---|---|---:|---|
 | MOD-M01 | Decision | P3 | Exact chunked GLM fitting under a memory budget. |
 | MOD-M02 | Decision | P3 | A low-memory boosted-tree fitting mode under an explicit user choice. |
-| MOD-R01 | Planned | P1 | A GLM's contract records the levels each categorical term was fitted on, and an unseen or null level is refused on every scoring path instead of priced as the reference level. |
-| MOD-R02 | Planned | P2 | A dispersion estimate registers its cancellation token before preparing, prepares off the request thread, and reports curated errors. |
 | MOD-R03 | Planned | P2 | Training publication validates the evaluation plan outside the job-store lock, and the plan stores memberships compactly. |
-| MOD-R04 | Planned | P2 | Fit parameters have no hidden defaults: an unset Tweedie power is refused by the job itself, CatBoost reserves its loss keys, a missing feature or dtype is an error, and `tweedie_deviance` needs its power. |
 | MOD-R05 | Planned | P3 | Diagnostics are measured as the fit was: weighted loss importance, one-based GPU iterations, no GLM `best_iteration`, a dispersion search that stops on `MemoryError`, the offset dtype in the contract, params logged whole. |
 | MOD-R06 | Planned | P3 | The training memory log is opt-in, the dead compatibility fields are gone, and the four native wrappers share one base. |
 
@@ -217,83 +214,6 @@ external-memory measurement. The model-card and result metadata surface.
 `src/haute/modelling/_model_card.py`; `src/haute/_ram_estimate.py` (the
 existing downsample decision).
 
-### MOD-R01 — GLM contracts record fitted levels
-**Why:** RustyStats encodes an unknown categorical label as all-zero dummies,
-so a GLM scores a level it never saw in training, and a null in a categorical
-term, exactly as the reference level (probed: levels D and Z and a null all
-priced at the A value). Haute's GLM contract records no fitted levels, only a
-domain the user declared upstream; `_load_rustystats_model` sets
-`cat_feature_names` empty, so `_validate_features_uncached` knows no GLM
-categoricals and nothing refuses the value on any scoring path, while the
-native families record `fit_categorical_levels` and `encode_frame` refuses an
-unseen value. A GLM's contract `categorical_features` is also dtype-derived,
-so a `categorical` term on an `Int64` column is not a categorical feature in
-the contract at all. New levels are routine in production scoring, and the
-high-level invariant says drift raises rather than producing a plausible
-wrong prediction.
-
-**Plan:** Record fitted labels by categorical term type in the GLM contract,
-including an `Int64` column used as a categorical term, while preserving any
-upstream declared domain as a separate constraint. Record an explicit null policy:
-refuse nulls unless the fitted model has a defined, separately encoded null level;
-presence of nulls in training alone does not prove that. Enforce the contract through
-the shared loaded-model/scorer validation on every path. A check confined to the
-training adapter is insufficient: `_load_rustystats_model` loads the native model
-and deployed scoring calls `ScoringModel.predict` directly. Keep other model families'
-declared-domain and encoding semantics intact.
-
-**Acceptance:** Scoring a GLM on a level absent from training raises naming
-the term and the value, in the preview, a standalone run and a deployed
-bundle after serialising to `.rsglm` and loading it again. Cover string and integer
-categorical terms, an upstream domain containing an unfitted level and the explicit
-null policy. The probe's null is refused and its A, B and C values are unchanged;
-other families retain their existing domain behaviour.
-
-**Dependencies:** `DEP-R07` binds the run's contract on every path; this
-package makes the GLM contract carry what binding needs.
-
-**Evidence:** `src/haute/modelling/_rustystats.py::GLMAlgorithm`;
-`src/haute/modelling/_rustystats.py::prepare_glm_design`;
-`src/haute/modelling/_training_job.py::_save_artifacts`;
-`src/haute/_mlflow_io.py::_load_rustystats_model`;
-`src/haute/_model_scorer.py::_validate_features_uncached`;
-`src/haute/modelling/_feature_contract.py::validate_categorical_value_domains`.
-
-### MOD-R02 — The dispersion estimate's lifecycle
-**Why:** `start_dispersion_estimate` creates its admitted context without a
-cancellation token and registers the job's token only after
-`_execute_and_sink` returns, so cancelling during preparation finds no token
-(`cancel` returns `False`), the preparation child keeps running the upstream
-pipeline under the job's admitted budget, and the job is nevertheless
-transitioned to `cancelled`, freeing the single running slot while the work
-continues; training registers its token before preparation. The RAM estimate,
-the upstream materialisation and the worker launch all run inside the HTTP
-request, which returns the job id only afterwards, so on a large pipeline the
-request blocks for minutes and the client has no id to poll or cancel;
-training moved exactly this work to an owned preparation thread. A start
-failure outside the HTTP and memory classes records `str(exc)` verbatim where
-training curates it.
-
-**Plan:** Register the token under the start lock as `start()` does and pass
-it into the admitted context before preparing; run the dispersion preparation
-through the same owned thread as training, parametrised on the launch
-function, returning the job id at once; route failures through
-`_friendly_error` and the HTTP-failure parts.
-
-**Acceptance:** Cancelling during preparation stops the preparation worker and
-releases admission before the job reads `cancelled`; the start route answers
-within the admission wait on a large pipeline; a start failure carries a
-curated message.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/routes/_training_lifecycle.py::start_dispersion_estimate`;
-`src/haute/routes/_training_lifecycle.py::cancel_dispersion`;
-`src/haute/routes/_training_lifecycle.py::_launch_dispersion_protocol`;
-`src/haute/routes/_training_lifecycle.py::_prepare_and_launch_training`;
-`src/haute/routes/_background_jobs.py::CancellableJobRegistry`;
-`src/haute/routes/modelling.py::estimate_dispersion`.
-
 ### MOD-R03 — Publication validates outside the lock
 **Why:** The evaluation plan stores every source position of the development
 set and of every validation fit's train and validation sets as JSON integers,
@@ -316,43 +236,6 @@ publication.
 `src/haute/routes/_training_artifacts.py::_validate_evaluation_artifact_contents`;
 `src/haute/routes/_job_store.py::compare_and_publish_completion`;
 `src/haute/routes/_training_lifecycle.py`.
-
-### MOD-R04 — Fit parameters without hidden defaults
-**Why:** `TrainingJob` does not gate the Tweedie variance power: a direct
-`TrainingJob(loss_function="Tweedie")` without `variance_power` trains at 1.5
-for CatBoost (`resolve_loss_function` fills it in), XGBoost and LightGBM (a
-`None` parameter is dropped; probed), the library default the objective gate
-exists to refuse; only the config builder and the route gate it. CatBoost's
-`reserved_params` names only `thread_count` and `class_names`, so a
-`loss_function`, `objective`, `eval_metric` or `random_seed` typed into the
-Parameters JSON is accepted and silently overwritten by the node's loss, while
-every other family refuses `objective`; its early-stopping block pops a key the
-guarding `if` has shown absent. The contract writer guesses `Float64` for a
-feature missing from the dtype snapshot and for an empty target dtype, the
-fallback the specification forbids. `_build_pool` silently drops any requested
-feature absent from the frame and recomputes the categorical indices over the
-survivors, so the one function every CatBoost fit and diagnostic goes through
-can build a pool of the wrong width. `tweedie_deviance` requested on a model
-without a variance power is computed at a hard-coded 1.5 without saying so.
-
-**Plan:** Raise `HauteValidationError` in `TrainingJob.__init__` (or in each
-adapter) when the loss is Tweedie and the power is `None`, and drop the 1.5
-default; add the loss, objective, metric, seed and file-writing keys to
-CatBoost's `reserved_params`; raise for a feature missing from the snapshot or
-the frame; require a variance power whenever the metric is computed.
-
-**Acceptance:** A `TrainingJob` without a Tweedie power is refused for every
-family; a CatBoost `loss_function` in the Parameters JSON is refused by name;
-`_build_pool` raises naming a missing feature; `tweedie_deviance` without a
-power raises.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/modelling/_algorithms.py::resolve_loss_function`;
-`src/haute/modelling/_algorithms.py::_build_pool`;
-`src/haute/modelling/_descriptors.py`;
-`src/haute/modelling/_training_job.py::_feature_dtypes_for_contract`;
-`src/haute/modelling/_metrics.py::_tweedie_deviance`.
 
 ### MOD-R05 — Diagnostics measured as the fit was
 **Why:** The CatBoost `LossFunctionChange` importance is computed on a pool

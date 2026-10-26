@@ -31,16 +31,18 @@ from haute._model_source import BoundModel, ModelSource, require_model_source
 from haute._polars_dtypes import refuse_wide_integers
 from haute._polars_utils import bounded_collect_batches
 from haute._types import _Frame
-from haute.errors import ConfigError
+from haute.errors import ConfigError, HauteValidationError
 from haute.errors import FeatureMismatchError as FeatureMismatchError
 
 if TYPE_CHECKING:
     from typing import IO
 
+    from haute._execution_context import FullTermTally
+
     # ``Task`` is the shared classification/regression literal already defined
     # for the feature contract; reuse it so the scorer surface does not invent
     # a second, drift-prone spelling of the task domain.
-    from haute.modelling._feature_contract import Task
+    from haute.modelling._feature_contract import FeatureContract, Task
 
 logger = get_logger(component="model_scorer")
 
@@ -96,7 +98,6 @@ _ModelFeatureContractKey: TypeAlias = tuple[tuple[str, ...], frozenset[str], str
 _FeatureValidationCacheKey: TypeAlias = tuple[_ModelFeatureContractKey, _SchemaValidationKey]
 _FeatureValidationResult: TypeAlias = tuple[list[str], list[str]]
 _FeatureValidationLastEntry: TypeAlias = tuple[_FeatureValidationCacheKey, _FeatureValidationResult]
-_CategoricalLevels: TypeAlias = Mapping[str, Iterable[str | None]] | None
 
 _feature_validation_cache: LRUCache[_FeatureValidationCacheKey, _FeatureValidationResult] = (
     LRUCache(max_size=_MLFLOW_MODEL_CACHE_MAX_SIZE)
@@ -247,10 +248,11 @@ def _validate_features_uncached(
 ) -> tuple[list[str], list[str]]:
     """Compare model features against available schema columns.
 
-    Returns ``(usable_features, missing_features)``.
-    Raises :class:`FeatureMismatchError` when any features are missing,
-    their relative order disagrees with training, or a categorical column
-    was supplied with a numeric dtype.
+    Returns ``(usable_features, missing_features)``, the usable ones in the
+    model's own order: every scoring path selects that list from the input, so
+    the order the input's columns arrive in never matters. Raises
+    :class:`FeatureMismatchError` when any features are missing or a
+    categorical column was supplied with a numeric dtype.
 
     Cost: O(n) set operations on column names — no data materialisation.
 
@@ -260,17 +262,14 @@ def _validate_features_uncached(
     schema_order = schema.names()
     available = set(schema_order)
     expected = scoring_model.feature_names
-
-    missing = [f for f in expected if f not in available]
-    usable = [f for f in expected if f in available]
-
-    # The trained-with offset column is a required scoring input even though
-    # it is not a design-matrix feature (RustyStats already lists it in
-    # ``required_columns``; CatBoost does not, so it is enforced here).
-    # Scoring without it would silently proceed on an offset-0 basis.
+    # The trained-with offset is never a missing feature: scoring prices a quote
+    # without an exposure for a full policy term and refuses a missing additive
+    # offset itself (``_full_term_offset``). A GLM lists it among its required
+    # columns, so it stays usable.
     offset_column = _declared_offset_column(scoring_model)
-    if offset_column and offset_column not in available and offset_column not in missing:
-        missing.append(offset_column)
+
+    missing = [f for f in expected if f not in available and f != offset_column]
+    usable = [f for f in expected if f in available or f == offset_column]
 
     # Cheap dtype checks for categorical expectations
     type_mismatches: list[tuple[str, str, str]] = []
@@ -308,32 +307,6 @@ def _validate_features_uncached(
             available=sorted(available),
             missing=missing,
             type_mismatches=type_mismatches,
-        )
-
-    # Feature order check: CatBoost treats the categorical set as positional
-    # indices into the feature vector, so a reorder of training features
-    # silently misaligns every categorical column.  Enforce that the input
-    # schema presents the model's features in the same relative order as
-    # training — extra columns elsewhere in the schema are fine.
-    schema_position_by_name: dict[str, int] = {}
-    for index, name in enumerate(schema_order):
-        schema_position_by_name.setdefault(name, index)
-
-    feature_positions = [
-        (name, schema_position_by_name[name]) for name in expected if name in available
-    ]
-    actual_order_by_position = [name for name, _ in sorted(feature_positions, key=lambda p: p[1])]
-    if actual_order_by_position != list(expected):
-        raise FeatureMismatchError(
-            "Feature order mismatch between training and scoring: the "
-            "input data presents the model's features in a different order. "
-            f"Expected order: {list(expected)}; actual relative order in "
-            f"the input schema: {actual_order_by_position}. "
-            "CatBoost categorical indices are positional — reordering features "
-            "at score time silently misaligns categorical columns.",
-            expected=list(expected),
-            actual=actual_order_by_position,
-            schema_order=list(schema_order),
         )
 
     return usable, missing
@@ -499,6 +472,13 @@ def model_score_whole_output() -> Iterator[None]:
         _score_whole_output.reset(token)
 
 
+# Where the scorer running now records what it priced as a full policy term
+# (set by ``ModelScorer.score``); each scoring path reads it once, as it
+# starts, so a row-local scan's callbacks record into the same tally.
+_full_term_tally: contextvars.ContextVar[FullTermTally | None] = contextvars.ContextVar(
+    "haute_model_score_full_term_tally", default=None
+)
+
 # How many rows the scored frame holds per row of the source it is read from:
 # the product of the scenario expansions between them (1: none). The input
 # sink reads that source in proportionally smaller chunks.
@@ -633,16 +613,57 @@ def _require_positive_log_link_offset(
     )
 
 
-def _require_offset_column(available: Iterable[str], offset_column: str | None) -> None:
-    """Fail loud when a scoring input lacks the model's offset column."""
-    if offset_column and offset_column not in set(available):
+def _full_term_offset(
+    frame: pl.DataFrame,
+    offset_column: str | None,
+    offset_link: str | None,
+    tally: FullTermTally | None = None,
+) -> pl.DataFrame:
+    """The frame scoring reads, with a missing or null exposure at its full-term value.
+
+    A quote is priced for a full policy term: a missing exposure is one, which
+    adds nothing to a log-link model. An additive offset is a base premium
+    with no full-term value, so a missing, null or non-finite one is refused.
+    Scoring reads this copy and attaches predictions to the caller's frame, so
+    the caller's own columns are never filled. *tally*, when given, records
+    what was filled, for the preview's note.
+    """
+    if not offset_column:
+        return frame
+    from haute.modelling._algorithms import full_term_offset
+
+    neutral = full_term_offset(offset_link)
+    if neutral is None:
+        _require_additive_offset(frame, offset_column)
+        return frame
+    missing = offset_column not in frame.columns
+    empty = frame.height if missing else frame.get_column(offset_column).null_count()
+    if tally is not None:
+        tally.record(offset_column, rows=frame.height, empty=empty, missing=missing)
+    if missing:
+        return frame.with_columns(pl.lit(neutral, dtype=pl.Float64).alias(offset_column))
+    if empty == 0:
+        return frame
+    return frame.with_columns(pl.col(offset_column).cast(pl.Float64).fill_null(neutral))
+
+
+def _require_additive_offset(frame: pl.DataFrame, offset_column: str) -> None:
+    """Refuse a missing, null or non-finite additive offset: a base premium has no default."""
+    if offset_column not in frame.columns:
         raise FeatureMismatchError(
-            f"Scoring input is missing the model's offset column "
-            f"{offset_column!r}. The model was trained with this offset and "
-            f"scoring without it would silently mis-scale every prediction. "
-            f"Provide the column (use a constant 1 for a unit basis).",
+            f"Scoring input is missing the model's offset column {offset_column!r}. The "
+            "model adds it to every prediction (a base premium, not an exposure), so it has "
+            "no default; provide the column.",
             missing=[offset_column],
             offset_column=offset_column,
+        )
+    values = frame.get_column(offset_column).cast(pl.Float64)
+    invalid = values.null_count() + int((~values.drop_nulls().is_finite()).sum())
+    if invalid:
+        raise HauteValidationError(
+            f"Scoring: offset column {offset_column!r} must be a finite number in every row, "
+            f"but {invalid:,} rows are empty or not finite. The model adds it to every "
+            "prediction (a base premium, not an exposure), so it has no default."
         )
 
 
@@ -665,7 +686,6 @@ def _catboost_baseline_pool(
 
     from haute.modelling._algorithms import offset_baseline
 
-    _require_offset_column(frame.columns, offset_column)
     if offset_link is None:
         raise FeatureMismatchError(
             f"Scoring input supplies offset column {offset_column!r}, but the CatBoost model "
@@ -816,9 +836,9 @@ def _score_input_projection_columns(
     scoring only needs the model features plus the projected passthrough
     columns (and any optional passthrough columns actually present) —
     everything else can be pruned from the single upstream execution.
-    The model's offset column, when set, is always part of the scoring
-    input and survives the pruning.  Shared by the eager and batched
-    paths so both prune identically.
+    The model's offset column survives the pruning when the input has it;
+    scoring fills a missing one with its full-term value.  Shared by the
+    eager and batched paths so both prune identically.
     """
     if write_projection is None or write_projection.passthrough_columns is None:
         return None
@@ -828,7 +848,8 @@ def _score_input_projection_columns(
         optional_present = write_projection.optional_passthrough_columns & schema_names
     required = frozenset(features) | write_projection.passthrough_columns | optional_present
     if offset_column:
-        required |= {offset_column}
+        present = offset_column in lf.collect_schema().names()
+        required = required | {offset_column} if present else required - {offset_column}
     return required
 
 
@@ -841,7 +862,6 @@ def _score_eager_unified(
     task: str,
     output_col: str,
     write_projection: ScoreWriteProjection | None = None,
-    categorical_levels: _CategoricalLevels = None,
     offset_column: str | None = None,
     offset_link: str | None = None,
 ) -> pl.LazyFrame:
@@ -852,9 +872,7 @@ def _score_eager_unified(
     same frame, so row alignment is structural: the upstream plan is
     never re-executed, and an order-unstable upstream op (``group_by``
     without ``maintain_order``, ``unique``, a streaming join) cannot
-    land predictions on the wrong rows.  Declared categorical value
-    domains are validated against the same materialisation — the exact
-    rows the model scores — before ``predict`` runs.
+    land predictions on the wrong rows.
 
     A concrete write projection prunes the collection to the columns the
     output needs (mirroring the batched path's sink projection); without
@@ -869,8 +887,6 @@ def _score_eager_unified(
     from haute._polars_utils import streaming_collect
 
     offset_column, offset_link = _resolve_offset(model, flavor, offset_column, offset_link)
-    if offset_column:
-        _require_offset_column(lf.collect_schema().names(), offset_column)
     collect_lf = lf
     input_columns = _score_input_projection_columns(
         lf,
@@ -894,9 +910,9 @@ def _score_eager_unified(
         flavor,
         task,
         output_col,
-        categorical_levels=categorical_levels,
         offset_column=offset_column,
         offset_link=offset_link,
+        tally=_full_term_tally.get(),
     )
     return _project_scored_output(
         scored.lazy(),
@@ -915,19 +931,19 @@ def _score_collected_frame(
     task: str,
     output_col: str,
     *,
-    categorical_levels: _CategoricalLevels,
     offset_column: str | None,
     offset_link: str | None,
+    tally: FullTermTally | None = None,
 ) -> tuple[pl.DataFrame, list[str]]:
-    """Validate and score one materialised frame; return it with predictions."""
+    """Score one materialised frame; return it with predictions."""
     from haute._mlflow_io import _prepare_predict_frame
 
-    _validate_runtime_categorical_values(frame, categorical_levels or {})
+    scoring = _full_term_offset(frame, offset_column, offset_link, tally)
     predict_features = _offset_predict_features(features, flavor, offset_column)
     if flavor == "rustystats":
-        _require_positive_log_link_offset(frame, offset_column, offset_link)
+        _require_positive_log_link_offset(scoring, offset_column, offset_link)
     x_data = _prepare_predict_frame(
-        frame.select(predict_features),
+        scoring.select(predict_features),
         predict_features,
         cat_feature_names=cat_feature_names,
         flavor=flavor,
@@ -935,7 +951,7 @@ def _score_collected_frame(
     if offset_column and flavor == "catboost":
         x_data = _catboost_baseline_pool(
             x_data,
-            frame,
+            scoring,
             features,
             cat_feature_names,
             offset_column,
@@ -966,7 +982,6 @@ def _score_row_local_scan(
     task: str,
     *,
     write_projection: ScoreWriteProjection | None,
-    categorical_levels: _CategoricalLevels,
 ) -> pl.LazyFrame:
     """Score through a row-local Python scan that Polars can push a limit into.
 
@@ -984,8 +999,6 @@ def _score_row_local_scan(
     offset_column = _declared_offset_column(scoring_model)
     offset_link = _declared_offset_link(scoring_model)
     schema = lf.collect_schema()
-    if offset_column:
-        _require_offset_column(schema.names(), offset_column)
     input_lf = lf
     input_columns = _score_input_projection_columns(
         lf,
@@ -1017,6 +1030,8 @@ def _score_row_local_scan(
     if proba_dtype is not None:
         output_dtypes[f"{output_col}_proba"] = proba_dtype
     output_schema = pl.Schema({**input_schema, **output_dtypes})
+    # Read now: the scan's callbacks may run on another thread.
+    tally = _full_term_tally.get()
 
     def score_batch(frame: pl.DataFrame) -> pl.DataFrame:
         scored, _generated = _score_collected_frame(
@@ -1027,17 +1042,18 @@ def _score_row_local_scan(
             flavor,
             task,
             output_col,
-            categorical_levels=categorical_levels,
             offset_column=offset_column,
             offset_link=offset_link,
+            tally=tally,
         )
         return scored.with_columns(
             pl.col(name).cast(dtype, strict=True) for name, dtype in output_dtypes.items()
         )
 
-    required_input_columns = set(predict_features)
-    if offset_column:
-        required_input_columns.add(offset_column)
+    # Features were validated present; a missing offset is filled per batch
+    # (``_full_term_offset``), so only a present one is a required input.
+    required_input_columns = set(predict_features) | ({offset_column} if offset_column else set())
+    required_input_columns &= set(input_schema.names())
     return _project_scored_output(
         row_local_python_scan(
             input_lf,
@@ -1078,32 +1094,6 @@ def _normalise_score_write_projection(
     )
 
 
-def _normalise_runtime_categorical_levels(
-    categorical_levels: _CategoricalLevels,
-    *,
-    features: list[str],
-) -> dict[str, list[str | None]]:
-    from haute.modelling._feature_contract import normalise_categorical_levels
-
-    feature_set = set(features)
-    return {
-        column: levels
-        for column, levels in normalise_categorical_levels(categorical_levels).items()
-        if column in feature_set
-    }
-
-
-def _validate_runtime_categorical_values(
-    frame: pl.LazyFrame | pl.DataFrame,
-    categorical_levels: Mapping[str, Iterable[str | None]],
-) -> None:
-    if not categorical_levels:
-        return
-    from haute.modelling._feature_contract import validate_categorical_value_domains
-
-    validate_categorical_value_domains(frame, categorical_levels)
-
-
 def _ordered_required_columns(
     schema_names: list[str],
     required_columns: frozenset[str],
@@ -1127,7 +1117,6 @@ def _score_batched_unified(
     output_col: str,
     write_projection: ScoreWriteProjection | None = None,
     temporary_paths: list[str] | None = None,
-    categorical_levels: _CategoricalLevels = None,
     offset_column: str | None = None,
     offset_link: str | None = None,
 ) -> pl.LazyFrame:
@@ -1142,8 +1131,6 @@ def _score_batched_unified(
     from haute._mlflow_io import ScoringModel
 
     offset_column, offset_link = _resolve_offset(model, flavor, offset_column, offset_link)
-    if offset_column:
-        _require_offset_column(lf.collect_schema().names(), offset_column)
     carrier = ScoringModel(
         model=model,
         feature_names=features,
@@ -1185,7 +1172,6 @@ def _score_batched_unified(
             output_col,
             task,
             write_projection=write_projection,
-            categorical_levels=categorical_levels,
             destination=destination,
         )
     finally:
@@ -1215,7 +1201,6 @@ def score_frame(
     required_output_columns: frozenset[str] | set[str] | None = None,
     write_projection: ScoreWriteProjection | None = None,
     temporary_paths: list[str] | None = None,
-    categorical_levels: _CategoricalLevels = None,
     offset_column: str | None = None,
     offset_link: str | None = None,
 ) -> pl.LazyFrame:
@@ -1287,11 +1272,6 @@ def score_frame(
             task=task,
         )
 
-    normalised_levels = _normalise_runtime_categorical_levels(
-        categorical_levels,
-        features=features,
-    )
-
     if batch:
         return _score_batched_unified(
             model,
@@ -1303,7 +1283,6 @@ def score_frame(
             output_col,
             write_projection=write_projection,
             temporary_paths=temporary_paths,
-            categorical_levels=normalised_levels,
             offset_column=offset_column,
             offset_link=offset_link,
         )
@@ -1316,7 +1295,6 @@ def score_frame(
         task,
         output_col,
         write_projection=write_projection,
-        categorical_levels=normalised_levels,
         offset_column=offset_column,
         offset_link=offset_link,
     )
@@ -1336,12 +1314,13 @@ def _run_score_pipeline(
     schema_only: bool = False,
     required_output_columns: frozenset[str] | set[str] | None = None,
     temporary_paths: list[str] | None = None,
-    categorical_levels: _CategoricalLevels = None,
     preamble_ns: dict[str, Any] | None = None,
+    contract: FeatureContract | None = None,
 ) -> _Frame:
     """Core scoring logic shared by ``ModelScorer.score()`` and deploy scorer.
 
-    1. Intersect model features with available columns.
+    1. Check the input against the bound feature contract, then intersect
+       model features with available columns.
     2. Run eager or batched prediction.
     3. Optionally execute user post-processing code.
 
@@ -1359,6 +1338,10 @@ def _run_score_pipeline(
     preamble_ns
         The preamble's names (the run's global constants among them), which
         the post-processing code sees beside ``model``.
+    contract
+        The feature contract *scoring_model* is bound to, whose dtypes the
+        input must match as a deployed request's do; the deploy scorer checks
+        its requests before loading and passes none.
     source
         ``"live"`` → eager path; anything else → batched path.
     row_limit
@@ -1372,12 +1355,11 @@ def _run_score_pipeline(
     from haute._mlflow_io import _score_eager as score_eager_
 
     schema = lf.collect_schema()
+    if contract is not None:
+        from haute.modelling._feature_contract import assert_schema_matches_contract
+
+        assert_schema_matches_contract(schema, contract)
     features, _missing = _validate_features(scoring_model, schema)
-    resolved_offset = _declared_offset_column(scoring_model)
-    normalised_levels = _normalise_runtime_categorical_levels(
-        categorical_levels,
-        features=features,
-    )
 
     # No catch-all here by design.  ``_validate_features`` above already
     # raises ``FeatureMismatchError`` with full schema context for the
@@ -1408,37 +1390,9 @@ def _run_score_pipeline(
             output_col,
             task,
             write_projection=write_projection,
-            categorical_levels=normalised_levels,
         )
     elif source == "live":
         eager_lf = lf
-        if normalised_levels:
-            # Materialise ONCE so domain validation inspects the exact rows
-            # that get scored.  Validating the lazy plan would execute the
-            # upstream a second time (the eager scorer collects again), and
-            # an order- or row-unstable upstream could diverge between the
-            # two executions.  The downstream eager collect of this
-            # DataFrame-backed plan re-runs no upstream compute.
-            from haute._polars_utils import streaming_collect
-
-            validation_lf = lf
-            validation_columns = _score_input_projection_columns(
-                lf,
-                features,
-                write_projection,
-                offset_column=resolved_offset,
-            )
-            if validation_columns is not None:
-                validation_lf = lf.select(
-                    _ordered_required_columns(
-                        schema.names(),
-                        validation_columns,
-                        context="live model-score categorical validation projection",
-                    )
-                )
-            collected = streaming_collect(validation_lf)
-            _validate_runtime_categorical_values(collected, normalised_levels)
-            eager_lf = collected.lazy()
         result_lf = score_eager_(
             scoring_model,
             eager_lf,
@@ -1460,7 +1414,6 @@ def _run_score_pipeline(
             task,
             write_projection=write_projection,
             temporary_paths=temporary_paths,
-            categorical_levels=normalised_levels,
         )
 
     if code:
@@ -1487,7 +1440,6 @@ def _score_batched_standalone(
     task: str,
     write_projection: ScoreWriteProjection | None = None,
     temporary_paths: list[str] | None = None,
-    categorical_levels: _CategoricalLevels = None,
 ) -> pl.LazyFrame:
     """Sink → batch score → lazy scan (low-memory path).
 
@@ -1505,7 +1457,6 @@ def _score_batched_standalone(
         batch=True,
         write_projection=write_projection,
         temporary_paths=temporary_paths,
-        categorical_levels=categorical_levels,
         offset_column=_declared_offset_column(scoring_model),
         offset_link=_declared_offset_link(scoring_model),
     )
@@ -1546,9 +1497,7 @@ class ModelScorer:
     feature_contract_path : str | None
         The resolved feature contract the model scores under
         (:func:`haute._model_source.scoring_contract_path`: explicit, or saved
-        beside a model file). The model is bound to it, and when it declares
-        categorical value domains, runtime declarations must match and
-        observed values are checked before prediction.
+        beside a model file). The model is bound to it.
     base_dir : str | Path | None
         The pipeline directory a relative model file may resolve against.
     reuse_loaded_model : bool
@@ -1574,14 +1523,12 @@ class ModelScorer:
         schema_only: bool = False,
         required_output_columns: frozenset[str] | set[str] | None = None,
         feature_contract_path: str | None = None,
-        categorical_levels: _CategoricalLevels = None,
         reuse_loaded_model: bool = False,
         input_fanout: int = 1,
         base_dir: str | Path | None = None,
         preamble_ns: dict[str, Any] | None = None,
+        full_term_tally: FullTermTally | None = None,
     ) -> None:
-        from haute.modelling._feature_contract import normalise_categorical_levels
-
         # The preamble's names, seen by the post-processing code beside ``model``.
         self.preamble_ns = preamble_ns
         self.model_source = model_source
@@ -1598,13 +1545,9 @@ class ModelScorer:
             else None
         )
         self.feature_contract_path = feature_contract_path or None
-        self._declared_categorical_levels = (
-            normalise_categorical_levels(categorical_levels)
-            if categorical_levels is not None
-            else None
-        )
         self.reuse_loaded_model = reuse_loaded_model
         self.input_fanout = max(1, int(input_fanout))
+        self.full_term_tally = full_term_tally
         self.base_dir = base_dir
         self._bound_model: BoundModel | None = None
         self._scoring_model_lock = threading.Lock()
@@ -1633,47 +1576,6 @@ class ModelScorer:
                 self._bound_model = self._load_bound_model_uncached()
         return self._bound_model
 
-    def _categorical_levels_for_score(
-        self, contract_path: str | None
-    ) -> dict[str, list[str | None]]:
-        """Return the categorical value domains to enforce for this score call.
-
-        *contract_path* is the contract the model is bound to: the node's own,
-        or the one its run logged for a model that needs it.
-        """
-        declared = self._declared_categorical_levels
-        if contract_path is None:
-            return {column: list(levels) for column, levels in (declared or {}).items()}
-
-        from haute.modelling._feature_contract import (
-            load_contract,
-            normalise_categorical_levels,
-        )
-
-        expected = load_contract(contract_path)
-        if not expected.categorical_levels:
-            return normalise_categorical_levels(declared, features=expected.features)
-
-        declared_for_contract = {
-            column: levels
-            for column, levels in (declared or {}).items()
-            if column in expected.categorical_levels
-        }
-        mismatched_levels = {
-            column: levels
-            for column, levels in declared_for_contract.items()
-            if levels != expected.categorical_levels[column]
-        }
-        if mismatched_levels:
-            raise FeatureMismatchError(
-                "contract mismatch: categorical_levels",
-                field="categorical_levels",
-                expected=expected.categorical_levels,
-                actual=mismatched_levels,
-                feature_contract_path=contract_path,
-            )
-        return {column: list(levels) for column, levels in expected.categorical_levels.items()}
-
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
@@ -1687,15 +1589,10 @@ class ModelScorer:
         Positional frames follow incoming-edge order; named frames are
         reconstructed in the scorer's declared-source order.
         """
-        if self.feature_contract_path is not None:
-            # A configured contract's domain drift fails before the model loads.
-            categorical_levels = self._categorical_levels_for_score(self.feature_contract_path)
-            scoring_model = self._load_bound_model().scoring_model
-        else:
-            # A contract the run logged is known only once the model has loaded.
-            bound = self._load_bound_model()
-            categorical_levels = self._categorical_levels_for_score(bound.contract_path)
-            scoring_model = bound.scoring_model
+        from haute.modelling._feature_contract import load_contract_cached
+
+        bound = self._load_bound_model()
+        scoring_model = bound.scoring_model
 
         if dfs_by_name:
             # Reconstruct positional tuple in declared-source order.
@@ -1706,6 +1603,7 @@ class ModelScorer:
             dfs = dfs_positional
         lf = dfs[0] if dfs else pl.LazyFrame()
         fanout_token = _score_input_fanout.set(self.input_fanout)
+        tally_token = _full_term_tally.set(self.full_term_tally)
         try:
             return _run_score_pipeline(
                 scoring_model,
@@ -1719,10 +1617,15 @@ class ModelScorer:
                 row_limit=self.row_limit,
                 schema_only=self.schema_only,
                 required_output_columns=self.required_output_columns,
-                categorical_levels=categorical_levels,
                 preamble_ns=self.preamble_ns,
+                contract=(
+                    load_contract_cached(bound.contract_path)
+                    if bound.contract_path is not None
+                    else None
+                ),
             )
         finally:
+            _full_term_tally.reset(tally_token)
             _score_input_fanout.reset(fanout_token)
 
 
@@ -1776,7 +1679,6 @@ def score_from_config(
         output_col=cfg.get("output_column", "prediction"),
         source=_scenario_ctx.get(),
         feature_contract_path=scoring_contract_path(model_source, cfg, base_dir),
-        categorical_levels=cfg.get("categorical_levels") or None,
         base_dir=base_dir,
     )
     return scorer.score(*dfs)
@@ -1910,11 +1812,15 @@ def _resolve_score_dtypes(
     )
     if declared is not None:
         return declared
-    probe = pl.DataFrame(
-        {
-            name: pl.Series([None], dtype=input_schema.get(name, pl.Float64))
-            for name in dict.fromkeys([*predict_features, *features])
-        }
+    probe = _full_term_offset(
+        pl.DataFrame(
+            {
+                name: pl.Series([None], dtype=input_schema.get(name, pl.Float64))
+                for name in dict.fromkeys([*predict_features, *features])
+            }
+        ),
+        _declared_offset_column(scoring_model),
+        _declared_offset_link(scoring_model),
     )
     probe_x: Any = _prepare_predict_frame(
         probe.select(predict_features),
@@ -1937,7 +1843,6 @@ def _batch_score_to_parquet(
     task: str,
     *,
     write_projection: ScoreWriteProjection | None = None,
-    categorical_levels: _CategoricalLevels = None,
     destination: ScoreOutputDestination | None = None,
 ) -> str:
     """Score a parquet input in batches; return the directory of scored part files.
@@ -1985,10 +1890,6 @@ def _batch_score_to_parquet(
     wrote_any = False
     want_proba = task == "classification"
     can_predict_proba = want_proba and _raw_model_supports_predict_proba(scoring_model)
-    normalised_levels = _normalise_runtime_categorical_levels(
-        categorical_levels,
-        features=features,
-    )
     offset_column = _declared_offset_column(scoring_model)
     offset_link = _declared_offset_link(scoring_model)
     predict_features = _offset_predict_features(
@@ -2023,19 +1924,18 @@ def _batch_score_to_parquet(
                 bounded_collect_batches(input_path, chunk_size=_SCORE_BATCH_SIZE)
             )
         input_schema_names = list(input_schema)
-        _require_offset_column(input_schema_names, offset_column)
+        tally = _full_term_tally.get()
         execution_context = current_execution_context()
         with batch_context as input_batches:
             for chunk_raw in input_batches:
                 if execution_context is not None:
                     execution_context.checkpoint(label="model_score_batch")
                 chunk = chunk_raw.to_frame() if isinstance(chunk_raw, pl.Series) else chunk_raw
-                feature_chunk = chunk.select(features)
-                _validate_runtime_categorical_values(feature_chunk, normalised_levels)
+                scoring = _full_term_offset(chunk, offset_column, offset_link, tally)
                 if scoring_model.flavor == "rustystats":
-                    _require_positive_log_link_offset(chunk, offset_column, offset_link)
+                    _require_positive_log_link_offset(scoring, offset_column, offset_link)
                 x_data = _prepare_predict_frame(
-                    chunk.select(predict_features),
+                    scoring.select(predict_features),
                     predict_features,
                     cat_feature_names=scoring_model.cat_feature_names,
                     flavor=scoring_model.flavor,
@@ -2043,7 +1943,7 @@ def _batch_score_to_parquet(
                 if offset_column and scoring_model.flavor == "catboost":
                     x_data = _catboost_baseline_pool(
                         x_data,
-                        chunk,
+                        scoring,
                         features,
                         scoring_model.cat_feature_names,
                         offset_column,

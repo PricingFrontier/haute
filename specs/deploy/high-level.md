@@ -103,7 +103,39 @@ first quote the same way. Where a build counts a skipped row, a served request i
 instead, naming the table (HTTP 422 from a container): a quote that is not an object, an
 array element whose shape does not fit its table, or a value that does not fit its column's
 type would otherwise be answered without it ([JSON shredding](../json-shredding/high-level.md)).
-Any other Quote Input reads the request as one frame. For a graph with no request input,
+Any other Quote Input reads the request as one frame typed by the input schema the manifest
+records (the sample file's columns and types), never by inference from the JSON values, so a
+request types its columns as the dry run and the test quotes do. A key the schema does not
+name is ignored. A quote must give every column the schema names: one that leaves out a rating
+factor is refused, naming the quote and the column, on every target, rather than priced as if
+the factor were missing. The exception is an exposure that one of the pipeline's models applies
+through a log link (the manifest's `omittable_inputs`): a quote may leave it out and is priced
+for a full policy term. Databricks Model Serving parses a request's records into one pandas
+frame before `HauteModel.predict` runs, so a key's absence survives only as a whole column:
+the signature refuses a column every quote leaves out, and a quote that leaves out a column
+another quote in the same request gives reads as an explicit null. A value sent as null is a null of the declared type; no column is made
+non-nullable from the sample. A value is accepted only when the
+declared type holds it exactly:
+
+| Declared type | Accepts |
+|---|---|
+| An integer (`Int8` to `Int64`, `UInt8` to `UInt64`) | A JSON integer within the type's range; never a boolean, a numeric string or a number with a fraction, which is refused rather than truncated (`30.9` for `Int64`). A whole number written with a fraction (`30.0`) is refused too. |
+| `Float32`, `Float64` | A finite JSON number; an integer only when the float type holds its exact value (`2^53 + 1` is refused for `Float64`). Never a boolean or a string. |
+| `String`, `Categorical`, `Enum` | A JSON string (for an `Enum`, one of its categories). |
+| `Boolean` | `true` or `false`. |
+| `Date` | An ISO date string (`2024-05-01`). |
+| `Datetime` | An ISO date-time string: with an offset when the type has a time zone, without one when it has none. |
+| `Null` | Only null. |
+
+Any other declared type (`Decimal`, `Time`, `Duration`, `Binary`, `List`, `Array`, `Struct`,
+`Object`) refuses the deploy, naming the column, before anything is built. A value that does
+not fit is refused naming the column, the quote and the value. A container answers HTTP 422
+`quote_input_invalid`: a single quote is framed before anything is admitted, and a batch inside
+its worker; a body that is not UTF-8 is the 422 `invalid_json` envelope. The Databricks model
+applies the same check to the frame MLflow hands it, after MLflow has enforced the model's
+logged signature, which accepts a stricter subset first (a `Float64` column's signature is
+`double`, so MLflow refuses an integer before Haute sees it); a pandas missing value (`NaN`,
+`NaT`, `NA`) there is a null. For a graph with no request input,
 exactly one source may be promoted only when it is a `dataInput`, whose configured data
 provides schema/sample information before live requests replace it. A `constant` or any
 other source type is never promoted accidentally; deployment fails with a correction that
@@ -551,7 +583,9 @@ plus `pandas`, `.lgbm` → `lightgbm` plus `pandas`, `.ebm` → `interpret-core`
 hold an object of any third-party package haute's restricted unpickler allows, so it adds all
 of them: `catboost`, `interpret-core`, `pandas` and `scikit-learn`. Both
 score XGBoost, LightGBM, EBM and t-boost on CPU with no extra requirement. Bundling discovers `.ubj`, `.lgbm`, `.ebm` and `.tboost`
-artifacts with the other native suffixes and carries each model's feature contract; for an
-`.ebm` it fetches the contract the run logged beside the model, and the deployed scorer loads
-the EBM under that bundled contract. A macOS image must provide `libomp`.
+artifacts with the other native suffixes and carries each model's feature contract: a run or
+registered model's is the contract its run logged beside it, when it logged one. A model whose
+run logged none is served against the features its own file names, as the preview scores it.
+The deployed scorer binds each model to its bundled contract when there is one. A macOS image
+must provide `libomp`.
 

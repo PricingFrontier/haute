@@ -61,17 +61,36 @@ def _write_cached_model(
     """Seed the shared model disk cache under a backend digest partition.
 
     Defaults to the auto-resolved backend, which is what the bundler resolves
-    for a model-score node with no stored ``mlflow_destination``.
+    for a model-score node with no stored ``mlflow_destination``. The contract
+    training logs beside every model is seeded with it.
     """
+    from haute.modelling._feature_contract import build_contract, save_contract
+    from haute.modelling._training_job import model_contract_filename
+
     digest = backend_digest if backend_digest is not None else resolve_backend("").digest
-    cached = _artifact_cache_path(tmp_path / ".cache" / "models", digest, run_id, artifact_path)
+    root = tmp_path / ".cache" / "models"
+    cached = _artifact_cache_path(root, digest, run_id, artifact_path)
     cached.parent.mkdir(parents=True, exist_ok=True)
     if artifact_path.endswith(".cbm"):
-        # The bundler reads a CatBoost model's offset declaration, so seed a real
-        # model that declares no offset, tagged with the payload.
+        # A real model that declares no offset, tagged with the payload.
         _declared_catboost(cached, payload)
     else:
         cached.write_bytes(payload)
+    contract = _artifact_cache_path(
+        root, digest, run_id, model_contract_filename(Path(artifact_path).stem)
+    )
+    contract.parent.mkdir(parents=True, exist_ok=True)
+    save_contract(
+        build_contract(
+            features=["0"],
+            feature_types={"0": "Float64"},
+            categorical_features=[],
+            target_name="y",
+            target_type="Float64",
+            task="regression",
+        ),
+        contract,
+    )
     return cached
 
 
@@ -157,9 +176,8 @@ def mock_mlflow_deploy():
     ):
         for name in _AMBIENT_MLFLOW_DATABRICKS_ENV:
             os.environ.pop(name, None)
-        registered = MagicMock()
-        registered.version = "1"
-        m_client.return_value.search_model_versions.return_value = [registered]
+        # log_model answers with the version it registered.
+        m_log_model.return_value.registered_model_version = 1
         # Deploy logs through a destination-bound client: an active experiment
         # and the run it creates.
         m_client.return_value.get_experiment_by_name.return_value = MagicMock(
@@ -463,9 +481,8 @@ class TestBundler:
         )
 
         artifacts = collect_artifacts(graph, [], tmp_path)
-        assert len(artifacts) == 1
-        name = next(iter(artifacts))
-        assert name == "ms1__model.cbm"
+        assert sorted(artifacts) == ["ms1__feature_contract.json", "ms1__model.cbm"]
+        name = "ms1__model.cbm"
         assert artifacts[name].is_file()
 
     def test_model_score_skipped_without_run_id(self):
@@ -580,9 +597,8 @@ class TestBundler:
             artifacts = collect_artifacts(graph, [], tmp_path)
 
         mock_resolve.assert_called_once_with("my-prod-model", "3", backend=ANY, alias="")
-        assert len(artifacts) == 1
-        name = next(iter(artifacts))
-        assert name == "ms_reg__model.cbm"
+        assert sorted(artifacts) == ["ms_reg__feature_contract.json", "ms_reg__model.cbm"]
+        name = "ms_reg__model.cbm"
         assert artifacts[name].is_file()
 
     def test_registered_model_latest_version(self, tmp_path, monkeypatch):
@@ -618,7 +634,7 @@ class TestBundler:
             artifacts = collect_artifacts(graph, [], tmp_path)
 
         mock_resolve.assert_called_once_with("my-model", "latest", backend=ANY, alias="")
-        assert len(artifacts) == 1
+        assert sorted(artifacts) == ["ms_latest__feature_contract.json", "ms_latest__model.cbm"]
 
     def test_registered_model_empty_version(self, tmp_path, monkeypatch):
         """sourceType='registered' with empty version (defaults to latest)."""
@@ -653,7 +669,10 @@ class TestBundler:
             artifacts = collect_artifacts(graph, [], tmp_path)
 
         mock_resolve.assert_called_once_with("my-model", "latest", backend=ANY, alias="")
-        assert len(artifacts) == 1
+        assert sorted(artifacts) == [
+            "ms_empty_ver__feature_contract.json",
+            "ms_empty_ver__model.cbm",
+        ]
 
     def test_registered_model_skipped_without_model_name(self):
         """sourceType='registered' with no registered_model is silently skipped."""
@@ -754,7 +773,7 @@ class TestBundler:
         ):
             artifacts = collect_artifacts(graph, [], tmp_path)
 
-        assert len(artifacts) == 2
+        assert len(artifacts) == 4  # each model and its run's contract
         assert "ms_run__direct.cbm" in artifacts
         assert "ms_reg__registered.cbm" in artifacts
         assert artifacts["ms_run__direct.cbm"].is_file()
@@ -787,7 +806,10 @@ class TestBundler:
         )
 
         artifacts = collect_artifacts(graph, [], tmp_path)
-        assert len(artifacts) == 1
+        assert sorted(artifacts) == [
+            "ms_explicit_run__feature_contract.json",
+            "ms_explicit_run__model.cbm",
+        ]
         assert "ms_explicit_run__model.cbm" in artifacts
 
     def test_model_score_without_source_type_is_not_bundled(self, tmp_path, monkeypatch):
@@ -861,6 +883,10 @@ class TestBundler:
             seen["download"] = backend
             return real_download(run_id, artifact_path, pipeline_dir, backend=backend)
 
+        def spy_contract(backend, run_id, artifact):
+            # The fake backend has no store to list: the run logged no contract.
+            seen["contract"] = backend
+
         graph = _g(
             {
                 "nodes": [
@@ -887,12 +913,14 @@ class TestBundler:
                 new=spy_resolve_registered,
             ),
             patch("haute.deploy._bundler._download_model_artifact", new=spy_download),
+            patch("haute.deploy._bundler._run_contract", new=spy_contract),
         ):
             artifacts = collect_artifacts(graph, [], tmp_path)
 
         assert resolutions == ["local"]
         assert seen["registered"] is backend_a
         assert seen["download"] is backend_a
+        assert seen["contract"] is backend_a
 
         bundled = artifacts["ms_one_backend__model.cbm"]
         assert bundled.read_bytes() == seeded.read_bytes()
@@ -1558,31 +1586,21 @@ class TestDatabricksTracking:
     def test_concurrent_deploys_each_serve_the_version_they_registered(
         self, deploy_pipeline_file: Path
     ) -> None:
-        """Deploys share the build directory and read their version back from the
-        registry after logging, so a second deploy may not register in between."""
+        """Deploys share the build directory, so they run one at a time, and each
+        serves the version its own log_model registered."""
         from haute.deploy._mlflow import deploy_to_mlflow
 
         events: list[str] = []
-        registered: list[MagicMock] = []
-        second_registered = threading.Event()
+        registered: list[int] = []
         first_logged = threading.Event()
 
-        def log_model(**_: object) -> None:
+        def log_model(**_: object) -> MagicMock:
             name = threading.current_thread().name
             events.append(f"{name}:register")
-            registered.append(MagicMock(version=str(len(registered) + 1)))
-            if name == "second":
-                second_registered.set()
-            else:
-                first_logged.set()
-
-        def search_model_versions(_filter: str) -> list[MagicMock]:
-            name = threading.current_thread().name
+            registered.append(len(registered) + 1)
             if name == "first":
-                # Give the second deploy the chance to register in between.
-                second_registered.wait(timeout=0.5)
-            events.append(f"{name}:versions")
-            return list(registered)
+                first_logged.set()
+            return MagicMock(registered_model_version=registered[-1])
 
         results: dict[str, int] = {}
         errors: list[BaseException] = []
@@ -1596,7 +1614,6 @@ class TestDatabricksTracking:
 
         with mock_mlflow_deploy() as mocks:
             mocks.log_model.side_effect = log_model
-            mocks.client.return_value.search_model_versions.side_effect = search_model_versions
             first = threading.Thread(target=deploy, args=("first",), name="first")
             second = threading.Thread(target=deploy, args=("second",), name="second")
             first.start()
@@ -1607,12 +1624,7 @@ class TestDatabricksTracking:
 
         assert not errors
         assert results == {"first": 1, "second": 2}
-        assert events == [
-            "first:register",
-            "first:versions",
-            "second:register",
-            "second:versions",
-        ]
+        assert events == ["first:register", "second:register"]
 
     def test_deploy_sets_tracking_uri(self, deploy_pipeline_file: Path) -> None:
         """deploy_to_mlflow() must call mlflow.set_tracking_uri('databricks')."""

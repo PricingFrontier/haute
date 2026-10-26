@@ -1810,6 +1810,14 @@ class TestLoadMlflowModelFastCache:
         )
         cached.parent.mkdir(parents=True)
         cached.write_bytes(b"cached model")
+        contract = _artifact_cache_path(
+            tmp_path / ".cache" / "models",
+            backend.digest,
+            "abc123",
+            "model.feature_contract.json",
+        )
+        contract.parent.mkdir(parents=True)
+        (tmp_path / contract.relative_to(tmp_path.resolve())).write_bytes(b"{}")
         fake_sm = ScoringModel(MagicMock(), ["a"], frozenset(), "catboost")
 
         with (
@@ -1824,8 +1832,13 @@ class TestLoadMlflowModelFastCache:
             )
 
         assert result is fake_sm
+        # The model carries the contract its run logged, read from the same cache.
+        assert result.run_contract_path == str(contract)
         load_local.assert_called_once_with(
-            str(cached), task="regression", source="MLflow run 'abc123'"
+            str(cached),
+            task="regression",
+            contract_path=str(contract),
+            source="MLflow run 'abc123'",
         )
         resolve_source.assert_not_called()
 
@@ -2332,12 +2345,13 @@ class TestCatBoostTaskFromTheModelFile:
             load_local_model(path, task="classification")
         assert load_local_model(path, task="regression").flavor == "catboost"
 
-    def test_a_task_mismatch_is_not_retried_as_a_corrupt_download(self, tmp_path):
+    def test_a_task_mismatch_is_not_retried_as_a_corrupt_download(self, tmp_path, monkeypatch):
         from catboost import CatBoostClassifier
 
         from haute._mlflow_io import _load_with_bounded_retry
         from haute.errors import ConfigError
 
+        monkeypatch.setattr("haute._mlflow_io._disk_cache_root", lambda: tmp_path / "cache")
         path = self._saved(
             tmp_path, CatBoostClassifier(iterations=2, verbose=0, allow_writing_files=False)
         )
@@ -2347,11 +2361,90 @@ class TestCatBoostTaskFromTheModelFile:
         ):
             _load_with_bounded_retry(
                 mlflow_mod=MagicMock(),
-                backend=MagicMock(),
+                client=MagicMock(),
+                backend=_FAKE_BACKEND,
                 run_id="r",
                 artifact="model.cbm",
                 flavor="catboost",
                 task="regression",
             )
-        assert resolve.call_count == 1
+        # The model and the contract its run logged, each read once: never retried.
+        assert [call.args[3] for call in resolve.call_args_list] == [
+            "model.cbm",
+            "model.feature_contract.json",
+        ]
         assert Path(path).is_file()
+
+
+class TestRunContractIfLogged:
+    """A run's contract is optional, but only a completed listing says it is absent."""
+
+    @pytest.fixture(autouse=True)
+    def _cache_root(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("haute._mlflow_io._disk_cache_root", lambda: tmp_path / "cache")
+
+    @staticmethod
+    def _marker(run_id: str, contract_artifact: str) -> Path:
+        from haute import _mlflow_io
+
+        # The module's patched root, not the name this test module imported.
+        return _mlflow_io._contract_absent_marker(
+            _artifact_cache_path(
+                _mlflow_io._disk_cache_root(), _FAKE_BACKEND.digest, run_id, contract_artifact
+            )
+        )
+
+    def test_a_failed_download_of_a_listed_contract_is_raised_not_read_as_absence(self):
+        from haute._mlflow_io import _run_contract_if_logged
+
+        client = MagicMock()
+        client.list_artifacts.return_value = [MagicMock(path="m.feature_contract.json")]
+        with (
+            patch("haute._mlflow_io._resolve_artifact_local", side_effect=OSError("reset")),
+            pytest.raises(OSError, match="reset"),
+        ):
+            _run_contract_if_logged(MagicMock(), lambda: client, _FAKE_BACKEND, "r1", "m.cbm")
+        assert not self._marker("r1", "m.feature_contract.json").exists()
+
+    def test_a_failed_listing_is_raised_not_read_as_absence(self):
+        from mlflow.exceptions import MlflowException
+
+        from haute._mlflow_io import _run_contract_if_logged
+
+        client = MagicMock()
+        client.list_artifacts.side_effect = MlflowException("401 Unauthorized")
+        with (
+            patch("haute._mlflow_io._resolve_artifact_local", side_effect=OSError("missing")),
+            pytest.raises(MlflowException, match="401"),
+        ):
+            _run_contract_if_logged(MagicMock(), lambda: client, _FAKE_BACKEND, "r2", "m.cbm")
+        assert not self._marker("r2", "m.feature_contract.json").exists()
+
+    def test_an_absent_contract_is_recorded_and_not_fetched_again(self):
+        from haute._mlflow_io import _run_contract_if_logged
+
+        client = MagicMock()
+        client.list_artifacts.return_value = [MagicMock(path="models/m.cbm")]
+        opened: list[object] = []
+
+        def open_client() -> MagicMock:
+            opened.append(client)
+            return client
+
+        with patch(
+            "haute._mlflow_io._resolve_artifact_local", side_effect=OSError("missing")
+        ) as resolve:
+            first = _run_contract_if_logged(
+                MagicMock(), open_client, _FAKE_BACKEND, "r3", "models/m.cbm"
+            )
+            second = _run_contract_if_logged(
+                MagicMock(), open_client, _FAKE_BACKEND, "r3", "models/m.cbm"
+            )
+
+        assert first is None and second is None
+        # The contract's own directory is listed, once; the marker answers the second call
+        # without opening the tracking store.
+        client.list_artifacts.assert_called_once_with("r3", "models")
+        assert len(opened) == 1
+        assert resolve.call_count == 1
+        assert self._marker("r3", "models/m.feature_contract.json").is_file()

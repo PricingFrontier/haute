@@ -26,7 +26,7 @@ from haute._model_source import (
     load_scoring_model,
 )
 from haute._path_resolution import RuntimePathOutsideProjectError
-from haute.errors import ConfigError, FeatureMismatchError
+from haute.errors import ConfigError, FeatureMismatchError, HauteValidationError
 from haute.modelling._feature_contract import build_contract, save_contract
 from haute.modelling._training_job import model_contract_filename
 
@@ -210,20 +210,17 @@ def test_an_explicit_no_offset_contract_scores(project: Path) -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("kind", "message"),
-    [
-        ("file", "does not record whether it was trained with an offset"),
-        # A run's model is bound to the contract logged beside it, which is missing.
-        ("run", "has no feature contract ext.feature_contract.json beside ext.cbm"),
-        ("registered", "has no feature contract ext.feature_contract.json beside ext.cbm"),
-    ],
-)
-def test_an_undeclared_catboost_offset_is_refused(project: Path, kind: str, message: str) -> None:
+@pytest.mark.parametrize("kind", SOURCES)
+def test_an_undeclared_catboost_offset_scores_with_no_offset(project: Path, kind: str) -> None:
+    """A quote is priced for a full policy term: an exposure of one adds nothing."""
     model_path = external_catboost(project, offset=True)
+    frame = data(seed=14)
 
-    with pytest.raises(ConfigError, match=message):
-        score(source_for(kind, model_path, None), data())
+    scored = score(source_for(kind, model_path, None), frame)
+
+    np.testing.assert_allclose(scored, native_reference(model_path, frame, offset=False))
+    full_term = frame.with_columns(exposure=pl.lit(1.0))
+    np.testing.assert_allclose(scored, native_reference(model_path, full_term, offset=True))
 
 
 @pytest.mark.parametrize("kind", SOURCES)
@@ -249,13 +246,45 @@ def test_metadata_and_contract_that_disagree_are_refused(project: Path, kind: st
         load_scoring_model(source, "regression", feature_contract_path=contract_path)
 
 
+def test_a_missing_or_empty_additive_offset_is_refused_and_the_trace_too(project: Path) -> None:
+    """An additive offset is a base premium, not an exposure: it has no default."""
+    from haute._model_explainability import (
+        ModelExplanationError,
+        explain_model_score_from_config,
+    )
+
+    model_path = external_catboost(project, offset=True)
+    write_contract(model_path, offset="exposure", link="identity")
+    source = FileModelSource(model_path=model_path.name)
+    frame = data(seed=19)
+
+    # The bound contract's check names the absent offset before scoring starts.
+    with pytest.raises(FeatureMismatchError, match="offset_column: expected='exposure'"):
+        score(source, frame.drop("exposure"))
+    with pytest.raises(HauteValidationError, match="1 rows are empty"):
+        score(source, frame.with_columns(pl.lit(None, dtype=pl.Float64).alias("exposure")).head(1))
+    with pytest.raises(ModelExplanationError, match="exposure"):
+        explain_model_score_from_config(
+            {"sourceType": "file", "model_path": model_path.name, "task": "regression"},
+            frame.drop("exposure").row(0, named=True),
+            {"pred": 1.0},
+            prediction_column="pred",
+            prediction_value=1.0,
+        )
+
+
 @pytest.mark.parametrize("kind", SOURCES)
-def test_a_missing_declared_offset_input_fails_before_prediction(project: Path, kind: str) -> None:
+def test_a_missing_declared_offset_input_scores_as_a_full_policy_term(
+    project: Path, kind: str
+) -> None:
     model_path = external_catboost(project, offset=True)
     contract = write_contract(model_path, offset="exposure", link="log")
+    frame = data(seed=16)
 
-    with pytest.raises(FeatureMismatchError, match="exposure"):
-        score(source_for(kind, model_path, contract), data().drop("exposure"))
+    scored = score(source_for(kind, model_path, contract), frame.drop("exposure"))
+
+    full_term = frame.with_columns(exposure=pl.lit(1.0))
+    np.testing.assert_allclose(scored, native_reference(model_path, full_term, offset=True))
 
 
 def test_a_contract_naming_an_offset_without_its_link_is_refused(project: Path) -> None:
@@ -302,15 +331,72 @@ def train(project: Path, algorithm: str, **params: Any) -> Path:
     return Path(result.model_path)
 
 
-def test_an_ebm_without_its_contract_fails_naming_the_file(project: Path) -> None:
+def test_an_ebm_scores_without_its_contract(project: Path) -> None:
     model_path = train(project, "ebm", loss="Poisson", max_rounds=20, interactions=0)
+    frame = data(seed=15)
+    with_contract = score(FileModelSource(model_path=model_path.name), frame)
     model_path.with_name(model_contract_filename(model_path.stem)).unlink()
 
-    with pytest.raises(ConfigError, match=f"beside {model_path.name}"):
-        score(FileModelSource(model_path=model_path.name), data())
+    np.testing.assert_array_equal(
+        score(FileModelSource(model_path=model_path.name), frame), with_contract
+    )
 
 
 GLM = {"terms": {"age": {"type": "linear"}}, "family": "poisson", "link": "log"}
+
+#: Every family Haute trains, each with an exposure offset.
+FAMILIES = [
+    ("catboost", {"loss": "Poisson", "iterations": 20, "depth": 3}),
+    ("glm", GLM),
+    ("xgboost", {"loss": "Poisson", "num_boost_round": 20, "max_depth": 3}),
+    ("lightgbm", {"loss": "Poisson", "num_iterations": 20, "num_leaves": 7, "min_data_in_leaf": 5}),
+    ("ebm", {"loss": "Poisson", "max_rounds": 20, "interactions": 0}),
+    ("tboost", {"loss": "Poisson", "n_trees": 50, "n_bags": 1, "prune": False}),
+]
+
+
+@pytest.mark.parametrize(("algorithm", "params"), FAMILIES, ids=[name for name, _ in FAMILIES])
+def test_every_family_prices_a_missing_or_empty_exposure_as_a_full_policy_term(
+    project: Path, algorithm: str, params: dict[str, Any]
+) -> None:
+    source = FileModelSource(model_path=train(project, algorithm, **dict(params)).name)
+    frame = data(seed=17)
+    full_term = score(source, frame.with_columns(exposure=pl.lit(1.0)))
+    as_given = score(source, frame)
+
+    np.testing.assert_allclose(score(source, frame.drop("exposure")), full_term, rtol=1e-9)
+    even = np.arange(frame.height) % 2 == 0
+    blanks = frame.with_columns(
+        exposure=pl.when(pl.Series(even)).then(None).otherwise(pl.col("exposure"))
+    )
+    np.testing.assert_allclose(
+        score(source, blanks), np.where(even, full_term, as_given), rtol=1e-9
+    )
+    with pytest.raises(HauteValidationError, match="must be positive under a log link"):
+        score(source, frame.with_columns(exposure=pl.lit(0.0)))
+
+
+@pytest.mark.parametrize(("algorithm", "params"), FAMILIES, ids=[name for name, _ in FAMILIES])
+def test_the_trace_explains_a_row_priced_without_its_exposure(
+    project: Path, algorithm: str, params: dict[str, Any]
+) -> None:
+    from haute._model_explainability import explain_model_score_from_config
+
+    model_path = train(project, algorithm, **dict(params))
+    row = data(seed=18).head(1).drop("exposure")
+    prediction = float(score(FileModelSource(model_path=model_path.name), row)[0])
+
+    explanation = explain_model_score_from_config(
+        {"sourceType": "file", "model_path": model_path.name, "task": "regression"},
+        row.row(0, named=True),
+        {"pred": prediction},
+        prediction_column="pred",
+        prediction_value=prediction,
+    )
+
+    assert explanation is not None
+    assert explanation["prediction_value"] == pytest.approx(prediction)
+    assert explanation["notes"] == ["Priced as a full policy term: this row has no 'exposure'."]
 
 
 @pytest.mark.parametrize(
@@ -395,13 +481,15 @@ class TestInspectionEndpoint:
         assert (body["offset_column"], body["offset_link"]) == ("exposure", "log")
         assert body["contract_path"] == model_contract_filename(model_path.stem)
 
-    def test_reports_the_scoring_refusal(self, project: Path, client: Any) -> None:
+    def test_reports_an_undeclared_offset_as_none(self, project: Path, client: Any) -> None:
         model_path = external_catboost(project, offset=True)
 
         response = client.get("/api/model-file", params={"path": model_path.name})
 
-        assert response.status_code == 400
-        assert "does not record whether it was trained with an offset" in response.json()["detail"]
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert (body["offset_column"], body["offset_link"]) == (None, None)
+        assert body["contract_path"] is None
 
 
 def _model_score_graph(config: dict[str, Any]) -> Any:
@@ -480,6 +568,78 @@ class TestBundling:
         assert bundled.read_bytes() == contract.read_bytes()
 
 
+@pytest.mark.parametrize("kind", ["run", "registered"])
+def test_a_run_model_that_declares_its_offset_binds_its_logged_contract(
+    project: Path, kind: str
+) -> None:
+    """The preview binds the contract the deploy bundle ships for every native model."""
+    from haute._model_source import load_bound_model
+
+    model_path = external_catboost(project, offset=False, stamp="")
+    contract = write_contract(model_path, offset=None, link=None)
+
+    bound = load_bound_model(source_for(kind, model_path, contract), "regression")
+
+    assert bound.contract_path is not None
+    assert Path(bound.contract_path).read_bytes() == contract.read_bytes()
+
+
+@pytest.mark.parametrize("kind", ["run", "registered"])
+def test_a_run_model_without_a_logged_contract_scores_against_its_own_features(
+    project: Path, kind: str
+) -> None:
+    """A model trained outside Haute scores; it is checked against the features it names."""
+    from haute._model_source import load_bound_model
+
+    model_path = external_catboost(project, offset=False, stamp="")
+    source = source_for(kind, model_path, None)
+    frame = data(seed=11)
+
+    assert load_bound_model(source, "regression").contract_path is None
+    np.testing.assert_allclose(
+        score(source, frame), native_reference(model_path, frame, offset=False)
+    )
+    with pytest.raises(FeatureMismatchError, match="age"):
+        score(source, frame.drop("age"))
+
+
+def test_a_run_without_a_contract_loads_from_the_disk_cache_alone(project: Path) -> None:
+    """The cache records that the run logged none, so a cache-only execution still loads it."""
+    from haute._mlflow_io import _model_cache, disk_cache_only_model_loads
+
+    model_path = external_catboost(project, offset=False, stamp="")
+    source = source_for("run", model_path, None)
+    frame = data(seed=12)
+    expected = native_reference(model_path, frame, offset=False)
+    np.testing.assert_allclose(score(source, frame), expected)
+    _model_cache.clear()
+
+    with disk_cache_only_model_loads():
+        np.testing.assert_allclose(score(source, frame), expected)
+
+
+@pytest.mark.parametrize("column", ["region", "age"])
+def test_a_feature_whose_dtype_drifted_from_training_is_refused_as_deploy_refuses_it(
+    project: Path, column: str
+) -> None:
+    """The preview compares the bound contract's dtypes with the input, as deploy does.
+
+    ``region`` was trained as String and ``age`` as Float64; an Int64 column in
+    either place would be cast and scored without this check.
+    """
+    from haute.deploy._scorer import _assert_runtime_contract_matches
+
+    model_path = external_catboost(project, offset=True)
+    contract = write_contract(model_path, offset="exposure", link="log")
+    frame = data().with_columns(pl.lit(7, dtype=pl.Int64).alias(column))
+
+    with pytest.raises(FeatureMismatchError, match="contract mismatch: feature_types") as preview:
+        score(FileModelSource(model_path=model_path.name), frame)
+    with pytest.raises(FeatureMismatchError) as deployed:
+        _assert_runtime_contract_matches(frame.lazy(), str(contract), "regression")
+    assert str(preview.value) == str(deployed.value)
+
+
 def test_inspection_reports_the_task_a_contractless_file_was_trained_for(project: Path) -> None:
     from catboost import CatBoostClassifier
 
@@ -547,14 +707,14 @@ def test_a_registered_model_and_its_logged_contract_come_from_one_run(
         client.set_terminated(run.info.run_id)
         client.create_model_version("ext", f"runs:/{run.info.run_id}", run.info.run_id)
     client.set_registered_model_alias("ext", "champion", "1")
-    resolve = _mlflow_io.resolve_run_artifact
+    fetch = _mlflow_io._run_contract_if_logged
 
-    def promote_then_resolve(**kwargs: Any) -> tuple[str, str]:
-        # The alias moves after the first model load and before the contract read.
+    def promote_then_fetch(*args: Any) -> str | None:
+        # The alias moves after the model was resolved and before its contract is read.
         client.set_registered_model_alias("ext", "champion", "2")
-        return resolve(**kwargs)
+        return fetch(*args)
 
-    monkeypatch.setattr(_mlflow_io, "resolve_run_artifact", promote_then_resolve)
+    monkeypatch.setattr(_mlflow_io, "_run_contract_if_logged", promote_then_fetch)
     source = RegisteredModelSource(
         registered_model="ext",
         version="",
@@ -566,10 +726,11 @@ def test_a_registered_model_and_its_logged_contract_come_from_one_run(
 
     scored = score(source, frame)
 
-    np.testing.assert_allclose(scored, native_reference(pairs[1][0], frame, offset=False))
+    # Version 1's model under version 1's exposure offset, not version 2's contract.
+    np.testing.assert_allclose(scored, native_reference(pairs[0][0], frame, offset=True))
 
 
-def test_a_run_logged_contract_enforces_its_categorical_domains(project: Path) -> None:
+def test_a_run_logged_contract_scores_values_the_model_never_saw(project: Path) -> None:
     model_path = external_catboost(project, offset=True)
     contract = model_path.with_name(model_contract_filename(model_path.stem))
     save_contract(
@@ -577,7 +738,6 @@ def test_a_run_logged_contract_enforces_its_categorical_domains(project: Path) -
             features=FEATURES,
             feature_types={"age": "Float64", "region": "String"},
             categorical_features=["region"],
-            categorical_levels={"region": ["east", "north"]},
             target_name="claims",
             target_type="Float64",
             task="regression",
@@ -588,8 +748,10 @@ def test_a_run_logged_contract_enforces_its_categorical_domains(project: Path) -
     )
     frame = data().with_columns(region=pl.lit("south"))
 
-    with pytest.raises(FeatureMismatchError, match="south"):
-        score(source_for("run", model_path, contract), frame)
+    scored = score(source_for("run", model_path, contract), frame)
+
+    assert len(scored) == frame.height
+    assert np.isfinite(scored).all()
 
 
 def test_a_sibling_contract_outside_the_project_is_refused(project: Path) -> None:
@@ -656,3 +818,575 @@ def test_a_model_and_its_logged_contract_are_read_from_one_resolved_backend(
 
     assert bound.scoring_model.offset_column == "exposure"
     assert bound.contract_path is not None
+
+
+# ---------------------------------------------------------------------------
+# Native models trained outside Haute score from what their libraries record
+# ---------------------------------------------------------------------------
+
+
+def native_frame(frame: pl.DataFrame) -> Any:
+    """The training rows as pandas, region a categorical as the libraries take it."""
+    pdf = frame.select(FEATURES).to_pandas()
+    pdf["region"] = pdf["region"].astype("category")
+    return pdf
+
+
+def external_model(directory: Path, library: str, task: str) -> tuple[Path, Any]:
+    """A model trained through *library*'s own API, and its own predict function."""
+    frame = data(seed=21)
+    target = (
+        frame["claims"].to_numpy()
+        if task == "regression"
+        else (frame["claims"].to_numpy() > 0).astype(int)
+    )
+    if library == "xgboost":
+        import xgboost as xgb
+
+        objective = "count:poisson" if task == "regression" else "binary:logistic"
+        booster = xgb.train(
+            {"objective": objective, "max_depth": 2, "verbosity": 0},
+            xgb.DMatrix(native_frame(frame), label=target, enable_categorical=True),
+            num_boost_round=10,
+        )
+        booster.set_attr(haute_offset="none")
+        path = directory / "ext.ubj"
+        booster.save_model(str(path))
+
+        def predict(rows: pl.DataFrame) -> Any:
+            return booster.predict(xgb.DMatrix(native_frame(rows), enable_categorical=True))
+
+        return path, predict
+    if library == "lightgbm":
+        import lightgbm as lgb
+
+        objective = "poisson" if task == "regression" else "binary"
+        booster = lgb.train(
+            {"objective": objective, "num_leaves": 4, "min_data_in_leaf": 5, "verbosity": -1},
+            lgb.Dataset(native_frame(frame), label=target),
+            num_boost_round=10,
+        )
+        path = directory / "ext.lgbm"
+        booster.save_model(str(path))
+        return path, lambda rows: booster.predict(native_frame(rows))
+    from t_boost import TBoostClassifier, TBoostRegressor
+
+    estimator = (
+        TBoostRegressor(n_trees=30, objective="poisson")
+        if task == "regression"
+        else TBoostClassifier(n_trees=30)
+    )
+    estimator.fit(frame.select(FEATURES), target)
+    path = directory / "ext.tboost"
+    path.write_text(estimator.to_json(), encoding="utf-8")
+    if task == "regression":
+        return path, lambda rows: estimator.predict(rows.select(FEATURES))
+    return path, lambda rows: estimator.predict_proba(rows.select(FEATURES))[:, 1]
+
+
+LIBRARIES = ["xgboost", "lightgbm", "tboost"]
+
+
+@pytest.mark.parametrize("kind", SOURCES)
+@pytest.mark.parametrize("library", LIBRARIES)
+def test_a_model_trained_outside_haute_scores_as_its_library_predicts(
+    project: Path, library: str, kind: str
+) -> None:
+    from haute._model_explainability import explain_model_score_from_config
+
+    model_path, native = external_model(project, library, "regression")
+    source = source_for(kind, model_path, None)
+    frame = data(seed=22)
+
+    scored = score(source, frame)
+
+    np.testing.assert_allclose(scored, native(frame), rtol=1e-6)
+    if kind == "file":
+        row = frame.head(1)
+        explanation = explain_model_score_from_config(
+            {"sourceType": "file", "model_path": model_path.name, "task": "regression"},
+            row.row(0, named=True),
+            {"pred": float(scored[0])},
+            prediction_column="pred",
+            prediction_value=float(scored[0]),
+        )
+        assert explanation is not None
+        assert explanation["prediction_value"] == pytest.approx(float(scored[0]), rel=1e-5)
+
+
+@pytest.mark.parametrize("library", LIBRARIES)
+def test_a_classifier_trained_outside_haute_scores_its_positive_class(
+    project: Path, library: str
+) -> None:
+    from haute._model_scorer import ModelScorer
+
+    model_path, native = external_model(project, library, "classification")
+    frame = data(seed=23)
+
+    scored = (
+        ModelScorer(
+            model_source=FileModelSource(model_path=model_path.name),
+            task="classification",
+            output_col="pred",
+        )
+        .score(frame.lazy())
+        .collect()
+    )
+
+    np.testing.assert_allclose(scored["pred_proba"], native(frame), rtol=1e-6)
+    np.testing.assert_array_equal(scored["pred"], (native(frame) > 0.5).astype(int))
+
+
+def test_integer_categories_a_library_recorded_score_from_their_text(project: Path) -> None:
+    """Haute reads categoricals as text; the library's own integer levels are put back."""
+    import lightgbm as lgb
+    import pandas as pd
+    import xgboost as xgb
+
+    rng = np.random.default_rng(24)
+    groups = rng.choice([3, 7, 11], 300)
+    pdf = pd.DataFrame({"age": rng.uniform(18, 80, 300), "group": pd.Categorical(groups)})
+    label = (groups == 7) * 2.0 + rng.uniform(size=300)
+    lgbm = lgb.train(
+        {"objective": "regression", "num_leaves": 4, "min_data_in_leaf": 5, "verbosity": -1},
+        lgb.Dataset(pdf, label=label),
+        num_boost_round=10,
+    )
+    lgbm.save_model(str(project / "groups.lgbm"))
+    booster = xgb.train(
+        {"objective": "reg:squarederror", "max_depth": 2, "verbosity": 0},
+        xgb.DMatrix(pdf, label=label, enable_categorical=True),
+        num_boost_round=10,
+    )
+    booster.set_attr(haute_offset="none")
+    booster.save_model(str(project / "groups.ubj"))
+    rows = pl.DataFrame({"age": [30.0, 30.0, 30.0], "group": ["3", "7", "11"]})
+    native_rows = pd.DataFrame({"age": [30.0] * 3, "group": pd.Categorical([3, 7, 11])})
+
+    np.testing.assert_allclose(
+        score(FileModelSource(model_path="groups.lgbm"), rows), lgbm.predict(native_rows)
+    )
+    np.testing.assert_allclose(
+        score(FileModelSource(model_path="groups.ubj"), rows),
+        booster.predict(xgb.DMatrix(native_rows, enable_categorical=True)),
+        rtol=1e-6,
+    )
+    # The category the input names, not its position: 7 scores above 3 and 11.
+    scored = score(FileModelSource(model_path="groups.lgbm"), rows)
+    assert scored[1] > max(scored[0], scored[2])
+
+
+def test_categories_trained_as_codes_score_from_the_input_codes(project: Path) -> None:
+    """A categorical feature that recorded no levels reads the input's numeric codes."""
+    import lightgbm as lgb
+    import pandas as pd
+    import xgboost as xgb
+
+    rng = np.random.default_rng(25)
+    codes = rng.choice([0, 1, 2], 300)
+    pdf = pd.DataFrame({"age": rng.uniform(18, 80, 300), "code": codes})
+    label = (codes == 1) * 2.0 + rng.uniform(size=300)
+    lgbm = lgb.train(
+        {"objective": "regression", "num_leaves": 4, "min_data_in_leaf": 5, "verbosity": -1},
+        lgb.Dataset(pdf, label=label, categorical_feature=["code"]),
+        num_boost_round=10,
+    )
+    lgbm.save_model(str(project / "codes.lgbm"))
+    booster = xgb.train(
+        {"objective": "reg:squarederror", "max_depth": 2, "verbosity": 0},
+        xgb.DMatrix(
+            pdf.astype(float), label=label, feature_types=["float", "c"], enable_categorical=True
+        ),
+        num_boost_round=10,
+    )
+    booster.set_attr(haute_offset="none")
+    booster.save_model(str(project / "codes.ubj"))
+    rows = pl.DataFrame({"age": [30.0, 30.0, 30.0], "code": [0.0, 1.0, 2.0]})
+    native_rows = rows.to_pandas()
+
+    np.testing.assert_allclose(
+        score(FileModelSource(model_path="codes.lgbm"), rows), lgbm.predict(native_rows)
+    )
+    np.testing.assert_allclose(
+        score(FileModelSource(model_path="codes.ubj"), rows),
+        booster.predict(
+            xgb.DMatrix(native_rows, feature_types=["float", "c"], enable_categorical=True)
+        ),
+        rtol=1e-6,
+    )
+
+
+def test_what_a_model_trained_outside_haute_cannot_be_scored_for_is_refused(
+    project: Path,
+) -> None:
+    """More than one output per row, or a classifier with no probability to score."""
+    import lightgbm as lgb
+    import xgboost as xgb
+    from t_boost import TBoostClassifier
+
+    from haute._mlflow_io import load_local_model
+
+    frame = data(seed=26)
+    pdf = native_frame(frame)
+    three = np.random.default_rng(26).choice([0, 1, 2], frame.height)
+    xgb.train(
+        {"objective": "multi:softprob", "num_class": 3, "verbosity": 0},
+        xgb.DMatrix(pdf, label=three, enable_categorical=True),
+        num_boost_round=2,
+    ).save_model(str(project / "multi.ubj"))
+    lgb.train(
+        {"objective": "multiclass", "num_class": 3, "verbosity": -1},
+        lgb.Dataset(pdf, label=three),
+        num_boost_round=2,
+    ).save_model(str(project / "multi.lgbm"))
+    xgb.train(
+        {"objective": "binary:logitraw", "verbosity": 0},
+        xgb.DMatrix(pdf, label=three > 0, enable_categorical=True),
+        num_boost_round=2,
+    ).save_model(str(project / "raw.ubj"))
+    estimator = TBoostClassifier(n_trees=10)
+    estimator.fit(frame.select(FEATURES), three)
+    (project / "multi.tboost").write_text(estimator.to_json(), encoding="utf-8")
+
+    ranked = xgb.train(
+        {"objective": "rank:ndcg", "verbosity": 0},
+        xgb.DMatrix(pdf, label=three, group=[frame.height], enable_categorical=True),
+        num_boost_round=2,
+    )
+    ranked.set_attr(haute_offset="none")
+    ranked.save_model(str(project / "ranked.ubj"))
+    lgb.train(
+        {"objective": "lambdarank", "verbosity": -1, "min_data_in_leaf": 5},
+        lgb.Dataset(pdf, label=three, group=[frame.height]),
+        num_boost_round=2,
+    ).save_model(str(project / "ranked.lgbm"))
+
+    for name in ("multi.ubj", "multi.lgbm"):
+        with pytest.raises(ConfigError, match="more than one value per row"):
+            load_local_model(str(project / name))
+    for name in ("ranked.ubj", "ranked.lgbm"):
+        with pytest.raises(ConfigError, match="ranking objective"):
+            load_local_model(str(project / name))
+    with pytest.raises(ConfigError, match="binary:logitraw.*no positive-class probability"):
+        load_local_model(str(project / "raw.ubj"), "classification")
+    with pytest.raises(ConfigError, match="multi.tboost|3-class classifier"):
+        load_local_model(str(project / "multi.tboost"), "classification")
+
+
+def test_an_xgboost_model_trained_outside_haute_declares_its_margin(project: Path) -> None:
+    """XGBoost scores a margin-trained model from base_score when no margin is given,
+    so such a model loads only once a stamp or a contract says how it was trained."""
+    import xgboost as xgb
+
+    frame = data(seed=27)
+    booster = xgb.train(
+        {"objective": "count:poisson", "max_depth": 2, "verbosity": 0},
+        xgb.DMatrix(
+            native_frame(frame),
+            label=frame["claims"].to_numpy(),
+            base_margin=np.log(frame["exposure"].to_numpy()),
+            enable_categorical=True,
+        ),
+        num_boost_round=10,
+    )
+
+    def native(rows: pl.DataFrame, margin: Any) -> Any:
+        return booster.predict(
+            xgb.DMatrix(native_frame(rows), base_margin=margin, enable_categorical=True)
+        )
+
+    unstamped = project / "ext.ubj"
+    booster.save_model(str(unstamped))
+    with pytest.raises(ConfigError, match=r'set_attr\(haute_offset="none"\)'):
+        score(FileModelSource(model_path=unstamped.name), frame)
+
+    stamped_dir = project / "stamped"
+    stamped_dir.mkdir()
+    booster.set_attr(haute_offset="exposure:log")
+    booster.save_model(str(stamped_dir / "ext.ubj"))
+    stamped = FileModelSource(model_path="stamped/ext.ubj")
+    np.testing.assert_allclose(
+        score(stamped, frame), native(frame, np.log(frame["exposure"].to_numpy())), rtol=1e-6
+    )
+    # A quote without exposure is a full policy term: a zero margin, not base_score.
+    np.testing.assert_allclose(
+        score(stamped, frame.drop("exposure")), native(frame, np.zeros(frame.height)), rtol=1e-6
+    )
+
+    # A contract declares the same margin for the unstamped file; the wrapper applies it.
+    write_contract(unstamped, offset="exposure", link="log")
+    np.testing.assert_allclose(
+        score(FileModelSource(model_path=unstamped.name), frame),
+        native(frame, np.log(frame["exposure"].to_numpy())),
+        rtol=1e-6,
+    )
+
+    booster.set_attr(haute_offset="exposure:sqrt")
+    booster.save_model(str(stamped_dir / "bad.ubj"))
+    with pytest.raises(ConfigError, match="'haute_offset' attribute is 'exposure:sqrt'"):
+        score(FileModelSource(model_path="stamped/bad.ubj"), frame)
+
+
+@pytest.mark.parametrize(
+    ("params", "task"),
+    [
+        ({"objective": "binary", "sigmoid": 2.0}, "classification"),
+        ({"objective": "regression", "reg_sqrt": True}, "regression"),
+    ],
+    ids=["sigmoid-2", "reg-sqrt"],
+)
+def test_a_lightgbm_model_trained_outside_haute_keeps_its_response_transform(
+    project: Path, params: dict[str, Any], task: str
+) -> None:
+    """LightGBM's own predict applies the transform it recorded; a link alone would not."""
+    import lightgbm as lgb
+
+    from haute._model_scorer import ModelScorer
+
+    frame = data(seed=28)
+    claims = frame["claims"].to_numpy()
+    label = (claims > 0).astype(int) if task == "classification" else claims * 40.0
+    booster = lgb.train(
+        {**params, "num_leaves": 4, "min_data_in_leaf": 5, "verbosity": -1},
+        lgb.Dataset(native_frame(frame), label=label),
+        num_boost_round=10,
+    )
+    booster.save_model(str(project / "transform.lgbm"))
+
+    scored = (
+        ModelScorer(
+            model_source=FileModelSource(model_path="transform.lgbm"),
+            task=task,
+            output_col="pred",
+        )
+        .score(frame.lazy())
+        .collect()
+    )
+
+    column = "pred_proba" if task == "classification" else "pred"
+    np.testing.assert_allclose(scored[column], booster.predict(native_frame(frame)), rtol=1e-9)
+    # The trace explains through the link, which does not rebuild this price: it refuses.
+    from haute._model_explainability import (
+        ModelExplanationError,
+        explain_model_score_from_config,
+    )
+
+    with pytest.raises(ModelExplanationError, match="inverse link does not reproduce"):
+        explain_model_score_from_config(
+            {"sourceType": "file", "model_path": "transform.lgbm", "task": task},
+            frame.row(0, named=True),
+            {"pred": float(scored["pred"][0])},
+            prediction_column="pred",
+            prediction_value=float(scored["pred"][0]),
+        )
+
+
+def test_the_preview_notes_an_exposure_it_priced_as_a_full_policy_term(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing fails, but a renamed column or a join that empties rows is said, not hidden."""
+    from haute.executor import execute_graph
+    from tests.conftest import make_edge, make_graph, make_node, make_source_node
+
+    model_path = train(project, "catboost", loss="Poisson", iterations=10, depth=2)
+
+    def notes(name: str, columns: list[str] | None = None) -> list[str]:
+        graph = make_graph(
+            {
+                "nodes": [
+                    make_source_node("src", str(project / name)),
+                    make_node(
+                        {
+                            "id": "ms",
+                            "data": {
+                                "label": "ms",
+                                "nodeType": "modelScore",
+                                "config": {
+                                    "sourceType": "file",
+                                    "model_path": model_path.name,
+                                    "task": "regression",
+                                    "output_column": "pred",
+                                },
+                            },
+                        }
+                    ),
+                ],
+                "edges": [make_edge("src", "ms")],
+            }
+        )
+        result = execute_graph(graph, target_node_id="ms", requested_preview_columns=columns)
+        assert result["ms"].status == "ok", result["ms"].error
+        return result["ms"].notes
+
+    frame = data(seed=29).head(10)
+    blanks = frame.with_columns(
+        exposure=pl.when(pl.int_range(pl.len()) < 3).then(None).otherwise(pl.col("exposure"))
+    )
+    frame.write_parquet(project / "full.parquet")
+    frame.drop("exposure").write_parquet(project / "none.parquet")
+    blanks.write_parquet(project / "blanks.parquet")
+    blanks.write_parquet(project / "projected.parquet")
+
+    assert notes("full.parquet") == []
+    assert notes("none.parquet") == [
+        "Scored as a full policy term: the input has no 'exposure' column."
+    ]
+    counted = ["3 of the 10 rows scored had no 'exposure' and were scored as a full policy term."]
+    assert notes("blanks.parquet") == counted
+    # One that shows only the prediction says the same: the count is what scoring
+    # filled, not what the preview displays.
+    assert notes("projected.parquet", columns=["pred"]) == counted
+
+    # A repeat is answered from the preview cache, without scoring again, and keeps it.
+    def no_scoring(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("the repeat scored again")
+
+    monkeypatch.setattr("haute._model_scorer._full_term_offset", no_scoring)
+    assert notes("blanks.parquet") == counted
+
+
+def test_a_preview_seeded_from_a_scored_snapshot_keeps_its_note(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A snapshot of the scored output carries the count; reading it scores nothing."""
+    from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+    from haute.executor import _preview_cache, execute_graph
+
+    model_path = train(project, "catboost", loss="Poisson", iterations=10, depth=2)
+    (project / "main.py").write_text("# pipeline\n", encoding="utf-8")
+    data(seed=31).head(10).with_columns(
+        exposure=pl.when(pl.int_range(pl.len()) < 4).then(None).otherwise(pl.col("exposure"))
+    ).write_parquet(project / "quotes.parquet")
+    score = {
+        "sourceType": "file",
+        "model_path": model_path.name,
+        "task": "regression",
+        "output_column": "pred",
+    }
+    source = {"inputType": "file", "format": "parquet", "mode": "scan", "path": "quotes.parquet"}
+    graph = PipelineGraph(
+        nodes=[
+            GraphNode(id=node_id, data=NodeData(label=node_id, nodeType=kind, config=config))
+            for node_id, kind, config in (
+                ("src", NodeType.DATA_INPUT, source),
+                ("ms", NodeType.MODEL_SCORE, score),
+                ("sorted", NodeType.POLARS, {"code": "df = ms.sort('age')"}),
+            )
+        ],
+        edges=[
+            GraphEdge(id="a", source="src", target="ms"),
+            GraphEdge(id="b", source="ms", target="sorted"),
+        ],
+        preamble="import polars as pl",
+        source_file=str(project / "main.py"),
+    )
+
+    def preview(target: str) -> Any:
+        _preview_cache.clear()
+        return execute_graph(
+            graph, target_node_id=target, source="batch", row_limit=200, shared_snapshots=True
+        )
+
+    counted = ["4 of the 10 rows scored had no 'exposure' and were scored as a full policy term."]
+    # The sort below reads the whole scored output, so the scorer's output is captured.
+    first = preview("sorted")
+    assert first["ms"].notes == counted, first["ms"].error
+
+    def no_scoring(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("the seeded preview scored again")
+
+    monkeypatch.setattr("haute._model_scorer._full_term_offset", no_scoring)
+    seeded = preview("ms")
+    assert seeded["ms"].status == "ok", seeded["ms"].error
+    assert seeded["ms"].notes == counted
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        ["exposure", 10, 4, False],
+        {"column": "exposure", "rows": 10, "empty": 4},
+        {"column": None, "rows": 10, "empty": 4, "missing": False},
+        {"column": "exposure", "rows": True, "empty": 0, "missing": False},
+        {"column": "exposure", "rows": 10, "empty": 11, "missing": False},
+        {"column": "exposure", "rows": 10, "empty": 4, "missing": "no"},
+    ],
+)
+def test_a_snapshot_s_malformed_full_term_facts_are_corrupt(raw: object) -> None:
+    """The store reads a refusal here as a corrupt generation, never as no note."""
+    from haute._node_snapshots import parse_full_term
+
+    assert parse_full_term(None) is None
+    with pytest.raises(ValueError, match="full-term facts"):
+        parse_full_term(raw)
+
+
+def test_the_note_reads_a_model_score_fed_by_one_table_of_several(project: Path) -> None:
+    """A parent that emits several tables feeds the scorer one of them, by its port."""
+    import json
+
+    from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+    from haute.executor import _preview_cache, execute_graph
+    from tests.conftest import build_test_api_input_snapshots
+
+    model_path = train(project, "catboost", loss="Poisson", iterations=10, depth=2)
+    records = [
+        {"age": 30.0 + i, "region": "north", "exposure": None if i < 2 else 0.5, "drivers": [{}]}
+        for i in range(5)
+    ]
+    (project / "quotes.json").write_text(json.dumps(records), encoding="utf-8")
+
+    def column(name: str, kind: str, path: str = "$[:]") -> dict[str, object]:
+        return {"name": name, "path": f"{path}.{name}", "type": kind, "selected": True}
+
+    config = {
+        "path": str(project / "quotes.json"),
+        "contract": "opaque",
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": "quotes",
+                "emit": True,
+                "columns": [
+                    column("age", "float"),
+                    column("region", "str"),
+                    column("exposure", "float"),
+                ],
+            },
+            {
+                "path": "$[:].drivers[:]",
+                "label": "drivers",
+                "emit": True,
+                "columns": [column("age", "float", "$[:]")],
+            },
+        ],
+    }
+    build_test_api_input_snapshots(project / "quotes.json", config)
+    graph = PipelineGraph(
+        nodes=[
+            GraphNode(
+                id="api", data=NodeData(label="api", nodeType=NodeType.API_INPUT, config=config)
+            ),
+            GraphNode(
+                id="ms",
+                data=NodeData(
+                    label="ms",
+                    nodeType=NodeType.MODEL_SCORE,
+                    config={
+                        "sourceType": "file",
+                        "model_path": model_path.name,
+                        "task": "regression",
+                        "output_column": "pred",
+                    },
+                ),
+            ),
+        ],
+        edges=[GraphEdge(id="e", source="api", target="ms", sourceHandle="quotes")],
+    )
+    counted = ["2 of the 5 rows scored had no 'exposure' and were scored as a full policy term."]
+    # The scorer previewed alone, and the whole pipeline with the parent's tables too.
+    for target in ("ms", None):
+        _preview_cache.clear()
+        result = execute_graph(graph, target_node_id=target)
+        assert result["ms"].status == "ok", result["ms"].error
+        assert result["ms"].notes == counted

@@ -12,7 +12,13 @@ import {
   MODELLING_CHART_GRID_COLOR as gridColor,
   TwoChartLayout,
 } from "./ChartScaffold"
-import { chartLabelIndices, chartTicks, formatChartTicks } from "../../utils/chartHelpers"
+import {
+  chartLabelIndices,
+  chartTicks,
+  formatChartNumber,
+  formatChartTicks,
+} from "../../utils/chartHelpers"
+import { formatMetricValue } from "./metricOptions"
 
 interface LiftTabProps {
   result: TrainResult
@@ -53,6 +59,7 @@ export function LiftTab({ result, width, height = 280 }: LiftTabProps) {
             <LorenzPanel
               curve={result.lorenz_curve!}
               perfectCurve={result.lorenz_curve_perfect}
+              gini={result.diagnostic_metrics?.gini}
               width={chartWidth}
               height={height}
             />
@@ -111,8 +118,8 @@ function LiftPanel({ data, width, height }: { data: LiftPoint[]; width: number; 
         headers={["Decile", "Actual", "Predicted", "Count"]}
         rows={data.map((row) => [
           row.decile,
-          row.actual.toFixed(4),
-          <span style={{ color: predictedColor }}>{row.predicted.toFixed(4)}</span>,
+          formatChartNumber(row.actual),
+          <span style={{ color: predictedColor }}>{formatChartNumber(row.predicted)}</span>,
           row.count.toLocaleString(),
         ])}
       />
@@ -240,11 +247,13 @@ function DoubleLiftChart({
 function LorenzPanel({
   curve,
   perfectCurve,
+  gini,
   width,
   height,
 }: {
   curve: LorenzPoint[]
   perfectCurve?: LorenzPoint[]
+  gini: number | undefined
   width: number
   height: number
 }) {
@@ -253,7 +262,13 @@ function LorenzPanel({
       <h4 className="text-[15px] font-medium" style={{ color: "var(--text-primary)" }}>
         Lorenz curve
       </h4>
-      <LorenzChart curve={curve} perfectCurve={perfectCurve} width={width} height={height} />
+      <LorenzChart
+        curve={curve}
+        perfectCurve={perfectCurve}
+        gini={gini}
+        width={width}
+        height={height}
+      />
     </div>
   )
 }
@@ -261,11 +276,14 @@ function LorenzPanel({
 function LorenzChart({
   curve,
   perfectCurve,
+  gini,
   width,
   height,
 }: {
   curve: LorenzPoint[]
   perfectCurve?: LorenzPoint[]
+  /** The server's Gini on the rows the curve is drawn from: the Summary's diagnostics. */
+  gini: number | undefined
   width: number
   height: number
 }) {
@@ -284,12 +302,12 @@ function LorenzChart({
           `${index ? "L" : "M"}${xScale(point.cum_weight_frac).toFixed(1)},${yScale(point.cum_actual_frac).toFixed(1)}`,
       )
       .join(" ")
-  const gini = computeGini(curve, perfectCurve),
-    perfectPath = perfectCurve?.length ? makePath(perfectCurve) : null
+  const perfectPath = perfectCurve?.length ? makePath(perfectCurve) : null
+  const giniLabel = typeof gini === "number" && Number.isFinite(gini) ? formatMetricValue(gini) : null
   return (
     <>
       <ChartSvg width={width} height={height} ariaLabel="Lorenz curve">
-        <title>Lorenz curve with Gini coefficient {gini.toFixed(4)}</title>
+        <title>{giniLabel ? `Lorenz curve with Gini coefficient ${giniLabel}` : "Lorenz curve"}</title>
         <ChartValueGrid ticks={chartTicks(0, 1, 5)} left={marginLeft} right={marginLeft + plotWidth} y={yScale} />
         {chartTicks(0, 1, 5).map((value, index, all) => (
           <g key={value}>
@@ -328,15 +346,17 @@ function LorenzChart({
           <path d={perfectPath} fill="none" stroke={actualColor} strokeWidth={1.5} opacity={0.6} />
         )}
         <path d={makePath(curve)} fill="none" stroke={predictedColor} strokeWidth={1.5} />
-        <text
-          x={marginLeft + 8}
-          y={marginTop + 16}
-          fontSize={12}
-          fontWeight="bold"
-          fill={predictedColor}
-        >
-          Gini = {gini.toFixed(4)}
-        </text>
+        {giniLabel && (
+          <text
+            x={marginLeft + 8}
+            y={marginTop + 16}
+            fontSize={12}
+            fontWeight="bold"
+            fill={predictedColor}
+          >
+            Gini = {giniLabel}
+          </text>
+        )}
         <text
           x={marginLeft + plotWidth / 2}
           y={height - 4}
@@ -368,23 +388,3 @@ function LorenzChart({
   )
 }
 
-function computeGini(curve: LorenzPoint[], perfectCurve?: LorenzPoint[]) {
-  if (curve.length < 2) return 0
-  const area = (points: LorenzPoint[]) =>
-    points
-      .slice(1)
-      .reduce(
-        (total, point, index) =>
-          total +
-          ((point.cum_weight_frac - points[index].cum_weight_frac) *
-            (point.cum_actual_frac + points[index].cum_actual_frac)) /
-            2,
-        0,
-      )
-  const rawGini = 2 * area(curve) - 1
-  if (!perfectCurve || perfectCurve.length < 2) return Number.isFinite(rawGini) ? rawGini : 0
-  const perfectGini = 2 * area(perfectCurve) - 1
-  return Number.isFinite(perfectGini) && perfectGini !== 0 && Number.isFinite(rawGini)
-    ? rawGini / perfectGini
-    : 0
-}

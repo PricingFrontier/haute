@@ -1397,15 +1397,15 @@ def read_binding(lineage: PipelineGraph, scenario: str) -> BindingRead:
     """Read a lineage's source generation, freshness tokens and identity components.
 
     The source generation digests the runtime input identity execution caches
-    sign together with each local Model Scoring node's cached model (and an
-    EBM's cached contract), which that identity does not sign. It hashes
-    inputs, so it is read only in the worker.
+    sign together with each local Model Scoring node's cached model and the
+    contract (or absence marker) every load binds, which that identity does not
+    sign. It hashes inputs, so it is read only in the worker.
     """
     components = identity_components(lineage)
     paths: list[str] = components["paths"]
     tokens = {path: _freshness_token(path) for path in paths}
     inputs = dataframe_graph_input_identity(lineage, target_node_id=None, source=scenario)
-    models = {node_id: cached.fingerprint() for node_id, cached in _cached_models(lineage).items()}
+    models = {node_id: cached.identity() for node_id, cached in _cached_models(lineage).items()}
     generation = content_hash_bytes(
         canonical_json({"inputs": inputs.digest, "models": models}).encode("utf-8")
     )

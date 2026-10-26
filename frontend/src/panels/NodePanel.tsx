@@ -675,6 +675,7 @@ const CACHED_PREVIEW_KEYS: readonly (keyof HauteNodeData)[] = [
   "_availableColumns",
   "_frameColumns",
   "_schemaWarnings",
+  "_notes",
   "_columnsSource",
   "_columnsStructuralVersion",
 ]
@@ -1287,6 +1288,25 @@ function NodeEditorTabStrip({ visible, tabs, activeTab, onSelect, configLabel = 
   )
 }
 
+function NodeNotes({ notes }: { notes: string[] }) {
+  if (notes.length === 0) return null
+  return (
+    <div className="px-4 py-2 shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
+      <div
+        data-testid="node-notes"
+        className="flex flex-col gap-1 px-3 py-2 rounded-lg"
+        style={{ background: "var(--accent-soft-subtle)", border: "1px solid var(--border)" }}
+      >
+        {notes.map((note) => (
+          <p key={note} className="text-[11px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+            {note}
+          </p>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 type SchemaWarningBannerProps = {
   warnings: { column: string; status: string }[]
   dismissedSignature: string | null
@@ -1863,6 +1883,8 @@ function NodePanelContent({
           onRefreshPreview={onRefreshPreview}
         />
       )}
+
+      {!showExplorePanes && <NodeNotes notes={(node.data._notes as string[] | undefined) ?? []} />}
 
       <NodeEditorBody
         nodeId={node.id}

@@ -326,6 +326,15 @@ class TestBuildPool:
         np.testing.assert_allclose(log_pool.get_baseline().ravel(), np.log([0.5, 1.0, 2.0]))
         np.testing.assert_allclose(identity_pool.get_baseline().ravel(), [0.5, 1.0, 2.0])
 
+    def test_a_feature_missing_from_the_frame_is_named(self):
+        """A pool narrower than its features would shift every categorical index."""
+        from haute.errors import HauteValidationError
+        from haute.modelling._algorithms import _build_pool
+
+        df = pl.DataFrame({"f1": [1.0, 2.0], "cat": ["a", "b"], "y": [0.0, 1.0]})
+        with pytest.raises(HauteValidationError, match="'f2'"):
+            _build_pool(df, ["f1", "f2", "cat"], ["cat"], target="y")
+
     def test_pool_offset_needs_its_link_and_log_link_refuses_non_positive_exposure(self):
         from haute.errors import HauteValidationError
         from haute.modelling._algorithms import _build_pool
@@ -349,14 +358,6 @@ class TestBuildPool:
 
         pool = _build_pool(df, ["f1"], [], y=y, w=w, baseline=baseline)
         assert pool.num_row() == 3
-
-    def test_pool_missing_feature_columns_are_skipped(self):
-        """Features not present in df columns are silently skipped."""
-        from haute.modelling._algorithms import _build_pool
-
-        df = pl.DataFrame({"f1": [1.0, 2.0], "y": [0.0, 1.0]})
-        pool = _build_pool(df, ["f1", "missing_col"], [], target="y")
-        assert pool.num_row() == 2
 
     def test_numeric_only_pool_carries_feature_names(self):
         """The numpy fast path must still name features (not ['0', '1', ...]).
@@ -492,10 +493,11 @@ class TestResolveLossFunctionCoverage:
         assert result == "Tweedie:variance_power=1.8"
 
     def test_tweedie_with_none_variance_power(self):
+        from haute.errors import HauteValidationError
         from haute.modelling._algorithms import resolve_loss_function
 
-        result = resolve_loss_function("Tweedie", "regression", None)
-        assert result == "Tweedie:variance_power=1.5"
+        with pytest.raises(HauteValidationError, match="Tweedie loss needs its variance power"):
+            resolve_loss_function("Tweedie", "regression", None)
 
     def test_all_classification_losses(self):
         from haute.modelling._algorithms import resolve_loss_function
@@ -1156,84 +1158,6 @@ class TestSaveArtifactsCoverage:
         with pytest.raises(HauteValidationError, match="has no model file suffix"):
             job._save_artifacts(train_result)
         assert not (tmp_path / "mymodel.model").exists()
-
-    def test_save_feature_contract_includes_declared_categorical_levels(self, tmp_path):
-        from haute.modelling._feature_contract import load_contract
-        from haute.modelling._training_job import (
-            TrainingJob,
-            _TrainModelResult,
-            model_contract_filename,
-        )
-
-        mock_algo = MagicMock()
-        mock_model = MagicMock()
-        mock_fit_result = MagicMock()
-        job = TrainingJob(
-            name="mymodel",
-            data=pl.DataFrame({"region": ["north"], "y": [1.0]}),
-            target="y",
-            algorithm="catboost",
-            output_dir=str(tmp_path),
-            categorical_levels={"region": ["north", "south"]},
-        )
-        job._contract_feature_dtypes = {"region": "String"}
-        job._contract_target_dtype = "Float64"
-        train_result = _TrainModelResult(
-            model=mock_model,
-            algo=mock_algo,
-            fit_result=mock_fit_result,
-            fit_params={},
-        )
-
-        job._save_artifacts(
-            train_result,
-            features=["region"],
-            cat_features=["region"],
-        )
-
-        # Per-model contract name (remediation 4b.9): models sharing one
-        # output_dir must not overwrite each other's contracts.
-        contract = load_contract(tmp_path / model_contract_filename("mymodel"))
-        assert contract.categorical_levels == {"region": ["north", "south"]}
-
-    def test_training_contract_filters_broad_source_categorical_levels(self):
-        from haute.modelling._training_job import TrainingJob
-
-        job = TrainingJob(
-            name="mymodel",
-            data=pl.DataFrame({"region": ["north"], "channel": ["web"], "y": [1.0]}),
-            target="y",
-            algorithm="catboost",
-            categorical_levels={
-                "region": ["north", "south"],
-                "channel": ["web", "direct"],
-            },
-        )
-
-        levels = job._categorical_levels_for_contract(
-            features=["region"],
-            cat_features=["region"],
-        )
-
-        assert levels == {"region": ["north", "south"]}
-
-    def test_training_contract_rejects_levels_for_numeric_model_feature(self):
-        from haute.errors import FeatureMismatchError
-        from haute.modelling._training_job import TrainingJob
-
-        job = TrainingJob(
-            name="mymodel",
-            data=pl.DataFrame({"age": [30], "y": [1.0]}),
-            target="y",
-            algorithm="catboost",
-            categorical_levels={"age": ["30", "40"]},
-        )
-
-        with pytest.raises(FeatureMismatchError, match="non-categorical"):
-            job._categorical_levels_for_contract(
-                features=["age"],
-                cat_features=[],
-            )
 
 
 # ---------------------------------------------------------------------------

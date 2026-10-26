@@ -1631,15 +1631,16 @@ def _count_contract_lookups(
     fn: Callable[[], dict[str, set[str] | None]],
 ) -> tuple[int, dict[str, set[str] | None]]:
     """Run *fn* while counting calls to that module's contract resolver."""
-    original = module.get_column_contract
+    name = "get_node_contract" if hasattr(module, "get_node_contract") else "get_column_contract"
+    original = getattr(module, name)
     calls = 0
 
-    def counted(node_type: NodeType, config: dict) -> tuple[set[str] | None, set[str] | None]:
+    def counted(node_type: NodeType, config: dict) -> object:
         nonlocal calls
         calls += 1
         return original(node_type, config)
 
-    monkeypatch.setattr(module, "get_column_contract", counted)
+    monkeypatch.setattr(module, name, counted)
     result = fn()
     return calls, result
 

@@ -552,6 +552,8 @@ class TestEditorAndPackagedScoringAgree:
             "pruned_graph": pruned.model_dump(),
             "input_node_ids": ["src"],
             "output_node_id": out_id,
+            "input_schema": {name: str(dtype) for name, dtype in input_df.schema.items()},
+            "omittable_inputs": [],
             "request_rows": {
                 "multi_quote": "in_request_order",
                 "refusals": [],

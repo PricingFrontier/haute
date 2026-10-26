@@ -29,6 +29,8 @@ from haute._config_validation import (
 )
 from haute._contracts import (
     _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY,
+    _DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY,
+    Contract,
 )
 from haute._contracts import (
     OPAQUE_CONTRACT as _OPAQUE_CONTRACT,
@@ -44,7 +46,11 @@ from haute._edge_join import (
     execute_edge_join,
     resolve_edge_join_role_indices,
 )
-from haute._execution_context import ExecutionProfile, current_execution_context
+from haute._execution_context import (
+    ExecutionProfile,
+    FullTermTally,
+    current_execution_context,
+)
 from haute._graph_utils import _sanitize_func_name, build_instance_mapping, edge_input_name
 from haute._io import _select_columns
 from haute._logging import get_logger
@@ -1124,7 +1130,29 @@ def _build_modelling(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, _modelling_passthrough_fn, False
 
 
-def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
+def _model_score_inputs(
+    produced: set[str], features: Iterable[str], offset_column: object, offset_link: object
+) -> Contract:
+    """A scorer reads its features, and its exposure only where the input has it.
+
+    A quote is priced for a full policy term, so a missing exposure (a log-link
+    offset) is filled at scoring; projection keeps a present one so pruning
+    never drops it. An additive offset is a base premium and a required input.
+    """
+    offset = (
+        frozenset({offset_column})
+        if isinstance(offset_column, str) and offset_column
+        else frozenset()
+    )
+    optional = offset if offset_link == "log" else frozenset()
+    return Contract(
+        inputs=(frozenset(features) | offset) - optional,
+        outputs=frozenset(produced),
+        optional_inputs=optional,
+    )
+
+
+def _model_score_columns(config: dict[str, Any]) -> _ColumnContract | Contract:
     out = config.get("output_column", "prediction") or "prediction"
     produced = {out}
 
@@ -1161,11 +1189,6 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
         from haute.modelling._feature_contract import load_contract_cached
 
         contract = load_contract_cached(feature_contract_path)
-        referenced = set(contract.features)
-        if contract.offset_column:
-            # The offset is a required scoring input (not a feature) —
-            # upstream pruning must not drop it.
-            referenced.add(contract.offset_column)
         if (
             config.get("task") == "classification"
             and contract.model is not None
@@ -1174,7 +1197,9 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
             # A Haute-trained binary classifier always scores its positive-class
             # probability; a prediction-only classifier records no class labels.
             produced = {*produced, f"{out}_proba"}
-        return produced, referenced
+        return _model_score_inputs(
+            produced, contract.features, contract.offset_column, contract.offset_link
+        )
 
     if _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY in config:
         # The deploy scorer annotates its in-memory graph copy from the
@@ -1182,18 +1207,29 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
         # internal state is an implementation defect, not a reason to fall
         # through to the graph's now-obsolete MLflow source.
         deploy_inputs = config[_DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY]
-        if (
-            not isinstance(deploy_inputs, list)
-            or any(not isinstance(column, str) or not column for column in deploy_inputs)
-            or len(set(deploy_inputs)) != len(deploy_inputs)
+        optional_inputs = config.get(_DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY, [])
+        for key, columns in (
+            (_DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY, deploy_inputs),
+            (_DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY, optional_inputs),
         ):
-            from haute.errors import ConfigError
+            if (
+                not isinstance(columns, list)
+                or any(not isinstance(column, str) or not column for column in columns)
+                or len(set(columns)) != len(columns)
+            ):
+                from haute.errors import ConfigError
 
-            raise ConfigError(
-                "modelScore node has invalid internal deploy model inputs",
-                config_key=_DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY,
-            )
-        return produced, set(deploy_inputs) if deploy_inputs else None
+                raise ConfigError(
+                    "modelScore node has invalid internal deploy model inputs",
+                    config_key=key,
+                )
+        if not deploy_inputs:
+            return produced, None
+        return Contract(
+            inputs=frozenset(deploy_inputs),
+            outputs=frozenset(produced),
+            optional_inputs=frozenset(optional_inputs),
+        )
 
     # Feature columns are only known after loading the model.
     if model_source is None:
@@ -1224,32 +1260,13 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
         model_source, config.get("task", "regression"), base_dir=_configured_pipeline_dir()
     )
     if scoring_model.feature_names:
-        referenced = set(scoring_model.feature_names)
-        model_offset = getattr(scoring_model, "offset_column", None)
-        if isinstance(model_offset, str) and model_offset:
-            referenced.add(model_offset)
-        return produced, referenced
-    return produced, None
-
-
-def _declared_categorical_levels_for_model_score(
-    config: dict[str, Any],
-    source_ids: list[str],
-    node_map: dict[str, GraphNode] | None,
-    upstream_ids: list[str] | None = None,
-) -> dict[str, list[str | None]]:
-    """Merge explicit categorical level declarations at a modelScore boundary."""
-    from haute.modelling._feature_contract import merge_categorical_level_declarations
-
-    declarations: list[tuple[str, Any]] = [("modelScore", config.get("categorical_levels"))]
-    candidate_ids = list(dict.fromkeys([*source_ids, *(upstream_ids or [])]))
-    if node_map is not None:
-        declarations.extend(
-            (source_id, node_map[source_id].data.config.get("categorical_levels"))
-            for source_id in candidate_ids
-            if source_id in node_map
+        return _model_score_inputs(
+            produced,
+            scoring_model.feature_names,
+            getattr(scoring_model, "offset_column", None),
+            getattr(scoring_model, "offset_link", None),
         )
-    return merge_categorical_level_declarations(declarations)
+    return produced, None
 
 
 @_register(
@@ -1285,13 +1302,6 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         ctx.required_output_columns,
         post_processing_code=code,
     )
-    declared_categorical_levels = _declared_categorical_levels_for_model_score(
-        config,
-        ctx.source_ids,
-        ctx.node_map,
-        ctx.upstream_ids,
-    )
-
     scorer = ModelScorer(
         model_source=model_source,
         task=config.get("task", "regression"),
@@ -1303,14 +1313,20 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         schema_only=ctx.schema_only,
         required_output_columns=required_output_columns,
         feature_contract_path=scoring_contract_path(model_source, config, base_dir),
-        categorical_levels=declared_categorical_levels,
         reuse_loaded_model=ctx.reuse_loaded_model,
         input_fanout=_upstream_scenario_fanout(ctx.upstream_ids, ctx.node_map),
+        full_term_tally=_full_term_tally(ctx),
         base_dir=base_dir,
         preamble_ns=dict(ctx.preamble_ns) if ctx.preamble_ns else None,
     )
 
     return ctx.func_name, scorer.score, False
+
+
+def _full_term_tally(ctx: NodeBuildContext) -> FullTermTally | None:
+    """Where this node's scorer records what it priced as a full policy term."""
+    context = current_execution_context()
+    return None if context is None else context.provenance.full_term_tally(ctx.node.id)
 
 
 def _upstream_scenario_fanout(

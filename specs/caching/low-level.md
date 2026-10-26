@@ -427,7 +427,14 @@ resulting plan.
   node records those columns as `node_output.unshaped_columns` (`[name, dtype]` pairs), and a
   seeded preview reports them from there (`SeedPlan.seed_unshaped_columns`). A generation
   without the record is not seeded: the node is executed, and a preview may still capture it,
-  for the bounded executions that seed from it. A preview's caller demand is only which columns to
+  for the bounded executions that seed from it. A Model Score's capture or explicit build also
+  records what its scoring filled as `node_output.full_term` (the exposure column, the rows
+  scored, those scored without an exposure, and whether the column was missing; read just
+  before publication, after the write that scored it, from
+  `ExecutionProvenance.full_term_facts`), so a seeded preview, which never rescores it, still
+  gives the node's full-policy-term note: the walk's seed read records the facts into the
+  node's tally (`SeedPlan.seed_full_term`). Malformed facts (`parse_full_term`) make the
+  generation corrupt. A preview's caller demand is only which columns to
   show first, so its request is `best_effort_demand`: no capture's columns are strict, and a
   requested column the target does not produce is refused as it is without a plan (400)
   rather than as a capture that lacks it.

@@ -25,6 +25,7 @@ retired.
 | EXEC-R15 | Planned | P3 | The static analyses cover the canvas join and the binning expressions, and the cardinality proof trusts `pl.lit` only with a literal argument. |
 | EXEC-R16 | Decision | P3 | Preview cache extension either extends the cached preview or is removed with its specification sentence. |
 | EXEC-R17 | Planned | P3 | The engine's never-fed evidence, dead entry points, test-only hooks and clone pairs are removed, and the preamble compile stops editing `sys.path` and bytecode caches. |
+| EXEC-R18 | Planned | P3 | A node's optional inputs relax only the edges that feed it, not every column of that name in the graph. |
 
 ## Planned improvements
 
@@ -306,3 +307,24 @@ report. Keep these behavioural guarantees alongside the mechanical cleanup check
 `src/haute/_polars_utils.py::row_local_python_scan`;
 `src/haute/_polars_utils.py::fanout_python_scan`;
 `src/haute/_ram_estimate.py::_resolve_row_cardinality_from_index`.
+
+### EXEC-R18 — Optional inputs relax only their own edges
+**Why:** A column a node reads only where it exists (`Contract.optional_inputs`, a Model
+Score's exposure) is collected into one graph-wide `ProjectionPlan.optional_columns`, and
+the walker drops any missing column of that name from every edge's projection. A different
+node that genuinely needs a column of the same name then loses the edge's early,
+named refusal and fails later, at its own boundary check or in Polars, with a less clear
+message.
+
+**Plan:** Carry optional demand per edge through the planner, so an edge's projection
+drops a missing column only when every consumer reading it through that edge reads it
+optionally.
+
+**Acceptance:** A graph where a Model Score reads `exposure` optionally and a Polars node
+downstream of the same source requires `exposure` refuses the Polars node's edge by name
+when the source lacks it, while the Model Score alone still prices a full policy term.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/projection.py::ProjectionPlan`;
+`src/haute/_graph_walker.py::_WalkProjection`.

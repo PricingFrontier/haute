@@ -54,7 +54,6 @@ class NativePyfuncModel:
                 algorithm=contract.model.algorithm,
             )
         self._task = contract.task
-        self._categorical_levels = dict(contract.categorical_levels)
         self._scoring = bind_feature_contract(
             load_local_model(str(model_file), task=contract.task),
             contract,
@@ -81,7 +80,6 @@ class NativePyfuncModel:
                 task=self._task,
                 output_col=_PREDICTION_COLUMN,
                 batch=False,
-                categorical_levels=self._categorical_levels or None,
                 offset_column=self._scoring.offset_column,
                 offset_link=self._scoring.offset_link,
             )

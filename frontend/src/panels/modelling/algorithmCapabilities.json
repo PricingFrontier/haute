@@ -22,8 +22,17 @@
     "monotone_unsupported_losses": [],
     "refit_policy": "validation_weighted_rounds",
     "reserved_params": [
+      "allow_writing_files",
       "class_names",
-      "thread_count"
+      "eval_metric",
+      "loss_function",
+      "objective",
+      "random_seed",
+      "random_state",
+      "save_snapshot",
+      "snapshot_file",
+      "thread_count",
+      "train_dir"
     ],
     "round_key": "iterations",
     "round_key_aliases": [

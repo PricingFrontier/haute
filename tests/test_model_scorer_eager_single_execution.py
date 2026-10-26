@@ -30,11 +30,9 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import polars as pl
-import pytest
 
 from haute._mlflow_io import ScoringModel
 from haute._model_scorer import (
-    FeatureMismatchError,
     _run_score_pipeline,
     score_frame,
 )
@@ -208,53 +206,6 @@ class TestScoreFrameEagerSingleExecution:
         np.testing.assert_allclose(result["pred"].to_numpy(), [10.0, 20.0])
         assert result["keep"].to_list() == [7.0, 8.0]
 
-    def test_categorical_levels_validated_once_against_scored_rows(self) -> None:
-        """Domain validation must not trigger an extra execution of the
-        upstream plan — it runs against the same materialised frame that
-        is scored."""
-        spy = _UpstreamSpy(pl.DataFrame({"region": ["north", "south"]}))
-        model = MagicMock()
-        model.predict.side_effect = lambda pdf: np.full(len(pdf), 1.5, dtype=np.float64)
-        del model.predict_proba
-
-        result = score_frame(
-            model=model,
-            lf=spy.lazy(),
-            features=["region"],
-            cat_feature_names=frozenset({"region"}),
-            flavor="catboost",
-            task="regression",
-            output_col="pred",
-            batch=False,
-            categorical_levels={"region": ["north", "south"]},
-        ).collect()
-
-        assert spy.executions == 1, (
-            f"Eager scoring with categorical domains executed the upstream plan "
-            f"{spy.executions} times; validation must reuse the single "
-            "materialised frame."
-        )
-        assert result["pred"].to_list() == [1.5, 1.5]
-
-    def test_categorical_domain_violation_still_raises_before_predict(self) -> None:
-        spy = _UpstreamSpy(pl.DataFrame({"region": ["north", "west"]}))
-        model = MagicMock()
-
-        with pytest.raises(FeatureMismatchError, match="outside declared"):
-            score_frame(
-                model=model,
-                lf=spy.lazy(),
-                features=["region"],
-                cat_feature_names=frozenset({"region"}),
-                flavor="catboost",
-                task="regression",
-                output_col="pred",
-                batch=False,
-                categorical_levels={"region": ["north", "south"]},
-            )
-
-        model.predict.assert_not_called()
-
     def test_empty_frame_single_execution(self) -> None:
         spy = _UpstreamSpy(pl.DataFrame({"a": pl.Series([], dtype=pl.Float64)}))
         model = MagicMock()
@@ -408,105 +359,6 @@ class TestRunScorePipelineLiveSingleExecution:
             "c": 10.0,
             "d": 15.0,
         }
-
-    def test_live_with_categorical_levels_single_execution(self) -> None:
-        """Domain validation in the live path must reuse the materialised
-        frame instead of running a separate narrow collection of the plan."""
-        spy = _UpstreamSpy(pl.DataFrame({"region": ["north", "south", "north"]}))
-        model = MagicMock()
-        model.predict.side_effect = lambda pdf: np.full(len(pdf), 2.5, dtype=np.float64)
-        del model.predict_proba
-        scoring_model = ScoringModel(
-            model=model,
-            feature_names=["region"],
-            cat_feature_names=frozenset({"region"}),
-            flavor="catboost",
-        )
-
-        result = _run_score_pipeline(
-            scoring_model,
-            spy.lazy(),
-            task="regression",
-            output_col="pred",
-            source="live",
-            categorical_levels={"region": ["north", "south"]},
-        ).collect()
-
-        assert spy.executions == 1, (
-            f"Live scoring with categorical domains executed the upstream plan "
-            f"{spy.executions} times."
-        )
-        assert result["pred"].to_list() == [2.5, 2.5, 2.5]
-
-    def test_live_categorical_validation_collects_only_score_projection(
-        self,
-        monkeypatch,
-    ) -> None:
-        """Unrelated wide columns never enter the live validation collect."""
-        import haute._polars_utils as polars_utils
-
-        collected_schemas: list[list[str]] = []
-        real_collect = polars_utils.streaming_collect
-
-        def recording_collect(lf: pl.LazyFrame, *args: Any, **kwargs: Any) -> pl.DataFrame:
-            collected_schemas.append(lf.collect_schema().names())
-            return real_collect(lf, *args, **kwargs)
-
-        monkeypatch.setattr(polars_utils, "streaming_collect", recording_collect)
-
-        model = MagicMock()
-        model.predict.side_effect = lambda pdf: np.full(len(pdf), 2.5, dtype=np.float64)
-        del model.predict_proba
-        scoring_model = ScoringModel(
-            model=model,
-            feature_names=["region"],
-            cat_feature_names=frozenset({"region"}),
-            flavor="catboost",
-        )
-        lf = pl.DataFrame(
-            {
-                "region": ["north", "south"],
-                "keep": [1, 2],
-                "unused_wide": ["x" * 1_000, "y" * 1_000],
-            }
-        ).lazy()
-
-        result = _run_score_pipeline(
-            scoring_model,
-            lf,
-            task="regression",
-            output_col="pred",
-            source="live",
-            required_output_columns=frozenset({"keep", "pred"}),
-            categorical_levels={"region": ["north", "south"]},
-        ).collect()
-
-        assert collected_schemas
-        assert collected_schemas[0] == ["region", "keep"]
-        assert all("unused_wide" not in schema for schema in collected_schemas)
-        assert result.columns == ["keep", "pred"]
-
-    def test_live_categorical_violation_raises_before_scoring(self) -> None:
-        spy = _UpstreamSpy(pl.DataFrame({"region": ["west"]}))
-        model = MagicMock()
-        scoring_model = ScoringModel(
-            model=model,
-            feature_names=["region"],
-            cat_feature_names=frozenset({"region"}),
-            flavor="catboost",
-        )
-
-        with pytest.raises(FeatureMismatchError, match="outside declared"):
-            _run_score_pipeline(
-                scoring_model,
-                spy.lazy(),
-                task="regression",
-                output_col="pred",
-                source="live",
-                categorical_levels={"region": ["north", "south"]},
-            )
-
-        model.predict.assert_not_called()
 
     def test_user_post_processing_code_sees_materialised_result(self) -> None:
         """User code downstream of scoring must not trigger a re-execution

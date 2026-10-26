@@ -131,6 +131,8 @@ class TestHauteModelLoadContext:
             "pruned_graph": {"nodes": [], "edges": []},
             "input_node_ids": ["api_src"],
             "output_node_id": "out",
+            "input_schema": {},
+            "omittable_inputs": [],
             "request_rows": {
                 "multi_quote": "in_request_order",
                 "refusals": [],
@@ -170,6 +172,8 @@ class TestHauteModelLoadContext:
             "pruned_graph": {"nodes": [], "edges": []},
             "input_node_ids": ["src"],
             "output_node_id": "out",
+            "input_schema": {},
+            "omittable_inputs": [],
             "request_rows": {
                 "multi_quote": "in_request_order",
                 "refusals": [],
@@ -197,6 +201,8 @@ class TestHauteModelLoadContext:
             "pruned_graph": {"nodes": [], "edges": []},
             "input_node_ids": ["src"],
             "output_node_id": "out",
+            "input_schema": {},
+            "omittable_inputs": [],
             "request_rows": {
                 "multi_quote": "in_request_order",
                 "refusals": [],
@@ -254,6 +260,8 @@ class TestHauteModelPredict:
         model._artifact_paths = {}
         model._output_fields = None
         model._request_rows = RequestRows("in_request_order")
+        model._omittable = frozenset()
+        model._input_schema = {"x": pl.Float64(), "y": pl.Float64()}
 
         input_pd = pd.DataFrame({"x": [1.0, 2.0], "y": [3.0, 4.0]})
         expected_result = pl.DataFrame({"x": [1.0, 2.0], "result": [10.0, 20.0]})
@@ -290,6 +298,8 @@ class TestHauteModelPredict:
         model._artifact_paths = {}
         model._output_fields = None
         model._request_rows = RequestRows("in_request_order")
+        model._omittable = frozenset()
+        model._input_schema = {"x": pl.Float64()}
         admission_error = ExecutionAdmissionError(
             "deploy_pyfunc_predict",
             profile=ExecutionProfile.DEPLOY_BATCH,
@@ -337,14 +347,15 @@ class TestHauteModelPredict:
         model._artifact_paths = {}
         model._output_fields = None
         model._request_rows = RequestRows("in_request_order")
+        model._omittable = frozenset()
+        model._input_schema = {"x": pl.Float64()}
 
         monkeypatch.setattr(
             "haute.deploy._scorer.admit_deploy_execution",
             lambda **_kwargs: execution_context,
         )
         monkeypatch.setattr(
-            pl,
-            "from_pandas",
+            "haute.deploy._request_frame.frame_rows",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bad pandas frame")),
         )
 
@@ -373,6 +384,8 @@ class TestHauteModelPredict:
         model._artifact_paths = {}
         model._output_fields = None
         model._request_rows = RequestRows("in_request_order")
+        model._omittable = frozenset()
+        model._input_schema = {"x": pl.Float64()}
 
         class Result:
             def to_pandas(self):
@@ -405,6 +418,8 @@ class TestHauteModelPredict:
         model._artifact_paths = {}
         model._output_fields = ["premium"]
         model._request_rows = RequestRows("in_request_order")
+        model._omittable = frozenset()
+        model._input_schema = {"x": pl.Float64()}
 
         input_pd = pd.DataFrame({"x": [1.0]})
         mock_result = pl.DataFrame({"premium": [100.0]})
@@ -431,6 +446,8 @@ class TestHauteModelPredict:
         model._artifact_paths = {"model.pkl": "/served/model.pkl"}
         model._output_fields = None
         model._request_rows = RequestRows("in_request_order")
+        model._omittable = frozenset()
+        model._input_schema = {"x": pl.Float64()}
 
         input_pd = pd.DataFrame({"x": [1.0]})
         mock_result = pl.DataFrame({"x": [1.0]})
@@ -460,6 +477,15 @@ class TestHauteModelPredict:
         model._output_node_id = "output"
         model._output_fields = output_fields
         model._request_rows = RequestRows("in_request_order")
+        model._omittable = frozenset()
+        model._input_schema = {
+            "IDpol": pl.Int64(),
+            "VehPower": pl.Int64(),
+            "Area": pl.String(),
+            "VehAge": pl.Int64(),
+            "BonusMalus": pl.Int64(),
+            "Exposure": pl.Float64(),
+        }
         model._artifact_paths = {}
         return model
 
@@ -3061,12 +3087,11 @@ class TestScoreGraphModelScoreRemap:
         assert result.columns == ["pred"]
         assert result["pred"].to_list() == [42.0]
 
-    def test_remapped_model_score_rejects_observed_category_before_predict(
+    def test_remapped_model_score_scores_a_category_the_model_never_saw(
         self,
         tmp_path,
     ):
         from haute.deploy._scorer import score_graph
-        from haute.errors import FeatureMismatchError
         from haute.modelling._feature_contract import (
             CONTRACT_FILENAME,
             build_contract,
@@ -3081,7 +3106,6 @@ class TestScoreGraphModelScoreRemap:
                 features=["region"],
                 feature_types={"region": "String"},
                 categorical_features=["region"],
-                categorical_levels={"region": ["north", "south"]},
                 target_name="target",
                 target_type="Float64",
                 task="regression",
@@ -3101,11 +3125,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": _single_frame_api_input_config(
-                                "region",
-                                label="src",
-                                categorical_levels={"region": ["north", "south"]},
-                            ),
+                            "config": _single_frame_api_input_config("region", label="src"),
                         },
                     },
                     {
@@ -3127,7 +3147,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": make_output_config([]),
+                            "config": make_output_config(["pred"]),
                         },
                     },
                 ],
@@ -3145,9 +3165,8 @@ class TestScoreGraphModelScoreRemap:
 
         with (
             patch("haute._mlflow_io._load_catboost_model", return_value=mock_model),
-            pytest.raises(FeatureMismatchError, match="outside declared"),
         ):
-            score_graph(
+            result = score_graph(
                 graph=graph,
                 input_df=pl.DataFrame({"region": ["west"]}),
                 input_node_ids=["src"],
@@ -3158,15 +3177,14 @@ class TestScoreGraphModelScoreRemap:
                 },
             )
 
-        mock_model.predict.assert_not_called()
+        assert result["pred"].to_list() == [42.0]
 
-    def test_contract_only_model_score_rejects_runtime_feature_order_drift(
+    def test_contract_only_model_score_accepts_features_in_any_order(
         self,
         tmp_path,
     ):
-        """Bundled contract checks compare live feature order, not just names."""
+        """Scoring selects features by name, so a reordered request passes the contract."""
         from haute.deploy._scorer import score_graph
-        from haute.errors import FeatureMismatchError
         from haute.modelling._feature_contract import (
             CONTRACT_FILENAME,
             build_contract,
@@ -3193,7 +3211,31 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": _single_frame_api_input_config("region", label="src"),
+                            "config": _single_frame_api_input_config(
+                                "region",
+                                label="src",
+                                tables=[
+                                    {
+                                        "path": "$[:]",
+                                        "label": "src",
+                                        "emit": True,
+                                        "columns": [
+                                            {
+                                                "name": "region",
+                                                "path": "$[:].region",
+                                                "type": "str",
+                                                "selected": True,
+                                            },
+                                            {
+                                                "name": "age",
+                                                "path": "$[:].age",
+                                                "type": "int",
+                                                "selected": True,
+                                            },
+                                        ],
+                                    }
+                                ],
+                            ),
                         },
                     },
                     {
@@ -3228,7 +3270,8 @@ class TestScoreGraphModelScoreRemap:
             }
         )
 
-        with pytest.raises(FeatureMismatchError, match="features"):
+        # The contract matched (region before age is fine); only the missing model stops it.
+        with pytest.raises(RuntimeError, match="no bundled model artifact"):
             score_graph(
                 graph=graph,
                 input_df=pl.DataFrame({"region": ["north"], "age": [30]}),
@@ -3237,13 +3280,11 @@ class TestScoreGraphModelScoreRemap:
                 artifact_paths={f"ms__{CONTRACT_FILENAME}": str(contract_path)},
             )
 
-    def test_contract_only_model_score_rejects_declared_categorical_level_drift(
+    def test_contract_only_model_score_fails_for_its_missing_model_not_for_a_category(
         self,
         tmp_path,
     ):
-        """Declared category domains are compared without scanning row values."""
         from haute.deploy._scorer import score_graph
-        from haute.errors import FeatureMismatchError
         from haute.modelling._feature_contract import (
             CONTRACT_FILENAME,
             build_contract,
@@ -3256,27 +3297,19 @@ class TestScoreGraphModelScoreRemap:
                 features=["region"],
                 feature_types={"region": "String"},
                 categorical_features=["region"],
-                categorical_levels={"region": ["north", "south"]},
                 target_name="target",
                 target_type="Float64",
                 task="regression",
             ),
             contract_path,
         )
+        source_config = _single_frame_api_input_config("region", label="src")
         graph = _g(
             {
                 "nodes": [
                     {
                         "id": "src",
-                        "data": {
-                            "label": "src",
-                            "nodeType": "apiInput",
-                            "config": _single_frame_api_input_config(
-                                "region",
-                                label="src",
-                                categorical_levels={"region": ["north", "east"]},
-                            ),
-                        },
+                        "data": {"label": "src", "nodeType": "apiInput", "config": source_config},
                     },
                     {
                         "id": "ms",
@@ -3310,337 +3343,10 @@ class TestScoreGraphModelScoreRemap:
             }
         )
 
-        with pytest.raises(FeatureMismatchError, match="categorical_levels"):
-            score_graph(
-                graph=graph,
-                input_df=pl.DataFrame({"region": ["north"]}),
-                input_node_ids=["src"],
-                output_node_id="out",
-                artifact_paths={f"ms__{CONTRACT_FILENAME}": str(contract_path)},
-            )
-
-    def test_contract_only_model_score_fails_loudly_after_matching_declared_levels(
-        self,
-        tmp_path,
-    ):
-        from haute.deploy._scorer import score_graph
-        from haute.modelling._feature_contract import (
-            CONTRACT_FILENAME,
-            build_contract,
-            save_contract,
-        )
-
-        contract_path = tmp_path / CONTRACT_FILENAME
-        save_contract(
-            build_contract(
-                features=["region"],
-                feature_types={"region": "String"},
-                categorical_features=["region"],
-                categorical_levels={"region": ["north", "south"]},
-                target_name="target",
-                target_type="Float64",
-                task="regression",
-            ),
-            contract_path,
-        )
-        graph = _g(
-            {
-                "nodes": [
-                    {
-                        "id": "src",
-                        "data": {
-                            "label": "src",
-                            "nodeType": "apiInput",
-                            "config": _single_frame_api_input_config(
-                                "region",
-                                label="src",
-                                categorical_levels={"region": ["north", "south"]},
-                            ),
-                        },
-                    },
-                    {
-                        "id": "ms",
-                        "data": {
-                            "label": "ms",
-                            "nodeType": "modelScore",
-                            "config": {
-                                "task": "regression",
-                                "output_column": "pred",
-                            },
-                        },
-                    },
-                    {
-                        "id": "out",
-                        "data": {
-                            "label": "out",
-                            "nodeType": "output",
-                            "config": make_output_config([]),
-                        },
-                    },
-                ],
-                "edges": [
-                    {
-                        "id": "e1",
-                        "source": "src",
-                        "target": "ms",
-                        "sourceHandle": "src",
-                    },
-                    {"id": "e2", "source": "ms", "target": "out"},
-                ],
-            }
-        )
-
-        with pytest.raises(RuntimeError, match="model artifact"):
-            score_graph(
-                graph=graph,
-                input_df=pl.DataFrame({"region": ["north"]}),
-                input_node_ids=["src"],
-                output_node_id="out",
-                artifact_paths={f"ms__{CONTRACT_FILENAME}": str(contract_path)},
-            )
-
-    def test_contract_only_model_score_rejects_observed_category_outside_domain(
-        self,
-        tmp_path,
-    ):
-        from haute.deploy._scorer import score_graph
-        from haute.errors import FeatureMismatchError
-        from haute.modelling._feature_contract import (
-            CONTRACT_FILENAME,
-            build_contract,
-            save_contract,
-        )
-
-        contract_path = tmp_path / CONTRACT_FILENAME
-        save_contract(
-            build_contract(
-                features=["region"],
-                feature_types={"region": "String"},
-                categorical_features=["region"],
-                categorical_levels={"region": ["north", "south"]},
-                target_name="target",
-                target_type="Float64",
-                task="regression",
-            ),
-            contract_path,
-        )
-        graph = _g(
-            {
-                "nodes": [
-                    {
-                        "id": "src",
-                        "data": {
-                            "label": "src",
-                            "nodeType": "apiInput",
-                            "config": _single_frame_api_input_config(
-                                "region",
-                                label="src",
-                                categorical_levels={"region": ["north", "south"]},
-                            ),
-                        },
-                    },
-                    {
-                        "id": "ms",
-                        "data": {
-                            "label": "ms",
-                            "nodeType": "modelScore",
-                            "config": {
-                                "task": "regression",
-                                "output_column": "pred",
-                            },
-                        },
-                    },
-                    {
-                        "id": "out",
-                        "data": {
-                            "label": "out",
-                            "nodeType": "output",
-                            "config": make_output_config([]),
-                        },
-                    },
-                ],
-                "edges": [
-                    {
-                        "id": "e1",
-                        "source": "src",
-                        "target": "ms",
-                        "sourceHandle": "src",
-                    },
-                    {"id": "e2", "source": "ms", "target": "out"},
-                ],
-            }
-        )
-
-        with pytest.raises(FeatureMismatchError, match="outside declared"):
+        with pytest.raises(RuntimeError, match="no bundled model artifact"):
             score_graph(
                 graph=graph,
                 input_df=pl.DataFrame({"region": ["west"]}),
-                input_node_ids=["src"],
-                output_node_id="out",
-                artifact_paths={f"ms__{CONTRACT_FILENAME}": str(contract_path)},
-            )
-
-    def test_contract_only_model_score_uses_contract_levels_without_redeclaration(
-        self,
-        tmp_path,
-    ):
-        from haute.deploy._scorer import score_graph
-        from haute.errors import FeatureMismatchError
-        from haute.modelling._feature_contract import (
-            CONTRACT_FILENAME,
-            build_contract,
-            save_contract,
-        )
-
-        contract_path = tmp_path / CONTRACT_FILENAME
-        save_contract(
-            build_contract(
-                features=["region"],
-                feature_types={"region": "String"},
-                categorical_features=["region"],
-                categorical_levels={"region": ["north", "south"]},
-                target_name="target",
-                target_type="Float64",
-                task="regression",
-            ),
-            contract_path,
-        )
-        graph = _g(
-            {
-                "nodes": [
-                    {
-                        "id": "src",
-                        "data": {
-                            "label": "src",
-                            "nodeType": "apiInput",
-                            "config": _single_frame_api_input_config("region", label="src"),
-                        },
-                    },
-                    {
-                        "id": "ms",
-                        "data": {
-                            "label": "ms",
-                            "nodeType": "modelScore",
-                            "config": {
-                                "task": "regression",
-                                "output_column": "pred",
-                            },
-                        },
-                    },
-                    {
-                        "id": "out",
-                        "data": {
-                            "label": "out",
-                            "nodeType": "output",
-                            "config": make_output_config([]),
-                        },
-                    },
-                ],
-                "edges": [
-                    {
-                        "id": "e1",
-                        "source": "src",
-                        "target": "ms",
-                        "sourceHandle": "src",
-                    },
-                    {"id": "e2", "source": "ms", "target": "out"},
-                ],
-            }
-        )
-
-        with pytest.raises(FeatureMismatchError, match="outside declared"):
-            score_graph(
-                graph=graph,
-                input_df=pl.DataFrame({"region": ["west"]}),
-                input_node_ids=["src"],
-                output_node_id="out",
-                artifact_paths={f"ms__{CONTRACT_FILENAME}": str(contract_path)},
-            )
-
-    def test_contract_only_model_score_collects_upstream_level_declarations(
-        self,
-        tmp_path,
-    ):
-        from haute.deploy._scorer import score_graph
-        from haute.errors import FeatureMismatchError
-        from haute.modelling._feature_contract import (
-            CONTRACT_FILENAME,
-            build_contract,
-            save_contract,
-        )
-
-        contract_path = tmp_path / CONTRACT_FILENAME
-        save_contract(
-            build_contract(
-                features=["region"],
-                feature_types={"region": "String"},
-                categorical_features=["region"],
-                categorical_levels={"region": ["north", "south"]},
-                target_name="target",
-                target_type="Float64",
-                task="regression",
-            ),
-            contract_path,
-        )
-        graph = _g(
-            {
-                "nodes": [
-                    {
-                        "id": "src",
-                        "data": {
-                            "label": "src",
-                            "nodeType": "apiInput",
-                            "config": _single_frame_api_input_config(
-                                "region",
-                                categorical_levels={"region": ["north", "east"]},
-                            ),
-                        },
-                    },
-                    {
-                        "id": "prep",
-                        "data": {
-                            "label": "prep",
-                            "nodeType": "polars",
-                            "config": {"code": "df = quotes"},
-                        },
-                    },
-                    {
-                        "id": "ms",
-                        "data": {
-                            "label": "ms",
-                            "nodeType": "modelScore",
-                            "config": {
-                                "task": "regression",
-                                "output_column": "pred",
-                            },
-                        },
-                    },
-                    {
-                        "id": "out",
-                        "data": {
-                            "label": "out",
-                            "nodeType": "output",
-                            "config": make_output_config([]),
-                        },
-                    },
-                ],
-                "edges": [
-                    {
-                        "id": "e1",
-                        "source": "src",
-                        "target": "prep",
-                        "sourceHandle": "quotes",
-                    },
-                    {"id": "e2", "source": "prep", "target": "ms"},
-                    {"id": "e3", "source": "ms", "target": "out"},
-                ],
-            }
-        )
-
-        with pytest.raises(FeatureMismatchError, match="categorical_levels"):
-            score_graph(
-                graph=graph,
-                input_df=pl.DataFrame({"region": ["north"]}),
                 input_node_ids=["src"],
                 output_node_id="out",
                 artifact_paths={f"ms__{CONTRACT_FILENAME}": str(contract_path)},
@@ -4042,7 +3748,7 @@ class TestScoreGraphModelScoreRemap:
         """Configured non-bundled deploy modelScore scores eagerly in memory."""
         from haute.deploy._scorer import score_graph
 
-        scoring_model = MagicMock(offset_column=None, offset_link=None)
+        scoring_model = MagicMock(offset_column=None, offset_link=None, run_contract_path=None)
         captured: dict[str, object] = {}
 
         def fake_run_score_pipeline(*_args, **kwargs):
@@ -4337,29 +4043,36 @@ class TestBundledModelContractInputs:
                 {"ms"},
             )
 
-    def test_model_offset_is_included_once_in_deploy_inputs(self):
-        from haute._contracts import _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY
+    def test_model_offset_is_an_optional_deploy_input(self):
+        """A request without the offset is priced for a full policy term."""
+        from haute._contracts import (
+            _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY,
+            _DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY,
+        )
         from haute.deploy._scorer import _attach_bundled_model_contract_inputs
 
-        scoring_model = MagicMock(
-            feature_names=["x"],
-            offset_column="exposure",
-        )
-
-        with patch(
-            "haute.deploy._scorer.load_local_model_cached",
-            return_value=scoring_model,
-        ):
-            result = _attach_bundled_model_contract_inputs(
-                self._graph(),
-                {"ms__model.cbm": "model.cbm"},
-                {"ms"},
+        def annotated(link: str) -> dict:
+            scoring_model = MagicMock(
+                feature_names=["x"], offset_column="exposure", offset_link=link
             )
+            with patch(
+                "haute.deploy._scorer.load_local_model_cached",
+                return_value=scoring_model,
+            ):
+                result = _attach_bundled_model_contract_inputs(
+                    self._graph(),
+                    {"ms__model.cbm": "model.cbm"},
+                    {"ms"},
+                )
+            return result.node_map["ms"].data.config
 
-        assert result.node_map["ms"].data.config[_DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY] == [
-            "x",
-            "exposure",
-        ]
+        exposure = annotated("log")
+        assert exposure[_DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY] == ["x"]
+        assert exposure[_DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY] == ["exposure"]
+        # An additive offset is a base premium, a required input.
+        premium = annotated("identity")
+        assert premium[_DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY] == ["x", "exposure"]
+        assert premium[_DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY] == []
 
 
 class TestRemapArtifact:
@@ -5122,7 +4835,7 @@ class TestBuildSignature:
             # The pandas frame MLflow hands ``predict`` after enforcing the signature, taken
             # as ``HauteModel.predict`` takes it: the records, for the reader.
             enforced = _enforce_schema(pd.DataFrame([quote]), signature.inputs)
-            request = _request(graph, ["request"], enforced)
+            request = _request(graph, ["request"], enforced, {}, frozenset())
             assert isinstance(request, QuoteRequest)
             frames = workbench_request_frames(config, request.records)
             return {name: frame.to_dicts() for name, frame in frames.items()}
@@ -5167,7 +4880,7 @@ class TestBuildSignature:
                 "items": [np.array([{"item_id": "Z", "value": np.float64(1.5)}], dtype=object)],
             }
         )
-        assert _request(graph, ["request"], by_hand) == QuoteRequest(
+        assert _request(graph, ["request"], by_hand, {}, frozenset()) == QuoteRequest(
             (
                 {
                     "policy": {"limit": 100, "start": "2026-01-02"},
@@ -5187,9 +4900,10 @@ class TestBuildSignature:
                 "edges": [],
             }
         )
-        assert _request(flat, ["quotes"], pd.DataFrame({"limit": [100]})).to_dicts() == [
-            {"limit": 100}
-        ]
+        limits = pd.DataFrame({"limit": [100]})
+        assert _request(
+            flat, ["quotes"], limits, {"limit": pl.Int64()}, frozenset()
+        ).to_dicts() == [{"limit": 100}]
 
     def test_all_numeric_types(self):
         """All supported numeric types should produce correct MLflow type mappings."""
@@ -5243,31 +4957,49 @@ class TestBuildSignature:
 class TestCondaEnvAndPipRequirements:
     """Tests for _conda_env() and _pip_requirements()."""
 
-    def test_pip_requirements_pin_the_served_haute_mlflow_and_polars(self):
-        """The haute that validated the deploy, and the editor's MLflow and Polars."""
-        import mlflow
-        import polars
+    def test_pip_requirements_pin_the_served_haute_and_the_served_runtime(self):
+        """The haute that validated the deploy, and this environment's MLflow, Polars,
+        pandas and NumPy."""
+        from importlib.metadata import version
 
         from haute.deploy._mlflow import _pip_requirements
 
-        reqs = _pip_requirements("haute==0.6.0")
+        reqs = _pip_requirements("haute==0.6.0", _make_resolved())
 
         assert reqs == [
             "haute==0.6.0",
-            f"mlflow=={mlflow.__version__}",
-            f"polars=={polars.__version__}",
+            *(f"{name}=={version(name)}" for name in ("mlflow", "polars", "pandas", "numpy")),
         ]
 
-    def test_pip_requirements_add_no_model_engine(self):
-        """The pinned Haute brings its own engines; no node adds one."""
+    def test_pip_requirements_pin_each_bundled_engine_once(self, tmp_path):
+        """DEP-R06: a bundled model serves under the engine release that trained it."""
+        from haute.deploy._container import _pinned_extra_dockerfile_deps
         from haute.deploy._mlflow import _pip_requirements
 
-        assert not any("catboost" in r for r in _pip_requirements("haute==0.6.0"))
+        resolved = _make_resolved(
+            artifacts={
+                "score__model.cbm": tmp_path / "model.cbm",
+                "freq__model.ubj": tmp_path / "model.ubj",
+                "sev__model.lgbm": tmp_path / "model.lgbm",
+            }
+        )
+
+        reqs = _pip_requirements("haute==0.6.0", resolved)
+
+        # The pins a container image of these artefacts carries: each engine's installed
+        # distribution (XGBoost's may be xgboost-cpu) at its installed version.
+        engines = _pinned_extra_dockerfile_deps(resolved)
+        assert {pin.split("==")[0] for pin in engines} >= {"catboost", "lightgbm"}
+        assert any(pin.startswith("xgboost") for pin in engines)
+        assert set(engines) <= set(reqs)
+        # pandas is both the pyfunc's and the XGBoost artefact's: named once.
+        assert len(reqs) == len(set(reqs))
+        assert sum(r.startswith("pandas==") for r in reqs) == 1
 
     def test_conda_env_structure(self):
         from haute.deploy._mlflow import _conda_env
 
-        env = _conda_env("3.13", "haute==0.6.0")
+        env = _conda_env("3.13", "haute==0.6.0", _make_resolved())
 
         assert env["name"] == "mlflow-env"
         assert "conda-forge" in env["channels"]
@@ -5279,7 +5011,8 @@ class TestCondaEnvAndPipRequirements:
         """The model serves on the Python the project ran on, at the precision it names."""
         from haute.deploy._mlflow import _conda_env
 
-        assert _conda_env(version, "haute==0.6.0")["dependencies"][0] == f"python={version}"
+        env = _conda_env(version, "haute==0.6.0", _make_resolved())
+        assert env["dependencies"][0] == f"python={version}"
 
 
 class TestCheckDatabricksConnectivity:
@@ -5341,6 +5074,39 @@ class TestCheckDatabricksConnectivity:
 
             with pytest.raises(DeployError, match="403 Forbidden"):
                 _check_databricks_connectivity(lambda msg: None)
+
+    def test_401_raises_as_a_credential_problem(self, monkeypatch):
+        """An expired token is not a reachable workspace."""
+        from haute.deploy._mlflow import _check_databricks_connectivity
+        from haute.errors import DeployError
+
+        monkeypatch.setenv("DATABRICKS_RATING_HOST", "https://host.databricks.com")
+        monkeypatch.setenv("DATABRICKS_RATING_TOKEN", "expired_token")
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = urllib.error.HTTPError(
+                url="https://host/api",
+                code=401,
+                msg="Unauthorized",
+                hdrs=None,
+                fp=None,
+            )
+
+            with pytest.raises(DeployError, match="401 Unauthorized.*has not expired"):
+                _check_databricks_connectivity(lambda msg: None)
+
+    def test_deploy_status_and_config_share_their_registry_defaults(self):
+        import inspect
+
+        from haute.deploy._config import DatabricksConfig
+        from haute.deploy._mlflow import get_deploy_status
+
+        parameters = inspect.signature(get_deploy_status).parameters
+        config = DatabricksConfig()
+        assert (parameters["catalog"].default, parameters["schema"].default) == (
+            config.catalog,
+            config.schema,
+        )
 
     def test_non_403_http_error_succeeds(self, monkeypatch):
         """Non-403 HTTP errors (e.g. 404) mean host is reachable."""
@@ -6192,3 +5958,83 @@ class TestBugB10LexicographicVersionComparison:
         assert result == "11"
         # The bug: max(versions) without int() gives "9"
         assert max(versions) == "9"  # proves the bug exists in string comparison
+
+
+class TestOmittableRequestColumns:
+    """A quote may leave out a bundled model's exposure, and nothing else."""
+
+    def test_the_databricks_signature_requires_every_column_but_an_exposure(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        import mlflow
+        import pandas as pd
+        from mlflow.exceptions import MlflowException
+
+        from haute.deploy._mlflow import _build_signature
+        from haute.graph_utils import PipelineGraph
+        from tests._deploy_helpers import make_resolved_deploy
+
+        resolved = make_resolved_deploy(
+            pruned_graph=PipelineGraph(),
+            input_schema={"age": "Int64", "exposure": "Float64"},
+            output_schema={"premium": "Float64"},
+            omittable_inputs=["exposure"],
+        )
+        signature = _build_signature(resolved)
+        required = {spec.name: spec.required for spec in signature.inputs.inputs}
+        assert required == {"age": True, "exposure": False}
+        assert all(spec.required for spec in signature.outputs.inputs)
+
+        # Through MLflow's own enforcement, as Model Serving applies it.
+        class Echo(mlflow.pyfunc.PythonModel):
+            def predict(self, context, model_input, params=None):  # type: ignore[no-untyped-def]
+                del context, params
+                return model_input
+
+        from haute._mlflow_utils import mlflow_fluent_operation
+
+        with mlflow_fluent_operation():
+            mlflow.set_tracking_uri((tmp_path / "mlruns").as_uri())
+            with mlflow.start_run():
+                info = mlflow.pyfunc.log_model(
+                    name="echo", python_model=Echo(), signature=signature
+                )
+            served = mlflow.pyfunc.load_model(info.model_uri)
+        assert served.predict(pd.DataFrame({"age": [30]})).to_dict("records") == [{"age": 30}]
+        with pytest.raises(MlflowException, match="missing inputs"):
+            served.predict(pd.DataFrame({"exposure": [1.0]}))
+
+    def test_a_bundled_model_s_exposure_the_request_carries_is_omittable(self, monkeypatch):
+        from haute.deploy._scorer import omittable_request_columns
+        from haute.graph_utils import PipelineGraph
+
+        graph = PipelineGraph.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": node_id,
+                        "data": {
+                            "label": node_id,
+                            "nodeType": "modelScore",
+                            "config": {"sourceType": "file", "model_path": f"{node_id}.cbm"},
+                        },
+                    }
+                    for node_id in ("freq", "sev", "unbundled")
+                ]
+            }
+        )
+        models = {
+            "freq__freq.cbm": MagicMock(offset_column="exposure", offset_link="log"),
+            "sev__sev.cbm": MagicMock(offset_column="premium", offset_link="identity"),
+        }
+        monkeypatch.setattr(
+            "haute.deploy._scorer.load_local_model_cached",
+            lambda path, task, contract: models[path],
+        )
+        artifacts = {name: name for name in models}
+
+        carried = {"age": "Int64", "exposure": "Float64", "premium": "Float64"}
+        assert omittable_request_columns(graph, artifacts, carried) == ["exposure"]
+        # An exposure the request does not carry is nothing a quote can leave out.
+        assert omittable_request_columns(graph, artifacts, {"age": "Int64"}) == []

@@ -79,8 +79,8 @@ Writing a scored dataset to parquet:
     | **ARGUMENTS** | `arguments`, a map of argument name to value |
     | **COLUMNS** tab | `selected_columns` |
 
-    The column metadata any node may carry, `column_renames` and `categorical_levels`, has no
-    editor control on this node.
+    The column metadata any node may carry, `column_renames`, has no editor control on
+    this node.
 
     A Databricks output has no `format`, `mode` or arguments:
 

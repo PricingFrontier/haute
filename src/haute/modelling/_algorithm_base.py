@@ -36,9 +36,6 @@ class FitResult:
     #: Threads the engine actually used, when it does not take the job's
     #: allotment (EBM always fits with ``n_jobs=1``).
     threads: int | None = None
-    #: The level list each categorical feature was encoded against, for the
-    #: contract (new-family adapters; ``None`` keeps the declared levels).
-    categorical_levels: dict[str, list[str | None]] | None = None
     #: The device a GPU-capable fit actually trained on (``cuda:0``);
     #: ``None`` for a CPU fit.
     device: str | None = None

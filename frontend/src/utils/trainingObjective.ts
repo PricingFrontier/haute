@@ -11,6 +11,12 @@ import {
 } from "../panels/modelling/glmTerms"
 import { glmCrossValidates } from "../panels/modelling/glmFamilies"
 import { selectedFeatureColumns } from "../panels/modelling/featureSelection"
+import {
+  metricCompatible,
+  metricLabel,
+  metricObjective,
+} from "../panels/modelling/metricOptions"
+import { isNumericDtype } from "./polarsDtypes"
 
 /**
  * Frontend mirror of the backend's target/objective validation.
@@ -22,6 +28,8 @@ import { selectedFeatureColumns } from "../panels/modelling/featureSelection"
 
 export type TrainingConfigurationIssueCode =
   | "training-target"
+  | "positive-class"
+  | "training-metrics"
   | "glm-family"
   | "glm-tweedie-variance-power"
   | "glm-negbin-theta"
@@ -194,6 +202,7 @@ export function evaluationConfigurationIssues(rawEvaluation: unknown): TrainingC
 
 export function trainingConfigurationIssues(
   config: Record<string, unknown>,
+  { targetDtype = "" }: { targetDtype?: string } = {},
 ): TrainingConfigurationIssue[] {
   const issues: TrainingConfigurationIssue[] = []
   const target = config.target
@@ -202,6 +211,32 @@ export function trainingConfigurationIssues(
       code: "training-target",
       message: "Select a target column.",
     })
+  }
+  // Mirrors the job's class rule: Boolean and 0/1 integer targets have a fixed
+  // positive class, so a text target is the one that always needs it chosen.
+  if (
+    config.task === "classification"
+    && targetDtype !== ""
+    && targetDtype !== "Boolean"
+    && !isNumericDtype(targetDtype)
+    && (config.positive_class === undefined || config.positive_class === null
+      || config.positive_class === "")
+  ) {
+    issues.push({
+      code: "positive-class",
+      message: "Choose which label of the text target is the positive class.",
+    })
+  }
+  const { task: metricTask, objective } = metricObjective(config)
+  if (metricTask !== undefined) {
+    for (const metric of effectiveMetrics(config)) {
+      if (!metricCompatible(metric, metricTask, objective)) {
+        issues.push({
+          code: "training-metrics",
+          message: `${metricLabel(metric)} cannot be reported for a ${objective} model; remove it from the metrics.`,
+        })
+      }
+    }
   }
 
   issues.push(...evaluationConfigurationIssues(config.evaluation))
@@ -261,28 +296,39 @@ export function trainingConfigurationIssues(
       : method === "single"
         ? 1
         : 0
-    const validTuning = (
-      algorithmCapability(String(config.algorithm ?? ""))?.supports_tuning === true
-      && tuning.schema_version === 1
-      && Number.isInteger(tuning.trial_count)
-      && trialCount >= 5
-      && trialCount <= 50
-      && Number.isInteger(tuning.seed)
-      && typeof tuning.metric === "string"
-      && metrics.includes(tuning.metric)
-      && searchSpace !== null
-      && Object.keys(searchSpace).length >= 1
-      && Object.keys(searchSpace).length <= 32
-      && validationFitCount > 0
-      && trialCount * validationFitCount <= 200
-    )
-    if (!validTuning) {
-      issues.push({
-        code: "tuning-config",
-        message:
-          "Complete tuning: 5–50 trials, a configured selection metric, a " +
-          "non-empty search space, and at most 200 trial-validation fits.",
-      })
+    const tuningIssue = (message: string) => issues.push({ code: "tuning-config", message })
+    const capability = algorithmCapability(String(config.algorithm ?? ""))
+    // One issue per cause, so each names what to change.
+    if (capability?.supports_tuning !== true) {
+      tuningIssue(`${capability?.label ?? "This model family"} does not support parameter tuning.`)
+    }
+    if (tuning.schema_version !== 1 || !Number.isInteger(tuning.seed)) {
+      tuningIssue("The tuning settings are malformed; switch to fixed parameters and back.")
+    }
+    const validTrials = Number.isInteger(tuning.trial_count) && trialCount >= 5 && trialCount <= 50
+    if (!validTrials) {
+      tuningIssue("Choose between 5 and 50 tuning trials.")
+    }
+    if (typeof tuning.metric !== "string" || !metrics.includes(tuning.metric)) {
+      tuningIssue("Choose a tuning selection metric from the reported metrics.")
+    }
+    if (
+      searchSpace === null
+      || Object.keys(searchSpace).length < 1
+      || Object.keys(searchSpace).length > 32
+    ) {
+      tuningIssue("Give the search space between 1 and 32 parameters.")
+    }
+    if (validationFitCount <= 0) {
+      tuningIssue(
+        "Parameter tuning compares trials on validation rows: enable holdout or "
+        + "cross-validation in the Split pane.",
+      )
+    } else if (validTrials && trialCount * validationFitCount > 200) {
+      tuningIssue(
+        `Tuning would run ${trialCount * validationFitCount} trial-validation fits; `
+        + "keep trials × validation fits at 200 or fewer.",
+      )
     }
   }
 
@@ -321,6 +367,14 @@ export function trainingConfigurationIssues(
           message:
             "Set the Negative Binomial dispersion (theta), or estimate it from " +
             "the data - RustyStats refuses to fit without it.",
+        })
+      } else if (
+        normalizedFamily === "negbinomial"
+        && !(typeof theta === "number" && Number.isFinite(theta) && theta > 0)
+      ) {
+        issues.push({
+          code: "glm-negbin-theta",
+          message: "Negative Binomial theta must be a finite positive number.",
         })
       }
     }

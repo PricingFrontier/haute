@@ -750,7 +750,7 @@ def _model_graph(project: Path, *, artifact: str = "model.cbm") -> PipelineGraph
 
     cached = disk_cached_run_model(run_id="run1", artifact_path=artifact, destination="")
     assert cached is not None
-    for cached_file in cached.files:
+    for cached_file in (cached.model_path, cached.contract_path):
         # The disk model cache lives under the project (the working directory).
         path = project / cached_file.relative_to(project.resolve())
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -782,8 +782,10 @@ def _stored(
     )
 
 
-@pytest.mark.parametrize(("artifact", "replaced"), [("model.cbm", 0), ("model.ebm", 1)])
-def test_replacing_a_cached_model_or_ebm_contract_during_a_check_is_source_changed(
+@pytest.mark.parametrize(
+    ("artifact", "replaced"), [("model.cbm", 0), ("model.cbm", 1), ("model.ebm", 1)]
+)
+def test_replacing_a_cached_model_or_its_contract_during_a_check_is_source_changed(
     project: Path, artifact: str, replaced: int
 ) -> None:
     """The graph configuration is unchanged; only the cache's bytes move."""
@@ -810,8 +812,10 @@ def test_replacing_a_cached_model_or_ebm_contract_during_a_check_is_source_chang
     assert outcome.kind == "source_changed"
 
 
-@pytest.mark.parametrize(("artifact", "replaced"), [("model.cbm", 0), ("model.ebm", 1)])
-def test_findings_are_labelled_after_their_cached_model_or_ebm_contract_is_replaced(
+@pytest.mark.parametrize(
+    ("artifact", "replaced"), [("model.cbm", 0), ("model.cbm", 1), ("model.ebm", 1)]
+)
+def test_findings_are_labelled_after_their_cached_model_or_contract_is_replaced(
     project: Path, artifact: str, replaced: int
 ) -> None:
     from haute._mlflow_io import disk_cached_run_model

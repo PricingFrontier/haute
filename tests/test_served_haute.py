@@ -146,20 +146,19 @@ def test_a_recorded_file_missing_from_the_install_is_refused(tmp_path: Path) -> 
 
 
 def test_the_served_environment_installs_that_haute_and_mlflow() -> None:
-    import mlflow
-    import polars
+    from importlib.metadata import version
 
     from haute.deploy._mlflow import _conda_env
+    from tests._deploy_helpers import make_resolved_deploy
 
-    env = _conda_env("3.13", "code/haute-0.6.0-py3-none-any.whl")
+    env = _conda_env("3.13", "code/haute-0.6.0-py3-none-any.whl", make_resolved_deploy())
 
     assert env["dependencies"][:2] == ["python=3.13", "pip"]
     # Model Serving builds the container only with mlflow itself in the environment.
     assert env["dependencies"][2] == {
         "pip": [
             "code/haute-0.6.0-py3-none-any.whl",
-            f"mlflow=={mlflow.__version__}",
-            f"polars=={polars.__version__}",
+            *(f"{name}=={version(name)}" for name in ("mlflow", "polars", "pandas", "numpy")),
         ]
     }
 

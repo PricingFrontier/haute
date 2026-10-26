@@ -23,6 +23,7 @@ from haute._api_input_schema import quote_input_reads_tables
 from haute._cache import canonical_json
 from haute._contracts import (
     _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY,
+    _DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY,
     _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY,
 )
 from haute._execution_admission import create_admitted_execution_context
@@ -33,7 +34,6 @@ from haute._io import load_external_object
 from haute._logging import get_logger
 from haute._mlflow_io import clear_local_model_cache, load_local_model_cached
 from haute._node_builder import NodeBuildHooks, NodeFnResult, node_fn_name, wrap_builder
-from haute._polars_dtypes import contract_dtype_name
 from haute._polars_utils import streaming_collect
 from haute._types import (
     REQUEST_INPUT_NODE_TYPES,
@@ -362,6 +362,35 @@ def _attach_bundled_feature_contracts(
     return graph.model_copy(update={"nodes": nodes})
 
 
+def omittable_request_columns(
+    graph: PipelineGraph, artifact_paths: Mapping[str, str], input_schema: Mapping[str, Any]
+) -> list[str]:
+    """The request columns a quote may leave out: each bundled model's exposure it carries.
+
+    A quote without an exposure (a log-link offset) is priced for a full policy term;
+    every other column the request names is a rating factor a quote must give. The
+    offset is read from the model as it is served, bound to its bundled contract.
+    """
+    remap = dict(artifact_paths)
+    columns: set[str] = set()
+    for node in graph.nodes:
+        config = node.data.config
+        if node.data.nodeType != NodeType.MODEL_SCORE:
+            continue
+        model_path = _remap_artifact(node.id, config, remap, model_artifact_field(config))
+        if model_path is None:
+            continue
+        scoring_model = load_local_model_cached(
+            model_path,
+            config.get("task", "regression"),
+            _bundled_contract_path(node.id, remap),
+        )
+        exposure = scoring_model.offset_column
+        if exposure is not None and scoring_model.offset_link == "log" and exposure in input_schema:
+            columns.add(exposure)
+    return sorted(columns)
+
+
 def _attach_bundled_model_contract_inputs(
     graph: PipelineGraph,
     remap: dict[str, str],
@@ -435,11 +464,22 @@ def _attach_bundled_model_contract_inputs(
                 node_id=node.id,
             )
 
-        deploy_inputs = list(feature_names)
-        if offset_column is not None and offset_column not in deploy_inputs:
+        # A request without an exposure (a log-link offset) is priced for a full
+        # policy term, so it is read where the request has it and never required;
+        # an additive offset is a base premium and a required input.
+        exposure = offset_column if scoring_model.offset_link == "log" else None
+        deploy_inputs = [column for column in feature_names if column != exposure]
+        if offset_column is not None and offset_column != exposure:
             deploy_inputs.append(offset_column)
+        optional_inputs = [exposure] if exposure is not None else []
         nodes.append(
-            node.with_config({**config, _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY: deploy_inputs})
+            node.with_config(
+                {
+                    **config,
+                    _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY: deploy_inputs,
+                    _DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY: optional_inputs,
+                }
+            )
         )
         changed = True
 
@@ -553,120 +593,23 @@ def _validate_deploy_model_score_source(node: GraphNode, remap: dict[str, str]) 
         raise DeployError(message, node_id=node.id)
 
 
-def _declared_categorical_levels_for_model_score(
-    node: GraphNode,
-    source_ids: list[str],
-    node_by_id: dict[str, GraphNode],
-    upstream_ids: list[str] | None = None,
-) -> dict[str, list[str | None]]:
-    """Merge explicit categorical level declarations at the score boundary."""
-    from haute.modelling._feature_contract import merge_categorical_level_declarations
-
-    declarations: list[tuple[str, Any]] = [(node.id, node.data.config.get("categorical_levels"))]
-    candidate_ids = list(dict.fromkeys([*source_ids, *(upstream_ids or [])]))
-    declarations.extend(
-        (source_id, node_by_id[source_id].data.config.get("categorical_levels"))
-        for source_id in candidate_ids
-        if source_id in node_by_id
-    )
-    return merge_categorical_level_declarations(declarations)
-
-
 def _assert_runtime_contract_matches(
     lf: pl.LazyFrame,
     contract_path: str,
     task: str,
-    *,
-    categorical_levels: dict[str, list[str | None]] | None = None,
-    validate_values: bool = False,
-) -> dict[str, list[str | None]]:
-    """Raise FeatureMismatchError if the live schema drifts from the bundled
-    contract, returning categorical levels safe to enforce during scoring.
+) -> None:
+    """Raise FeatureMismatchError if the live schema drifts from the bundled contract.
 
-    Rebuilds a :class:`FeatureContract` from the live LazyFrame's schema
-    (restricted to the features the bundled contract cares about) and
-    compares it against the training-time contract via
-    :func:`assert_contracts_match`.  A disagreement on any field —
-    feature set, dtype, categorical membership — raises immediately so
-    deploy operators see the mismatch at load time rather than via
-    cryptic downstream errors.
+    The check the preview runs on every scored frame
+    (:func:`~haute.modelling._feature_contract.assert_schema_matches_contract`),
+    so deploy operators see a mismatch at load time, with the preview's
+    message, rather than via cryptic downstream errors.
     """
-    from haute.modelling._feature_contract import (
-        assert_contracts_match,
-        build_contract,
-        normalise_categorical_levels,
-        validate_categorical_value_domains,
-    )
+    from haute.modelling._feature_contract import assert_schema_matches_contract
 
-    expected = _load_feature_contract_cached(contract_path)
-    schema = lf.collect_schema()
-    feature_types: dict[str, str] = {}
-    expected_feature_set = set(expected.features)
-    runtime_features = [name for name in schema.names() if name in expected_feature_set]
-    seen_runtime_features = set(runtime_features)
-    runtime_features.extend(name for name in expected.features if name not in seen_runtime_features)
-    categorical_features: list[str] = []
-    for name in expected.features:
-        dtype = schema.get(name)
-        if dtype is None:
-            # Missing feature at runtime — build a contract with the
-            # placeholder so the diff names the missing column.
-            feature_types[name] = "MISSING"
-            continue
-        canonical = contract_dtype_name(dtype, column=name)
-        feature_types[name] = canonical
-    for name in runtime_features:
-        if feature_types.get(name) == "String":
-            categorical_features.append(name)
-    runtime_feature_set = set(runtime_features)
-    runtime_declared_levels = {
-        column: levels
-        for column, levels in normalise_categorical_levels(categorical_levels).items()
-        if column in runtime_feature_set
-    }
-    mismatched_levels = {
-        column: levels
-        for column, levels in runtime_declared_levels.items()
-        if column in expected.categorical_levels and levels != expected.categorical_levels[column]
-    }
-    if mismatched_levels:
-        from haute.errors import FeatureMismatchError
-
-        raise FeatureMismatchError(
-            "contract mismatch: categorical_levels",
-            field="categorical_levels",
-            expected=expected.categorical_levels,
-            actual=mismatched_levels,
-            feature_contract_path=contract_path,
-        )
-    contract_levels = expected.categorical_levels if expected.categorical_levels else {}
-
-    # The offset column is a required scoring input: rebuild the runtime
-    # contract with it only when the live schema actually carries it, so a
-    # payload without the column fails the contract diff by name instead of
-    # silently scoring on an offset-absent basis.
-    runtime_offset = (
-        expected.offset_column
-        if expected.offset_column and schema.get(expected.offset_column) is not None
-        else None
+    assert_schema_matches_contract(
+        lf.collect_schema(), _load_feature_contract_cached(contract_path)
     )
-    actual = build_contract(
-        features=runtime_features,
-        feature_types=feature_types,
-        categorical_features=categorical_features,
-        categorical_levels=contract_levels,
-        target_name=expected.target_name,
-        target_type=expected.target_type,
-        task=expected.task,
-        offset_column=runtime_offset,
-    )
-    assert_contracts_match(expected, actual)
-    score_levels = (
-        expected.categorical_levels if expected.categorical_levels else runtime_declared_levels
-    )
-    if validate_values:
-        validate_categorical_value_domains(lf, score_levels)
-    return {column: list(levels) for column, levels in score_levels.items()}
 
 
 def score_graph_lazy(
@@ -862,7 +805,6 @@ def _score_graph_lazy(
     _reject_incomplete_stepped_nodes(graph, relevant_node_ids)
     graph = _attach_bundled_model_contract_inputs(graph, remap, relevant_node_ids)
     node_by_id = {node.id: node for node in graph.nodes}
-    parents_of = graph.parents_of
     for edge in graph.edges:
         if edge.source not in relevant_node_ids or edge.target not in relevant_node_ids:
             continue
@@ -1136,13 +1078,6 @@ def _score_graph_lazy(
             _task = config.get("task", "regression")
             _output_col = config.get("output_column", "prediction")
             _src_names = list(source_names)
-            _src_ids = list(source_ids)
-            _declared_levels = _declared_categorical_levels_for_model_score(
-                node,
-                _src_ids,
-                node_by_id,
-                upstream_node_ids(nid, parents_of),
-            )
             _code = str(config.get("code") or "").strip()
             _score_source = "live"
             _required_output_columns = projection.model_score_required_output_columns(
@@ -1162,21 +1097,14 @@ def _score_graph_lazy(
                     _c: str = _code,
                     _sn: list[str] = _src_names,
                     _contract_path: str | None = _contract_path_model,
-                    _categorical_levels: dict[str, list[str | None]] = _declared_levels,
                     _source: str = _score_source,
                     _required: Any = _required_output_columns,
                 ) -> _Frame:
                     from haute._model_scorer import _run_score_pipeline
 
                     lf = dfs[0] if dfs else pl.LazyFrame()
-                    score_categorical_levels = dict(_categorical_levels)
                     if _contract_path is not None:
-                        score_categorical_levels = _assert_runtime_contract_matches(
-                            lf,
-                            _contract_path,
-                            _t,
-                            categorical_levels=_categorical_levels,
-                        )
+                        _assert_runtime_contract_matches(lf, _contract_path, _t)
                     # Bound to the bundled contract, which declares the offset
                     # a pyfunc or an undeclared CatBoost model scores with.
                     scoring_model = load_local_model_cached(_p, _t, _contract_path)
@@ -1191,7 +1119,6 @@ def _score_graph_lazy(
                         source=_source,
                         required_output_columns=_required,
                         temporary_paths=model_score_temp_paths,
-                        categorical_levels=score_categorical_levels,
                         preamble_ns=_preamble_names,
                     )
 
@@ -1209,17 +1136,10 @@ def _score_graph_lazy(
                     *dfs: _Frame,
                     _t: str = _task,
                     _contract_path: str = _contract_path_only,
-                    _categorical_levels: dict[str, list[str | None]] = _declared_levels,
                     _nid: str = _node_id,
                 ) -> _Frame:
                     lf = dfs[0] if dfs else pl.LazyFrame()
-                    _assert_runtime_contract_matches(
-                        lf,
-                        _contract_path,
-                        _t,
-                        categorical_levels=_categorical_levels,
-                        validate_values=True,
-                    )
+                    _assert_runtime_contract_matches(lf, _contract_path, _t)
                     # The contract matched, but without a model artifact
                     # there is no honest prediction to return.
                     raise RuntimeError(

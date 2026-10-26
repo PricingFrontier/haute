@@ -114,7 +114,7 @@ def test_strict_contract_resolution_raises_typed_redacted_error(
     failure_kind: str,
 ) -> None:
     with patch(
-        "haute._execute_lazy.get_column_contract",
+        "haute._execute_lazy.get_node_contract",
         side_effect=error,
     ):
         with pytest.raises(ContractResolutionError) as exc_info:
@@ -136,7 +136,7 @@ def test_strict_contract_resolution_raises_typed_redacted_error(
 
 def test_preview_contract_resolution_reports_opaque_degradation() -> None:
     with patch(
-        "haute._execute_lazy.get_column_contract",
+        "haute._execute_lazy.get_node_contract",
         side_effect=ConfigError("missing model"),
     ):
         resolution = _resolve_effective_contract(
@@ -204,7 +204,7 @@ def test_lazy_and_eager_bounded_execution_share_typed_resolution_failure() -> No
 
     payloads: list[dict[str, object]] = []
     with patch(
-        "haute._execute_lazy.get_column_contract",
+        "haute._execute_lazy.get_node_contract",
         side_effect=ConfigError("missing source contract"),
     ):
         for execute in (
@@ -238,7 +238,7 @@ def test_lazy_and_eager_bounded_execution_share_typed_resolution_failure() -> No
 
 def test_contract_resolution_reraises_attribute_error() -> None:
     with patch(
-        "haute._execute_lazy.get_column_contract",
+        "haute._execute_lazy.get_node_contract",
         side_effect=AttributeError("bug"),
     ):
         with pytest.raises(AttributeError, match="bug"):
@@ -247,8 +247,8 @@ def test_contract_resolution_reraises_attribute_error() -> None:
 
 def test_contract_resolution_raises_for_malformed_declared_contract() -> None:
     with patch(
-        "haute._execute_lazy.get_column_contract",
-        return_value=({"premium"}, {"base_rate"}),
+        "haute._execute_lazy.get_node_contract",
+        return_value=Contract.from_tuple(({"premium"}, {"base_rate"})),
     ):
         with pytest.raises(ContractMismatchError, match="malformed"):
             _resolve_effective_contract(
@@ -262,8 +262,8 @@ def test_contract_resolution_raises_for_malformed_declared_contract() -> None:
 
 def test_contract_resolution_merges_declared_inputs_with_builder_outputs() -> None:
     with patch(
-        "haute._execute_lazy.get_column_contract",
-        return_value=({"premium"}, None),
+        "haute._execute_lazy.get_node_contract",
+        return_value=Contract.from_tuple(({"premium"}, None)),
     ):
         contract = _resolve_effective_contract(
             _node(
@@ -283,8 +283,8 @@ def test_contract_resolution_prefers_builder_sides_over_a_stale_declaration() ->
     # A declaration parsed from the previous save still names the old output
     # column and model features after the user edits the node's config.
     with patch(
-        "haute._execute_lazy.get_column_contract",
-        return_value=({"competitor_premium"}, {"annual_mileage"}),
+        "haute._execute_lazy.get_node_contract",
+        return_value=Contract.from_tuple(({"competitor_premium"}, {"annual_mileage"})),
     ):
         contract = _resolve_effective_contract(
             _node(
@@ -302,8 +302,8 @@ def test_contract_resolution_prefers_builder_sides_over_a_stale_declaration() ->
 
 def test_contract_resolution_declared_opaque_preserves_builder_contract() -> None:
     with patch(
-        "haute._execute_lazy.get_column_contract",
-        return_value=({"premium"}, {"base_rate"}),
+        "haute._execute_lazy.get_node_contract",
+        return_value=Contract.from_tuple(({"premium"}, {"base_rate"})),
     ):
         contract = _resolve_effective_contract(
             _node(NodeType.POLARS, {"contract": "opaque"}),

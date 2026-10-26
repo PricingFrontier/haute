@@ -4085,7 +4085,7 @@ class TestFormatContractKwargFailLoud:
             calls.append(str(node_type))
             raise exc
 
-        monkeypatch.setattr(codegen_mod, "get_column_contract", _raise)
+        monkeypatch.setattr(codegen_mod, "get_node_contract", _raise)
         keyword = codegen_mod._contract_keyword(TestFormatContractKwargFailLoud._node())
         # The derivation genuinely failed and was rescued, not skipped.
         assert calls == ["polars"]
@@ -4111,7 +4111,7 @@ class TestFormatContractKwargFailLoud:
         def _raise(node_type, config):
             raise exc_factory()
 
-        monkeypatch.setattr(codegen_mod, "get_column_contract", _raise)
+        monkeypatch.setattr(codegen_mod, "get_node_contract", _raise)
         with pytest.raises(type(exc_factory())):
             codegen_mod._contract_keyword(self._node())
 
@@ -4139,7 +4139,7 @@ class TestFormatContractKwargFailLoud:
         def _raise(node_type, config):
             raise MlflowConfigError("Unknown MLflow destination 'managed'")
 
-        monkeypatch.setattr(codegen_mod, "get_column_contract", _raise)
+        monkeypatch.setattr(codegen_mod, "get_node_contract", _raise)
         with pytest.raises(MlflowConfigError):
             codegen_mod._contract_keyword(self._node())
 

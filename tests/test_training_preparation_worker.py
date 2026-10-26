@@ -914,8 +914,6 @@ class TestDispersionWorkerMemoryOperation:
         _widen_sandbox_root: None,
     ) -> None:
         """Dispersion admits its own operation and reuses the same supervisor."""
-        from fastapi import HTTPException
-
         from haute.schemas import DispersionEstimateRequest
 
         store = JobStore()
@@ -933,21 +931,18 @@ class TestDispersionWorkerMemoryOperation:
 
         monkeypatch.setattr(_training_lifecycle, "run_isolated_worker", raising)
 
-        with pytest.raises(HTTPException) as exc_info:
-            service.start_dispersion_estimate(body)
+        # The request returns the job; preparation's failure lands in it.
+        response = service.start_dispersion_estimate(body)
+        service._join_preparation(response.job_id)
 
-        assert exc_info.value.status_code == 507
-        detail = exc_info.value.detail
-        assert detail["operation"] == "dispersion_estimate"
-        assert detail["error_code"] == "memory_limit"
-        assert detail["reason"] == "worker_rss_limit_exceeded"
-
-        job_id = next(iter(store._jobs))
-        job = store.require_job(job_id)
+        job = store.require_job(response.job_id)
         assert job["status"] == "memory_limited"
         assert job["terminal_reason"] == "memory_limited"
         assert job["http_status_code"] == 507
-        assert job["error_detail"]["operation"] == "dispersion_estimate"
+        detail = job["error_detail"]
+        assert detail["operation"] == "dispersion_estimate"
+        assert detail["error_code"] == "memory_limit"
+        assert detail["reason"] == "worker_rss_limit_exceeded"
 
 
 # ---------------------------------------------------------------------------

@@ -167,30 +167,6 @@ class TestGenApiInput:
         assert "data/input.csv" not in code
         _compile_node_code(code)
 
-    def test_api_input_preserves_categorical_levels_in_shared_reader(self) -> None:
-        node = _make_codegen_node(
-            "apiInput",
-            {
-                "path": "data/input.csv",
-                "categorical_levels": {"region": ["north", "south"]},
-            },
-            label="CategoricalInput",
-        )
-
-        code = _node_to_code(node)
-
-        # The levels stay in the sidecar the shared reader loads; the
-        # generated function only declares the node.
-        assert code == (
-            '@pipeline.api_input(config="config/quote_input/CategoricalInput.json")\n'
-            "def CategoricalInput(): ...\n"
-        )
-        sidecar = collect_node_configs(_g({"nodes": [node.model_dump()], "edges": []}))
-        assert json.loads(sidecar["config/quote_input/CategoricalInput.json"])[
-            "categorical_levels"
-        ] == {"region": ["north", "south"]}
-        _compile_node_code(code)
-
     def test_json_api_input(self) -> None:
         node = _make_codegen_node(
             "apiInput",

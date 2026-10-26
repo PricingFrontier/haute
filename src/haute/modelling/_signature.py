@@ -44,6 +44,7 @@ def build_signature(
     task: Literal["classification", "regression"] = "regression",
     offset_name: str | None = None,
     offset_type: str = "Float64",
+    offset_link: str | None = None,
 ) -> ModelSignature:
     """Build an MLflow ModelSignature for a haute training run.
 
@@ -95,7 +96,11 @@ def build_signature(
         ColSpec(type=_map_dtype(feature_types[f]), name=f) for f in features
     ]
     if offset_name is not None:
-        input_specs.append(ColSpec(type=_map_dtype(offset_type), name=offset_name))
+        # An exposure (log link) is optional: a request without it is priced for a
+        # full policy term. An additive offset is a base premium and required.
+        input_specs.append(
+            ColSpec(type=_map_dtype(offset_type), name=offset_name, required=offset_link != "log")
+        )
     inputs = Schema(input_specs)
 
     target_dtype = _map_dtype(target_type)

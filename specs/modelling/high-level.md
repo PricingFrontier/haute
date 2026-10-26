@@ -47,6 +47,9 @@ the workspace. Related charts stack when their container is narrow.
   Lorenz may be compared together when the workspace is wide; a narrow workspace
   has a labelled view switch. A result containing only Lorenz data still renders.
   Deciles identify their prediction ordering, and full values/counts are available.
+  The Lorenz chart is labelled with the server's Gini on the rows it is drawn from (the
+  Summary's diagnostics), never a figure recomputed from the downsampled curve, and is
+  unlabelled when Gini is not reported.
 - Residual distribution and actual/predicted scatter use aligned responsive
   layouts, numeric residual ticks and explicit reference lines. Existing weighting,
   sampling disclosure and diagnostic statistics are preserved.
@@ -177,7 +180,9 @@ compatibility facade and route own no duplicate state or worker implementation.
   process (`available`, an actionable `detail`, the `device`), probed once per process.
 - `POST /api/modelling/estimate` returns a RAM/row-limit and (for GPU CatBoost or GPU
   XGBoost) VRAM
-  estimate without starting a job. Both this estimate and the pre-training RAM check
+  estimate without starting a job. The VRAM figure is sized at the rows training will use
+  (the source total under the user's and the RAM-safe row limit), the count the pre-launch
+  check sizes it at too, and the response states that basis (`gpu_vram_rows`). Both this estimate and the pre-training RAM check
   use fresh shared node snapshots that cover the training column demand: cached
   outputs supply measured row counts and schema even when their original computation
   cannot be analysed statically. Estimating RAM alone never builds missing snapshots
@@ -233,7 +238,9 @@ compatibility facade and route own no duplicate state or worker implementation.
   `theta` or Tweedie `var_power` by profile likelihood over the node's own training
   data, as a background job the client polls
   (`GET /api/modelling/dispersion/status/{job_id}`) and can cancel
-  (`POST /api/modelling/dispersion/cancel/{job_id}`); after that explicit estimate
+  (`POST /api/modelling/dispersion/cancel/{job_id}`). As for training, the request returns
+  the job id once its configuration is validated: preparing the data runs inside the job,
+  where cancelling stops it and a failure is a curated job status; after that explicit estimate
   action resolves, the UI writes the value into the visible editable node-config
   field. The user can inspect or adjust that auto-filled value before their normal
   save/publish action. Its process supervisor enforces the timeout stamped at job
@@ -278,9 +285,25 @@ Invariants that always hold:
   infinite-valued target passes the gate and fails downstream inside the wrapped
   metric stage with its own bounded message.
 - Every trained model is saved together with a feature contract pinning its exact
-  feature order, dtypes, categorical domains, target, and offset column. Any drift
-  detected later (train vs. score) raises rather than producing a plausible-looking
-  wrong prediction.
+  feature order, dtypes, categorical feature set, target, and offset column. Structural
+  drift detected later (train vs. score: a missing feature, a changed dtype, a missing
+  offset column) raises rather than producing a plausible-looking wrong prediction. The
+  contract holds no list of category values: a model's own file knows the categories it
+  encodes. A categorical value the training rows never held is not structural drift and
+  never stops scoring (below).
+- **Unseen categorical values.** No scoring path refuses a categorical value the rows
+  the model was fitted on never held, or a null in a feature whose training rows held
+  none: one new value must not stop a production scoring run. Each family scores the
+  value through its library's own mechanism, and Haute maps it to no level of its own and
+  reports nothing. t-boost scores it in its pooled
+  `<rare>` cell. LightGBM and XGBoost receive it as a missing value (XGBoost refuses a
+  category it was not trained on, and LightGBM turns one into a missing value itself), so it
+  takes the branch a null takes; at LightGBM's default categorical settings that is also the
+  side its thinnest levels take. EBM scores it in its unknown bin, whose score is zero (the
+  book average). CatBoost scores it at its zero-count prior. A GLM categorical term scores
+  it at the reference level, with every level **Levels** leaves unlisted, and a
+  target-encoding term at the encoding's prior. A null is never an unseen value: every
+  family scores it through its own missing-value handling.
 - MLflow signatures preserve temporal inputs deliberately: Polars `Date` and
   every supported parameterised `Datetime` unit/time-zone form map to MLflow
   `datetime`, survive signature persistence, and accept the corresponding
@@ -302,7 +325,10 @@ Invariants that always hold:
   reported predictions and diagnostics — an offset-absent prediction path is refused,
   never silently computed at baseline zero. The offset is a strictly positive exposure
   multiplier under a log link (a log-link GLM, CatBoost `Poisson` or `Tweedie`) and an
-  additive term otherwise, for both algorithms.
+  additive term otherwise, for both algorithms. Scoring a quote in Model Scoring is
+  different: a quote is priced for a full policy term, so there a missing or null exposure
+  (a log-link offset) is an exposure of one; an additive offset, a base premium, is still
+  required (see the MLflow model registry specification).
 - Optional diagnostics (SHAP, partial dependence, GLM inference statistics) can fail
   independently without aborting the run; failures are recorded and surfaced, not
   swallowed.
@@ -494,7 +520,10 @@ model instead. Both are permanently closed off by making the builder the only pa
 objective: an unset Tweedie variance power, Negative Binomial `theta`, GLM terms,
 or elastic-net L1 ratio would otherwise fall through to a library default (variance power
 1.5, theta 1.0, an intercept-only design, pure ridge) that produces a real, trainable,
-plausible-looking model — just not the one the user intended. Cross-validation uses a
+plausible-looking model — just not the one the user intended. A `TrainingJob` built
+directly applies the same rule: a Tweedie loss without its variance power is refused for
+every family, and so is a `tweedie_deviance` metric (a Tweedie GLM measures at its own
+`var_power`), so nothing trains or measures at a library's 1.5. Cross-validation uses a
 fixed seed of 42 when older configurations have none, avoiding unseeded folds without
 requiring a user-facing seed control.
 `training_objective_issue` gates this identically at config-build time and at the
@@ -796,8 +825,9 @@ browser without a server or JS bundle.
 - A feature-contract mismatch (train vs. score, or a hand-edited/corrupted contract
   file) raises `FeatureMismatchError` naming the specific field and its expected vs.
   actual value.
-- A prediction request missing a required offset column raises rather than silently
-  scoring without the offset's effect.
+- During training and evaluation, a prediction missing a required offset column raises
+  rather than silently scoring without the offset's effect; Model Scoring prices a missing
+  or null exposure as a full policy term and still refuses a missing additive offset.
 - If every row supplied to a metric or diagnostic is non-finite, computation raises
   rather than returning an empty or NaN result that could be mistaken for a valid
   (if poor) evaluation.
@@ -858,10 +888,14 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   `CrossEntropy`. CatBoost supports all of them except `Gamma` (CatBoost 1.2.10 has no Gamma
   loss). The GLM configures `family`/`link` instead and trains regression only: a binomial GLM
   predicts a probability, not a class label.
-- **Parameters.** CatBoost raw `params` are forwarded unchanged apart from `thread_count`,
-  which the thread allotment owns, and `class_names`, which would reorder the probability
-  columns away from the positive = 1 encoding; tuning search spaces still exclude CatBoost's
-  orchestration-owned keys, and a CatBoost fit whose classes are not the encoded `[0, 1]`
+- **Parameters.** CatBoost raw `params` are forwarded unchanged apart from the keys Haute
+  sets, which are refused by name rather than silently overwritten: `thread_count`, which the
+  thread allotment owns; `class_names`, which would reorder the probability columns away from
+  the positive = 1 encoding; the loss, objective and metric (`loss_function`, `objective`,
+  `eval_metric`), which the node's loss setting owns; the seed (`random_seed`,
+  `random_state`), which is the job's seed as for every family; and the training-file keys
+  (`allow_writing_files`, `train_dir`, `save_snapshot`, `snapshot_file`). Tuning search
+  spaces still exclude CatBoost's orchestration-owned keys, and a CatBoost fit whose classes are not the encoded `[0, 1]`
   fails. The GLM keeps its own configuration-key validation. A family with
   an allowlist rejects reserved keys, aliases, duplicate spellings, and unknown keys.
 - **Refits.** A round-refitting family feeds zero-based best iterations to
@@ -885,8 +919,9 @@ Cancellation, crash, malformed result, or validation failure removes the directo
 - **XGBoost.** The `xgboost` family trains a native CPU `hist` booster. Categorical codes come
   from the level list the model was fitted against (declared levels, else the training
   partition's distinct values), stored in the model and the contract, because XGBoost 3.2 reads
-  a booster sliced to its best round positionally; an unseen category fails instead of scoring
-  as missing. A regression offset enters as `base_margin` at fit and predict, because a model
+  a booster sliced to its best round positionally; a value outside that list reaches the
+  booster as a missing value, because XGBoost refuses a category it was not trained on. A
+  regression offset enters as `base_margin` at fit and predict, because a model
   trained with a margin ignores its fitted `base_score`. Early stopping on Haute's validation
   partition keeps `best_iteration + 1` rounds, and the refit reuses the weighted count through
   `num_boost_round`. Losses are `RMSE`, `MAE`, `Poisson`, `Gamma`, `Tweedie` and `Logloss`;
@@ -926,8 +961,10 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   each main effect's shape (missing-value bin included) and each interaction's surface as
   additive link-scale term scores, and a traced prediction is explained by the intercept, the
   offset and one contribution per term, an interaction staying one term. The `.ebm` file is
-  the joblib-dumped estimator, loaded only through the restricted unpickler and only under its
-  feature contract, which must record the installed `interpret-core` version exactly.
+  a JSON record of the model's `interpret-core` version, features, task, link, offset and
+  class labels followed by the joblib-dumped estimator, so it describes itself and loads
+  without its feature contract. It is loaded only through the restricted unpickler and only
+  when its record names the installed `interpret-core` version exactly.
 - **t-boost.** The `tboost` family trains a t-boost model (regressor, or binary classifier
   for `Logloss`): gradient boosting on symmetric trees whose fitted model is exactly a set of
   rating tables, one per main effect and per interaction up to `max_interaction_order`, so an
@@ -990,16 +1027,19 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   an XGBoost GPU job is refused when `estimate_xgboost_gpu_vram_bytes` exceeds free VRAM.
   LightGBM's wheels have no GPU or CUDA learner on Windows and only OpenCL on Linux (no OpenCL
   device under WSL), so LightGBM, like EBM and t-boost, trains on the CPU only.
-- **Model identity.** A version-3 feature contract carries an optional model identity:
+- **Model identity.** A version-4 feature contract carries an optional model identity:
   algorithm, Haute loss or GLM family, link, variance power, class labels, native feature names,
   and exact engine and Haute versions, all inside the hashed payload. Training always writes
   it; a contract supplied for a generic MLflow model may omit it. An earlier contract version
   fails to load with a retrain message.
-- **Offset declaration.** A version-3 contract records how its offset enters the raw score
+- **No level lists.** A version-4 contract records no category values: the
+  `categorical_levels` field earlier contracts carried is gone, so a contract stays small
+  whatever a feature's cardinality, and contracts written by an earlier Haute fail to load
+  and are regenerated by retraining.
+- **Offset declaration.** A version-4 contract records how its offset enters the raw score
   (`offset_link`: `log` or `identity`) beside the offset column, so a contract can declare the
   baseline of a model whose file does not, such as a CatBoost model trained outside Haute.
-  Training writes the link whenever it writes an offset column. Version 3 adds the field, so
-  contracts written by an earlier Haute fail to load and are regenerated by retraining. The shared MLflow pyfunc and Model Score check a loaded model
+  Training writes the link whenever it writes an offset column. The shared MLflow pyfunc and Model Score check a loaded model
   against the identity (its model type, and CatBoost's recorded loss) and fail on a mismatch.
   Only the schema fields are compared against live data.
 

@@ -449,7 +449,6 @@ def test_explicit_save_reloads_and_clears_child_column_metadata(tmp_path: Path) 
     metadata = {
         "selected_columns": ["_id", "premium"],
         "column_renames": {"_id": "identifier"},
-        "categorical_levels": {"premium": ["low", "high", None]},
     }
     service.save_graph_transactionally(
         graph=_managed_graph(child_config=metadata),
@@ -475,7 +474,6 @@ def test_explicit_save_reloads_and_clears_child_column_metadata(tmp_path: Path) 
         {
             "selected_columns": [],
             "column_renames": {},
-            "categorical_levels": {},
         }
     )
     service.save_graph_transactionally(
@@ -491,11 +489,9 @@ def test_explicit_save_reloads_and_clears_child_column_metadata(tmp_path: Path) 
     assert {
         "selected_columns": cleared.data.config.get("selected_columns", []),
         "column_renames": cleared.data.config.get("column_renames", {}),
-        "categorical_levels": cleared.data.config.get("categorical_levels", {}),
     } == {
         "selected_columns": [],
         "column_renames": {},
-        "categorical_levels": {},
     }
 
 
