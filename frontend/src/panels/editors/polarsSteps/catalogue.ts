@@ -227,7 +227,13 @@ export const LIST_LITERAL_TYPES = LITERAL_TYPES.filter((t) => t.value !== "null"
  * is zero or more; `int` may be negative (a slice start counting from the end);
  * `format` is a date format such as `%Y-%m-%d`.
  */
-export type FunctionArg = "integer" | "int" | "number" | "scalar" | "dtype" | "text" | "format"
+export type FunctionArg = "integer" | "int" | "number" | "dtype" | "text" | "format" | "number_operand" | "scalar_operand"
+/** Arguments that take any operand besides a plain value of these types (the renderer's `_OPERAND_ARGUMENT_LITERALS`). */
+export const OPERAND_ARGUMENT_LITERALS: Partial<Record<FunctionArg, readonly LiteralType[]>> = {
+  number_operand: ["number"],
+  scalar_operand: ["number", "text", "boolean"],
+}
+export const isOperandArgument = (arg: FunctionArg | undefined): boolean => arg !== undefined && OPERAND_ARGUMENT_LITERALS[arg] !== undefined
 export const FUNCTIONS: Array<{ value: FunctionName; label: string; args: FunctionArg[] }> = [
   { value: "abs", label: "absolute value", args: [] },
   { value: "round", label: "round", args: ["integer"] },
@@ -236,8 +242,8 @@ export const FUNCTIONS: Array<{ value: FunctionName; label: string; args: Functi
   { value: "sqrt", label: "square root", args: [] },
   { value: "log", label: "natural log", args: [] },
   { value: "exp", label: "exponential", args: [] },
-  { value: "clip", label: "clip between", args: ["number", "number"] },
-  { value: "fill_null", label: "fill missing with", args: ["scalar"] },
+  { value: "clip", label: "clip between", args: ["number_operand", "number_operand"] },
+  { value: "fill_null", label: "fill missing with", args: ["scalar_operand"] },
   { value: "cast", label: "cast to type", args: ["dtype"] },
   { value: "upper", label: "upper case", args: [] },
   { value: "lower", label: "lower case", args: [] },
@@ -330,7 +336,7 @@ export function exprTypeProblem(expr: Expr, typeOf: (name: string) => string | n
   const operandProblem = (operand: Operand): string | null => (operand.kind === "expr" ? exprTypeProblem(operand.expr, typeOf) : null)
   switch (expr.type) {
     case "function": {
-      const inner = operandProblem(expr.operand)
+      const inner = operandProblem(expr.operand) ?? expr.args.map(operandProblem).find((problem) => problem !== null)
       if (inner) return inner
       if (expr.operand.kind !== "column") return null
       const name = expr.operand.name
@@ -414,7 +420,8 @@ export function defaultArgFor(arg: FunctionArg): LiteralOperand {
     case "int":
     case "number":
       return literal("number", 0)
-    case "scalar":
+    case "number_operand":
+    case "scalar_operand":
       return literal("number", 0)
     case "dtype":
       return literal("text", "Float64")
@@ -615,7 +622,19 @@ export function exprProblem(value: unknown, where: string, depth = 1): string | 
     case "function":
       if (typeof expr.fn !== "string") return `${where} is missing its function.`
       if (expr.text !== undefined && typeof expr.text !== "string") return `${where} has malformed formula text.`
-      if (!Array.isArray(expr.args) || expr.args.some((a) => argumentProblem(a, where) !== null)) return `${where} has malformed function arguments.`
+      if (!Array.isArray(expr.args)) return `${where} has malformed function arguments.`
+      {
+        const kinds = FUNCTIONS.find((f) => f.value === expr.fn)?.args ?? []
+        for (const [index, arg] of expr.args.entries()) {
+          // An operand argument takes any operand; the others a plain value or a constant.
+          if (isOperandArgument(kinds[index])) {
+            const problem = operandProblem(arg, `${where} argument ${index + 1}`, depth)
+            if (problem) return problem
+          } else if (argumentProblem(arg, where) !== null) {
+            return `${where} has malformed function arguments.`
+          }
+        }
+      }
       return operandProblem(expr.operand, where, depth)
     case "conditional":
       if (typeof expr.match !== "string") return `${where} is missing its match mode.`
@@ -852,7 +871,7 @@ function canonicalExpr(expr: Expr): Expr {
     case "binary":
       return { ...expr, left: canonicalOperand(expr.left), right: canonicalOperand(expr.right) }
     case "function":
-      return { ...expr, operand: canonicalOperand(expr.operand) }
+      return { ...expr, operand: canonicalOperand(expr.operand), args: expr.args.map(canonicalOperand) }
   }
 }
 

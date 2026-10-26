@@ -32,6 +32,7 @@ import {
   JOIN_VALIDATE,
   JOIN_VALIDATED_HOW,
   MAX_EXPR_DEPTH,
+  OPERAND_ARGUMENT_LITERALS,
   PIVOT_AGGREGATIONS,
   REDUCING_AGGREGATIONS,
   WINDOW_AGGREGATIONS,
@@ -155,8 +156,9 @@ const ARG_CONSTANT_TYPES: Record<FunctionArg, readonly GlobalConstantType[]> = {
   number: ["integer", "float"],
   text: ["text"],
   format: ["text"],
-  scalar: ["integer", "float", "text", "boolean"],
   dtype: [],
+  number_operand: ["integer", "float"],
+  scalar_operand: ["integer", "float", "text", "boolean"],
 }
 /** Literal types a stored value may take (fills, concat parts). */
 const VALUE_TYPES: readonly LiteralType[] = ["number", "text", "boolean", "date"]
@@ -532,7 +534,7 @@ function StructuredFormula({ expr, onChange, ctx, depth }: { expr: Extract<Expr,
   )
 }
 
-function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "function" }>; onChange: (next: Expr) => void; ctx: StepFormContext }) {
+function FunctionArgs({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "function" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {
   const schema = useStepSchema()
   const spec = FUNCTIONS.find((f) => f.value === expr.fn)
   if (!spec || spec.args.length === 0) return null
@@ -542,6 +544,8 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
       {spec.args.map((arg, index) => {
         const value: FunctionArgValue = expr.args[index] ?? defaultArgFor(arg)
         const plain: LiteralOperand = value.kind === "literal" ? value : defaultArgFor(arg)
+        // A plain-value argument is a value or a constant; the step check refuses anything else.
+        const plainOrConstant = value.kind === "literal" || value.kind === "constant" ? value : plain
         const set = (next: FunctionArgValue) => {
           const args = spec.args.map((a, i) => (i === index ? next : (expr.args[i] ?? defaultArgFor(a))))
           onChange({ ...expr, args })
@@ -557,10 +561,28 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
             </Field>
           )
         }
+        const operandLiterals = OPERAND_ARGUMENT_LITERALS[arg]
+        if (operandLiterals) {
+          return (
+            <Field key={index} label={label}>
+              <OperandField
+                value={value}
+                onChange={set}
+                sources={ALL_SOURCES}
+                literalTypes={operandLiterals}
+                constantTypes={ARG_CONSTANT_TYPES[arg]}
+                columns={ctx.columns}
+                variables={ctx.variables}
+                ariaLabel={label}
+                renderExpression={nestedExpression(ctx, depth + 1)}
+              />
+            </Field>
+          )
+        }
         if (arg === "format") {
           return (
             <Field key={index} label={label}>
-              <ArgumentField value={value} onChange={set} constantTypes={ARG_CONSTANT_TYPES.format} plainValue={defaultArgFor("format")} plainLabel="text" ariaLabel={label}>
+              <ArgumentField value={plainOrConstant} onChange={set} constantTypes={ARG_CONSTANT_TYPES.format} plainValue={defaultArgFor("format")} plainLabel="text" ariaLabel={label}>
                 <TextField
                   value={plain.type === "text" ? String(plain.value) : ""}
                   onCommit={(format) => format.includes("%") && set(literal("text", format))}
@@ -571,26 +593,10 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
             </Field>
           )
         }
-        if (arg === "scalar") {
-          return (
-            <Field key={index} label={label}>
-              <OperandField
-                value={value}
-                onChange={(next) => (next.kind === "literal" || next.kind === "constant") && set(next)}
-                sources={["literal", "constant"]}
-                literalTypes={["number", "text", "boolean"]}
-                constantTypes={ARG_CONSTANT_TYPES.scalar}
-                columns={ctx.columns}
-                variables={[]}
-                ariaLabel={label}
-              />
-            </Field>
-          )
-        }
         if (arg === "text") {
           return (
             <Field key={index} label={label}>
-              <ArgumentField value={value} onChange={set} constantTypes={ARG_CONSTANT_TYPES.text} plainValue={literal("text", "")} plainLabel="text" ariaLabel={label}>
+              <ArgumentField value={plainOrConstant} onChange={set} constantTypes={ARG_CONSTANT_TYPES.text} plainValue={literal("text", "")} plainLabel="text" ariaLabel={label}>
                 <TextField value={plain.type === "text" ? String(plain.value) : ""} onCommit={(text) => set(literal("text", text))} ariaLabel={label} mono />
               </ArgumentField>
             </Field>
@@ -598,7 +604,7 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
         }
         return (
           <Field key={index} label={label}>
-            <ArgumentField value={value} onChange={set} constantTypes={ARG_CONSTANT_TYPES[arg]} plainValue={defaultArgFor(arg)} plainLabel="number" ariaLabel={label}>
+            <ArgumentField value={plainOrConstant} onChange={set} constantTypes={ARG_CONSTANT_TYPES[arg]} plainValue={defaultArgFor(arg)} plainLabel="number" ariaLabel={label}>
               <LiteralValueInput
                 value={plain.type === "number" ? plain : literal("number", 0)}
                 onChange={set}
@@ -644,7 +650,7 @@ function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: 
           <Field label="Of">
             <OperandField value={expr.operand} onChange={(operand) => onChange({ ...expr, operand })} ariaLabel="Function operand" {...operandProps} />
           </Field>
-          <FunctionArgs expr={expr} onChange={onChange} ctx={ctx} />
+          <FunctionArgs expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
         </>
       )
     case "conditional":

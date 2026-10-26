@@ -190,7 +190,7 @@ export function exprColumns(expr: Expr): string[] {
     case "binary":
       return [...operandColumns(expr.left), ...operandColumns(expr.right)]
     case "function":
-      return operandColumns(expr.operand)
+      return [...operandColumns(expr.operand), ...expr.args.flatMap(operandColumns)]
     case "conditional":
       return [...conditionColumns(expr.conditions), ...operandColumns(expr.then), ...operandColumns(expr.otherwise)]
     case "window":

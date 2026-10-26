@@ -74,7 +74,7 @@ function exprParts(expr: Expr): SummaryPart[] {
     case "binary":
       return [...operandParts(expr.left), op(expr.op), ...operandParts(expr.right)]
     case "function":
-      return [code(expr.fn), ...operandParts(expr.operand)]
+      return [code(expr.fn), ...operandParts(expr.operand), ...expr.args.flatMap((arg) => [sep(","), ...operandParts(arg)])]
     case "conditional":
       return [text("if"), ...conditionsParts(expr.conditions, expr.match), text("then"), ...operandParts(expr.then), text("else"), ...operandParts(expr.otherwise)]
     case "window": {

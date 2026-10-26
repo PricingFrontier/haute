@@ -165,6 +165,34 @@ describe("step forms only build schema-valid payloads", () => {
     expect(screen.getByLabelText("Maximum")).toBeInTheDocument()
   })
 
+  it("clip's bounds and fill_null's value also take a column, a variable or an expression", () => {
+    const spy = vi.fn()
+    const step: Step = {
+      id: "w",
+      kind: "with_column",
+      name: "capped",
+      expr: { type: "function", fn: "clip", operand: { kind: "column", name: "premium" }, args: [{ kind: "literal", type: "number", value: 0 }, { kind: "literal", type: "number", value: 1 }] },
+    }
+    render(<Stateful initial={step} spy={spy} />)
+    expect(optionValues(screen.getByLabelText("Maximum kind"))).toEqual(["number", "column", "variable", "expr"])
+    fireEvent.change(screen.getByLabelText("Maximum kind"), { target: { value: "column" } })
+    fireEvent.change(screen.getByRole("combobox", { name: "Maximum column" }), { target: { value: "region" } })
+    fireEvent.blur(screen.getByRole("combobox", { name: "Maximum column" }))
+    let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toMatchObject({ args: [{ kind: "literal", value: 0 }, { kind: "column", name: "region" }] })
+    expect(stepProblem(latest)).toBeNull()
+    fireEvent.change(screen.getByLabelText("Minimum kind"), { target: { value: "expr" } })
+    expect(screen.getByRole("group", { name: "Minimum expression" })).toBeInTheDocument()
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toMatchObject({ args: [{ kind: "expr", expr: { type: "binary", text: "" } }, { kind: "column", name: "region" }] })
+    expect(stepProblem(latest)).toBeNull()
+    // fill_null takes text and true/false too, and plain-value arguments stay plain.
+    fireEvent.change(screen.getByLabelText("Function"), { target: { value: "fill_null" } })
+    expect(optionValues(screen.getByLabelText("Fill with kind"))).toEqual(["number", "text", "boolean", "column", "variable", "expr"])
+    fireEvent.change(screen.getByLabelText("Function"), { target: { value: "round" } })
+    expect(screen.queryByLabelText("Decimal places kind")).not.toBeInTheDocument()
+  })
+
   it("cast offers the cast types through a Type select", () => {
     const onChange = vi.fn()
     const step: Step = {

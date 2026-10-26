@@ -19,11 +19,15 @@ export type ColumnOperand = { kind: "column"; name: string }
 export type VariableOperand = { kind: "variable"; name: string }
 /** A pipeline global constant, read as `global_constants.<name>`; also a typed function argument. */
 export type ConstantOperand = { kind: "constant"; name: string }
-/** A nested expression; allowed wherever an operand is, except membership lists, variables and function arguments. */
+/** A nested expression; allowed wherever an operand is, except membership lists, variables and plain-value function arguments. */
 export type ExprOperand = { kind: "expr"; expr: Expr }
 export type Operand = LiteralOperand | ColumnOperand | VariableOperand | ConstantOperand | ExprOperand
-/** A function's extra argument: a plain value, or a constant of the argument's type. */
-export type FunctionArgValue = LiteralOperand | ConstantOperand
+/**
+ * A function's extra argument: a plain value or a constant of the argument's
+ * type, and for an operand argument (clip's bounds, fill_null's value) also a
+ * column, a variable or a nested expression.
+ */
+export type FunctionArgValue = Operand
 
 export type ConditionOperator =
   | "eq" | "ne" | "gt" | "ge" | "lt" | "le"

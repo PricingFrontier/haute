@@ -415,16 +415,25 @@ _ARGUMENT_CONSTANT_TYPES: dict[str, tuple[str, ...]] = {
     "number": ("integer", "float"),
     "text": ("text",),
     "format": ("text",),
-    "scalar": ("integer", "float", "text", "boolean"),
     "dtype": (),
+    "number_operand": ("integer", "float"),
+    "scalar_operand": ("integer", "float", "text", "boolean"),
+}
+#: Arguments that take any operand (a column, a variable, a constant or a
+#: nested expression) besides a plain value of these literal types.
+_OPERAND_ARGUMENT_LITERALS: dict[str, tuple[str, ...]] = {
+    "number_operand": ("number",),
+    "scalar_operand": ("number", "text", "boolean"),
 }
 #: How deep expressions may nest as operands; a with_column expression is depth 1.
 #: A formula chain nests one level per operator, so a dozen terms fit.
 MAX_EXPR_DEPTH = 12
 _PRECEDENCE: dict[str, int] = {"+": 1, "-": 1, "*": 2, "/": 2, "//": 2, "%": 2, "**": 3}
 
-#: ``fn -> (argument literal types, render template)``. ``{r}`` is the
-#: receiver rendered in expression position; ``{0}``/``{1}`` are bare literals.
+#: ``fn -> (argument types, render template)``. ``{r}`` is the receiver
+#: rendered in expression position; ``{0}``/``{1}`` are the arguments in value
+#: position (a bare literal or constant, or an operand argument's column,
+#: variable or expression).
 FUNCTIONS: dict[str, tuple[tuple[str, ...], str]] = {
     "abs": ((), "{r}.abs()"),
     "floor": ((), "{r}.floor()"),
@@ -433,8 +442,8 @@ FUNCTIONS: dict[str, tuple[tuple[str, ...], str]] = {
     "log": ((), "{r}.log()"),
     "exp": ((), "{r}.exp()"),
     "round": (("integer",), "{r}.round({0})"),
-    "clip": (("number", "number"), "{r}.clip({0}, {1})"),
-    "fill_null": (("scalar",), "{r}.fill_null({0})"),
+    "clip": (("number_operand", "number_operand"), "{r}.clip({0}, {1})"),
+    "fill_null": (("scalar_operand",), "{r}.fill_null({0})"),
     "cast": (("dtype",), "{r}.cast(pl.{0})"),
     "upper": ((), "{r}.str.to_uppercase()"),
     "lower": ((), "{r}.str.to_lowercase()"),
@@ -1458,6 +1467,21 @@ class _Renderer:
             raise self.fail(f"{label} order columns must all share one direction.")
         return f"{base}.over({over!r}, order_by={columns!r}, descending={flags[0]!r})"
 
+    def _operand_argument(self, operand: Mapping[str, Any], expected: str, label: str) -> str:
+        """An argument that takes any operand, rendered in value position."""
+        literals = _OPERAND_ARGUMENT_LITERALS[expected]
+        if operand.get("kind") == "literal":
+            literal_type, rendered = self._literal(operand, label)
+            if literal_type not in literals:
+                plain = "a number" if literals == ("number",) else "a number, text or true/false"
+                raise self.fail(
+                    f"{label} must be {plain}, a column, a variable, a constant or an expression."
+                )
+            return rendered
+        return self._operand(
+            operand, label, expr=False, constant_types=_ARGUMENT_CONSTANT_TYPES[expected]
+        )
+
     def _window_value(self, value: object, label: str) -> str:
         """A window's value: a column, or a nested expression (a formula in brackets)."""
         operand = self._object(value, f"{label} value")
@@ -1467,6 +1491,8 @@ class _Renderer:
 
     def _function_arg(self, value: object, expected: str, label: str) -> str:
         operand = self._object(value, label)
+        if expected in _OPERAND_ARGUMENT_LITERALS:
+            return self._operand_argument(operand, expected, label)
         if operand.get("kind") == "constant":
             types = _ARGUMENT_CONSTANT_TYPES[expected]
             if not types:
@@ -1497,10 +1523,6 @@ class _Renderer:
             if literal_type != "text":
                 raise self.fail(f"{label} must be a date format such as '%Y-%m-%d'.")
             return self._date_format(operand.get("value"), label)
-        if expected == "scalar":
-            if literal_type in ("date", "null"):
-                raise self.fail(f"{label} must be a number, text or true/false.")
-            return rendered
         if literal_type != "text" or operand.get("value") not in CAST_DTYPES:
             raise self.fail(f"{label} must be one of {list(CAST_DTYPES)!r}.")
         return str(operand["value"])

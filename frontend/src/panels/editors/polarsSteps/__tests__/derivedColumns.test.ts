@@ -232,6 +232,17 @@ describe("unknown columns", () => {
     expect(columnsReadBy({ id: "g", kind: "group_by", keys: ["region", ""], aggregations: [{ column: "premium", agg: "sum", name: "t" }, { column: "", agg: "len", name: "n" }] })).toEqual(["region", "premium"])
   })
 
+  it("reads the columns in an operand argument, never a plain-value one", () => {
+    const capped: Step = {
+      id: "c",
+      kind: "with_column",
+      name: "t",
+      expr: { type: "function", fn: "clip", operand: { kind: "column", name: "premium" }, args: [{ kind: "column", name: "flor" }, { kind: "literal", type: "number", value: 1 }] },
+    }
+    expect(columnsReadBy(capped)).toEqual(["premium", "flor"])
+    expect(unknownColumnsOf(capped, columnsBeforeStep(SOURCE, [source("quotes"), capped], 1), SOURCE)).toEqual(["flor"])
+  })
+
   it("reads the columns a window's row filter tests", () => {
     const where = { match: "all" as const, conditions: [{ column: "chanel", operator: "is_null" as const }] }
     const filtered: Step = { id: "w", kind: "with_column", name: "t", expr: { type: "window", agg: "sum", of: { kind: "column", name: "premium" }, over: ["region"], where } }

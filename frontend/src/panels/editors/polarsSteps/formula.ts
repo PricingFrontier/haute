@@ -9,7 +9,8 @@
  * names too, text is quoted, `true`/`false`/`null` are keywords, dates are
  * written `date('2024-01-01')`, and functions take the catalogue's names in
  * any case (the kept text spells them as the catalogue does) with their extra
- * arguments as plain values. A pipeline global constant is its bare name
+ * arguments as plain values, except an operand argument (clip's bounds,
+ * fill_null's value), which is any formula. A pipeline global constant is its bare name
  * (or `global_constants.<name>`), also as an extra argument; a bare name is an
  * earlier variable first, then one of the `constants` given, then a column, and
  * backticks always name a column. The editor leaves out of `constants` any
@@ -18,7 +19,7 @@
  * Expression types text cannot express (windows, conditionals, text joins)
  * make `formulaText` return null, and the structured editor takes over.
  */
-import { CAST_DTYPES, FUNCTIONS, literal, type FunctionArg } from "./catalogue"
+import { CAST_DTYPES, FUNCTIONS, OPERAND_ARGUMENT_LITERALS, isOperandArgument, literal, type FunctionArg } from "./catalogue"
 import type { BinaryOperator, CastDtype, Expr, FunctionArgValue, FunctionName, LiteralOperand, Operand } from "./types"
 
 const PRECEDENCE: Record<BinaryOperator, number> = { "+": 1, "-": 1, "*": 2, "/": 2, "//": 2, "%": 2, "**": 3 }
@@ -286,7 +287,20 @@ class Parser {
     return { type: "function", fn: spec.value as FunctionName, operand, args }
   }
 
+  /** An operand argument: any formula, its plain values of the argument's types only. */
+  private operandArg(fn: string, arg: FunctionArg): Operand {
+    const start = this.here()
+    const operand = asOperand(this.additive())
+    const types = OPERAND_ARGUMENT_LITERALS[arg] ?? []
+    if (operand.kind === "literal" && !types.includes(operand.type)) {
+      const plain = types.length === 1 ? "a number" : "a number, quoted text, true/false"
+      throw new FormulaError(`${fn}() expects ${plain}, a column or a formula here.`, start)
+    }
+    return operand
+  }
+
   private literalArg(fn: string, arg: FunctionArg): FunctionArgValue {
+    if (arg === "number_operand" || arg === "scalar_operand") return this.operandArg(fn, arg)
     const token = this.take()
     // A bare name is a constant only where a constant may stand: never a type
     // argument, and never a keyword (`true`, `false`, `null`, `date`).
@@ -322,11 +336,6 @@ class Parser {
         if (negative || !(CAST_DTYPES as string[]).includes(dtype)) throw new FormulaError(`${fn}() expects a type such as ${CAST_DTYPES.slice(0, 3).join(", ")}.`, value.start)
         return literal("text", dtype as CastDtype)
       }
-      case "scalar":
-        if (value.kind === "number") return literal("number", negative ? -value.value : value.value)
-        if (value.kind === "string" && !negative) return literal("text", value.value)
-        if (value.kind === "name" && !value.quoted && !negative && (value.value === "true" || value.value === "false")) return literal("boolean", value.value === "true")
-        throw new FormulaError(`${fn}() expects a number, quoted text or true/false here.`, value.start)
     }
   }
 }
@@ -382,7 +391,7 @@ export function withoutFormulaText(expr: Expr): Expr {
     case "binary":
       return { type: "binary", left: strip(expr.left), op: expr.op, right: strip(expr.right) }
     case "function":
-      return { type: "function", fn: expr.fn, operand: strip(expr.operand), args: expr.args }
+      return { type: "function", fn: expr.fn, operand: strip(expr.operand), args: expr.args.map(strip) }
     case "operand":
       return { type: "operand", operand: strip(expr.operand) }
     case "conditional":
@@ -502,7 +511,10 @@ function exprText(expr: Expr, variables: ReadonlySet<string>, constants: Readonl
       if (receiver === null) return null
       const spec = FUNCTIONS.find((f) => f.value === expr.fn)
       const args = expr.args.map((arg, index) => {
+        // An operand argument sits between commas, so it needs no brackets.
+        if (isOperandArgument(spec?.args[index])) return arg.kind === "expr" ? exprText(arg.expr, variables, constants) : operandText(arg, variables, null, constants)
         if (arg.kind === "constant") return constantText(arg.name, variables, constants)
+        if (arg.kind !== "literal") return null
         return spec?.args[index] === "dtype" ? String(arg.value) : literalText(arg)
       })
       if (args.some((arg) => arg === null)) return null
@@ -530,8 +542,8 @@ export function renameColumnInFormula(
   const insert = nameText(to, known, false) ?? to
   // Which argument of which call each token sits in: a catalogue function's
   // arguments after the first are plain values (a type such as Float64, a
-  // number, text), never columns.
-  const calls: Array<{ fn: boolean; arg: number }> = []
+  // number, text), never columns, except an operand argument, which is any formula.
+  const calls: Array<{ fn: (typeof FUNCTIONS)[number] | undefined; arg: number }> = []
   const spans: Array<{ start: number; end: number }> = []
   tokens.forEach((token, index) => {
     const next = tokens[index + 1]
@@ -539,7 +551,7 @@ export function renameColumnInFormula(
     if (token.kind === "punct") {
       if (token.value === "(") {
         const previous = tokens[index - 1]
-        const fn = previous?.kind === "name" && !previous.quoted && functionNamed(previous.value) !== undefined
+        const fn = previous?.kind === "name" && !previous.quoted ? functionNamed(previous.value) : undefined
         calls.push({ fn, arg: 0 })
       } else if (token.value === ")") calls.pop()
       else if (calls.length > 0) calls[calls.length - 1].arg += 1
@@ -547,7 +559,7 @@ export function renameColumnInFormula(
     }
     if (token.kind !== "name" || token.value !== from) return
     const inCall = calls[calls.length - 1]
-    if (inCall?.fn && inCall.arg > 0) return
+    if (inCall?.fn && inCall.arg > 0 && !isOperandArgument(inCall.fn.args[inCall.arg - 1])) return
     // `date` is the date constructor only when a call follows; bare, it is a column.
     const keyword = KEYWORDS.has(token.value) && token.value !== "date"
     if (!token.quoted && (keyword || known.has(token.value) || opensCall)) return

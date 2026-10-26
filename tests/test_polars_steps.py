@@ -2722,6 +2722,7 @@ def test_generated_reshaping_code_stays_inside_the_lineage_model() -> None:
 # ---------------------------------------------------------------------------
 
 _WEB = [cond("channel", "eq", value=text("web"))]
+_CAP = {"kind": "constant", "name": "cap"}
 
 
 @pytest.mark.parametrize(
@@ -2773,6 +2774,29 @@ _WEB = [cond("channel", "eq", value=text("web"))]
             '    .alias("run")\n'
             ")",
         ),
+        (
+            step(
+                "c",
+                "with_column",
+                name="t",
+                expr=fn("clip", col("irpm"), ex(binary(num(0), "-", col("cap"))), col("cap")),
+            ),
+            "df = df.with_columns(\n"
+            '    pl.col("irpm").clip(pl.lit(0) - pl.col("cap"), pl.col("cap")).alias("t")\n'
+            ")",
+        ),
+        (
+            step("c", "with_column", name="t", expr=fn("clip", col("x"), _CAP, var("top"))),
+            'df = df.with_columns(pl.col("x").clip(global_constants.cap, top).alias("t"))',
+        ),
+        (
+            step("f", "with_column", name="t", expr=fn("fill_null", col("a"), col("b"))),
+            'df = df.with_columns(pl.col("a").fill_null(pl.col("b")).alias("t"))',
+        ),
+        (
+            step("f", "with_column", name="t", expr=fn("clip", col("a"), num(-1), num(1))),
+            'df = df.with_columns(pl.col("a").clip(-1, 1).alias("t"))',
+        ),
     ],
     ids=[
         "filtered-sum",
@@ -2780,11 +2804,16 @@ _WEB = [cond("channel", "eq", value=text("web"))]
         "filtered-ordered-first",
         "filtered-sum-of-a-formula",
         "running-total-of-a-function",
+        "clip-between-column-bounds",
+        "clip-by-a-constant-and-a-variable",
+        "fill-null-from-a-column",
+        "clip-between-plain-values",
     ],
 )
 def test_expression_additions_render(kind_step: dict[str, Any], expected: str) -> None:
-    rendered = render_polars_steps([source(), kind_step], ["quotes"], start="input")
-    assert step_text(rendered, 1) == expected
+    top = step("v", "variable", name="top", value=num(2))
+    rendered = render_polars_steps([source(), top, kind_step], ["quotes"], start="input")
+    assert step_text(rendered, 2) == expected
 
 
 @pytest.mark.parametrize(
@@ -2817,6 +2846,19 @@ def test_expression_additions_render(kind_step: dict[str, Any], expected: str) -
         (window("t", "sum", None, []), "needs a value to aggregate: a column or an expression"),
         (window("t", "sum", num(1), []), "value must be a column or an expression"),
         (window("t", "mean", var("rate"), []), "value must be a column or an expression"),
+        (
+            step("c", "with_column", name="t", expr=fn("clip", col("a"), text("low"), num(1))),
+            "clip argument 1 must be a number, a column, a variable, a constant or an expression",
+        ),
+        (
+            step("c", "with_column", name="t", expr=fn("fill_null", col("a"), null())),
+            "must be a number, text or true/false, a column, a variable, a constant or an "
+            "expression",
+        ),
+        (
+            step("r", "with_column", name="t", expr=fn("round", col("a"), col("places"))),
+            "round argument 1 must be a plain value or a constant",
+        ),
     ],
     ids=[
         "positional-aggregate",
@@ -2827,6 +2869,9 @@ def test_expression_additions_render(kind_step: dict[str, Any], expected: str) -
         "sum-without-a-value",
         "literal-value",
         "variable-value",
+        "clip-to-text",
+        "fill-null-with-null",
+        "round-to-a-column",
     ],
 )
 def test_expression_additions_reject(kind_step: dict[str, Any], fragment: str) -> None:
@@ -2885,6 +2930,48 @@ def test_a_window_aggregates_an_expression() -> None:
     assert out["web_loaded"].to_list() == [1.0, 1.0, 25.0]
 
 
+def test_clip_and_fill_null_take_columns_and_expressions() -> None:
+    frame = pl.DataFrame(
+        {
+            "irpm": [0.4, -0.4, 0.1, None],
+            "cap": [0.25, 0.25, 0.25, 0.25],
+            "quoted": [None, 2.0, None, 4.0],
+            "fallback": [1.0, 1.0, 3.0, 3.0],
+        }
+    )
+    out = _run_steps(
+        [
+            source(),
+            step(
+                "c",
+                "with_column",
+                name="capped",
+                expr=fn("clip", col("irpm"), ex(binary(num(0), "-", col("cap"))), col("cap")),
+            ),
+            step(
+                "f",
+                "with_column",
+                name="filled",
+                expr=fn("fill_null", col("quoted"), ex(binary(col("fallback"), "*", num(2)))),
+            ),
+        ],
+        frame,
+    )
+    assert out["capped"].to_list() == [0.25, -0.25, 0.1, None]
+    assert out["filled"].to_list() == [2.0, 2.0, 6.0, 4.0]
+
+
+def test_a_constant_in_an_operand_argument_is_checked_against_the_argument_types() -> None:
+    rendered = render_polars_steps(
+        [source(), step("c", "with_column", name="t", expr=fn("fill_null", col("a"), _CAP))],
+        ["quotes"],
+        start="input",
+    )
+    [reference] = rendered.constant_references
+    assert (reference.step_index, reference.name) == (1, "cap")
+    assert reference.types == ("integer", "float", "text", "boolean")
+
+
 def test_generated_expression_additions_stay_inside_the_lineage_model() -> None:
     """Each addition's generated shape is one the lineage and cardinality models prove."""
     from haute._column_lineage import analyze_polars_cardinality, analyze_polars_lineage
@@ -2902,6 +2989,15 @@ def test_generated_expression_additions_stay_inside_the_lineage_model() -> None:
         "window of a formula": (
             window("t", "sum", ex(binary(col("premium"), "*", col("qid"))), ["region"]),
             {"premium", "qid", "region"},
+        ),
+        "clip between columns": (
+            step(
+                "c",
+                "with_column",
+                name="t",
+                expr=fn("clip", col("premium"), ex(binary(num(0), "-", col("qid"))), col("qid")),
+            ),
+            {"premium", "qid"},
         ),
     }
     for name, (kind_step, demanded) in cases.items():
