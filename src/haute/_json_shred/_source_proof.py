@@ -432,8 +432,11 @@ def files_signature(files: Sequence[Path]) -> str:
     removing, renaming or rewriting any one of them changes it; each file is hashed once
     per unchanged freshness token, as a single file is.
     """
+    # Imported here: haute._cache imports this module.
+    from haute._cache import canonical_json
+
     entries = [[str(file), file_signature(file).source_signature] for file in files]
-    digest = content_hash_bytes(json.dumps(entries).encode("utf-8"))
+    digest = content_hash_bytes(canonical_json(entries).encode("utf-8"))
     return f"{HASH_ALGO}-files:{digest}:{len(entries)}"
 
 
