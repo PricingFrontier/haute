@@ -750,9 +750,12 @@ function WindowEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { ty
           />
         </span>
         {expr.of && (
-          <>
-            <Words>of</Words>
-            <span className={`flex-1 min-w-0 ${expr.of.kind === "expr" ? "basis-full" : "basis-28"}`}>
+          // An expression's editor takes the full width, so its "of" starts the line with it.
+          <span className={`flex flex-1 min-w-0 gap-1.5 ${expr.of.kind === "expr" ? "basis-full items-start" : "basis-28 items-center"}`}>
+            <span className={expr.of.kind === "expr" ? "pt-1" : undefined}>
+              <Words>of</Words>
+            </span>
+            <span className="flex-1 min-w-0">
               <OperandField
                 value={expr.of}
                 onChange={(of) => onChange({ ...expr, of })}
@@ -764,7 +767,7 @@ function WindowEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { ty
                 renderExpression={nestedExpression(ctx, depth + 1)}
               />
             </span>
-          </>
+          </span>
         )}
       </Sentence>
       {expr.agg === "quantile" && <QuantileField value={expr.quantile} onChange={(quantile) => onChange({ ...expr, quantile })} ariaLabel="Window quantile" />}
