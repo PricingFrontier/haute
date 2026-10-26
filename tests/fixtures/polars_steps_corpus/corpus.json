@@ -54,6 +54,15 @@
     "code": "df = claims.filter((pl.col('amount') > 0) & (pl.col('status') != 'declined'))\ndf = df.with_columns(pl.col('amount').log().alias('log_amount'), pl.col('amount').log(10).alias('log10_amount'))"
   },
   {
+    "id": "capped_schedule_load",
+    "category": "numeric",
+    "description": "Total the schedule loadings (claims, no-claims years and a young or older driver), skipping any that are missing, and keep the total within plus or minus the cap.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "df = quotes.with_columns(pl.lit(0.2).alias('load_cap'))\ndf = df.with_columns(pl.sum_horizontal(pl.col('claims_count') * 0.1, pl.col('ncd_years') * -0.03, pl.when(pl.col('age') < 25).then(0.15).when(pl.col('age') >= 70).then(0.05)).clip(-pl.col('load_cap'), pl.col('load_cap')).alias('schedule_load')).drop('load_cap')"
+  },
+  {
     "id": "underwriting_decision",
     "category": "conditional",
     "description": "Route quotes to decline, referral, missing-price review or acceptance using ordered underwriting rules.",
@@ -241,6 +250,15 @@
       "quotes"
     ],
     "code": "df = quotes.with_columns(pl.col('premium').shift(1).over('policy_id', order_by=['start_date', 'quote_id']).alias('previous_premium'))\ndf = df.with_columns((pl.col('premium') - pl.col('previous_premium')).alias('premium_change')).sort(['policy_id', 'start_date', 'quote_id'])"
+  },
+  {
+    "id": "direct_rate_per_thousand",
+    "category": "window",
+    "description": "Blend the direct channels' premium rate per £1,000 insured within each policy: the web and phone quotes' total premium over their total sum insured, missing where they insure nothing.",
+    "inputs": [
+      "quotes"
+    ],
+    "code": "direct = pl.col('channel').is_in(['web', 'phone'])\ndf = quotes.with_columns(pl.col('premium').filter(direct).sum().over('policy_id').alias('direct_premium'), (pl.col('sum_insured') / 1000).filter(direct).sum().over('policy_id').alias('direct_thousands'))\ndf = df.with_columns(pl.when(pl.col('direct_thousands') != 0).then(pl.col('direct_premium') / pl.col('direct_thousands')).alias('direct_rate_per_thousand')).drop('direct_premium', 'direct_thousands')"
   },
   {
     "id": "attach_regional_rates",

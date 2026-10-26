@@ -3886,5 +3886,258 @@
       }
     ],
     "note": "row numbers follow the preceding sort, as in the original"
+  },
+  "direct_rate_per_thousand": {
+    "steps": [
+      {
+        "id": "s340",
+        "kind": "source",
+        "input": "quotes"
+      },
+      {
+        "id": "s341",
+        "kind": "with_column",
+        "name": "direct_rate_per_thousand",
+        "expr": {
+          "type": "function",
+          "fn": "divide",
+          "operand": {
+            "kind": "expr",
+            "expr": {
+              "type": "window",
+              "agg": "sum",
+              "of": {
+                "kind": "column",
+                "name": "premium"
+              },
+              "over": [
+                "policy_id"
+              ],
+              "where": {
+                "match": "all",
+                "conditions": [
+                  {
+                    "column": "channel",
+                    "operator": "is_in",
+                    "values": [
+                      {
+                        "kind": "literal",
+                        "type": "text",
+                        "value": "web"
+                      },
+                      {
+                        "kind": "literal",
+                        "type": "text",
+                        "value": "phone"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          "args": [
+            {
+              "kind": "expr",
+              "expr": {
+                "type": "window",
+                "agg": "sum",
+                "of": {
+                  "kind": "expr",
+                  "expr": {
+                    "type": "binary",
+                    "left": {
+                      "kind": "column",
+                      "name": "sum_insured"
+                    },
+                    "op": "/",
+                    "right": {
+                      "kind": "literal",
+                      "type": "number",
+                      "value": 1000
+                    }
+                  }
+                },
+                "over": [
+                  "policy_id"
+                ],
+                "where": {
+                  "match": "all",
+                  "conditions": [
+                    {
+                      "column": "channel",
+                      "operator": "is_in",
+                      "values": [
+                        {
+                          "kind": "literal",
+                          "type": "text",
+                          "value": "web"
+                        },
+                        {
+                          "kind": "literal",
+                          "type": "text",
+                          "value": "phone"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "capped_schedule_load": {
+    "steps": [
+      {
+        "id": "s342",
+        "kind": "source",
+        "input": "quotes"
+      },
+      {
+        "id": "s343",
+        "kind": "with_column",
+        "name": "load_cap",
+        "expr": {
+          "type": "operand",
+          "operand": {
+            "kind": "literal",
+            "type": "number",
+            "value": 0.2
+          }
+        }
+      },
+      {
+        "id": "s344",
+        "kind": "with_column",
+        "name": "schedule_load",
+        "expr": {
+          "type": "function",
+          "fn": "clip",
+          "operand": {
+            "kind": "expr",
+            "expr": {
+              "type": "sum_horizontal",
+              "parts": [
+                {
+                  "kind": "expr",
+                  "expr": {
+                    "type": "binary",
+                    "left": {
+                      "kind": "column",
+                      "name": "claims_count"
+                    },
+                    "op": "*",
+                    "right": {
+                      "kind": "literal",
+                      "type": "number",
+                      "value": 0.1
+                    }
+                  }
+                },
+                {
+                  "kind": "expr",
+                  "expr": {
+                    "type": "binary",
+                    "left": {
+                      "kind": "column",
+                      "name": "ncd_years"
+                    },
+                    "op": "*",
+                    "right": {
+                      "kind": "literal",
+                      "type": "number",
+                      "value": -0.03
+                    }
+                  }
+                },
+                {
+                  "kind": "expr",
+                  "expr": {
+                    "type": "conditional",
+                    "branches": [
+                      {
+                        "match": "all",
+                        "conditions": [
+                          {
+                            "column": "age",
+                            "operator": "lt",
+                            "value": {
+                              "kind": "literal",
+                              "type": "number",
+                              "value": 25
+                            }
+                          }
+                        ],
+                        "then": {
+                          "kind": "literal",
+                          "type": "number",
+                          "value": 0.15
+                        }
+                      },
+                      {
+                        "match": "all",
+                        "conditions": [
+                          {
+                            "column": "age",
+                            "operator": "ge",
+                            "value": {
+                              "kind": "literal",
+                              "type": "number",
+                              "value": 70
+                            }
+                          }
+                        ],
+                        "then": {
+                          "kind": "literal",
+                          "type": "number",
+                          "value": 0.05
+                        }
+                      }
+                    ],
+                    "otherwise": {
+                      "kind": "literal",
+                      "type": "null",
+                      "value": null
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "args": [
+            {
+              "kind": "expr",
+              "expr": {
+                "type": "binary",
+                "left": {
+                  "kind": "literal",
+                  "type": "number",
+                  "value": 0
+                },
+                "op": "-",
+                "right": {
+                  "kind": "column",
+                  "name": "load_cap"
+                }
+              }
+            },
+            {
+              "kind": "column",
+              "name": "load_cap"
+            }
+          ]
+        }
+      },
+      {
+        "id": "s345",
+        "kind": "drop",
+        "columns": [
+          "load_cap"
+        ]
+      }
+    ]
   }
 }
