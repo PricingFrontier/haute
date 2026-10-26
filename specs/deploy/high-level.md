@@ -110,7 +110,10 @@ name is ignored. A quote must give every column the schema names: one that leave
 factor is refused, naming the quote and the column, on every target, rather than priced as if
 the factor were missing. The exception is an exposure that one of the pipeline's models applies
 through a log link (the manifest's `omittable_inputs`): a quote may leave it out and is priced
-for a full policy term. A value sent as null is a null of the declared type; no column is made
+for a full policy term. Databricks Model Serving parses a request's records into one pandas
+frame before `HauteModel.predict` runs, so a key's absence survives only as a whole column:
+the signature refuses a column every quote leaves out, and a quote that leaves out a column
+another quote in the same request gives reads as an explicit null. A value sent as null is a null of the declared type; no column is made
 non-nullable from the sample. A value is accepted only when the
 declared type holds it exactly:
 

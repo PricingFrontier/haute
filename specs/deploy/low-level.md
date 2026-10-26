@@ -562,7 +562,8 @@ workspace is reachable, and no answer fails as unreachable), creates an
 builds the manifest, writes it under `<pipeline_dir>/.haute_build/`, builds an MLflow
 `ModelSignature` from the resolved schemas (every input column required but those in
 `omittable_inputs`, so Model Serving refuses a request that leaves out a rating factor as a
-container does; `Categorical` and parameterised `Enum` map to
+container does, though only when every record leaves it out: MLflow frames the records before
+`predict`, and a key one record omits while another gives it arrives as a null; `Categorical` and parameterised `Enum` map to
 MLflow string; a workbench pipeline's struct and list columns to a `Map` of `AnyType` and an
 `Array` of them; genuinely unrepresentable Polars types, a `Decimal` among them, fail
 loudly, and a column holding a 128-bit integer fails with the cast that fixes it,

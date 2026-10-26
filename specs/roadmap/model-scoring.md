@@ -81,7 +81,12 @@ change existing MLflow-source trust behaviour.
 
 The input signature must describe supported named tabular columns; an absent
 or unsupported signature is refused. Offsets come only from a feature
-contract, as for a registry pyfunc. The package digest
+contract, as for a registry pyfunc. Pyfunc scoring from any source reads a
+signature input marked optional (`ColSpec.required` false) as optional, passing
+it when the input has it: today `_extract_pyfunc_features` reads every
+signature input as required, so a Haute model's logged pyfunc artifact, chosen
+by its artifact path, refuses a quote without an exposure that its native
+artifact prices as a full policy term. The package digest
 covers sorted relative file names and their bytes, including `MLmodel`, code,
 pickles, data and requirement files; added and removed files change it too.
 All package members and local model, artifact and code paths declared by
@@ -104,7 +109,9 @@ before implementation.
 
 **Acceptance:** Explicitly trusted pyfunc regressor and classifier packages
 score in the preview, in a standalone run and in a deployed bundle, with
-predictions equal to the model's own `predict`. A harmless fixture records
+predictions equal to the model's own `predict`. A Haute model scored through
+its logged pyfunc artifact, given input without its exposure, prices as its
+native artifact does. A harmless fixture records
 whether its deserialization hook or `load_context` ran: browsing and
 inspection leave both untouched, and absent or mismatched trust refuses
 scoring and bundling without running either. Verify this with warm model and
