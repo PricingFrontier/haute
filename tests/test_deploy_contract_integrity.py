@@ -642,8 +642,9 @@ class TestFeatureContractBundled:
             cached = _artifact_cache_path(
                 tmp_path / ".cache" / "models", _auto_backend_digest(), run_id, source.name
             )
-            cached.parent.mkdir(parents=True, exist_ok=True)
-            cached.write_bytes(source.read_bytes())
+            target = tmp_path / cached.relative_to(tmp_path.resolve())
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read_bytes())
 
     def test_training_writes_contract_next_to_model(
         self,

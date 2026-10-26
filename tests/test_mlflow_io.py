@@ -1817,7 +1817,7 @@ class TestLoadMlflowModelFastCache:
             "model.feature_contract.json",
         )
         contract.parent.mkdir(parents=True)
-        contract.write_bytes(b"{}")
+        (tmp_path / contract.relative_to(tmp_path.resolve())).write_bytes(b"{}")
         fake_sm = ScoringModel(MagicMock(), ["a"], frozenset(), "catboost")
 
         with (
