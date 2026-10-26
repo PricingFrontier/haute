@@ -423,7 +423,7 @@ def test_the_databricks_model_hands_the_quote_input_its_records(sample):
     graph = _graph(sample)
     frame = pd.DataFrame(QUOTES)
 
-    request = _request(graph, ["request"], frame, {})
+    request = _request(graph, ["request"], frame, {}, frozenset())
 
     assert isinstance(request, QuoteRequest)
     assert [record["drivers"] for record in request.records] == [q["drivers"] for q in QUOTES]

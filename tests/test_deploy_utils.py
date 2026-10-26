@@ -159,6 +159,7 @@ class TestGetHauteVersion:
 # ---------------------------------------------------------------------------
 
 _EXPECTED_KEYS = {
+    "omittable_inputs",
     "haute_version",
     "pipeline_name",
     "pipeline_file",

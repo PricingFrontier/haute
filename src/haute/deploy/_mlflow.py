@@ -368,7 +368,7 @@ def _build_signature(resolved: ResolvedDeploy) -> object:
             raise unsupported(col_name, dtype_str)
         return DataType[name]
 
-    def _to_colspecs(schema: dict[str, str]) -> list[ColSpec]:
+    def _to_colspecs(schema: dict[str, str], omittable: frozenset[str]) -> list[ColSpec]:
         specs = []
         for col_name, dtype_str in schema.items():
             try:
@@ -381,11 +381,15 @@ def _build_signature(resolved: ResolvedDeploy) -> object:
                 )
             kind = mlflow_type(dtype, col_name=col_name, dtype_str=dtype_str)
             table = isinstance(dtype, pl.Struct | pl.List)
-            specs.append(ColSpec(type=kind, name=col_name, required=not table))
+            # A quote may leave out an exposure (a full policy term), never a rating factor.
+            optional = table or col_name in omittable
+            specs.append(ColSpec(type=kind, name=col_name, required=not optional))
         return specs
 
-    input_schema = Schema(_to_colspecs(resolved.input_schema))  # type: ignore[arg-type]
-    output_schema = Schema(_to_colspecs(resolved.output_schema))  # type: ignore[arg-type]
+    input_schema = Schema(
+        _to_colspecs(resolved.input_schema, frozenset(resolved.omittable_inputs))  # type: ignore[arg-type]
+    )
+    output_schema = Schema(_to_colspecs(resolved.output_schema, frozenset()))  # type: ignore[arg-type]
     return ModelSignature(inputs=input_schema, outputs=output_schema)
 
 

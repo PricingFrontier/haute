@@ -35,6 +35,7 @@ def _request(
     input_node_ids: list[str],
     model_input: pd.DataFrame,
     input_schema: dict[str, Any],
+    omittable: frozenset[str],
 ) -> DeployInput:
     """The request as the pipeline's request input takes it.
 
@@ -43,8 +44,8 @@ def _request(
     tables do not name, and fail on one of mixed types, before the reader could leave it
     unread, where the signature lets any value through (specs/workbench). Any other
     request input takes a frame typed by its declared *input_schema*, as a container's
-    request is: pandas has no typed null, so a missing value (``NaN``, ``NaT``, ``NA``) is a
-    null first.
+    request is, leaving out only the *omittable* columns: pandas has no typed null, so a
+    missing value (``NaN``, ``NaT``, ``NA``) is a null first.
     """
     from haute.deploy._request_frame import frame_rows
     from haute.deploy._scorer import QuoteRequest, reads_records
@@ -56,7 +57,7 @@ def _request(
         {key: None if _missing(value) else value for key, value in record.items()}
         for record in records
     ]
-    return frame_rows(present, input_schema)
+    return frame_rows(present, input_schema, omittable=omittable)
 
 
 def _missing(value: object) -> bool:
@@ -109,6 +110,12 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
             if reads_records(self._graph, self._input_node_ids)
             else request_frame_schema(self._manifest["input_schema"])
         )
+        # The columns a quote may leave out: its exposures, priced as a full policy term.
+        self._omittable = (
+            frozenset()
+            if reads_records(self._graph, self._input_node_ids)
+            else frozenset(self._manifest["omittable_inputs"])
+        )
 
         manifest_artifacts = set(self._manifest.get("artifacts", {}))
         missing_artifacts = sorted(manifest_artifacts - set(context.artifacts))
@@ -139,7 +146,11 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
         try:
             with execution_context.stage("deploy_from_pandas"):
                 input_df = _request(
-                    self._graph, self._input_node_ids, model_input, self._input_schema
+                    self._graph,
+                    self._input_node_ids,
+                    model_input,
+                    self._input_schema,
+                    self._omittable,
                 )
             execution_context.checkpoint(label="after_deploy_from_pandas")
             result = score_graph(

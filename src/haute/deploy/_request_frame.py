@@ -2,9 +2,11 @@
 
 The request is typed by the columns and types the deploy recorded from the sample, never by
 inference from the JSON values, so it types its columns as the dry run and the test quotes
-did. A key the schema does not name is ignored; a column a quote leaves out is a typed null.
-A value its declared type does not hold is refused naming the column and the quote
-(:func:`haute._json_values.json_value` has the rules).
+did. A key the schema does not name is ignored, and an explicit null is a typed null. A
+column a quote leaves out is refused, naming the quote and the column, unless it is an
+exposure (the manifest's ``omittable_inputs``): a quote without one is priced for a full
+policy term. A value its declared type does not hold is refused naming the column and the
+quote (:func:`haute._json_values.json_value` has the rules).
 """
 
 from __future__ import annotations
@@ -41,18 +43,32 @@ def request_frame_schema(input_schema: Mapping[str, str]) -> dict[str, pl.DataTy
 
 
 def frame_rows(
-    rows: Sequence[Mapping[str, Any]], schema: Mapping[str, pl.DataType]
+    rows: Sequence[Mapping[str, Any]],
+    schema: Mapping[str, pl.DataType],
+    *,
+    omittable: frozenset[str],
 ) -> pl.DataFrame:
     """*rows*, a request's quotes, as one frame of *schema*'s columns and types.
 
+    A quote may leave out only the *omittable* columns (exposures).
+
     Raises:
-        QuoteInputError: a quote is not an object, or a value does not fit its column.
+        QuoteInputError: a quote is not an object, leaves out a column it must give, or
+            holds a value that does not fit its column.
     """
     columns: dict[str, list[Any]] = {name: [] for name in schema}
     for index, row in enumerate(rows):
         if not isinstance(row, Mapping):
             raise QuoteInputError(f"Quote {index} is not an object.", column=None, quote=index)
         for name, dtype in schema.items():
+            if name not in row and name not in omittable:
+                raise QuoteInputError(
+                    f"Quote {index} has no {name!r}. Every quote gives each column the input "
+                    "names (null for a value it does not have); only an exposure may be left "
+                    "out, priced as a full policy term.",
+                    column=name,
+                    quote=index,
+                )
             value = row.get(name)
             try:
                 columns[name].append(json_value(value, dtype))

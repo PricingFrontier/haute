@@ -264,6 +264,7 @@ def _load_app(
         "output_node_id": "quotes",
         # The quotes these tests send: {"age": 30}.
         "input_schema": {"age": "Int64"},
+        "omittable_inputs": [],
         "request_rows": {"multi_quote": "in_request_order", "refusals": [], "checked_lookups": []},
         "artifacts": {},
         "output_fields": None,

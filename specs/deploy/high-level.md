@@ -106,8 +106,12 @@ type would otherwise be answered without it ([JSON shredding](../json-shredding/
 Any other Quote Input reads the request as one frame typed by the input schema the manifest
 records (the sample file's columns and types), never by inference from the JSON values, so a
 request types its columns as the dry run and the test quotes do. A key the schema does not
-name is ignored, and a column a quote leaves out, or sends as null, is a null of the declared
-type; no column is made non-nullable from the sample. A value is accepted only when the
+name is ignored. A quote must give every column the schema names: one that leaves out a rating
+factor is refused, naming the quote and the column, on every target, rather than priced as if
+the factor were missing. The exception is an exposure that one of the pipeline's models applies
+through a log link (the manifest's `omittable_inputs`): a quote may leave it out and is priced
+for a full policy term. A value sent as null is a null of the declared type; no column is made
+non-nullable from the sample. A value is accepted only when the
 declared type holds it exactly:
 
 | Declared type | Accepts |

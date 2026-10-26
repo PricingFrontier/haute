@@ -37,7 +37,7 @@ EXACT = 2**53
 
 
 def _framed(dtype: pl.DataType, value: object) -> Any:
-    return frame_rows([{"x": value}], {"x": dtype})["x"][0]
+    return frame_rows([{"x": value}], {"x": dtype}, omittable=frozenset())["x"][0]
 
 
 @pytest.mark.parametrize(
@@ -116,27 +116,50 @@ def test_a_zoned_date_time_keeps_its_instant() -> None:
     assert framed.isoformat() == "2024-05-01T09:30:00+00:00"
 
 
-def test_typed_nulls_keep_the_declared_type_and_unknown_keys_are_ignored() -> None:
+def test_explicit_nulls_keep_the_declared_type_and_unknown_keys_are_ignored() -> None:
     schema = {"age": pl.Int64(), "region": pl.String(), "start": pl.Date()}
 
-    frame = frame_rows([{"age": None, "extra": 1}, {"region": "N"}], schema)
+    frame = frame_rows(
+        [
+            {"age": None, "region": None, "start": None, "extra": 1},
+            {"age": 30, "region": "N", "start": None},
+        ],
+        schema,
+        omittable=frozenset(),
+    )
 
     assert frame.schema == pl.Schema(schema)
     assert frame.to_dicts() == [
         {"age": None, "region": None, "start": None},
-        {"age": None, "region": "N", "start": None},
+        {"age": 30, "region": "N", "start": None},
     ]
+
+
+def test_a_quote_leaving_out_a_rating_factor_is_refused_but_not_its_exposure() -> None:
+    """A missing factor is a client's mistake; a missing exposure is a full policy term."""
+    schema = {"age": pl.Int64(), "exposure": pl.Float64()}
+
+    with pytest.raises(QuoteInputError, match="Quote 1 has no 'age'") as refused:
+        frame_rows(
+            [{"age": 30, "exposure": 1.0}, {"exposure": 0.5}],
+            schema,
+            omittable=frozenset({"exposure"}),
+        )
+    assert (refused.value.column, refused.value.quote) == ("age", 1)
+
+    frame = frame_rows([{"age": 30}], schema, omittable=frozenset({"exposure"}))
+    assert frame.to_dicts() == [{"age": 30, "exposure": None}]
 
 
 def test_a_mixed_list_is_refused_at_the_quote_that_breaks_it() -> None:
     with pytest.raises(QuoteInputError) as refused:
-        frame_rows([{"age": 30}, {"age": "30"}], {"age": pl.Int64()})
+        frame_rows([{"age": 30}, {"age": "30"}], {"age": pl.Int64()}, omittable=frozenset())
     assert (refused.value.column, refused.value.quote) == ("age", 1)
 
 
 def test_a_quote_that_is_not_an_object_is_refused() -> None:
     with pytest.raises(QuoteInputError, match="Quote 0 is not an object"):
-        frame_rows([30], {"age": pl.Int64()})  # type: ignore[list-item]
+        frame_rows([30], {"age": pl.Int64()}, omittable=frozenset())  # type: ignore[list-item]
 
 
 def test_a_type_a_json_request_cannot_carry_refuses_the_deploy() -> None:
@@ -197,13 +220,14 @@ def _graph() -> PipelineGraph:
     )
 
 
-def _manifest() -> dict[str, Any]:
+def _manifest(omittable: list[str] | None = None) -> dict[str, Any]:
     return {
         "polars_version": pl.__version__,
         "pruned_graph": _graph().model_dump(mode="json"),
         "input_node_ids": ["quotes"],
         "output_node_id": "out",
         "input_schema": SCHEMA,
+        "omittable_inputs": omittable or [],
         "request_rows": RequestRows(multi_quote="in_request_order").to_manifest(),
         "artifacts": {},
         "output_fields": None,
@@ -265,15 +289,21 @@ def test_the_container_types_a_quote_by_its_schema(tmp_path, monkeypatch):
 def test_the_container_s_batch_worker_frames_by_the_schema(tmp_path, monkeypatch):
     _module, client = _app(tmp_path, monkeypatch)
 
-    answered = client.post("/quote", json=[{"quote_id": 1, "age": 30}, {"quote_id": 2}])
-    refused = client.post("/quote", json=[{"quote_id": 1, "age": 30}, {"quote_id": "2"}])
+    answered = client.post(
+        "/quote", json=[{"quote_id": 1, "age": 30}, {"quote_id": 2, "age": None}]
+    )
+    refused = client.post("/quote", json=[{"quote_id": 1, "age": 30}, {"quote_id": "2", "age": 1}])
+    left_out = client.post("/quote", json=[{"quote_id": 1, "age": 30}, {"quote_id": 2}])
 
     assert answered.status_code == 200, answered.text
     assert answered.json()["rows"] == [
         {"quote_id": 1, "age": 30.0, "rate": 60.0},
-        # A missing age is a null Float64: the answer leaves its nulls out.
+        # A null age is a null Float64: the answer leaves its nulls out.
         {"quote_id": 2},
     ]
+    # A quote that leaves out a rating factor is refused, naming it.
+    assert left_out.status_code == 422, left_out.text
+    assert (left_out.json()["column"], left_out.json()["quote"]) == ("age", 1)
     assert refused.status_code == 422, refused.text
     assert (refused.json()["error_code"], refused.json()["column"], refused.json()["quote"]) == (
         "quote_input_invalid",
@@ -394,3 +424,13 @@ def test_the_databricks_model_frames_by_the_schema(tmp_path):
     with pytest.raises(QuoteInputError) as refused:
         model.predict(MagicMock(), pd.DataFrame({"quote_id": [1.9], "age": [30.0]}))
     assert refused.value.column == "quote_id"
+    # A rating factor left out of the request (MLflow passes an optional column's
+    # absence through) is refused as the container refuses it; an exposure is not.
+    with pytest.raises(QuoteInputError, match="Quote 0 has no 'age'"):
+        model.predict(MagicMock(), pd.DataFrame({"quote_id": [1]}))
+    manifest_path.write_text(json.dumps(_manifest(omittable=["age"])), encoding="utf-8")
+    exposed = HauteModel()
+    exposed.load_context(context)
+    assert pl.from_pandas(
+        exposed.predict(MagicMock(), pd.DataFrame({"quote_id": [1]}))
+    ).to_dicts() == [{"quote_id": 1, "age": None, "rate": None}]

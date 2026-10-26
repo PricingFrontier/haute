@@ -436,6 +436,8 @@ _input_node_ids = _manifest["input_node_ids"]
 _reads_quotes = reads_records(_pruned_graph, _input_node_ids)
 # A flat Quote Input's rows are typed by the schema its sample recorded, never inferred.
 _request_schema = {{}} if _reads_quotes else request_frame_schema(_manifest["input_schema"])
+# The columns a quote may leave out: its exposures, priced as a full policy term.
+_omittable = frozenset() if _reads_quotes else frozenset(_manifest["omittable_inputs"])
 _output_node_id = _manifest["output_node_id"]
 # Whether a request of several quotes is answered in request order, or refused.
 _request_rows = RequestRows.from_manifest(_manifest["request_rows"])
@@ -681,6 +683,7 @@ async def _quote_batch(request: Request, rows: list):
             output_fields=_output_fields,
             input_schema=None if _reads_quotes else _request_schema,
             request_rows=_request_rows,
+            omittable_inputs=_omittable,
         )
         outcome = await run_isolated_worker_async(
             score_batch_worker,
@@ -850,7 +853,11 @@ async def quote(request: Request) -> JSONResponse:
     # The body is size-capped, so a single quote is framed before anything is admitted:
     # a value its column does not hold is refused without holding a context.
     try:
-        input_df = QuoteRequest(tuple(rows)) if _reads_quotes else frame_rows(rows, _request_schema)
+        input_df = (
+            QuoteRequest(tuple(rows))
+            if _reads_quotes
+            else frame_rows(rows, _request_schema, omittable=_omittable)
+        )
     except HauteError as exc:
         if is_public_contract_error(exc):
             return JSONResponse(status_code=422, content=exc.to_payload())

@@ -382,6 +382,7 @@ class TestHauteModelEdgeCases:
             "input_node_ids": ["src"],
             "output_node_id": "out",
             "input_schema": {},
+            "omittable_inputs": [],
             "request_rows": {
                 "multi_quote": "in_request_order",
                 "refusals": [],
@@ -423,6 +424,7 @@ class TestHauteModelEdgeCases:
             "input_node_ids": ["src"],
             "output_node_id": "out",
             "input_schema": {},
+            "omittable_inputs": [],
             "request_rows": {
                 "multi_quote": "in_request_order",
                 "refusals": [],
@@ -453,6 +455,7 @@ class TestHauteModelEdgeCases:
         model._artifact_paths = {}
         model._output_fields = None
         model._request_rows = RequestRows("in_request_order")
+        model._omittable = frozenset()
         model._input_schema = {"a": pl.Int64(), "b": pl.Float64()}
 
         input_pd = pd.DataFrame({"a": [1, 2], "b": [3.0, 4.0]})

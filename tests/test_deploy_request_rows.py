@@ -249,6 +249,7 @@ def test_the_databricks_model_answers_in_request_order_or_quote_by_quote(tmp_pat
             "input_node_ids": ["quotes"],
             "output_node_id": "out",
             "input_schema": QUOTE_SCHEMA,
+            "omittable_inputs": [],
             "output_fields": None,
             "request_rows": rows.to_manifest(),
             "artifacts": dict.fromkeys(remap, ""),
@@ -837,6 +838,7 @@ def _load_app(tmp_path: Path, rows: RequestRows, graph: PipelineGraph) -> Any:
         "input_node_ids": ["quotes"],
         "output_node_id": "out",
         "input_schema": QUOTE_SCHEMA,
+        "omittable_inputs": [],
         "request_rows": rows.to_manifest(),
         "artifacts": {},
         "output_fields": None,
@@ -880,8 +882,14 @@ def test_the_container_shows_the_record_and_names_a_quote_a_batch_cannot_answer(
     monkeypatch.setattr(module, "run_isolated_worker_async", in_process)
     client = TestClient(module.app)
 
-    response = client.post("/quote", json=[{"quote_id": 1, "age": 30}, {"quote_id": 2, "age": 31}])
-    answered = client.post("/quote", json=[{"quote_id": 1, "age": 40}, {"quote_id": 2, "age": 31}])
+    response = client.post(
+        "/quote",
+        json=[{"quote_id": 1, "region": "N", "age": 30}, {"quote_id": 2, "region": "S", "age": 31}],
+    )
+    answered = client.post(
+        "/quote",
+        json=[{"quote_id": 1, "region": "N", "age": 40}, {"quote_id": 2, "region": "S", "age": 31}],
+    )
 
     assert client.get("/health").json()["request_rows"] == SORTED.to_manifest()
     assert answered.status_code == 200, answered.text

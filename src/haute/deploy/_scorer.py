@@ -362,6 +362,35 @@ def _attach_bundled_feature_contracts(
     return graph.model_copy(update={"nodes": nodes})
 
 
+def omittable_request_columns(
+    graph: PipelineGraph, artifact_paths: Mapping[str, str], input_schema: Mapping[str, Any]
+) -> list[str]:
+    """The request columns a quote may leave out: each bundled model's exposure it carries.
+
+    A quote without an exposure (a log-link offset) is priced for a full policy term;
+    every other column the request names is a rating factor a quote must give. The
+    offset is read from the model as it is served, bound to its bundled contract.
+    """
+    remap = dict(artifact_paths)
+    columns: set[str] = set()
+    for node in graph.nodes:
+        config = node.data.config
+        if node.data.nodeType != NodeType.MODEL_SCORE:
+            continue
+        model_path = _remap_artifact(node.id, config, remap, model_artifact_field(config))
+        if model_path is None:
+            continue
+        scoring_model = load_local_model_cached(
+            model_path,
+            config.get("task", "regression"),
+            _bundled_contract_path(node.id, remap),
+        )
+        exposure = scoring_model.offset_column
+        if exposure is not None and scoring_model.offset_link == "log" and exposure in input_schema:
+            columns.add(exposure)
+    return sorted(columns)
+
+
 def _attach_bundled_model_contract_inputs(
     graph: PipelineGraph,
     remap: dict[str, str],

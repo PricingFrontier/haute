@@ -132,6 +132,7 @@ class TestHauteModelLoadContext:
             "input_node_ids": ["api_src"],
             "output_node_id": "out",
             "input_schema": {},
+            "omittable_inputs": [],
             "request_rows": {
                 "multi_quote": "in_request_order",
                 "refusals": [],
@@ -172,6 +173,7 @@ class TestHauteModelLoadContext:
             "input_node_ids": ["src"],
             "output_node_id": "out",
             "input_schema": {},
+            "omittable_inputs": [],
             "request_rows": {
                 "multi_quote": "in_request_order",
                 "refusals": [],
@@ -200,6 +202,7 @@ class TestHauteModelLoadContext:
             "input_node_ids": ["src"],
             "output_node_id": "out",
             "input_schema": {},
+            "omittable_inputs": [],
             "request_rows": {
                 "multi_quote": "in_request_order",
                 "refusals": [],
@@ -257,6 +260,7 @@ class TestHauteModelPredict:
         model._artifact_paths = {}
         model._output_fields = None
         model._request_rows = RequestRows("in_request_order")
+        model._omittable = frozenset()
         model._input_schema = {"x": pl.Float64(), "y": pl.Float64()}
 
         input_pd = pd.DataFrame({"x": [1.0, 2.0], "y": [3.0, 4.0]})
@@ -294,6 +298,7 @@ class TestHauteModelPredict:
         model._artifact_paths = {}
         model._output_fields = None
         model._request_rows = RequestRows("in_request_order")
+        model._omittable = frozenset()
         model._input_schema = {"x": pl.Float64()}
         admission_error = ExecutionAdmissionError(
             "deploy_pyfunc_predict",
@@ -342,6 +347,7 @@ class TestHauteModelPredict:
         model._artifact_paths = {}
         model._output_fields = None
         model._request_rows = RequestRows("in_request_order")
+        model._omittable = frozenset()
         model._input_schema = {"x": pl.Float64()}
 
         monkeypatch.setattr(
@@ -378,6 +384,7 @@ class TestHauteModelPredict:
         model._artifact_paths = {}
         model._output_fields = None
         model._request_rows = RequestRows("in_request_order")
+        model._omittable = frozenset()
         model._input_schema = {"x": pl.Float64()}
 
         class Result:
@@ -411,6 +418,7 @@ class TestHauteModelPredict:
         model._artifact_paths = {}
         model._output_fields = ["premium"]
         model._request_rows = RequestRows("in_request_order")
+        model._omittable = frozenset()
         model._input_schema = {"x": pl.Float64()}
 
         input_pd = pd.DataFrame({"x": [1.0]})
@@ -438,6 +446,7 @@ class TestHauteModelPredict:
         model._artifact_paths = {"model.pkl": "/served/model.pkl"}
         model._output_fields = None
         model._request_rows = RequestRows("in_request_order")
+        model._omittable = frozenset()
         model._input_schema = {"x": pl.Float64()}
 
         input_pd = pd.DataFrame({"x": [1.0]})
@@ -468,6 +477,7 @@ class TestHauteModelPredict:
         model._output_node_id = "output"
         model._output_fields = output_fields
         model._request_rows = RequestRows("in_request_order")
+        model._omittable = frozenset()
         model._input_schema = {
             "IDpol": pl.Int64(),
             "VehPower": pl.Int64(),
@@ -4825,7 +4835,7 @@ class TestBuildSignature:
             # The pandas frame MLflow hands ``predict`` after enforcing the signature, taken
             # as ``HauteModel.predict`` takes it: the records, for the reader.
             enforced = _enforce_schema(pd.DataFrame([quote]), signature.inputs)
-            request = _request(graph, ["request"], enforced, {})
+            request = _request(graph, ["request"], enforced, {}, frozenset())
             assert isinstance(request, QuoteRequest)
             frames = workbench_request_frames(config, request.records)
             return {name: frame.to_dicts() for name, frame in frames.items()}
@@ -4870,7 +4880,7 @@ class TestBuildSignature:
                 "items": [np.array([{"item_id": "Z", "value": np.float64(1.5)}], dtype=object)],
             }
         )
-        assert _request(graph, ["request"], by_hand, {}) == QuoteRequest(
+        assert _request(graph, ["request"], by_hand, {}, frozenset()) == QuoteRequest(
             (
                 {
                     "policy": {"limit": 100, "start": "2026-01-02"},
@@ -4891,9 +4901,9 @@ class TestBuildSignature:
             }
         )
         limits = pd.DataFrame({"limit": [100]})
-        assert _request(flat, ["quotes"], limits, {"limit": pl.Int64()}).to_dicts() == [
-            {"limit": 100}
-        ]
+        assert _request(
+            flat, ["quotes"], limits, {"limit": pl.Int64()}, frozenset()
+        ).to_dicts() == [{"limit": 100}]
 
     def test_all_numeric_types(self):
         """All supported numeric types should produce correct MLflow type mappings."""
@@ -5948,3 +5958,83 @@ class TestBugB10LexicographicVersionComparison:
         assert result == "11"
         # The bug: max(versions) without int() gives "9"
         assert max(versions) == "9"  # proves the bug exists in string comparison
+
+
+class TestOmittableRequestColumns:
+    """A quote may leave out a bundled model's exposure, and nothing else."""
+
+    def test_the_databricks_signature_requires_every_column_but_an_exposure(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        import mlflow
+        import pandas as pd
+        from mlflow.exceptions import MlflowException
+
+        from haute.deploy._mlflow import _build_signature
+        from haute.graph_utils import PipelineGraph
+        from tests._deploy_helpers import make_resolved_deploy
+
+        resolved = make_resolved_deploy(
+            pruned_graph=PipelineGraph(),
+            input_schema={"age": "Int64", "exposure": "Float64"},
+            output_schema={"premium": "Float64"},
+            omittable_inputs=["exposure"],
+        )
+        signature = _build_signature(resolved)
+        required = {spec.name: spec.required for spec in signature.inputs.inputs}
+        assert required == {"age": True, "exposure": False}
+        assert all(spec.required for spec in signature.outputs.inputs)
+
+        # Through MLflow's own enforcement, as Model Serving applies it.
+        class Echo(mlflow.pyfunc.PythonModel):
+            def predict(self, context, model_input, params=None):  # type: ignore[no-untyped-def]
+                del context, params
+                return model_input
+
+        from haute._mlflow_utils import mlflow_fluent_operation
+
+        with mlflow_fluent_operation():
+            mlflow.set_tracking_uri((tmp_path / "mlruns").as_uri())
+            with mlflow.start_run():
+                info = mlflow.pyfunc.log_model(
+                    name="echo", python_model=Echo(), signature=signature
+                )
+            served = mlflow.pyfunc.load_model(info.model_uri)
+        assert served.predict(pd.DataFrame({"age": [30]})).to_dict("records") == [{"age": 30}]
+        with pytest.raises(MlflowException, match="missing inputs"):
+            served.predict(pd.DataFrame({"exposure": [1.0]}))
+
+    def test_a_bundled_model_s_exposure_the_request_carries_is_omittable(self, monkeypatch):
+        from haute.deploy._scorer import omittable_request_columns
+        from haute.graph_utils import PipelineGraph
+
+        graph = PipelineGraph.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": node_id,
+                        "data": {
+                            "label": node_id,
+                            "nodeType": "modelScore",
+                            "config": {"sourceType": "file", "model_path": f"{node_id}.cbm"},
+                        },
+                    }
+                    for node_id in ("freq", "sev", "unbundled")
+                ]
+            }
+        )
+        models = {
+            "freq__freq.cbm": MagicMock(offset_column="exposure", offset_link="log"),
+            "sev__sev.cbm": MagicMock(offset_column="premium", offset_link="identity"),
+        }
+        monkeypatch.setattr(
+            "haute.deploy._scorer.load_local_model_cached",
+            lambda path, task, contract: models[path],
+        )
+        artifacts = {name: name for name in models}
+
+        carried = {"age": "Int64", "exposure": "Float64", "premium": "Float64"}
+        assert omittable_request_columns(graph, artifacts, carried) == ["exposure"]
+        # An exposure the request does not carry is nothing a quote can leave out.
+        assert omittable_request_columns(graph, artifacts, {"age": "Int64"}) == []

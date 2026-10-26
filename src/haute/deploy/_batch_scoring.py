@@ -81,6 +81,9 @@ class BatchScoreRequest:
     input_schema: dict[str, pl.DataType] | None = None
     # The deployment's record of how it answers several quotes; None for the dry run.
     request_rows: RequestRows | None = None
+    # The columns a served quote may leave out (its exposures); the dry run sends every
+    # column its sample holds.
+    omittable_inputs: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,7 +224,7 @@ def score_batch_scoring_request(
 
         if request.input_schema is None:
             raise ValueError("A flat Quote Input's batch needs its input schema to be framed.")
-        input_df = frame_rows(rows, request.input_schema)
+        input_df = frame_rows(rows, request.input_schema, omittable=request.omittable_inputs)
     execution_context.checkpoint(label="after_deploy_batch_dataframe")
 
     if answers_quote_by_quote(request.request_rows, input_df.height):
@@ -346,6 +349,7 @@ def prepare_batch_scoring(
     operation: str = "deploy_quote",
     input_schema: Mapping[str, pl.DataType] | None = None,
     request_rows: RequestRows | None = None,
+    omittable_inputs: frozenset[str] = frozenset(),
 ) -> BatchScorePlan:
     """Admit the parent batch context and stage the child's inputs on disk.
 
@@ -380,6 +384,7 @@ def prepare_batch_scoring(
                 result_path=str(Path(temp_dir) / "result.parquet"),
                 input_schema=dict(input_schema) if input_schema is not None else None,
                 request_rows=request_rows,
+                omittable_inputs=omittable_inputs,
             )
             worker_config = worker_config_for_memory_policy(
                 memory_limit_bytes=budget.memory_limit_bytes,

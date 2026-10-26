@@ -552,6 +552,8 @@ class ResolvedDeploy:
     artifact_digests: dict[str, str]
     """Each artefact's content digest, recorded before anything read it."""
     execution_policy: dict[str, Any] = field(default_factory=dict)
+    omittable_inputs: list[str] = field(default_factory=list)
+    """The request columns a quote may leave out: each bundled model's exposure."""
     removed_node_ids: list[str] = field(default_factory=list)
     snapshot_provenance: dict[str, dict[str, Any]] = field(default_factory=dict)
     model_sources: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -799,6 +801,9 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
                 # A flat Quote Input's request is framed by this schema: a type a JSON
                 # request cannot carry is refused before anything is built.
                 request_frame_schema(input_schema)
+            from haute.deploy._scorer import omittable_request_columns
+
+            omittable_inputs = omittable_request_columns(pruned_graph, artifact_paths, input_schema)
             # Plan the served batch strategy first: it needs only the one-row
             # sample, and a target that scores batches in process must refuse an
             # unprovable group-by before the schema dry-run tries to run one.
@@ -871,6 +876,7 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
         project_modules=project_modules,
         request_rows=rows,
         artifact_digests=artifact_digests,
+        omittable_inputs=omittable_inputs,
         execution_policy=execution_policy,
         removed_node_ids=removed_ids,
         snapshot_provenance=snapshot_provenance,
