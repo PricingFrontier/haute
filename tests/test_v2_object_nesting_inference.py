@@ -247,6 +247,18 @@ class TestInferenceIgnoresObjectBranching:
             "amount": "$[:].drivers[:].claims[:].amount"
         }
 
+    def test_one_object_holding_only_nulls_joins_the_list_table(self, tmp_path: Path) -> None:
+        # Its only evidence is a null field, which still belongs to the child table.
+        records = [{"id": 1, "drivers": [{"age": 30}]}, {"id": 2, "drivers": {"licence": None}}]
+        schema = infer_v2_schema_from_data(_write(tmp_path, records))
+
+        assert _table_paths(schema) == {"$[:]", "$[:].drivers[:]"}
+        assert _columns_of(schema, "$[:]") == {"id": "$[:].id"}
+        assert _columns_of(schema, "$[:].drivers[:]") == {
+            "age": "$[:].drivers[:].age",
+            "licence": "$[:].drivers[:].licence",
+        }
+
     def test_a_key_held_as_a_list_and_as_one_scalar_is_one_scalar_table(
         self, tmp_path: Path
     ) -> None:
