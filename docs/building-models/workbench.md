@@ -73,9 +73,9 @@ small mark beside the label on the sheets; for an Integer or a Decimal, its **fo
 the Explore pivot offers them; and, in an input table, its **default**, its
 **placeholder**, what an empty cell shows (any type but True/false and Date), and the
 rules an underwriter's value must meet: required, a range for a number, the allowed
-values. A number shows in its format wherever the sheets show it, a percentage as the
-value times 100, so you type 0.125 for 12.5%; while you type into a cell it shows as
-typed, and what is typed is what is saved and priced. Under each column's name, a line
+values. A number shows in its format wherever the sheets show it, and in its default, a
+percentage as the value times 100, so you type 0.125 for 12.5%; while you type into a cell
+or the default it shows as typed, and what is typed is what is saved and priced. Under each column's name, a line
 sums up what is set: required, its range and default, shown in its format, its allowed
 values, and a number's format and decimal places.
 

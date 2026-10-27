@@ -400,7 +400,8 @@ Out of scope:
   places and thousands separators, separators ticked under General making it a Number as
   an Explore pivot does; and, in an input table, its default in a one-row table (ticked or
   not for True/false, one of the allowed values while it has some, a date for a Date, else
-  typed), its placeholder for any type but
+  typed, a number's default and allowed values shown in its format, as a cell's are, and
+  the default as typed while it is typed in), its placeholder for any type but
   True/false and Date and its rules: required, a range for an Integer or a Decimal, and the
   allowed values for any type but True/false and Date, never typed in but read from a
   CSV in the pipeline folder's `files/params/`: its file chosen, then its column from the

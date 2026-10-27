@@ -784,6 +784,25 @@ describe("SchemaEditor", () => {
     commit(screen.getByRole("textbox", { name: "Default of exposure" }), "250,000")
     expect(within(tableNamed("policy_details")).queryByText(/has a default its rules refuse/)).toBeNull()
 
+    // A number in its column's format, as a cell shows it, and as typed while it is typed in.
+    fireEvent.change(screen.getByRole("combobox", { name: "Format of exposure" }), { target: { value: "currency_usd" } })
+    const exposure = screen.getByRole("textbox", { name: "Default of exposure" })
+    expect(exposure).toHaveValue("US$250,000.00")
+    fireEvent.focus(exposure)
+    expect(exposure).toHaveValue("250,000")
+    commit(exposure, "0.175")
+    expect(current().schema.tables[0].columns[1].default_value).toBe("0.175")
+    fireEvent.change(screen.getByRole("combobox", { name: "Format of exposure" }), { target: { value: "percent" } })
+    expect(exposure).toHaveValue("17.5%")
+    // Its allowed values in its format too, each still the value as written.
+    act(() => useWorkbenchFormStore.getState().change((spec) => updateSchemaColumn(spec, "t_policy", "c_exposure", { options: ["0.1", "0.175"] })))
+    const allowed = screen.getByRole("combobox", { name: "Default of exposure" })
+    expect([...allowed.querySelectorAll("option")].map((option) => [option.getAttribute("value"), option.textContent])).toEqual([
+      ["", ""],
+      ["0.1", "10%"],
+      ["0.175", "17.5%"],
+    ])
+
     // One of the allowed values, or none.
     fireEvent.click(screen.getByRole("button", { name: "Label and rules of state" }))
     const state = screen.getByRole("combobox", { name: "Default of state" })
