@@ -7,7 +7,7 @@ import { MAX_EXPR_DEPTH, createStep, stepProblem } from "../catalogue"
 import { parseFormula } from "../formula"
 import { StepForm, type StepFormContext } from "../forms"
 import { schemaFor } from "../stepSchema"
-import type { Expr, Step } from "../types"
+import type { Expr, Operand, Step } from "../types"
 
 /** Keeps the step in state so form edits re-render like the editor does. */
 function Stateful({ initial, spy }: { initial: Step; spy: (next: Step) => void }) {
@@ -1392,6 +1392,37 @@ describe("Computed as", () => {
     expect(latest.expr).toMatchObject({ parts: [{ kind: "expr", expr: { fn: "clip", operand: { name: "other_amount" }, args: [{ value: 0 }, { value: 0 }] } }, { kind: "expr", expr: clipPremium }] })
   })
 
+  it("gives a row restored by an undo its own drafts, not a neighbour's", () => {
+    const onChange = vi.fn()
+    const part = (expr: Expr) => ({ kind: "expr" as const, expr })
+    const clipOther: Expr = { type: "function", fn: "clip", operand: { kind: "column", name: "other_amount" }, args: [{ kind: "literal", type: "number", value: 0.8 }, { kind: "literal", type: "number", value: 1.2 }] }
+    const start: Step = { id: "s", kind: "with_column", name: "total", expr: { type: "sum_horizontal", parts: [part({ type: "function", fn: "abs", operand: { kind: "column", name: "premium" }, args: [] }), part(clipOther), { kind: "column", name: "fee" }] } }
+    const { rerender } = render(<StepForm step={start} onChange={onChange} ctx={ctx} />)
+    fireEvent.change(screen.getByLabelText("Part 2 expression type"), { target: { value: "round" } })
+    const rounded = onChange.mock.calls.at(-1)?.[0] as Step
+    rerender(<StepForm step={rounded} onChange={onChange} ctx={ctx} />)
+    fireEvent.click(screen.getByRole("button", { name: "Remove part 1" }))
+    rerender(<StepForm step={onChange.mock.calls.at(-1)?.[0] as Step} onChange={onChange} ctx={ctx} />)
+    // Undo brings the removed part back in front of the rounded one.
+    rerender(<StepForm step={rounded} onChange={onChange} ctx={ctx} />)
+    fireEvent.change(screen.getByLabelText("Part 1 expression type"), { target: { value: "clip" } })
+    const partsOf = () => ((onChange.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>).expr as Extract<Expr, { type: "sum_horizontal" }>).parts
+    expect(partsOf()[0]).toMatchObject({ expr: { fn: "clip", operand: { name: "premium" }, args: [{ value: 0 }, { value: 0 }] } })
+    fireEvent.change(screen.getByLabelText("Part 2 expression type"), { target: { value: "clip" } })
+    expect(partsOf()[1]).toEqual({ kind: "expr", expr: clipOther })
+  })
+
+  it("keeps a branch's drafts when the branches above it are removed down to one", () => {
+    const spy = vi.fn()
+    const clipOther: Expr = { type: "function", fn: "clip", operand: { kind: "column", name: "other_amount" }, args: [{ kind: "literal", type: "number", value: 0.8 }, { kind: "literal", type: "number", value: 1.2 }] }
+    const branch = (then: Operand) => ({ match: "all" as const, conditions: [{ column: "premium", operator: "gt" as const, value: { kind: "literal" as const, type: "number" as const, value: 100 } }], then })
+    render(<Stateful initial={{ ...clipLoad, expr: { type: "conditional", branches: [branch({ kind: "literal", type: "number", value: 1 }), branch({ kind: "expr", expr: clipOther })], otherwise: { kind: "literal", type: "number", value: 0 } } }} spy={spy} />)
+    fireEvent.change(screen.getByLabelText("Branch 2 then value expression type"), { target: { value: "round" } })
+    fireEvent.click(screen.getByRole("button", { name: "Remove branch 1" }))
+    fireEvent.change(screen.getByLabelText("Then value expression type"), { target: { value: "clip" } })
+    expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>).expr).toMatchObject({ branches: [{ then: { kind: "expr", expr: clipOther } }] })
+  })
+
   it("keeps a saved calculation the list does not offer reachable after a switch", () => {
     const spy = vi.fn()
     const window: Expr = { type: "window", agg: "sum", of: { kind: "column", name: "premium" }, over: ["region"] }
@@ -1412,6 +1443,12 @@ describe("Computed as", () => {
     fireEvent.change(screen.getByLabelText("Expression type"), { target: { value: "formula" } })
     expect(screen.getByLabelText("Formula")).toHaveValue("premium * (")
     expect(spy).toHaveBeenLastCalledWith({ ...clipLoad, expr: parseFormula("premium * 2") })
+    // Text a completion inserted is kept the same way.
+    fireEvent.change(screen.getByLabelText("Formula"), { target: { value: "trim", selectionStart: 4 } })
+    fireEvent.mouseDown(within(screen.getByRole("listbox")).getByRole("option", { name: "strip" }))
+    fireEvent.change(screen.getByLabelText("Expression type"), { target: { value: "round" } })
+    fireEvent.change(screen.getByLabelText("Expression type"), { target: { value: "formula" } })
+    expect(screen.getByLabelText("Formula")).toHaveValue("strip()")
   })
 })
 
@@ -1561,6 +1598,21 @@ describe("steps offer only what Polars 2 runs on the column types the editor kno
       fn: "try_to_date",
       args: [{ kind: "literal", type: "text", value: "%Y-%m-%d" }],
     })
+  })
+
+  it("Computed as keeps a calculation it left selectable whatever the current value's type", () => {
+    const context = contextFor([["start", "String"], ["premium", "Float64"]])
+    const window: Expr = { type: "window", agg: "first", of: { kind: "column", name: "start" }, over: ["region"] }
+    const toDate: Expr = { type: "function", fn: "to_date", operand: { kind: "expr", expr: window }, args: [{ kind: "literal", type: "text", value: "%Y-%m-%d" }] }
+    const spy = vi.fn()
+    render(<StatefulIn initial={{ id: "w", kind: "with_column", name: "d", expr: toDate }} spy={spy} context={context} />)
+    fireEvent.change(screen.getByLabelText("Expression type"), { target: { value: "value" } })
+    fireEvent.change(screen.getByLabelText("Value kind"), { target: { value: "column" } })
+    fireEvent.change(screen.getByRole("combobox", { name: "Value column" }), { target: { value: "premium" } })
+    fireEvent.blur(screen.getByRole("combobox", { name: "Value column" }))
+    expect(optionValues(screen.getByLabelText("Expression type"))).toContain("to_date")
+    fireEvent.change(screen.getByLabelText("Expression type"), { target: { value: "to_date" } })
+    expect(spy).toHaveBeenLastCalledWith({ id: "w", kind: "with_column", name: "d", expr: toDate })
   })
 
   it("Computed as leaves out the functions a typed column cannot take", () => {

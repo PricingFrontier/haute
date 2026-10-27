@@ -7,7 +7,7 @@
  * when a saved step uses them.
  */
 import { Info } from "lucide-react"
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react"
 
 import { ConfigCheckbox, QuietAction } from "../../../components/form"
 import { CodeEditor } from "../CodeEditor"
@@ -263,7 +263,8 @@ function ExprTypeSelect({
   const general = CALCULATIONS.filter((c) => c.section === "General")
   const entries = [...general, ...unlisted, ...CALCULATIONS.slice(general.length)]
   const options = entries
-    .filter((c) => c.id === current || !isFunction(c.id) || functionTakes(c.id, valueType))
+    // A calculation left earlier comes back with its own value, so the current value's type does not decide it.
+    .filter((c) => c.id === current || left.has(c.id) || !isFunction(c.id) || functionTakes(c.id, valueType))
     .map((c) => ({ value: c.id, label: calculationLabel(c), group: c.section }))
   return (
     <Field label="Computed as">
@@ -458,6 +459,11 @@ function FormulaField({
     element.style.height = `${element.scrollHeight}px`
   }, [draft])
 
+  // Text in the box that is not yet read, kept where it survives a switch of calculation.
+  const type = (value: string) => {
+    setDraft(value)
+    unfinished?.set(value === text ? null : { over: text, text: value })
+  }
   const commitText = (value: string) => {
     completion.hide()
     if (value.trim() === text) {
@@ -496,7 +502,7 @@ function FormulaField({
     if (insert === null) return
     const before = draft.slice(0, caret - prefix.length)
     const after = draft.slice(caret)
-    setDraft(`${before}${insert}${after}`)
+    type(`${before}${insert}${after}`)
     const at = before.length + insert.length - (call ? 1 : 0)
     setCaret(at)
     pendingCaret.current = at
@@ -537,9 +543,7 @@ function FormulaField({
           value={draft}
           {...completion.inputProps}
           onChange={(event) => {
-            const typed = event.target.value.replace(/\r?\n/g, " ")
-            setDraft(typed)
-            unfinished?.set(typed === text ? null : { over: text, text: typed })
+            type(event.target.value.replace(/\r?\n/g, " "))
             setCaret(event.target.selectionStart ?? event.target.value.length)
             completion.typed()
           }}
@@ -737,8 +741,7 @@ function ConditionalEditor({
   operandProps: ReturnType<typeof anyOperand>
 }) {
   const many = expr.branches.length > 1
-  const Wrapper = many ? RowGroup : PlainRow
-  const branchKeys = useRowKeys(expr.branches.length)
+  const keys = useRowKeys(expr.branches)
   const setBranch = (index: number, next: ConditionalBranch) => onChange({ ...expr, branches: expr.branches.map((b, i) => (i === index ? next : b)) })
   const addBranch = () => {
     // A new branch tests the previous branch's first column and starts from a value of its Then's type.
@@ -751,7 +754,7 @@ function ConditionalEditor({
       {expr.branches.map((branch, index) => {
         const name = index === 0 ? "If" : `Branch ${index + 1}`
         return (
-          <Wrapper key={branchKeys.keys[index]} label={`Branch ${index + 1}`}>
+          <RowGroup key={keys[index]} label={`Branch ${index + 1}`} boxed={many}>
             <div className="flex items-start gap-1.5">
               <div className="grid flex-1 gap-1.5 min-w-0">
                 <ConditionList
@@ -768,17 +771,9 @@ function ConditionalEditor({
                   <OperandField value={branch.then} onChange={(then) => setBranch(index, { ...branch, then })} ariaLabel={index === 0 ? "Then value" : `${name} then value`} {...operandProps} />
                 </Field>
               </div>
-              {many && (
-                <RowRemove
-                  label={`Remove branch ${index + 1}`}
-                  onClick={() => {
-                    branchKeys.remove(index)
-                    onChange({ ...expr, branches: expr.branches.filter((_, i) => i !== index) })
-                  }}
-                />
-              )}
+              {many && <RowRemove label={`Remove branch ${index + 1}`} onClick={() => onChange({ ...expr, branches: expr.branches.filter((_, i) => i !== index) })} />}
             </div>
-          </Wrapper>
+          </RowGroup>
         )
       })}
       <QuietAction onClick={addBranch} className="justify-self-start">Add branch</QuietAction>
@@ -1188,9 +1183,8 @@ function AggregationRow({ entry, index, onChange, onRemove, ctx, boxed, showFilt
 }) {
   const schema = useStepSchema()
   const label = `Aggregation ${index + 1}`
-  const Wrapper = boxed ? RowGroup : PlainRow
   return (
-    <Wrapper label={label}>
+    <RowGroup label={label} boxed={boxed}>
       <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
         <span className="flex flex-1 basis-32 min-w-0 items-center gap-1.5">
           <span className="flex-1 min-w-0">
@@ -1231,16 +1225,7 @@ function AggregationRow({ entry, index, onChange, onRemove, ctx, boxed, showFilt
       </div>
       {entry.agg === "quantile" && <QuantileField value={entry.quantile} onChange={(quantile) => onChange({ ...entry, quantile })} ariaLabel={`${label} quantile`} />}
       {showFilter && <RowFilter where={entry.where} onChange={(where) => onChange(where ? { ...entry, where } : omitKeys(entry, ["where"]))} ctx={ctx} label={label} />}
-    </Wrapper>
-  )
-}
-
-/** A row's controls without a border, for a list of one. */
-function PlainRow({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="grid gap-1.5" role="group" aria-label={label}>
-      {children}
-    </div>
+    </RowGroup>
   )
 }
 
@@ -1258,9 +1243,8 @@ function DtypeAggregationRow({ entry, index, onChange, onRemove, boxed }: {
   boxed: boolean
 }) {
   const label = `Aggregation ${index + 1}`
-  const Wrapper = boxed ? RowGroup : PlainRow
   return (
-    <Wrapper label={label}>
+    <RowGroup label={label} boxed={boxed}>
       <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
         <span className="flex flex-1 basis-32 min-w-0 items-center gap-1">
           <Words>*</Words>
@@ -1290,7 +1274,7 @@ function DtypeAggregationRow({ entry, index, onChange, onRemove, boxed }: {
       </div>
       <Hint>Each output is named after its column with the suffix added.</Hint>
       {entry.agg === "quantile" && <QuantileField value={entry.quantile} onChange={(quantile) => onChange({ ...entry, quantile })} ariaLabel={`${label} quantile`} />}
-    </Wrapper>
+    </RowGroup>
   )
 }
 
