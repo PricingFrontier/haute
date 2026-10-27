@@ -31,11 +31,16 @@ export default function WorkingBranchModal({ onConfirmed, onClose }: WorkingBran
   const identityNeeded = status ? !status.identity_set : false
 
   // Default selection (S5/S27): the currently checked-out branch when it's
-  // eligible, else the first eligible branch, else "create new".
+  // eligible, else the first eligible branch, else "create new". A project left
+  // on an earlier version starts on "create new": an existing branch would open
+  // its latest save, and only a new branch keeps the version open now.
+  const detached = status?.state === "detached"
   const current = status?.current_branch ?? ""
-  const defaultChoice = eligible.includes(current)
-    ? current
-    : (eligible[0] ?? CREATE_SENTINEL)
+  const defaultChoice = detached
+    ? CREATE_SENTINEL
+    : eligible.includes(current)
+      ? current
+      : (eligible[0] ?? CREATE_SENTINEL)
   const [choice, setChoice] = useState<string>(defaultChoice)
   const [newBranch, setNewBranch] = useState("")
   const [userName, setUserName] = useState(status?.user_name ?? "")
@@ -123,6 +128,16 @@ export default function WorkingBranchModal({ onConfirmed, onClose }: WorkingBran
             ))}
             <option value={CREATE_SENTINEL}>+ Create new branch…</option>
           </select>
+          {detached && (
+            <p
+              data-testid="working-branch-detached"
+              className="text-[11px] mt-1"
+              style={{ color: "var(--text-muted)" }}
+            >
+              Choosing an existing branch opens its latest save; the version open now is kept
+              only by a new branch.
+            </p>
+          )}
         </div>
 
         {creating && (

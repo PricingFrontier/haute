@@ -93,7 +93,8 @@ branch it also offers:
 - "Restore this version", except on the current version;
 - "Start a branch from this version";
 - "New branch from here, stay on this branch";
-- on the branch tip only, "new branch & move work here".
+- on the branch tip only, "Move the later saves to a new branch", which winds this branch
+  back to the chosen point.
 
 **Graph rail.** When the whole-forest graph topology loads successfully, each row in the
 history additionally draws a small rail: a coloured lane for the viewed branch and its
@@ -122,7 +123,14 @@ mutation starts.
 
 **Modals.** `WorkingBranchModal` gates first use (and any save attempted with no working
 branch set): choose among eligible branches or create one, optionally set git identity
-inline. `MilestoneCommitModal` records a message (required, at most 500 characters with
+inline. Startup opens it when the project is unset, invalid or detached.
+
+On a detached project, left on an earlier version by a checkout outside Haute:
+- it starts on "Create new branch…";
+- it says "Choosing an existing branch opens its latest save; the version open now is kept
+  only by a new branch.";
+- the branch it creates starts at that version, as an anchoring milestone when the version
+  is a save. `MilestoneCommitModal` records a message (required, at most 500 characters with
 visible validation when exceeded) and version label (optional) against the accumulated
 ledger saves; a 409 from the server surfaces a "committing now
 would fork the remote" warning with an explicit "commit anyway" override rather than a

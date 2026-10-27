@@ -1016,7 +1016,7 @@ function FlowEditor() {
       addToast("success", `Restored ${justRestored} as a new save.`)
     }
     void loadGitReadiness().then((st) => {
-      if (!st || st.state === "ready" || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "detached") return
+      if (!st || st.state === "ready" || st.state === "no-repository" || st.state === "git-unavailable") return
       useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select")
     })
   }, [loadGitReadiness, addToast])

@@ -1449,6 +1449,31 @@ describe("App integration - save pipeline", () => {
     })
   })
 
+  it("a project left on an earlier version opens the branch chooser at startup", async () => {
+    vi.mocked(api.getWorkingBranch).mockResolvedValue(makeGitWorkingBranch({
+      working_branch: null,
+      state: "detached",
+      errors: [],
+      current_branch: "",
+      head_sha: "a".repeat(40),
+      last_save_sha: null,
+      eligible_branches: ["dev"],
+      identity_set: true,
+      user_name: "U",
+      user_email: "u@x.y",
+    }))
+    render(<App />)
+    await waitForAppReady()
+
+    await waitFor(
+      () => {
+        expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument()
+      },
+      { timeout: MODAL_TIMEOUT_MS },
+    )
+    expect((screen.getByTestId("working-branch-select") as HTMLSelectElement).value).toBe("__create__")
+  })
+
   it("save-gate: with no working branch, Save opens the modal first, then runs on confirm", async () => {
     // No working branch configured for this clone.
     vi.mocked(api.getWorkingBranch).mockResolvedValue(makeGitWorkingBranch({

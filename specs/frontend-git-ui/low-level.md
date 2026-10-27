@@ -20,7 +20,7 @@
 | `frontend/src/components/CommitBreadcrumb.tsx` | `CommitBreadcrumb` (version-relative label for a comparison canvas) and `ComparisonDelta` (historic↔current commit-count chip). |
 | `frontend/src/components/MilestoneCommitModal.tsx` | Commit modal: required message (500-character maximum with visible validation) + version label form, and the 409 fork-warning override flow. |
 | `frontend/src/components/RestoreConfirmModal.tsx` | The save/discard/confirm prompt before a restore: reads `useGitStore.restoreTarget` for the target label and `useProjectDirty` (the canvas's or the workbench's form's unsaved edits) to decide single-confirm vs. save-or-discard, and locks buttons plus Escape/backdrop close (`busy`) once clicked while the caller performs the actual restore. |
-| `frontend/src/components/WorkingBranchModal.tsx` | Startup / save-gate branch-selection modal, with an inline git-identity sub-form. |
+| `frontend/src/components/WorkingBranchModal.tsx` | Startup / save-gate branch-selection modal, with an inline git-identity sub-form. Its default choice is the checked-out branch when eligible, else the first eligible branch, else "Create new branch…"; on a `detached` status it is always "Create new branch…", with a line saying that an existing branch opens its latest save. |
 | `frontend/src/components/RemotePushControl.tsx` | Remote dropdown, ahead/behind + ledger-divergence display, explicit push (including empty-remote default-bootstrap tooltip/toast and the pending-save integrity confirm), catch-up, the non-fast-forward `PushRejectedModal`, `AheadBehind`/`LedgerStatus`/`RejectedLeg` sub-components. |
 | `frontend/src/components/DivergenceModal.tsx` | Recorded-branch-vs-HEAD divergence recovery modal (go home / stay here / open branch manager). |
 | `frontend/src/components/ModalForm.tsx` | The form blocks the working-branch, divergence and save-time identity modals share inside `ModalShell`: the heading with its line of context, the modal text input, the git identity fields (name, email, global-config checkbox) and the cancel/submit row. |
@@ -183,7 +183,7 @@ stringified geometry key short-circuits `setRowGeom` when nothing actually moved
 **Branch mutation flows.** `GitPanel.submitFork` → `createWorkingBranch(name, {at: sha,
 move, switch})`, from the fork draft's mode: `"parallel"` (New branch from here),
 `"switch"` (Start a branch from this version, the row button or the menu item) or
-`"move"` (new branch & move work here). On `res.switched` it does a full
+`"move"` (Move the later saves to a new branch). On `res.switched` it does a full
 `window.location.reload()`, since the checkout replaces the working tree and the client
 can't safely reconcile in place. A parallel create instead just calls `refresh()`. Before
 any switch, switch-mode or move-mode create,
@@ -295,11 +295,11 @@ or a failed push.
   over non-archived branches in payload order.
 - **Fork-menu availability while peeking.** The context menu always opens (never falls
   through to the browser menu) on any row, but while peeking it offers only "View
-  side-by-side". Restore, Start a branch, New branch from here and "…& move work here" only
+  side-by-side". Restore, Start a branch, New branch from here and "Move the later saves" only
   make sense relative to the user's own working branch, and the row buttons for Restore
   and Start a branch are left out too.
 - **Create-and-move eligibility is narrower than starting a branch.** `canMove` gates only
-  "New branch & move work here": it is true for the newest milestone and pending saves, and
+  "Move the later saves to a new branch": it is true for the newest milestone and pending saves, and
   false for older milestones and saves already folded inside a milestone. Start a branch
   and New branch from here are available on every row of the user's own history.
 - **`BranchManager`'s archive-vs-delete asymmetry.** Archive on the *current* branch with
@@ -474,15 +474,17 @@ Library component/unit tests (no e2e for this surface).
   transaction rejects a failed `restoreVersion` request with an error toast and clears
   `restoreTarget`, proving the busy-locked `RestoreConfirmModal` cannot remain stranded
   after its promise settles; a restore that succeeds reloads and the reloaded page toasts
-  the restore; and Save captures the files earlier writes left uncaptured before it saves
-  the pipeline.
+  the restore; a detached project opens the branch chooser at startup on "Create new
+  branch…"; and Save captures the files earlier writes left uncaptured before it saves the
+  pipeline.
 - **`frontend/src/components/__tests__/MilestoneCommitModal.test.tsx`** — submit gating on message
   presence, visible validation above the 500-character maximum, successful commit
   with/without a version label, the 409 fork-warning → commit-anyway override flow, and
   backing out of that warning.
 - **`frontend/src/components/__tests__/WorkingBranchModal.test.tsx`** — eligible-branch listing plus
-  create option, adopting an existing branch, creating a new one, submit gating, and the
-  inline identity sub-form.
+  create option, adopting an existing branch, creating a new one, submit gating, the
+  inline identity sub-form, and a detached project starting on "Create new branch…" with
+  its explanation (and no explanation otherwise).
 - **`frontend/src/components/__tests__/RemotePushControl.test.tsx`** — no-remotes messaging, sole-
   remote auto-selection, multi-remote deliberate-selection requirement, the pending-save
   push confirm (both proceeding and cancelling), ahead/behind display in all states

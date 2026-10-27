@@ -254,9 +254,10 @@ Out of scope:
   two saves never pass the revision check together, and answers the form with its new
   revision. The written file is one
   save on the clone's save ledger, captured as the pipeline's save captures the files it
-  wrote and through the same capture: no working branch, no capture; a missing git
-  identity leaves the file uncaptured and is reported for the editor to ask for; a capture
-  that fails is a warning, and leaves the file uncaptured too. The response says what the
+  wrote and through the same capture: no repository, no capture; no working branch
+  chosen leaves the file uncaptured with a warning; a missing git identity leaves the file
+  uncaptured and is reported for the editor to ask for; a capture that fails is a warning,
+  and leaves the file uncaptured too. The response says what the
   capture gave (`git_sha`, `warnings`, `identity_required` and the files left
   `uncaptured`, as every write's response has them), the editor keeps an uncaptured file
   until the one capture route takes it, and from its first

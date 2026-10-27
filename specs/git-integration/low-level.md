@@ -166,8 +166,11 @@ headline and an assistant undo `Undo: ` and that headline, through
 Every route that writes project files captures them through the save module's
 `capture_save_in_ledger(root, rel_paths, warnings, message)`, which returns a
 `LedgerCapture` (`git_sha`, `identity_required`, `uncaptured`) and answers it in the shared
-`schemas.SaveCapture` fields: no working branch, no capture and nothing owed; a missing
-identity skips the commit with a warning and `identity_required`; a `GitDomainError` or
+`schemas.SaveCapture` fields. No repository: no capture and nothing owed. A repository
+with no working branch chosen: no capture, a warning ("Changes saved, but no working branch
+is chosen, so version history doesn't have them yet. Choose a working branch to keep
+them."), and every path `uncaptured`. A missing identity skips the commit with a warning
+and `identity_required`; a `GitDomainError` or
 `GitError` is a warning. A skipped or failed capture names its paths in `uncaptured`, since
 the pathspec-scoped commit of a later save never takes them; `POST /api/git/capture` takes
 them later.
@@ -301,6 +304,20 @@ A failure at step 9 propagates with the ledger already at the restore save. The 
 it inside `pause_watcher()`, then calls `_project_storage.enqueue_push()` as a save's
 capture does. `commit_milestone` takes its sweep from the same
 `_unrecorded_project_files`.
+
+**Adopt-create's start (inside `set_working_branch`, `create=True`, a born repository).**
+The new branch starts at HEAD, unless HEAD is a save of a working branch's ledger off every
+working branch's first-parent spine. `_branch_start` reads every working branch whose ledger
+exists from `_list_branches_with_tips`.
+- **On a spine:** HEAD is a milestone, and the branch starts there.
+- **A pending save of `W`:** an ancestor of `W-save`'s tip and not of `W`'s. The branch
+  starts at `_crystallize_milestone(W tip, HEAD, branch)`.
+- **A folded save of `W`:** an ancestor of `W`'s tip off its spine. It starts at
+  `_crystallize_milestone(_folding_anchor(W tip, HEAD), HEAD, branch)`.
+
+These helpers live in `_git_setup.py` and are shared with `create_working_branch`. The
+anchoring commit's tree is HEAD's, so `checkout -b <branch> <start>` changes no file and
+carries any uncommitted edit across.
 
 **Unborn-repo seeding (inside `set_working_branch`, `create=True`).** Only triggers when
 `HEAD` has no commits. If the current unborn branch is not itself protected, it is renamed
@@ -623,7 +640,11 @@ process failures, and precise ref-movement races deterministic.
   limit refusing the Commit by name),
   milestone merge and its
   invariant checks, git identity get/set, working-branch status across all seven readiness states,
-  `set_working_branch` including the unborn-repo seed path and its gitignore-guard
+  `set_working_branch` including a branch created from a detached pending save, folded
+  save and milestone (an anchoring milestone for a save, none for a milestone), the
+  capture of a save made with no working branch chosen (warned and left uncaptured) and
+  in a project with no repository (nothing owed), the unborn-repo seed path and its
+  gitignore-guard
   interaction (`TestSeedGitignoreGuards`, `TestSetWorkingBranchUnbornNonDefault`), version
   restore (`TestRestoreVersion`: a pending save, a milestone and a folded save restored as
   one save on the same branch with later saves kept, files changed, deleted and added since

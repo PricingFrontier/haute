@@ -421,7 +421,9 @@ describe("GitPanel", () => {
     fireEvent.contextMenu(screen.getAllByTestId("git-panel-milestone")[0])
     await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
     expect(screen.getByTestId("git-panel-fork-here")).toBeInTheDocument()
-    expect(screen.getByTestId("git-panel-fork-move")).toBeInTheDocument()
+    expect(screen.getByTestId("git-panel-fork-move")).toHaveTextContent(
+      "Move the later saves to a new branch",
+    )
   })
 
   it("an older milestone offers create-only (no move)", async () => {

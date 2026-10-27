@@ -602,15 +602,25 @@ class TestLedgerCaptureOnSave:
         with patch.object(svc, "_validate_api_inputs_have_schemas"):
             return svc.save(self._save_body(root))
 
-    def test_no_state_no_commit(self, repo: Path) -> None:
+    def test_no_working_branch_saves_and_names_what_it_left_off(self, repo: Path) -> None:
         result = self._service_save(repo)
         assert result.git_sha is None
+        assert "demo.py" in result.uncaptured
+        assert any("no working branch is chosen" in w for w in result.warnings)
         ok = subprocess.run(
             ["git", "rev-parse", "--verify", "--quiet", LEDGER],
             cwd=repo,
             capture_output=True,
         )
         assert ok.returncode != 0, "no ledger may exist without a configured branch"
+
+    def test_no_repository_owes_nothing(self, tmp_path: Path) -> None:
+        root = tmp_path / "no_git"
+        root.mkdir()
+        result = self._service_save(root)
+        assert result.git_sha is None
+        assert result.uncaptured == []
+        assert not any("working branch" in w for w in result.warnings)
 
     def test_configured_save_commits_written_files_to_ledger(self, repo: Path) -> None:
         from haute._git_state import write_working_branch
@@ -851,6 +861,49 @@ class TestSetWorkingBranch:
     def test_refuses_ledger_name(self, repo: Path) -> None:
         with pytest.raises(GitGuardrailError):
             set_working_branch(LEDGER, repo, cwd=repo)
+
+    @staticmethod
+    def _detach_at(repo: Path, sha: str) -> None:
+        """Leave the project on *sha*, unlinked, as a checkout outside Haute would."""
+        from haute._git_state import clear_working_branch
+
+        _git(repo, "checkout", "-q", "--detach", sha)
+        clear_working_branch(repo)
+
+    def test_create_from_a_detached_pending_save_starts_at_an_anchoring_milestone(
+        self, repo: Path
+    ) -> None:
+        ids = _fork_setup(repo)
+        self._detach_at(repo, ids["s2"])
+
+        set_working_branch("fresh", repo, create=True, cwd=repo)
+
+        assert _parents(repo, "fresh") == [ids["m1"], ids["s2"]]
+        assert _tree(repo, "fresh") == _tree(repo, ids["s2"])
+        ms = working_milestones(repo, cwd=repo, branch="fresh")
+        assert ms.entries[0].message.startswith("Start fresh from save")
+        assert [e.message for e in ms.entries[1:]] == ["M1", "initial pipeline"]
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == "fresh-save"
+
+    def test_create_from_a_detached_folded_save_anchors_on_the_milestone_before(
+        self, repo: Path
+    ) -> None:
+        ids = _fork_setup(repo)
+        commit_milestone("M2", repo, cwd=repo)  # folds save 2 and save 3
+        self._detach_at(repo, ids["s2"])
+
+        set_working_branch("fresh", repo, create=True, cwd=repo)
+
+        assert _parents(repo, "fresh") == [ids["m1"], ids["s2"]]
+        assert (repo / "rating.py").read_text() == "# v3\n"
+
+    def test_create_from_a_detached_milestone_starts_there(self, repo: Path) -> None:
+        ids = _fork_setup(repo)
+        self._detach_at(repo, ids["m1"])
+
+        set_working_branch("fresh", repo, create=True, cwd=repo)
+
+        assert _git(repo, "rev-parse", "fresh") == ids["m1"]
 
 
 @pytest.fixture

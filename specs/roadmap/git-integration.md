@@ -9,7 +9,7 @@ specified in [the git-integration specification](../git-integration/high-level.m
 and [the git UI](../frontend-git-ui/high-level.md). These
 packages come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md);
 the Databricks IO defects the same review found are `BUG-44` and `BUG-45` in
-[bugs](bugs.md). `GIT-R10` and `GIT-R12` to `GIT-R15` come from a review on 27 October 2026 of going
+[bugs](bugs.md). `GIT-R12` to `GIT-R15` come from a review on 27 October 2026 of going
 back to an earlier version (one Codex and two Fable reviews, every finding checked at
 its source), after an analyst restoring a version on the test project took six Move
 and return cycles and made and deleted two branches between 13:14 and 13:36.
@@ -25,7 +25,6 @@ and return cycles and made and deleted two branches between 13:14 and 13:36.
 | GIT-R06 | Decision | P3 | Automatic ledger saves either skip the project's git hooks or the specification says they run them. |
 | GIT-R07 | Planned | P2 | Every tree-changing action in the git UI passes the dirty-project guard and names what changes, a failed history read shows an error rather than an empty branch, a failed preference save is reported, and the dialogs and specification say what the server does. |
 | GIT-R08 | Planned | P3 | The git panel has one context menu, one dirty-navigation wrapper and one relative-time rule. |
-| GIT-R10 | Planned | P2 | A project left on an earlier version by a checkout outside Haute never silently returns to a branch's latest save: it asks on startup, the branch chooser starts on a new branch and says what choosing an existing one does, a branch made there keeps milestones as milestones, and files changed there are reported as not recorded. |
 | GIT-R12 | Reverify | P2 | After a branch switch, a restore, Catch up or Spin off a copy, the server reloads the pipeline and the form and the canvas shows the files on disk; a save from the previous document is refused. |
 | GIT-R13 | Planned | P2 | A checkout that stops part-way on Windows (a file open in Excel, an antivirus hold) is rolled back and names the file, and a project is never reported ready over a half-changed tree. |
 | GIT-R14 | Planned | P2 | Deleted branches stay restorable from the branch manager whatever their name, and deleting or archiving the current branch leaves the analyst on its last milestone rather than the default branch's seed project. |
@@ -235,54 +234,6 @@ panel.
 `frontend/src/panels/assistant/relativeTime.ts`;
 `frontend/src/utils/formatTime.ts`.
 
-### GIT-R10 — Leaving an earlier version without a silent return
-**Why:** Haute no longer detaches, but a checkout made outside it can leave a
-project on an earlier version, unlinked from its branch. Four gaps meet the analyst
-there.
-- **The chooser:** the branch chooser starts on an existing branch, and choosing it
-  opens that branch's latest save without saying so.
-- **No prompt:** startup opens no prompt for a detached project. The only cue is
-  the red "Detached at …" button.
-- **No milestones:** creating a branch from the chooser while detached runs
-  `git checkout -b` at HEAD without crystallising a milestone. When HEAD is a save,
-  the new branch's first-parent chain is the old ledger's saves. The test
-  project's `branch-testing`, made from the save `ed71c35`, lists 122 first-parent
-  commits and no merges, so its Milestones list shows 122 saves as milestones.
-- **Unrecorded files:** with no working branch recorded, `capture_save_in_ledger`
-  returns nothing uncaptured. A file the Files panel writes or deletes there is on
-  disk only, and nothing says so.
-
-**Plan:**
-- **The chooser on a detached project:** it starts on "Create new branch…" and says
-  "Choosing an existing branch opens its latest save; the version open now is kept
-  only by a new branch."
-- **On startup:** open the chooser when readiness is `detached`.
-- **A branch made from a save:** `set_working_branch(create=True)` from a save of a
-  working branch's ledger, off its first-parent spine, crystallises a milestone
-  first, as `create_working_branch` does.
-- **Unrecorded files:** a capture with no working branch names its paths as
-  uncaptured with a warning, as a skipped capture does.
-- **The menu wording:** rename "New branch & move work here" to say that it carries
-  the later saves to the new branch and winds this one back to the chosen point.
-
-**Acceptance:**
-- **The chooser:** on a detached project, Save starts the chooser on a new branch.
-- **Restart:** restarting the server while detached opens the chooser.
-- **Milestones:** a branch created from a detached save lists its milestones, not
-  the saves before it.
-- **Files:** a file uploaded while detached is reported as not recorded.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/components/WorkingBranchModal.tsx`;
-`frontend/src/App.tsx`;
-`frontend/src/components/BranchIndicator.tsx`;
-`src/haute/_git_setup.py::set_working_branch`;
-`src/haute/_git_transactions.py::_crystallize_milestone`;
-`src/haute/routes/_save_pipeline.py::capture_save_in_ledger`;
-`src/haute/routes/project_files.py`;
-`frontend/src/panels/GitPanel.tsx`.
-
 ### GIT-R12 — The canvas follows a tree change
 **Why:** An in-app branch switch does not reload the page. The comment beside
 `switchNow` says the checkout reaches the canvas through the websocket sync, but
@@ -410,7 +361,7 @@ its last milestone open with the chooser. An orphan `x-save` is reported with
 Repair.
 
 **Dependencies:** `GIT-R07` owns the delete dialog's wording; `GIT-R03` the dirty
-tree at delete; `GIT-R10` the startup prompt.
+tree at delete.
 
 **Evidence:** `src/haute/_git_archive.py::_switch_away_if_active`;
 `src/haute/_git_archive.py::_trash_ref`;
@@ -432,8 +383,8 @@ tree at delete; `GIT-R10` the startup prompt.
 - the branch manager's badges read "uncommitted" and "unsaved".
 
 **Plan:**
-- **The toolbar on a detached project:** "Viewing an earlier version", with its
-  actions from `GIT-R10`.
+- **The toolbar on a detached project:** "Viewing an earlier version"; the branch
+  chooser it opens already starts on a new branch.
 - **The tooltip:** no hexadecimal.
 - **The pending box:** "Saves since the last milestone".
 - **The divergence dialog:** plain words.
@@ -443,8 +394,7 @@ tree at delete; `GIT-R10` the startup prompt.
 **Acceptance:** None of the listed words appears in the git UI's visible text,
 and the tests asserting the old strings assert the new ones.
 
-**Dependencies:** `GIT-R07` owns the delete dialog's wording; `GIT-R10` the
-toolbar's actions on a detached project.
+**Dependencies:** `GIT-R07` owns the delete dialog's wording.
 
 **Evidence:** `frontend/src/components/BranchIndicator.tsx`;
 `frontend/src/panels/GitPanel.tsx`;

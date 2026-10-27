@@ -51,6 +51,24 @@ describe("WorkingBranchModal", () => {
   })
   afterEach(cleanup)
 
+  it("on a project left on an earlier version, starts on a new branch and says why", () => {
+    useGitStore.setState({
+      status: status({ state: "detached", current_branch: "", head_sha: "a".repeat(40) }),
+    })
+    render(<WorkingBranchModal onConfirmed={vi.fn()} onClose={vi.fn()} />)
+    const select = screen.getByTestId("working-branch-select") as HTMLSelectElement
+    expect(select.value).toBe("__create__")
+    expect(screen.getByTestId("working-branch-detached")).toHaveTextContent(
+      "Choosing an existing branch opens its latest save",
+    )
+  })
+
+  it("off an earlier version, keeps the existing default and says nothing more", () => {
+    render(<WorkingBranchModal onConfirmed={vi.fn()} onClose={vi.fn()} />)
+    expect((screen.getByTestId("working-branch-select") as HTMLSelectElement).value).toBe("dev")
+    expect(screen.queryByTestId("working-branch-detached")).not.toBeInTheDocument()
+  })
+
   it("lists eligible branches plus a create option", () => {
     render(<WorkingBranchModal onConfirmed={vi.fn()} onClose={vi.fn()} />)
     const select = screen.getByTestId("working-branch-select") as HTMLSelectElement

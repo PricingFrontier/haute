@@ -268,18 +268,27 @@ def capture_save_in_ledger(
     without a structural signal the UI can never prompt for one, so the user's
     work would silently never be version-captured.
 
-    Additive by design: with no working branch recorded (or no git repo) saves
-    behave exactly as before, and a failed capture degrades to a warning
-    appended to *warnings*, the on-disk save having already succeeded. A
-    skipped or failed capture names *rel_paths* in ``uncaptured``: the commit is
-    pathspec-scoped, so no later save's capture takes them, and the editor
-    keeps them for ``POST /api/git/capture``.
+    Additive by design: with no git repo saves behave exactly as before, and a
+    capture skipped for want of a working branch or an identity, or a failed
+    one, degrades to a warning appended to *warnings*, the on-disk save having
+    already succeeded. A skipped or failed capture names *rel_paths* in
+    ``uncaptured``: the commit is pathspec-scoped, so no later save's capture
+    takes them, and the editor keeps them for ``POST /api/git/capture``.
     """
+    from haute._git_core import _is_git_repo
     from haute._git_state import read_working_branch
 
-    working = read_working_branch(root)
-    if working is None or not rel_paths:
+    if not rel_paths:
         return LedgerCapture(None, False, [])
+    working = read_working_branch(root)
+    if working is None:
+        if not _is_git_repo(root):
+            return LedgerCapture(None, False, [])
+        warnings.append(
+            "Changes saved, but no working branch is chosen, so version history doesn't "
+            "have them yet. Choose a working branch to keep them."
+        )
+        return LedgerCapture(None, False, list(rel_paths))
 
     from haute import _git
 

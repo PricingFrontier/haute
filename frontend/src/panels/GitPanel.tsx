@@ -45,7 +45,7 @@ type ForkMode = "parallel" | "switch" | "move"
 const FORK_DIALOG: Record<ForkMode, { title: string; create: string }> = {
   parallel: { title: "New branch from this point", create: "Create" },
   switch: { title: "Start a branch from this version", create: "Create & open" },
-  move: { title: "New branch - move your work here", create: "Create & Move" },
+  move: { title: "Move the later saves to a new branch", create: "Create & Move" },
 }
 
 interface GitPanelProps {
@@ -793,7 +793,7 @@ function GitPanelBranchScope({
                     className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
                     style={{ color: "var(--text-primary)" }}
                   >
-                    <ArrowRightLeft size={12} style={{ color: "var(--accent)" }} /> New branch &amp; move work here
+                    <ArrowRightLeft size={12} style={{ color: "var(--accent)" }} /> Move the later saves to a new branch
                   </button>
                 )}
               </>

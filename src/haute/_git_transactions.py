@@ -36,7 +36,14 @@ from haute._git_core import (
     divergence_state,
     ledger_name,
 )
-from haute._git_setup import get_identity, resolve_ledger, set_working_branch
+from haute._git_setup import (
+    _crystallize_milestone,
+    _folding_anchor,
+    _on_first_parent,
+    get_identity,
+    resolve_ledger,
+    set_working_branch,
+)
 from haute._logging import get_logger
 from haute._project_layout import VERSIONED_FILE_LIMIT_BYTES, versioned_name
 from haute.schemas import (
@@ -361,41 +368,10 @@ def merge_to_working(
     return sha
 
 
-def _on_first_parent(working: str, commit: str, cwd: Path | None = None) -> bool:
-    """Whether *commit* sits on *working*'s first-parent (milestone) chain."""
-    ok, raw = _run_git_ok("rev-list", "--first-parent", working, cwd=cwd)
-    return ok and commit in raw.split()
-
-
 def _commits_in_range(start: str, end: str, cwd: Path | None = None) -> list[str]:
     """SHAs in ``start..end``, oldest-first (ready to replay onto a new base)."""
     ok, raw = _run_git_ok("rev-list", "--reverse", f"{start}..{end}", cwd=cwd)
     return raw.split() if ok and raw.strip() else []
-
-
-def _crystallize_milestone(anchor: str, save: str, name: str, cwd: Path | None = None) -> str:
-    """An anchoring milestone for a new branch forked at a *save*: a real merge
-    commit (parents = the milestone the save came after + the save) carrying the
-    save's tree, so the new branch opens at a clean milestone capturing that state."""
-    tree = _tree_of(save, cwd=cwd)
-    msg = f"Start {name} from save {save[:8]}"
-    return _run_git("commit-tree", tree, "-p", anchor, "-p", save, "-m", msg, cwd=cwd)
-
-
-def _folding_anchor(working_tip: str, save: str, cwd: Path | None = None) -> str:
-    """The milestone a *save* folded into a milestone came after: the first parent
-    of the oldest milestone on *working_tip*'s spine the save is an ancestor of.
-    Anchoring there keeps the new branch's milestones in the order the work was
-    done, never under milestones recorded after the save."""
-    spine = _run_git("rev-list", "--first-parent", working_tip, cwd=cwd).split()
-    folding: int | None = None
-    for index, milestone in enumerate(spine):
-        if not _is_ancestor(save, milestone, cwd=cwd):
-            break
-        folding = index
-    if folding is None or folding + 1 >= len(spine):
-        raise GitDomainError(f"Save {save[:8]} is not folded into a milestone of this branch.")
-    return spine[folding + 1]
 
 
 def _replay_onto(base: str, commits: list[str], cwd: Path | None = None) -> str:
