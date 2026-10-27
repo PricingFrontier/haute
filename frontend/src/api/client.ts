@@ -53,7 +53,6 @@ import type {
   GitUpstreamStatus,
   GitCommitContext,
   GitGraphResponse,
-  GitMoveResponse,
   GitRestoreVersionResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
@@ -2227,12 +2226,12 @@ export function undeleteBranch(
 
 export function createWorkingBranch(
   name: string,
-  opts: { at?: string | null; move?: boolean } = {},
+  opts: { at?: string | null; move?: boolean; switch?: boolean } = {},
   options?: { signal?: AbortSignal },
 ): Promise<GitCreateWorkingBranchResponse> {
   return post<unknown>(
     "/api/git/working-branches",
-    { name, at: opts.at ?? null, move: opts.move ?? false },
+    { name, at: opts.at ?? null, move: opts.move ?? false, switch: opts.switch ?? false },
     options,
   ).then(async (data) => expectGeneratedContract("GitCreateWorkingBranchResponse", (await gitValidators()).validateGitCreateWorkingBranchResponse, data))
 }
@@ -2323,19 +2322,6 @@ export function getCommitContext(
     `/api/git/commit-context/${encodeURIComponent(sha)}${query}`,
     options,
   ).then(async (data) => expectGeneratedContract("GitCommitContext", (await gitValidators()).validateGitCommitContext, data))
-}
-
-/**
- * Move the working directory to a historical commit (S11/S13 — §3.4): a real
- * detached checkout that materialises `sha`'s tree as the repo state. Unlike
- * the read-only `getCommitPipeline`, this changes HEAD and the working tree.
- * Creates nothing — the next save spawns a fresh working branch here (S13).
- */
-export function moveToVersion(
-  sha: string,
-  options?: { signal?: AbortSignal },
-): Promise<GitMoveResponse> {
-  return post<unknown>("/api/git/move", { sha }, options).then(async (data) => expectGeneratedContract("GitMoveResponse", (await gitValidators()).validateGitMoveResponse, data))
 }
 
 /**

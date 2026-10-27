@@ -43,9 +43,6 @@ export type GitModalMode =
 /** A version being inspected read-only in the side-by-side comparison view (S11).
  *  `sha` is the commit materialised on the LEFT (historical) canvas; `label` is a
  *  human string for the floating chip (version label, message, or short sha). */
-/** An action that writes a version's files into the project, gated by `MoveConfirmModal`. */
-export type GitVersionAction = "move" | "restore"
-
 export interface GitComparison {
   sha: string
   label: string
@@ -95,14 +92,10 @@ interface GitData {
   /** The version under read-only inspection in the side-by-side comparison view,
    *  or null when not comparing (S11). Drives the dual-canvas overlay. */
   comparison: GitComparison | null
-  /** A version the user has asked to MOVE to (a real detached checkout), pending
-   *  the pre-move save/discard/confirm prompt (P6 §3.4). null when no move is
-   *  pending. Distinct from `comparison` (read-only view) — a move mutates the
-   *  working tree. */
-  moveTarget: GitComparison | null
   /** A version of the current branch the user has asked to RESTORE (written back as
-   *  a new save on the branch), pending the same save/discard/confirm prompt. null
-   *  when no restore is pending. */
+   *  a new save on the branch), pending the save/discard/confirm prompt. null when
+   *  no restore is pending. Distinct from `comparison` (read-only view) — a restore
+   *  rewrites the files. */
   restoreTarget: GitComparison | null
   /** The files, relative to the project, that writes reported uncaptured (a capture
    *  skipped for want of an identity, or failed), kept by `reportSaveCapture` until
@@ -132,11 +125,6 @@ interface GitActions {
   openComparison: (comparison: GitComparison) => void
   /** Close the comparison view, returning to the live editor (S11). */
   closeComparison: () => void
-  /** Begin a move: open the pre-move save/discard/confirm prompt for *target*
-   *  (P6 §3.4). The actual checkout runs only once the prompt is confirmed. */
-  requestMove: (target: GitComparison) => void
-  /** Dismiss the pre-move prompt without moving. */
-  closeMove: () => void
   /** Begin a restore: open the save/discard/confirm prompt for *target*. The
    *  restore runs only once the prompt is confirmed. */
   requestRestore: (target: GitComparison) => void
@@ -197,7 +185,6 @@ const freshGitData = (): GitData => ({
   historyNonce: 0,
   commitNonce: 0,
   comparison: null,
-  moveTarget: null,
   restoreTarget: null,
   uncaptured: [],
 })
@@ -276,8 +263,6 @@ const useGitStore = create<GitState>()((set, get) => ({
   notifyMilestoneCommitted: () => set((s) => ({ commitNonce: s.commitNonce + 1 })),
   openComparison: (comparison) => set({ comparison }),
   closeComparison: () => set({ comparison: null }),
-  requestMove: (target) => set({ moveTarget: target }),
-  closeMove: () => set({ moveTarget: null }),
   requestRestore: (target) => set({ restoreTarget: target }),
   closeRestore: () => set({ restoreTarget: null }),
 

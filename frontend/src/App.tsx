@@ -16,7 +16,7 @@ import {
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 
-import { moveToVersion, restoreVersion } from "./api/client"
+import { restoreVersion } from "./api/client"
 import { nodeTypes } from "./utils/nodeTypeRegistry"
 import NodePalette from "./panels/NodePalette"
 import NodePanel from "./panels/NodePanel"
@@ -70,7 +70,6 @@ import useSettingsStore from "./stores/useSettingsStore"
 import useUIStore from "./stores/useUIStore"
 import useGraphStore from "./stores/useGraphStore"
 import useGitStore from "./stores/useGitStore"
-import type { GitVersionAction } from "./stores/useGitStore"
 import { captureUncaptured } from "./stores/saveCapture"
 import useToastStore from "./stores/useToastStore"
 import useWorkbenchStore from "./stores/useWorkbenchStore"
@@ -119,7 +118,7 @@ import { PaletteRevealStrip } from "./haute-ui"
 
 const DivergenceModal = lazy(() => import("./components/DivergenceModal"))
 const MilestoneCommitModal = lazy(() => import("./components/MilestoneCommitModal"))
-const MoveConfirmModal = lazy(() => import("./components/MoveConfirmModal"))
+const RestoreConfirmModal = lazy(() => import("./components/RestoreConfirmModal"))
 const WorkingBranchModal = lazy(() => import("./components/WorkingBranchModal"))
 const StorageBindModal = lazy(() => import("./components/StorageBindModal"))
 const UpstreamSyncModal = lazy(() => import("./components/UpstreamSyncModal"))
@@ -166,11 +165,8 @@ const NODE_SEARCH_FOCUS_ZOOM = 0.8
 
 const proOptions = { hideAttribution: true }
 
-// One-shot sessionStorage flag set just before the post-move reload, read once on
-// the next startup so it can confirm the move (toast) and skip the auto branch
-// prompt — the moved-to detached HEAD is intended, not a divergence (P6 §3.4).
-const JUST_MOVED_KEY = "haute:justMoved"
-// The same one-shot flag for a restore, so the reloaded page can say what was restored.
+// One-shot sessionStorage flag set just before the post-restore reload, read once
+// on the next startup so the reloaded page can say what was restored.
 const JUST_RESTORED_KEY = "haute:justRestored"
 
 const edgeJoinSwapFailureMessages: Record<EdgeJoinSwapInputsFailureReason, string> = {
@@ -388,7 +384,7 @@ type FlowEditorOverlaysProps = {
   onCreateInstance: ComponentProps<typeof ContextMenu>["onCreateInstance"]
   onDissolveSubmodel: ComponentProps<typeof ContextMenu>["onDissolveSubmodel"]
   onGitModalConfirmed: () => void
-  onVersionConfirmed: (kind: GitVersionAction, saveFirst: boolean) => Promise<void>
+  onRestoreConfirmed: (saveFirst: boolean) => Promise<void>
   onCreateSubmodel: (name: string, nodeIds: string[]) => Promise<SubmodelCreateResult>
   onRenameNode: (nodeId: string, label: string) => Promise<OnUpdateConfigResult>
   pipelineRepairTarget: PipelineRepairTarget | null
@@ -409,7 +405,7 @@ function FlowEditorOverlays({
   onCreateInstance,
   onDissolveSubmodel,
   onGitModalConfirmed,
-  onVersionConfirmed,
+  onRestoreConfirmed,
   onCreateSubmodel,
   onRenameNode,
   pipelineRepairTarget,
@@ -429,8 +425,6 @@ function FlowEditorOverlays({
   const setNodeSearchOpen = useUIStore((state) => state.setNodeSearchOpen)
   const gitModal = useGitStore((state) => state.modal)
   const closeGitModal = useGitStore((state) => state.closeModal)
-  const moveTarget = useGitStore((state) => state.moveTarget)
-  const closeMove = useGitStore((state) => state.closeMove)
   const restoreTarget = useGitStore((state) => state.restoreTarget)
   const closeRestore = useGitStore((state) => state.closeRestore)
 
@@ -478,21 +472,9 @@ function FlowEditorOverlays({
           <IdentityPromptModal onClose={closeGitModal} />
         </Suspense>
       )}
-      {moveTarget && (
-        <Suspense fallback={null}>
-          <MoveConfirmModal
-            onConfirm={(saveFirst) => onVersionConfirmed("move", saveFirst)}
-            onClose={closeMove}
-          />
-        </Suspense>
-      )}
       {restoreTarget && (
         <Suspense fallback={null}>
-          <MoveConfirmModal
-            kind="restore"
-            onConfirm={(saveFirst) => onVersionConfirmed("restore", saveFirst)}
-            onClose={closeRestore}
-          />
+          <RestoreConfirmModal onConfirm={onRestoreConfirmed} onClose={closeRestore} />
         </Suspense>
       )}
       {submodelDialog && (
@@ -1025,23 +1007,15 @@ function FlowEditor() {
 
   // Startup readiness check (S27): load status once, and surface the modal only
   // when something needs attention (unset/invalid → select, divergent → that
-  // modal). A healthy clone fires nothing. Exception: when we've just arrived via
-  // a move (one-shot flag), HEAD is detached / working branch unset BY DESIGN —
-  // skip the auto-prompt and confirm the move with a toast; the branch modal is
-  // meant to fire on the first SAVE here, not on arrival (P6 §3.4 / S13).
+  // modal). A healthy clone fires nothing. After a restore's reload, say what was
+  // restored.
   useEffect(() => {
-    const justMoved = sessionStorage.getItem(JUST_MOVED_KEY)
-    if (justMoved !== null) sessionStorage.removeItem(JUST_MOVED_KEY)
     const justRestored = sessionStorage.getItem(JUST_RESTORED_KEY)
     if (justRestored !== null) {
       sessionStorage.removeItem(JUST_RESTORED_KEY)
       addToast("success", `Restored ${justRestored} as a new save.`)
     }
     void loadGitReadiness().then((st) => {
-      if (justMoved !== null) {
-        addToast("info", `Moved to ${justMoved} - save to start a new version line here.`)
-        return
-      }
       if (!st || st.state === "ready" || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "detached") return
       useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select")
     })
@@ -1449,37 +1423,27 @@ function FlowEditor() {
     else if (pending === "commit") void flushSaveThenMilestone()
   }, [flushSaveThenMilestone, saveProject])
 
-  // Moving to or restoring a version replaces the files. If requested, park the
-  // fenced graph on the current branch first; a failed save keeps the user in place.
-  // Either reloads on success, so the client starts again from the files on disk.
-  const handleVersionConfirmed = useCallback(
-    async (kind: GitVersionAction, saveFirst: boolean) => {
-      const git = useGitStore.getState()
-      const target = kind === "move" ? git.moveTarget : git.restoreTarget
-      const close = kind === "move" ? git.closeMove : git.closeRestore
+  // Restoring a version replaces the files. If requested, park the fenced graph on
+  // the current branch first; a failed save keeps the user in place. The page
+  // reloads on success, so the client starts again from the files on disk.
+  const handleRestoreConfirmed = useCallback(
+    async (saveFirst: boolean) => {
+      const { restoreTarget: target, closeRestore } = useGitStore.getState()
       if (!target) return
       try {
         if (saveFirst && !await saveProject()) {
           addToast("error", "Save failed - staying on the current version.")
-          close()
+          closeRestore()
           return
         }
-        if (kind === "move") {
-          await moveToVersion(target.sha)
-          sessionStorage.setItem(JUST_MOVED_KEY, target.label)
-        } else {
-          await restoreVersion(target.sha)
-          sessionStorage.setItem(JUST_RESTORED_KEY, target.label)
-        }
+        await restoreVersion(target.sha)
+        sessionStorage.setItem(JUST_RESTORED_KEY, target.label)
         window.location.reload()
       } catch (err: unknown) {
         const { apiErrorMessage } = await import("./api/errors")
         const detail = apiErrorMessage(err, "unknown error")
-        addToast(
-          "error",
-          `Could not ${kind === "move" ? "move to" : "restore"} this version: ${detail}`,
-        )
-        close()
+        addToast("error", `Could not restore this version: ${detail}`)
+        closeRestore()
       }
     },
     [addToast, saveProject],
@@ -2217,7 +2181,7 @@ function FlowEditor() {
         onCreateInstance={handleCreateInstance}
         onDissolveSubmodel={handleDissolveSubmodel}
         onGitModalConfirmed={handleGitModalConfirmed}
-        onVersionConfirmed={handleVersionConfirmed}
+        onRestoreConfirmed={handleRestoreConfirmed}
         onCreateSubmodel={handleCreateSubmodel}
         onRenameNode={onRenameNode}
         pipelineRepairTarget={pipelineRepairTarget}

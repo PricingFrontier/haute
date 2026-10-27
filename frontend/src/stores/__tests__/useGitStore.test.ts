@@ -64,8 +64,7 @@ describe("useGitStore", () => {
       status: READY, loading: true, statusError: "boom", branchesLoaded: true,
       branchesLoading: true, branchesError: "boom", modal: "select", pendingAction: "save",
       peekBranch: "pricing/nick/spur", branchesExpandNonce: 3, historyNonce: 4, commitNonce: 5,
-      comparison: { sha: "a", label: "A" }, moveTarget: { sha: "b", label: "B" },
-      restoreTarget: { sha: "c", label: "C" },
+      comparison: { sha: "a", label: "A" }, restoreTarget: { sha: "c", label: "C" },
       branches: [{
         name: "dev", is_current: true, is_archived: false, has_unmerged_saves: false,
         has_uncommitted_changes: false,
@@ -320,19 +319,10 @@ describe("useGitStore", () => {
     expect(useGitStore.getState().comparison).toBeNull()
   })
 
-  it("requestMove/closeMove toggle the pending move target", () => {
-    const target = { sha: "abc1234", label: "v2.0" }
-    useGitStore.getState().requestMove(target)
-    expect(useGitStore.getState().moveTarget).toEqual(target)
-    useGitStore.getState().closeMove()
-    expect(useGitStore.getState().moveTarget).toBeNull()
-  })
-
-  it("requestRestore/closeRestore toggle the pending restore target alone", () => {
+  it("requestRestore/closeRestore toggle the pending restore target", () => {
     const target = { sha: "def5678", label: "v1.0" }
     useGitStore.getState().requestRestore(target)
     expect(useGitStore.getState().restoreTarget).toEqual(target)
-    expect(useGitStore.getState().moveTarget).toBeNull()
     useGitStore.getState().closeRestore()
     expect(useGitStore.getState().restoreTarget).toBeNull()
   })

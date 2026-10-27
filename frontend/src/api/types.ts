@@ -1600,7 +1600,6 @@ export type {
   GitManagedBranch,
   GitMilestoneEntry,
   GitMilestonesResponse,
-  GitMoveResponse,
   GitPrefs,
   GitPushResponse,
   GitRemote,

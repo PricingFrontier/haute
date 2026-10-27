@@ -91,7 +91,7 @@ describe("GitPanel - uncovered fork/view/peek paths", () => {
     render(<GitPanel {...defaultProps} />)
     await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
     fireEvent.contextMenu(screen.getAllByTestId("git-panel-milestone")[0])
-    fireEvent.click(screen.getByTestId("git-panel-fork-here"))
+    fireEvent.click(screen.getByTestId("git-panel-fork-switch"))
     await waitFor(() => expect(screen.getByTestId("git-panel-fork-name")).toBeInTheDocument())
     fireEvent.change(screen.getByTestId("git-panel-fork-name"), { target: { value: "spur" } })
     // Refresh should NOT be re-invoked once we commit to a reload.
@@ -137,7 +137,7 @@ describe("GitPanel - uncovered fork/view/peek paths", () => {
     fireEvent.click(screen.getByTestId("git-panel-fork-create"))
 
     await waitFor(() =>
-      expect(mockCreateWorkingBranch).toHaveBeenCalledWith("spur", { at: "m1full", move: true }),
+      expect(mockCreateWorkingBranch).toHaveBeenCalledWith("spur", { at: "m1full", move: true, switch: false }),
     )
   })
 
@@ -153,11 +153,11 @@ describe("GitPanel - uncovered fork/view/peek paths", () => {
     expect(useGitStore.getState().comparison).toEqual({ sha: "m1full", label: "1.0" })
   })
 
-  it("while peeking, the row menu opens with view/move but no fork items (~292)", async () => {
+  it("while peeking, the row menu opens with view but no fork items (~292)", async () => {
     // The row menu ALWAYS opens now (never falls through to the browser menu),
     // but fork-from-history is only meaningful on the current branch's own
-    // history, so while peeking the menu carries only the view/move items —
-    // the fork-here / fork-&-move items are gated out.
+    // history, so while peeking the menu carries only the view item —
+    // the fork-here / start / fork-&-move items are gated out.
     useGitStore.setState({ peekBranch: "some-other-branch" })
 
     render(<GitPanel {...defaultProps} />)
@@ -171,7 +171,7 @@ describe("GitPanel - uncovered fork/view/peek paths", () => {
     await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
     expect(screen.queryByTestId("git-panel-fork-here")).not.toBeInTheDocument()
     expect(screen.queryByTestId("git-panel-fork-move")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("git-panel-fork-switch")).not.toBeInTheDocument()
     expect(screen.getByTestId("git-panel-menu-view")).toBeInTheDocument()
-    expect(screen.getByTestId("git-panel-menu-move")).toBeInTheDocument()
   })
 })

@@ -230,6 +230,26 @@ class TestGitCreateWorkingBranch:
         res = client.post("/api/git/working-branches", json={"name": "pricing/test-user/x"})
         assert res.status_code == 400
 
+    def test_switch_opens_the_new_branch(self, client: TestClient, tmp_path: Path) -> None:
+        self._adopt(client)
+        res = client.post(
+            "/api/git/working-branches",
+            json={"name": "pricing/test-user/idea", "switch": True},
+        )
+        assert res.status_code == 200
+        assert res.json()["switched"] is True and res.json()["moved"] is False
+        assert _git(tmp_path, "symbolic-ref", "--short", "HEAD") == "pricing/test-user/idea-save"
+        status = client.get("/api/git/working-branch").json()
+        assert status["working_branch"] == "pricing/test-user/idea"
+
+    def test_move_and_switch_together_rejected(self, client: TestClient) -> None:
+        self._adopt(client)
+        res = client.post(
+            "/api/git/working-branches",
+            json={"name": "pricing/test-user/x", "move": True, "switch": True},
+        )
+        assert res.status_code == 400
+
 
 # ---------------------------------------------------------------------------
 # GET/POST /api/git/prefs — per-clone UI preferences (P5d)
@@ -441,7 +461,7 @@ class TestGitShow:
 
 
 # ---------------------------------------------------------------------------
-# POST /api/git/move — move to a historical commit (detached checkout, §3.4)
+# A working branch adopted through the API, for the routes that act on its history
 # ---------------------------------------------------------------------------
 
 
@@ -460,44 +480,6 @@ class _AdoptedBranch:
         _git(tmp_path, "add", "rating.py")
         _git(tmp_path, "commit", "-m", "save")
         return _git(tmp_path, "rev-parse", "HEAD")
-
-
-class TestGitMove(_AdoptedBranch):
-    def test_move_detaches_and_clears_working_branch(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
-        self._adopt(client)
-        sha1 = self._commit(tmp_path, "# v1\n")
-        self._commit(tmp_path, "# v2\n")
-
-        res = client.post("/api/git/move", json={"sha": sha1})
-        assert res.status_code == 200
-        body = res.json()
-        assert body["sha"] == sha1
-        assert body["short_sha"] == sha1[:8]
-        assert body["is_detached"] is True
-        assert body["prior_branch"] == "pricing/test-user/dev-save"
-        # HEAD detached at the old commit; working tree restored to that version.
-        assert _git(tmp_path, "rev-parse", "HEAD") == sha1
-        assert (tmp_path / "rating.py").read_text() == "# v1\n"
-        # Working branch cleared → the next save re-prompts (S13).
-        status = client.get("/api/git/working-branch").json()
-        assert status["working_branch"] is None
-
-    def test_move_refuses_dirty_tree_returns_400(self, client: TestClient, tmp_path: Path) -> None:
-        self._adopt(client)
-        sha1 = self._commit(tmp_path, "# v1\n")
-        self._commit(tmp_path, "# v2\n")
-        (tmp_path / "rating.py").write_text("# uncommitted edit\n")
-
-        res = client.post("/api/git/move", json={"sha": sha1})
-        assert res.status_code == 400
-        assert "unsaved changes" in res.json()["detail"]
-
-    def test_move_unknown_sha_returns_400(self, client: TestClient) -> None:
-        self._adopt(client)
-        res = client.post("/api/git/move", json={"sha": "0" * 40})
-        assert res.status_code == 400
 
 
 # ---------------------------------------------------------------------------
@@ -1180,7 +1162,6 @@ class TestRefMoversPauseWatcher:
     @pytest.mark.parametrize(
         "method, path, body",
         [
-            ("post", "/api/git/move", {"sha": "HEAD"}),
             ("post", "/api/git/restore-version", {"sha": "HEAD"}),
             ("post", "/api/git/fast-forward", {"remote": "origin"}),
             ("post", "/api/git/branch-away", {"remote": "origin"}),

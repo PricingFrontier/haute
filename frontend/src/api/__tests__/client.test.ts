@@ -57,7 +57,7 @@ import {
   setGitPrefs,
   getCommitPipeline,
   getCommitContext,
-  moveToVersion,
+  createWorkingBranch,
   restoreVersion,
   listUtilityFiles,
   readUtilityFile,
@@ -1379,20 +1379,15 @@ describe("git remote catch-up + history endpoints", () => {
     expect(result.delta_from_base).toBe(2)
   })
 
-  it("moveToVersion POSTs /api/git/move with the sha", async () => {
-    const data = {
-      sha: "a".repeat(40),
-      short_sha: "aaaaaaaa",
-      prior_branch: "dev-save",
-      is_detached: true,
-    }
+  it("createWorkingBranch POSTs the fork point and whether to open the branch", async () => {
+    const data = { working_branch: "idea", moved: false, switched: true, last_save_sha: null }
     mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await moveToVersion("a".repeat(40))
+    const result = await createWorkingBranch("idea", { at: "a".repeat(40), switch: true })
     const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/git/move")
+    expect(url).toBe("/api/git/working-branches")
     expect(opts.method).toBe("POST")
-    expect(JSON.parse(opts.body)).toEqual({ sha: "a".repeat(40) })
-    expect(result.is_detached).toBe(true)
+    expect(JSON.parse(opts.body)).toEqual({ name: "idea", at: "a".repeat(40), move: false, switch: true })
+    expect(result.switched).toBe(true)
   })
 
   it("restoreVersion POSTs /api/git/restore-version with the sha", async () => {

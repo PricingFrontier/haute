@@ -6790,35 +6790,6 @@
       "title": "GitMilestonesResponse",
       "type": "object"
     },
-    "GitMoveResponse": {
-      "properties": {
-        "is_detached": {
-          "default": true,
-          "title": "Is Detached",
-          "type": "boolean"
-        },
-        "prior_branch": {
-          "title": "Prior Branch",
-          "type": "string"
-        },
-        "sha": {
-          "title": "Sha",
-          "type": "string"
-        },
-        "short_sha": {
-          "title": "Short Sha",
-          "type": "string"
-        }
-      },
-      "required": [
-        "sha",
-        "short_sha",
-        "prior_branch",
-        "is_detached"
-      ],
-      "title": "GitMoveResponse",
-      "type": "object"
-    },
     "GitPrefs": {
       "properties": {
         "skip_switch_confirm": {
@@ -17319,9 +17290,6 @@
     "GitMilestonesResponse": {
       "$ref": "#/$defs/GitMilestonesResponse"
     },
-    "GitMoveResponse": {
-      "$ref": "#/$defs/GitMoveResponse"
-    },
     "GitPrefs": {
       "$ref": "#/$defs/GitPrefs"
     },
@@ -17605,7 +17573,6 @@
     "GitCreateWorkingBranchResponse",
     "GitSetIdentityResponse",
     "GitPrefs",
-    "GitMoveResponse",
     "GitRestoreVersionResponse",
     "GitCommitResponse",
     "GitCommitContext",
@@ -17716,7 +17683,6 @@
       "GitCreateWorkingBranchResponse",
       "GitSetIdentityResponse",
       "GitPrefs",
-      "GitMoveResponse",
       "GitRestoreVersionResponse",
       "GitCommitResponse",
       "GitCommitContext",

@@ -315,13 +315,12 @@ class TestMutationEndToEnd:
         assert tool_messages
         assert "version capture failed" in str(tool_messages[-1].content)
 
-    async def test_an_applied_assistant_mutation_is_undone_by_moving_the_ledger_back(
+    async def test_an_applied_assistant_mutation_is_undone_by_restoring_the_earlier_save(
         self, project_root: Path, mutations_ready
     ):
         import subprocess
 
         from haute import _git
-        from haute._git_archive import move_to_commit
         from haute.assistant._ops import AssistantOperationError
         from haute.assistant._tools import application_service
         from haute.routes._helpers import parse_pipeline_to_graph
@@ -373,8 +372,9 @@ class TestMutationEndToEnd:
         ).plan
         assert stale_plan.base_revision != pre_mutation_revision
 
-        # POST /api/git/move service function: src/haute/_git_archive.py::move_to_commit
-        move_to_commit(tip_before, project_root, cwd=project_root)
+        # POST /api/git/restore-version service function:
+        # src/haute/_git_transactions.py::restore_version
+        _git.restore_version(tip_before, project_root, cwd=project_root)
 
         assert (project_root / "main.py").read_bytes() == pre_mutation_bytes
         restored_graph = parse_pipeline_to_graph(

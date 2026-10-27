@@ -1202,7 +1202,7 @@ tests = [
   "tests/test_assistant_application.py::TestApply::test_committed_verification_failure_is_published_and_never_retried",
   "tests/test_assistant_application.py::TestSchemaValidationScope::test_group_by_edit_validates_at_schema_tier",
   "tests/test_assistant_integration.py::TestMutationEndToEnd::test_instruction_to_disk_broadcast_and_readback",
-  "tests/test_assistant_integration.py::TestMutationEndToEnd::test_an_applied_assistant_mutation_is_undone_by_moving_the_ledger_back",
+  "tests/test_assistant_integration.py::TestMutationEndToEnd::test_an_applied_assistant_mutation_is_undone_by_restoring_the_earlier_save",
   "tests/test_assistant_loop.py::TestCancellation::test_inflight_mutation_completes_despite_cancel",
   "tests/test_assistant_routes.py::TestSessionResume::test_resume_after_restart_returns_same_id_and_transcript",
   "tests/test_assistant_session_persistence.py::TestRevival::test_restart_revives_a_session_from_disk",

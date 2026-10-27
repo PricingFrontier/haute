@@ -271,12 +271,6 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/GitGraphResponse"},
         },
     },
-    "/api/git/move": {
-        "POST": {
-            "request_ref": "#/components/schemas/GitMoveRequest",
-            "success_schema": {"$ref": "#/components/schemas/GitMoveResponse"},
-        },
-    },
     "/api/git/pending-saves": {
         "GET": {
             "request_ref": None,

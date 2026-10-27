@@ -247,7 +247,7 @@ def set_working_branch(
             _rb_ref = sym.strip()
             _rb_detach = False
         else:
-            # Detached HEAD (e.g. after move_to_commit): capture SHA for restore.
+            # Detached HEAD (a checkout outside Haute): capture SHA for restore.
             _rb_ref = _run_git("rev-parse", "HEAD", cwd=cwd)
             _rb_detach = True
 

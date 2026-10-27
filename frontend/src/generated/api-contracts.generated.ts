@@ -1006,12 +1006,6 @@ export interface GitSetIdentityResponse {
 export interface GitPrefs {
   skip_switch_confirm: boolean;
 }
-export interface GitMoveResponse {
-  is_detached: boolean;
-  prior_branch: string;
-  sha: string;
-  short_sha: string;
-}
 export interface GitRestoreVersionResponse {
   restored_from: string;
   sha: string;

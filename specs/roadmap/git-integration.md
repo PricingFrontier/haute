@@ -2,14 +2,14 @@
 
 ## Scope
 
-The working-branch model on top of git: saves and milestones, move, archive,
+The working-branch model on top of git: saves and milestones, restore, archive,
 delete, catch-up, spin-off and push, the unborn-repo seed, the history views and
 the remote handling, and the git panel that drives them. Current behaviour is
 specified in [the git-integration specification](../git-integration/high-level.md)
 and [the git UI](../frontend-git-ui/high-level.md). These
 packages come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md);
 the Databricks IO defects the same review found are `BUG-44` and `BUG-45` in
-[bugs](bugs.md). `GIT-R10` to `GIT-R15` come from a review on 27 October 2026 of going
+[bugs](bugs.md). `GIT-R10` and `GIT-R12` to `GIT-R15` come from a review on 27 October 2026 of going
 back to an earlier version (one Codex and two Fable reviews, every finding checked at
 its source), after an analyst restoring a version on the test project took six Move
 and return cycles and made and deleted two branches between 13:14 and 13:36.
@@ -25,8 +25,7 @@ and return cycles and made and deleted two branches between 13:14 and 13:36.
 | GIT-R06 | Decision | P3 | Automatic ledger saves either skip the project's git hooks or the specification says they run them. |
 | GIT-R07 | Planned | P2 | Every tree-changing action in the git UI passes the dirty-project guard and names what changes, a failed history read shows an error rather than an empty branch, a failed preference save is reported, and the dialogs and specification say what the server does. |
 | GIT-R08 | Planned | P3 | The git panel has one context menu, one dirty-navigation wrapper and one relative-time rule. |
-| GIT-R10 | Planned | P2 | Leaving an earlier version never silently returns to a branch's latest save: after a Move the branch chooser starts on a new branch and says what choosing an existing one does, a project left on an earlier version asks on startup, a branch made there keeps milestones as milestones, and files changed there are reported as not recorded. |
-| GIT-R11 | Planned | P2 | "Start a branch from this version" makes a branch at any milestone or save, folded saves included, and opens it in one step, leaving the current branch as it was; with Restore it replaces Move on the history rows. |
+| GIT-R10 | Planned | P2 | A project left on an earlier version by a checkout outside Haute never silently returns to a branch's latest save: it asks on startup, the branch chooser starts on a new branch and says what choosing an existing one does, a branch made there keeps milestones as milestones, and files changed there are reported as not recorded. |
 | GIT-R12 | Reverify | P2 | After a branch switch, a restore, Catch up or Spin off a copy, the server reloads the pipeline and the form and the canvas shows the files on disk; a save from the previous document is refused. |
 | GIT-R13 | Planned | P2 | A checkout that stops part-way on Windows (a file open in Excel, an antivirus hold) is rolled back and names the file, and a project is never reported ready over a half-changed tree. |
 | GIT-R14 | Planned | P2 | Deleted branches stay restorable from the branch manager whatever their name, and deleting or archiving the current branch leaves the analyst on its last milestone rather than the default branch's seed project. |
@@ -49,7 +48,7 @@ that works in the shell fails in Haute with the sanitized message. An unreadable
 history (`git log` failing for a resolved tip) is returned as an empty,
 successful milestone list. Saves and milestones do not check for an in-progress
 merge, rebase or cherry-pick, so every canvas save then fails with the sanitized
-"cannot do a partial commit during a merge" while move, catch-up and spin-off
+"cannot do a partial commit during a merge" while restore, catch-up and spin-off
 refuse with the hand-written reason. `commit_save` reads a failed `git status` as
 "nothing changed" and returns no save, so a failing status check skips the capture
 without a word.
@@ -237,12 +236,13 @@ panel.
 `frontend/src/utils/formatTime.ts`.
 
 ### GIT-R10 — Leaving an earlier version without a silent return
-**Why:** Four gaps meet an analyst who has Moved to an earlier version.
-- **The chooser:** after a Move the branch chooser starts on an existing branch,
-  and choosing it opens that branch's latest save without saying so.
-- **No prompt:** startup opens no prompt for a detached project. The only cue
-  after a Move is a one-time toast from `sessionStorage`, and after a restart or in
-  a new tab it is the red "Detached at …" button.
+**Why:** Haute no longer detaches, but a checkout made outside it can leave a
+project on an earlier version, unlinked from its branch. Four gaps meet the analyst
+there.
+- **The chooser:** the branch chooser starts on an existing branch, and choosing it
+  opens that branch's latest save without saying so.
+- **No prompt:** startup opens no prompt for a detached project. The only cue is
+  the red "Detached at …" button.
 - **No milestones:** creating a branch from the chooser while detached runs
   `git checkout -b` at HEAD without crystallising a milestone. When HEAD is a save,
   the new branch's first-parent chain is the old ledger's saves. The test
@@ -253,22 +253,20 @@ panel.
   disk only, and nothing says so.
 
 **Plan:**
-- **The chooser on a detached project** (after a Move until `GIT-R11` removes it,
-  or after a checkout outside Haute): it starts on "Create new branch…" and says
+- **The chooser on a detached project:** it starts on "Create new branch…" and says
   "Choosing an existing branch opens its latest save; the version open now is kept
   only by a new branch."
-- **On startup:** open the chooser when readiness is `detached`, and show a lasting
-  banner rather than the toast.
-- **A branch made from a save:** `set_working_branch(create=True)` from a save off
-  every first-parent spine crystallises a milestone first, as
-  `create_working_branch` does.
+- **On startup:** open the chooser when readiness is `detached`.
+- **A branch made from a save:** `set_working_branch(create=True)` from a save of a
+  working branch's ledger, off its first-parent spine, crystallises a milestone
+  first, as `create_working_branch` does.
 - **Unrecorded files:** a capture with no working branch names its paths as
   uncaptured with a warning, as a skipped capture does.
 - **The menu wording:** rename "New branch & move work here" to say that it carries
   the later saves to the new branch and winds this one back to the chosen point.
 
 **Acceptance:**
-- **The chooser:** Move, then Save, starts the chooser on a new branch.
+- **The chooser:** on a detached project, Save starts the chooser on a new branch.
 - **Restart:** restarting the server while detached opens the chooser.
 - **Milestones:** a branch created from a detached save lists its milestones, not
   the saves before it.
@@ -283,46 +281,6 @@ panel.
 `src/haute/_git_transactions.py::_crystallize_milestone`;
 `src/haute/routes/_save_pipeline.py::capture_save_in_ledger`;
 `src/haute/routes/project_files.py`;
-`frontend/src/panels/GitPanel.tsx`.
-
-### GIT-R11 — Start a branch from a version in one step
-**Why:** Trying an idea from an earlier version takes "New branch from here" and
-then a Switch. "New branch & move work here" moves the later saves rather than
-opening the chosen version. A save folded into a milestone is offered the fork
-menu, but `create_working_branch` refuses anything other than a first-parent
-milestone or a pending save. Move then remains beside Restore on every row, and
-it leaves the analyst on no branch (`GIT-R10`).
-
-**Plan:**
-- **The engine:** add a mode of `create_working_branch` that makes the pair at the
-  chosen point and checks out its ledger, leaving the current pair's refs
-  untouched. It crystallises a milestone at a save, folded saves included, as
-  `_crystallize_milestone` does for a pending save, and the switch's dirty guard
-  applies.
-- **In the panel:** "Start a branch from this version" on every row and in the
-  menu, then one naming step.
-- **Move goes:** Restore, Start a branch and View cover Move's uses, and on 27
-  October 2026 the owner chose to remove it. That takes out:
-  - the row button and menu item, the move half of `MoveConfirmModal` (renamed
-    for the restore it keeps), the store's `requestMove`/`moveTarget` and the
-    move branch of `App.tsx`'s `handleVersionConfirmed`;
-  - the after-move toast, `move_to_commit` and `POST /api/git/move`;
-  - Move in both git specifications ("go back to an earlier version" becomes
-    Restore).
-
-  A project can still be left detached by a checkout outside Haute, so `GIT-R10`'s
-  chooser and startup prompt stay.
-
-**Acceptance:** From a folded save, Start a branch names the branch and opens it
-at that version in one step, and the previous branch's milestones and saves are
-unchanged. Neither the rows, the menu nor the API offers Move.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_git_transactions.py::create_working_branch`;
-`src/haute/_git_transactions.py::_on_first_parent`;
-`src/haute/_git_transactions.py::_crystallize_milestone`;
-`src/haute/routes/git.py::git_move`;
 `frontend/src/panels/GitPanel.tsx`.
 
 ### GIT-R12 — The canvas follows a tree change
@@ -365,25 +323,25 @@ a page reload, and a save from the old document is still refused.
 `src/haute/server.py`.
 
 ### GIT-R13 — Checkouts that stop part-way on Windows
-**Why:** `move_to_commit` runs the volatile wipe, `checkout --detach` and the
-clone-state clear with no rollback.
-- **If the checkout stops part-way:** for example, Windows refuses to replace a
-  file open in Excel, or an antivirus hold stops it. HEAD stays on the ledger, the
-  clone state stays set and the tree is part old, part new.
+**Why:** The tree-changing checkouts have no fence against a file Windows will not
+replace. These are `set_working_branch`'s, `create_working_branch`'s switch and move,
+`_switch_away_if_active`'s, Catch up's `merge --ff-only`, Spin off a copy's, and
+Restore's `git restore`.
+- **If the checkout stops part-way:** for example, a file is open in Excel, or an
+  antivirus hold stops it. The tree is left part old, part new.
 - **What the analyst sees:** readiness still answers `ready`, and the analyst reads
   "Operation failed. Check the server logs for details."
 - **What gets recorded:** the next Commit's sweep records the mixed tree.
-- **The other checkouts:** `set_working_branch`'s checkouts roll back with another
-  checkout, which can fail on the same lock.
-- **The in-progress check:** `_assert_no_git_op_in_progress` guards only Move and
-  Restore.
+- **The rollbacks:** where one exists, it is another checkout, which can fail on the
+  same lock.
+- **The in-progress check:** `_assert_no_git_op_in_progress` guards only Restore and
+  the switch.
 
 What git leaves when Windows refuses a file part-way has not been probed, and no
-test injects a failed checkout.
+test injects a lock.
 
-**Plan:** Probe first: hold a project file open with an exclusive handle on
-Windows, Move, and record what git leaves. Then one checkout helper for every
-tree-changing checkout:
+**Plan:** Probe first: hold a project file open on Windows, switch branch, and
+record what git leaves. Then one checkout helper for every tree-changing checkout:
 - it checks the changing paths (`git diff --name-only HEAD <target>`) are writable
   first;
 - it translates git's "would be overwritten", "unable to unlink" and "Permission
@@ -394,16 +352,18 @@ tree-changing checkout:
   is resolved;
 - the in-progress check runs before every checkout.
 
-**Acceptance:** A Move with a locked file answers "Close <file> and try again" and
-leaves the tree and branch as they were. A failed rollback shows the interrupted
-state with Retry. Tests inject a failed checkout.
+**Acceptance:** A branch switch with a locked file answers "Close <file> and try
+again" and leaves the tree and branch as they were. A failed rollback shows the
+interrupted state with Retry. Tests inject a failed checkout.
 
 **Dependencies:** `GIT-R02` translates the errors; `GIT-R05` supplies the one
 compensation helper; `GIT-R07` corrects the count of readiness states that the new
 state adds to.
 
-**Evidence:** `src/haute/_git_archive.py::move_to_commit`;
-`src/haute/_git_setup.py::set_working_branch`;
+**Evidence:** `src/haute/_git_setup.py::set_working_branch`;
+`src/haute/_git_transactions.py::create_working_branch`;
+`src/haute/_git_transactions.py::restore_version`;
+`src/haute/_git_archive.py::_switch_away_if_active`;
 `src/haute/_git_read_models.py::working_branch_status`;
 `src/haute/_git_transactions.py::commit_milestone`;
 `src/haute/_git_core.py::_assert_no_git_op_in_progress`;
@@ -472,8 +432,8 @@ tree at delete; `GIT-R10` the startup prompt.
 - the branch manager's badges read "uncommitted" and "unsaved".
 
 **Plan:**
-- **The toolbar after a Move:** "Viewing an earlier version", with its actions
-  from `GIT-R10`.
+- **The toolbar on a detached project:** "Viewing an earlier version", with its
+  actions from `GIT-R10`.
 - **The tooltip:** no hexadecimal.
 - **The pending box:** "Saves since the last milestone".
 - **The divergence dialog:** plain words.
@@ -484,7 +444,7 @@ tree at delete; `GIT-R10` the startup prompt.
 and the tests asserting the old strings assert the new ones.
 
 **Dependencies:** `GIT-R07` owns the delete dialog's wording; `GIT-R10` the
-toolbar's actions after a Move.
+toolbar's actions on a detached project.
 
 **Evidence:** `frontend/src/components/BranchIndicator.tsx`;
 `frontend/src/panels/GitPanel.tsx`;

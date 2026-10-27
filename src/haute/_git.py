@@ -3,7 +3,6 @@
 from haute._git_archive import (
     archive_working_pair,
     delete_working_pair,
-    move_to_commit,
     restore_working_pair,
     undelete_working_pair,
 )
@@ -190,7 +189,6 @@ __all__ = [
     "list_remotes",
     "merge_to_working",
     "milestone_saves",
-    "move_to_commit",
     "pair_divergence",
     "pending_ledger_saves",
     "pipeline_file_states",

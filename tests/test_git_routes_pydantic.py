@@ -25,17 +25,17 @@ def _isolated_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 class TestGitModuleReturnsPydantic:
-    def test_move_to_commit_returns_pydantic_model(self, tmp_path: Path) -> None:
-        from haute._git import move_to_commit
-        from haute.schemas import GitMoveResponse
+    def test_working_branch_status_returns_pydantic_model(self, tmp_path: Path) -> None:
+        from haute._git import working_branch_status
+        from haute.schemas import GitWorkingBranchResponse
 
-        result = move_to_commit("HEAD", tmp_path)
+        result = working_branch_status(tmp_path)
 
         assert isinstance(result, BaseModel), (
-            "_git.move_to_commit() must return a Pydantic BaseModel; "
+            "_git.working_branch_status() must return a Pydantic BaseModel; "
             f"got {type(result).__name__!r}."
         )
-        GitMoveResponse.model_validate(result.model_dump())
+        GitWorkingBranchResponse.model_validate(result.model_dump())
 
 
 class TestGitRouteBodiesDoNotRewrap:

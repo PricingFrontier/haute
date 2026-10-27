@@ -42,7 +42,6 @@ from haute._git import (
     list_remotes,
     merge_to_working,
     milestone_saves,
-    move_to_commit,
     pending_ledger_saves,
     push_working_pair,
     resolve_ledger,
@@ -1384,146 +1383,6 @@ class TestSetWorkingBranchUnbornNonDefault:
         assert _git(root, "symbolic-ref", "--short", "HEAD") == "feature"
 
 
-class TestMoveToCommit:
-    """P6 move-through-history: a detached checkout that materialises a
-    historical commit's tree and clears the working branch (§3.4 / §3.9)."""
-
-    def _two_saves(self, repo: Path) -> tuple[str, str]:
-        """Adopt WORKING, land two ledger saves; return (first_sha, second_sha)."""
-        set_working_branch(WORKING, repo, cwd=repo)
-        sha1 = _write_and_save(repo, WORKING, {"rating.py": "# v1\n"})
-        sha2 = _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
-        assert sha1 and sha2
-        return sha1, sha2
-
-    def test_detaches_head_and_materialises_tree(self, repo: Path) -> None:
-        sha1, sha2 = self._two_saves(repo)
-
-        resp = move_to_commit(sha1, repo, cwd=repo)
-
-        assert resp.sha == sha1
-        assert resp.short_sha == sha1[:8]
-        assert resp.is_detached is True
-        # HEAD really is detached (not a symbolic ref to a branch)...
-        assert not (repo / ".git" / "HEAD").read_text().startswith("ref:")
-        assert _git(repo, "rev-parse", "HEAD") == sha1
-        # ...and the working tree is the old version's content.
-        assert (repo / "rating.py").read_text() == "# v1\n"
-        assert _tree(repo, "HEAD") == _tree(repo, sha1)
-
-    def test_clears_working_branch(self, repo: Path) -> None:
-        from haute._git_state import read_working_branch
-
-        sha1, _ = self._two_saves(repo)
-        assert read_working_branch(repo) == WORKING
-
-        move_to_commit(sha1, repo, cwd=repo)
-
-        assert read_working_branch(repo) is None
-
-    def test_prior_branch_stays_reachable(self, repo: Path) -> None:
-        """The move detaches HEAD; it must not move or orphan any ref."""
-        _, sha2 = self._two_saves(repo)
-        ledger_tip_before = _git(repo, "rev-parse", LEDGER)
-        working_tip_before = _git(repo, "rev-parse", WORKING)
-
-        resp = move_to_commit(sha2, repo, cwd=repo)
-
-        assert resp.prior_branch == LEDGER  # HEAD was on the ledger before the move
-        assert _git(repo, "rev-parse", LEDGER) == ledger_tip_before
-        assert _git(repo, "rev-parse", WORKING) == working_tip_before
-
-    def test_refuses_dirty_tree(self, repo: Path) -> None:
-        """Row A / S21: uncommitted tracked edits block the move."""
-        sha1, _ = self._two_saves(repo)
-        (repo / "rating.py").write_text("# uncommitted external edit\n")
-
-        with pytest.raises(GitDomainError, match="unsaved changes"):
-            move_to_commit(sha1, repo, cwd=repo)
-
-    def test_refuses_when_git_op_in_progress(self, repo: Path) -> None:
-        """Row H: a half-finished merge/rebase/cherry-pick blocks the move."""
-        sha1, _ = self._two_saves(repo)
-        (repo / ".git" / "MERGE_HEAD").write_text(sha1 + "\n")
-
-        with pytest.raises(GitDomainError, match="in progress"):
-            move_to_commit(sha1, repo, cwd=repo)
-
-    def test_refuses_unknown_sha(self, repo: Path) -> None:
-        self._two_saves(repo)
-        with pytest.raises(GitDomainError, match="No commit found"):
-            move_to_commit("0" * 40, repo, cwd=repo)
-
-    def test_rejects_flag_like_sha(self, repo: Path) -> None:
-        self._two_saves(repo)
-        with pytest.raises(GitDomainError):
-            move_to_commit("--hard", repo, cwd=repo)
-
-    def test_wipes_caches_and_keeps_results(self, repo: Path) -> None:
-        sha1, _ = self._two_saves(repo)
-        cache = repo / ".haute_cache"
-        cache.mkdir()
-        (cache / "stale.parquet").write_text("junk")
-        # outputs/ holds the analyst's local results, which git cannot bring back;
-        # optimiser results were published to output/ by default, and Apply
-        # Optimisation prices from them. A move deletes neither.
-        result = repo / "outputs" / "result.parquet"
-        result.parent.mkdir()
-        result.write_text("kept")
-        published = repo / "output" / "optimiser_opt_1.json"
-        published.parent.mkdir()
-        published.write_text("{}")
-
-        move_to_commit(sha1, repo, cwd=repo)
-
-        assert not cache.exists()
-        assert result.read_text() == "kept"
-        assert published.read_text() == "{}"
-
-    def test_failed_checkout_wipes_nothing(
-        self, repo: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import haute._git_archive as git_archive
-
-        sha1, _ = self._two_saves(repo)
-        cache = repo / ".haute_cache"
-        cache.mkdir()
-        real_run_git = git_archive._run_git
-
-        def refuse_checkout(*args: str, **kwargs: object) -> str:
-            if args[0] == "checkout":
-                raise GitError("unable to unlink 'rating.py': Permission denied")
-            return real_run_git(*args, **kwargs)  # type: ignore[arg-type]
-
-        monkeypatch.setattr(git_archive, "_run_git", refuse_checkout)
-
-        with pytest.raises(GitError):
-            move_to_commit(sha1, repo, cwd=repo)
-
-        assert cache.exists()
-
-    def test_first_save_after_move_spawns_fresh_pair(self, repo: Path) -> None:
-        """S13: after a move, set_working_branch(create=True) spawns a new
-        working+ledger pair off the detached commit and a save lands on it."""
-        from haute._git_state import read_working_branch
-
-        sha1, _ = self._two_saves(repo)
-        move_to_commit(sha1, repo, cwd=repo)
-
-        result = set_working_branch("fresh-line", repo, create=True, cwd=repo)
-
-        assert result.working_branch == "fresh-line"
-        # The new branch is rooted at the moved-to commit, not the old tip.
-        assert _git(repo, "rev-parse", "fresh-line") == sha1
-        assert _git(repo, "symbolic-ref", "--short", "HEAD") == "fresh-line-save"
-        assert read_working_branch(repo) == "fresh-line"
-
-        new_save = _write_and_save(repo, "fresh-line", {"rating.py": "# branched\n"})
-        assert new_save is not None
-        # The save sits atop the moved-to commit on the fresh ledger.
-        assert sha1 in _parents(repo, "fresh-line-save")
-
-
 class TestRestoreVersion:
     """Restore: an earlier version written back as one new save on the current
     branch, history recorded before the files are written."""
@@ -1701,12 +1560,14 @@ class TestRestoreVersion:
             return real_run_git(*args, **kwargs)  # type: ignore[arg-type]
 
         monkeypatch.setattr(git_transactions, "_run_git", refuse_restore)
+        (repo / ".haute_cache").mkdir()
 
         with pytest.raises(GitError):
             restore_version(sha1, repo, cwd=repo)
 
         assert _parents(repo, LEDGER) == [sha2]
         assert _tree(repo, LEDGER) == _tree(repo, sha1)
+        assert (repo / ".haute_cache").is_dir()
 
 
 class TestCommitMilestone:
@@ -2758,10 +2619,79 @@ class TestCreateWorkingBranch:
         assert _git(repo, "branch", "--list", "moved") != ""
 
     def test_fork_from_foreign_commit_refused(self, repo: Path) -> None:
+        _fork_setup(repo)
+        _git(repo, "checkout", "-q", "-b", "elsewhere", "main")
+        (repo / "other.txt").write_text("x\n")
+        _git(repo, "add", "other.txt")
+        _git(repo, "commit", "-q", "-m", "elsewhere")
+        foreign = _git(repo, "rev-parse", "HEAD")
+        _git(repo, "checkout", "-q", LEDGER)
+        with pytest.raises(GitDomainError, match="milestone or a save on the current branch"):
+            create_working_branch("nope", repo, at=foreign, cwd=repo)
+
+    def test_fork_at_folded_save_anchors_on_the_milestone_before(self, repo: Path) -> None:
         ids = _fork_setup(repo)
-        folded = milestone_saves(ids["m1"], cwd=repo).saves[0].sha  # a save inside M1
-        with pytest.raises(GitDomainError, match="milestone or a pending save"):
-            create_working_branch("nope", repo, at=folded, cwd=repo)
+        m2 = commit_milestone("M2", repo, cwd=repo).sha  # folds save 2 and save 3
+        res = create_working_branch("exp", repo, at=ids["s2"], cwd=repo)
+        assert res.switched is False
+        assert _tree(repo, "exp") == _tree(repo, ids["s2"])
+        # Anchored on M1, the milestone save 2 came after, never on M2 above it.
+        assert _parents(repo, "exp") == [ids["m1"], ids["s2"]]
+        ms = working_milestones(repo, cwd=repo, branch="exp")
+        assert [e.message for e in ms.entries[1:]] == ["M1", "initial pipeline"]
+        assert _git(repo, "rev-parse", WORKING) == m2
+
+    def test_move_at_folded_save_refused(self, repo: Path) -> None:
+        ids = _fork_setup(repo)
+        commit_milestone("M2", repo, cwd=repo)
+        with pytest.raises(GitDomainError, match="older saves can only start a parallel line"):
+            create_working_branch("nope", repo, at=ids["s2"], move=True, cwd=repo)
+
+    def test_switch_opens_the_new_branch_and_leaves_the_current_one(self, repo: Path) -> None:
+        from haute._git_state import read_working_branch
+
+        ids = _fork_setup(repo)
+        ledger_before = _git(repo, "rev-parse", LEDGER)
+        res = create_working_branch("idea", repo, at=ids["s2"], switch=True, cwd=repo)
+        assert res.switched is True and res.moved is False
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == "idea-save"
+        assert read_working_branch(repo) == "idea"
+        assert (repo / "rating.py").read_text() == "# v3\n"
+        # The branch left behind keeps every save.
+        assert _git(repo, "rev-parse", LEDGER) == ledger_before
+        assert _git(repo, "rev-parse", WORKING) == ids["m1"]
+
+    def test_switch_refuses_tracked_changes(self, repo: Path) -> None:
+        ids = _fork_setup(repo)
+        (repo / "rating.py").write_text("# not saved\n")
+        with pytest.raises(GitDomainError, match="unsaved changes"):
+            create_working_branch("idea", repo, at=ids["m1"], switch=True, cwd=repo)
+        assert _git(repo, "branch", "--list", "idea") == ""
+
+    def test_switch_rolls_back_a_failed_checkout(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._git_state import read_working_branch
+
+        ids = _fork_setup(repo)
+        real_run_git = git_transactions._run_git
+
+        def refuse_checkout(*args: str, **kwargs: object) -> str:
+            if args[:2] == ("checkout", "idea-save"):
+                raise GitError("unable to unlink 'rating.py': Permission denied")
+            return real_run_git(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(git_transactions, "_run_git", refuse_checkout)
+        with pytest.raises(GitError):
+            create_working_branch("idea", repo, at=ids["m1"], switch=True, cwd=repo)
+        assert _git(repo, "branch", "--list", "idea", "idea-save") == ""
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
+        assert read_working_branch(repo) == WORKING
+
+    def test_move_and_switch_together_refused(self, repo: Path) -> None:
+        _fork_setup(repo)
+        with pytest.raises(GitDomainError, match="choose one or the other"):
+            create_working_branch("x", repo, move=True, switch=True, cwd=repo)
 
     def test_name_collision_refused(self, repo: Path) -> None:
         _fork_setup(repo)

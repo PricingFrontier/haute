@@ -373,13 +373,29 @@ def _commits_in_range(start: str, end: str, cwd: Path | None = None) -> list[str
     return raw.split() if ok and raw.strip() else []
 
 
-def _crystallize_milestone(working_tip: str, save: str, name: str, cwd: Path | None = None) -> str:
-    """An anchoring milestone for a new branch forked at a pending *save*: a real
-    merge commit (parents = latest milestone + the save) carrying the save's
-    tree, so the new branch opens at a clean milestone capturing that state."""
+def _crystallize_milestone(anchor: str, save: str, name: str, cwd: Path | None = None) -> str:
+    """An anchoring milestone for a new branch forked at a *save*: a real merge
+    commit (parents = the milestone the save came after + the save) carrying the
+    save's tree, so the new branch opens at a clean milestone capturing that state."""
     tree = _tree_of(save, cwd=cwd)
     msg = f"Start {name} from save {save[:8]}"
-    return _run_git("commit-tree", tree, "-p", working_tip, "-p", save, "-m", msg, cwd=cwd)
+    return _run_git("commit-tree", tree, "-p", anchor, "-p", save, "-m", msg, cwd=cwd)
+
+
+def _folding_anchor(working_tip: str, save: str, cwd: Path | None = None) -> str:
+    """The milestone a *save* folded into a milestone came after: the first parent
+    of the oldest milestone on *working_tip*'s spine the save is an ancestor of.
+    Anchoring there keeps the new branch's milestones in the order the work was
+    done, never under milestones recorded after the save."""
+    spine = _run_git("rev-list", "--first-parent", working_tip, cwd=cwd).split()
+    folding: int | None = None
+    for index, milestone in enumerate(spine):
+        if not _is_ancestor(save, milestone, cwd=cwd):
+            break
+        folding = index
+    if folding is None or folding + 1 >= len(spine):
+        raise GitDomainError(f"Save {save[:8]} is not folded into a milestone of this branch.")
+    return spine[folding + 1]
 
 
 def _replay_onto(base: str, commits: list[str], cwd: Path | None = None) -> str:
@@ -440,28 +456,33 @@ def create_working_branch(
     at: str | None = None,
     move: bool = False,
     cwd: Path | None = None,
+    switch: bool = False,
 ) -> GitCreateWorkingBranchResponse:
     """Create a new working branch as a fork of the current one (P5d/S38).
 
     Fork point: ``at=None`` → the current branch's latest milestone; ``at=<sha>``
-    → that milestone, or a pending save (crystallized into an anchoring
-    milestone). ``move=False`` (default) spins off a parallel line and leaves the
-    current branch and your in-progress work untouched — you stay put.
+    → that milestone, or a pending save or a save folded into a milestone (either
+    crystallized into an anchoring milestone). ``move=False`` (default) spins off
+    a parallel line and leaves the current branch and your in-progress work
+    untouched — you stay put; ``switch=True`` then opens the new branch, a
+    checkout of its ledger that leaves the current pair's refs as they were.
     ``move=True`` relocates the work after the fork point (unmilestoned saves +
     uncommitted edits) onto the new branch, rewinds the current branch's ledger
     to the fork point, and switches you over. Move is valid only at the latest
-    milestone or a pending save.
+    milestone or a pending save, and not with ``switch``, which it implies.
     """
     from haute._git_state import read_working_branch, write_working_branch
 
     _assert_git_repo(cwd)
     _validate_ref_name(name)
     _assert_eligible_working(name)
+    if move and switch:
+        raise GitDomainError("Create & Move already opens the new branch; choose one or the other.")
 
     current = read_working_branch(project_root)
     if current is None:
         # No working branch yet — an adopt-create off real HEAD; no fork model.
-        if at is not None or move:
+        if at is not None or move or switch:
             raise GitDomainError("No working branch to fork from yet.")
         res = set_working_branch(name, project_root, create=True, cwd=cwd)
         return GitCreateWorkingBranchResponse(
@@ -489,31 +510,60 @@ def create_working_branch(
         raise GitDomainError(f"Commit '{at}' does not exist.")
 
     is_milestone = _on_first_parent(current, point, cwd=cwd)
-    is_pending = (
-        not is_milestone
-        and _is_ancestor(point, ledger_tip, cwd=cwd)
-        and not _is_ancestor(point, working_tip, cwd=cwd)
-    )
-    if not is_milestone and not is_pending:
+    in_milestones = not is_milestone and _is_ancestor(point, working_tip, cwd=cwd)
+    is_pending = not is_milestone and not in_milestones and _is_ancestor(point, ledger_tip, cwd=cwd)
+    if not (is_milestone or in_milestones or is_pending):
         raise GitDomainError(
-            "You can only branch from a milestone or a pending save on the current branch."
+            "You can only branch from a milestone or a save on the current branch."
+        )
+    if move and in_milestones:
+        raise GitDomainError(
+            "Create & Move is only available at the latest milestone or a "
+            "pending save — older saves can only start a parallel line."
         )
 
-    base = point if is_milestone else _crystallize_milestone(working_tip, point, name, cwd=cwd)
+    if switch:
+        # Opening the new branch replaces the files: what is on disk must be saved.
+        _assert_no_git_op_in_progress(cwd)
+        ok_status, status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
+        if ok_status and status.strip():
+            raise GitDomainError(
+                "You have unsaved changes. Save or discard them before opening the new branch."
+            )
+
+    if is_milestone:
+        base = point
+    else:
+        anchor = working_tip if is_pending else _folding_anchor(working_tip, point, cwd=cwd)
+        base = _crystallize_milestone(anchor, point, name, cwd=cwd)
 
     if not move:
-        # Parallel fork: two fresh refs at the base; current and HEAD untouched.
-        _run_git("branch", name, base, cwd=cwd)
+        # Two fresh refs at the base; with *switch* the new ledger is then checked
+        # out, the current pair's refs untouched either way.
         try:
+            _run_git("branch", name, base, cwd=cwd)
             _run_git("branch", ledger_name(name), base, cwd=cwd)
-        except GitError:
-            _run_git_ok("branch", "-D", name, cwd=cwd)  # don't leak a lone ref
+            if switch:
+                _run_git("checkout", ledger_name(name), cwd=cwd)
+                write_working_branch(project_root, name)
+        except Exception as exc:
+            refs_restored = _rollback_fork(name, ledger, ledger_tip, cwd=cwd)
+            try:
+                write_working_branch(project_root, current)
+                state_restored = True
+            except OSError:
+                state_restored = False
+            if not refs_restored or not state_restored:
+                raise GitTransactionError(
+                    "Creating the branch failed and automatic rollback was incomplete. "
+                    "Inspect the repository before retrying."
+                ) from exc
             raise
-        logger.info("working_branch_forked", name=name, at=point[:8], moved=False)
+        logger.info("working_branch_forked", name=name, at=point[:8], moved=False, switched=switch)
         return GitCreateWorkingBranchResponse(
             working_branch=name,
             moved=False,
-            switched=False,
+            switched=switch,
             last_save_sha=_ledger_or_branch_sha(name, cwd=cwd),
         )
 

@@ -11,7 +11,7 @@
 | `src/haute/_git_read_models.py` | Immutable panel read models for repository/working-branch readiness and managed working-branch listings, and the project-file reads behind the Pipeline files panel: `pipeline_file_states` (how each file in a folder stands against version history: `new`, `changed` or `ignored`) and `ignore_rule` (the `.gitignore` rule that ignores a path). It performs no mutation or fetch. |
 | `src/haute/_git_history.py` | Immutable history projection and safe historical materialisation: milestones, ledger saves, commit context, forest topology, use of the core's object-addressed log cache, and bounded archive extraction. |
 | `src/haute/_git_remote.py` | Deliberate remote synchronization and transport: remote configuration/listing, clone/bundle flows, pair divergence, fetch, push/bootstrap, fast-forward, and branch-away resolution. It uses the core command boundary and never owns clone-state files. |
-| `src/haute/_git_archive.py` | Local branch-pair movement and archive lifecycle: detached historical move, archive, delete/tombstone, undelete, and restore transactions with compensating rollback. |
+| `src/haute/_git_archive.py` | Local branch-pair archive lifecycle: archive, delete/tombstone, undelete, and restore transactions with compensating rollback. |
 | `src/haute/_git_lock.py` | Reentrant per-repository mutation-lock registry shared by the engine and clone-state helpers. Uses a bounded marker-aware identity cache, a stable project-path key across `git init`, a common-Git-directory key for linked worktrees, and weak lock values so idle repositories are evicted. It never invokes Git. |
 | `src/haute/_git_state.py` | Per-clone, untracked JSON state under `<project_root>/.haute/`: working-branch association (`state.json`), UI preferences (`prefs.json`), last-pushed SHAs (`pushed.json`), delete tombstones (`trash.json`). Fail-soft parsing plus lock-scoped atomic replace; no git subprocess calls. |
 | `src/haute/_gitignore_guard.py` | Shared `.gitignore` deny-list owned by [sandbox-security](../sandbox-security/low-level.md) and append-only `ensure_gitignore_guards()` used both by project initialization and unborn-repository seeding; preserves tracked `*.haute.json` sidecars while excluding per-clone/cache/data/venv state. |
@@ -126,7 +126,6 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 |---|---|---|
 | `GET /api/git/working-branch` | None | `GitWorkingBranchResponse` (seven-state readiness contract above, including `head_sha` when resolvable; augmented via `_with_storage_state` with durable-storage fields `storage`, `storage_remote`, `storage_forked_from`, `sync`, and `storage_bind` owned by [hosted-project-storage](../hosted-project-storage/low-level.md)) |
 | `POST /api/git/working-branch` | `GitSetWorkingBranchRequest {branch,create=false}` | `GitSetWorkingBranchResponse {working_branch,state,last_save_sha?}` |
-| `POST /api/git/move` | `GitMoveRequest {sha}` | `GitMoveResponse {sha,short_sha,prior_branch,is_detached=true}` |
 | `POST /api/git/restore-version` | `GitRestoreVersionRequest {sha}` | `GitRestoreVersionResponse {sha,short_sha,restored_from,working_branch}`: `sha` is the new save on the ledger, `restored_from` the full SHA of the version restored |
 | `POST /api/git/identity` | `GitSetIdentityRequest {user_name,user_email,set_global=false}` | `GitSetIdentityResponse {user_name,user_email,scope}` |
 | `POST /api/git/capture` | `GitCaptureRequest {paths}`: at least one file, relative to the project in POSIX form, as writes reported it `uncaptured` | `SaveCapture {warnings,git_sha,identity_required,uncaptured}`: the paths committed on the ledger as they are on disk, through the save capture, under the repository lock; a path `_artifact_paths.ordinary_path_problem` refuses (absolute, a drive, `..`, `.git`, `.haute`, a link on the way) is 400, nothing captured |
@@ -140,7 +139,7 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 | `POST /api/git/undelete` | `GitUndeleteRequest {branch}` | `GitUndeleteResponse {status="restored",branch}` |
 | `GET /api/git/working-branches` | None | `GitWorkingBranchesResponse {current?,branches:[GitManagedBranch...]}` |
 | `POST /api/git/restore` | `GitRestoreRequest {branch}` | `GitRestoreResponse {restored_as}` |
-| `POST /api/git/working-branches` | `GitCreateWorkingBranchRequest {name,at=null,move=false}` | `GitCreateWorkingBranchResponse {working_branch,moved,switched,last_save_sha?}` |
+| `POST /api/git/working-branches` | `GitCreateWorkingBranchRequest {name,at=null,move=false,switch=false}` | `GitCreateWorkingBranchResponse {working_branch,moved,switched,last_save_sha?}`; `move` and `switch` together are 400 |
 | `GET /api/git/prefs` | None | `GitPrefs {skip_switch_confirm=false}` |
 | `POST /api/git/prefs` | `GitPrefs {skip_switch_confirm=false}` | The persisted `GitPrefs` |
 | `GET /api/git/remotes` | None | `GitRemotesResponse {remotes:[GitRemote {name,url,working,ledger}...],working_branch?}`; `working` and `ledger` are the sole per-leg divergence records and URL userinfo is redacted |
@@ -225,15 +224,29 @@ equals the last-merged ledger commit's tree, not an ancestor relationship.
 - No recorded working branch yet → delegates to `set_working_branch(..., create=True)`
   (adopt-create off real HEAD; no fork bookkeeping).
 - A working branch exists → resolves the fork point (`at=None` → current working tip;
-  `at=<sha>` → that commit), classifies it as either on the current branch's first-parent
-  (milestone) spine or a pending ledger save ahead of the tip (rejecting anything else), and
-  for a pending save calls `_crystallize_milestone` to synthesize an anchoring merge commit
-  (parents = `[working_tip, save]`) so the new branch opens at a clean milestone. Then:
-  - `move=False` (default): two fresh branches (`name`, `ledger_name(name)`) at the base;
-    current HEAD and branch untouched. If the ledger branch creation fails after the
-    working branch succeeded, the working branch is deleted so no lone ref leaks.
+  `at=<sha>` → that commit) and classifies it.
+  - **Milestone:** on the current branch's first-parent spine.
+  - **Pending save:** an ancestor of the ledger tip and not of the working tip.
+  - **Folded save:** an ancestor of the working tip off the spine.
+
+  Anything else is refused: "You can only branch from a milestone or a save on the current
+  branch." For a save, `_crystallize_milestone(anchor, save, name)` synthesises an
+  anchoring merge commit (parents `[anchor, save]`, the save's tree), so the new branch
+  opens at a clean milestone. For a pending save the anchor is the working tip. For a
+  folded save it is the first parent of the oldest spine milestone the save is an ancestor
+  of (`_folding_anchor`). Then:
+  - `move=False, switch=False` (default): two fresh branches (`name`, `ledger_name(name)`)
+    at the base; current HEAD and branch untouched.
+  - `switch=True`: the same two branches, then a checkout of the new ledger and
+    `write_working_branch(name)`, the current pair's refs untouched. It first refuses a git
+    operation in progress and tracked changes ("You have unsaved changes. Save or discard
+    them before opening the new branch."), since the checkout replaces the files.
+
+  Either way, a failure after the first ref runs `_rollback_fork` and puts the recorded
+  working branch back. A complete rollback re-raises, and an incomplete one raises
+  `GitTransactionError`, so no lone ref leaks.
   - `move=True`: only legal at the latest milestone or a pending save (not an older
-    milestone). Refuses if the spawning ledger's later commits are already published on
+    milestone or a folded save), and not with `switch`, which it implies. Refuses if the spawning ledger's later commits are already published on
     ANY remote and the rewind would orphan them (checked per-remote via `_is_ancestor`),
     steering the user to a parallel fork instead. Otherwise: computes the new ledger tip
     (reuse the pending chain, or `_replay_onto` the crystallized base via `commit-tree`
@@ -247,17 +260,13 @@ equals the last-merged ledger commit's tree, not an ancestor relationship.
     re-raises the original error, while any failed compensation raises
     `GitTransactionError`.
 
-**Move (`move_to_commit`).** Refuses if a git op is in progress (`_assert_no_git_op_in_progress`
-checks `MERGE_HEAD`/`CHERRY_PICK_HEAD`/`REVERT_HEAD`/`rebase-merge`/`rebase-apply` under
-the git dir) or if tracked files are dirty. Runs `git checkout --detach <sha>`, then
-`_git_state.clear_working_branch`, then wipes `_VOLATILE_ARTEFACTS`. HEAD moves but no ref is
-created or updated, so the prior branch stays fully reachable.
-
-The wipe is best-effort and covers only reconstructable caches: the root's `__pycache__`,
-`.haute_cache`, `.cache` and the tool caches. It never touches `outputs/`, the analyst's
-local results, or `output/`, where Apply Optimisation reads published optimiser results.
-Catch up and Spin off a copy also wipe only after their checkout, so a refused one deletes
-nothing.
+**The volatile wipe (`_wipe_volatile_artefacts`).** Restore, Catch up and Spin off a copy
+wipe `_VOLATILE_ARTEFACTS` once their files are in place, so a refused or failed one deletes
+nothing. The wipe is best-effort and covers only reconstructable caches: the root's
+`__pycache__`, `.haute_cache`, `.cache` and the tool caches. It never touches `outputs/`, the
+analyst's local results, or `output/`, where Apply Optimisation reads published optimiser
+results. `_assert_no_git_op_in_progress` checks `MERGE_HEAD`/`CHERRY_PICK_HEAD`/
+`REVERT_HEAD`/`rebase-merge`/`rebase-apply` under the git dir.
 
 **Restore a version (`restore_version`).** `restore_version(sha, project_root, cwd,
 pipeline_folder)` holds the repository lock throughout. It refuses, with a `GitDomainError`
@@ -440,7 +449,7 @@ Repeating a successful push is idempotent and reports `bootstrapped_default=fals
 remote advertises refs.
 
 **Fast-forward (`fast_forward_pair`).** Requires HEAD to currently be on the ledger (refuses
-mid-move/detached states) and a clean tracked tree. Fetches and prunes the configured remote
+detached states) and a clean tracked tree. Fetches and prunes the configured remote
 namespace, then aborts with `GitDomainError` if that required refresh times out, cannot
 launch, exits non-zero, or shows that either managed remote leg is missing; transport
 failure and a deleted working/ledger branch have distinct user-facing refusals. No cache
@@ -615,17 +624,19 @@ process failures, and precise ref-movement races deterministic.
   milestone merge and its
   invariant checks, git identity get/set, working-branch status across all seven readiness states,
   `set_working_branch` including the unborn-repo seed path and its gitignore-guard
-  interaction (`TestSeedGitignoreGuards`, `TestSetWorkingBranchUnbornNonDefault`), move-to-
-  commit (caches wiped after the checkout, `outputs/` and `output/` kept), version restore
-  (`TestRestoreVersion`: a pending save, a milestone and a folded save restored as one
-  save on the same branch with later saves kept, files changed, deleted and added since put
-  back, untracked files and `.haute/` untouched, unrecorded changes and new pipeline files
-  recorded first, the already-current, other-branch, overwrite, identity and in-progress
-  refusals, and a failure writing the files leaving the restore recorded), milestone
+  interaction (`TestSeedGitignoreGuards`, `TestSetWorkingBranchUnbornNonDefault`), version
+  restore (`TestRestoreVersion`: a pending save, a milestone and a folded save restored as
+  one save on the same branch with later saves kept, files changed, deleted and added since
+  put back, untracked files, `.haute/` and `outputs/` untouched and caches wiped,
+  unrecorded changes and new pipeline files recorded first, the already-current,
+  other-branch, overwrite, identity and in-progress refusals, and a failure writing the
+  files leaving the restore recorded and the caches in place), milestone
   history and commit-context breadcrumbs, rename-preserving ledger
   expansion, the branch manager (archive/delete/undelete/restore), request-path no-fetch
   guarantees,
-  canonical-remote resolution, fork/create-working-branch (both move and non-move), archive-
+  canonical-remote resolution, fork/create-working-branch (parallel, switch and move, from
+  a milestone, a pending save and a folded save, the switch refusing tracked changes and
+  rolling back a failed checkout), archive-
   commit read-only extraction, remotes/push/fast-forward/branch-away, the milestone fork
   gate, protected-branch env-var configuration, and subprocess text-encoding. Push coverage
   includes the full unborn-repo → first working branch → explicit Push journey; atomic

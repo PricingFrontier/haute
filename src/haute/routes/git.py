@@ -39,7 +39,6 @@ from haute._git import (
     graph_topology,
     list_remotes,
     milestone_saves,
-    move_to_commit,
     pending_ledger_saves,
     push_working_pair,
     restore_version,
@@ -82,8 +81,6 @@ from haute.schemas import (
     GitLedgerSavesResponse,
     GitMilestoneFork,
     GitMilestonesResponse,
-    GitMoveRequest,
-    GitMoveResponse,
     GitPrefs,
     GitPushRejection,
     GitPushRequest,
@@ -212,22 +209,6 @@ def git_set_working_branch(body: GitSetWorkingBranchRequest) -> GitSetWorkingBra
     the association. Confirms both the startup modal and the save-gate."""
     with pause_watcher():  # M4: adopting a branch checks out its ledger (tree swap)
         return set_working_branch(body.branch, Path.cwd(), create=body.create)
-
-
-# ---------------------------------------------------------------------------
-# POST /api/git/move — move to a historical commit (detached checkout, §3.4)
-# ---------------------------------------------------------------------------
-
-
-@router.post("/move", response_model=GitMoveResponse)
-def git_move(body: GitMoveRequest) -> GitMoveResponse:
-    """Move the working directory to a historical commit (detached checkout).
-
-    The watcher is paused for the wholesale tree replacement (S30); the move
-    enforces the §3.9 floors (refuse dirty tree / in-progress git op) and clears
-    the working branch, so the next save spawns a fresh one (S13)."""
-    with pause_watcher():
-        return move_to_commit(body.sha, Path.cwd())
 
 
 # ---------------------------------------------------------------------------
@@ -428,10 +409,13 @@ def git_restore(body: GitRestoreRequest) -> GitRestoreResponse:
 def git_create_working_branch(
     body: GitCreateWorkingBranchRequest,
 ) -> GitCreateWorkingBranchResponse:
-    """Fork a new working branch off the current one. ``at``/``move`` select the
-    fork point and whether in-progress work is relocated onto it (S38)."""
-    with pause_watcher():  # M4: move-mode forks check out the new ledger (tree swap)
-        return create_working_branch(body.name, Path.cwd(), at=body.at, move=body.move)
+    """Fork a new working branch off the current one. ``at`` selects the fork
+    point, ``move`` whether in-progress work is relocated onto it, and ``switch``
+    whether the new branch is opened (S38)."""
+    with pause_watcher():  # M4: move and switch forks check out the new ledger (tree swap)
+        return create_working_branch(
+            body.name, Path.cwd(), at=body.at, move=body.move, switch=body.switch
+        )
 
 
 # ---------------------------------------------------------------------------
