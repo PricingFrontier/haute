@@ -1333,7 +1333,9 @@ Out of scope:
     app's quote leave out the same values.
   - **While building** a new quote decides, its defaults alone typed: a hidden sheet's tab, a hidden section, a
     hidden component and a hidden field are drawn faded, still shown, selected and edited
-    like any other, the sheet's sections and a component's fields keeping their places, and
+    like any other, the sheet's sections and a component's fields keeping their places;
+    the sheet being built is decided as if it showed, so its own conditions fade nothing on
+    it, its tab alone marking it hidden, and what is on it fades for its own conditions; and
     a sheet, a section, a component or a field with conditions carries an eye (a section's
     in its bar, a field's after its label, or a column's in its header), struck through
     while it is hidden, that names its conditions on hover.

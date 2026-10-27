@@ -1316,7 +1316,7 @@ describe("SheetCanvas", () => {
     expect(useWorkbenchPreviewStore.getState().quote).toEqual({})
   })
 
-  it("while building draws a component a new quote hides faded with its eye struck through, whatever the sample holds, and one that shows with its eye", () => {
+  it("while building draws a component a new quote hides faded with its eye struck through, whatever the sample holds, one that shows with its eye, and one on a sheet a new quote hides faded for its own conditions alone", () => {
     const form = coverForm()
     widgetsOf(form)[1].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"] }] }
     loadForm(withSampleCell(form, "policy", 0, "policy.state", "NY"))
@@ -1336,8 +1336,15 @@ describe("SheetCanvas", () => {
     expect(body("w_grid")).toBeNull()
     expect(within(frame("w_grid")).getByRole("img", { name: "Shows when Cover is not ticked" })).toBeInTheDocument()
 
-    // A component on a sheet a new quote hides is hidden with it, and still drawn to edit.
+    // A sheet a new quote hides is drawn as if it showed, its tab alone marking it hidden.
     act(() => useWorkbenchViewStore.getState().showPage("p2"))
+    expect(body("w_year")).toBeNull()
+    // What is on it still fades for its own conditions.
+    act(() =>
+      useWorkbenchFormStore.getState().change((spec) =>
+        updateWidget(spec, "w_year", { show_when: { match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"] }] } }),
+      ),
+    )
     expect(body("w_year")).not.toBeNull()
   })
 

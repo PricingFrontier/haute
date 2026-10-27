@@ -499,7 +499,9 @@ show again once hidden, so the view names it as a problem.
 While building, a new quote decides, holding its defaults alone: a hidden sheet's tab, a
 hidden section, a hidden component and a hidden field are faded, their eye struck through
 (hover it to read the conditions), and you can still select and edit them; every section
-keeps its place, and every field its place in its component. In
+keeps its place, and every field its place in its component. A sheet's own conditions never
+fade what is on it, so a hidden sheet stays easy to work on: its faded tab shows that it is
+hidden, and its sections, components and fields fade for their own conditions. In
 Preview the sample decides as you type it, and in the underwriter app the quote: a hidden
 sheet has no tab; a hidden section is not drawn and the
 sections under it move up to close the gap; a hidden component is not drawn, its space
