@@ -7061,6 +7061,34 @@
       "title": "GitRestoreResponse",
       "type": "object"
     },
+    "GitRestoreVersionResponse": {
+      "properties": {
+        "restored_from": {
+          "title": "Restored From",
+          "type": "string"
+        },
+        "sha": {
+          "title": "Sha",
+          "type": "string"
+        },
+        "short_sha": {
+          "title": "Short Sha",
+          "type": "string"
+        },
+        "working_branch": {
+          "title": "Working Branch",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha",
+        "short_sha",
+        "restored_from",
+        "working_branch"
+      ],
+      "title": "GitRestoreVersionResponse",
+      "type": "object"
+    },
     "GitSetIdentityResponse": {
       "properties": {
         "scope": {
@@ -17309,6 +17337,9 @@
     "GitRestoreResponse": {
       "$ref": "#/$defs/GitRestoreResponse"
     },
+    "GitRestoreVersionResponse": {
+      "$ref": "#/$defs/GitRestoreVersionResponse"
+    },
     "GitSetIdentityResponse": {
       "$ref": "#/$defs/GitSetIdentityResponse"
     },
@@ -17575,6 +17606,7 @@
     "GitSetIdentityResponse",
     "GitPrefs",
     "GitMoveResponse",
+    "GitRestoreVersionResponse",
     "GitCommitResponse",
     "GitCommitContext",
     "GitMilestonesResponse",
@@ -17685,6 +17717,7 @@
       "GitSetIdentityResponse",
       "GitPrefs",
       "GitMoveResponse",
+      "GitRestoreVersionResponse",
       "GitCommitResponse",
       "GitCommitContext",
       "GitMilestonesResponse",

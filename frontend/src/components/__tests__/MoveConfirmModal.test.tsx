@@ -82,4 +82,38 @@ describe("MoveConfirmModal", () => {
     const { container } = render(<MoveConfirmModal onConfirm={vi.fn()} onClose={vi.fn()} />)
     expect(container).toBeEmptyDOMElement()
   })
+
+  describe("for a restore", () => {
+    beforeEach(() => {
+      useGitStore.setState({ moveTarget: null, restoreTarget: { sha: "def456", label: "v1.0" } })
+    })
+
+    it("asks to restore the pending restore's version, saying the branch carries on", () => {
+      const onConfirm = vi.fn()
+      render(<MoveConfirmModal kind="restore" onConfirm={onConfirm} onClose={vi.fn()} />)
+      const modal = screen.getByTestId("restore-confirm-modal")
+      expect(modal).toHaveTextContent("Restore v1.0?")
+      expect(modal).toHaveTextContent("Your branch carries on from this version.")
+      fireEvent.click(screen.getByTestId("restore-confirm"))
+      expect(onConfirm).toHaveBeenCalledWith(false)
+    })
+
+    it("when dirty, offers save-and-restore and discard-and-restore", () => {
+      useGraphStore.setState({ dirty: true })
+      const onConfirm = vi.fn()
+      render(<MoveConfirmModal kind="restore" onConfirm={onConfirm} onClose={vi.fn()} />)
+      expect(screen.getByTestId("restore-dirty-warning")).toHaveTextContent("restoring replaces them")
+      expect(screen.getByTestId("restore-discard")).toHaveTextContent("Discard & restore")
+      fireEvent.click(screen.getByTestId("restore-save"))
+      expect(onConfirm).toHaveBeenCalledWith(true)
+    })
+
+    it("renders nothing when no restore is pending, whatever move is", () => {
+      useGitStore.setState({ moveTarget: { sha: "abc123", label: "v2.0" }, restoreTarget: null })
+      const { container } = render(
+        <MoveConfirmModal kind="restore" onConfirm={vi.fn()} onClose={vi.fn()} />,
+      )
+      expect(container).toBeEmptyDOMElement()
+    })
+  })
 })

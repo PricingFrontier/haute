@@ -9,7 +9,7 @@ specified in [the git-integration specification](../git-integration/high-level.m
 and [the git UI](../frontend-git-ui/high-level.md). These
 packages come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md);
 the Databricks IO defects the same review found are `BUG-44` and `BUG-45` in
-[bugs](bugs.md). `GIT-R09` to `GIT-R15` come from a review on 27 October 2026 of going
+[bugs](bugs.md). `GIT-R10` to `GIT-R15` come from a review on 27 October 2026 of going
 back to an earlier version (one Codex and two Fable reviews, every finding checked at
 its source), after an analyst restoring a version on the test project took six Move
 and return cycles and made and deleted two branches between 13:14 and 13:36.
@@ -18,7 +18,6 @@ and return cycles and made and deleted two branches between 13:14 and 13:36.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| GIT-R01 | Planned | P1 | Move, Catch up, Spin off a copy and Restore stop deleting the project's `outputs/` folder, and clear the caches only after the checkout succeeds. |
 | GIT-R02 | Planned | P2 | Every git failure the analyst can act on is answered with its reason: an invalid typed branch name, a push or fetch that times out or fails authentication, an unreadable history, a save during an in-progress git operation, and an SSH command of the user's own. |
 | GIT-R03 | Planned | P2 | Deleting the active pair without confirmation keeps a dirty tree, and the first commit never seeds a virtual environment. |
 | GIT-R04 | Planned | P3 | Commit context and historical extraction pass their SHAs and paths through stdin, so a long branch or a large commit does not fail on Windows' command-line limit. |
@@ -26,7 +25,6 @@ and return cycles and made and deleted two branches between 13:14 and 13:36.
 | GIT-R06 | Decision | P3 | Automatic ledger saves either skip the project's git hooks or the specification says they run them. |
 | GIT-R07 | Planned | P2 | Every tree-changing action in the git UI passes the dirty-project guard and names what changes, a failed history read shows an error rather than an empty branch, a failed preference save is reported, and the dialogs and specification say what the server does. |
 | GIT-R08 | Planned | P3 | The git panel has one context menu, one dirty-navigation wrapper and one relative-time rule. |
-| GIT-R09 | Planned | P2 | "Restore this version" on any milestone or save of the current branch puts that version back as a new save on the branch: the analyst stays on it, the saves since stay in the history, and restoring the save before undoes it. |
 | GIT-R10 | Planned | P2 | Leaving an earlier version never silently returns to a branch's latest save: after a Move the branch chooser starts on a new branch and says what choosing an existing one does, a project left on an earlier version asks on startup, a branch made there keeps milestones as milestones, and files changed there are reported as not recorded. |
 | GIT-R11 | Planned | P2 | "Start a branch from this version" makes a branch at any milestone or save, folded saves included, and opens it in one step, leaving the current branch as it was; with Restore it replaces Move on the history rows. |
 | GIT-R12 | Reverify | P2 | After a branch switch, a restore, Catch up or Spin off a copy, the server reloads the pipeline and the form and the canvas shows the files on disk; a save from the previous document is refused. |
@@ -35,34 +33,6 @@ and return cycles and made and deleted two branches between 13:14 and 13:36.
 | GIT-R15 | Planned | P3 | The git UI's words are the analyst's: no "detached", "repo", "ledger", "fold" or "hexadecimal". |
 
 ## Planned improvements
-
-### GIT-R01 — `outputs/` survives a move
-**Why:** `_VOLATILE_ARTEFACTS` names `outputs` beside the caches, and
-`_wipe_volatile_artefacts` removes each entry with `shutil.rmtree` before the
-detached checkout, so Move, Catch up and Spin off a copy delete the project's
-`outputs/` folder wholesale, even when the checkout is then refused. `outputs/`
-is the documented local, unversioned folder of analyst results (`LOCAL_FOLDERS`):
-the Files panel serves it and a model's data export defaults into it, and git
-cannot restore it. The comment beside the list already exempts `output`
-(singular) because Apply Optimisation prices from results there; the same hazard
-applies. The specification lists `outputs` among the wiped folders, so code and
-specification agree. On 27 October 2026 the owner chose to keep `outputs/`: a stale
-result can be run again, a deleted one cannot.
-
-**Plan:** Remove `outputs` from `_VOLATILE_ARTEFACTS` and keep the caches. Run the
-wipe after a successful checkout, so a refused one deletes nothing. Update the
-git-integration specification's wiped-folder list. Restore (`GIT-R09`) uses the same
-wipe.
-
-**Acceptance:** A move, Catch up or Spin off a copy with a file in `outputs/` leaves
-it in place, and a refused checkout deletes nothing.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_git_core.py::_VOLATILE_ARTEFACTS`;
-`src/haute/_git_core.py::_wipe_volatile_artefacts`;
-`src/haute/_git_archive.py::move_to_commit`;
-`src/haute/_project_layout.py::LOCAL_FOLDERS`.
 
 ### GIT-R02 — Git failures the analyst can act on
 **Why:** A typed branch name git refuses but `_validate_ref_name` admits (a
@@ -213,9 +183,8 @@ save.
 `src/haute/_scaffold.py::pre_commit_hook`.
 
 ### GIT-R07 — The git UI guards and reports every tree change
-**Why:** Catch up and Spin off a copy update the working tree (and wipe
-`outputs/` while `GIT-R01` stands) from one click with no confirmation and
-without the dirty-project guard every other tree-changing action has, so unsaved
+**Why:** Catch up and Spin off a copy update the working tree from one click
+with no confirmation and without the dirty-project guard every other tree-changing action has, so unsaved
 in-memory canvas and form edits meet the change unannounced (the server refuses
 a dirty tracked tree, so what is exposed is the in-memory state); the toolbar's
 undo and redo of a branch switch check out the other branch with no guard and
@@ -237,8 +206,7 @@ the preference failure; word the delete as recoverable; list every error; add
 failure shows an error with Retry, not the empty state; a failed preference save
 toasts; the guard test iterates seven states.
 
-**Dependencies:** `GIT-R01` keeps `outputs/` through Catch up and Spin off, so the
-confirm names no deletion.
+**Dependencies:** None.
 
 **Evidence:** `frontend/src/components/RemotePushControl.tsx`;
 `frontend/src/utils/vcHistory.ts`; `frontend/src/panels/git/useGitHistory.ts`;
@@ -268,96 +236,10 @@ panel.
 `frontend/src/panels/assistant/relativeTime.ts`;
 `frontend/src/utils/formatTime.ts`.
 
-### GIT-R09 — Restore a version as a save on the current branch
-**Why:** Going back to an earlier version is only possible as a Move.
-`move_to_commit` checks the commit out detached and clears the clone's working
-branch, so the next Save opens the branch chooser. Its default is the first
-eligible branch when the project is detached, and adopting a branch runs
-`resolve_ledger`, which checks out that branch's latest save: the version the
-analyst was undoing. The restore does not hold. On the test project on 27 October
-2026, a save had deleted 179 lines of `rating/config/polars/br_policy_features.json`.
-Getting the save before it back took six Move and return cycles in 22 minutes, two
-branches made and deleted, and finally "Create new branch" from the detached
-commit. The right-click actions do not serve either.
-- "New branch & move work here" is offered on pending saves. It replays the saves
-  after the chosen point onto the new branch, so the bad save travels with it, and
-  winds the old branch back.
-- "New branch from here" and then Switch gives the right files in two steps, but on
-  a new branch.
-
-No action writes an earlier version back onto the branch the analyst is on.
-
-**Plan:** `restore_version(sha)` in `_git_transactions.py`, under the repository
-lock, and `POST /api/git/restore-version` (`/restore` is the archived-branch
-restore) inside `pause_watcher`.
-- **What it refuses:**
-  - no working branch, or HEAD not on its ledger;
-  - no git identity, or a git operation in progress;
-  - tracked changes;
-  - a new file in the pipeline folder that the next Commit would sweep;
-  - an untracked or ignored file at a path the target holds, naming it;
-  - a target outside the current branch's history (its milestones, pending saves
-    and folded saves all count);
-  - a target whose tree equals the ledger tip's ("already this version").
-
-  The UI saves or discards first, as Move's confirm does. A new pipeline file is
-  saved first, so the restore removes it and the history keeps it.
-- **History first, files second:** `commit-tree <sha>^{tree} -p <ledger tip>`,
-  one parent, with the message `Restored <label>` and a `Restored-from: <sha>`
-  trailer, then `update-ref` the ledger with the old tip as its expected value.
-- **Then the files:** `git restore --source=HEAD --staged --worktree -- .`, which
-  writes changed files, brings back deleted ones and removes ones added since.
-  Untracked files, ignored files, `outputs/` and `.haute/` are left alone, and the
-  caches are cleared after the files are written (`GIT-R01`).
-- **If writing the files fails:** the history is already right, and the retry
-  writes the files alone (`GIT-R13`).
-- **The restore is an ordinary save:** no ref other than the ledger moves, the
-  branch is not left, and the next Commit folds the restore like any save.
-  `commit-tree` runs no hooks, as milestones do (`GIT-R06`).
-- **Reloading:** the server reloads the pipeline and the form afterwards
-  (`GIT-R12`). Until that lands, the page reloads as Move's does. Fable B
-  proposed only the page reload, and Codex the server reload, because a page
-  reload leaves the server's own caches stale.
-- **In the panel:** a Restore button beside View on every milestone and save row
-  of the current branch, and in the row menu.
-  - Its confirm reads "Restore <label>? Your branch carries on from this version.
-    The saves since then stay in the history." When the canvas or the form has
-    unsaved edits, it offers Save or Discard first.
-  - The result is the top pending save, "Restored <label>", recorded on the
-    toolbar's undo.
-- **Specifications:** update git-integration's Behaviour, Control flow, Failure
-  model and Testing, and the git UI's panel and modal sections.
-
-**Acceptance:** Take a branch whose last save broke a file. Restore on the save
-before it, and then:
-- readiness is `ready` and the working branch is unchanged;
-- one new pending save's tree equals the target's, and the bad save is still listed;
-- a file added since is gone, a file deleted since is back, and `.haute/` is
-  untouched.
-
-Restore with unsaved canvas edits asks first. A new pipeline file is saved first,
-an untracked file in the way is refused by name, and restoring the same version
-twice answers "already this version". A failure writing the files leaves the
-history right and a retry that completes. A Commit afterwards folds the restore.
-
-**Dependencies:** `GIT-R01` supplies the wipe that keeps `outputs/`; `GIT-R12`
-replaces the page reload; `GIT-R13` owns the retry after a failure writing the files.
-
-**Evidence:** `src/haute/_git_archive.py::move_to_commit`;
-`src/haute/_git_setup.py::resolve_ledger`;
-`src/haute/_git_setup.py::set_working_branch`;
-`src/haute/_git_transactions.py::create_working_branch`;
-`src/haute/_git_transactions.py::_replay_onto`;
-`src/haute/_git_transactions.py::commit_save`;
-`src/haute/_git_transactions.py::commit_milestone`;
-`frontend/src/components/WorkingBranchModal.tsx`;
-`frontend/src/components/MoveConfirmModal.tsx`;
-`frontend/src/panels/GitPanel.tsx`.
-
 ### GIT-R10 — Leaving an earlier version without a silent return
 **Why:** Four gaps meet an analyst who has Moved to an earlier version.
 - **The chooser:** after a Move the branch chooser starts on an existing branch,
-  and choosing it opens that branch's latest save without saying so (`GIT-R09`).
+  and choosing it opens that branch's latest save without saying so.
 - **No prompt:** startup opens no prompt for a detached project. The only cue
   after a Move is a one-time toast from `sessionStorage`, and after a restart or in
   a new tab it is the red "Detached at …" button.
@@ -408,8 +290,8 @@ replaces the page reload; `GIT-R13` owns the retry after a failure writing the f
 then a Switch. "New branch & move work here" moves the later saves rather than
 opening the chosen version. A save folded into a milestone is offered the fork
 menu, but `create_working_branch` refuses anything other than a first-parent
-milestone or a pending save. Move then remains the one-click way back, and it
-leaves the analyst on no branch (`GIT-R09`, `GIT-R10`).
+milestone or a pending save. Move then remains beside Restore on every row, and
+it leaves the analyst on no branch (`GIT-R10`).
 
 **Plan:**
 - **The engine:** add a mode of `create_working_branch` that makes the pair at the
@@ -419,10 +301,11 @@ leaves the analyst on no branch (`GIT-R09`, `GIT-R10`).
   applies.
 - **In the panel:** "Start a branch from this version" on every row and in the
   menu, then one naming step.
-- **Move goes:** once `GIT-R09` lands, Restore, Start a branch and View cover
-  Move's uses, and on 27 October 2026 the owner chose to remove it. That takes out:
-  - the row button and menu item, `MoveConfirmModal` and the store's
-    `requestMove`/`moveTarget`;
+- **Move goes:** Restore, Start a branch and View cover Move's uses, and on 27
+  October 2026 the owner chose to remove it. That takes out:
+  - the row button and menu item, the move half of `MoveConfirmModal` (renamed
+    for the restore it keeps), the store's `requestMove`/`moveTarget` and the
+    move branch of `App.tsx`'s `handleVersionConfirmed`;
   - the after-move toast, `move_to_commit` and `POST /api/git/move`;
   - Move in both git specifications ("go back to an earlier version" becomes
     Restore).
@@ -434,7 +317,7 @@ leaves the analyst on no branch (`GIT-R09`, `GIT-R10`).
 at that version in one step, and the previous branch's milestones and saves are
 unchanged. Neither the rows, the menu nor the API offers Move.
 
-**Dependencies:** `GIT-R09`.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_git_transactions.py::create_working_branch`;
 `src/haute/_git_transactions.py::_on_first_parent`;
@@ -492,7 +375,8 @@ clone-state clear with no rollback.
 - **What gets recorded:** the next Commit's sweep records the mixed tree.
 - **The other checkouts:** `set_working_branch`'s checkouts roll back with another
   checkout, which can fail on the same lock.
-- **The in-progress check:** `_assert_no_git_op_in_progress` guards Move only.
+- **The in-progress check:** `_assert_no_git_op_in_progress` guards only Move and
+  Restore.
 
 What git leaves when Windows refuses a file part-way has not been probed, and no
 test injects a failed checkout.

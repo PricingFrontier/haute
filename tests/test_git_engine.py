@@ -46,6 +46,7 @@ from haute._git import (
     pending_ledger_saves,
     push_working_pair,
     resolve_ledger,
+    restore_version,
     restore_working_pair,
     set_identity,
     set_working_branch,
@@ -1458,16 +1459,17 @@ class TestMoveToCommit:
         with pytest.raises(GitDomainError):
             move_to_commit("--hard", repo, cwd=repo)
 
-    def test_wipes_volatile_artefacts(self, repo: Path) -> None:
+    def test_wipes_caches_and_keeps_results(self, repo: Path) -> None:
         sha1, _ = self._two_saves(repo)
         cache = repo / ".haute_cache"
         cache.mkdir()
         (cache / "stale.parquet").write_text("junk")
-        out = repo / "outputs"
-        out.mkdir()
-        (out / "result.parquet").write_text("junk")
-        # Optimiser results were published to output/ by default, and Apply
-        # Optimisation prices from them: a move must not delete them.
+        # outputs/ holds the analyst's local results, which git cannot bring back;
+        # optimiser results were published to output/ by default, and Apply
+        # Optimisation prices from them. A move deletes neither.
+        result = repo / "outputs" / "result.parquet"
+        result.parent.mkdir()
+        result.write_text("kept")
         published = repo / "output" / "optimiser_opt_1.json"
         published.parent.mkdir()
         published.write_text("{}")
@@ -1475,8 +1477,30 @@ class TestMoveToCommit:
         move_to_commit(sha1, repo, cwd=repo)
 
         assert not cache.exists()
-        assert not out.exists()
+        assert result.read_text() == "kept"
         assert published.read_text() == "{}"
+
+    def test_failed_checkout_wipes_nothing(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import haute._git_archive as git_archive
+
+        sha1, _ = self._two_saves(repo)
+        cache = repo / ".haute_cache"
+        cache.mkdir()
+        real_run_git = git_archive._run_git
+
+        def refuse_checkout(*args: str, **kwargs: object) -> str:
+            if args[0] == "checkout":
+                raise GitError("unable to unlink 'rating.py': Permission denied")
+            return real_run_git(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(git_archive, "_run_git", refuse_checkout)
+
+        with pytest.raises(GitError):
+            move_to_commit(sha1, repo, cwd=repo)
+
+        assert cache.exists()
 
     def test_first_save_after_move_spawns_fresh_pair(self, repo: Path) -> None:
         """S13: after a move, set_working_branch(create=True) spawns a new
@@ -1498,6 +1522,191 @@ class TestMoveToCommit:
         assert new_save is not None
         # The save sits atop the moved-to commit on the fresh ledger.
         assert sha1 in _parents(repo, "fresh-line-save")
+
+
+class TestRestoreVersion:
+    """Restore: an earlier version written back as one new save on the current
+    branch, history recorded before the files are written."""
+
+    def _saves(self, repo: Path) -> tuple[str, str]:
+        """Adopt WORKING and land two saves; the second changes, deletes and adds a
+        file. Return (first_sha, second_sha)."""
+        set_working_branch(WORKING, repo, cwd=repo)
+        sha1 = _write_and_save(
+            repo, WORKING, {"rating.py": "# v1\n", "keep.txt": "keep\n", "gone.txt": "old\n"}
+        )
+        (repo / "rating.py").write_text("# v2\n")
+        (repo / "added.txt").write_text("new\n")
+        (repo / "gone.txt").unlink()
+        sha2 = commit_save(["rating.py", "added.txt", "gone.txt"], WORKING, cwd=repo)
+        assert sha1 and sha2
+        assert "gone.txt" not in _git(repo, "ls-tree", "--name-only", sha2)
+        return sha1, sha2
+
+    def test_restores_a_save_as_one_new_save_on_the_branch(self, repo: Path) -> None:
+        from haute._git_state import read_working_branch
+
+        sha1, sha2 = self._saves(repo)
+        working_tip = _git(repo, "rev-parse", WORKING)
+        (repo / "notes.txt").write_text("mine\n")  # untracked, outside any sweep
+        (repo / ".haute_cache").mkdir()
+        result = repo / "outputs" / "result.parquet"
+        result.parent.mkdir()
+        result.write_text("kept")
+
+        resp = restore_version(sha1, repo, cwd=repo)
+
+        assert resp.restored_from == sha1
+        assert resp.working_branch == WORKING
+        assert resp.sha == _git(repo, "rev-parse", LEDGER)
+        assert resp.short_sha == resp.sha[:8]
+        # One new save on the same ledger, the later saves kept beneath it.
+        assert _parents(repo, LEDGER) == [sha2]
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
+        assert read_working_branch(repo) == WORKING
+        assert _git(repo, "rev-parse", WORKING) == working_tip
+        assert _tree(repo, LEDGER) == _tree(repo, sha1)
+        subject = _git(repo, "log", "-1", "--format=%s", LEDGER)
+        original = _git(repo, "log", "-1", "--format=%s", sha1)
+        assert subject == f"Restored {sha1[:8]}: {original}"
+        assert f"Restored-from: {sha1}" in _git(repo, "log", "-1", "--format=%B", LEDGER)
+        # The files are the earlier version's: changed back, deleted ones returned,
+        # ones added since removed, and nothing left unrecorded.
+        assert (repo / "rating.py").read_text() == "# v1\n"
+        assert (repo / "gone.txt").read_text() == "old\n"
+        assert not (repo / "added.txt").exists()
+        assert _git(repo, "status", "--porcelain", "--untracked-files=no") == ""
+        # Untracked files, .haute/ and the analyst's results stay; caches go.
+        assert (repo / "notes.txt").read_text() == "mine\n"
+        assert (repo / ".haute" / "state.json").exists()
+        assert result.read_text() == "kept"
+        assert not (repo / ".haute_cache").exists()
+
+    def test_restores_a_milestone_and_a_save_folded_into_one(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v1\n"})
+        first = commit_milestone("First", repo, cwd=repo).sha
+        folded = _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        _write_and_save(repo, WORKING, {"rating.py": "# v3\n"})
+        commit_milestone("Second", repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v4\n"})
+        assert folded is not None
+
+        restore_version(first, repo, cwd=repo)
+        assert (repo / "rating.py").read_text() == "# v1\n"
+        assert _tree(repo, LEDGER) == _tree(repo, first)
+
+        restore_version(folded, repo, cwd=repo)
+        assert (repo / "rating.py").read_text() == "# v2\n"
+        assert _tree(repo, LEDGER) == _tree(repo, folded)
+
+    def test_records_unrecorded_work_first(self, repo: Path) -> None:
+        sha1, sha2 = self._saves(repo)
+        (repo / "rating.py").write_text("# edited outside Haute\n")
+        new_file = repo / "rating" / "files" / "rates.csv"
+        new_file.parent.mkdir(parents=True)
+        new_file.write_text("a,b\n")
+
+        restore_version(sha1, repo, cwd=repo, pipeline_folder="rating")
+
+        swept = _parents(repo, LEDGER)[0]
+        assert _parents(repo, swept) == [sha2]
+        assert _git(repo, "log", "-1", "--format=%s", swept) == "Updated project files"
+        assert _git(repo, "show", f"{swept}:rating.py") == "# edited outside Haute"
+        assert _git(repo, "show", f"{swept}:rating/files/rates.csv") == "a,b"
+        assert not new_file.exists()
+        assert (repo / "rating.py").read_text() == "# v1\n"
+
+    def test_current_version_is_refused(self, repo: Path) -> None:
+        _, sha2 = self._saves(repo)
+
+        with pytest.raises(GitDomainError, match="already the current version"):
+            restore_version(sha2, repo, cwd=repo)
+
+        assert _git(repo, "rev-parse", LEDGER) == sha2
+
+    def test_current_version_with_edits_on_disk_records_and_clears_them(self, repo: Path) -> None:
+        _, sha2 = self._saves(repo)
+        (repo / "rating.py").write_text("# edited outside Haute\n")
+
+        restore_version(sha2, repo, cwd=repo)
+
+        assert _git(repo, "log", "-1", "--format=%s", f"{LEDGER}~1") == "Updated project files"
+        assert (repo / "rating.py").read_text() == "# v2\n"
+        assert _tree(repo, LEDGER) == _tree(repo, sha2)
+
+    def test_commit_outside_the_branch_is_refused(self, repo: Path) -> None:
+        _, sha2 = self._saves(repo)
+        _git(repo, "checkout", "-q", "-b", "elsewhere", "main")
+        (repo / "other.txt").write_text("x\n")
+        _git(repo, "add", "other.txt")
+        _git(repo, "commit", "-q", "-m", "elsewhere")
+        elsewhere = _git(repo, "rev-parse", "HEAD")
+        _git(repo, "checkout", "-q", LEDGER)
+
+        with pytest.raises(GitDomainError, match="this branch's history"):
+            restore_version(elsewhere, repo, cwd=repo)
+
+        assert _git(repo, "rev-parse", LEDGER) == sha2
+
+    def test_file_in_the_way_is_refused_by_name(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        sha1 = _write_and_save(repo, WORKING, {"extra.txt": "versioned\n"})
+        (repo / "extra.txt").unlink()
+        sha2 = commit_save(["extra.txt"], WORKING, cwd=repo)
+        assert sha1 and sha2
+        (repo / "extra.txt").write_text("local copy\n")
+
+        with pytest.raises(GitDomainError, match="extra.txt"):
+            restore_version(sha1, repo, cwd=repo)
+
+        assert (repo / "extra.txt").read_text() == "local copy\n"
+        assert _git(repo, "rev-parse", LEDGER) == sha2
+
+    def test_refused_without_identity(self, repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        sha1, sha2 = self._saves(repo)
+        monkeypatch.setattr(git_transactions, "get_identity", lambda cwd=None: (None, None))
+
+        with pytest.raises(GitDomainError, match="git identity"):
+            restore_version(sha1, repo, cwd=repo)
+
+        assert _git(repo, "rev-parse", LEDGER) == sha2
+
+    def test_refused_while_a_git_operation_is_in_progress(self, repo: Path) -> None:
+        sha1, _ = self._saves(repo)
+        (repo / ".git" / "MERGE_HEAD").write_text(sha1 + "\n")
+
+        with pytest.raises(GitDomainError, match="in progress"):
+            restore_version(sha1, repo, cwd=repo)
+
+    def test_refused_without_a_working_branch(self, repo: Path) -> None:
+        with pytest.raises(GitDomainError, match="No working branch"):
+            restore_version("HEAD", repo, cwd=repo)
+
+    @pytest.mark.parametrize("sha", ["--hard", "0" * 40])
+    def test_refuses_a_ref_that_is_not_a_commit(self, repo: Path, sha: str) -> None:
+        self._saves(repo)
+        with pytest.raises(GitDomainError):
+            restore_version(sha, repo, cwd=repo)
+
+    def test_failure_writing_the_files_leaves_the_restore_recorded(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sha1, sha2 = self._saves(repo)
+        real_run_git = git_transactions._run_git
+
+        def refuse_restore(*args: str, **kwargs: object) -> str:
+            if args[0] == "restore":
+                raise GitError("unable to unlink 'rating.py': Permission denied")
+            return real_run_git(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(git_transactions, "_run_git", refuse_restore)
+
+        with pytest.raises(GitError):
+            restore_version(sha1, repo, cwd=repo)
+
+        assert _parents(repo, LEDGER) == [sha2]
+        assert _tree(repo, LEDGER) == _tree(repo, sha1)
 
 
 class TestCommitMilestone:

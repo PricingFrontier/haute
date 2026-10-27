@@ -16,7 +16,7 @@ import {
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 
-import { moveToVersion } from "./api/client"
+import { moveToVersion, restoreVersion } from "./api/client"
 import { nodeTypes } from "./utils/nodeTypeRegistry"
 import NodePalette from "./panels/NodePalette"
 import NodePanel from "./panels/NodePanel"
@@ -70,6 +70,7 @@ import useSettingsStore from "./stores/useSettingsStore"
 import useUIStore from "./stores/useUIStore"
 import useGraphStore from "./stores/useGraphStore"
 import useGitStore from "./stores/useGitStore"
+import type { GitVersionAction } from "./stores/useGitStore"
 import { captureUncaptured } from "./stores/saveCapture"
 import useToastStore from "./stores/useToastStore"
 import useWorkbenchStore from "./stores/useWorkbenchStore"
@@ -169,6 +170,8 @@ const proOptions = { hideAttribution: true }
 // the next startup so it can confirm the move (toast) and skip the auto branch
 // prompt — the moved-to detached HEAD is intended, not a divergence (P6 §3.4).
 const JUST_MOVED_KEY = "haute:justMoved"
+// The same one-shot flag for a restore, so the reloaded page can say what was restored.
+const JUST_RESTORED_KEY = "haute:justRestored"
 
 const edgeJoinSwapFailureMessages: Record<EdgeJoinSwapInputsFailureReason, string> = {
   "edge-join-node-not-found": "Edge join swap rejected: selected edge join is no longer available",
@@ -385,7 +388,7 @@ type FlowEditorOverlaysProps = {
   onCreateInstance: ComponentProps<typeof ContextMenu>["onCreateInstance"]
   onDissolveSubmodel: ComponentProps<typeof ContextMenu>["onDissolveSubmodel"]
   onGitModalConfirmed: () => void
-  onMoveConfirmed: (saveFirst: boolean) => Promise<void>
+  onVersionConfirmed: (kind: GitVersionAction, saveFirst: boolean) => Promise<void>
   onCreateSubmodel: (name: string, nodeIds: string[]) => Promise<SubmodelCreateResult>
   onRenameNode: (nodeId: string, label: string) => Promise<OnUpdateConfigResult>
   pipelineRepairTarget: PipelineRepairTarget | null
@@ -406,7 +409,7 @@ function FlowEditorOverlays({
   onCreateInstance,
   onDissolveSubmodel,
   onGitModalConfirmed,
-  onMoveConfirmed,
+  onVersionConfirmed,
   onCreateSubmodel,
   onRenameNode,
   pipelineRepairTarget,
@@ -428,6 +431,8 @@ function FlowEditorOverlays({
   const closeGitModal = useGitStore((state) => state.closeModal)
   const moveTarget = useGitStore((state) => state.moveTarget)
   const closeMove = useGitStore((state) => state.closeMove)
+  const restoreTarget = useGitStore((state) => state.restoreTarget)
+  const closeRestore = useGitStore((state) => state.closeRestore)
 
   return (
     <>
@@ -475,7 +480,19 @@ function FlowEditorOverlays({
       )}
       {moveTarget && (
         <Suspense fallback={null}>
-          <MoveConfirmModal onConfirm={onMoveConfirmed} onClose={closeMove} />
+          <MoveConfirmModal
+            onConfirm={(saveFirst) => onVersionConfirmed("move", saveFirst)}
+            onClose={closeMove}
+          />
+        </Suspense>
+      )}
+      {restoreTarget && (
+        <Suspense fallback={null}>
+          <MoveConfirmModal
+            kind="restore"
+            onConfirm={(saveFirst) => onVersionConfirmed("restore", saveFirst)}
+            onClose={closeRestore}
+          />
         </Suspense>
       )}
       {submodelDialog && (
@@ -1015,6 +1032,11 @@ function FlowEditor() {
   useEffect(() => {
     const justMoved = sessionStorage.getItem(JUST_MOVED_KEY)
     if (justMoved !== null) sessionStorage.removeItem(JUST_MOVED_KEY)
+    const justRestored = sessionStorage.getItem(JUST_RESTORED_KEY)
+    if (justRestored !== null) {
+      sessionStorage.removeItem(JUST_RESTORED_KEY)
+      addToast("success", `Restored ${justRestored} as a new save.`)
+    }
     void loadGitReadiness().then((st) => {
       if (justMoved !== null) {
         addToast("info", `Moved to ${justMoved} - save to start a new version line here.`)
@@ -1427,26 +1449,37 @@ function FlowEditor() {
     else if (pending === "commit") void flushSaveThenMilestone()
   }, [flushSaveThenMilestone, saveProject])
 
-  // Moving versions replaces the working tree. If requested, park the fenced
-  // graph on the current branch first; a failed save keeps the user in place.
-  const handleMoveConfirmed = useCallback(
-    async (saveFirst: boolean) => {
-      const target = useGitStore.getState().moveTarget
+  // Moving to or restoring a version replaces the files. If requested, park the
+  // fenced graph on the current branch first; a failed save keeps the user in place.
+  // Either reloads on success, so the client starts again from the files on disk.
+  const handleVersionConfirmed = useCallback(
+    async (kind: GitVersionAction, saveFirst: boolean) => {
+      const git = useGitStore.getState()
+      const target = kind === "move" ? git.moveTarget : git.restoreTarget
+      const close = kind === "move" ? git.closeMove : git.closeRestore
       if (!target) return
       try {
         if (saveFirst && !await saveProject()) {
           addToast("error", "Save failed - staying on the current version.")
-          useGitStore.getState().closeMove()
+          close()
           return
         }
-        await moveToVersion(target.sha)
-        sessionStorage.setItem(JUST_MOVED_KEY, target.label)
+        if (kind === "move") {
+          await moveToVersion(target.sha)
+          sessionStorage.setItem(JUST_MOVED_KEY, target.label)
+        } else {
+          await restoreVersion(target.sha)
+          sessionStorage.setItem(JUST_RESTORED_KEY, target.label)
+        }
         window.location.reload()
       } catch (err: unknown) {
         const { apiErrorMessage } = await import("./api/errors")
         const detail = apiErrorMessage(err, "unknown error")
-        addToast("error", `Could not move to this version: ${detail}`)
-        useGitStore.getState().closeMove()
+        addToast(
+          "error",
+          `Could not ${kind === "move" ? "move to" : "restore"} this version: ${detail}`,
+        )
+        close()
       }
     },
     [addToast, saveProject],
@@ -2184,7 +2217,7 @@ function FlowEditor() {
         onCreateInstance={handleCreateInstance}
         onDissolveSubmodel={handleDissolveSubmodel}
         onGitModalConfirmed={handleGitModalConfirmed}
-        onMoveConfirmed={handleMoveConfirmed}
+        onVersionConfirmed={handleVersionConfirmed}
         onCreateSubmodel={handleCreateSubmodel}
         onRenameNode={onRenameNode}
         pipelineRepairTarget={pipelineRepairTarget}

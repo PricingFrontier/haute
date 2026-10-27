@@ -1012,6 +1012,12 @@ export interface GitMoveResponse {
   sha: string;
   short_sha: string;
 }
+export interface GitRestoreVersionResponse {
+  restored_from: string;
+  sha: string;
+  short_sha: string;
+  working_branch: string;
+}
 export interface GitCommitResponse {
   sha: string;
   short_sha: string;

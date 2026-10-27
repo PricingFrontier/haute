@@ -58,6 +58,7 @@ import {
   getCommitPipeline,
   getCommitContext,
   moveToVersion,
+  restoreVersion,
   listUtilityFiles,
   readUtilityFile,
   createUtilityFile,
@@ -1392,6 +1393,22 @@ describe("git remote catch-up + history endpoints", () => {
     expect(opts.method).toBe("POST")
     expect(JSON.parse(opts.body)).toEqual({ sha: "a".repeat(40) })
     expect(result.is_detached).toBe(true)
+  })
+
+  it("restoreVersion POSTs /api/git/restore-version with the sha", async () => {
+    const data = {
+      sha: "b".repeat(40),
+      short_sha: "bbbbbbbb",
+      restored_from: "a".repeat(40),
+      working_branch: "dev",
+    }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await restoreVersion("a".repeat(40))
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/restore-version")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({ sha: "a".repeat(40) })
+    expect(result.restored_from).toBe("a".repeat(40))
   })
 })
 

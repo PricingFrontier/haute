@@ -9,7 +9,7 @@
 | `frontend/src/panels/gitPanelCache.ts` | Module-level session caches (`branchHistory`, `milestoneSaves`, whole-forest `graphCache`) with LRU eviction, feeding `useGitHistory`'s stale-while-revalidate hydration and unchanged-payload short-circuit. |
 | `frontend/src/panels/gitgraph/layout.ts` | Pure layout: `computeGitGraphLayout` turns a `GitGraphResponse` + the panel's row list into a `RailModel` (lanes, dots, curves, magnifiers, spawn stubs); `computeRailRuns` consolidates per-row cells into whole-length vertical line segments. No DOM, no fetch. |
 | `frontend/src/panels/gitgraph/GraphCell.tsx` | Rendering: `GraphRailCell` (per-row SVG cell), `GraphRailOverlay` (the measured whole-box overlay of consolidated runs), `GraphRailHeader` (top departing-branch chip strip), `Magnifier`. Pure presentation over `frontend/src/panels/gitgraph/layout.ts` types. |
-| `frontend/src/stores/useGitStore.ts` | Zustand store: working-branch readiness + retry error, shared branch-list state/action, modal routing (`GitModalMode`), peek/comparison/move targets, the refresh-triggering nonces (`historyNonce`, `commitNonce`, `branchesExpandNonce`), and `uncaptured`, the files writes reported left off the ledger, kept for a capture. |
+| `frontend/src/stores/useGitStore.ts` | Zustand store: working-branch readiness + retry error, shared branch-list state/action, modal routing (`GitModalMode`), peek/comparison/move/restore targets, the refresh-triggering nonces (`historyNonce`, `commitNonce`, `branchesExpandNonce`), and `uncaptured`, the files writes reported left off the ledger, kept for a capture. |
 | `frontend/src/stores/saveCapture.ts` | `reportSaveCapture`: what a write answered about its version capture, reported the same way for every write (the pipeline's save, the form's save, a Pipeline file written or deleted) — the ledger commit onto the status for the branch indicator through `setLastSaveSha` (left as it is when the answer has no commit field), `notifyHistoryChanged` so an open panel refetches, the answer's `uncaptured` files added, each once, to the git store's `uncaptured`, each warning in a toast of its own, and the identity modal opened on `identity_required` unless it was dismissed this session (`isIdentityPromptDismissed`) or is already open. `captureUncaptured`: nothing while nothing is kept; else the kept files taken off the store, sent to `POST /api/git/capture` (`captureFiles`) and the answer reported, so a file still uncaptured is kept again, while a request that fails keeps them all and toasts "Version capture failed: <reason>"; the identity prompt calls it once an identity is recorded and the project save at its start. |
 | `frontend/src/stores/gitBranchLoader.ts` | Lazily loaded branch-list request coordinator. It publishes results into `useGitStore` while delegating the in-flight/queued-refresh bookkeeping to `singleFlight.ts`, keeping branch-only client code out of the initial editor bundle. |
 | `frontend/src/stores/singleFlight.ts` | Shared resettable single-flight utility: request joining, the trailing-refresh queue (exactly one follow-up per active request, generation-anchored), and the stalled-request watchdog. Consumed by `useGitStore.ts` (working-branch status) and `gitBranchLoader.ts` (branch list). Test seam: both stores' `reset…ForTests` exports delegate to its `reset()`. |
@@ -19,7 +19,7 @@
 | `frontend/src/components/GitNavigationConfirm.tsx` | Shared clean/dirty navigation confirmation used by branch-manager and graph-lane switches plus Create & Move; dirty mode offers Cancel, Discard, and Save first. |
 | `frontend/src/components/CommitBreadcrumb.tsx` | `CommitBreadcrumb` (version-relative label for a comparison canvas) and `ComparisonDelta` (historic↔current commit-count chip). |
 | `frontend/src/components/MilestoneCommitModal.tsx` | Commit modal: required message (500-character maximum with visible validation) + version label form, and the 409 fork-warning override flow. |
-| `frontend/src/components/MoveConfirmModal.tsx` | Pre-move save/discard/confirm prompt: reads `useGitStore.moveTarget` for the target label and `useProjectDirty` (the canvas's or the workbench's form's unsaved edits) to decide single-confirm vs. save-or-discard, and locks buttons plus Escape/backdrop close (`busy`) once clicked while the caller performs the actual move. |
+| `frontend/src/components/MoveConfirmModal.tsx` | The save/discard/confirm prompt before a move or, with `kind="restore"`, a restore: reads `useGitStore.moveTarget` or `restoreTarget` for the target label, the wording and the test ids by its `kind`, and `useProjectDirty` (the canvas's or the workbench's form's unsaved edits) to decide single-confirm vs. save-or-discard, and locks buttons plus Escape/backdrop close (`busy`) once clicked while the caller performs the actual move or restore. |
 | `frontend/src/components/WorkingBranchModal.tsx` | Startup / save-gate branch-selection modal, with an inline git-identity sub-form. |
 | `frontend/src/components/RemotePushControl.tsx` | Remote dropdown, ahead/behind + ledger-divergence display, explicit push (including empty-remote default-bootstrap tooltip/toast and the pending-save integrity confirm), catch-up, the non-fast-forward `PushRejectedModal`, `AheadBehind`/`LedgerStatus`/`RejectedLeg` sub-components. |
 | `frontend/src/components/DivergenceModal.tsx` | Recorded-branch-vs-HEAD divergence recovery modal (go home / stay here / open branch manager). |
@@ -31,9 +31,9 @@
 **`GitModalMode`** (`frontend/src/stores/useGitStore.ts`) — `"select" | "divergence" | "milestone" | "storage" | "upstream" | "identity"`; which gating modal is open (`null` means none). The first three drive `WorkingBranchModal`, `DivergenceModal`, and `MilestoneCommitModal`; `"storage"`, `"upstream"`, and `"identity"` are routed by the hosted-project-storage surface (`StorageBindModal`, `UpstreamSyncModal`, and `IdentityPromptModal`).
 
 **`GitComparison`** — `{ sha: string; label: string }`. Dual-purpose: `comparison` (the
-read-only side-by-side target) and `moveTarget` (the pending move, gated by
-`MoveConfirmModal` — see Module map) are both typed as this shape but are distinct store
-fields with independent lifecycles.
+read-only side-by-side target), `moveTarget` (the pending move) and `restoreTarget` (the
+pending restore, both gated by `MoveConfirmModal` — see Module map) are all typed as this
+shape but are distinct store fields with independent lifecycles.
 
 **`GitPendingAction`** — `"save" | "commit" | null`; an action queued behind a
 `WorkingBranchModal` confirmation (the save-gate).
@@ -218,11 +218,26 @@ server-side.
 modal itself performs no API call: clicking any of its buttons sets a local `busy` flag
 (blocking double-submission) and calls the caller-supplied `onConfirm(saveFirst)` —
 `saveFirst` is `true` only for the dirty-project "Save & move" button, `false` for a
-clean-canvas confirm or an explicit "Discard & move". `App.tsx`'s `handleMoveConfirmed` owns
+clean-canvas confirm or an explicit "Discard & move". `App.tsx`'s `handleVersionConfirmed` owns
 the actual sequencing: optionally flushing unsaved edits via `handleSave()`, then calling the
 `moveToVersion` API and reloading the page on success (a move replaces the whole working tree,
 so the client re-initialises from scratch rather than reconciling in place) — or closing the
 modal (`closeMove`) and toasting on either a failed save or a failed move.
+
+**Restore flow.** `GitPanel`'s restore affordances (the row button and the row menu's
+"Restore this version") call `useGitStore.requestRestore({sha, label})`.
+- **Where they show:** on the current branch's own history only (not while peeking), and
+  never on the current version. That is `pending[0]`, or with nothing pending
+  `milestones[0]` and the first (newest) save expanded under it.
+- **The modal:** `App.tsx` surfaces the target as `MoveConfirmModal` with
+  `kind="restore"`. The move and the restore share one handler,
+  `handleVersionConfirmed(kind, saveFirst)`. It optionally saves first, then calls
+  `moveToVersion` or `restoreVersion` (`POST /api/git/restore-version`).
+- **On success:** it records the label under `JUST_MOVED_KEY` or `JUST_RESTORED_KEY` in
+  `sessionStorage` and reloads the page. The reloaded page toasts "Restored <label> as a new
+  save." for a restore.
+- **On failure:** it toasts "Could not restore this version: <reason>" (or "Could not move
+  to this version: <reason>") and closes the modal, through `closeRestore` or `closeMove`.
 
 **Remote push flow.** `RemotePushControl` loads configured remotes and their locally-known
 divergence, and auto-selects only a sole remote. That GET never fetches. Project
@@ -362,9 +377,10 @@ or a failed push.
   modal renders outside the empty/error body so refresh failure cannot dismiss an
   in-progress recovery flow.
 - `MoveConfirmModal` itself throws and catches nothing — it is a stateless (aside from
-  `busy`) confirm surface. The move's actual try/catch (a failed `handleSave()`, a failed
-  `moveToVersion` call) lives in `App.tsx`'s `handleMoveConfirmed`, which toasts and calls
-  `closeMove()` on either failure rather than leaving the modal open in a stuck busy state.
+  `busy`) confirm surface. The actual try/catch of a move or restore (a failed
+  `handleSave()`, a failed `moveToVersion` or `restoreVersion` call) lives in `App.tsx`'s
+  `handleVersionConfirmed`, which toasts and calls `closeMove()` or `closeRestore()` on
+  either failure rather than leaving the modal open in a stuck busy state.
 - `useGitStore.loadStatus()` catches failures into `statusError` using the shared Git
   formatter while retaining its last successful `status`. A successful retry clears the
   error. A first-load failure and a successful `state: "no-repository"` response therefore
@@ -389,7 +405,10 @@ Library component/unit tests (no e2e for this surface).
   peeking's effect on menu contents, the fork-creation dialog, the graph rail's dots/
   stubs/chips/magnifier, lane and dot context menus, in-app branch switching from the
   lane menu (including the dirty-canvas guard, and the workbench's form's edits dropped
-  once a lane switch chosen over them succeeds), and the peek in-flight mislabel guard.
+  once a lane switch chosen over them succeeds), the peek in-flight mislabel guard, and the
+  restore affordance: shown on older milestones, pending and folded saves, absent on the
+  current version and while peeking, the row button and menu item requesting a restore of
+  that row.
 - **`frontend/src/panels/__tests__/GitPanel.gaps.test.tsx`** — targeted gap-fill: fork-with-switch page reload, fork
   failure toast, fork-with-move submission, the view affordance opening a comparison,
   peeking's menu contents (a second angle on the same invariant as the main suite).
@@ -425,8 +444,8 @@ Library component/unit tests (no e2e for this surface).
   failure with retained actionable detail, concurrent readiness-request de-duplication,
   shared branch publication and request de-duplication, modal open/close and pending-
   action interaction (including the close-clears-pending-action regression), peek
-  set/clear, each nonce incrementing exactly once per action, comparison and move-target
-  toggling.
+  set/clear, each nonce incrementing exactly once per action, comparison, move-target and
+  restore-target toggling.
 - **`frontend/src/components/__tests__/BranchManager.test.tsx`** — listing (current/others/archived),
   peek-without-switch, create (with and without move, including the move confirm step),
   switch confirmation (including persisted "don't ask again") and its in-app (no-reload)
@@ -454,11 +473,14 @@ Library component/unit tests (no e2e for this surface).
   `onConfirm(true)`/`onConfirm(false)` respectively with the warning message shown, the
   same pair for unsaved edits in the workbench's form alone, Cancel
   calling `onClose` without confirming, busy Escape/backdrop dismissal refusal, and
-  rendering nothing when `moveTarget` is `null`.
-- **`frontend/src/__tests__/App.integration.test.tsx`** — the parent-owned move transaction rejects a
-  failed `moveToVersion` request with an error toast and clears `moveTarget`, proving the
-  busy-locked `MoveConfirmModal` cannot remain stranded after its promise settles; and Save
-  captures the files earlier writes left uncaptured before it saves the pipeline.
+  rendering nothing when `moveTarget` is `null`; with `kind="restore"`, the restore wording
+  and buttons read from `restoreTarget`.
+- **`frontend/src/__tests__/App.integration.test.tsx`** — the parent-owned move and restore
+  transactions reject a failed `moveToVersion` or `restoreVersion` request with an error
+  toast and clear `moveTarget` or `restoreTarget`, proving the busy-locked
+  `MoveConfirmModal` cannot remain stranded after its promise settles; a restore that
+  succeeds reloads and the reloaded page toasts the restore; and Save captures the files
+  earlier writes left uncaptured before it saves the pipeline.
 - **`frontend/src/components/__tests__/MilestoneCommitModal.test.tsx`** — submit gating on message
   presence, visible validation above the 500-character maximum, successful commit
   with/without a version label, the 409 fork-warning → commit-anyway override flow, and

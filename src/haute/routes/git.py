@@ -42,6 +42,7 @@ from haute._git import (
     move_to_commit,
     pending_ledger_saves,
     push_working_pair,
+    restore_version,
     restore_working_pair,
     set_identity,
     set_prefs,
@@ -90,6 +91,8 @@ from haute.schemas import (
     GitRemotesResponse,
     GitRestoreRequest,
     GitRestoreResponse,
+    GitRestoreVersionRequest,
+    GitRestoreVersionResponse,
     GitSetIdentityRequest,
     GitSetIdentityResponse,
     GitSetWorkingBranchRequest,
@@ -225,6 +228,27 @@ def git_move(body: GitMoveRequest) -> GitMoveResponse:
     the working branch, so the next save spawns a fresh one (S13)."""
     with pause_watcher():
         return move_to_commit(body.sha, Path.cwd())
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/restore-version — an earlier version back as a new save
+# ---------------------------------------------------------------------------
+
+
+@router.post("/restore-version", response_model=GitRestoreVersionResponse)
+def git_restore_version(body: GitRestoreVersionRequest) -> GitRestoreVersionResponse:
+    """Restore a milestone or save of the current branch as one new save on it.
+
+    The watcher is paused while the files are rewritten (S30). What is on disk is
+    recorded first, the restore save next, the files last; the branch is not left.
+    The new saves are published like any save's when the project is bound to
+    durable storage."""
+    with pause_watcher():
+        response = restore_version(
+            body.sha, Path.cwd(), pipeline_folder=pipeline_folder(Path.cwd())
+        )
+    _project_storage.enqueue_push()
+    return response
 
 
 # ---------------------------------------------------------------------------

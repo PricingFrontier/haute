@@ -36,11 +36,11 @@ PROTECTED_BRANCHES = DEFAULT_PROTECTED_BRANCHES
 _BRANCH_PREFIX = "pricing"
 _ARCHIVE_PREFIX = "archive"
 
-# Not ``output``: optimiser results were published there by default, and Apply
-# Optimisation prices from them.
+# Reconstructable caches only. Not ``outputs``: the analyst's local results, which
+# git cannot bring back. Not ``output``: optimiser results were published there by
+# default, and Apply Optimisation prices from them.
 _VOLATILE_ARTEFACTS = (
     "__pycache__",
-    "outputs",
     ".haute_cache",
     ".cache",
     ".pytest_cache",
@@ -1005,8 +1005,7 @@ def _assert_no_git_op_in_progress(cwd: Path | None = None) -> None:
     )
     if in_progress:
         raise GitDomainError(
-            "A git operation is in progress; finish or abort it outside haute "
-            "before moving to another version."
+            "A git operation is in progress; finish or abort it outside Haute first."
         )
 
 

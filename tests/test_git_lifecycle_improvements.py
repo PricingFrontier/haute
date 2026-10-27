@@ -137,6 +137,8 @@ def test_fast_forward_failure_restores_both_refs_head_and_worktree(
     old_working = _git(repo, "rev-parse", WORKING)
     old_ledger = _git(repo, "rev-parse", LEDGER)
     old_content = (repo / "rating.py").read_text()
+    # Caches are wiped only once the caught-up tree is in place.
+    (repo / ".haute_cache").mkdir()
     real_run = git_remote._run_git
 
     def fail_working_cas(*args: str, **kwargs: object) -> str:
@@ -153,6 +155,7 @@ def test_fast_forward_failure_restores_both_refs_head_and_worktree(
     assert _git(repo, "rev-parse", LEDGER) == old_ledger
     assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
     assert (repo / "rating.py").read_text() == old_content
+    assert (repo / ".haute_cache").is_dir()
 
 
 def test_fast_forward_raises_transaction_error_when_ledger_compensation_fails(

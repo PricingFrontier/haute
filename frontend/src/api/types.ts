@@ -1607,6 +1607,7 @@ export type {
   GitRemoteLeg,
   GitRemotesResponse,
   GitRestoreResponse,
+  GitRestoreVersionResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
   GitStorageBind,

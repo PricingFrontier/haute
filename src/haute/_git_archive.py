@@ -86,15 +86,16 @@ def move_to_commit(sha: str, project_root: Path, cwd: Path | None = None) -> Git
 
     prior_branch = _get_current_branch(cwd)
 
-    # Volatile artefacts (S12): wipe so a stale cache can't survive into the
-    # moved-to tree. Best-effort and before the checkout — reconstructable.
-    _wipe_volatile_artefacts(cwd or Path.cwd())
-
     # Detached checkout: materialise the target's tree as the working directory.
     _run_git("checkout", "--detach", target, cwd=cwd)
 
     # The clone now serves no working branch — the next save spawns one (S13).
     clear_working_branch(project_root)
+
+    # Volatile caches (S12): wiped only once the checkout has succeeded, so a
+    # stale cache can't survive into the moved-to tree and a refused one deletes
+    # nothing. Best-effort — reconstructable.
+    _wipe_volatile_artefacts(cwd or Path.cwd())
 
     logger.info("moved_to_commit", sha=target, prior_branch=prior_branch)
     return GitMoveResponse(

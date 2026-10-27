@@ -907,9 +907,6 @@ def fast_forward_pair_from_tracking(
     if w_leg.status != "behind" and l_leg.status != "behind":
         raise GitDomainError(f"Already up to date with '{label}'.")
 
-    # Volatile caches must not survive into the caught-up tree (S12).
-    _wipe_volatile_artefacts(cwd or Path.cwd())
-
     fast_forwarded: list[str] = []
     old_ledger = _rev_parse(ledger, cwd=cwd)
     old_working = _rev_parse(working, cwd=cwd)
@@ -948,6 +945,10 @@ def fast_forward_pair_from_tracking(
                 "repository before retrying."
             ) from exc
         raise
+
+    # Volatile caches must not survive into the caught-up tree (S12); wiped only
+    # once it is in place, so a refused catch-up deletes nothing.
+    _wipe_volatile_artefacts(cwd or Path.cwd())
 
     logger.info("fast_forwarded_pair", remote=remote, refs=fast_forwarded)
     return GitFastForwardResponse(
@@ -1065,9 +1066,6 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
     aside = _unique_aside_name(working, cwd=cwd)
     aside_ledger = ledger_name(aside)
 
-    # Volatile caches must not bleed from the local tree into the adopted one (S12).
-    _wipe_volatile_artefacts(cwd or Path.cwd())
-
     renamed_w = renamed_l = created_w = created_l = False
     try:
         # Free the pair for renaming (HEAD is on the ledger): detach at its tip —
@@ -1105,6 +1103,10 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
                 "incomplete. Inspect the repository before retrying."
             ) from exc
         raise
+
+    # Volatile caches must not bleed from the local tree into the adopted one (S12);
+    # wiped only once it is in place, so a refused spin-off deletes nothing.
+    _wipe_volatile_artefacts(cwd or Path.cwd())
 
     logger.info("branched_away", working=working, set_aside=aside, remote=remote)
     return GitBranchAwayResponse(working_branch=working, set_aside_as=aside)

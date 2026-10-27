@@ -43,6 +43,9 @@ export type GitModalMode =
 /** A version being inspected read-only in the side-by-side comparison view (S11).
  *  `sha` is the commit materialised on the LEFT (historical) canvas; `label` is a
  *  human string for the floating chip (version label, message, or short sha). */
+/** An action that writes a version's files into the project, gated by `MoveConfirmModal`. */
+export type GitVersionAction = "move" | "restore"
+
 export interface GitComparison {
   sha: string
   label: string
@@ -97,6 +100,10 @@ interface GitData {
    *  pending. Distinct from `comparison` (read-only view) — a move mutates the
    *  working tree. */
   moveTarget: GitComparison | null
+  /** A version of the current branch the user has asked to RESTORE (written back as
+   *  a new save on the branch), pending the same save/discard/confirm prompt. null
+   *  when no restore is pending. */
+  restoreTarget: GitComparison | null
   /** The files, relative to the project, that writes reported uncaptured (a capture
    *  skipped for want of an identity, or failed), kept by `reportSaveCapture` until
    *  `captureUncaptured` takes them. */
@@ -130,6 +137,11 @@ interface GitActions {
   requestMove: (target: GitComparison) => void
   /** Dismiss the pre-move prompt without moving. */
   closeMove: () => void
+  /** Begin a restore: open the save/discard/confirm prompt for *target*. The
+   *  restore runs only once the prompt is confirmed. */
+  requestRestore: (target: GitComparison) => void
+  /** Dismiss the restore prompt without restoring. */
+  closeRestore: () => void
   /** Update just the last-save SHA after a save (cheaper than a full reload). */
   setLastSaveSha: (sha: string | null) => void
   /** Bind the state volume to a remote for durable storage, then refresh readiness. */
@@ -186,6 +198,7 @@ const freshGitData = (): GitData => ({
   commitNonce: 0,
   comparison: null,
   moveTarget: null,
+  restoreTarget: null,
   uncaptured: [],
 })
 
@@ -265,6 +278,8 @@ const useGitStore = create<GitState>()((set, get) => ({
   closeComparison: () => set({ comparison: null }),
   requestMove: (target) => set({ moveTarget: target }),
   closeMove: () => set({ moveTarget: null }),
+  requestRestore: (target) => set({ restoreTarget: target }),
+  closeRestore: () => set({ restoreTarget: null }),
 
   setLastSaveSha: (sha) =>
     set((s) => (s.status ? { status: { ...s.status, last_save_sha: sha } } : s)),

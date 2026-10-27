@@ -29,7 +29,8 @@ In scope:
 - The five git modals: `WorkingBranchModal` (branch selection at startup / save-gate),
   `MilestoneCommitModal` (commit a milestone, including the fork-warning override),
   `DivergenceModal` (recover when the recorded working branch and HEAD disagree),
-  `MoveConfirmModal` (the pre-move save/discard/confirm prompt — see Behaviour), and the
+  `MoveConfirmModal` (the save/discard/confirm prompt before a move or a restore — see
+  Behaviour), and the
   push surface `RemotePushControl` (remote selection, ahead/behind, explicit publication
   including empty-remote default-branch bootstrap, fast-forward catch-up, and the non-fast-
   forward rejection recovery flow).
@@ -80,8 +81,12 @@ reveal the individual saves folded into it. Milestones and saves each carry: a v
 label or "init" tag, message, short SHA with a tooltip, a relative time, a view (read-only
 compare) affordance, a move-to-this-version affordance, and — when a branch was spawned
 from that exact point — clickable branch chips ("fork links") back to the spawned branch.
+On the user's own (non-peeked) branch every row except the current version also carries a
+restore affordance, "Restore this version". The current version is the newest pending
+save, or with none pending the newest milestone and the newest save folded into it.
 Right-clicking any row opens a context menu; on the user's own (non-peeked) branch it also
-offers "new branch from here" and, on the branch tip only, "new branch & move work here".
+offers "Restore this version" (except on the current version), "new branch from here" and,
+on the branch tip only, "new branch & move work here".
 
 **Graph rail.** When the whole-forest graph topology loads successfully, each row in the
 history additionally draws a small rail: a coloured lane for the viewed branch and its
@@ -128,6 +133,17 @@ otherwise be lost silently. Once a move starts, its modal ignores Cancel, Escape
 backdrop dismissal until the asynchronous operation settles, preventing a second move from
 being opened over the first.
 
+The same modal gates a restore, with its own wording:
+- The title is "Restore <label>?" and the line below it reads "Your branch carries on from
+  this version. The saves since then stay in the history."
+- A dirty project gets "Save & restore" or "Discard & restore". A clean one gets "Restore
+  this version".
+
+A restore writes files across the project, so after success the page reloads as a move's
+does, and a toast then reads "Restored <label> as a new save." Until then a failed save or
+a failed restore toasts and closes the modal. The toolbar's undo records no restore,
+because the reload clears its stacks. Restoring the save before undoes it.
+
 **Remote push.** `RemotePushControl` requires a deliberate remote selection (no default
 push target unless exactly one remote exists), shows the working branch's and save-ledger's
 last-known ahead/behind/diverged state per remote, and warns (overridably) before pushing
@@ -150,7 +166,8 @@ recovery modal: fast-forward catch-up when the fork is behind-only, or "spin off
 - A plain save never changes the panel's selection; a milestone commit does (selects the
   new milestone), but only when viewing the current branch's own history.
 - Peeking a branch never mutates working-tree state; only "switch" (branch manager /
-  lane context menu) and "move to version" perform a real checkout.
+  lane context menu) and "move to version" perform a real checkout, and only "restore this
+  version" rewrites the files on the current branch.
 - The rail's row list and the graph payload are fetched independently and may transiently
   disagree; the rail withholds rendering rather than mislabel rows during that window
   (see Failure model).

@@ -5272,6 +5272,27 @@ class GitMoveResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Restore a version: an earlier version's files written back as one new save on
+# the current branch's ledger. The branch is not left and no other ref moves.
+# ---------------------------------------------------------------------------
+
+
+class GitRestoreVersionRequest(BaseModel):
+    # A milestone or save in the current branch's history.
+    sha: str
+
+
+class GitRestoreVersionResponse(BaseModel):
+    # The new save on the ledger that holds the restored files.
+    sha: str
+    short_sha: str
+    # The full SHA of the version restored.
+    restored_from: str
+    # The working branch the restore was saved on, unchanged by it.
+    working_branch: str
+
+
+# ---------------------------------------------------------------------------
 # Save & commit (P3): milestone merge of the ledger onto the working branch,
 # and the working branch's milestone history.
 # ---------------------------------------------------------------------------

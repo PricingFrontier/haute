@@ -54,6 +54,7 @@ import type {
   GitCommitContext,
   GitGraphResponse,
   GitMoveResponse,
+  GitRestoreVersionResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
   GitWorkingBranchResponse,
@@ -2335,4 +2336,16 @@ export function moveToVersion(
   options?: { signal?: AbortSignal },
 ): Promise<GitMoveResponse> {
   return post<unknown>("/api/git/move", { sha }, options).then(async (data) => expectGeneratedContract("GitMoveResponse", (await gitValidators()).validateGitMoveResponse, data))
+}
+
+/**
+ * Restore an earlier version of the current branch as one new save on it: what is
+ * on disk is recorded first, then the restore, then the files are rewritten. The
+ * branch is not left and the saves since stay in the history.
+ */
+export function restoreVersion(
+  sha: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitRestoreVersionResponse> {
+  return post<unknown>("/api/git/restore-version", { sha }, options).then(async (data) => expectGeneratedContract("GitRestoreVersionResponse", (await gitValidators()).validateGitRestoreVersionResponse, data))
 }

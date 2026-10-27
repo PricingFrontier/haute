@@ -1,7 +1,7 @@
 import { Fragment, useState, useEffect, useLayoutEffect, useMemo, useRef } from "react"
 import {
   GitFork, GitBranch, Clock, ChevronRight, ChevronDown, RefreshCw, History,
-  Pencil, Plus, Minus, ArrowRightLeft, Copy, CornerDownRight, FileText, Eye, RotateCcw,
+  Pencil, Plus, Minus, ArrowRightLeft, Copy, CornerDownRight, FileText, Eye, RotateCcw, Undo2,
 } from "lucide-react"
 import PanelShell from "./PanelShell"
 import BranchManager from "../components/BranchManager"
@@ -120,7 +120,10 @@ function GitPanelBranchScope({
   // Right-click "new branch from here" (S38): the anchor is the menu position +
   // fork point; the draft is the naming step once an option is picked.
   const [forkAnchor, setForkAnchor] = useState<
-    { x: number; y: number; sha: string; canMove: boolean; peeking: boolean; label: string } | null
+    {
+      x: number; y: number; sha: string; canMove: boolean; canRestore: boolean; peeking: boolean
+      label: string
+    } | null
   >(null)
   const [forkDraft, setForkDraft] = useState<{ sha: string; move: boolean; name: string; x: number; y: number } | null>(null)
   const [forking, setForking] = useState(false)
@@ -138,7 +141,9 @@ function GitPanelBranchScope({
   const openForkMenu = (e: React.MouseEvent, sha: string, canMove: boolean, label: string) => {
     e.preventDefault()
     e.stopPropagation()
-    setForkAnchor({ x: e.clientX, y: e.clientY, sha, canMove, peeking, label })
+    setForkAnchor({
+      x: e.clientX, y: e.clientY, sha, canMove, canRestore: restorable(sha), peeking, label,
+    })
   }
 
   const startFork = (move: boolean) => {
@@ -218,6 +223,26 @@ function GitPanelBranchScope({
   // save/discard/confirm prompt. Distinct from viewVersion's read-only compare.
   const moveVersion = (sha: string, label: string) =>
     useGitStore.getState().requestMove({ sha, label })
+
+  // Begin a RESTORE of a version: written back as a new save on the current
+  // branch, gated by the same save/discard/confirm prompt.
+  const restoreVersion = (sha: string, label: string) =>
+    useGitStore.getState().requestRestore({ sha, label })
+
+  // Restore offers itself on the current branch's own rows only, and never on the
+  // current version, where it would change nothing: the newest pending save, or
+  // with none pending the newest milestone and the newest save folded into it.
+  const currentVersion = new Set<string>()
+  if (pending.length > 0) {
+    currentVersion.add(pending[0].sha)
+  } else if (milestones.length > 0) {
+    currentVersion.add(milestones[0].sha)
+    const newestFolded = expanded[milestones[0].sha]
+    if (Array.isArray(newestFolded) && newestFolded.length > 0) currentVersion.add(newestFolded[0].sha)
+  }
+  const ownRows = !peeking && workingBranch !== null && rowsBranch === workingBranch
+  const restorable = (sha: string) => ownRows && !currentVersion.has(sha)
+  const restoreAt = (sha: string) => (restorable(sha) ? restoreVersion : undefined)
 
   // ---------------------------------------------------------------------------
   // Graph rail (D-B): the visual row list in render order + its rail model.
@@ -498,6 +523,7 @@ function GitPanelBranchScope({
                       onSelect={setSelectedSha}
                       onView={viewVersion}
                       onMove={moveVersion}
+                      onRestore={restoreAt(s.sha)}
                       onContextMenu={(e) => { setSelectedSha(s.sha); openForkMenu(e, s.sha, true, s.message) }}
                     />
                   )
@@ -614,6 +640,13 @@ function GitPanelBranchScope({
                           label={m.version_label || m.message}
                           onView={viewVersion}
                         />
+                        {restorable(m.sha) && (
+                          <RestoreVersionButton
+                            sha={m.sha}
+                            label={m.version_label || m.message}
+                            onRestore={restoreVersion}
+                          />
+                        )}
                         <MoveToVersionButton
                           sha={m.sha}
                           label={m.version_label || m.message}
@@ -664,6 +697,7 @@ function GitPanelBranchScope({
                                 onSelect={setSelectedSha}
                                 onView={viewVersion}
                                 onMove={moveVersion}
+                                onRestore={restoreAt(s.sha)}
                                 onContextMenu={(e) => { setSelectedSha(s.sha); openForkMenu(e, s.sha, false, s.message) }}
                               />
                             </div>
@@ -694,6 +728,7 @@ function GitPanelBranchScope({
                               onSelect={setSelectedSha}
                               onView={viewVersion}
                               onMove={moveVersion}
+                              onRestore={restoreAt(s.sha)}
                               onContextMenu={(e) => { setSelectedSha(s.sha); openForkMenu(e, s.sha, false, s.message) }}
                             />
                           ))}
@@ -755,6 +790,16 @@ function GitPanelBranchScope({
             >
               <Eye size={12} style={{ color: "var(--accent)" }} /> View side-by-side
             </button>
+            {forkAnchor.canRestore && (
+              <button
+                data-testid="git-panel-menu-restore"
+                onClick={() => { restoreVersion(forkAnchor.sha, forkAnchor.label); setForkAnchor(null) }}
+                className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
+                style={{ color: "var(--text-primary)" }}
+              >
+                <Undo2 size={12} style={{ color: "var(--accent)" }} /> Restore this version
+              </button>
+            )}
             <button
               data-testid="git-panel-menu-move"
               onClick={() => { moveVersion(forkAnchor.sha, forkAnchor.label); setForkAnchor(null) }}
@@ -894,6 +939,7 @@ function SaveRow({
   onSelect,
   onView,
   onMove,
+  onRestore,
   onContextMenu,
 }: {
   save: GitLedgerSave
@@ -904,6 +950,7 @@ function SaveRow({
   onSelect?: (sha: string) => void
   onView?: (sha: string, label: string) => void
   onMove?: (sha: string, label: string) => void
+  onRestore?: (sha: string, label: string) => void
   onContextMenu?: (e: React.MouseEvent) => void
 }) {
   return (
@@ -925,6 +972,9 @@ function SaveRow({
           <ForkLinks branches={forkLinks} onPeek={onPeek} />
         )}
         {onView && <ViewVersionButton sha={save.sha} label={save.message} onView={onView} />}
+        {onRestore && (
+          <RestoreVersionButton sha={save.sha} label={save.message} onRestore={onRestore} />
+        )}
         {onMove && <MoveToVersionButton sha={save.sha} label={save.message} onMove={onMove} />}
         <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-secondary)" }}>
           <Tooltip label={HASH_TOOLTIP} side="bottom">
@@ -1097,6 +1147,36 @@ function MoveToVersionButton({
       style={{ color: "var(--text-muted)" }}
     >
       <RotateCcw size={12} />
+    </span>
+  )
+}
+
+// Restore affordance: this version written back as a new save on the current
+// branch (gated by the restore prompt). Same role="button" span as the Eye.
+function RestoreVersionButton({
+  sha,
+  label,
+  onRestore,
+}: {
+  sha: string
+  label: string
+  onRestore: (sha: string, label: string) => void
+}) {
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      data-testid="git-panel-restore"
+      title="Restore this version"
+      onClick={(e) => { e.stopPropagation(); onRestore(sha, label) }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); onRestore(sha, label) }
+      }}
+      // self-center for the same cross-row alignment reason as the Eye.
+      className="shrink-0 self-center inline-flex items-center justify-center p-0.5 rounded cursor-pointer hover:bg-[var(--bg-hover)]"
+      style={{ color: "var(--text-muted)" }}
+    >
+      <Undo2 size={12} />
     </span>
   )
 }

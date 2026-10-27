@@ -445,7 +445,9 @@ class TestGitShow:
 # ---------------------------------------------------------------------------
 
 
-class TestGitMove:
+class _AdoptedBranch:
+    """A working branch adopted through the API, with saves committed on its ledger."""
+
     def _adopt(self, client: TestClient) -> None:
         res = client.post(
             "/api/git/working-branch",
@@ -459,6 +461,8 @@ class TestGitMove:
         _git(tmp_path, "commit", "-m", "save")
         return _git(tmp_path, "rev-parse", "HEAD")
 
+
+class TestGitMove(_AdoptedBranch):
     def test_move_detaches_and_clears_working_branch(
         self, client: TestClient, tmp_path: Path
     ) -> None:
@@ -494,6 +498,51 @@ class TestGitMove:
         self._adopt(client)
         res = client.post("/api/git/move", json={"sha": "0" * 40})
         assert res.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/restore-version — an earlier version back as a new save
+# ---------------------------------------------------------------------------
+
+
+class TestGitRestoreVersion(_AdoptedBranch):
+    def test_restore_saves_the_version_on_the_same_branch(
+        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import _project_storage
+
+        pushes: list[bool] = []
+        monkeypatch.setattr(_project_storage, "enqueue_push", lambda: pushes.append(True))
+        self._adopt(client)
+        sha1 = self._commit(tmp_path, "# v1\n")
+        sha2 = self._commit(tmp_path, "# v2\n")
+
+        res = client.post("/api/git/restore-version", json={"sha": sha1})
+
+        assert res.status_code == 200
+        body = res.json()
+        assert body["restored_from"] == sha1
+        assert body["working_branch"] == "pricing/test-user/dev"
+        assert body["short_sha"] == body["sha"][:8]
+        assert _git(tmp_path, "rev-parse", "pricing/test-user/dev-save") == body["sha"]
+        assert _git(tmp_path, "rev-parse", f"{body['sha']}^") == sha2
+        assert (tmp_path / "rating.py").read_text() == "# v1\n"
+        status = client.get("/api/git/working-branch").json()
+        assert status["state"] == "ready"
+        assert status["working_branch"] == "pricing/test-user/dev"
+        assert pushes == [True]
+
+    def test_restore_of_the_current_version_returns_400(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        self._adopt(client)
+        self._commit(tmp_path, "# v1\n")
+        sha2 = self._commit(tmp_path, "# v2\n")
+
+        res = client.post("/api/git/restore-version", json={"sha": sha2})
+
+        assert res.status_code == 400
+        assert res.json()["detail"] == "This is already the current version."
 
 
 # ---------------------------------------------------------------------------
@@ -1132,6 +1181,7 @@ class TestRefMoversPauseWatcher:
         "method, path, body",
         [
             ("post", "/api/git/move", {"sha": "HEAD"}),
+            ("post", "/api/git/restore-version", {"sha": "HEAD"}),
             ("post", "/api/git/fast-forward", {"remote": "origin"}),
             ("post", "/api/git/branch-away", {"remote": "origin"}),
             (

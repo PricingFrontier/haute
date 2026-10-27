@@ -7,7 +7,7 @@
 | `src/haute/_git.py` | Stable import facade. Re-exports the route/public Git API and exception taxonomy from the cohesive domain modules below; owns no subprocess, mutable state, cache, or branch transaction. |
 | `src/haute/_git_core.py` | Sole Git command and repository-mutation boundary: exception taxonomy, prompt-proof subprocess adapters, fetch serialization/cooldowns, ref validation and branch-pair naming, guardrails, immutable object/ref queries, and content-addressed primitive caches (including parsed graph-log rows). Domain modules depend on this layer; it depends on none of them. |
 | `src/haute/_git_setup.py` | Repository and clone setup: repository readiness, identity, default/working-branch association, unborn-repository seeding, and Git preferences. |
-| `src/haute/_git_transactions.py` | Working/ledger branch-pair transactions: path-scoped saves, invariant checks, milestone merge/ref transaction, and branch creation/fork replay with compensating rollback. |
+| `src/haute/_git_transactions.py` | Working/ledger branch-pair transactions: path-scoped saves, invariant checks, the sweep of unrecorded project files, milestone merge/ref transaction, version restore, and branch creation/fork replay with compensating rollback. |
 | `src/haute/_git_read_models.py` | Immutable panel read models for repository/working-branch readiness and managed working-branch listings, and the project-file reads behind the Pipeline files panel: `pipeline_file_states` (how each file in a folder stands against version history: `new`, `changed` or `ignored`) and `ignore_rule` (the `.gitignore` rule that ignores a path). It performs no mutation or fetch. |
 | `src/haute/_git_history.py` | Immutable history projection and safe historical materialisation: milestones, ledger saves, commit context, forest topology, use of the core's object-addressed log cache, and bounded archive extraction. |
 | `src/haute/_git_remote.py` | Deliberate remote synchronization and transport: remote configuration/listing, clone/bundle flows, pair divergence, fetch, push/bootstrap, fast-forward, and branch-away resolution. It uses the core command boundary and never owns clone-state files. |
@@ -127,6 +127,7 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 | `GET /api/git/working-branch` | None | `GitWorkingBranchResponse` (seven-state readiness contract above, including `head_sha` when resolvable; augmented via `_with_storage_state` with durable-storage fields `storage`, `storage_remote`, `storage_forked_from`, `sync`, and `storage_bind` owned by [hosted-project-storage](../hosted-project-storage/low-level.md)) |
 | `POST /api/git/working-branch` | `GitSetWorkingBranchRequest {branch,create=false}` | `GitSetWorkingBranchResponse {working_branch,state,last_save_sha?}` |
 | `POST /api/git/move` | `GitMoveRequest {sha}` | `GitMoveResponse {sha,short_sha,prior_branch,is_detached=true}` |
+| `POST /api/git/restore-version` | `GitRestoreVersionRequest {sha}` | `GitRestoreVersionResponse {sha,short_sha,restored_from,working_branch}`: `sha` is the new save on the ledger, `restored_from` the full SHA of the version restored |
 | `POST /api/git/identity` | `GitSetIdentityRequest {user_name,user_email,set_global=false}` | `GitSetIdentityResponse {user_name,user_email,scope}` |
 | `POST /api/git/capture` | `GitCaptureRequest {paths}`: at least one file, relative to the project in POSIX form, as writes reported it `uncaptured` | `SaveCapture {warnings,git_sha,identity_required,uncaptured}`: the paths committed on the ledger as they are on disk, through the save capture, under the repository lock; a path `_artifact_paths.ordinary_path_problem` refuses (absolute, a drive, `..`, `.git`, `.haute`, a link on the way) is 400, nothing captured |
 | `POST /api/git/commit` | `GitCommitRequest {message,version_label=null,allow_fork=false}` | `GitCommitResponse {sha,short_sha,working_branch,version_label?}`; would-fork is 409 |
@@ -248,11 +249,49 @@ equals the last-merged ledger commit's tree, not an ancestor relationship.
 
 **Move (`move_to_commit`).** Refuses if a git op is in progress (`_assert_no_git_op_in_progress`
 checks `MERGE_HEAD`/`CHERRY_PICK_HEAD`/`REVERT_HEAD`/`rebase-merge`/`rebase-apply` under
-the git dir) or if tracked files are dirty. Wipes `_VOLATILE_ARTEFACTS` (best-effort: the
-root's `__pycache__`, `outputs`, `.haute_cache`, `.cache` and tool caches, but not `output`,
-where optimiser results Apply Optimisation prices from were published by default),
-`git checkout --detach <sha>`, then `_git_state.clear_working_branch` — HEAD moves but no
-ref is created or updated, so the prior branch stays fully reachable.
+the git dir) or if tracked files are dirty. Runs `git checkout --detach <sha>`, then
+`_git_state.clear_working_branch`, then wipes `_VOLATILE_ARTEFACTS`. HEAD moves but no ref is
+created or updated, so the prior branch stays fully reachable.
+
+The wipe is best-effort and covers only reconstructable caches: the root's `__pycache__`,
+`.haute_cache`, `.cache` and the tool caches. It never touches `outputs/`, the analyst's
+local results, or `output/`, where Apply Optimisation reads published optimiser results.
+Catch up and Spin off a copy also wipe only after their checkout, so a refused one deletes
+nothing.
+
+**Restore a version (`restore_version`).** `restore_version(sha, project_root, cwd,
+pipeline_folder)` holds the repository lock throughout. It refuses, with a `GitDomainError`
+and no change, in this order:
+1. No working branch is recorded, a git operation is in progress, or no git identity is set
+   ("Restoring a version needs a git identity. Set your name and email first.").
+2. `_validate_ref_name` refuses a ref that could reach git as a flag. `resolve_ledger` then
+   puts HEAD on the ledger, and `_rev_parse` refuses a ref that is not a commit ("No commit
+   found for …").
+3. The commit is neither an ancestor of the working tip (milestones and the saves folded in
+   them) nor of the ledger tip (pending and earlier saves): "You can only restore a version
+   from this branch's history."
+4. `_unrecorded_project_files` (the milestone's sweep: tracked changes, new pipeline-folder
+   files, the `VERSIONED_FILE_LIMIT_BYTES` refusal) is empty and the target's tree equals the
+   ledger tip's tree: "This is already the current version."
+
+Then:
+5. A non-empty sweep is committed as one ledger save, "Updated project files".
+6. A path the target's tree adds against HEAD's (`diff --name-only --no-renames
+   --diff-filter=A -z HEAD <sha>`) that already exists on disk refuses, naming up to five
+   paths ("…would overwrite a file that is not in version history: <paths>. Move or rename it
+   first."). The sweep's save stays.
+7. `commit-tree <sha>^{tree} -p <ledger tip>`, message `Restored <short sha>: <target
+   subject>` with a `Restored-from: <sha>` trailer.
+8. A CAS `update-ref refs/heads/<ledger> <new> <old tip>`.
+9. `git restore --source=HEAD --staged --worktree -- :/`, which writes the target's files,
+   brings back deleted ones and removes ones added since, leaving untracked and ignored
+   files and `.haute/` alone.
+10. `_wipe_volatile_artefacts`.
+
+A failure at step 9 propagates with the ledger already at the restore save. The route runs
+it inside `pause_watcher()`, then calls `_project_storage.enqueue_push()` as a save's
+capture does. `commit_milestone` takes its sweep from the same
+`_unrecorded_project_files`.
 
 **Unborn-repo seeding (inside `set_working_branch`, `create=True`).** Only triggers when
 `HEAD` has no commits. If the current unborn branch is not itself protected, it is renamed
@@ -577,7 +616,13 @@ process failures, and precise ref-movement races deterministic.
   invariant checks, git identity get/set, working-branch status across all seven readiness states,
   `set_working_branch` including the unborn-repo seed path and its gitignore-guard
   interaction (`TestSeedGitignoreGuards`, `TestSetWorkingBranchUnbornNonDefault`), move-to-
-  commit, milestone history and commit-context breadcrumbs, rename-preserving ledger
+  commit (caches wiped after the checkout, `outputs/` and `output/` kept), version restore
+  (`TestRestoreVersion`: a pending save, a milestone and a folded save restored as one
+  save on the same branch with later saves kept, files changed, deleted and added since put
+  back, untracked files and `.haute/` untouched, unrecorded changes and new pipeline files
+  recorded first, the already-current, other-branch, overwrite, identity and in-progress
+  refusals, and a failure writing the files leaving the restore recorded), milestone
+  history and commit-context breadcrumbs, rename-preserving ledger
   expansion, the branch manager (archive/delete/undelete/restore), request-path no-fetch
   guarantees,
   canonical-remote resolution, fork/create-working-branch (both move and non-move), archive-

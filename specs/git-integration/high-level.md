@@ -26,14 +26,15 @@ through the facade, so the split does not create hidden state or circular import
 
 The component owns the full lifecycle of a "working branch": creating one, saving
 incremental progress to it, promoting saves to a named milestone, forking a parallel
-version line, moving to read a historical version, archiving/deleting/restoring branches,
+version line, restoring an earlier version as a new save, moving to read a historical
+version, archiving/deleting/restoring branches,
 and the deliberate (never automatic) push/fetch surface that shares work with a remote.
 
 ## Scope
 
 In scope:
 - The working-branch / save-ledger branch-pair engine (create, save, commit milestone,
-  fork, move, archive, delete, undelete, restore).
+  restore a version, fork, move, archive, delete, undelete, restore).
 - Guardrails: protected-branch enforcement, ref-name injection prevention, unborn-repo
   seeding, git-op-in-progress detection, and the shared `.gitignore` deny-list asserted
   before a root commit can stage project files.
@@ -146,6 +147,31 @@ the very next save re-triggers the working-branch chooser rather than silently r
 old branch. A create-and-move operation preserves pending save topology; when external merge
 commits make replay unsafe, it refuses and directs the user to create a parallel line.
 
+**Restoring a version.** Going back to an earlier version and carrying on is a Restore, not a
+Move. Restoring a milestone or save of the current working branch writes that version's
+files back as one new save on its ledger: the analyst stays on the branch, no other ref
+moves, and the saves since stay in the history. A Restore is undone by restoring the save
+before it. Its target is any commit in the current branch's history: a milestone, a pending
+save, or a save folded inside a milestone. A commit of another branch, or one outside both
+lines, is refused. A Restore runs in this order:
+
+1. It records everything on disk first, with the milestone's sweep: modified tracked files
+   and new files in the pipeline folder become one save, "Updated project files". So nothing
+   the Restore then replaces is lost, and a file too large for version history refuses the
+   Restore before anything is recorded.
+2. It writes the restore save into history, built from the target's tree with plumbing as a
+   milestone is: one parent, the ledger tip, and a message the engine writes from the
+   target's short SHA and subject. The ledger then advances under a compare-and-swap.
+3. Only then does it write the files: changed files take the target's content, files deleted
+   since come back, and files added since are removed. Untracked and ignored files and
+   `.haute/` are left alone, and the caches are cleared afterwards.
+
+Restoring the current version with nothing on disk to record answers that it is already this
+version. A Restore needs a git identity, and refuses while a git operation is in progress. It
+also refuses when an untracked or ignored file sits where the target has a file, naming the
+file, rather than overwriting it. If writing the files fails, history already holds the
+restore; the analyst sees the failure.
+
 **Recoverability.** Deleting a working pair does not destroy it: both tips are pinned under
 a non-head ref namespace and a tombstone is recorded before the branch refs are removed, so
 `undelete` can rebuild one of the 20 most recently tombstoned pairs exactly. Older trash
@@ -181,6 +207,12 @@ complete old or new document, never torn JSON.
   user — the tree is exactly the ledger's tree, unconditionally. When a version label is
   supplied, its annotated tag object is prepared first and the working ref plus tag ref are
   committed together.
+- **Restore as a save, history before files.** A detached Move unlinks the branch, and the
+  next Save's chooser offered the branch's latest save, which undid the restore. A ledger
+  rewind would drop saves and collide with a published ledger. A save keeps every commit
+  reachable and leaves the analyst on the branch. Recording the restore before writing the
+  files means a file the operating system refuses to replace cannot leave a part-written
+  tree that the next milestone's sweep would record as if it were the restore.
 - **Never force, never auto-merge remotely.** The product's trust model is that a user's
   local work is never silently discarded or rewritten. Push refuses on divergence rather
   than forcing; fast-forward refuses on anything but a clean fast-forward; a remote rewrite

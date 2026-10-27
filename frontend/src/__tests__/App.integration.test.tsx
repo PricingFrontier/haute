@@ -234,6 +234,14 @@ vi.mock("../api/client", async () => {
         is_detached: true,
       }),
     ),
+    restoreVersion: vi.fn(() =>
+      Promise.resolve({
+        sha: "fed4321abc",
+        short_sha: "fed4321",
+        restored_from: "target-sha",
+        working_branch: "dev",
+      }),
+    ),
     gitArchiveBranch: vi.fn(() => Promise.resolve({ archived_as: "" })),
     gitDeleteBranch: vi.fn(() => Promise.resolve({ status: "ok", branch: "" })),
     getGitRemotes: vi.fn(() => Promise.resolve({ remotes: [], working_branch: "dev" })),
@@ -341,6 +349,7 @@ function resetAllStores(): void {
     modal: null,
     pendingAction: null,
     moveTarget: null,
+    restoreTarget: null,
   })
   useNodeResultsStore.setState({
     previews: {},
@@ -579,7 +588,8 @@ beforeEach(() => {
   vi.mocked(api.commitMilestone).mockReset().mockResolvedValue({ sha: "deadbeef0000", short_sha: "deadbee", working_branch: "dev", version_label: null })
   vi.mocked(api.getMilestones).mockReset().mockResolvedValue({ working_branch: "dev", entries: [] })
   vi.mocked(api.moveToVersion).mockReset().mockResolvedValue({ sha: "abc1234def", short_sha: "abc1234", prior_branch: "dev-save", is_detached: true })
-  useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, moveTarget: null, uncaptured: [] })
+  vi.mocked(api.restoreVersion).mockReset().mockResolvedValue({ sha: "fed4321abc", short_sha: "fed4321", restored_from: "target-sha", working_branch: "dev" })
+  useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, moveTarget: null, restoreTarget: null, uncaptured: [] })
 })
 
 afterEach(() => {
@@ -838,6 +848,69 @@ describe("App integration - move failure recovery", () => {
         text: "Could not move to this version: checkout failed",
       }),
     )
+  })
+})
+
+describe("App integration - restoring a version", () => {
+  it("closes the busy restore modal when the restore request rejects", async () => {
+    vi.mocked(api.restoreVersion).mockRejectedValueOnce(new Error("This is already the current version."))
+    render(<App />)
+    await waitForAppReady()
+
+    act(() => {
+      useGitStore.getState().requestRestore({ sha: "target-sha", label: "v1.0" })
+    })
+    fireEvent.click(await screen.findByTestId("restore-confirm"))
+
+    await waitFor(() => {
+      expect(vi.mocked(api.restoreVersion)).toHaveBeenCalledWith("target-sha")
+      expect(useGitStore.getState().restoreTarget).toBeNull()
+    })
+    expect(screen.queryByTestId("restore-confirm-modal")).not.toBeInTheDocument()
+    expect(vi.mocked(api.moveToVersion)).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        text: "Could not restore this version: This is already the current version.",
+      }),
+    )
+  })
+
+  it("reloads after a restore, and the reloaded page says what was restored", async () => {
+    const originalLocation = window.location
+    const reload = vi.fn()
+    Object.defineProperty(window, "location", {
+      value: { ...originalLocation, reload },
+      configurable: true,
+    })
+    try {
+      const first = render(<App />)
+      await waitForAppReady()
+      act(() => {
+        useGitStore.getState().requestRestore({ sha: "target-sha", label: "v1.0" })
+      })
+      fireEvent.click(await screen.findByTestId("restore-confirm"))
+
+      await waitFor(() => expect(reload).toHaveBeenCalledTimes(1))
+      expect(vi.mocked(api.restoreVersion)).toHaveBeenCalledWith("target-sha")
+      expect(sessionStorage.getItem("haute:justRestored")).toBe("v1.0")
+
+      // The reload is a fresh start: the page reads the flag once and toasts.
+      first.unmount()
+      useToastStore.setState({ toasts: [] })
+      render(<App />)
+      await waitForAppReady()
+      expect(useToastStore.getState().toasts).toContainEqual(
+        expect.objectContaining({ type: "success", text: "Restored v1.0 as a new save." }),
+      )
+      expect(sessionStorage.getItem("haute:justRestored")).toBeNull()
+    } finally {
+      sessionStorage.removeItem("haute:justRestored")
+      Object.defineProperty(window, "location", {
+        value: originalLocation,
+        configurable: true,
+      })
+    }
   })
 })
 
