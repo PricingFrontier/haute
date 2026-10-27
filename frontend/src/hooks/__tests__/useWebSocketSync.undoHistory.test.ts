@@ -255,7 +255,8 @@ describe("useWebSocketSync - WS sync must not corrupt undo history (#8)", () => 
       })
       await act(async () => {
         latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify(pipelineDocumentFrame(document)),
+          // Each document is a different one, so each carries its own fingerprint.
+          data: JSON.stringify(pipelineDocumentFrame(document, `document-fingerprint-${i}`)),
         }))
       })
     }
@@ -263,6 +264,58 @@ describe("useWebSocketSync - WS sync must not corrupt undo history (#8)", () => 
     expect(graphStore.loadGraphSnapshot).toHaveBeenCalledTimes(5)
     expect(graphStore.undoStack).toEqual([])
     expect(graphStore.redoStack).toEqual([])
+  })
+
+  it("drops a frame of the document the canvas already shows", async () => {
+    const params = makeHookParams()
+    const document = makePipelineEditorDocument({
+      source_file: SOURCE_FILE,
+      source_revision: "revision-test",
+      nodes: [{ ...baseNode, id: "n1" }],
+    })
+    renderHook(() => useWebSocketSync(params))
+    act(() => { latestWS().onopen?.(new Event("open")) })
+    const frame = JSON.stringify(pipelineDocumentFrame(document, "fingerprint-a"))
+
+    await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: frame })) })
+    vi.mocked(useToastStore.getState().addToast).mockClear()
+    await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: frame })) })
+
+    expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledTimes(1)
+    expect(useToastStore.getState().addToast).not.toHaveBeenCalled()
+  })
+
+  it("asks for the document without its fingerprint on a resync request, and applies a frame a dirty canvas blocked", async () => {
+    const params = makeHookParams()
+    const graphStore = useGraphStore.getState()
+    const document = makePipelineEditorDocument({
+      source_file: SOURCE_FILE,
+      source_revision: "revision-test",
+      nodes: [{ ...baseNode, id: "destination" }],
+    })
+    renderHook(() => useWebSocketSync(params))
+    act(() => { latestWS().onopen?.(new Event("open")) })
+    const frame = JSON.stringify(pipelineDocumentFrame(document, "fingerprint-destination"))
+
+    // A git action's broadcast reaches a canvas with unsaved edits: blocked.
+    graphStore.dirty = true
+    await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: frame })) })
+    expect(graphStore.loadGraphSnapshot).not.toHaveBeenCalled()
+
+    // The switch dropped the edits and asked for the document again.
+    graphStore.dirty = false
+    latestWS().send.mockClear()
+    act(() => { useDocumentStatusStore.getState().requestResync() })
+    expect(latestWS().send).toHaveBeenCalledTimes(1)
+    const request = JSON.parse(latestWS().send.mock.calls[0][0] as string)
+    expect(request).toMatchObject({ type: "resync", source_file: SOURCE_FILE })
+    expect(request).not.toHaveProperty("document_fingerprint")
+
+    // The same document answers it, and this time it is applied.
+    await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: frame })) })
+    expect(graphStore.loadGraphSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ nodes: [expect.objectContaining({ id: "destination" })] }),
+    )
   })
 
   it("retains an exact dirty column configuration and its history when a watcher update arrives", async () => {

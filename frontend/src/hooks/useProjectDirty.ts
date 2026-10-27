@@ -1,4 +1,6 @@
+import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useGraphStore from "../stores/useGraphStore"
+import useUIStore from "../stores/useUIStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 
 /**
@@ -24,4 +26,18 @@ export async function discardFormEdits(): Promise<void> {
   if (!useWorkbenchStore.getState().formDirty) return
   const { default: formStore } = await import("../stores/useWorkbenchFormStore")
   await formStore.getState().reload()
+}
+
+/**
+ * After a switch the user chose over the canvas's unsaved edits: drop them and ask for the
+ * document again, so the destination's pipeline shows rather than the edits they discarded
+ * (a dirty canvas blocks the server's broadcast of it, behind the sync banner). Nothing
+ * while the canvas is as saved, when the broadcast brings the document by itself, and
+ * nothing when the switch failed, since the edits are then still wanted.
+ */
+export function discardCanvasEdits(): void {
+  if (!useGraphStore.getState().dirty) return
+  useGraphStore.getState().markSaved()
+  useUIStore.getState().setSyncBanner(null)
+  useDocumentStatusStore.getState().requestResync()
 }

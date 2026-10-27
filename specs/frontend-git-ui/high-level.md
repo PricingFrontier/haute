@@ -121,6 +121,13 @@ use the same guard before their mutation/reload path, including when the branch 
 saved work awaiting a milestone. Save first must complete successfully before the Git
 mutation starts.
 
+An in-app switch reloads no page. The server publishes the new branch's documents and form
+once the switch has answered. When the analyst chose Discard, the switch drops the canvas's
+edits and asks for the document again only after it succeeds, so a failed switch keeps them.
+
+Known gap: the startup chooser adopting an existing branch from an unset project also
+checks out that branch's files, and a Save queued behind it meets them.
+
 **Modals.** `WorkingBranchModal` gates first use (and any save attempted with no working
 branch set): choose among eligible branches or create one, optionally set git identity
 inline. Startup opens it when the project is unset, invalid or detached.

@@ -37,7 +37,7 @@ records corrections to that audit's claims and proposed remedies.
 | [Frontend modelling and optimiser UI](frontend-modelling-optimiser-ui.md) | The specification as the editor is; an auto-range run that survives a save, percentage constraints kept as such, one point-request lifecycle | `FMOU-R04` |
 | [Frontend node editors](frontend-node-editors.md) | Editors that write what the engine reads, drafts in step with the document and errors with their detail, one copy of each picker and helper; grid rules the save refuses with a reason, positions and passthroughs in the subdirectories | `FNED-R01` |
 | [Frontend shared](frontend-shared.md) | A save that keeps the browser in step after a reconnect, surfaced completion errors, aborted fetches, a bootstrap deadline; Ctrl+S saving what is being typed and creation fenced on structure; one copy of each store derivation and helper; the specification as the code is; the results store | `FSH-R05` |
-| [Git integration](git-integration.md) | Git failures the analyst can act on, a dirty tree and a virtual environment at delete and seed, long argument lists through stdin, dead symbols and one compensation helper, hooks on automatic saves (a decision); a git panel that guards and reports every tree change; going back to a version: the canvas following a tree change (to reverify), checkouts that stop part-way on Windows, deleted branches that stay restorable, the git UI in the analyst's words | `GIT-R12` |
+| [Git integration](git-integration.md) | Git failures the analyst can act on, a dirty tree and a virtual environment at delete and seed, long argument lists through stdin, dead symbols and one compensation helper, hooks on automatic saves (a decision); a git panel that guards and reports every tree change; going back to a version: checkouts that stop part-way on Windows, deleted branches that stay restorable, the git UI in the analyst's words | `GIT-R13` |
 | [IO layer](io-layer.md) | Missing against corrupt generations, one path-anchoring rule, lock holds and usage cost, clear and settle rules, one supervised build | `IO-R04` |
 | [JSON shredding](json-shredding.md) | Root arrays tokenised in chunks, declared types that hold exactly, the path grammar as specified, one counted shred | `JSON-R02` |
 | [Model scoring](model-scoring.md) | Generic model-file suffixes, pyfunc files, loader errors that keep their meaning | `MSC-06` |
@@ -62,7 +62,7 @@ dependencies, its size and the user-visible changes it makes. It owns only
 the order; the packages above own the work. The packages the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md) added, and the
 documentation packages from that day's check of the deployment guides, are not
-yet placed in its rounds, nor are `GIT-R12` to `GIT-R15` from the 27 October
+yet placed in its rounds, nor are `GIT-R13` to `GIT-R15` from the 27 October
 review of going back to a version.
 
 ## Codebase review — 23 September 2026

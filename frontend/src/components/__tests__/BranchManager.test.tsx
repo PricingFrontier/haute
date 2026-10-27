@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react"
 import BranchManager from "../BranchManager"
+import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useGitStore from "../../stores/useGitStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
@@ -192,6 +193,27 @@ describe("BranchManager", () => {
     fireEvent.click(await screen.findByTestId("branch-manager-confirm-switch-go"))
     fireEvent.click(await screen.findByTestId("git-navigation-discard"))
     await waitFor(() => expect(reload).toHaveBeenCalledTimes(1))
+  })
+
+  it("drops the canvas's edits and asks for the document once a switch chosen over them succeeds, and keeps them when it fails", async () => {
+    useGraphStore.setState({ dirty: true })
+    const resyncs = useDocumentStatusStore.getState().resyncRequests
+    mockSetWorkingBranch.mockRejectedValueOnce(new Error("no such branch"))
+    render(<BranchManager />)
+    await waitFor(() => expect(screen.getByTestId("branch-manager-switch")).toBeInTheDocument())
+
+    fireEvent.click(screen.getByTestId("branch-manager-switch"))
+    fireEvent.click(await screen.findByTestId("branch-manager-confirm-switch-go"))
+    fireEvent.click(await screen.findByTestId("git-navigation-discard"))
+    await waitFor(() => expect(screen.getAllByText(/Could not switch/).length).toBeGreaterThan(0))
+    expect(useGraphStore.getState().dirty).toBe(true)
+    expect(useDocumentStatusStore.getState().resyncRequests).toBe(resyncs)
+
+    fireEvent.click(screen.getByTestId("branch-manager-switch"))
+    fireEvent.click(await screen.findByTestId("branch-manager-confirm-switch-go"))
+    fireEvent.click(await screen.findByTestId("git-navigation-discard"))
+    await waitFor(() => expect(useGraphStore.getState().dirty).toBe(false))
+    expect(useDocumentStatusStore.getState().resyncRequests).toBe(resyncs + 1)
   })
 
   it("does not let the skip-switch-confirm preference bypass the dirty guard", async () => {

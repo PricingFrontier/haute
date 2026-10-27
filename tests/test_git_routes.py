@@ -1200,3 +1200,165 @@ class TestRefMoversPauseWatcher:
         # call, so even an erroring op must record an entry.
         client.request(method.upper(), path, json=body)
         assert entered, f"{method.upper()} {path} did not pause the watcher (M4)"
+
+
+class TestTreeChangesAreAnnounced:
+    """A git action that rewrites the files runs with the watcher paused, so once it
+    has answered the server announces what is on disk: every open canvas follows it
+    as it follows an IDE edit, and the name→path index sees the files as they are."""
+
+    _PIPELINE = 'import haute\n\npipeline = haute.Pipeline("{name}", description="{description}")\n'
+
+    def _commit_pipeline(self, repo: Path, file: str, name: str, description: str) -> None:
+        (repo / file).write_text(self._PIPELINE.format(name=name, description=description))
+        _git(repo, "add", file)
+        _git(repo, "commit", "-m", f"save {description}")
+
+    def _two_branches(self, client: TestClient, repo: Path) -> None:
+        """``dev`` holds Pipeline X; ``other``, opened last, holds Pipeline Y and a
+        second pipeline dev lacks."""
+        res = client.post(
+            "/api/git/working-branch", json={"branch": "pricing/test-user/dev", "create": True}
+        )
+        assert res.status_code == 200
+        self._commit_pipeline(repo, "test_pipeline.py", "test_pipeline", "Pipeline X")
+        res = client.post(
+            "/api/git/working-branches", json={"name": "pricing/test-user/other", "switch": True}
+        )
+        assert res.status_code == 200
+        self._commit_pipeline(repo, "test_pipeline.py", "test_pipeline", "Pipeline Y")
+        self._commit_pipeline(repo, "second.py", "second", "Second")
+
+    def test_a_switch_broadcasts_the_destinations_document(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        from haute._event_bus import default_bus
+
+        self._two_branches(client, tmp_path)
+        frames: list[dict[str, object]] = []
+        unsubscribe = default_bus.subscribe("pipeline.document.update", frames.append)
+        try:
+            res = client.post("/api/git/working-branch", json={"branch": "pricing/test-user/dev"})
+        finally:
+            unsubscribe()
+
+        assert res.status_code == 200
+        documents = {frame["source_file"]: frame["document"] for frame in frames}
+        assert documents["test_pipeline.py"]["pipeline_description"] == "Pipeline X"  # type: ignore[index]
+        assert "second.py" not in documents
+
+    def test_a_switch_refreshes_the_pipeline_index(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        from haute.routes._helpers import _ensure_pipeline_index
+
+        self._two_branches(client, tmp_path)
+        client.post("/api/git/working-branch", json={"branch": "pricing/test-user/dev"})
+        assert "second" not in _ensure_pipeline_index()
+
+        res = client.post("/api/git/working-branch", json={"branch": "pricing/test-user/other"})
+
+        assert res.status_code == 200
+        assert "second" in _ensure_pipeline_index()
+
+    def test_a_refused_action_announces_nothing(self, client: TestClient) -> None:
+        from haute._event_bus import default_bus
+
+        announced: list[object] = []
+        unsubscribe = default_bus.subscribe("git.tree.changed", announced.append)
+        try:
+            res = client.post("/api/git/working-branch", json={"branch": "main"})
+        finally:
+            unsubscribe()
+
+        assert res.status_code == 403
+        assert announced == []
+
+    @pytest.mark.parametrize(
+        "method, path, body, engine, answer",
+        [
+            (
+                "post",
+                "/api/git/working-branch",
+                {"branch": "b"},
+                "set_working_branch",
+                {"working_branch": "b", "state": "ready"},
+            ),
+            (
+                "post",
+                "/api/git/working-branches",
+                {"name": "b"},
+                "create_working_branch",
+                {"working_branch": "b", "moved": False, "switched": True},
+            ),
+            (
+                "post",
+                "/api/git/restore-version",
+                {"sha": "HEAD"},
+                "restore_version",
+                {
+                    "sha": "a" * 40,
+                    "short_sha": "a" * 8,
+                    "restored_from": "b" * 40,
+                    "working_branch": "b",
+                },
+            ),
+            (
+                "post",
+                "/api/git/archive",
+                {"branch": "b"},
+                "archive_working_pair",
+                {"archived_as": "archive/b"},
+            ),
+            (
+                "delete",
+                "/api/git/branches",
+                {"branch": "b"},
+                "delete_working_pair",
+                {"status": "deleted", "branch": "b"},
+            ),
+            (
+                "post",
+                "/api/git/fast-forward",
+                {"remote": "origin"},
+                "fast_forward_pair",
+                {"remote": "origin", "working_branch": "b"},
+            ),
+            (
+                "post",
+                "/api/git/branch-away",
+                {"remote": "origin"},
+                "branch_away",
+                {"working_branch": "b", "set_aside_as": "b-local"},
+            ),
+        ],
+    )
+    def test_every_route_that_pauses_the_watcher_announces_the_change(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+        method: str,
+        path: str,
+        body: dict[str, object],
+        engine: str,
+        answer: dict[str, object],
+    ) -> None:
+        from haute._event_bus import default_bus
+        from haute.routes import git as git_route
+
+        # The engine call answers as it would on success, with the route's own model.
+        response_model = next(
+            route.response_model  # type: ignore[attr-defined]
+            for route in git_route.router.routes
+            if route.path == path and method.upper() in route.methods  # type: ignore[attr-defined]
+        )
+        monkeypatch.setattr(git_route, engine, lambda *_a, **_k: response_model(**answer))
+        announced: list[object] = []
+        unsubscribe = default_bus.subscribe("git.tree.changed", announced.append)
+        try:
+            res = client.request(method.upper(), path, json=body)
+        finally:
+            unsubscribe()
+
+        assert res.status_code == 200, res.text
+        assert announced == [{}]

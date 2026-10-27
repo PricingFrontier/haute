@@ -55,6 +55,10 @@ export interface DocumentExecutionFence {
 }
 
 export interface DocumentStatusStore extends DocumentStatusState {
+  /** Bumped by `requestResync`: the socket asks for the document whatever its fingerprint. */
+  resyncRequests: number
+  /** Ask `/ws/sync` for the document on disk, as after a git action replaced it. */
+  requestResync: () => void
   loadDocumentStatus: (
     document: PipelineEditorDocument,
     graphSynchronized?: boolean,
@@ -145,6 +149,8 @@ function documentState(
 
 const useDocumentStatusStore = create<DocumentStatusStore>()((set) => ({
   ...initialState(),
+  resyncRequests: 0,
+  requestResync: () => set((state) => ({ resyncRequests: state.resyncRequests + 1 })),
   loadDocumentStatus: (document, graphSynchronized = true, documentFingerprint = null) =>
     set((state) => documentState(
       document, graphSynchronized, state.executionGeneration + 1, documentFingerprint,

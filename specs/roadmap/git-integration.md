@@ -9,7 +9,7 @@ specified in [the git-integration specification](../git-integration/high-level.m
 and [the git UI](../frontend-git-ui/high-level.md). These
 packages come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md);
 the Databricks IO defects the same review found are `BUG-44` and `BUG-45` in
-[bugs](bugs.md). `GIT-R12` to `GIT-R15` come from a review on 27 October 2026 of going
+[bugs](bugs.md). `GIT-R13` to `GIT-R15` come from a review on 27 October 2026 of going
 back to an earlier version (one Codex and two Fable reviews, every finding checked at
 its source), after an analyst restoring a version on the test project took six Move
 and return cycles and made and deleted two branches between 13:14 and 13:36.
@@ -25,7 +25,6 @@ and return cycles and made and deleted two branches between 13:14 and 13:36.
 | GIT-R06 | Decision | P3 | Automatic ledger saves either skip the project's git hooks or the specification says they run them. |
 | GIT-R07 | Planned | P2 | Every tree-changing action in the git UI passes the dirty-project guard and names what changes, a failed history read shows an error rather than an empty branch, a failed preference save is reported, and the dialogs and specification say what the server does. |
 | GIT-R08 | Planned | P3 | The git panel has one context menu, one dirty-navigation wrapper and one relative-time rule. |
-| GIT-R12 | Reverify | P2 | After a branch switch, a restore, Catch up or Spin off a copy, the server reloads the pipeline and the form and the canvas shows the files on disk; a save from the previous document is refused. |
 | GIT-R13 | Planned | P2 | A checkout that stops part-way on Windows (a file open in Excel, an antivirus hold) is rolled back and names the file, and a project is never reported ready over a half-changed tree. |
 | GIT-R14 | Planned | P2 | Deleted branches stay restorable from the branch manager whatever their name, and deleting or archiving the current branch leaves the analyst on its last milestone rather than the default branch's seed project. |
 | GIT-R15 | Planned | P3 | The git UI's words are the analyst's: no "detached", "repo", "ledger", "fold" or "hexadecimal". |
@@ -233,45 +232,6 @@ panel.
 `frontend/src/components/CommitBreadcrumb.tsx`;
 `frontend/src/panels/assistant/relativeTime.ts`;
 `frontend/src/utils/formatTime.ts`.
-
-### GIT-R12 — The canvas follows a tree change
-**Why:** An in-app branch switch does not reload the page. The comment beside
-`switchNow` says the checkout reaches the canvas through the websocket sync, but
-that path is closed:
-- the route holds `pause_watcher`;
-- the watcher drops every event while paused and for a one-second settle window
-  after;
-- the client sends a resync only when its websocket opens;
-- no git route broadcasts.
-
-The same holds for the undo and redo of a switch. A pipeline save from the
-previous document cannot land on the new branch: `_require_base_revision` compares
-the client's base revision with the file on disk and raises
-`StaleDocumentRevisionError`. Not yet run: whether the canvas keeps showing the
-previous branch's pipeline until a page reload, so the analyst's next Save meets a
-stale-document refusal. No frontend test asserts what the canvas shows after a
-switch.
-
-**Plan:** Reproduce first in a scratch project with two branches holding
-different pipelines: switch in the branch manager, read the canvas, Save. Then,
-after every tree-changing git route (switch, restore, Catch up, Spin off a copy,
-the undo legs), the server reloads the pipeline index, the document and the form,
-then broadcasts so open clients load the new document. A route-to-client test
-covers it, and the stale-document refusal stays.
-
-**Acceptance:** After a switch the canvas shows the new branch's pipeline without
-a page reload, and a save from the old document is still refused.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/components/BranchManager.tsx`;
-`frontend/src/hooks/useWebSocketSync.ts`;
-`frontend/src/utils/vcHistory.ts`;
-`src/haute/routes/_helpers.py::pause_watcher`;
-`src/haute/routes/_helpers.py::watcher_is_paused`;
-`src/haute/routes/git.py::git_set_working_branch`;
-`src/haute/routes/_save_pipeline.py::StaleDocumentRevisionError`;
-`src/haute/server.py`.
 
 ### GIT-R13 — Checkouts that stop part-way on Windows
 **Why:** The tree-changing checkouts have no fence against a file Windows will not

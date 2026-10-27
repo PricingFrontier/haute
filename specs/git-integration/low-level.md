@@ -120,7 +120,7 @@ transport/server failures remain non-200 responses.
 **HTTP contracts.** Every handler is synchronous `def`, so FastAPI runs git subprocess work
 in its thread pool. Request bodies are the named Pydantic models; omitted fields take the
 defaults shown. Query bounds are enforced by FastAPI and invalid input uses its standard 422
-validation envelope. The `/api/git/storage/*` endpoints hosted in this router and the post-commit push enqueue on `POST /api/git/commit` are owned by [hosted-project-storage](../hosted-project-storage/low-level.md).
+validation envelope. The `/api/git/storage/*` endpoints hosted in this router and the post-commit push enqueue on `POST /api/git/commit` are owned by [hosted-project-storage](../hosted-project-storage/low-level.md). Every route that holds `pause_watcher()` publishes `git.tree.changed` on `default_bus` as a background task once it has answered successfully. These are working-branch selection, branch creation, restore-version, archive, delete, fast-forward and branch-away. The server then broadcasts what is on disk ([server-api](../server-api/low-level.md)).
 
 | Method and path | Input | Success response |
 |---|---|---|
@@ -705,7 +705,9 @@ process failures, and precise ref-movement races deterministic.
   handlers are genuinely sync `def` (not `async def`, to avoid event-loop blocking),
   general-exception-to-500 handling, `git_error_http_exception`'s logging and status-code mapping
   for all three error families, and that ref-moving routes correctly wrap their `_git` call
-  in `pause_watcher()`. The push route pins `default_branch`,
+  in `pause_watcher()` and publish `git.tree.changed` once they have answered (a switch
+  broadcasting the destination's document, and the name→path index seeing a pipeline the
+  destination adds). The push route pins `default_branch`,
   `bootstrapped_default`, and `pushed_refs` on bootstrap and established-remote responses,
   plus refusal/error mapping without partial publication.
 - **`tests/test_git_routes_pydantic.py`** — a narrower contract-pinning suite (item #74)

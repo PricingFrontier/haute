@@ -786,6 +786,78 @@ def _workbench_form_file(project_root: Path) -> tuple[str, str] | None:
     return (config.form, str(config.form_path.resolve())) if config.enabled else None
 
 
+def _publish_pipeline_document(path: Path, *, skip_unchanged: bool) -> None:
+    """Publish *path*'s editor document as live sync's frame, or its load failure.
+
+    With *skip_unchanged*, a file byte-identical to the one last broadcast is left
+    alone. Raw bytes are hashed so ANY edit counts: the parser normalises code
+    (strips whitespace, docstrings, return statements), which hides real edits
+    from a graph-only fingerprint, and checking before the parse skips the
+    expensive AST walk."""
+    fp_key = str(path.resolve())
+    try:
+        fp = hashlib.sha256(path.read_bytes()).hexdigest()
+        if skip_unchanged and _last_broadcast_fp.get(fp_key) == fp:
+            logger.info("graph_unchanged", file=path.name)
+            return
+        # The recovery document is the only live-sync payload.  It deliberately
+        # remains available in degraded and source-only states, so an authored
+        # error still reaches clients as an honest document rather than a parse
+        # error.
+        document = load_pipeline_editor_document(path, project_root=Path.cwd())
+        document_payload = document.model_dump(mode="json", by_alias=True)
+        document_fingerprint = pipeline_document_fingerprint(document_payload)
+        _last_broadcast_fp[fp_key] = fp
+        default_bus.publish(
+            "pipeline.document.update",
+            {
+                "document": document_payload,
+                "document_fingerprint": document_fingerprint,
+                "source_file": _wire_source_file(path),
+            },
+        )
+        with ws_clients_lock:
+            client_count = len(ws_clients)
+        logger.info(
+            "document_broadcast",
+            clients=client_count,
+            load_status=document.load_status,
+            nodes=len(document.nodes),
+        )
+    except Exception as e:  # noqa: BLE001 — one unreadable pipeline must not silence the rest
+        # Only a document-load or serialization defect lands here; authored
+        # errors were already representable above.  Send the established safe
+        # message, never the raw exception.
+        _last_broadcast_fp.pop(fp_key, None)
+        logger.error("parse_error", file=path.name, error=str(e), exc_info=True)
+        default_bus.publish(
+            "parse.error",
+            {
+                "error": PIPELINE_DOCUMENT_LOAD_ERROR,
+                "source_file": _wire_source_file(path),
+            },
+        )
+
+
+def _broadcast_tree_change(_payload: dict[str, Any]) -> None:
+    """Announce what is on disk after a git action that rewrote the files.
+
+    The action ran with the watcher paused, so no watcher batch saw its changes:
+    the name→path index is invalidated, then every discovered pipeline's document
+    and the form's change are published, as the watcher does for an edit. A
+    client already showing a document drops its frame; a dirty one gets the
+    banner."""
+    invalidate_pipeline_index()
+    for pipeline_path in _discovered_pipeline_paths().values():
+        _publish_pipeline_document(pipeline_path, skip_unchanged=False)
+    form_file = _workbench_form_file(Path.cwd())
+    if form_file is not None:
+        default_bus.publish("workbench.form.changed", {"form": form_file[0]})
+
+
+_unsubscribe_git_tree_changed = default_bus.subscribe("git.tree.changed", _broadcast_tree_change)
+
+
 async def _file_watcher() -> None:
     """Watch pipeline directories for .py changes and broadcast to GUI.
 
@@ -957,56 +1029,7 @@ async def _file_watcher() -> None:
             # Deduplicate and parse
             for p, dependency_triggered in changed_files.values():
                 logger.info("file_changed", file=p.name)
-                try:
-                    # Hash raw bytes so ANY edit triggers a broadcast.  The parser
-                    # normalises code (strips whitespace, docstrings, return
-                    # statements) which hides real edits from a graph-only
-                    # fingerprint.  Checking before parse skips the expensive
-                    # AST walk when the file is byte-identical.
-                    fp = hashlib.sha256(p.read_bytes()).hexdigest()
-                    fp_key = str(p.resolve())
-                    file_changed = _last_broadcast_fp.get(fp_key) != fp
-                    if not file_changed and not dependency_triggered:
-                        logger.info("graph_unchanged", file=p.name)
-                        continue
-                    # The recovery document is the only live-sync payload.  It
-                    # deliberately remains available in degraded and
-                    # source-only states, so an authored error still reaches
-                    # clients as an honest document rather than a parse error.
-                    document = load_pipeline_editor_document(p, project_root=Path.cwd())
-                    document_payload = document.model_dump(mode="json", by_alias=True)
-                    document_fingerprint = pipeline_document_fingerprint(document_payload)
-                    _last_broadcast_fp[fp_key] = fp
-                    default_bus.publish(
-                        "pipeline.document.update",
-                        {
-                            "document": document_payload,
-                            "document_fingerprint": document_fingerprint,
-                            "source_file": _wire_source_file(p),
-                        },
-                    )
-                    with ws_clients_lock:
-                        client_count = len(ws_clients)
-                    logger.info(
-                        "document_broadcast",
-                        clients=client_count,
-                        load_status=document.load_status,
-                        nodes=len(document.nodes),
-                    )
-                except Exception as e:
-                    # Only a document-load or serialization defect lands here;
-                    # authored errors were already representable above.  Send
-                    # the established safe message, never the raw exception.
-                    fp_key = str(p.resolve())
-                    _last_broadcast_fp.pop(fp_key, None)
-                    logger.error("parse_error", file=p.name, error=str(e), exc_info=True)
-                    default_bus.publish(
-                        "parse.error",
-                        {
-                            "error": PIPELINE_DOCUMENT_LOAD_ERROR,
-                            "source_file": _wire_source_file(p),
-                        },
-                    )
+                _publish_pipeline_document(p, skip_unchanged=not dependency_triggered)
         except asyncio.CancelledError:
             if requeue_on_error:
                 pending_changes.update(to_process)

@@ -18,10 +18,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 
 from haute import _project_storage
 from haute._artifact_paths import ordinary_path_problem
+from haute._event_bus import default_bus
 from haute._git import (
     GitDomainError,
     GitError,
@@ -203,12 +204,24 @@ def git_get_working_branch() -> GitWorkingBranchResponse:
 # ---------------------------------------------------------------------------
 
 
+def _announce_tree_change(background: BackgroundTasks) -> None:
+    """After a git action that may have rewritten the files, once the response is
+    sent: the watcher was paused through it, so the server broadcasts what is on
+    disk now (``_broadcast_tree_change``). An error response runs no background
+    task, so a refused action announces nothing."""
+    background.add_task(default_bus.publish, "git.tree.changed", {})
+
+
 @router.post("/working-branch", response_model=GitSetWorkingBranchResponse)
-def git_set_working_branch(body: GitSetWorkingBranchRequest) -> GitSetWorkingBranchResponse:
+def git_set_working_branch(
+    body: GitSetWorkingBranchRequest, background: BackgroundTasks
+) -> GitSetWorkingBranchResponse:
     """Adopt a working branch for this clone, spawning its ledger and recording
     the association. Confirms both the startup modal and the save-gate."""
     with pause_watcher():  # M4: adopting a branch checks out its ledger (tree swap)
-        return set_working_branch(body.branch, Path.cwd(), create=body.create)
+        response = set_working_branch(body.branch, Path.cwd(), create=body.create)
+    _announce_tree_change(background)
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +230,9 @@ def git_set_working_branch(body: GitSetWorkingBranchRequest) -> GitSetWorkingBra
 
 
 @router.post("/restore-version", response_model=GitRestoreVersionResponse)
-def git_restore_version(body: GitRestoreVersionRequest) -> GitRestoreVersionResponse:
+def git_restore_version(
+    body: GitRestoreVersionRequest, background: BackgroundTasks
+) -> GitRestoreVersionResponse:
     """Restore a milestone or save of the current branch as one new save on it.
 
     The watcher is paused while the files are rewritten (S30). What is on disk is
@@ -229,6 +244,7 @@ def git_restore_version(body: GitRestoreVersionRequest) -> GitRestoreVersionResp
             body.sha, Path.cwd(), pipeline_folder=pipeline_folder(Path.cwd())
         )
     _project_storage.enqueue_push()
+    _announce_tree_change(background)
     return response
 
 
@@ -351,10 +367,12 @@ def git_pending_saves(branch: str | None = Query(None)) -> GitLedgerSavesRespons
 
 
 @router.post("/archive", response_model=GitArchiveResponse)
-def git_archive(body: GitArchiveRequest) -> GitArchiveResponse:
+def git_archive(body: GitArchiveRequest, background: BackgroundTasks) -> GitArchiveResponse:
     """Archive a working branch and its ledger together (S32, pair-aware)."""
     with pause_watcher():  # M4: archiving the active pair switches away (tree swap)
-        return archive_working_pair(body.branch, Path.cwd())
+        response = archive_working_pair(body.branch, Path.cwd())
+    _announce_tree_change(background)
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -363,11 +381,15 @@ def git_archive(body: GitArchiveRequest) -> GitArchiveResponse:
 
 
 @router.delete("/branches", response_model=GitDeleteBranchResponse)
-def git_delete_branch(body: GitDeleteBranchRequest) -> GitDeleteBranchResponse:
+def git_delete_branch(
+    body: GitDeleteBranchRequest, background: BackgroundTasks
+) -> GitDeleteBranchResponse:
     """Delete a working branch and its ledger together; refuses on unmerged
     ledger saves unless ``confirm`` (§8, pair-aware)."""
     with pause_watcher():  # M4: deleting the active pair switches away (tree swap)
-        return delete_working_pair(body.branch, Path.cwd(), confirm=body.confirm)
+        response = delete_working_pair(body.branch, Path.cwd(), confirm=body.confirm)
+    _announce_tree_change(background)
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -407,15 +429,17 @@ def git_restore(body: GitRestoreRequest) -> GitRestoreResponse:
 
 @router.post("/working-branches", response_model=GitCreateWorkingBranchResponse)
 def git_create_working_branch(
-    body: GitCreateWorkingBranchRequest,
+    body: GitCreateWorkingBranchRequest, background: BackgroundTasks
 ) -> GitCreateWorkingBranchResponse:
     """Fork a new working branch off the current one. ``at`` selects the fork
     point, ``move`` whether in-progress work is relocated onto it, and ``switch``
     whether the new branch is opened (S38)."""
     with pause_watcher():  # M4: move and switch forks check out the new ledger (tree swap)
-        return create_working_branch(
+        response = create_working_branch(
             body.name, Path.cwd(), at=body.at, move=body.move, switch=body.switch
         )
+    _announce_tree_change(background)
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -657,14 +681,16 @@ def git_check_upstream() -> GitUpstreamStatusResponse:
 
 
 @router.post("/storage/upstream/pull", response_model=GitFastForwardResponse)
-def git_pull_upstream() -> GitFastForwardResponse:
+def git_pull_upstream(background: BackgroundTasks) -> GitFastForwardResponse:
     """Catch this fork up to its parent by fast-forward only.
 
     One-directional by design (parent → fork). The watcher is paused for
     the wholesale tree replacement, exactly as the remote catch-up does."""
     try:
         with pause_watcher():
-            return _project_storage.pull_upstream(Path.cwd())
+            response = _project_storage.pull_upstream(Path.cwd())
+        _announce_tree_change(background)
+        return response
     except _project_storage.StorageConfigError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except _project_storage.StorageUnavailableError as e:
@@ -689,13 +715,17 @@ def git_retry_storage_sync() -> GitWorkingBranchResponse:
 
 
 @router.post("/fast-forward", response_model=GitFastForwardResponse)
-def git_fast_forward(body: GitFastForwardRequest) -> GitFastForwardResponse:
+def git_fast_forward(
+    body: GitFastForwardRequest, background: BackgroundTasks
+) -> GitFastForwardResponse:
     """Catch the working pair up to a remote's tips by fast-forward only (D1/D2) —
     a pure ref advance, never a merge. Refuses anything that isn't a clean
     fast-forward (the user spins off a copy instead). The watcher is paused for
     the wholesale tree replacement (S30/M4)."""
     with pause_watcher():
-        return fast_forward_pair(body.remote, Path.cwd())
+        response = fast_forward_pair(body.remote, Path.cwd())
+    _announce_tree_change(background)
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -704,10 +734,14 @@ def git_fast_forward(body: GitFastForwardRequest) -> GitFastForwardResponse:
 
 
 @router.post("/branch-away", response_model=GitBranchAwayResponse)
-def git_branch_away(body: GitBranchAwayRequest) -> GitBranchAwayResponse:
+def git_branch_away(
+    body: GitBranchAwayRequest, background: BackgroundTasks
+) -> GitBranchAwayResponse:
     """Resolve a remote fork by setting the local pair aside under a dated name and
     repointing the canonical name to the remote's tips (M3) — both lineages kept,
     nothing rewritten, never a merge. The watcher is paused for the tree
     replacement (S30/M4)."""
     with pause_watcher():
-        return branch_away(body.remote, Path.cwd())
+        response = branch_away(body.remote, Path.cwd())
+    _announce_tree_change(background)
+    return response

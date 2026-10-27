@@ -5371,3 +5371,49 @@ class TestStaticBuildReady:
         (static / "index.html").write_text("<html></html>")
         (static / "assets").mkdir()
         assert static_build_ready(static)
+
+
+class TestBroadcastTreeChange:
+    """After a git action that rewrote the files (the watcher paused), the server
+    publishes what is on disk: each pipeline's document, or its load failure on its
+    own, and the form's change."""
+
+    def test_each_pipeline_and_the_form_are_announced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import server
+        from haute._event_bus import default_bus
+
+        monkeypatch.chdir(tmp_path)
+        for name in ("good", "broken"):
+            (tmp_path / f"{name}.py").write_text(
+                f'import haute\n\npipeline = haute.Pipeline("{name}")\n'
+            )
+        real_load = server.load_pipeline_editor_document
+
+        def load(path: Path, **kwargs: object) -> object:
+            if path.name == "broken.py":
+                raise RuntimeError("cannot recover")
+            return real_load(path, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(server, "load_pipeline_editor_document", load)
+        monkeypatch.setattr(
+            server, "_workbench_form_file", lambda _root: ("forms/form.json", "form.json")
+        )
+        events: list[tuple[str, dict[str, object]]] = []
+        unsubscribes = [
+            default_bus.subscribe(kind, lambda payload, kind=kind: events.append((kind, payload)))
+            for kind in ("pipeline.document.update", "parse.error", "workbench.form.changed")
+        ]
+        try:
+            server._broadcast_tree_change({})
+        finally:
+            for unsubscribe in unsubscribes:
+                unsubscribe()
+
+        assert sorted((kind, payload.get("source_file")) for kind, payload in events) == [
+            ("parse.error", "broken.py"),
+            ("pipeline.document.update", "good.py"),
+            ("workbench.form.changed", None),
+        ]
+        assert ("workbench.form.changed", {"form": "forms/form.json"}) in events

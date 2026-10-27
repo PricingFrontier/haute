@@ -12,7 +12,7 @@
 | `src/haute/errors.py` | The `HauteError` hierarchy, including execution, bounded-memory, schema/contract, deployment, and feature errors. Route-visible public subclasses carry stable `error_code` and `public_fields` metadata consumed by `_contract_errors.py`. |
 | `src/haute/_validation_error.py` | `HauteValidationError` — the ValueError-derived marker for haute-authored validation messages (re-exported by `errors.py`); the modelling worker boundary keys its curated-message promotion on it. |
 | `src/haute/_logging.py` | `configure_logging()` (structlog + stdlib bridge, dev-console vs. JSON-lines modes) and `get_logger()`. |
-| `src/haute/_event_bus.py` | `EventBus` — thread-safe synchronous pub/sub with typed `parse.error` and `pipeline.document.update` overloads; `default_bus` is the module-level singleton the watcher and server wire together. |
+| `src/haute/_event_bus.py` | `EventBus` — thread-safe synchronous pub/sub with typed `parse.error` and `pipeline.document.update` overloads; `default_bus` is the module-level singleton the watcher and server wire together. The git routes publish the git.tree.changed event (an empty payload) after a git action that rewrote the files. |
 | `src/haute/_types.py` | `NodeType` (`StrEnum`), the decorator↔NodeType maps, `SINK_ONLY_NODE_TYPES` (the types with no output, mirrored by the editor), every per-node-type config `TypedDict`, the `SolveResultLike` Protocol family, and the canonical `NodeData` / `GraphNode` / `GraphEdge` / `PipelineGraph` Pydantic models (with `PipelineGraph`'s cached-property-invalidating `model_copy` override). `GlobalConstant` (a named, typed constant, uniform or split by source, validated as the global constants file requires) and the `PipelineGraph` fields `global_constants` and `global_constants_error`, which every field-by-field graph copy carries. |
 | `src/haute/_pipeline_revision.py` | [submodels](../submodels/low-level.md)-owned canonical parsed-graph revision plus the editor recovery revision over a contained, role-qualified raw-artifact manifest with explicit missing sentinels. |
 | `src/haute/_pipeline_recovery.py` | Side-effect-free editor loader: AST skeleton discovery (a syntax-invalid file becomes a source-only document carrying the syntax error), isolated node resolution, availability/diagnostic propagation, typed sidecar merge, raw-artifact revision assembly, and ready/degraded/source-only classification, plus `pipeline_document_fingerprint`, the one digest of a dumped editor document shared by the load routes, resync, and live-sync frames. It never returns a canonical `PipelineGraph`. Submodel imports are read one statement at a time (`_recover_ast_submodel_registrations`), so a malformed import is its own diagnostic while the well-formed ones still name their files, and each registration is then extracted against that import table. Both load paths carry the global constants and their load error into the document, read once through the load's capture, and `_source_references` lists the declared constants file so the revision authenticates the bytes the document carries. |
@@ -431,6 +431,21 @@ crash. Every filesystem event batches into `pending_changes`; a 300ms debounce t
    from `pending_changes`, tries each change once in isolation so healthy paths still
    broadcast, and logs/drops each still-failing event. A later event for a dropped path is a
    fresh attempt; no retry task is recursively scheduled.
+
+**After a git action (`_broadcast_tree_change`).** `server.py` subscribes
+`_broadcast_tree_change` to `git.tree.changed`. The git routes publish it as a FastAPI
+background task, after the response is sent, so the acting client has its answer before the
+frames arrive. The handler:
+1. calls `invalidate_pipeline_index()`;
+2. for each `_discovered_pipeline_paths()` entry, loads the editor document, records the raw
+   bytes' hash in `_last_broadcast_fp` (the watcher's next real edit is judged against the
+   new content), and publishes `pipeline.document.update`, or `parse.error` with the fixed
+   safe message when the document cannot be loaded, each file on its own;
+3. publishes `workbench.form.changed` when the form file exists.
+
+A client whose graph is dirty gets the dirty banner, as for any external edit, and a client
+already showing that document drops the frame (see
+[frontend-graph-canvas](../frontend-graph-canvas/low-level.md)).
 
 **Pipeline save (`SavePipelineService.save`)**, run inside the process-wide `save_lock` (an
 `asyncio.Lock`, so it serialises against concurrent submodel create/dissolve as well as
@@ -1203,7 +1218,9 @@ for route-level tests, and direct unit tests for the pure-function modules.
   other JSON and a disabled workbench not, content-identity self-write suppression: an external write to a
   server-written path before the coalesced flush is broadcast, an unchanged self-write
   and a self-deletion are suppressed, an external recreate and an unrelated same-batch
-  edit are broadcast with their actual document content).
+  edit are broadcast with their actual document content), and `_broadcast_tree_change`
+  announcing each pipeline's document, a pipeline whose document cannot be loaded as its
+  own `parse.error`, and the form's change.
 - **`test_pipeline_recovery.py`** — editor-document DTO separation, degraded/source-only
   recovery, authored-structure conservation, bounded diagnostics, raw-artifact revision safety,
   mutation fences, and server-owned ready-closure preview admission.
