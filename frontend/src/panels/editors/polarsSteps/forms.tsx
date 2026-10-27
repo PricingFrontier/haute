@@ -16,7 +16,7 @@ import type { GlobalConstantType } from "../../../utils/globalConstants"
 import { ALL_CONSTANT_TYPES, useFittingConstants } from "./useFittingConstants"
 import { completionMatches } from "./completion"
 import { exprColumns, type ColumnInfo } from "./derivedColumns"
-import { FormulaError, callAtCaret, displayFormula, formulaText, parseFormula, renameColumnInFormula, typedAsFormula } from "./formula"
+import { FormulaError, bareConstants, callAtCaret, displayFormula, formulaText, parseFormula, renameColumnInFormula, typedAsFormula } from "./formula"
 import {
   AGGREGATION_OPTIONS,
   BINARY_OPERATORS,
@@ -82,6 +82,7 @@ import {
 } from "./fields"
 import { StepSchemaContext, UNKNOWN_SCHEMA, schemaFor, useStepSchema, type StepSchema } from "./stepSchema"
 import { useCompletionList, type Completion } from "./useCompletionList"
+import { useRowKeys } from "./useRowKeys"
 import { CALCULATIONS, calculationEntry, calculationExpr, calculationLabel, calculationOf, computedValue, type CalculationId } from "./calculations"
 import type {
   AggregationSpec,
@@ -138,15 +139,6 @@ export type StepFormContext = {
   firstFieldId: string
   /** Snippet-relative runtime error line for an authored free-code step. */
   errorLine?: number | null
-}
-
-/**
- * The constants a formula at this step reads by bare name: every one that is
- * not also the name of a column here, since a column's name always means the
- * column. A constant sharing a column's name is written `global_constants.<name>`.
- */
-function bareConstants(constants: readonly string[], columns: readonly string[]): string[] {
-  return constants.filter((name) => !columns.includes(name))
 }
 
 type FormProps<S extends Step> = { step: S; onChange: (next: S) => void; ctx: StepFormContext }
@@ -212,10 +204,26 @@ function nestedExpression(ctx: StepFormContext, depth: number): RenderExpression
   // nesting, and a refused step cannot be edited here, so the editor never
   // offers a level it could not save.
   if (depth > MAX_EXPR_DEPTH) return undefined
-  return (expr, onChange, ariaLabel) => (
+  return (expr, onChange, ariaLabel) => <ExpressionFields expr={expr} onChange={onChange} ctx={ctx} depth={depth} ariaLabel={`${ariaLabel} type`} />
+}
+
+/** A formula's text as typed but not yet read, and the committed text it was typed over. */
+type FormulaDraft = { over: string; text: string }
+type UnfinishedFormula = { draft: FormulaDraft | null; set: (next: FormulaDraft | null) => void }
+
+/**
+ * A "Computed as" select with the form of the calculation it names, for a
+ * step's own expression or a nested one. The two share what lets a switch
+ * keep work while the form is open: the expression left for each calculation,
+ * and a formula's unfinished text.
+ */
+function ExpressionFields({ expr, onChange, ctx, depth, ariaLabel }: { expr: Expr; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number; ariaLabel: string }) {
+  const [left, setLeft] = useState<ReadonlyMap<CalculationId, Expr>>(() => new Map())
+  const [formulaDraft, setFormulaDraft] = useState<FormulaDraft | null>(null)
+  return (
     <>
-      <ExprTypeSelect expr={expr} onChange={onChange} ctx={ctx} ariaLabel={`${ariaLabel} type`} />
-      <ExprEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
+      <ExprTypeSelect expr={expr} onChange={onChange} ctx={ctx} ariaLabel={ariaLabel} left={left} onLeave={(id, from) => setLeft((drafts) => new Map(drafts).set(id, from))} />
+      <ExprEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} unfinished={{ draft: formulaDraft, set: setFormulaDraft }} />
     </>
   )
 }
@@ -224,23 +232,36 @@ const isFunction = (id: CalculationId): id is FunctionName => FUNCTIONS.some((f)
 
 /**
  * The "Computed as" select: every calculation, in its sections, with an
- * unlisted function a formula cannot show kept as its own entry. While the
- * expression computes from a column of a known type, the functions it cannot
- * take are left out. Choosing a calculation never discards work: the
- * expression being left is kept as that calculation's draft while the form
- * is open, so going back restores it, and one not used yet starts from what
- * the last one computed (`calculationExpr`).
+ * unlisted function a formula cannot show (the current one, or one left
+ * earlier) kept as its own entry. While the expression computes from a column
+ * of a known type, the functions it cannot take are left out. Choosing a
+ * calculation never discards work: the expression being left is kept in
+ * `left` for its calculation, so going back restores it, and one not used
+ * yet starts from what the last one computed (`calculationExpr`).
  */
-function ExprTypeSelect({ expr, onChange, ctx, ariaLabel }: { expr: Expr; onChange: (next: Expr) => void; ctx: StepFormContext; ariaLabel: string }) {
+function ExprTypeSelect({
+  expr,
+  onChange,
+  ctx,
+  ariaLabel,
+  left,
+  onLeave,
+}: {
+  expr: Expr
+  onChange: (next: Expr) => void
+  ctx: StepFormContext
+  ariaLabel: string
+  left: ReadonlyMap<CalculationId, Expr>
+  onLeave: (id: CalculationId, from: Expr) => void
+}) {
   const schema = useStepSchema()
-  const drafts = useRef(new Map<CalculationId, Expr>())
   const bare = bareConstants(ctx.constants ?? [], ctx.columns)
   const current = calculationOf(expr, ctx.variables, bare)
   const value = computedValue(expr)
   const valueType = value?.kind === "column" ? schema.typeOf(value.name) : null
-  const listed = CALCULATIONS.some((c) => c.id === current)
+  const unlisted = [...new Set([current, ...left.keys()])].filter((id) => !CALCULATIONS.some((c) => c.id === id)).map(calculationEntry)
   const general = CALCULATIONS.filter((c) => c.section === "General")
-  const entries = listed ? CALCULATIONS : [...general, calculationEntry(current), ...CALCULATIONS.slice(general.length)]
+  const entries = [...general, ...unlisted, ...CALCULATIONS.slice(general.length)]
   const options = entries
     .filter((c) => c.id === current || !isFunction(c.id) || functionTakes(c.id, valueType))
     .map((c) => ({ value: c.id, label: calculationLabel(c), group: c.section }))
@@ -250,8 +271,8 @@ function ExprTypeSelect({ expr, onChange, ctx, ariaLabel }: { expr: Expr; onChan
         value={current}
         options={options}
         onChange={(id) => {
-          drafts.current.set(current, expr)
-          onChange(drafts.current.get(id) ?? calculationExpr(id, expr, ctx.variables, bare))
+          onLeave(current, expr)
+          onChange(left.get(id) ?? calculationExpr(id, expr, ctx.variables, bare))
         }}
         ariaLabel={ariaLabel}
       />
@@ -269,11 +290,11 @@ const FORMULA_PLACEHOLDER = "e.g. (premium + commission) * tax / 12"
  * holding a window, conditional or text join) falls back to the structured
  * left/operator/right form.
  */
-function FormulaEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "binary" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {
+function FormulaEditor({ expr, onChange, ctx, depth, unfinished }: { expr: Extract<Expr, { type: "binary" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number; unfinished?: UnfinishedFormula }) {
   const constants = ctx.constants ?? []
   const text = displayFormula(expr, ctx.variables, bareConstants(constants, ctx.columns))
   if (text === null) return <StructuredFormula expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
-  return <FormulaField text={text} onCommit={onChange} variables={ctx.variables} constants={constants} columns={ctx.columns} depth={depth} />
+  return <FormulaField text={text} onCommit={onChange} variables={ctx.variables} constants={constants} columns={ctx.columns} depth={depth} unfinished={unfinished} />
 }
 
 const WORD_BEFORE_CARET = /[A-Za-z_][A-Za-z0-9_]*$/
@@ -384,10 +405,28 @@ function ArgumentTip({ fn, arg }: { fn: string; arg: number }) {
  * The draft follows `text` when it changes from outside, without remounting
  * the box, so focus survives a commit.
  */
-function FormulaField({ text, onCommit, variables, constants, columns, depth }: { text: string; onCommit: (next: Expr) => void; variables: string[]; constants: string[]; columns: string[]; depth: number }) {
+function FormulaField({
+  text,
+  onCommit,
+  variables,
+  constants,
+  columns,
+  depth,
+  unfinished,
+}: {
+  text: string
+  onCommit: (next: Expr) => void
+  variables: string[]
+  constants: string[]
+  columns: string[]
+  depth: number
+  /** Where text typed but not yet read is kept, so it survives a switch of calculation. */
+  unfinished?: UnfinishedFormula
+}) {
   const schema = useStepSchema()
   const problemId = useId()
-  const [draft, setDraft] = useState(text)
+  // Unfinished text comes back only over the formula it was typed over.
+  const [draft, setDraft] = useState(() => (unfinished?.draft?.over === text ? unfinished.draft.text : text))
   const [caret, setCaret] = useState(text.length)
   // `refused` marks a formula that was read but does something Polars 2 refuses.
   const [problem, setProblem] = useState<{ message: string; position: number | null; text: string; refused?: boolean } | null>(null)
@@ -424,6 +463,7 @@ function FormulaField({ text, onCommit, variables, constants, columns, depth }: 
     if (value.trim() === text) {
       // Back at the committed formula: whatever failed to parse is gone.
       setProblem(null)
+      unfinished?.set(null)
       return
     }
     try {
@@ -437,6 +477,7 @@ function FormulaField({ text, onCommit, variables, constants, columns, depth }: 
       }
       onCommit(expr)
       setProblem(null)
+      unfinished?.set(null)
     } catch (error) {
       if (error instanceof FormulaError) setProblem({ message: error.message, position: error.position, text: value })
       else setProblem({ message: "The formula could not be read.", position: null, text: value })
@@ -496,7 +537,9 @@ function FormulaField({ text, onCommit, variables, constants, columns, depth }: 
           value={draft}
           {...completion.inputProps}
           onChange={(event) => {
-            setDraft(event.target.value.replace(/\r?\n/g, " "))
+            const typed = event.target.value.replace(/\r?\n/g, " ")
+            setDraft(typed)
+            unfinished?.set(typed === text ? null : { over: text, text: typed })
             setCaret(event.target.selectionStart ?? event.target.value.length)
             completion.typed()
           }}
@@ -645,12 +688,12 @@ function FunctionArgs({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { ty
   )
 }
 
-function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: (next: Expr) => void; ctx: StepFormContext; depth?: number }) {
+function ExprEditor({ expr, onChange, ctx, depth = 1, unfinished }: { expr: Expr; onChange: (next: Expr) => void; ctx: StepFormContext; depth?: number; unfinished?: UnfinishedFormula }) {
   const bare = bareConstants(ctx.constants ?? [], ctx.columns)
   // A typed formula, and an unlisted function a formula can show, are edited as a formula.
   const asFormula = typedAsFormula(expr) || (expr.type === "function" && calculationOf(expr, ctx.variables, bare) === "formula")
   const typedText = asFormula ? displayFormula(expr, ctx.variables, bare) : null
-  if (typedText !== null) return <FormulaField text={typedText} onCommit={onChange} variables={ctx.variables} constants={ctx.constants ?? []} columns={ctx.columns} depth={depth} />
+  if (typedText !== null) return <FormulaField text={typedText} onCommit={onChange} variables={ctx.variables} constants={ctx.constants ?? []} columns={ctx.columns} depth={depth} unfinished={unfinished} />
   const operandProps = anyOperand(ctx, depth + 1)
   switch (expr.type) {
     case "operand":
@@ -660,7 +703,7 @@ function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: 
         </Field>
       )
     case "binary":
-      return <FormulaEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
+      return <FormulaEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} unfinished={unfinished} />
     case "function":
       return (
         <>
@@ -695,6 +738,7 @@ function ConditionalEditor({
 }) {
   const many = expr.branches.length > 1
   const Wrapper = many ? RowGroup : PlainRow
+  const branchKeys = useRowKeys(expr.branches.length)
   const setBranch = (index: number, next: ConditionalBranch) => onChange({ ...expr, branches: expr.branches.map((b, i) => (i === index ? next : b)) })
   const addBranch = () => {
     // A new branch tests the previous branch's first column and starts from a value of its Then's type.
@@ -707,7 +751,7 @@ function ConditionalEditor({
       {expr.branches.map((branch, index) => {
         const name = index === 0 ? "If" : `Branch ${index + 1}`
         return (
-          <Wrapper key={index} label={`Branch ${index + 1}`}>
+          <Wrapper key={branchKeys.keys[index]} label={`Branch ${index + 1}`}>
             <div className="flex items-start gap-1.5">
               <div className="grid flex-1 gap-1.5 min-w-0">
                 <ConditionList
@@ -724,7 +768,15 @@ function ConditionalEditor({
                   <OperandField value={branch.then} onChange={(then) => setBranch(index, { ...branch, then })} ariaLabel={index === 0 ? "Then value" : `${name} then value`} {...operandProps} />
                 </Field>
               </div>
-              {many && <RowRemove label={`Remove branch ${index + 1}`} onClick={() => onChange({ ...expr, branches: expr.branches.filter((_, i) => i !== index) })} />}
+              {many && (
+                <RowRemove
+                  label={`Remove branch ${index + 1}`}
+                  onClick={() => {
+                    branchKeys.remove(index)
+                    onChange({ ...expr, branches: expr.branches.filter((_, i) => i !== index) })
+                  }}
+                />
+              )}
             </div>
           </Wrapper>
         )
@@ -909,8 +961,7 @@ function WithColumnForm({ step, onChange, ctx }: FormProps<WithColumnStep>) {
       <Field label="Column name" htmlFor={ctx.firstFieldId}>
         <TextField id={ctx.firstFieldId} value={step.name} onCommit={(name) => onChange({ ...step, name })} ariaLabel="Column name" placeholder="new_column" mono />
       </Field>
-      <ExprTypeSelect expr={step.expr} onChange={(expr) => onChange({ ...step, expr })} ctx={ctx} ariaLabel="Expression type" />
-      <ExprEditor expr={step.expr} onChange={(expr) => onChange({ ...step, expr })} ctx={ctx} />
+      <ExpressionFields expr={step.expr} onChange={(expr) => onChange({ ...step, expr })} ctx={ctx} depth={1} ariaLabel="Expression type" />
     </>
   )
 }

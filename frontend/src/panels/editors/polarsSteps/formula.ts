@@ -394,6 +394,15 @@ function isFormulaType(expr: Expr): expr is Extract<Expr, { type: "operand" | "b
   return expr.type === "operand" || expr.type === "binary" || expr.type === "function" || expr.type === "sum_horizontal"
 }
 
+/**
+ * The constants a formula at this step reads by bare name: every one that is
+ * not also the name of a column here, since a column's name always means the
+ * column. A constant sharing a column's name is written `global_constants.<name>`.
+ */
+export function bareConstants(constants: readonly string[], columns: readonly string[]): string[] {
+  return constants.filter((name) => !columns.includes(name))
+}
+
 /** Whether the expression was typed as a formula (it carries its text). */
 export function typedAsFormula(expr: Expr): boolean {
   return isFormulaType(expr) && typeof expr.text === "string"

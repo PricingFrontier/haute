@@ -472,7 +472,10 @@ function's Of, a window's value, a sum across's or a text join's first part, a V
 value) carries into the new calculation's value where it has one, a function's arguments
 carry to a function taking the same kinds of argument, Formula shows the expression being
 left as its formula where a formula can express it, and going back to a calculation
-already used in the open card restores it as it was left. A formula is edited as text
+already used in the open card restores it as it was left, a formula's unfinished text
+included, and keeps a saved calculation the list does not offer selectable. What a row of
+a list holds (a part, a condition, a branch, and the drafts of an expression in it) stays
+with that row when an earlier row is removed. A formula is edited as text
 (`(premium + tax) * 1.05 / 12`, `round(premium / sum_insured * 1000, 3)`: columns by name or
 in backticks, earlier variables by name, global constants by name or as `global_constants.<name>`
 (a bare name is an earlier variable first, then a column the step has, then a constant; a constant

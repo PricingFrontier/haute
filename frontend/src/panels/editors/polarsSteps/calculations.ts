@@ -145,12 +145,16 @@ export function calculationExpr(id: CalculationId, previous?: Expr, variables: r
   return { type: "function", fn: id, operand: value ?? empty, args }
 }
 
-/** A card's title: an Add column step's calculation, any other step's kind. */
-export function stepTitle(step: Step): string {
-  return step.kind === "with_column" ? calculationEntry(calculationOf(step.expr)).name : kindLabel(step.kind)
+/**
+ * A card's title: an Add column step's calculation, read as its form reads it
+ * (with the earlier variables and the constants named bare at the step), and
+ * any other step's kind.
+ */
+export function stepTitle(step: Step, variables: readonly string[] = [], constants: readonly string[] = []): string {
+  return step.kind === "with_column" ? calculationEntry(calculationOf(step.expr, variables, constants)).name : kindLabel(step.kind)
 }
 
 /** A card's icon, chosen as its title is. */
-export function stepIcon(step: Step): LucideIcon {
-  return step.kind === "with_column" ? calculationIcon(calculationEntry(calculationOf(step.expr))) : STEP_ICONS[step.kind]
+export function stepIcon(step: Step, variables: readonly string[] = [], constants: readonly string[] = []): LucideIcon {
+  return step.kind === "with_column" ? calculationIcon(calculationEntry(calculationOf(step.expr, variables, constants))) : STEP_ICONS[step.kind]
 }

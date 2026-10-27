@@ -1378,6 +1378,41 @@ describe("Computed as", () => {
     expect(screen.getByLabelText("Formula")).toHaveValue("clip(load, 0.8, 1.2)")
     expect(spy).toHaveBeenLastCalledWith({ ...clipLoad, expr: { ...clipLoad.expr, text: "clip(load, 0.8, 1.2)" } })
   })
+
+  it("keeps a part's drafts with that part when an earlier part is removed", () => {
+    const spy = vi.fn()
+    const clipPremium: Expr = { type: "function", fn: "clip", operand: { kind: "column", name: "premium" }, args: [{ kind: "literal", type: "number", value: 0.8 }, { kind: "literal", type: "number", value: 1.2 }] }
+    const absOther: Expr = { type: "function", fn: "abs", operand: { kind: "column", name: "other_amount" }, args: [] }
+    const parts = [clipPremium, absOther, clipPremium].map((expr) => ({ kind: "expr" as const, expr }))
+    render(<Stateful initial={{ id: "s", kind: "with_column", name: "total", expr: { type: "sum_horizontal", parts } }} spy={spy} />)
+    fireEvent.change(screen.getByLabelText("Part 1 expression type"), { target: { value: "round" } })
+    fireEvent.click(screen.getByRole("button", { name: "Remove part 1" }))
+    fireEvent.change(screen.getByLabelText("Part 1 expression type"), { target: { value: "clip" } })
+    const latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toMatchObject({ parts: [{ kind: "expr", expr: { fn: "clip", operand: { name: "other_amount" }, args: [{ value: 0 }, { value: 0 }] } }, { kind: "expr", expr: clipPremium }] })
+  })
+
+  it("keeps a saved calculation the list does not offer reachable after a switch", () => {
+    const spy = vi.fn()
+    const window: Expr = { type: "window", agg: "sum", of: { kind: "column", name: "premium" }, over: ["region"] }
+    const cast: Expr = { type: "function", fn: "cast", operand: { kind: "expr", expr: window }, args: [{ kind: "literal", type: "text", value: "Int64" }] }
+    render(<Stateful initial={{ ...clipLoad, expr: cast }} spy={spy} />)
+    fireEvent.change(screen.getByLabelText("Expression type"), { target: { value: "round" } })
+    expect(optionValues(screen.getByLabelText("Expression type"))).toContain("cast")
+    fireEvent.change(screen.getByLabelText("Expression type"), { target: { value: "cast" } })
+    expect(spy).toHaveBeenLastCalledWith({ ...clipLoad, expr: cast })
+  })
+
+  it("keeps a formula's unfinished text across a switch", () => {
+    const spy = vi.fn()
+    render(<Stateful initial={{ ...clipLoad, expr: parseFormula("premium * 2") }} spy={spy} />)
+    fireEvent.change(screen.getByLabelText("Formula"), { target: { value: "premium * (" } })
+    fireEvent.blur(screen.getByLabelText("Formula"))
+    fireEvent.change(screen.getByLabelText("Expression type"), { target: { value: "round" } })
+    fireEvent.change(screen.getByLabelText("Expression type"), { target: { value: "formula" } })
+    expect(screen.getByLabelText("Formula")).toHaveValue("premium * (")
+    expect(spy).toHaveBeenLastCalledWith({ ...clipLoad, expr: parseFormula("premium * 2") })
+  })
 })
 
 describe("steps offer only what Polars 2 runs on the column types the editor knows", () => {

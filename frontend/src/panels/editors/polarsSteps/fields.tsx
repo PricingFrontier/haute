@@ -36,6 +36,7 @@ import { decimalScale } from "../../../utils/polarsDtypes"
 import { completionMatches } from "./completion"
 import { useStepSchema } from "./stepSchema"
 import { namesAsCompletions, useCompletionList, type Completion } from "./useCompletionList"
+import { useRowKeys } from "./useRowKeys"
 import type { Condition, ConstantOperand, Expr, LiteralOperand, LiteralType, MatchMode, NumberType, Operand } from "./types"
 
 export const CONTROL_CLASS = "focus-ring w-full min-w-0 px-2 py-1.5 text-xs rounded-md"
@@ -365,13 +366,20 @@ export function RowList<T>({
   renderRow: (row: T, set: (next: T) => void, index: number) => ReactNode
   children?: ReactNode
 }) {
+  const rowKeys = useRowKeys(rows.length)
   return (
     <div className="grid gap-1.5">
       {rows.map((row, index) => (
-        <div key={index} className="flex flex-wrap items-center gap-1.5" role="group" aria-label={`${label} ${index + 1}`}>
+        <div key={rowKeys.keys[index]} className="flex flex-wrap items-center gap-1.5" role="group" aria-label={`${label} ${index + 1}`}>
           {renderRow(row, (next) => onChange(rows.map((r, i) => (i === index ? next : r))), index)}
           {rows.length > min && (
-            <RowRemove label={`Remove ${label.toLowerCase()} ${index + 1}`} onClick={() => onChange(rows.filter((_, i) => i !== index))} />
+            <RowRemove
+              label={`Remove ${label.toLowerCase()} ${index + 1}`}
+              onClick={() => {
+                rowKeys.remove(index)
+                onChange(rows.filter((_, i) => i !== index))
+              }}
+            />
           )}
         </div>
       ))}
@@ -1262,6 +1270,7 @@ export function ConditionList({
   firstId?: string
 }) {
   const opening = lead === "keep" ? "Keep rows where" : lead === "when" ? "When" : "Otherwise, when"
+  const rowKeys = useRowKeys(conditions.length)
   return (
     <div className="grid gap-1.5">
       {conditions.length > 1 ? (
@@ -1287,7 +1296,7 @@ export function ConditionList({
       )}
       {conditions.map((condition, index) => (
         <ConditionRow
-          key={index}
+          key={rowKeys.keys[index]}
           condition={condition}
           columns={columns}
           variables={variables}
@@ -1296,7 +1305,14 @@ export function ConditionList({
           columnId={index === 0 ? firstId : undefined}
           boxed={conditions.length > 1}
           onChange={(next) => onChange(conditions.map((c, i) => (i === index ? next : c)), match)}
-          onRemove={conditions.length > 1 ? () => onChange(conditions.filter((_, i) => i !== index), match) : undefined}
+          onRemove={
+            conditions.length > 1
+              ? () => {
+                  rowKeys.remove(index)
+                  onChange(conditions.filter((_, i) => i !== index), match)
+                }
+              : undefined
+          }
         />
       ))}
       <QuietAction onClick={() => onChange([...conditions, defaultCondition()], match)} className="justify-self-start">Add condition</QuietAction>

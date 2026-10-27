@@ -834,6 +834,14 @@ describe("PolarsStepsEditor notes and linked code", () => {
     expect(cardOf("Step 4: Filter rows")).toHaveTextContent("Choose a column…")
   })
 
+  it("titles a card as its form reads it, earlier variables included", () => {
+    const rate: Step = { id: "v", kind: "variable", name: "rate", value: { kind: "literal", type: "text", value: "1.5" } }
+    const castRate: Step = { id: "c", kind: "with_column", name: "r", expr: { type: "function", fn: "cast", operand: { kind: "variable", name: "rate" }, args: [{ kind: "literal", type: "text", value: "Float64" }] } }
+    render(<Harness initial={{ steps: [source, rate, castRate] }} inputSources={[quotesTyped]} />)
+    fireEvent.click(cardOf("Step 2: Formula").querySelector("button[aria-expanded]") as HTMLElement)
+    expect(screen.getByLabelText("Expression type")).toHaveValue("formula")
+  })
+
   it("shows a columnless window saved without its column once the columns are known", () => {
     const rowCount = { id: "n", kind: "with_column", name: "n", expr: { type: "window", agg: "len", over: [] } } as unknown as Step
     render(<Harness initial={{ steps: [source, rowCount] }} inputSources={[quotesTyped]} />)

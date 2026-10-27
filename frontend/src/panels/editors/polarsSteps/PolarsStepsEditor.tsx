@@ -9,6 +9,7 @@ import { InputSourcesBar, INPUT_STYLE } from "../_shared"
 import type { InputSource, OnReplaceConfig, OnUpdateConfig } from "../_shared"
 import AddStepMenu, { type StepPreset } from "./AddStepMenu"
 import { stepIcon, stepTitle } from "./calculations"
+import { bareConstants } from "./formula"
 import { createStep, stepDisplayLabel, stepProblem, variablesBefore } from "./catalogue"
 import { columnChange, columnNames, columnsAtEachStep, unknownColumnsOf, type ColumnSource } from "./derivedColumns"
 import { StepForm } from "./forms"
@@ -18,6 +19,7 @@ import { schemaFor } from "./stepSchema"
 import { summaryParts, unfinishedPart } from "./summary"
 import { readSteps, type Step, type StepKind } from "./types"
 import { useRenderedSteps, type KnownColumns } from "./useRenderedSteps"
+import { ALL_CONSTANT_TYPES, useFittingConstants } from "./useFittingConstants"
 
 let stepCounter = 0
 function newStepId(): string {
@@ -134,6 +136,8 @@ export default function PolarsStepsEditor({
 }) {
   const isFrame = start === "frame"
   const steps = useMemo(() => readSteps(config) ?? [], [config])
+  // The constants each form reads, so a card is titled as its form reads its calculation.
+  const constants = useFittingConstants(ALL_CONSTANT_TYPES)
   const [openIndex, setOpenIndex] = useState<number | null>(null)
   // The step whose generated lines are tinted: the card or code line under the pointer or focus.
   const [pointedStep, setPointedStep] = useState<number | null>(null)
@@ -468,8 +472,8 @@ export default function PolarsStepsEditor({
                 return (
                   <div key={key} role="listitem">
                     <StepCard
-                      label={stepTitle(step)}
-                      icon={stepIcon(step)}
+                      label={stepTitle(step, variablesBefore(steps, index), bareConstants(constants, columnNames(before)))}
+                      icon={stepIcon(step, variablesBefore(steps, index), bareConstants(constants, columnNames(before)))}
                       number={displayNumber}
                       summary={summaryParts(step)}
                       change={columnChange(step, before, columnStates[index + 1])}
