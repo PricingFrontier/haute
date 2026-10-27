@@ -559,7 +559,8 @@ rows after the last one you typed into go, or more are added. A Table showing a 
 has a row for each value (see [Schema](#schema)) shows those rows whatever its own rows
 say. Each cell is the control its
 column calls for: a tick box, a dropdown of the allowed values, a date picker, or a text
-field. An empty cell is blank, or shows its column's placeholder. The sample is part of
+field. An empty cell is blank, or shows its column's placeholder, a number column's in
+its format when the placeholder is a number. The sample is part of
 what **Save** writes, and **Undo** and **Redo** take back what you type, in Preview as
 while building.
 

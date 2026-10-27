@@ -567,7 +567,8 @@ Out of scope:
   Table or a Collection shows its label (its column's, or the name made readable), a star for
   a required input, a mark showing its help when it has some, a hint at its type (a
   dropdown's chevron, a date's calendar), an empty cell blank or showing its column's
-  placeholder, a number in its column's format (a percent the value times 100, so a
+  placeholder (a number column's, while it is a number, in its format), a number in its
+  column's format (a percent the value times 100, so a
   fraction typed into an input, 0.125, shows as 12.5%; an input as typed while it is typed
   into), an output column shaded, and "Missing column" when its
   column is gone.

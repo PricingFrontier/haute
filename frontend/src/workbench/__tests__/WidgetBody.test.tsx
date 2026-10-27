@@ -1088,7 +1088,7 @@ describe("WidgetBody", () => {
     useWorkbenchPricingStore.setState({
       price: { basis: previewBasis(form), sample: { equipment: [{ item: "Crane" }] }, tables: { premiums: [{ item: "Crane", premium: 1234.5 }] } },
     })
-    renderBody("w_grid")
+    const { rerender } = renderBody("w_grid")
 
     const premium = screen.getByTestId("priced-premiums:premiums.premium-1")
     expect(premium).toHaveTextContent("£1,234.50")
@@ -1108,6 +1108,18 @@ describe("WidgetBody", () => {
 
     expect(screen.getByRole("textbox", { name: "Item row 2" })).toHaveAttribute("placeholder", "e.g. Crane")
     expect(screen.getByTitle("Replacement value")).toHaveTextContent("Replacement value")
+
+    // A number column's placeholder shows in its format while it is a number, as written while not.
+    const hint = (placeholder: string, options: string[] = []) => {
+      loadForm(updateSchemaColumn(currentForm(), "equipment", "equipment.value", { placeholder, options }))
+      rerender(body("w_grid"))
+    }
+    hint("2500000")
+    expect(screen.getByRole("textbox", { name: "Value row 2" })).toHaveAttribute("placeholder", "2,500,000")
+    hint("about 2500000")
+    expect(screen.getByRole("textbox", { name: "Value row 2" })).toHaveAttribute("placeholder", "about 2500000")
+    hint("2500000", ["1000"])
+    expect(within(screen.getByRole("combobox", { name: "Value row 2" })).getAllByRole("option")[0]).toHaveTextContent(/^2,500,000$/)
   })
 
   it("takes a percent as the fraction typed, 0.125, and shows it as 12.5% once typed", () => {

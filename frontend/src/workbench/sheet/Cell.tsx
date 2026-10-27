@@ -29,7 +29,8 @@ const TICK_PLACE: Record<string, CSSProperties["justifyContent"]> = { center: "c
 /**
  * The control a field's type calls for, holding what the sheet has for it, or its
  * column's placeholder while empty. A number column's format shows a number while the
- * cell is not being typed in, the text as typed while it is.
+ * cell is not being typed in, the text as typed while it is, and its placeholder while
+ * that is a number.
  */
 export function Cell({
   found,
@@ -63,6 +64,7 @@ export function Cell({
   const [typing, setTyping] = useState(false)
   const { column } = found
   const text = typeof value === "string" ? value : ""
+  const hint = formattedNumber(column, column.placeholder) ?? column.placeholder
   const boxed = box !== null
   const className = `${boxed ? BOX_CLASS : GRID_CELL_CLASS} ${height}`
   const style = {
@@ -102,7 +104,7 @@ export function Cell({
   if (column.options.length > 0) {
     return (
       <select {...marked} aria-label={label} value={text} onChange={(event) => onChange(event.target.value)} disabled={disabled} className={className} style={style}>
-        <option value="">{column.placeholder}</option>
+        <option value="">{hint}</option>
         {/* A value held that the options no longer give is priced as held, so it shows, marked. */}
         {text !== "" && !column.options.includes(text) && <option value={text}>{text}</option>}
         {column.options.map((option) => (
@@ -125,7 +127,7 @@ export function Cell({
       onCommit={onChange}
       onFocus={() => setTyping(true)}
       onBlur={() => setTyping(false)}
-      placeholder={column.placeholder || undefined}
+      placeholder={hint || undefined}
       inputMode={isNumeric(column.type) ? "decimal" : undefined}
       disabled={disabled}
       className={`${className} ${isNumeric(column.type) ? "text-right tabular-nums" : ""}`}
