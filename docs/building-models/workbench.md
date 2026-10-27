@@ -75,9 +75,9 @@ the Explore pivot offers them; and, in an input table, its **default**, its
 rules an underwriter's value must meet: required, a range for a number, the allowed
 values. A number shows in its format wherever the sheets show it, and in its default, a
 percentage as the value times 100, so you type 0.125 for 12.5%; while you type into a cell
-or the default it shows as typed, and what is typed is what is saved and priced. Under each column's name, a line
-sums up what is set: required, its range and default, shown in its format, its allowed
-values, and a number's format and decimal places.
+or the default it shows as typed, and what is typed is what is saved and priced. Under
+each column's name, a line sums up what is set: required, its range and default, shown in
+its format, its allowed values, and a number's format and decimal places.
 
 Every table but `quote_details` starts with two columns Haute keeps for the quote,
 **quote_reference** and **quote_option**, which say which quote a row belongs to once rows of many
