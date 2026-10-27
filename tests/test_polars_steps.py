@@ -474,6 +474,7 @@ def test_free_code_validation_never_executes_the_snippet(tmp_path: Path) -> None
             step(
                 "x",
                 "cast",
+                strict=True,
                 casts=[{"column": "a", "dtype": "Int64"}, {"column": "b", "dtype": "String"}],
             ),
             'df = df.with_columns(pl.col("a").cast(pl.Int64), pl.col("b").cast(pl.String))',
@@ -1243,6 +1244,7 @@ def window(
             step(
                 "x",
                 "cast",
+                strict=True,
                 casts=[{"column": "a", "dtype": "Int8"}, {"column": "b", "dtype": "Float32"}],
             ),
             'df = df.with_columns(pl.col("a").cast(pl.Int8), pl.col("b").cast(pl.Float32))',
@@ -2580,7 +2582,7 @@ def test_reshaping_and_dtype_selectors_execute(tmp_path: Path) -> None:
             name="digit",
             expr=fn("extract", col("qid"), text("([0-9]+)"), num(1)),
         ),
-        step("c", "cast", casts=[{"column": "digit", "dtype": "Int64"}]),
+        step("c", "cast", strict=True, casts=[{"column": "digit", "dtype": "Int64"}]),
         step("sel", "select", columns=["qid"], dtypes=["Float64", "Int64"]),
         step(
             "u",
@@ -3377,7 +3379,10 @@ def test_executor_runs_every_step_kind(tmp_path: Path) -> None:
         "select": [source(), step("x", "select", columns=["premium"])],
         "drop": [source(), step("x", "drop", columns=["north"])],
         "rename": [source(), step("x", "rename", renames=[{"from": "premium", "to": "prem"}])],
-        "cast": [source(), step("x", "cast", casts=[{"column": "premium", "dtype": "Int64"}])],
+        "cast": [
+            source(),
+            step("x", "cast", strict=True, casts=[{"column": "premium", "dtype": "Int64"}]),
+        ],
         "sort": [
             source(),
             step("x", "sort", keys=[{"column": "premium", "descending": True}], nullsLast=True),
@@ -3728,7 +3733,10 @@ def test_the_step_locator_resolves_the_whole_plan_before_any_prefix(
     assert (located.line, located.remedy) == (7, None)
     # A strict cast meeting a bad value fails only on data: its plan resolves, and each
     # step's schema shows nothing Polars 2 refuses, so no step is named.
-    cast = [source(), step("c", "cast", casts=[{"column": "region", "dtype": "Int64"}])]
+    cast = [
+        source(),
+        step("c", "cast", strict=True, casts=[{"column": "region", "dtype": "Int64"}]),
+    ]
     _name, fn, _is_source = _build_node_fn(
         _stepped("c", cast), source_names=["quotes"], source_ids=["quotes"]
     )
@@ -3746,7 +3754,10 @@ def test_a_strict_cast_data_error_keeps_no_line(
     tmp_path: Path, replays: dict[str, list[Any]]
 ) -> None:
     quotes, _rates = _frames(tmp_path)
-    steps = [source(), step("c", "cast", casts=[{"column": "region", "dtype": "Int64"}])]
+    steps = [
+        source(),
+        step("c", "cast", strict=True, casts=[{"column": "region", "dtype": "Int64"}]),
+    ]
     graph = PipelineGraph(nodes=[quotes, _stepped("t", steps)], edges=[make_edge("quotes", "t")])
     result = execute_graph(graph, target_node_id="t", execution_context=_capped_context())["t"]
     assert result.status == "error"
@@ -6563,6 +6574,7 @@ def test_change_types_parses_text_dates_with_their_format() -> None:
         step(
             "c",
             "cast",
+            strict=True,
             casts=[
                 {"column": "start", "dtype": "Date", "format": "%d/%m/%Y"},
                 {"column": "stamp", "dtype": "Datetime", "format": "%Y-%m-%d %H:%M"},
@@ -6576,6 +6588,44 @@ def test_change_types_parses_text_dates_with_their_format() -> None:
     out = _run_steps(steps, pl.DataFrame({"start": ["02/01/2024"], "stamp": ["2024-01-02 03:04"]}))
     assert out["start"].to_list() == [dt.date(2024, 1, 2)]
     assert out["stamp"].to_list() == [dt.datetime(2024, 1, 2, 3, 4)]
+
+
+def test_change_types_gives_missing_values_where_a_value_does_not_convert() -> None:
+    lenient = step(
+        "c",
+        "cast",
+        strict=False,
+        casts=[
+            {"column": "n", "dtype": "Int64"},
+            {"column": "start", "dtype": "Date", "format": "%d/%m/%Y"},
+            {"column": "stamp", "dtype": "Datetime", "format": "%Y-%m-%d %H:%M"},
+        ],
+    )
+    code = render_polars_steps([source(), lenient], ["quotes"], start="input").code
+
+    assert 'pl.col("n").cast(pl.Int64, strict=False)' in code
+    assert 'pl.col("start").str.to_date("%d/%m/%Y", strict=False)' in code
+    assert 'pl.col("stamp").str.to_datetime("%Y-%m-%d %H:%M", strict=False)' in code
+    frame = pl.DataFrame(
+        {"n": ["7", "seven"], "start": ["02/01/2024", "soon"], "stamp": ["2024-01-02 03:04", "-"]}
+    )
+    out = _run_steps([source(), lenient], frame)
+    assert out["n"].to_list() == [7, None]
+    assert out["start"].to_list() == [dt.date(2024, 1, 2), None]
+    assert out["stamp"].to_list() == [dt.datetime(2024, 1, 2, 3, 4), None]
+    with pytest.raises(pl.exceptions.PolarsError):
+        _run_steps([source(), {**lenient, "strict": True}], frame)
+
+
+@pytest.mark.parametrize(
+    ("strict", "message"), [(None, r"Missing field\(s\) \['strict'\]"), ("no", "true or false")]
+)
+def test_change_types_states_whether_it_is_strict(strict: object, message: str) -> None:
+    cast = step("c", "cast", casts=[{"column": "n", "dtype": "Int64"}])
+    if strict is not None:
+        cast["strict"] = strict
+    with pytest.raises(PolarsStepError, match=message):
+        render_polars_steps([source(), cast], ["quotes"], start="input")
 
 
 def test_formulas_parse_text_dates_strictly_or_to_null() -> None:
@@ -6606,14 +6656,24 @@ def test_formulas_parse_text_dates_strictly_or_to_null() -> None:
         (
             [
                 source(),
-                step("c", "cast", casts=[{"column": "a", "dtype": "Int64", "format": "%Y"}]),
+                step(
+                    "c",
+                    "cast",
+                    strict=True,
+                    casts=[{"column": "a", "dtype": "Int64", "format": "%Y"}],
+                ),
             ],
             "only a Date or Datetime cast parses with",
         ),
         (
             [
                 source(),
-                step("c", "cast", casts=[{"column": "a", "dtype": "Date", "format": "Y-m-d"}]),
+                step(
+                    "c",
+                    "cast",
+                    strict=True,
+                    casts=[{"column": "a", "dtype": "Date", "format": "Y-m-d"}],
+                ),
             ],
             "must be a date format such as '%Y-%m-%d'",
         ),
@@ -6756,13 +6816,19 @@ def test_the_cast_table_is_what_polars_refuses() -> None:
     ("steps", "frame", "remedy"),
     [
         (
-            [source(), step("c", "cast", casts=[{"column": "start", "dtype": "Date"}])],
+            [
+                source(),
+                step("c", "cast", strict=True, casts=[{"column": "start", "dtype": "Date"}]),
+            ],
             pl.LazyFrame({"start": ["2024-01-02"]}),
             "'start' is text, which Polars 2 does not cast to Date: give the Change types "
             "entry the Format its dates are written in.",
         ),
         (
-            [source(), step("c", "cast", casts=[{"column": "band", "dtype": "Int64"}])],
+            [
+                source(),
+                step("c", "cast", strict=True, casts=[{"column": "band", "dtype": "Int64"}]),
+            ],
             pl.LazyFrame({"band": pl.Series(["1"], dtype=pl.Categorical)}),
             "'band' is a category, which Polars 2 casts only to text: change it to String "
             "first, then to Int64.",
@@ -6832,7 +6898,7 @@ def test_a_failed_run_starts_with_what_to_change(tmp_path: Path) -> None:
     steps = [
         source(),
         step("l", "limit", n=5),
-        step("c", "cast", casts=[{"column": "start", "dtype": "Date"}]),
+        step("c", "cast", strict=True, casts=[{"column": "start", "dtype": "Date"}]),
     ]
     graph = PipelineGraph(nodes=[quotes, _stepped("t", steps)], edges=[make_edge("quotes", "t")])
 

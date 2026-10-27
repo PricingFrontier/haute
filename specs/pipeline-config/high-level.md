@@ -351,7 +351,8 @@ typed functions over numbers, text, dates and durations, conditionals with one o
 branches, window aggregates of a column or an expression with a partition, an optional
 in-partition order and an optional row filter, text joins, and sums across columns),
 select, drop, rename, cast (the integer, float, string, boolean, date, datetime and
-categorical dtypes), sort, unique, group-by with optional per-aggregate row filters
+categorical dtypes, with a required `strict` flag: `false` gives a missing value
+wherever a value does not convert, as Polars' `strict=False`), sort, unique, group-by with optional per-aggregate row filters
 and quantiles (an empty key list summarises the whole frame), joins with optional
 key-cardinality validation (inner, left and full joins only, as Polars refuses it
 elsewhere) and output-order control, concat, fill-null, limit, and

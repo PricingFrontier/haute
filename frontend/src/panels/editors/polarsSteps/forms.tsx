@@ -7,7 +7,7 @@
  * when a saved step uses them.
  */
 import { Info } from "lucide-react"
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react"
 
 import { ConfigCheckbox, QuietAction } from "../../../components/form"
 import { CodeEditor } from "../CodeEditor"
@@ -16,7 +16,7 @@ import type { GlobalConstantType } from "../../../utils/globalConstants"
 import { ALL_CONSTANT_TYPES, useFittingConstants } from "./useFittingConstants"
 import { completionMatches } from "./completion"
 import { exprColumns, type ColumnInfo } from "./derivedColumns"
-import { FormulaError, callAtCaret, displayFormula, formulaText, parseFormula, renameColumnInFormula, typedAsFormula } from "./formula"
+import { FormulaError, bareConstants, callAtCaret, displayFormula, formulaText, parseFormula, renameColumnInFormula, typedAsFormula } from "./formula"
 import {
   AGGREGATION_OPTIONS,
   BINARY_OPERATORS,
@@ -42,7 +42,6 @@ import {
   castTargetsFor,
   defaultArgFor,
   defaultCondition,
-  defaultExpr,
   defaultLiteral,
   exprProblem,
   exprTypeProblem,
@@ -83,8 +82,11 @@ import {
 } from "./fields"
 import { StepSchemaContext, UNKNOWN_SCHEMA, schemaFor, useStepSchema, type StepSchema } from "./stepSchema"
 import { useCompletionList, type Completion } from "./useCompletionList"
+import { useRowKeys } from "./useRowKeys"
+import { CALCULATIONS, calculationEntry, calculationExpr, calculationLabel, calculationOf, computedValue, stepSection, type CalculationId, type FunctionSection } from "./calculations"
 import type {
   AggregationSpec,
+  FunctionName,
   WindowAggregation,
   CastDtype,
   CastEntry,
@@ -137,15 +139,6 @@ export type StepFormContext = {
   firstFieldId: string
   /** Snippet-relative runtime error line for an authored free-code step. */
   errorLine?: number | null
-}
-
-/**
- * The constants a formula at this step reads by bare name: every one that is
- * not also the name of a column here, since a column's name always means the
- * column. A constant sharing a column's name is written `global_constants.<name>`.
- */
-function bareConstants(constants: readonly string[], columns: readonly string[]): string[] {
-  return constants.filter((name) => !columns.includes(name))
 }
 
 type FormProps<S extends Step> = { step: S; onChange: (next: S) => void; ctx: StepFormContext }
@@ -211,29 +204,98 @@ function nestedExpression(ctx: StepFormContext, depth: number): RenderExpression
   // nesting, and a refused step cannot be edited here, so the editor never
   // offers a level it could not save.
   if (depth > MAX_EXPR_DEPTH) return undefined
-  return (expr, onChange, ariaLabel) => (
+  return (expr, onChange, ariaLabel) => <ExpressionFields expr={expr} onChange={onChange} ctx={ctx} depth={depth} ariaLabel={`${ariaLabel} type`} />
+}
+
+/** A formula's text as typed but not yet read, and the committed text it was typed over. */
+type FormulaDraft = { over: string; text: string }
+type UnfinishedFormula = { draft: FormulaDraft | null; set: (next: FormulaDraft | null) => void }
+
+/**
+ * An expression's select with the form of the calculation it names. A nested
+ * expression (`only` absent) offers every calculation in "Computed as"; a
+ * step's own expression offers its section's functions in "Function" where
+ * it is a function step, and no select otherwise (`only` null). The select
+ * and the form share what lets a switch keep work while the form is open: the
+ * expression left for each calculation, and a formula's unfinished text.
+ */
+function ExpressionFields({
+  expr,
+  onChange,
+  ctx,
+  depth,
+  ariaLabel,
+  only,
+}: {
+  expr: Expr
+  onChange: (next: Expr) => void
+  ctx: StepFormContext
+  depth: number
+  ariaLabel: string
+  only?: FunctionSection | null
+}) {
+  const [left, setLeft] = useState<ReadonlyMap<CalculationId, Expr>>(() => new Map())
+  const [formulaDraft, setFormulaDraft] = useState<FormulaDraft | null>(null)
+  return (
     <>
-      <ExprTypeSelect expr={expr} onChange={onChange} ariaLabel={`${ariaLabel} type`} />
-      <ExprEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
+      {only !== null && <ExprTypeSelect expr={expr} onChange={onChange} ctx={ctx} ariaLabel={ariaLabel} left={left} onLeave={(id, from) => setLeft((drafts) => new Map(drafts).set(id, from))} only={only} />}
+      <ExprEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} unfinished={{ draft: formulaDraft, set: setFormulaDraft }} />
     </>
   )
 }
 
-const EXPR_TYPES: Array<{ value: Expr["type"]; label: string }> = [
-  { value: "operand", label: "Value" },
-  { value: "binary", label: "Formula" },
-  { value: "function", label: "Function" },
-  { value: "conditional", label: "If-then" },
-  { value: "window", label: "Window" },
-  { value: "concat", label: "Join text" },
-  { value: "sum_horizontal", label: "Sum across" },
-]
+const isFunction = (id: CalculationId): id is FunctionName => FUNCTIONS.some((f) => f.value === id)
 
-/** The "Computed as" select: choosing a type starts a fresh expression of that type. */
-function ExprTypeSelect({ expr, onChange, ariaLabel }: { expr: Expr; onChange: (next: Expr) => void; ariaLabel: string }) {
+/**
+ * The "Computed as" select: every calculation, in its sections, with an
+ * unlisted function a formula cannot show (the current one, or one left
+ * earlier) kept as its own entry; or, with `only`, the "Function" select of
+ * one section's functions. While the expression computes from a column of a
+ * known type, the functions it cannot take are left out. Choosing a
+ * calculation never discards work: the expression being left is kept in
+ * `left` for its calculation, so going back restores it, and one not used
+ * yet starts from what the last one computed (`calculationExpr`).
+ */
+function ExprTypeSelect({
+  expr,
+  onChange,
+  ctx,
+  ariaLabel,
+  left,
+  onLeave,
+  only,
+}: {
+  expr: Expr
+  onChange: (next: Expr) => void
+  ctx: StepFormContext
+  ariaLabel: string
+  left: ReadonlyMap<CalculationId, Expr>
+  onLeave: (id: CalculationId, from: Expr) => void
+  only?: FunctionSection
+}) {
+  const schema = useStepSchema()
+  const bare = bareConstants(ctx.constants ?? [], ctx.columns)
+  const current = calculationOf(expr, ctx.variables, bare)
+  const value = computedValue(expr)
+  const valueType = value?.kind === "column" ? schema.typeOf(value.name) : null
+  const unlisted = [...new Set([current, ...left.keys()])].filter((id) => !CALCULATIONS.some((c) => c.id === id)).map(calculationEntry)
+  const general = CALCULATIONS.filter((c) => c.section === "General")
+  const entries = only ? CALCULATIONS.filter((c) => c.section === only) : [...general, ...unlisted, ...CALCULATIONS.slice(general.length)]
+  const options = entries
+    // A calculation left earlier comes back with its own value, so the current value's type does not decide it.
+    .filter((c) => c.id === current || left.has(c.id) || !isFunction(c.id) || functionTakes(c.id, valueType))
+    .map((c) => ({ value: c.id, label: calculationLabel(c), group: only ? undefined : c.section }))
   return (
-    <Field label="Computed as">
-      <SelectField value={exprTypeValue(expr)} options={EXPR_TYPES} onChange={(type) => onChange(defaultExpr(type))} ariaLabel={ariaLabel} />
+    <Field label={only ? "Function" : "Computed as"}>
+      <SelectField
+        value={current}
+        options={options}
+        onChange={(id) => {
+          onLeave(current, expr)
+          onChange(left.get(id) ?? calculationExpr(id, expr, ctx.variables, bare))
+        }}
+        ariaLabel={ariaLabel}
+      />
     </Field>
   )
 }
@@ -248,16 +310,11 @@ const FORMULA_PLACEHOLDER = "e.g. (premium + commission) * tax / 12"
  * holding a window, conditional or text join) falls back to the structured
  * left/operator/right form.
  */
-function FormulaEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "binary" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {
+function FormulaEditor({ expr, onChange, ctx, depth, unfinished }: { expr: Extract<Expr, { type: "binary" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number; unfinished?: UnfinishedFormula }) {
   const constants = ctx.constants ?? []
   const text = displayFormula(expr, ctx.variables, bareConstants(constants, ctx.columns))
   if (text === null) return <StructuredFormula expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
-  return <FormulaField text={text} onCommit={onChange} variables={ctx.variables} constants={constants} columns={ctx.columns} depth={depth} />
-}
-
-/** A value or function typed as a formula stays a formula in the editor and the "Computed as" select. */
-function exprTypeValue(expr: Expr): Expr["type"] {
-  return typedAsFormula(expr) ? "binary" : expr.type
+  return <FormulaField text={text} onCommit={onChange} variables={ctx.variables} constants={constants} columns={ctx.columns} depth={depth} unfinished={unfinished} />
 }
 
 const WORD_BEFORE_CARET = /[A-Za-z_][A-Za-z0-9_]*$/
@@ -303,10 +360,16 @@ function formulaCompletions(draft: string, caret: number, columns: string[], var
         : { value: `var:${name}`, label: name, note: "variable" },
     ),
     ...constantEntries,
-    ...FORMULA_FUNCTIONS.filter((f) => f.value.startsWith(lower) && f.value !== lower).map((f) => ({ value: `fn:${f.value}`, label: f.value, note: f.label === f.value ? null : f.label, mark: "ƒ" })),
+    ...[...FORMULA_FUNCTIONS.filter((f) => f.value.startsWith(lower) && f.value !== lower), ...functionsDoing(lower)].map((f) => ({ value: `fn:${f.value}`, label: f.value, note: f.label === f.value ? null : f.label, mark: "ƒ" })),
   ]
   const exact = columns.includes(prefix) || variables.includes(prefix) || constants.includes(prefix) || FORMULA_FUNCTIONS.some((f) => f.value === lower) ? prefix : null
   return { prefix, entries, exact }
+}
+
+/** Functions a word of whose label starts with `word` (three letters or more), other than those named so: `trim` finds strip. */
+function functionsDoing(word: string): typeof FORMULA_FUNCTIONS {
+  if (word.length < 3) return []
+  return FORMULA_FUNCTIONS.filter((f) => !f.value.startsWith(word) && f.label.toLowerCase().split(/[^a-z]+/).some((part) => part.startsWith(word)))
 }
 
 /** Argument names for the functions whose arguments need saying. */
@@ -362,10 +425,28 @@ function ArgumentTip({ fn, arg }: { fn: string; arg: number }) {
  * The draft follows `text` when it changes from outside, without remounting
  * the box, so focus survives a commit.
  */
-function FormulaField({ text, onCommit, variables, constants, columns, depth }: { text: string; onCommit: (next: Expr) => void; variables: string[]; constants: string[]; columns: string[]; depth: number }) {
+function FormulaField({
+  text,
+  onCommit,
+  variables,
+  constants,
+  columns,
+  depth,
+  unfinished,
+}: {
+  text: string
+  onCommit: (next: Expr) => void
+  variables: string[]
+  constants: string[]
+  columns: string[]
+  depth: number
+  /** Where text typed but not yet read is kept, so it survives a switch of calculation. */
+  unfinished?: UnfinishedFormula
+}) {
   const schema = useStepSchema()
   const problemId = useId()
-  const [draft, setDraft] = useState(text)
+  // Unfinished text comes back only over the formula it was typed over.
+  const [draft, setDraft] = useState(() => (unfinished?.draft?.over === text ? unfinished.draft.text : text))
   const [caret, setCaret] = useState(text.length)
   // `refused` marks a formula that was read but does something Polars 2 refuses.
   const [problem, setProblem] = useState<{ message: string; position: number | null; text: string; refused?: boolean } | null>(null)
@@ -397,11 +478,17 @@ function FormulaField({ text, onCommit, variables, constants, columns, depth }: 
     element.style.height = `${element.scrollHeight}px`
   }, [draft])
 
+  // Text in the box that is not yet read, kept where it survives a switch of calculation.
+  const type = (value: string) => {
+    setDraft(value)
+    unfinished?.set(value === text ? null : { over: text, text: value })
+  }
   const commitText = (value: string) => {
     completion.hide()
     if (value.trim() === text) {
       // Back at the committed formula: whatever failed to parse is gone.
       setProblem(null)
+      unfinished?.set(null)
       return
     }
     try {
@@ -415,6 +502,7 @@ function FormulaField({ text, onCommit, variables, constants, columns, depth }: 
       }
       onCommit(expr)
       setProblem(null)
+      unfinished?.set(null)
     } catch (error) {
       if (error instanceof FormulaError) setProblem({ message: error.message, position: error.position, text: value })
       else setProblem({ message: "The formula could not be read.", position: null, text: value })
@@ -433,7 +521,7 @@ function FormulaField({ text, onCommit, variables, constants, columns, depth }: 
     if (insert === null) return
     const before = draft.slice(0, caret - prefix.length)
     const after = draft.slice(caret)
-    setDraft(`${before}${insert}${after}`)
+    type(`${before}${insert}${after}`)
     const at = before.length + insert.length - (call ? 1 : 0)
     setCaret(at)
     pendingCaret.current = at
@@ -474,7 +562,7 @@ function FormulaField({ text, onCommit, variables, constants, columns, depth }: 
           value={draft}
           {...completion.inputProps}
           onChange={(event) => {
-            setDraft(event.target.value.replace(/\r?\n/g, " "))
+            type(event.target.value.replace(/\r?\n/g, " "))
             setCaret(event.target.selectionStart ?? event.target.value.length)
             completion.typed()
           }}
@@ -623,10 +711,12 @@ function FunctionArgs({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { ty
   )
 }
 
-function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: (next: Expr) => void; ctx: StepFormContext; depth?: number }) {
-  const schema = useStepSchema()
-  const typedText = typedAsFormula(expr) ? displayFormula(expr, ctx.variables, bareConstants(ctx.constants ?? [], ctx.columns)) : null
-  if (typedText !== null) return <FormulaField text={typedText} onCommit={onChange} variables={ctx.variables} constants={ctx.constants ?? []} columns={ctx.columns} depth={depth} />
+function ExprEditor({ expr, onChange, ctx, depth = 1, unfinished }: { expr: Expr; onChange: (next: Expr) => void; ctx: StepFormContext; depth?: number; unfinished?: UnfinishedFormula }) {
+  const bare = bareConstants(ctx.constants ?? [], ctx.columns)
+  // A typed formula, and an unlisted function a formula can show, are edited as a formula.
+  const asFormula = typedAsFormula(expr) || (expr.type === "function" && calculationOf(expr, ctx.variables, bare) === "formula")
+  const typedText = asFormula ? displayFormula(expr, ctx.variables, bare) : null
+  if (typedText !== null) return <FormulaField text={typedText} onCommit={onChange} variables={ctx.variables} constants={ctx.constants ?? []} columns={ctx.columns} depth={depth} unfinished={unfinished} />
   const operandProps = anyOperand(ctx, depth + 1)
   switch (expr.type) {
     case "operand":
@@ -636,21 +726,10 @@ function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: 
         </Field>
       )
     case "binary":
-      return <FormulaEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
+      return <FormulaEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} unfinished={unfinished} />
     case "function":
       return (
         <>
-          <Field label="Function">
-            <SelectField
-              value={expr.fn}
-              options={FUNCTIONS.filter((f) => f.value === expr.fn || expr.operand.kind !== "column" || functionTakes(f.value, schema.typeOf(expr.operand.name))).map((f) => ({ value: f.value, label: f.label }))}
-              onChange={(fn) => {
-                const spec = FUNCTIONS.find((f) => f.value === fn)
-                onChange({ ...expr, fn, args: (spec?.args ?? []).map(defaultArgFor) })
-              }}
-              ariaLabel="Function"
-            />
-          </Field>
           <Field label="Of">
             <OperandField value={expr.operand} onChange={(operand) => onChange({ ...expr, operand })} ariaLabel="Function operand" {...operandProps} />
           </Field>
@@ -681,12 +760,13 @@ function ConditionalEditor({
   operandProps: ReturnType<typeof anyOperand>
 }) {
   const many = expr.branches.length > 1
-  const Wrapper = many ? RowGroup : PlainRow
+  const branchKeys = useRowKeys(expr.branches)
   const setBranch = (index: number, next: ConditionalBranch) => onChange({ ...expr, branches: expr.branches.map((b, i) => (i === index ? next : b)) })
   const addBranch = () => {
     // A new branch tests the previous branch's first column and starts from a value of its Then's type.
     const last = expr.branches[expr.branches.length - 1]
     const then = last.then.kind === "literal" ? defaultLiteral(last.then.type) : literal("number", 0)
+    branchKeys.add()
     onChange({ ...expr, branches: [...expr.branches, { match: "all", conditions: [defaultCondition(last.conditions[0]?.column ?? "")], then }] })
   }
   return (
@@ -694,7 +774,7 @@ function ConditionalEditor({
       {expr.branches.map((branch, index) => {
         const name = index === 0 ? "If" : `Branch ${index + 1}`
         return (
-          <Wrapper key={index} label={`Branch ${index + 1}`}>
+          <RowGroup key={branchKeys.keys[index]} label={`Branch ${index + 1}`} boxed={many}>
             <div className="flex items-start gap-1.5">
               <div className="grid flex-1 gap-1.5 min-w-0">
                 <ConditionList
@@ -711,9 +791,17 @@ function ConditionalEditor({
                   <OperandField value={branch.then} onChange={(then) => setBranch(index, { ...branch, then })} ariaLabel={index === 0 ? "Then value" : `${name} then value`} {...operandProps} />
                 </Field>
               </div>
-              {many && <RowRemove label={`Remove branch ${index + 1}`} onClick={() => onChange({ ...expr, branches: expr.branches.filter((_, i) => i !== index) })} />}
+              {many && (
+                <RowRemove
+                  label={`Remove branch ${index + 1}`}
+                  onClick={() => {
+                    branchKeys.remove(index)
+                    onChange({ ...expr, branches: expr.branches.filter((_, i) => i !== index) })
+                  }}
+                />
+              )}
             </div>
-          </Wrapper>
+          </RowGroup>
         )
       })}
       <QuietAction onClick={addBranch} className="justify-self-start">Add branch</QuietAction>
@@ -890,14 +978,15 @@ function SumAcrossEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, {
   )
 }
 
+/** An Add column step keeps the kind it was added as: a function step lists only its own section's functions. */
 function WithColumnForm({ step, onChange, ctx }: FormProps<WithColumnStep>) {
+  const section = stepSection(calculationOf(step.expr, ctx.variables, bareConstants(ctx.constants ?? [], ctx.columns)))
   return (
     <>
       <Field label="Column name" htmlFor={ctx.firstFieldId}>
         <TextField id={ctx.firstFieldId} value={step.name} onCommit={(name) => onChange({ ...step, name })} ariaLabel="Column name" placeholder="new_column" mono />
       </Field>
-      <ExprTypeSelect expr={step.expr} onChange={(expr) => onChange({ ...step, expr })} ariaLabel="Expression type" />
-      <ExprEditor expr={step.expr} onChange={(expr) => onChange({ ...step, expr })} ctx={ctx} />
+      <ExpressionFields expr={step.expr} onChange={(expr) => onChange({ ...step, expr })} ctx={ctx} depth={1} ariaLabel="Function" only={section} />
     </>
   )
 }
@@ -982,63 +1071,66 @@ function castEntryFor(entry: CastEntry, dtype: string | null): CastEntry {
 function CastForm({ step, onChange, ctx }: FormProps<CastStep>) {
   const schema = useStepSchema()
   return (
-    <RowList
-      rows={step.casts}
-      onChange={(casts) => onChange({ ...step, casts })}
-      label="Cast"
-      addLabel="Add column"
-      create={(): CastEntry => ({ column: "", dtype: "Float64" })}
-      renderRow={(entry, set, index) => {
-        const dtype = entry.column ? schema.typeOf(entry.column) : null
-        const targets = castTargetsFor(dtype)
-        const options = DTYPE_OPTIONS.filter((option) => targets.includes(option.value) || option.value === entry.dtype)
-        const parsing = parsesText(entry.dtype) && (castFamily(dtype) === "text" || (castFamily(dtype) === null && entry.format !== undefined))
-        const refused = castFamily(dtype) !== null && !targets.includes(entry.dtype)
-        return (
-          <>
-            <Words>{index === 0 ? "Change" : "and"}</Words>
-            <div className="flex-1 basis-28 min-w-0">
-              <ColumnPicker
-                id={index === 0 ? ctx.firstFieldId : undefined}
-                value={entry.column}
-                onCommit={(column) => set(castEntryFor({ ...entry, column }, schema.typeOf(column)))}
-                suggestions={ctx.columns}
-                ariaLabel={`Cast ${index + 1} column`}
-              />
-            </div>
-            <Words>to</Words>
-            <div className="flex-1 basis-28 min-w-0">
-              <SelectField value={entry.dtype} options={options} onChange={(next) => set(castEntryFor({ ...entry, dtype: next }, dtype))} ariaLabel={`Cast ${index + 1} type`} />
-            </div>
-            {parsing && (
-              <>
-                <Words>with format</Words>
-                <div className="flex-1 basis-28 min-w-0">
-                  <TextField
-                    value={entry.format ?? ""}
-                    // A text column needs its format: clearing it keeps the last one.
-                    onCommit={(format) => {
-                      if (format) set({ ...entry, format })
-                      else if (castFamily(dtype) !== "text") set(omitKeys(entry, ["format"]))
-                    }}
-                    ariaLabel={`Cast ${index + 1} format`}
-                    placeholder={parsesText(entry.dtype) ? DATE_FORMAT_DEFAULTS[entry.dtype] : undefined}
-                    mono
-                  />
-                </div>
-              </>
-            )}
-            {refused && (
-              <p role="alert" className="m-0 basis-full text-[11px]" style={{ color: "var(--warning)" }}>
-                {castFamily(dtype) === "category"
-                  ? `${entry.column} is a category, which Polars 2 casts only to text: change it to String first.`
-                  : `Polars 2 does not cast ${entry.column} from ${dtype} to ${entry.dtype}.`}
-              </p>
-            )}
-          </>
-        )
-      }}
-    />
+    <>
+      <RowList
+        rows={step.casts}
+        onChange={(casts) => onChange({ ...step, casts })}
+        label="Cast"
+        addLabel="Add column"
+        create={(): CastEntry => ({ column: "", dtype: "Float64" })}
+        renderRow={(entry, set, index) => {
+          const dtype = entry.column ? schema.typeOf(entry.column) : null
+          const targets = castTargetsFor(dtype)
+          const options = DTYPE_OPTIONS.filter((option) => targets.includes(option.value) || option.value === entry.dtype)
+          const parsing = parsesText(entry.dtype) && (castFamily(dtype) === "text" || (castFamily(dtype) === null && entry.format !== undefined))
+          const refused = castFamily(dtype) !== null && !targets.includes(entry.dtype)
+          return (
+            <>
+              <Words>{index === 0 ? "Change" : "and"}</Words>
+              <div className="flex-1 basis-28 min-w-0">
+                <ColumnPicker
+                  id={index === 0 ? ctx.firstFieldId : undefined}
+                  value={entry.column}
+                  onCommit={(column) => set(castEntryFor({ ...entry, column }, schema.typeOf(column)))}
+                  suggestions={ctx.columns}
+                  ariaLabel={`Cast ${index + 1} column`}
+                />
+              </div>
+              <Words>to</Words>
+              <div className="flex-1 basis-28 min-w-0">
+                <SelectField value={entry.dtype} options={options} onChange={(next) => set(castEntryFor({ ...entry, dtype: next }, dtype))} ariaLabel={`Cast ${index + 1} type`} />
+              </div>
+              {parsing && (
+                <>
+                  <Words>with format</Words>
+                  <div className="flex-1 basis-28 min-w-0">
+                    <TextField
+                      value={entry.format ?? ""}
+                      // A text column needs its format: clearing it keeps the last one.
+                      onCommit={(format) => {
+                        if (format) set({ ...entry, format })
+                        else if (castFamily(dtype) !== "text") set(omitKeys(entry, ["format"]))
+                      }}
+                      ariaLabel={`Cast ${index + 1} format`}
+                      placeholder={parsesText(entry.dtype) ? DATE_FORMAT_DEFAULTS[entry.dtype] : undefined}
+                      mono
+                    />
+                  </div>
+                </>
+              )}
+              {refused && (
+                <p role="alert" className="m-0 basis-full text-[11px]" style={{ color: "var(--warning)" }}>
+                  {castFamily(dtype) === "category"
+                    ? `${entry.column} is a category, which Polars 2 casts only to text: change it to String first.`
+                    : `Polars 2 does not cast ${entry.column} from ${dtype} to ${entry.dtype}.`}
+                </p>
+              )}
+            </>
+          )
+        }}
+      />
+      <ConfigCheckbox checked={!step.strict} onChange={(missing) => onChange({ ...step, strict: !missing })} label="Values that don't convert become missing" />
+    </>
   )
 }
 
@@ -1121,9 +1213,8 @@ function AggregationRow({ entry, index, onChange, onRemove, ctx, boxed, showFilt
 }) {
   const schema = useStepSchema()
   const label = `Aggregation ${index + 1}`
-  const Wrapper = boxed ? RowGroup : PlainRow
   return (
-    <Wrapper label={label}>
+    <RowGroup label={label} boxed={boxed}>
       <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
         <span className="flex flex-1 basis-32 min-w-0 items-center gap-1.5">
           <span className="flex-1 min-w-0">
@@ -1164,16 +1255,7 @@ function AggregationRow({ entry, index, onChange, onRemove, ctx, boxed, showFilt
       </div>
       {entry.agg === "quantile" && <QuantileField value={entry.quantile} onChange={(quantile) => onChange({ ...entry, quantile })} ariaLabel={`${label} quantile`} />}
       {showFilter && <RowFilter where={entry.where} onChange={(where) => onChange(where ? { ...entry, where } : omitKeys(entry, ["where"]))} ctx={ctx} label={label} />}
-    </Wrapper>
-  )
-}
-
-/** A row's controls without a border, for a list of one. */
-function PlainRow({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="grid gap-1.5" role="group" aria-label={label}>
-      {children}
-    </div>
+    </RowGroup>
   )
 }
 
@@ -1191,9 +1273,8 @@ function DtypeAggregationRow({ entry, index, onChange, onRemove, boxed }: {
   boxed: boolean
 }) {
   const label = `Aggregation ${index + 1}`
-  const Wrapper = boxed ? RowGroup : PlainRow
   return (
-    <Wrapper label={label}>
+    <RowGroup label={label} boxed={boxed}>
       <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
         <span className="flex flex-1 basis-32 min-w-0 items-center gap-1">
           <Words>*</Words>
@@ -1223,7 +1304,7 @@ function DtypeAggregationRow({ entry, index, onChange, onRemove, boxed }: {
       </div>
       <Hint>Each output is named after its column with the suffix added.</Hint>
       {entry.agg === "quantile" && <QuantileField value={entry.quantile} onChange={(quantile) => onChange({ ...entry, quantile })} ariaLabel={`${label} quantile`} />}
-    </Wrapper>
+    </RowGroup>
   )
 }
 

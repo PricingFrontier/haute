@@ -955,7 +955,7 @@ describe("App integration - load a pipeline with nodes", () => {
     })
     fireEvent.click(await screen.findByTestId("rf__node-t"))
     await findEditorTestId("polars-steps-editor")
-    fireEvent.click(screen.getByRole("button", { name: "Step 1: Add column" }))
+    fireEvent.click(screen.getByRole("button", { name: "Step 1: Formula" }))
     const formula = await screen.findByRole("combobox", { name: "Formula" })
     fireEvent.change(formula, { target: { value: "pre" } })
     const list = await screen.findByRole("listbox", { name: "Matching columns, constants and functions" })

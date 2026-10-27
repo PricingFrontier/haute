@@ -386,7 +386,7 @@ test.describe("Transform step builder journey", () => {
 
     // A formula reads the constant by its bare name, offered as the word is typed.
     await editor.getByRole("button", { name: "Add step" }).click()
-    await editor.getByRole("menu", { name: "Add step" }).getByRole("menuitem", { name: "Add column" }).click()
+    await editor.getByRole("menu", { name: "Add step" }).getByRole("menuitem", { name: "Formula" }).click()
     const columnName = editor.getByLabel("Column name")
     await columnName.fill("scaled")
     await columnName.press("Enter")

@@ -321,8 +321,12 @@ numbered step cards ("Start from", then Step 1 onwards, the same numbering every
 uses) that open one at a time through a keyboard-operable disclosure (a new step opens
 itself and its first field takes focus; Escape collapses; deleting a card moves focus to
 the next disclosure or to `Add step`). A card's header, laid out like the trace panel's
-step card, carries the chevron, the step number in muted monospace, the kind's icon and
-its label, with the collapsed summary under the label in the same column: column names as
+step card, carries the chevron, the step number in muted monospace, the step's icon and
+title, with the collapsed summary under the title in the same column. The title is the
+kind's label, except that an Add column card is titled, and iconed, by what it computes:
+its "Computed as" entry ("Formula", "If-then", "Window", "Clip", "Trim whitespace"), a
+function typed in a formula being a Formula; messages about a step still name its kind.
+The summary shows column names as
 chips, values in their code colours, operator words muted, an unset part as a dashed
 placeholder naming what is missing ("column", "name"), a step whose main column is not
 chosen yet as a prompt ("Choose a column…"), and, at the right, the change the step makes
@@ -335,13 +339,31 @@ there and the open card follows its step). Keys the canvas acts on stop at the s
 whatever control has focus: Delete and Backspace outside a text box, and the graph's
 Ctrl+C, Ctrl+V, Ctrl+A and Ctrl+G; save, undo and redo, node search, fit view, help and
 Escape (once no open card has handled it) stay global. An `Add step` button under the last
-card (under the start card while there are no steps) opens, in place, a chooser of every
-step kind by icon and name, sectioned as rows, columns, combine, values and code, with a
-search box that takes focus and filters the kinds by label, description or Polars call
-(never SAS or Excel names; Enter adds the first match), a line at its foot giving the
-focused or hovered kind's description and Polars call, arrow keys that move between the
-search box and the kinds, and Escape that closes and returns focus; choosing a kind moves
-focus into the new card. The chooser covers filter, derived
+card (under the start card while there are no steps) opens, in place, a chooser of
+entries by icon and name in five sections: Add column (Formula, If-then, Window, Number
+function, Text function and Date function, each adding an Add column step of that kind,
+Number function as Round, Text function as Trim whitespace and Date function as Shift
+date), Rows (Filter
+rows, Sort rows, Remove duplicates, Limit rows), Columns (Keep columns, Drop columns,
+Rename columns, Change types, Fill missing values), Combine (Join another input, Append
+inputs, Group and aggregate, Pivot to columns, Unpivot to rows) and Other (Define
+variable, Free code). A search box ("Search steps and functions") takes focus; typing
+replaces the sections with one ranked list of at most ten matches over every entry,
+every other "Computed as" calculation (Sum across, Join text, Value, Divide and each
+number, text and date function), every window aggregate ("Window: running total") and
+the Change types presets for the type conversions ("Text to date", "Text to date and
+time", and, ticking the step's "Values that don't convert become missing", "Convert,
+missing where a value doesn't convert", "Text to date, missing where it doesn't parse"
+and "Text to date and time, missing where it doesn't parse"), matched by name,
+description or Polars call (never SAS or Excel names). Each hit that adds a step other
+than its own name says which, muted after its name ("Add column", "Change types"); a
+hit whose name or Polars call is the query ranks first, then hits whose name has a word
+starting with it, then the rest, each rank in the sections' order; and Enter adds the
+first. A line at the chooser's foot gives the focused or hovered entry's description and
+Polars call; Window's ("A group's value on every row", `over`) and Group and aggregate's
+("One row per group", `group_by().agg()`) say how the two differ. Arrow keys move
+between the search box and the entries, Escape closes and returns focus, and choosing an
+entry moves focus into the new card. The chooser covers filter, derived
 column, conditional column, window aggregate, select, drop, rename, cast, sort, unique,
 group by, join, concat, pivot, unpivot, fill null, limit, and variable. Short forms read as
 sentences (`Keep the first [100] rows`, `Sort by [column] [ascending]`, `Rename [column]
@@ -430,9 +452,42 @@ branches as "Otherwise, when [all] of these are true", the match select sitting 
 sentence. An if-then lists its branches, each a condition list and a Then value, boxed
 and removable ("Remove branch 2") while there are several, then "Add branch" (a new
 branch's condition starting from the previous branch's first column), and its
-Otherwise value last; a row takes the first branch whose conditions hold. "Computed as"
-offers Value, Formula, Function, If-then, Window, Join text and Sum across; a new column starts in
-Formula, its name field taking focus first. A formula is edited as text
+Otherwise value last; a row takes the first branch whose conditions hold. The
+calculations are the General ones (Formula, If-then, Window, Sum across, Join text,
+Value) and the functions in three sections: Number (Round, Clip, Divide, Absolute value,
+Round down, Round up, Square root, Natural log, Exponential), Text (Trim whitespace,
+Lower case, Upper case, Replace first match, Replace all matches, Replace by pattern,
+Substring, Split and take part, Extract pattern group, Text length) and Dates (Shift
+date, Duration in days, Year, Month, Day, Weekday); an entry whose name needs it carries
+its qualifier in a list ("Divide (missing where the divisor is zero)", "Weekday (1 =
+Monday)", "Replace by pattern (regex)", "Extract pattern group (regex)") and only its
+name as a card title. A function's form is its value ("Of") and its labelled arguments.
+An Add column step keeps the kind it was added as, read from its expression with nothing
+stored for it: a Number, Text or Date function step offers, in a "Function" select, the
+functions of its own section only; a Formula (a function typed in the formula box
+included), If-then, Window, Sum across, Join text or Value step shows that calculation's
+form alone, with no select, and so does a step holding a conversion a formula cannot
+express. An operand's "Expression" source instead offers every calculation, in one
+"Computed as" select of four sections, General, Number, Text and Dates. While the
+value computed from is a column of a known type, the functions it cannot take are left
+out, the current entry always kept. The type conversions (cast, try_cast, to_date,
+to_datetime, try_to_date, try_to_datetime) and fill_null are not listed, Change types
+and Fill missing values being where they are chosen, but stay functions a formula types;
+a saved one is shown as its formula, or, where a formula cannot express it, keeps its
+own entry. A new column starts in Formula, its name field taking focus first. Changing
+the "Function" or "Computed as" select never discards work and never wraps it: the value being computed (a
+function's Of, a window's value, a sum across's or a text join's first part, a Value's
+value) carries into the new calculation's value where it has one, a function's arguments
+carry to a function taking the same kinds of argument, Formula shows the expression being
+left as its formula where a formula can express it, and going back to a calculation
+already used in the open card restores it as it was left, a formula's unfinished text
+included (typed or completed), and keeps a calculation it left selectable even where the
+list would not offer it (a saved conversion, or a function the current value's type cannot
+take). What a row of a list holds (a part, a condition, a branch, and the drafts of an
+expression in it) stays with that row when the list's own actions add or remove rows
+(rows that read the same included) and when the list shrinks to one row and loses its
+boxes; an undo or any other change from outside the list that adds or removes rows starts
+every row's drafts afresh rather than risk giving one row another's. A formula is edited as text
 (`(premium + tax) * 1.05 / 12`, `round(premium / sum_insured * 1000, 3)`: columns by name or
 in backticks, earlier variables by name, global constants by name or as `global_constants.<name>`
 (a bare name is an earlier variable first, then a column the step has, then a constant; a constant
@@ -462,7 +517,9 @@ can replace the last valid expression. A new formula box starts empty
 formula as its placeholder, as a tooltip on the box and on an info icon beside its label, and
 grows onto more lines as the formula lengthens (Enter still commits); as a name is typed the
 columns (with their types), earlier variables and global constants starting with it are listed under the box,
-then the catalogue's functions, marked `ƒ` with what they do (Up/Down move, Tab, Enter or a
+then the catalogue's functions, marked `ƒ` with what they do, a function also offered when a
+word of what it does starts with the typed word (`trim` offers `strip`, `days` offers
+`total_days`, each inserting its own name) (Up/Down move, Tab, Enter or a
 click takes the active entry, a column backticked when it is not an identifier, a function
 arriving as `name()` with the caret between the brackets; a word that already is a name is
 kept; Escape closes; while no upstream column names are known a note says to run the step
@@ -477,7 +534,7 @@ matching quoted text, a function, a variable or a function's plain-value argumen
 as a type); and an expression text cannot express (one
 holding a window, conditional or text join) is edited in the structured
 left/operator/right form instead. An operand field also offers an "Expression" source that
-opens a nested editor (the same "Computed as" select and expression form, indented under
+opens a nested editor (the four-section "Computed as" select and expression form, indented under
 the field); the source is withheld at the renderer's depth cap of twelve so the editor
 never builds a step it could not save. Formula commits obey the same cap, including
 their enclosing expression depth: an over-depth draft stays editable with an inline
@@ -576,7 +633,11 @@ field, starting at `%Y-%m-%d`, or `%Y-%m-%d %H:%M:%S` for a date and time) and t
 parses with it (`str.to_date(format)`, `str.to_datetime(format)`); left empty where the
 column's type is unknown, the entry is a plain cast. Formulas parse text with
 `to_date`, `to_datetime`, `try_to_date` and `try_to_datetime`, each taking a required
-format, the `try_` forms giving null where a value does not parse. Change types offers
+format, the `try_` forms giving null where a value does not parse. Change types carries
+one checkbox, "Values that don't convert become missing": ticked, every cast and parse in
+the step gives a missing value where a value does not convert (the step's `strict` is
+`false`, rendered as `strict=False`); unticked, as a new step starts, `strict` is `true`
+and such a value fails the run. Change types offers
 each column only the types Polars 2 casts it to (a category becomes text or a
 category, a duration a number, binary data text, text anything but true/false, and no
 number or date becomes a category directly), the same table the renderer holds
@@ -595,7 +656,7 @@ does switching between "is one of" and "is not one of", which keeps the values. 
 (`implode()`). Where the editor does not know a column's type it offers everything, and
 a step Polars refuses fails the run on that step (see the error line below).
 
-The Add step chooser also offers **Free code** in a Code section. Its card embeds
+The Add step chooser also offers **Free code** in its Other section. Its card embeds
 the shared Python code editor, starts empty, and has no explanatory text below
 the editor. The editor starts at a compact 120px height, can be resized vertically,
 and fills the available height as its box grows. It can

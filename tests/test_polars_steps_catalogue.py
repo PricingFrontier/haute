@@ -118,6 +118,7 @@ def test_date_format_defaults_are_formats_the_renderer_takes() -> None:
                 {
                     "id": "c",
                     "kind": "cast",
+                    "strict": True,
                     "casts": [{"column": "a", "dtype": dtype, "format": date_format}],
                 },
             ],

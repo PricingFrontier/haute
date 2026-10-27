@@ -38,7 +38,7 @@ The Constant node produces a single-row table. To give every row of your main da
 
 1. Add a Constant node called `params`. Change the first row to `expense_loading` = `1.15`.
 2. Click **Add value** twice and fill in `tax_rate` = `0.12` and `min_premium` = `250`.
-3. Connect `params` and your data, `quotes`, to a Transform node. **Start from** `quotes`, add **Join another input** with **cross: every combination of rows** and `params`, then add **Add column** with **Column name** `loaded_premium` and the formula `base_premium * expense_loading`.
+3. Connect `params` and your data, `quotes`, to a Transform node. **Start from** `quotes`, add **Join another input** with **cross: every combination of rows** and `params`, then add **Formula** with **Column name** `loaded_premium` and the formula `base_premium * expense_loading`.
 
 The Constant's preview is one row:
 

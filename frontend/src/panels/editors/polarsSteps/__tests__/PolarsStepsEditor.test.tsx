@@ -204,8 +204,8 @@ describe("PolarsStepsEditor", () => {
     render(<Harness initial={{ steps: [source] }} inputSources={[quotes, rates]} spy={spy} />)
     fireEvent.click(screen.getByRole("button", { name: "Add step" }))
     const menu = screen.getByRole("menu", { name: "Add step" })
-    expect(within(menu).getAllByRole("menuitem")).toHaveLength(17)
-    expect(within(menu).getAllByRole("group").map((g) => g.getAttribute("aria-label"))).toEqual(["Rows", "Columns", "Combine", "Values", "Code"])
+    expect(within(menu).getAllByRole("menuitem")).toHaveLength(22)
+    expect(within(menu).getAllByRole("group").map((g) => g.getAttribute("aria-label"))).toEqual(["Add column", "Rows", "Columns", "Combine", "Other"])
     expect(within(within(menu).getByRole("group", { name: "Combine" })).getAllByRole("menuitem")).toHaveLength(5)
     expect(within(menu).getByRole("menuitem", { name: "Limit rows" })).toHaveAttribute("title", "Keep the first N rows")
     expect(screen.queryByRole("button", { name: "Add step" })).not.toBeInTheDocument()
@@ -250,7 +250,7 @@ describe("PolarsStepsEditor", () => {
 
   it("reorders steps by dragging a card onto another", async () => {
     const spy = vi.fn()
-    const cast: Step = { id: "c", kind: "cast", casts: [{ column: "premium", dtype: "Float64" }] }
+    const cast: Step = { id: "c", kind: "cast", strict: true, casts: [{ column: "premium", dtype: "Float64" }] }
     render(<Harness initial={{ steps: [source, filter, limit, cast] }} inputSources={[quotes]} spy={spy} />)
     const cardOf = (name: string) => screen.getByRole("button", { name }).closest("[data-testid='polars-step-card']") as HTMLElement
     const header = screen.getByRole("button", { name: "Step 3: Change types" }).parentElement as HTMLElement
@@ -310,7 +310,7 @@ describe("PolarsStepsEditor", () => {
     const { rerender } = render(<Harness initial={{ steps: [source, { id: "w", kind: "with_column", name: "", expr: { type: "operand", operand: { kind: "column", name: "premium" } } }] }} inputSources={[quotes]} />)
     await waitFor(() => expect(screen.getByTestId("polars-code-note")).toHaveTextContent("Step 1 isn't finished: it needs a name for the new column."), { timeout: 5000 })
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
-    const card = screen.getByRole("button", { name: "Step 1: Add column" }).closest("[data-testid='polars-step-card']")
+    const card = screen.getByRole("button", { name: "Step 1: Value" }).closest("[data-testid='polars-step-card']")
     expect(card).toHaveTextContent("Needs a name for the new column.")
     expect(screen.getByRole("button", { name: "Switch to code" })).toBeDisabled()
     rerender(<Harness initial={{ steps: [source, { id: "w", kind: "with_column", name: "", expr: { type: "operand", operand: { kind: "column", name: "premium" } } }] }} inputSources={[quotes]} runError="Step 1: Column name must be a non-empty string." />)
@@ -491,7 +491,7 @@ describe("PolarsStepsEditor", () => {
 
   it("keeps the open card on its step when another card is dragged past it", async () => {
     const spy = vi.fn()
-    const cast: Step = { id: "c", kind: "cast", casts: [{ column: "premium", dtype: "Float64" }] }
+    const cast: Step = { id: "c", kind: "cast", strict: true, casts: [{ column: "premium", dtype: "Float64" }] }
     render(<Harness initial={{ steps: [source, filter, limit, cast] }} inputSources={[quotes]} spy={spy} />)
     fireEvent.click(screen.getByRole("button", { name: "Step 2: Limit rows" }))
     const cardOf = (name: string) => screen.getByRole("button", { name }).closest("[data-testid='polars-step-card']") as HTMLElement
@@ -557,7 +557,7 @@ describe("PolarsStepsEditor in frame mode", () => {
     expect(within(menu).queryByRole("menuitem", { name: "Append inputs" })).not.toBeInTheDocument()
     const combine = within(menu).getByRole("group", { name: "Combine" })
     expect(within(combine).getAllByRole("menuitem")).toHaveLength(3)
-    expect(within(menu).getAllByRole("menuitem")).toHaveLength(15)
+    expect(within(menu).getAllByRole("menuitem")).toHaveLength(20)
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Limit rows" }))
     await waitFor(() => expect(lastSteps(spy)).toHaveLength(1), { timeout: 5000 })
     expect((lastSteps(spy) as Step[])[0]).toMatchObject({ kind: "limit" })
@@ -701,12 +701,35 @@ describe("PolarsStepsEditor keys and focus", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Step 1: Limit rows" })).toBe(document.activeElement), { timeout: 5000 })
   })
 
+  it("adds a step computed as the chosen entry, its card titled by the calculation", async () => {
+    const spy = vi.fn()
+    render(<Harness initial={{ steps: [source] }} inputSources={[quotes]} spy={spy} />)
+    fireEvent.click(screen.getByRole("button", { name: "Add step" }))
+    fireEvent.click(screen.getByRole("menuitem", { name: "Number function" }))
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Column name")), { timeout: 5000 })
+    expect(screen.getByRole("button", { name: "Step 1: Round" })).toHaveAttribute("aria-expanded", "true")
+    expect(screen.getByLabelText("Function")).toHaveValue("round")
+    expect(screen.getByLabelText("Decimal places")).toBeInTheDocument()
+    await waitFor(() => expect((lastSteps(spy) as Step[])[1]).toMatchObject({ kind: "with_column", expr: { type: "function", fn: "round" } }), { timeout: 5000 })
+    fireEvent.change(screen.getByLabelText("Function"), { target: { value: "clip" } })
+    expect(screen.getByRole("button", { name: "Step 1: Clip" })).toBeInTheDocument()
+    // A second pick of the same entry starts from its own copy of the preset.
+    fireEvent.click(screen.getByRole("button", { name: "Add step" }))
+    fireEvent.click(screen.getByRole("menuitem", { name: "Number function" }))
+    fireEvent.click(screen.getByRole("button", { name: "Add step" }))
+    fireEvent.click(screen.getByRole("menuitem", { name: "Number function" }))
+    await waitFor(() => expect(lastSteps(spy)).toHaveLength(4), { timeout: 5000 })
+    const [, , second, third] = lastSteps(spy) as Array<Extract<Step, { kind: "with_column" }>>
+    expect(second.expr).toEqual(third.expr)
+    expect(second.expr).not.toBe(third.expr)
+  })
+
   it("opens a new Add column step on its name, with the formula box showing its example", async () => {
     render(<Harness initial={{ steps: [source] }} inputSources={[quotes]} />)
     fireEvent.click(screen.getByRole("button", { name: "Add step" }))
-    fireEvent.click(screen.getByRole("menuitem", { name: "Add column" }))
+    fireEvent.click(screen.getByRole("menuitem", { name: "Formula" }))
     await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Column name")), { timeout: 5000 })
-    expect(screen.getByLabelText("Expression type")).toHaveValue("binary")
+    expect(screen.queryByLabelText("Function")).not.toBeInTheDocument()
     expect(screen.getByRole("combobox", { name: "Formula" })).toHaveAttribute("placeholder", "e.g. (premium + commission) * tax / 12")
   })
 })
@@ -803,27 +826,35 @@ describe("PolarsStepsEditor notes and linked code", () => {
     const total: Step = { id: "g", kind: "group_by", keys: [], aggregations: [{ column: "premium", agg: "sum", name: "total" }] }
     const fresh: Step = { id: "f2", kind: "filter", match: "all", conditions: [{ column: "", operator: "eq", value: { kind: "literal", type: "number", value: 0 } }] }
     render(<Harness initial={{ steps: [source, addGross, dropRegion, total, fresh] }} inputSources={[quotesTyped]} />)
-    expect(cardOf("Step 1: Add column")).toHaveTextContent("+gross")
-    expect(within(cardOf("Step 1: Add column")).getByText("gross").tagName).toBe("CODE")
+    expect(cardOf("Step 1: Formula")).toHaveTextContent("+gross")
+    expect(within(cardOf("Step 1: Formula")).getByText("gross").tagName).toBe("CODE")
     expect(cardOf("Step 2: Drop columns")).toHaveTextContent("−region")
     expect(cardOf("Step 3: Group and aggregate")).toHaveTextContent("total = sum of premium")
     expect(cardOf("Step 3: Group and aggregate")).toHaveTextContent("→ 1 column")
     expect(cardOf("Step 4: Filter rows")).toHaveTextContent("Choose a column…")
   })
 
+  it("titles a card as its form reads it, earlier variables included", () => {
+    const rate: Step = { id: "v", kind: "variable", name: "rate", value: { kind: "literal", type: "text", value: "1.5" } }
+    const castRate: Step = { id: "c", kind: "with_column", name: "r", expr: { type: "function", fn: "cast", operand: { kind: "variable", name: "rate" }, args: [{ kind: "literal", type: "text", value: "Float64" }] } }
+    render(<Harness initial={{ steps: [source, rate, castRate] }} inputSources={[quotesTyped]} />)
+    fireEvent.click(cardOf("Step 2: Formula").querySelector("button[aria-expanded]") as HTMLElement)
+    expect(screen.getByLabelText("Formula")).toHaveValue("cast(rate, Float64)")
+  })
+
   it("shows a columnless window saved without its column once the columns are known", () => {
     const rowCount = { id: "n", kind: "with_column", name: "n", expr: { type: "window", agg: "len", over: [] } } as unknown as Step
     render(<Harness initial={{ steps: [source, rowCount] }} inputSources={[quotesTyped]} />)
-    expect(cardOf("Step 1: Add column")).toHaveTextContent("n = row count over all rows")
-    expect(cardOf("Step 1: Add column")).not.toHaveTextContent("Not in the data")
+    expect(cardOf("Step 1: Window")).toHaveTextContent("n = row count over all rows")
+    expect(cardOf("Step 1: Window")).not.toHaveTextContent("Not in the data")
   })
 
   it("states no column change where the columns are not exactly known", () => {
     const keepByType: Step = { id: "k", kind: "select", columns: ["premium"], dtypes: ["String"] }
     render(<Harness initial={{ steps: [source, freeCode, { ...addGross, id: "w1" }, keepByType, { ...addGross, id: "w2", name: "net" }] }} inputSources={[quotesTyped]} />)
-    expect(cardOf("Step 2: Add column")).not.toHaveTextContent("+gross")
+    expect(cardOf("Step 2: Formula")).not.toHaveTextContent("+gross")
     expect(cardOf("Step 3: Keep columns")).not.toHaveTextContent("−")
-    expect(cardOf("Step 4: Add column")).not.toHaveTextContent("+net")
+    expect(cardOf("Step 4: Formula")).not.toHaveTextContent("+net")
   })
 
   it("keeps three action slots on every card and lines the summary up with the label", () => {

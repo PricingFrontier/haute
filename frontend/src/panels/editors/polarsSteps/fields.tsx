@@ -36,6 +36,7 @@ import { decimalScale } from "../../../utils/polarsDtypes"
 import { completionMatches } from "./completion"
 import { useStepSchema } from "./stepSchema"
 import { namesAsCompletions, useCompletionList, type Completion } from "./useCompletionList"
+import { useRowKeys } from "./useRowKeys"
 import type { Condition, ConstantOperand, Expr, LiteralOperand, LiteralType, MatchMode, NumberType, Operand } from "./types"
 
 export const CONTROL_CLASS = "focus-ring w-full min-w-0 px-2 py-1.5 text-xs rounded-md"
@@ -136,7 +137,18 @@ export function Hint({ children }: { children: string }) {
   )
 }
 
-export type SelectOption<T extends string> = { value: T; label: string }
+/** Consecutive options sharing a `group` are listed under it. */
+export type SelectOption<T extends string> = { value: T; label: string; group?: string }
+
+function optionRuns<T extends string>(options: ReadonlyArray<SelectOption<T>>): Array<{ group?: string; options: Array<SelectOption<T>> }> {
+  const runs: Array<{ group?: string; options: Array<SelectOption<T>> }> = []
+  for (const option of options) {
+    const last = runs[runs.length - 1]
+    if (last && last.group === option.group) last.options.push(option)
+    else runs.push({ group: option.group, options: [option] })
+  }
+  return runs
+}
 
 export function SelectField<T extends string>({
   value,
@@ -169,11 +181,14 @@ export function SelectField<T extends string>({
           {placeholder}
         </option>
       )}
-      {options.map((option) => (
-        <option key={option.value} value={option.value}>
-          {option.label}
-        </option>
-      ))}
+      {optionRuns(options).map((run, index) => {
+        const items = run.options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))
+        return run.group === undefined ? items : <optgroup key={`${run.group}-${index}`} label={run.group}>{items}</optgroup>
+      })}
     </select>
   )
 }
@@ -317,9 +332,10 @@ export function RowRemove({ onClick, label }: { onClick: () => void; label: stri
 }
 
 /** A bordered group of controls that belong to one row (a condition, an aggregation). */
-export function RowGroup({ label, children }: { label: string; children: ReactNode }) {
+export function RowGroup({ label, children, boxed = true }: { label: string; children: ReactNode; boxed?: boolean }) {
+  // Unboxed it keeps the same element, so its children keep their state when a list shrinks to one row.
   return (
-    <div className="grid gap-1.5 p-2 rounded-md" style={{ border: "1px solid var(--border-subtle)" }} role="group" aria-label={label}>
+    <div className={boxed ? "grid gap-1.5 p-2 rounded-md" : "grid gap-1.5"} style={boxed ? { border: "1px solid var(--border-subtle)" } : undefined} role="group" aria-label={label}>
       {children}
     </div>
   )
@@ -351,18 +367,33 @@ export function RowList<T>({
   renderRow: (row: T, set: (next: T) => void, index: number) => ReactNode
   children?: ReactNode
 }) {
+  const rowKeys = useRowKeys(rows)
   return (
     <div className="grid gap-1.5">
       {rows.map((row, index) => (
-        <div key={index} className="flex flex-wrap items-center gap-1.5" role="group" aria-label={`${label} ${index + 1}`}>
+        <div key={rowKeys.keys[index]} className="flex flex-wrap items-center gap-1.5" role="group" aria-label={`${label} ${index + 1}`}>
           {renderRow(row, (next) => onChange(rows.map((r, i) => (i === index ? next : r))), index)}
           {rows.length > min && (
-            <RowRemove label={`Remove ${label.toLowerCase()} ${index + 1}`} onClick={() => onChange(rows.filter((_, i) => i !== index))} />
+            <RowRemove
+              label={`Remove ${label.toLowerCase()} ${index + 1}`}
+              onClick={() => {
+                rowKeys.remove(index)
+                onChange(rows.filter((_, i) => i !== index))
+              }}
+            />
           )}
         </div>
       ))}
       {children}
-      <QuietAction onClick={() => onChange([...rows, create()])} className="justify-self-start">{addLabel}</QuietAction>
+      <QuietAction
+        onClick={() => {
+          rowKeys.add()
+          onChange([...rows, create()])
+        }}
+        className="justify-self-start"
+      >
+        {addLabel}
+      </QuietAction>
     </div>
   )
 }
@@ -1119,7 +1150,11 @@ function isUntouchedValue(value: Operand | undefined): boolean {
 
 /** Rows without their own border when a list has one row, so the simple case stays calm. */
 function Row({ label, boxed, children }: { label: string; boxed: boolean; children: ReactNode }) {
-  return boxed ? <RowGroup label={label}>{children}</RowGroup> : <div className="grid gap-1.5" role="group" aria-label={label}>{children}</div>
+  return (
+    <RowGroup label={label} boxed={boxed}>
+      {children}
+    </RowGroup>
+  )
 }
 
 export function ConditionRow({
@@ -1248,6 +1283,7 @@ export function ConditionList({
   firstId?: string
 }) {
   const opening = lead === "keep" ? "Keep rows where" : lead === "when" ? "When" : "Otherwise, when"
+  const rowKeys = useRowKeys(conditions)
   return (
     <div className="grid gap-1.5">
       {conditions.length > 1 ? (
@@ -1273,7 +1309,7 @@ export function ConditionList({
       )}
       {conditions.map((condition, index) => (
         <ConditionRow
-          key={index}
+          key={rowKeys.keys[index]}
           condition={condition}
           columns={columns}
           variables={variables}
@@ -1282,10 +1318,25 @@ export function ConditionList({
           columnId={index === 0 ? firstId : undefined}
           boxed={conditions.length > 1}
           onChange={(next) => onChange(conditions.map((c, i) => (i === index ? next : c)), match)}
-          onRemove={conditions.length > 1 ? () => onChange(conditions.filter((_, i) => i !== index), match) : undefined}
+          onRemove={
+            conditions.length > 1
+              ? () => {
+                  rowKeys.remove(index)
+                  onChange(conditions.filter((_, i) => i !== index), match)
+                }
+              : undefined
+          }
         />
       ))}
-      <QuietAction onClick={() => onChange([...conditions, defaultCondition()], match)} className="justify-self-start">Add condition</QuietAction>
+      <QuietAction
+        onClick={() => {
+          rowKeys.add()
+          onChange([...conditions, defaultCondition()], match)
+        }}
+        className="justify-self-start"
+      >
+        Add condition
+      </QuietAction>
     </div>
   )
 }

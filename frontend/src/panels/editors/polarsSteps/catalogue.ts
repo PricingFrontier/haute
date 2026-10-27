@@ -44,7 +44,7 @@ export const STEP_CATALOGUE: StepKindInfo[] = [
   { kind: "cast", label: "Change types", description: "Cast columns to another data type", method: "cast" },
   { kind: "sort", label: "Sort rows", description: "Order rows by one or more columns", method: "sort" },
   { kind: "unique", label: "Remove duplicates", description: "Keep one row per key", method: "unique" },
-  { kind: "group_by", label: "Group and aggregate", description: "Summarise rows per group", method: "group_by().agg()" },
+  { kind: "group_by", label: "Group and aggregate", description: "One row per group", method: "group_by().agg()" },
   { kind: "join", label: "Join another input", description: "Combine columns from another input", method: "join" },
   { kind: "concat", label: "Append inputs", description: "Stack rows from other inputs", method: "pl.concat" },
   { kind: "fill_null", label: "Fill missing values", description: "Replace nulls with a value or strategy", method: "fill_null" },
@@ -480,7 +480,7 @@ export function createStep(kind: Exclude<StepKind, "source">, id: string): Step 
     case "rename":
       return { id, kind, renames: [{ from: "", to: "" }] }
     case "cast":
-      return { id, kind, casts: [{ column: "", dtype: "Float64" }] }
+      return { id, kind, casts: [{ column: "", dtype: "Float64" }], strict: true }
     case "sort":
       return { id, kind, keys: [{ column: "", descending: false }], nullsLast: false }
     case "unique":
@@ -714,7 +714,7 @@ const REQUIRED_FIELDS: Record<StepKind, Array<[string, Shape]>> = {
   select: [["columns", "array"]],
   drop: [["columns", "array"]],
   rename: [["renames", "array"]],
-  cast: [["casts", "array"]],
+  cast: [["casts", "array"], ["strict", "boolean"]],
   sort: [["keys", "array"], ["nullsLast", "boolean"]],
   unique: [["columns", "array"], ["keep", "string"]],
   group_by: [["keys", "array"], ["aggregations", "array"]],

@@ -7,17 +7,19 @@ import { NODE_GROUP_COLORS } from "../../../theme/colors"
 import type { StepStart } from "../../../utils/polarsStepInputs"
 import { InputSourcesBar, INPUT_STYLE } from "../_shared"
 import type { InputSource, OnReplaceConfig, OnUpdateConfig } from "../_shared"
-import AddStepMenu from "./AddStepMenu"
-import { createStep, kindLabel, stepDisplayLabel, stepProblem, variablesBefore } from "./catalogue"
+import AddStepMenu, { type StepPreset } from "./AddStepMenu"
+import { stepIcon, stepTitle } from "./calculations"
+import { bareConstants } from "./formula"
+import { createStep, stepDisplayLabel, stepProblem, variablesBefore } from "./catalogue"
 import { columnChange, columnNames, columnsAtEachStep, unknownColumnsOf, type ColumnSource } from "./derivedColumns"
 import { StepForm } from "./forms"
 import GeneratedCodePanel from "./GeneratedCodePanel"
 import StepCard, { type StepBadge } from "./StepCard"
-import { STEP_ICONS } from "./stepIcons"
 import { schemaFor } from "./stepSchema"
 import { summaryParts, unfinishedPart } from "./summary"
 import { readSteps, type Step, type StepKind } from "./types"
 import { useRenderedSteps, type KnownColumns } from "./useRenderedSteps"
+import { ALL_CONSTANT_TYPES, useFittingConstants } from "./useFittingConstants"
 
 let stepCounter = 0
 function newStepId(): string {
@@ -134,6 +136,8 @@ export default function PolarsStepsEditor({
 }) {
   const isFrame = start === "frame"
   const steps = useMemo(() => readSteps(config) ?? [], [config])
+  // The constants each form reads, so a card is titled as its form reads its calculation.
+  const constants = useFittingConstants(ALL_CONSTANT_TYPES)
   const [openIndex, setOpenIndex] = useState<number | null>(null)
   // The step whose generated lines are tinted: the card or code line under the pointer or focus.
   const [pointedStep, setPointedStep] = useState<number | null>(null)
@@ -218,12 +222,14 @@ export default function PolarsStepsEditor({
     ;(document.getElementById(`${id}-first`) ?? disclosures.current.get(index))?.focus()
   })
 
-  const addStep = (kind: Exclude<StepKind, "source">) => {
+  const addStep = (kind: Exclude<StepKind, "source">, preset?: StepPreset) => {
     if (!canAdd) return
     const base = isFrame || steps[0]?.kind === "source"
       ? steps
       : [{ id: newStepId(), kind: "source", input: effectiveStart } as Step, ...steps]
-    const step = createStep(kind, newStepId())
+    // A preset belongs to its own kind (an Add column's calculation, a Change types entry);
+    // each step gets its own copy, as the chooser hands every pick the same preset.
+    const step = { ...createStep(kind, newStepId()), ...structuredClone(preset) } as Step
     // With one input there is nothing to join; the card says to connect one.
     if (step.kind === "join") step.input = inputNames.find((name) => name !== effectiveStart) ?? ""
     setSteps([...base, step])
@@ -466,8 +472,8 @@ export default function PolarsStepsEditor({
                 return (
                   <div key={key} role="listitem">
                     <StepCard
-                      label={kindLabel(step.kind)}
-                      icon={STEP_ICONS[step.kind]}
+                      label={stepTitle(step, variablesBefore(steps, index), bareConstants(constants, columnNames(before)))}
+                      icon={stepIcon(step, variablesBefore(steps, index), bareConstants(constants, columnNames(before)))}
                       number={displayNumber}
                       summary={summaryParts(step)}
                       change={columnChange(step, before, columnStates[index + 1])}

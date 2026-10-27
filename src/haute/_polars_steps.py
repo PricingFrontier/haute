@@ -477,7 +477,7 @@ _STEP_KEYS: dict[str, frozenset[str]] = {
     "select": frozenset({"columns", "dtypes"}),
     "drop": frozenset({"columns", "dtypes"}),
     "rename": frozenset({"renames"}),
-    "cast": frozenset({"casts"}),
+    "cast": frozenset({"casts", "strict"}),
     "sort": frozenset({"keys", "nullsLast"}),
     "unique": frozenset({"columns", "keep"}),
     "group_by": frozenset({"keys", "aggregations"}),
@@ -1623,6 +1623,8 @@ class _Renderer:
         casts = step["casts"]
         if not isinstance(casts, list) or not casts:
             raise self.fail("Add at least one column to cast.")
+        # Not strict: a value that does not convert becomes null instead of failing the run.
+        lenient = ", strict=False" if not self._bool(step["strict"], "Strict") else ""
         rendered: list[str] = []
         for i, entry in enumerate(casts):
             entry = self._object(entry, f"Cast {i + 1}")
@@ -1630,14 +1632,14 @@ class _Renderer:
             column = self._column(entry.get("column"), f"Cast {i + 1} column")
             dtype = self._choice(entry.get("dtype"), CAST_DTYPES, f"Cast {i + 1} type")
             if "format" not in entry:
-                rendered.append(f"{column}.cast(pl.{dtype})")
+                rendered.append(f"{column}.cast(pl.{dtype}{lenient})")
                 continue
             if dtype not in DATE_PARSE_TARGETS:
                 raise self.fail(
                     f"Cast {i + 1} has a format, which only a Date or Datetime cast parses with."
                 )
             date_format = self._date_format(entry.get("format"), f"Cast {i + 1} format")
-            rendered.append(f"{column}.str.{DATE_PARSE_TARGETS[dtype]}({date_format})")
+            rendered.append(f"{column}.str.{DATE_PARSE_TARGETS[dtype]}({date_format}{lenient})")
         return f"df = df.with_columns({', '.join(rendered)})"
 
     def _date_format(self, value: object, label: str) -> str:
