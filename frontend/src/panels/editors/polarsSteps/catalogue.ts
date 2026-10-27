@@ -44,7 +44,7 @@ export const STEP_CATALOGUE: StepKindInfo[] = [
   { kind: "cast", label: "Change types", description: "Cast columns to another data type", method: "cast" },
   { kind: "sort", label: "Sort rows", description: "Order rows by one or more columns", method: "sort" },
   { kind: "unique", label: "Remove duplicates", description: "Keep one row per key", method: "unique" },
-  { kind: "group_by", label: "Group and aggregate", description: "Summarise rows per group", method: "group_by().agg()" },
+  { kind: "group_by", label: "Group and aggregate", description: "One row per group", method: "group_by().agg()" },
   { kind: "join", label: "Join another input", description: "Combine columns from another input", method: "join" },
   { kind: "concat", label: "Append inputs", description: "Stack rows from other inputs", method: "pl.concat" },
   { kind: "fill_null", label: "Fill missing values", description: "Replace nulls with a value or strategy", method: "fill_null" },
