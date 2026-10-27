@@ -42,9 +42,9 @@ fields with independent lifecycles.
 `default_branch: string` and `bootstrapped_default: boolean` members in addition to the
 remote, working/ledger names, and `pushed_refs`. The matching runtime guard requires and
 parses both members; `bootstrapped_default` is false by default on the server but is always
-present on the wire. `pushed_refs` names the explicit branch refspecs submitted by the
-atomic push (not implicit `--follow-tags` tags), and does not necessarily mean each tip
-changed.
+present on the wire. `pushed_refs` names the explicit branch refspecs the Push submitted
+(for a bootstrap, the default's own push and then the atomic pair push; never implicit
+`--follow-tags` tags), and does not necessarily mean each tip changed.
 
 **`GitRemote`** — `{ name, url, working, ledger }`. `working` and `ledger` are
 `GitRemoteLeg | null` and are the only divergence fields; the working leg is not duplicated

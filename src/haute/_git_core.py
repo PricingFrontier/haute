@@ -136,6 +136,16 @@ class GitPushRejectedError(GitDomainError):
         self.rejection = rejection
 
 
+class GitBootstrapIncompleteError(GitDomainError):
+    """An empty remote received its default branch but not the working/ledger pair.
+
+    The message is hand-written (it names the published default and never carries
+    git stderr), so the HTTP layer keeps it verbatim. The remote now holds only the
+    validated default — an established remote — so the next push publishes the
+    pair through the ordinary established-remote path.
+    """
+
+
 class GitMilestoneForkError(GitDomainError):
     """A milestone refused because it would fork the remote working branch (U4).
 

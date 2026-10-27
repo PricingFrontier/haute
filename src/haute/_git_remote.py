@@ -15,6 +15,7 @@ from haute._git_core import (
     _FETCH_TIMEOUT_SECONDS,
     _PUSH_TIMEOUT_SECONDS,
     LEDGER_SUFFIX,
+    GitBootstrapIncompleteError,
     GitDomainError,
     GitError,
     GitPushRejectedError,
@@ -24,6 +25,7 @@ from haute._git_core import (
     _fetch_exec_lock,
     _fetch_refs,
     _get_current_branch,
+    _GitProcessResult,
     _GitProcessTimeoutError,
     _is_ancestor,
     _is_valid_full_ref_name,
@@ -60,7 +62,7 @@ __all__ = [
     "ensure_remote",
     "remote_url",
     "adopt_cloned_lineage",
-    "remote_has_content",
+    "remote_holds_other_history",
     "clone_project",
     "bundle_create",
     "bundle_verify",
@@ -135,18 +137,40 @@ def adopt_cloned_lineage(working: str, remote: str = "origin", cwd: Path | None 
     logger.info("cloned_lineage_adopted", working=working)
 
 
-def remote_has_content(remote: str, cwd: Path | None = None) -> bool:
-    """Whether *remote* advertises any object refs (i.e. is not an empty repo).
+def remote_holds_other_history(remote: str, project_root: Path, cwd: Path | None = None) -> bool:
+    """Whether *remote* holds history other than what this clone bootstraps there.
 
-    Hosted binding uses this to choose between adopting the local project
-    onto a fresh remote and lifting an existing project from a populated
-    one. Propagates :class:`GitError` when the remote cannot be inspected
-    at all — an unreachable remote must never read as "empty" and trigger
-    an adopt that would publish over someone's project.
+    Hosted binding uses this to choose between adopting the local project onto
+    the remote and lifting an existing project from it. ``False`` for an empty
+    remote, and for the one state an interrupted bootstrap Push leaves behind:
+    the remote's only object ref is the default branch this clone bootstraps, at
+    exactly the local default's tip (an advertised ``HEAD`` must agree). Any other
+    branch, tag or tip is someone's history. Propagates :class:`GitError` when the
+    remote cannot be inspected at all — an unreachable remote must never read as
+    adoptable and trigger an adopt that would publish over someone's project.
     """
+    from haute._git_state import read_working_branch
+
     _validate_ref_name(remote)
-    _, _, has_object_refs = _inspect_remote(remote, cwd=cwd)
-    return has_object_refs
+    _, head_target, object_refs = _read_advertisement(remote, cwd=cwd)
+    if not object_refs:
+        return False
+    # An object-valued HEAD with no branch beside it (hidden refs) is still content.
+    refs = {ref: sha for ref, sha in object_refs.items() if ref != "HEAD"}
+    working = read_working_branch(project_root)
+    if working is None or len(refs) != 1:
+        return True
+    ((ref, sha),) = refs.items()
+    if object_refs.get("HEAD", sha) != sha:
+        return True
+    try:
+        default = _resolve_push_default(
+            set(), head_target, False, working, ledger_name(working), remote, cwd=cwd
+        )
+    except GitDomainError:
+        # No unambiguous default of our own to bootstrap, so the ref is not ours.
+        return True
+    return ref != f"refs/heads/{default}" or _rev_parse(f"refs/heads/{default}", cwd=cwd) != sha
 
 
 def clone_project(url: str, destination: Path, branch: str | None = None) -> None:
@@ -370,8 +394,10 @@ def _push_rejection(
 ) -> GitPushRejectedError:
     """Build the data-bearing non-FF push rejection (M7/M6, X3).
 
-    Fetch the pair once — *forced* past the demand throttle, because a rejection
-    is authoritative, not a poll — then recompute both legs so the payload shows
+    Fetch the remote's namespace once — *forced* past the demand throttle, because
+    a rejection is authoritative, not a poll, and in the namespace form, so a pair
+    leg the remote lacks reads as a missing tracking ref instead of failing the
+    whole fetch — then recompute both legs so the payload shows
     the live fork. ``--atomic`` means a fast-forwardable leg is rejected
     alongside a non-FF one, so the message names the **blocking** leg(s) (the ones
     the remote has moved ahead on), reconciling with the per-leg counts rather
@@ -380,7 +406,7 @@ def _push_rejection(
     person-reconciles off-ramp. A failed fetch degrades to the last-known tracking
     refs — still honest, never a hang (F1)."""
     with _fetch_exec_lock:
-        _fetch_refs(remote, working, ledger, cwd=cwd)
+        _fetch_refs(remote, cwd=cwd)
     working_leg = _leg_state(working, remote, cwd=cwd)
     ledger_leg = (
         _leg_state(ledger, remote, cwd=cwd) if _rev_parse(ledger, cwd=cwd) is not None else None
@@ -490,6 +516,14 @@ def _tag_collisions(remote: str, working: str, cwd: Path | None = None) -> list[
 
 def _inspect_remote(remote: str, cwd: Path | None = None) -> tuple[set[str], str | None, bool]:
     """Strictly inspect one remote; empty means a successful zero-object advertisement."""
+    heads, head_target, object_refs = _read_advertisement(remote, cwd=cwd)
+    return heads, head_target, bool(object_refs)
+
+
+def _read_advertisement(
+    remote: str, cwd: Path | None = None
+) -> tuple[set[str], str | None, dict[str, str]]:
+    """The strict ``ls-remote --symref`` parse: branch names, HEAD target, object refs."""
     try:
         result = _run_git_process(
             "ls-remote",
@@ -508,7 +542,6 @@ def _inspect_remote(remote: str, cwd: Path | None = None) -> tuple[set[str], str
         raise GitError(result.stderr.strip() or "git ls-remote failed")
     heads: set[str] = set()
     head_target: str | None = None
-    has_object_refs = False
     object_refs: dict[str, str] = {}
     object_id_width: int | None = None
     for line in result.stdout.splitlines():
@@ -545,7 +578,6 @@ def _inspect_remote(remote: str, cwd: Path | None = None) -> tuple[set[str], str
             if previous is not None and previous != object_id:
                 raise GitError("malformed git ls-remote advertisement")
             object_refs[ref] = object_id
-            has_object_refs = True
             if canonical_ref.startswith("refs/heads/"):
                 name = ref[len("refs/heads/") :]
                 heads.add(name)
@@ -556,7 +588,7 @@ def _inspect_remote(remote: str, cwd: Path | None = None) -> tuple[set[str], str
         target_object = object_refs.get(f"refs/heads/{head_target}")
         if head_object is not None and target_object is not None and head_object != target_object:
             raise GitError("malformed git ls-remote advertisement")
-    return heads, head_target, has_object_refs
+    return heads, head_target, object_refs
 
 
 def _local_unmanaged_bases(working: str, ledger: str, cwd: Path | None = None) -> set[str]:
@@ -674,14 +706,83 @@ def _fetch_expected_default(remote: str, branch: str, cwd: Path | None = None) -
     return sha
 
 
+def _run_push(
+    remote: str, options: list[str], refspecs: list[str], cwd: Path | None = None
+) -> _GitProcessResult[str]:
+    """Run one prompt-proof, time-bounded ``git push``; timeout or launch failure raises."""
+    try:
+        return _run_git_process(
+            "push",
+            *options,
+            remote,
+            *refspecs,
+            errors="replace",
+            cwd=cwd or Path.cwd(),
+            env=_remote_env(),
+            timeout=_PUSH_TIMEOUT_SECONDS,
+        )
+    except _GitProcessTimeoutError as exc:
+        logger.warning("git_push_timed_out", remote=remote, refs=refspecs)
+        raise GitError("git push timed out") from exc
+    except OSError as exc:
+        logger.warning("git_push_launch_failed", remote=remote, refs=refspecs, error=str(exc))
+        raise GitError("git push failed") from exc
+
+
+def _create_remote_default(
+    remote: str, default: str, default_sha: str, cwd: Path | None = None
+) -> None:
+    """Initialise an empty *remote* with its default branch, alone.
+
+    GitHub never triggers ``push`` or ``pull_request`` workflows in a repository
+    whose first push created more than one ref, atomic or not (observed 27 October
+    2026), so this push carries exactly one: ``--no-follow-tags`` also overrides a
+    configured ``push.followTags``. The empty-value lease keeps it a
+    compare-and-create — an existing default is never advanced or replaced, and one
+    already at *default_sha* is an up-to-date no-op. A refusal, including a lost
+    create race (``[rejected] ... (stale info)``), is a plain :class:`GitError` and
+    is never read as working/ledger divergence.
+    """
+    refspec = f"{default_sha}:refs/heads/{default}"
+    options = ["--no-follow-tags", f"--force-with-lease=refs/heads/{default}:"]
+    result = _run_push(remote, options, [refspec], cwd=cwd)
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        logger.warning("git_push_failed", remote=remote, refs=[refspec], stderr=stderr)
+        raise GitError(stderr or "git push failed")
+
+
+def _bootstrap_incomplete(
+    remote: str, default: str, *, refused: bool
+) -> GitBootstrapIncompleteError:
+    """The hand-written error for a bootstrap whose default landed but whose pair did not."""
+    logger.warning("git_bootstrap_incomplete", remote=remote, branch=default, refused=refused)
+    if refused:
+        outcome = (
+            f"'{remote}' did not accept your branch and save history. Nothing was "
+            "overwritten and your work is unchanged. Try again; if it fails the same "
+            f"way, '{remote}' is refusing these branches (for example a branch rule or "
+            "missing write access) and the Haute server log has its reason."
+        )
+    else:
+        outcome = (
+            "Haute could not confirm that your branch and save history were published. "
+            "Nothing was overwritten and your work is unchanged. Try again to finish."
+        )
+    return GitBootstrapIncompleteError(
+        f"'{default}' is now on '{remote}' as your merge target, but {outcome}"
+    )
+
+
 @_serialized_mutation
 def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) -> GitPushResponse:
-    """Deliberately publish managed history to an existing *remote* atomically.
+    """Deliberately publish managed history to an existing *remote*.
 
-    A successfully inspected empty remote receives the resolved default branch
-    plus the working branch and optional ledger under a create-only default-ref
-    lease. An established remote receives only the working/ledger pair after its
-    default has been validated. No existing remote ref is ever force-updated.
+    The working branch and optional ledger always travel in one atomic push. A
+    successfully inspected empty remote first receives the resolved default branch
+    on its own, in a single-ref create-only push (:func:`_create_remote_default`).
+    An established remote receives only the pair after its default has been
+    validated. No existing remote ref is ever force-updated.
     """
     from haute._git_state import read_working_branch
 
@@ -735,46 +836,40 @@ def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) 
             "pick a different label, or coordinate with whoever published it."
         )
 
-    # Include the ledger only when it has been spawned. Bootstrap's empty-value
-    # lease is compare-and-create only; no existing ref can be force-updated (S33).
-    # --follow-tags carries the annotated version/<label> tags reachable from the
-    # pushed commits (X4: labels travel with the work they mark).
-    refspecs: list[str] = []
-    if bootstrapping:
-        if default_sha is None:  # guarded above; keep the snapshot invariant explicit
-            raise GitError("default branch snapshot is missing")
-        refspecs.append(f"{default_sha}:refs/heads/{default}")
-    refspecs.append(f"{working_sha}:refs/heads/{working}")
+    # Include the ledger only when it has been spawned. --follow-tags carries the
+    # annotated version/<label> tags reachable from the pushed commits (X4: labels
+    # travel with the work they mark). The pair push never names the default and
+    # carries no lease, so no existing ref can be force-updated (S33).
+    refspecs = [f"{working_sha}:refs/heads/{working}"]
     if ledger_sha is not None:
         refspecs.append(f"{ledger_sha}:refs/heads/{ledger}")
 
-    cmd = ["git", "push", "--atomic", "--follow-tags"]
     if bootstrapping:
-        cmd.append(f"--force-with-lease=refs/heads/{default}:")
-    cmd.extend([remote, *refspecs])
+        if default_sha is None:  # guarded above; keep the snapshot invariant explicit
+            raise GitError("default branch snapshot is missing")
+        # Nothing else touches the network between the two pushes: the pair was
+        # validated against default_sha above, and this publishes exactly that commit.
+        _create_remote_default(remote, default, default_sha, cwd=cwd)
+
     try:
-        result = _run_git_process(
-            *cmd[1:],
-            errors="replace",
-            cwd=cwd or Path.cwd(),
-            env=_remote_env(),
-            timeout=_PUSH_TIMEOUT_SECONDS,
-        )
-    except _GitProcessTimeoutError as exc:
-        logger.warning("git_push_timed_out", remote=remote, refs=refspecs)
-        raise GitError("git push timed out") from exc
-    except OSError as exc:
-        logger.warning("git_push_launch_failed", remote=remote, refs=refspecs, error=str(exc))
-        raise GitError("git push failed") from exc
+        result = _run_push(remote, ["--atomic", "--follow-tags"], refspecs, cwd=cwd)
+    except GitError as exc:
+        if bootstrapping:
+            raise _bootstrap_incomplete(remote, default, refused=False) from exc
+        raise
     if result.returncode != 0:
         stderr = result.stderr.strip()
         logger.warning("git_push_failed", remote=remote, refs=refspecs, stderr=stderr)
-        if not bootstrapping and any(
-            s in stderr for s in ("non-fast-forward", "fetch first", "[rejected]")
-        ):
+        if any(s in stderr for s in ("non-fast-forward", "fetch first", "[rejected]")):
             # M7: a rejection is the moment we KNOW we're diverged — turn it into
             # the data-bearing fork the UI needs, not a generic dead-end string.
+            # During a bootstrap the default exists by now, so this is a real fork.
             raise _push_rejection(remote, working, ledger, project_root, cwd=cwd)
+        if bootstrapping:
+            # Only an explicit refusal proves the pair did not land: git also exits
+            # non-zero when the connection drops after the remote applied the refs.
+            refused = "[remote rejected]" in stderr
+            raise _bootstrap_incomplete(remote, default, refused=refused)
         raise GitError(stderr or "git push failed")
 
     pushed = ([default] if bootstrapping else []) + [working] + ([ledger] if ledger_exists else [])
