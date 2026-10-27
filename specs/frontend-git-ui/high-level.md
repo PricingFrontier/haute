@@ -70,7 +70,9 @@ repository. When the compact toolbar truncates the detail, the complete diagnost
 available in a tooltip on hover over the error or keyboard focus on Retry, and describes
 the Retry button for assistive technology. Successful responses render distinct labels and
 remediation for no repository, unset working branch, invalid state, attached divergence,
-and detached HEAD (including its short SHA). A ready state shows the working branch name
+and detached HEAD (including its short SHA). An interrupted clone reads "Files in use", with
+the files in its tooltip and a Retry that asks the server to write them again. Startup opens
+no chooser for it. A ready state shows the working branch name
 alone; clicking it opens the panel on the current branch. The indicator carries no save
 SHA — the commit code belongs to the history panel, which shows it in context.
 

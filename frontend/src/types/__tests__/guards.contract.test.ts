@@ -3799,7 +3799,9 @@ describe("API response guards", () => {
     const base = makeGitWorkingBranch({ current_branch: "", identity_set: false })
 
     for (const state of [
+      "git-unavailable",
       "no-repository",
+      "interrupted",
       "unset",
       "detached",
       "invalid",

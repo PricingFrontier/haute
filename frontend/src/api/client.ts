@@ -2049,6 +2049,16 @@ export function getWorkingBranch(
   return request<unknown>("/api/git/working-branch", options).then(async (data) => expectGeneratedContract("GitWorkingBranchResponse", (await gitValidators()).validateGitWorkingBranchResponse, data))
 }
 
+/**
+ * Write HEAD's version of the files a git action left out of step (a file another
+ * program held open), once the analyst has closed them; answers the readiness after.
+ */
+export function retryInterruptedGit(
+  options?: { signal?: AbortSignal },
+): Promise<GitWorkingBranchResponse> {
+  return post<unknown>("/api/git/interrupted/retry", {}, options).then(async (data) => expectGeneratedContract("GitWorkingBranchResponse", (await gitValidators()).validateGitWorkingBranchResponse, data))
+}
+
 export function setWorkingBranch(
   branch: string,
   create: boolean,

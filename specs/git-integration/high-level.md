@@ -198,6 +198,23 @@ index, and create a permanent root commit before pair creation begins. A failure
 phase can leave those safe preparatory changes behind, although it does not deliberately
 remove working-tree files.
 
+**Files another program holds open.** On Windows git cannot replace a file another program
+holds open, such as a CSV open in Excel, and it does not always say so. A checkout still
+exits 0: HEAD moves to the new branch while that file keeps the old version, which the next
+Commit's sweep would record as a change. A fast-forward exits 1 with the other files already
+written, and a restore stops part-way.
+
+So every git command that rewrites the working tree runs through one fence. It compares the
+tracked changes before and after, and a new one means the tree is out of step with HEAD. The
+fence then puts HEAD back where it was, writes the out-of-step files from it, and refuses
+with the files named: "<files> are open in another program, so Haute could not replace them.
+Close them and try again."
+
+When a file still cannot be written, the clone is recorded as interrupted. This happens when
+the put-back fails, or when a restore fails after its save was recorded. Readiness then
+answers `interrupted` with the files. Commit and Restore refuse until the analyst closes the
+files and chooses Retry, which writes HEAD's version of those files.
+
 **Crash-safe clone state.** Every `.haute/*.json` write is staged to a sibling temporary
 file and atomically replaced while holding the same per-repository mutation lock used by the
 engine. Read-modify-write helpers keep that lock for the whole transaction, so concurrent
@@ -304,6 +321,9 @@ subclass of the project-wide `HauteError`):
 - **`GitHistoryReadError`** — a `GitDomainError` subtype for a malformed archive or a
   historical tree that cannot produce a pipeline graph. It is a failed read, never an empty
   successful graph.
+- **`GitFilesInUseError`** — a `GitDomainError` subtype carrying the files a tree-rewriting
+  command could not write because another program holds them open. HTTP 400 with its
+  message, which names at most five of them.
 
 Two operations carry structured, machine-readable failure payloads instead of a plain
 message, because the UI needs to *act* on the failure, not just display it:

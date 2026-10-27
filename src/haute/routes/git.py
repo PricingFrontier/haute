@@ -44,6 +44,7 @@ from haute._git import (
     push_working_pair,
     restore_version,
     restore_working_pair,
+    retry_interrupted,
     set_identity,
     set_prefs,
     set_working_branch,
@@ -197,6 +198,22 @@ def git_get_working_branch() -> GitWorkingBranchResponse:
     toolbar indicator need in one call."""
     status = working_branch_status(Path.cwd())
     return _with_storage_state(status)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/interrupted/retry — write the files an interrupted action left
+# ---------------------------------------------------------------------------
+
+
+@router.post("/interrupted/retry", response_model=GitWorkingBranchResponse)
+def git_retry_interrupted(background: BackgroundTasks) -> GitWorkingBranchResponse:
+    """Write HEAD's version of the files a git action left out of step (a file
+    another program held open), once the analyst has closed them, and answer the
+    readiness after. Files still held are 400, naming them."""
+    with pause_watcher():
+        retry_interrupted(Path.cwd())
+    _announce_tree_change(background)
+    return _with_storage_state(working_branch_status(Path.cwd()))
 
 
 # ---------------------------------------------------------------------------

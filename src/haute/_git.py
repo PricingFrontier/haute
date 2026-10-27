@@ -107,6 +107,7 @@ from haute._git_transactions import (
     create_working_branch,
     merge_to_working,
     restore_version,
+    retry_interrupted,
 )
 from haute.schemas import GitPrefs
 
@@ -197,6 +198,7 @@ __all__ = [
     "remote_url",
     "resolve_ledger",
     "restore_version",
+    "retry_interrupted",
     "restore_working_pair",
     "set_identity",
     "set_prefs",

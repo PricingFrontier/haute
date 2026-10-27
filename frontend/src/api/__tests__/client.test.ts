@@ -59,6 +59,7 @@ import {
   getCommitContext,
   createWorkingBranch,
   restoreVersion,
+  retryInterruptedGit,
   listUtilityFiles,
   readUtilityFile,
   createUtilityFile,
@@ -73,6 +74,7 @@ import {
   testMlflowConnection,
 } from "../client"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
+import { makeGitWorkingBranch } from "../../test-utils/factories"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 
 // ---------------------------------------------------------------------------
@@ -1377,6 +1379,16 @@ describe("git remote catch-up + history endpoints", () => {
       `/api/git/commit-context/${"b".repeat(40)}?base=${"a".repeat(40)}`,
     )
     expect(result.delta_from_base).toBe(2)
+  })
+
+  it("retryInterruptedGit POSTs /api/git/interrupted/retry and answers the readiness", async () => {
+    const data = makeGitWorkingBranch({ state: "ready" })
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await retryInterruptedGit()
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/interrupted/retry")
+    expect(opts.method).toBe("POST")
+    expect(result.state).toBe("ready")
   })
 
   it("createWorkingBranch POSTs the fork point and whether to open the branch", async () => {

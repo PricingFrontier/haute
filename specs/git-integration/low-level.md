@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/_git.py` | Stable import facade. Re-exports the route/public Git API and exception taxonomy from the cohesive domain modules below; owns no subprocess, mutable state, cache, or branch transaction. |
-| `src/haute/_git_core.py` | Sole Git command and repository-mutation boundary: exception taxonomy, prompt-proof subprocess adapters, fetch serialization/cooldowns, ref validation and branch-pair naming, guardrails, immutable object/ref queries, and content-addressed primitive caches (including parsed graph-log rows). Domain modules depend on this layer; it depends on none of them. |
+| `src/haute/_git_core.py` | Sole Git command and repository-mutation boundary: exception taxonomy, prompt-proof subprocess adapters, fetch serialization/cooldowns, ref validation and branch-pair naming, guardrails, immutable object/ref queries, content-addressed primitive caches (including parsed graph-log rows), and the tree fence every working-tree-rewriting command runs through (`_rewrite_tree`, `_tracked_changes`, `GitFilesInUseError`). Domain modules depend on this layer; it depends on none of them. |
 | `src/haute/_git_setup.py` | Repository and clone setup: repository readiness, identity, default/working-branch association, unborn-repository seeding, and Git preferences. |
 | `src/haute/_git_transactions.py` | Working/ledger branch-pair transactions: path-scoped saves, invariant checks, the sweep of unrecorded project files, milestone merge/ref transaction, version restore, and branch creation/fork replay with compensating rollback. |
 | `src/haute/_git_read_models.py` | Immutable panel read models for repository/working-branch readiness and managed working-branch listings, and the project-file reads behind the Pipeline files panel: `pipeline_file_states` (how each file in a folder stands against version history: `new`, `changed` or `ignored`) and `ignore_rule` (the `.gitignore` rule that ignores a path). It performs no mutation or fetch. |
@@ -13,7 +13,7 @@
 | `src/haute/_git_remote.py` | Deliberate remote synchronization and transport: remote configuration/listing, clone/bundle flows, pair divergence, fetch, push/bootstrap, fast-forward, and branch-away resolution. It uses the core command boundary and never owns clone-state files. |
 | `src/haute/_git_archive.py` | Local branch-pair archive lifecycle: archive, delete/tombstone, undelete, and restore transactions with compensating rollback. |
 | `src/haute/_git_lock.py` | Reentrant per-repository mutation-lock registry shared by the engine and clone-state helpers. Uses a bounded marker-aware identity cache, a stable project-path key across `git init`, a common-Git-directory key for linked worktrees, and weak lock values so idle repositories are evicted. It never invokes Git. |
-| `src/haute/_git_state.py` | Per-clone, untracked JSON state under `<project_root>/.haute/`: working-branch association (`state.json`), UI preferences (`prefs.json`), last-pushed SHAs (`pushed.json`), delete tombstones (`trash.json`). Fail-soft parsing plus lock-scoped atomic replace; no git subprocess calls. |
+| `src/haute/_git_state.py` | Per-clone, untracked JSON state under `<project_root>/.haute/`: working-branch association (`state.json`), UI preferences (`prefs.json`), last-pushed SHAs (`pushed.json`), delete tombstones (`trash.json`), and an interrupted tree (`interrupted.json`: `operation`, `files`, `at`). Fail-soft parsing plus lock-scoped atomic replace; no git subprocess calls. |
 | `src/haute/_gitignore_guard.py` | Shared `.gitignore` deny-list owned by [sandbox-security](../sandbox-security/low-level.md) and append-only `ensure_gitignore_guards()` used both by project initialization and unborn-repository seeding; preserves tracked `*.haute.json` sidecars while excluding per-clone/cache/data/venv state. |
 | `src/haute/routes/git.py` | FastAPI router at `/api/git`. One `def` (sync) handler per Git endpoint, each a thin call into the Git domain; a `GitError` the route does not map itself reaches the application handler, which converts it with `git_error_http_exception`. The `/api/git/storage/*` endpoints hosted in this router are owned by [hosted-project-storage](../hosted-project-storage/low-level.md). |
 
@@ -107,10 +107,11 @@ appends only missing exact lines under a `# Haute` block. Existing non-UTF-8 byt
 with replacement for membership testing. It deliberately does not ignore `*.haute.json`,
 because pipeline position sidecars belong on the save ledger.
 
-**`GitWorkingBranchResponse.state`** (computed by `working_branch_status`) is one of seven
+**`GitWorkingBranchResponse.state`** (computed by `working_branch_status`) is one of eight
 literal values: `"git-unavailable"` (no Git binary on PATH; distinct from
 `"no-repository"` so the UI does not offer init), `"no-repository"` (there is no Git
-repository), `"unset"` (repository present, attached HEAD, no working branch recorded),
+repository), `"interrupted"` (`.haute/interrupted.json` exists: files are out of step with
+HEAD, named in `errors`; read before every state below), `"unset"` (repository present, attached HEAD, no working branch recorded),
 `"detached"` (HEAD has no branch; `head_sha` supplies the accurate commit context),
 `"invalid"` (Git metadata or the recorded pair is missing / ineligible /
 invariant-violating), `"divergent"` (attached HEAD is on neither the recorded branch nor
@@ -124,8 +125,9 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 
 | Method and path | Input | Success response |
 |---|---|---|
-| `GET /api/git/working-branch` | None | `GitWorkingBranchResponse` (seven-state readiness contract above, including `head_sha` when resolvable; augmented via `_with_storage_state` with durable-storage fields `storage`, `storage_remote`, `storage_forked_from`, `sync`, and `storage_bind` owned by [hosted-project-storage](../hosted-project-storage/low-level.md)) |
+| `GET /api/git/working-branch` | None | `GitWorkingBranchResponse` (eight-state readiness contract above, including `head_sha` when resolvable; augmented via `_with_storage_state` with durable-storage fields `storage`, `storage_remote`, `storage_forked_from`, `sync`, and `storage_bind` owned by [hosted-project-storage](../hosted-project-storage/low-level.md)) |
 | `POST /api/git/working-branch` | `GitSetWorkingBranchRequest {branch,create=false}` | `GitSetWorkingBranchResponse {working_branch,state,last_save_sha?}` |
+| `POST /api/git/interrupted/retry` | None | `GitWorkingBranchResponse`, the readiness once HEAD's version of the interrupted files is written and the marker cleared; files still held are 400 `GitFilesInUseError`, the marker kept |
 | `POST /api/git/restore-version` | `GitRestoreVersionRequest {sha}` | `GitRestoreVersionResponse {sha,short_sha,restored_from,working_branch}`: `sha` is the new save on the ledger, `restored_from` the full SHA of the version restored |
 | `POST /api/git/identity` | `GitSetIdentityRequest {user_name,user_email,set_global=false}` | `GitSetIdentityResponse {user_name,user_email,scope}` |
 | `POST /api/git/capture` | `GitCaptureRequest {paths}`: at least one file, relative to the project in POSIX form, as writes reported it `uncaptured` | `SaveCapture {warnings,git_sha,identity_required,uncaptured}`: the paths committed on the ledger as they are on disk, through the save capture, under the repository lock; a path `_artifact_paths.ordinary_path_problem` refuses (absolute, a drive, `..`, `.git`, `.haute`, a link on the way) is 400, nothing captured |
@@ -181,6 +183,34 @@ Nested calls such as `commit_milestone` → `commit_save` → `resolve_ledger` r
 lock. Pure Git history/object readers do not acquire the engine lock, but every clone-state
 reader in `_git_state.py` acquires it for the file read so it cannot overlap an atomic state
 transaction.
+
+**The tree fence (`_rewrite_tree(*args, cwd)`).** Every command that rewrites the working
+tree runs through it. These are the checkouts in `resolve_ledger`, `set_working_branch`,
+`create_working_branch`'s switch and move, `_switch_away_if_active` and `branch_away`, and
+Catch up's `merge --ff-only`. The fence:
+1. checks for a git operation in progress, then records HEAD (its branch, or its SHA when
+   detached) and `_tracked_changes` (`status --porcelain -z --untracked-files=no`);
+2. runs the command, keeping its stderr;
+3. treats any tracked change that was not there before as out of step. With none, a non-zero
+   exit is an ordinary `GitError`.
+
+When files are out of step, the fence puts HEAD back if it moved (`checkout` of the recorded
+branch or `--detach` SHA). It then writes the still-out-of-step files from HEAD
+(`restore --source=HEAD --staged --worktree`). Anything still out of step after that records
+the clone interrupted (`record_interrupted`).
+
+Either way it raises `GitFilesInUseError`, naming the files stderr's `unable to unlink old`
+reports, else the out-of-step ones. The caller's own compensation then runs as for any
+failure: deleting the branch it created, restoring a ref.
+
+**Interrupted (`.haute/interrupted.json`).** `record_interrupted(project_root, operation,
+files)`, `read_interrupted` and `clear_interrupted` are lock-scoped like the other clone-state
+files. While it exists, readiness answers `"interrupted"`, and `commit_milestone` and
+`restore_version` refuse: "These files are out of step with version history: <files>. Close
+them and choose Retry first." `retry_interrupted(project_root, cwd)` writes HEAD's version
+of the marker's files. When no tracked change is left among them it clears the marker and
+returns readiness; otherwise it raises `GitFilesInUseError`. Its route runs under
+`pause_watcher()` and announces the tree change like the other paused routes.
 
 **Milestone.** `commit_milestone(message, project_root, version_label, cwd, allow_fork,
 pipeline_folder)` → reads the recorded working branch from `_git_state.read_working_branch` →
@@ -274,7 +304,8 @@ results. `_assert_no_git_op_in_progress` checks `MERGE_HEAD`/`CHERRY_PICK_HEAD`/
 **Restore a version (`restore_version`).** `restore_version(sha, project_root, cwd,
 pipeline_folder)` holds the repository lock throughout. It refuses, with a `GitDomainError`
 and no change, in this order:
-1. No working branch is recorded, a git operation is in progress, or no git identity is set
+1. The clone is interrupted, no working branch is recorded, a git operation is in progress,
+   or no git identity is set
    ("Restoring a version needs a git identity. Set your name and email first.").
 2. `_validate_ref_name` refuses a ref that could reach git as a flag. `resolve_ledger` then
    puts HEAD on the ledger, and `_rev_parse` refuses a ref that is not a commit ("No commit
@@ -300,8 +331,11 @@ Then:
    files and `.haute/` alone.
 10. `_wipe_volatile_artefacts`.
 
-A failure at step 9 propagates with the ledger already at the restore save. The route runs
-it inside `pause_watcher()`, then calls `_project_storage.enqueue_push()` as a save's
+A failure at step 9 leaves the ledger at the restore save, so it is not undone. The clone is
+recorded interrupted with the files git could not write: those named by `unable to unlink
+old '<path>'` on stderr, else the tracked changes left. The restore then raises
+`GitFilesInUseError`, and Retry writes those files. The route runs it inside
+`pause_watcher()`, then calls `_project_storage.enqueue_push()` as a save's
 capture does. `commit_milestone` takes its sweep from the same
 `_unrecorded_project_files`.
 
@@ -639,7 +673,7 @@ process failures, and precise ref-movement races deterministic.
   `.haute_build/`, bytecode and the names the Files panels hide left out, and a file over the
   limit refusing the Commit by name),
   milestone merge and its
-  invariant checks, git identity get/set, working-branch status across all seven readiness states,
+  invariant checks, git identity get/set, working-branch status across all eight readiness states,
   `set_working_branch` including a branch created from a detached pending save, folded
   save and milestone (an anchoring milestone for a save, none for a milestone), the
   capture of a save made with no working branch chosen (warned and left uncaptured) and
@@ -655,7 +689,12 @@ process failures, and precise ref-movement races deterministic.
   history and commit-context breadcrumbs, rename-preserving ledger
   expansion, the branch manager (archive/delete/undelete/restore), request-path no-fetch
   guarantees,
-  canonical-remote resolution, fork/create-working-branch (parallel, switch and move, from
+  the tree fence (`TestTreeFence`: a checkout that exits 0 with a file left stale put back
+  and refused by name, a failed fast-forward's written files put back, a put-back that
+  cannot finish recording the clone interrupted, Commit and Restore refusing while
+  interrupted, Retry clearing the marker once the file is writable and refusing while it
+  is not, and on Windows a real held file), canonical-remote resolution,
+  fork/create-working-branch (parallel, switch and move, from
   a milestone, a pending save and a folded save, the switch refusing tracked changes and
   rolling back a failed checkout), archive-
   commit read-only extraction, remotes/push/fast-forward/branch-away, the milestone fork

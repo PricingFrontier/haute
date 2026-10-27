@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 from haute._git_core import (
     GitDomainError,
     GitError,
+    GitFilesInUseError,
     GitGuardrailError,
     GitMilestoneForkError,
     GitTransactionError,
@@ -21,15 +22,19 @@ from haute._git_core import (
     _commit_parents,
     _generate_commit_message,
     _get_current_branch,
+    _held_files,
     _is_ancestor,
     _is_valid_full_ref_name,
     _ledger_or_branch_sha,
     _merge_base,
     _remote_names,
     _rev_parse,
+    _rewrite_tree,
     _run_git,
+    _run_git_capture,
     _run_git_ok,
     _serialized_mutation,
+    _tracked_changes,
     _tree_of,
     _validate_ref_name,
     _wipe_volatile_artefacts,
@@ -62,6 +67,7 @@ __all__ = [
     "create_working_branch",
     "commit_milestone",
     "restore_version",
+    "retry_interrupted",
 ]
 
 # How many of the files in a restore's way its refusal names.
@@ -520,7 +526,7 @@ def create_working_branch(
             _run_git("branch", name, base, cwd=cwd)
             _run_git("branch", ledger_name(name), base, cwd=cwd)
             if switch:
-                _run_git("checkout", ledger_name(name), cwd=cwd)
+                _rewrite_tree("checkout", ledger_name(name), cwd=cwd)
                 write_working_branch(project_root, name)
         except Exception as exc:
             refs_restored = _rollback_fork(name, ledger, ledger_tip, cwd=cwd)
@@ -580,7 +586,7 @@ def create_working_branch(
         _run_git("branch", ledger_name(name), new_ledger_tip, cwd=cwd)
         # Switch onto the new ledger. The new ledger tip shares the old HEAD's
         # tree, so uncommitted edits carry across the checkout untouched.
-        _run_git("checkout", ledger_name(name), cwd=cwd)
+        _rewrite_tree("checkout", ledger_name(name), cwd=cwd)
         # Rewind the spawning branch's ledger to the fork point (its later work
         # has been relocated; the commits stay reachable via the new ledger).
         _run_git("branch", "-f", ledger, point, cwd=cwd)
@@ -633,6 +639,7 @@ def commit_milestone(
     from haute._git_state import read_working_branch
 
     _assert_git_repo(cwd)
+    _assert_not_interrupted(project_root)
     working = read_working_branch(project_root)
     if working is None:
         raise GitDomainError("No working branch is set for this project.")
@@ -695,9 +702,10 @@ def restore_version(
     into one (reachable from the working tip) or a pending or earlier save
     (reachable from the ledger tip). *pipeline_folder* is as for
     :func:`commit_milestone`."""
-    from haute._git_state import read_working_branch
+    from haute._git_state import read_working_branch, record_interrupted
 
     _assert_git_repo(cwd)
+    _assert_not_interrupted(project_root)
     working = read_working_branch(project_root)
     if working is None:
         raise GitDomainError("No working branch is set for this project.")
@@ -755,8 +763,19 @@ def restore_version(
 
     # HEAD is the ledger, now at the restore: bring the index and the files to it.
     # Paths tracked but absent from the restore are removed; untracked and ignored
-    # files, .haute/ among them, are not git's to touch.
-    _run_git("restore", "--source=HEAD", "--staged", "--worktree", "--", ":/", cwd=cwd)
+    # files, .haute/ among them, are not git's to touch. A file another program
+    # holds open cannot be written; the restore stays recorded and the clone is
+    # interrupted until Retry writes what is left.
+    code, stderr = _run_git_capture(
+        "restore", "--source=HEAD", "--staged", "--worktree", "--", ":/", cwd=cwd
+    )
+    left = sorted(_tracked_changes(cwd))
+    if left:
+        record_interrupted(project_root, "restore", left)
+        raise GitFilesInUseError(_held_files(stderr) or left)
+    if code != 0:
+        logger.warning("git_command_failed", cmd=["git", "restore"], stderr=stderr)
+        raise GitError(stderr or "git restore failed")
     _wipe_volatile_artefacts(cwd or Path.cwd())
 
     logger.info("version_restored", working=working, sha=restored, restored_from=target)
@@ -766,3 +785,53 @@ def restore_version(
         restored_from=target,
         working_branch=working,
     )
+
+
+def _assert_not_interrupted(project_root: Path) -> None:
+    """Refuse while files are out of step with HEAD: a milestone's sweep or a
+    restore would record or overwrite them as if they were the analyst's."""
+    from haute._git_state import read_interrupted
+
+    record = read_interrupted(project_root)
+    if record is None:
+        return
+    files = record["files"]
+    assert isinstance(files, list)
+    named = ", ".join(files[:5]) + (f" and {len(files) - 5} more" if len(files) > 5 else "")
+    raise GitDomainError(
+        f"These files are out of step with version history: {named or 'unknown'}. "
+        "Close them and choose Retry first."
+    )
+
+
+@_serialized_mutation
+def retry_interrupted(project_root: Path, cwd: Path | None = None) -> None:
+    """Write HEAD's version of the files an interrupted git action left out of step,
+    and clear the interruption once none is left. Files still held open refuse with
+    ``GitFilesInUseError`` and the interruption stays."""
+    from haute._git_state import clear_interrupted, read_interrupted
+
+    _assert_git_repo(cwd)
+    record = read_interrupted(project_root)
+    if record is None:
+        return
+    files = record["files"]
+    assert isinstance(files, list)
+    stderr = ""
+    if files:
+        _assert_no_git_op_in_progress(cwd)
+        _code, stderr = _run_git_capture(
+            "restore",
+            "--source=HEAD",
+            "--staged",
+            "--worktree",
+            "--",
+            *[f":(literal){path}" for path in files],
+            cwd=cwd,
+        )
+    left = sorted(_tracked_changes(cwd) & set(files))
+    if left:
+        raise GitFilesInUseError(_held_files(stderr) or left)
+    clear_interrupted(project_root)
+    _wipe_volatile_artefacts(cwd or Path.cwd())
+    logger.info("interrupted_tree_retried", files=files)

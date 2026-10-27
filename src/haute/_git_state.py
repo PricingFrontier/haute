@@ -24,6 +24,7 @@ _STATE_FILE = "state.json"
 _PREFS_FILE = "prefs.json"
 _PUSHED_FILE = "pushed.json"
 _TRASH_FILE = "trash.json"
+_INTERRUPTED_FILE = "interrupted.json"
 _WORKING_BRANCH_KEY = "workingBranch"
 
 # Serialises pushed.json access within this process. Atomic replacement keeps
@@ -52,6 +53,10 @@ def _pushed_path(project_root: Path) -> Path:
 
 def _trash_path(project_root: Path) -> Path:
     return project_root / _STATE_DIR / _TRASH_FILE
+
+
+def _interrupted_path(project_root: Path) -> Path:
+    return project_root / _STATE_DIR / _INTERRUPTED_FILE
 
 
 def read_working_branch(project_root: Path) -> str | None:
@@ -184,6 +189,56 @@ def remove_trash(project_root: Path, branch: str) -> None:
         trash = read_trash(project_root)
         if trash.pop(branch, None) is not None:
             _write_trash(project_root, trash)
+
+
+# ---------------------------------------------------------------------------
+# An interrupted tree — files a git action could not write (Windows refuses to
+# replace a file another program holds open) and the fence could not put back,
+# so the working tree is out of step with HEAD. Readiness answers "interrupted"
+# while it exists; Retry writes HEAD's version of the files and clears it.
+# ---------------------------------------------------------------------------
+
+
+def read_interrupted(project_root: Path) -> dict[str, object] | None:
+    """The interrupted tree's record (``operation``, ``files``, ``at``), or None.
+
+    A record that cannot be read is still an interruption: the files it would
+    name are unknown, so it reads as one with no files rather than as healthy."""
+    path = _interrupted_path(project_root)
+    with repository_mutation(project_root):
+        try:
+            raw = json.loads(path.read_text())
+        except FileNotFoundError:
+            return None
+        except (OSError, json.JSONDecodeError):
+            logger.warning("git_interrupted_unreadable", path=str(path))
+            return {"operation": "unknown", "files": [], "at": None}
+    if not isinstance(raw, dict):
+        return {"operation": "unknown", "files": [], "at": None}
+    files = raw.get("files")
+    return {
+        "operation": raw.get("operation") if isinstance(raw.get("operation"), str) else "unknown",
+        "files": [f for f in files if isinstance(f, str)] if isinstance(files, list) else [],
+        "at": raw.get("at") if isinstance(raw.get("at"), str) else None,
+    }
+
+
+def record_interrupted(project_root: Path, operation: str, files: list[str]) -> None:
+    """Record the working tree as out of step with HEAD over *files*."""
+    from datetime import UTC, datetime
+
+    path = _interrupted_path(project_root)
+    with repository_mutation(project_root):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {"operation": operation, "files": files, "at": datetime.now(UTC).isoformat()}
+        atomic_write_text(path, json.dumps(record, indent=2) + "\n")
+    logger.warning("git_tree_interrupted", operation=operation, files=files)
+
+
+def clear_interrupted(project_root: Path) -> None:
+    """Forget the interruption once HEAD's version of its files is written."""
+    with repository_mutation(project_root):
+        _interrupted_path(project_root).unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------

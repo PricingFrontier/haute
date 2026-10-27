@@ -9,7 +9,7 @@ specified in [the git-integration specification](../git-integration/high-level.m
 and [the git UI](../frontend-git-ui/high-level.md). These
 packages come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md);
 the Databricks IO defects the same review found are `BUG-44` and `BUG-45` in
-[bugs](bugs.md). `GIT-R13` to `GIT-R15` come from a review on 27 October 2026 of going
+[bugs](bugs.md). `GIT-R14` and `GIT-R15` come from a review on 27 October 2026 of going
 back to an earlier version (one Codex and two Fable reviews, every finding checked at
 its source), after an analyst restoring a version on the test project took six Move
 and return cycles and made and deleted two branches between 13:14 and 13:36.
@@ -25,7 +25,6 @@ and return cycles and made and deleted two branches between 13:14 and 13:36.
 | GIT-R06 | Decision | P3 | Automatic ledger saves either skip the project's git hooks or the specification says they run them. |
 | GIT-R07 | Planned | P2 | Every tree-changing action in the git UI passes the dirty-project guard and names what changes, a failed history read shows an error rather than an empty branch, a failed preference save is reported, and the dialogs and specification say what the server does. |
 | GIT-R08 | Planned | P3 | The git panel has one context menu, one dirty-navigation wrapper and one relative-time rule. |
-| GIT-R13 | Planned | P2 | A checkout that stops part-way on Windows (a file open in Excel, an antivirus hold) is rolled back and names the file, and a project is never reported ready over a half-changed tree. |
 | GIT-R14 | Planned | P2 | Deleted branches stay restorable from the branch manager whatever their name, and deleting or archiving the current branch leaves the analyst on its last milestone rather than the default branch's seed project. |
 | GIT-R15 | Planned | P3 | The git UI's words are the analyst's: no "detached", "repo", "ledger", "fold" or "hexadecimal". |
 
@@ -232,53 +231,6 @@ panel.
 `frontend/src/components/CommitBreadcrumb.tsx`;
 `frontend/src/panels/assistant/relativeTime.ts`;
 `frontend/src/utils/formatTime.ts`.
-
-### GIT-R13 — Checkouts that stop part-way on Windows
-**Why:** The tree-changing checkouts have no fence against a file Windows will not
-replace. These are `set_working_branch`'s, `create_working_branch`'s switch and move,
-`_switch_away_if_active`'s, Catch up's `merge --ff-only`, Spin off a copy's, and
-Restore's `git restore`.
-- **If the checkout stops part-way:** for example, a file is open in Excel, or an
-  antivirus hold stops it. The tree is left part old, part new.
-- **What the analyst sees:** readiness still answers `ready`, and the analyst reads
-  "Operation failed. Check the server logs for details."
-- **What gets recorded:** the next Commit's sweep records the mixed tree.
-- **The rollbacks:** where one exists, it is another checkout, which can fail on the
-  same lock.
-- **The in-progress check:** `_assert_no_git_op_in_progress` guards only Restore and
-  the switch.
-
-What git leaves when Windows refuses a file part-way has not been probed, and no
-test injects a lock.
-
-**Plan:** Probe first: hold a project file open on Windows, switch branch, and
-record what git leaves. Then one checkout helper for every tree-changing checkout:
-- it checks the changing paths (`git diff --name-only HEAD <target>`) are writable
-  first;
-- it translates git's "would be overwritten", "unable to unlink" and "Permission
-  denied" into a `GitDomainError` naming the file and asking for it to be closed;
-- on failure it writes HEAD's tree back;
-- when that also fails, it records `.haute/interrupted.json`, so readiness answers
-  an `interrupted` state naming the file with Retry, and Commit refuses until it
-  is resolved;
-- the in-progress check runs before every checkout.
-
-**Acceptance:** A branch switch with a locked file answers "Close <file> and try
-again" and leaves the tree and branch as they were. A failed rollback shows the
-interrupted state with Retry. Tests inject a failed checkout.
-
-**Dependencies:** `GIT-R02` translates the errors; `GIT-R05` supplies the one
-compensation helper; `GIT-R07` corrects the count of readiness states that the new
-state adds to.
-
-**Evidence:** `src/haute/_git_setup.py::set_working_branch`;
-`src/haute/_git_transactions.py::create_working_branch`;
-`src/haute/_git_transactions.py::restore_version`;
-`src/haute/_git_archive.py::_switch_away_if_active`;
-`src/haute/_git_read_models.py::working_branch_status`;
-`src/haute/_git_transactions.py::commit_milestone`;
-`src/haute/_git_core.py::_assert_no_git_op_in_progress`;
-`tests/test_git_improvements.py`.
 
 ### GIT-R14 — Deleted branches stay restorable
 **Why:**

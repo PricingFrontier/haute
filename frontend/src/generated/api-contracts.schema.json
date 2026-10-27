@@ -7105,6 +7105,7 @@
           "enum": [
             "git-unavailable",
             "no-repository",
+            "interrupted",
             "unset",
             "detached",
             "invalid",
@@ -7420,6 +7421,7 @@
           "enum": [
             "git-unavailable",
             "no-repository",
+            "interrupted",
             "unset",
             "detached",
             "invalid",

@@ -259,6 +259,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/GitBranchAwayResponse"},
         },
     },
+    "/api/git/interrupted/retry": {
+        "POST": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/GitWorkingBranchResponse"},
+        },
+    },
     "/api/git/fast-forward": {
         "POST": {
             "request_ref": "#/components/schemas/GitFastForwardRequest",

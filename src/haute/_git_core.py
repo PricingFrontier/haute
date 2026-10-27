@@ -159,6 +159,31 @@ class GitHistoryReadError(GitDomainError):
     """A historical pipeline could not be materialised or parsed safely."""
 
 
+# How many files a refusal over files in use names.
+_FILES_NAMED = 5
+
+
+def files_in_use_message(files: list[str]) -> str:
+    """The analyst's message for *files* another program holds open."""
+    named = ", ".join(files[:_FILES_NAMED]) + (
+        f" and {len(files) - _FILES_NAMED} more" if len(files) > _FILES_NAMED else ""
+    )
+    one = len(files) == 1
+    return (
+        f"{named} {'is' if one else 'are'} open in another program, so Haute could not "
+        f"replace {'it' if one else 'them'}. Close {'it' if one else 'them'} and try again."
+    )
+
+
+class GitFilesInUseError(GitDomainError):
+    """A command that rewrites the working tree could not write *files*: on Windows
+    git cannot replace a file another program holds open."""
+
+    def __init__(self, files: list[str]) -> None:
+        self.files = files
+        super().__init__(files_in_use_message(files))
+
+
 class _GitProcessTimeoutError(TimeoutError):
     """A deliberately bounded Git process exceeded its timeout."""
 
@@ -1022,6 +1047,110 @@ def _wipe_volatile_artefacts(repo_root: Path) -> None:
                 target.unlink(missing_ok=True)
         except OSError as exc:  # pragma: no cover - defensive; rmtree swallows most
             logger.warning("volatile_wipe_failed", path=name, error=str(exc))
+
+
+# git's message for a file Windows would not let it replace (LC_ALL=C keeps it fixed).
+_UNLINK_FAILED = re.compile(r"unable to unlink old '(.+?)'")
+
+
+def _tracked_changes(cwd: Path | None = None) -> set[str]:
+    """Tracked paths whose index or working content differs from HEAD."""
+    # Read raw: each entry's two status letters may begin with a space, which a
+    # stripped output would lose along with the path's first character.
+    result = subprocess.run(
+        ["git", "status", "--porcelain", "-z", "--untracked-files=no"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=cwd or Path.cwd(),
+        env=_git_env(),
+    )
+    if result.returncode != 0:
+        logger.warning("git_command_failed", cmd=["git", "status"], stderr=result.stderr.strip())
+        raise GitError(result.stderr.strip() or "git status failed")
+    tokens = result.stdout.split("\0")
+    paths: set[str] = set()
+    i = 0
+    while i < len(tokens):
+        entry = tokens[i]
+        i += 1
+        if len(entry) < 4:
+            continue
+        paths.add(entry[3:])
+        if entry[0] in "RC" or entry[1] in "RC":
+            i += 1  # a rename's or copy's source path follows
+    return paths
+
+
+def _held_files(stderr: str) -> list[str]:
+    """The files git said it could not replace, in the order it said so."""
+    return list(dict.fromkeys(_UNLINK_FAILED.findall(stderr)))
+
+
+def _run_git_capture(*args: str, cwd: Path | None = None) -> tuple[int, str]:
+    """Run a git command and return (returncode, stderr). Never raises."""
+    result = subprocess.run(
+        ["git", *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=cwd or Path.cwd(),
+        env=_git_env(),
+    )
+    return result.returncode, result.stderr.strip()
+
+
+def _rewrite_tree(*args: str, cwd: Path | None = None) -> None:
+    """Run a git command that rewrites the working tree (a checkout, a fast-forward
+    merge), failing loud on a file it could not write.
+
+    On Windows git cannot replace a file another program holds open. A checkout
+    still exits 0, leaving that file at the old version under the new HEAD; a
+    fast-forward exits 1 with the other files already written. So the tracked
+    changes are compared before and after: a new one means the tree is out of
+    step with HEAD. HEAD is then put back where it was and the out-of-step files
+    written from it; any still out of step record the clone interrupted, for the
+    analyst to retry once the file is closed. Either way ``GitFilesInUseError``
+    names the files, and the caller's own compensation runs as for any failure."""
+    _assert_no_git_op_in_progress(cwd)
+    attached, head = _run_git_ok("symbolic-ref", "--short", "-q", "HEAD", cwd=cwd)
+    previous = head if attached else _run_git("rev-parse", "HEAD", cwd=cwd)
+    before = _tracked_changes(cwd)
+    code, stderr = _run_git_capture(*args, cwd=cwd)
+    out_of_step = sorted(_tracked_changes(cwd) - before)
+    if not out_of_step:
+        if code != 0:
+            logger.warning("git_command_failed", cmd=["git", *args], stderr=stderr)
+            raise GitError(stderr or f"git {args[0]} failed")
+        return
+    logger.warning("git_tree_out_of_step", cmd=["git", *args], files=out_of_step, stderr=stderr)
+    held = _held_files(stderr) or out_of_step
+    moved_ok, now = _run_git_ok("symbolic-ref", "--short", "-q", "HEAD", cwd=cwd)
+    current = now if moved_ok else _run_git("rev-parse", "HEAD", cwd=cwd)
+    if current != previous:
+        # A file git left unreplaced still holds the previous version while its
+        # index entry moved on, and checkout refuses to overwrite such a "change".
+        # Staging what is on disk lets checkout carry it back untouched.
+        literal = [f":(literal){path}" for path in out_of_step]
+        _run_git_ok("add", "--", *literal, cwd=cwd)
+        _run_git_ok("checkout", *(() if attached else ("--detach",)), previous, cwd=cwd)
+    left = sorted(_tracked_changes(cwd) - before)
+    if left:
+        _run_git_ok(
+            "restore",
+            "--source=HEAD",
+            "--staged",
+            "--worktree",
+            "--",
+            *[f":(literal){path}" for path in left],
+            cwd=cwd,
+        )
+        left = sorted(_tracked_changes(cwd) - before)
+    if left:
+        from haute._git_state import record_interrupted
+
+        record_interrupted(cwd or Path.cwd(), args[0], left)
+    raise GitFilesInUseError(held)
 
 
 def _remote_names(cwd: Path | None = None) -> list[str]:

@@ -13,7 +13,7 @@
 | `frontend/src/stores/saveCapture.ts` | `reportSaveCapture`: what a write answered about its version capture, reported the same way for every write (the pipeline's save, the form's save, a Pipeline file written or deleted) — the ledger commit onto the status for the branch indicator through `setLastSaveSha` (left as it is when the answer has no commit field), `notifyHistoryChanged` so an open panel refetches, the answer's `uncaptured` files added, each once, to the git store's `uncaptured`, each warning in a toast of its own, and the identity modal opened on `identity_required` unless it was dismissed this session (`isIdentityPromptDismissed`) or is already open. `captureUncaptured`: nothing while nothing is kept; else the kept files taken off the store, sent to `POST /api/git/capture` (`captureFiles`) and the answer reported, so a file still uncaptured is kept again, while a request that fails keeps them all and toasts "Version capture failed: <reason>"; the identity prompt calls it once an identity is recorded and the project save at its start. |
 | `frontend/src/stores/gitBranchLoader.ts` | Lazily loaded branch-list request coordinator. It publishes results into `useGitStore` while delegating the in-flight/queued-refresh bookkeeping to `singleFlight.ts`, keeping branch-only client code out of the initial editor bundle. |
 | `frontend/src/stores/singleFlight.ts` | Shared resettable single-flight utility: request joining, the trailing-refresh queue (exactly one follow-up per active request, generation-anchored), and the stalled-request watchdog. Consumed by `useGitStore.ts` (working-branch status) and `gitBranchLoader.ts` (branch list). Test seam: both stores' `reset…ForTests` exports delegate to its `reset()`. |
-| `frontend/src/components/BranchIndicator.tsx` | Toolbar entry point: explicit repository/readiness/error labels with Retry, plus a ready branch-name button that opens the panel on the current branch. Truncated errors use the shared `Tooltip` to expose the full diagnostic on error hover or Retry focus; its function child places `aria-describedby` on Retry. |
+| `frontend/src/components/BranchIndicator.tsx` | Toolbar entry point: explicit repository/readiness/error labels with Retry (an `interrupted` clone's Retry calls `retryInterruptedGit` and reloads readiness), plus a ready branch-name button that opens the panel on the current branch. Truncated errors use the shared `Tooltip` to expose the full diagnostic on error hover or Retry focus; its function child places `aria-describedby` on Retry. |
 | `frontend/src/components/BranchManager.tsx` | Branch list/create/switch/archive/delete/restore, embedded in the Git panel; owns its own confirm dialogs and row context menu. |
 | `frontend/src/hooks/useProjectDirty.ts` | `useProjectDirty`: whether the project holds unsaved edits, the canvas's (`useGraphStore`) or the workbench's form's (`useWorkbenchStore`'s `formDirty`, mirrored by the form store, a lazy chunk); what every navigation guard asks about. `discardFormEdits`: after a switch chosen over the form's unsaved edits has succeeded, the form read again (the form store imported then), so the destination's form shows; nothing while the form is as saved. `discardCanvasEdits`: after a switch chosen over the canvas's unsaved edits has succeeded, the canvas's edits dropped (`markSaved`, the sync banner cleared) and a resync requested (`requestResync`), so the destination's pipeline shows; nothing while the canvas is as saved. |
 | `frontend/src/components/GitNavigationConfirm.tsx` | Shared clean/dirty navigation confirmation used by branch-manager and graph-lane switches plus Create & Move; dirty mode offers Cancel, Discard, and Save first. |
@@ -459,7 +459,9 @@ Library component/unit tests (no e2e for this surface).
   the dirty-canvas guard on current-branch archive and delete before those reload paths.
 - **`frontend/src/components/__tests__/BranchIndicator.test.tsx`** — checking and retryable-error
   states, full error tooltip on hover and Retry focus with an accessible description,
-  no-repository/unset/detached/invalid/divergent/ready rendering, the branch-name
+  no-repository/unset/detached/invalid/divergent/ready rendering, an interrupted clone
+  naming its files with a Retry that reloads readiness on success and toasts the files
+  still held on refusal, the branch-name
   click's panel/store side effects, and that the ready state stays branch-only — carrying no
   save SHA, including while a comparison is open.
 - **`frontend/src/components/__tests__/CommitBreadcrumb.test.tsx`** — root/milestone collapse-to-anchor
@@ -508,7 +510,7 @@ Library component/unit tests (no e2e for this surface).
   client/guard contract requires `default_branch` and `bootstrapped_default`, preserves
   submitted `pushed_refs`, accepts both boolean values, and rejects missing or wrongly typed
   bootstrap metadata rather than inventing a default. The guard suite also accepts exactly
-  the six working-branch readiness states, preserves detached `head_sha`, and rejects an
+  the eight working-branch readiness states, preserves detached `head_sha`, and rejects an
   unknown state.
 - **`frontend/src/components/__tests__/DivergenceModal.test.tsx`** — recorded/current branch naming,
   each of the three resolution choices, and stay-here's disabled state when the current

@@ -19,6 +19,7 @@ from haute._git_core import (
     _get_current_branch,
     _get_default_branch,
     _rev_parse,
+    _rewrite_tree,
     _run_git,
     _run_git_ok,
     _serialized_mutation,
@@ -84,7 +85,7 @@ def _switch_away_if_active(
             if fallback is None:
                 raise GitDomainError("No safe commit is available to leave the active branch.")
             checkout_args = (("-f",) if discard else ()) + ("--detach", fallback)
-        _run_git("checkout", *checkout_args, cwd=cwd)
+        _rewrite_tree("checkout", *checkout_args, cwd=cwd)
         return recorded == working
     return False
 

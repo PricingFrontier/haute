@@ -19,6 +19,7 @@ from haute._git_core import (
     _ledger_or_branch_sha,
     _list_branches_with_tips,
     _rev_parse,
+    _rewrite_tree,
     _run_git,
     _run_git_ok,
     _serialized_mutation,
@@ -143,7 +144,7 @@ def resolve_ledger(working: str, cwd: Path | None = None) -> str:
         logger.info("ledger_spawned", working=working, ledger=ledger)
 
     if _get_current_branch(cwd) != ledger:
-        _run_git("checkout", ledger, cwd=cwd)
+        _rewrite_tree("checkout", ledger, cwd=cwd)
 
     return ledger
 
@@ -316,7 +317,7 @@ def set_working_branch(
         # the checkout changes no file and carries uncommitted edits across).
         start = _branch_start(branch, cwd=cwd)
         try:
-            _run_git("checkout", "-b", branch, *([start] if start else []), cwd=cwd)
+            _rewrite_tree("checkout", "-b", branch, *([start] if start else []), cwd=cwd)
             resolve_ledger(branch, cwd=cwd)
             write_working_branch(project_root, branch)
         except Exception as exc:

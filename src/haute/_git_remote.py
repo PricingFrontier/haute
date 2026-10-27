@@ -32,6 +32,7 @@ from haute._git_core import (
     _remote_env,
     _remote_names,
     _rev_parse,
+    _rewrite_tree,
     _run_git,
     _run_git_ok,
     _run_git_process,
@@ -915,7 +916,7 @@ def fast_forward_pair_from_tracking(
     try:
         # Ledger first (it's HEAD; merge --ff-only advances it and the working tree).
         if l_leg.status == "behind":
-            _run_git("merge", "--ff-only", f"refs/remotes/{remote}/{ledger}", cwd=cwd)
+            _rewrite_tree("merge", "--ff-only", f"refs/remotes/{remote}/{ledger}", cwd=cwd)
             ledger_advanced = True
             fast_forwarded.append(ledger)
         # Working ref (not checked out): CAS-advance it to its remote tip.
@@ -1080,7 +1081,7 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
         if remote_l is not None:
             _run_git("branch", ledger, remote_l, cwd=cwd)
             created_l = True
-            _run_git("checkout", ledger, cwd=cwd)
+            _rewrite_tree("checkout", ledger, cwd=cwd)
         else:
             # X2: no remote ledger — respawn it at the adopted working tip + checkout.
             resolve_ledger(working, cwd=cwd)

@@ -1,6 +1,9 @@
 import { GitBranch } from "lucide-react"
 
+import { retryInterruptedGit } from "../api/client"
+import { apiErrorMessage } from "../api/errors"
 import useGitStore from "../stores/useGitStore"
+import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import Tooltip from "./Tooltip"
 
@@ -129,6 +132,19 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
   const setPeekBranch = useGitStore((s) => s.setPeekBranch)
   const requestExpandBranches = useGitStore((s) => s.requestExpandBranches)
   const setGitOpen = useUIStore((s) => s.setGitOpen)
+  const addToast = useToastStore((s) => s.addToast)
+
+  // An interrupted clone: once the analyst has closed the files, the server writes
+  // HEAD's version of them; files still held keep it interrupted, named in the toast.
+  const retryInterrupted = async () => {
+    try {
+      await retryInterruptedGit()
+      await loadStatus({ refresh: true })
+      addToast("success", "The files are back in step with version history.")
+    } catch (err) {
+      addToast("error", apiErrorMessage(err, "Could not write the files."))
+    }
+  }
 
   // Open the Git panel, expand the branch manager, and return its history view
   // to the current branch (a no-op when already current, so any open milestone
@@ -206,6 +222,32 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
         >
           Git unavailable
         </span>
+      )
+    }
+    if (status.state === "interrupted") {
+      const detail = status.errors[0] ?? "A git action left files out of step."
+      return wrapWithChildren(
+        <Tooltip label={detail} side="bottom" className="max-w-[260px]">
+          {(describedBy) => (
+            <span
+              data-testid="toolbar-branch-indicator"
+              data-branch-state="interrupted"
+              className="toolbar-btn flex items-center justify-center gap-1 px-2.5 py-1 text-[12px] font-medium min-w-[136px] max-w-[220px] w-full"
+              style={{ color: "var(--danger)" }}
+            >
+              <span className="truncate">Files in use</span>
+              <button
+                type="button"
+                data-testid="branch-indicator-retry-interrupted"
+                aria-describedby={describedBy}
+                onClick={() => void retryInterrupted()}
+                className="shrink-0 underline"
+              >
+                Retry
+              </button>
+            </span>
+          )}
+        </Tooltip>
       )
     }
     if (status.state === "no-repository") {
