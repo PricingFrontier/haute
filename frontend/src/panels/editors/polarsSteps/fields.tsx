@@ -385,7 +385,15 @@ export function RowList<T>({
         </div>
       ))}
       {children}
-      <QuietAction onClick={() => onChange([...rows, create()])} className="justify-self-start">{addLabel}</QuietAction>
+      <QuietAction
+        onClick={() => {
+          rowKeys.add()
+          onChange([...rows, create()])
+        }}
+        className="justify-self-start"
+      >
+        {addLabel}
+      </QuietAction>
     </div>
   )
 }
@@ -1320,7 +1328,15 @@ export function ConditionList({
           }
         />
       ))}
-      <QuietAction onClick={() => onChange([...conditions, defaultCondition()], match)} className="justify-self-start">Add condition</QuietAction>
+      <QuietAction
+        onClick={() => {
+          rowKeys.add()
+          onChange([...conditions, defaultCondition()], match)
+        }}
+        className="justify-self-start"
+      >
+        Add condition
+      </QuietAction>
     </div>
   )
 }

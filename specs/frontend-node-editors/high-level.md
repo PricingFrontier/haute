@@ -476,8 +476,10 @@ already used in the open card restores it as it was left, a formula's unfinished
 included (typed or completed), and keeps a calculation it left selectable even where the
 list would not offer it (a saved conversion, or a function the current value's type cannot
 take). What a row of a list holds (a part, a condition, a branch, and the drafts of an
-expression in it) stays with that row when rows above it are removed, when an undo brings
-them back, and when the list shrinks to one row and loses its boxes. A formula is edited as text
+expression in it) stays with that row when the list's own actions add or remove rows
+(rows that read the same included) and when the list shrinks to one row and loses its
+boxes; an undo or any other change from outside the list that adds or removes rows starts
+every row's drafts afresh rather than risk giving one row another's. A formula is edited as text
 (`(premium + tax) * 1.05 / 12`, `round(premium / sum_insured * 1000, 3)`: columns by name or
 in backticks, earlier variables by name, global constants by name or as `global_constants.<name>`
 (a bare name is an earlier variable first, then a column the step has, then a constant; a constant

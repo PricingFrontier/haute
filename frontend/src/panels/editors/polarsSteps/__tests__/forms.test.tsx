@@ -1404,7 +1404,7 @@ describe("Computed as", () => {
     expect(parts[0]).toEqual(clip(0.9, 1.1))
   })
 
-  it("gives a row restored by an undo its own drafts, not a neighbour's", () => {
+  it("starts every row afresh when an undo brings a removed row back, never handing one row another's drafts", () => {
     const onChange = vi.fn()
     const part = (expr: Expr) => ({ kind: "expr" as const, expr })
     const clipOther: Expr = { type: "function", fn: "clip", operand: { kind: "column", name: "other_amount" }, args: [{ kind: "literal", type: "number", value: 0.8 }, { kind: "literal", type: "number", value: 1.2 }] }
@@ -1421,7 +1421,7 @@ describe("Computed as", () => {
     const partsOf = () => ((onChange.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>).expr as Extract<Expr, { type: "sum_horizontal" }>).parts
     expect(partsOf()[0]).toMatchObject({ expr: { fn: "clip", operand: { name: "premium" }, args: [{ value: 0 }, { value: 0 }] } })
     fireEvent.change(screen.getByLabelText("Part 2 expression type"), { target: { value: "clip" } })
-    expect(partsOf()[1]).toEqual({ kind: "expr", expr: clipOther })
+    expect(partsOf()[1]).toMatchObject({ expr: { fn: "clip", operand: { name: "other_amount" }, args: [{ value: 0 }, { value: 0 }] } })
   })
 
   it("keeps a branch's drafts when the branches above it are removed down to one", () => {

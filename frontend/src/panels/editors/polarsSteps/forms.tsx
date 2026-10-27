@@ -747,6 +747,7 @@ function ConditionalEditor({
     // A new branch tests the previous branch's first column and starts from a value of its Then's type.
     const last = expr.branches[expr.branches.length - 1]
     const then = last.then.kind === "literal" ? defaultLiteral(last.then.type) : literal("number", 0)
+    branchKeys.add()
     onChange({ ...expr, branches: [...expr.branches, { match: "all", conditions: [defaultCondition(last.conditions[0]?.column ?? "")], then }] })
   }
   return (
