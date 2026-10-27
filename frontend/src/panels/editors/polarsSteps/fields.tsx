@@ -136,7 +136,18 @@ export function Hint({ children }: { children: string }) {
   )
 }
 
-export type SelectOption<T extends string> = { value: T; label: string }
+/** Consecutive options sharing a `group` are listed under it. */
+export type SelectOption<T extends string> = { value: T; label: string; group?: string }
+
+function optionRuns<T extends string>(options: ReadonlyArray<SelectOption<T>>): Array<{ group?: string; options: Array<SelectOption<T>> }> {
+  const runs: Array<{ group?: string; options: Array<SelectOption<T>> }> = []
+  for (const option of options) {
+    const last = runs[runs.length - 1]
+    if (last && last.group === option.group) last.options.push(option)
+    else runs.push({ group: option.group, options: [option] })
+  }
+  return runs
+}
 
 export function SelectField<T extends string>({
   value,
@@ -169,11 +180,14 @@ export function SelectField<T extends string>({
           {placeholder}
         </option>
       )}
-      {options.map((option) => (
-        <option key={option.value} value={option.value}>
-          {option.label}
-        </option>
-      ))}
+      {optionRuns(options).map((run, index) => {
+        const items = run.options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))
+        return run.group === undefined ? items : <optgroup key={`${run.group}-${index}`} label={run.group}>{items}</optgroup>
+      })}
     </select>
   )
 }

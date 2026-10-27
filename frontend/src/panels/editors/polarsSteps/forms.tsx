@@ -42,7 +42,6 @@ import {
   castTargetsFor,
   defaultArgFor,
   defaultCondition,
-  defaultExpr,
   defaultLiteral,
   exprProblem,
   exprTypeProblem,
@@ -83,8 +82,10 @@ import {
 } from "./fields"
 import { StepSchemaContext, UNKNOWN_SCHEMA, schemaFor, useStepSchema, type StepSchema } from "./stepSchema"
 import { useCompletionList, type Completion } from "./useCompletionList"
+import { CALCULATIONS, calculationEntry, calculationExpr, calculationLabel, calculationOf, computedValue, type CalculationId } from "./calculations"
 import type {
   AggregationSpec,
+  FunctionName,
   WindowAggregation,
   CastDtype,
   CastEntry,
@@ -213,27 +214,47 @@ function nestedExpression(ctx: StepFormContext, depth: number): RenderExpression
   if (depth > MAX_EXPR_DEPTH) return undefined
   return (expr, onChange, ariaLabel) => (
     <>
-      <ExprTypeSelect expr={expr} onChange={onChange} ariaLabel={`${ariaLabel} type`} />
+      <ExprTypeSelect expr={expr} onChange={onChange} ctx={ctx} ariaLabel={`${ariaLabel} type`} />
       <ExprEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
     </>
   )
 }
 
-const EXPR_TYPES: Array<{ value: Expr["type"]; label: string }> = [
-  { value: "operand", label: "Value" },
-  { value: "binary", label: "Formula" },
-  { value: "function", label: "Function" },
-  { value: "conditional", label: "If-then" },
-  { value: "window", label: "Window" },
-  { value: "concat", label: "Join text" },
-  { value: "sum_horizontal", label: "Sum across" },
-]
+const isFunction = (id: CalculationId): id is FunctionName => FUNCTIONS.some((f) => f.value === id)
 
-/** The "Computed as" select: choosing a type starts a fresh expression of that type. */
-function ExprTypeSelect({ expr, onChange, ariaLabel }: { expr: Expr; onChange: (next: Expr) => void; ariaLabel: string }) {
+/**
+ * The "Computed as" select: every calculation, in its sections, with an
+ * unlisted function a formula cannot show kept as its own entry. While the
+ * expression computes from a column of a known type, the functions it cannot
+ * take are left out. Choosing a calculation never discards work: the
+ * expression being left is kept as that calculation's draft while the form
+ * is open, so going back restores it, and one not used yet starts from what
+ * the last one computed (`calculationExpr`).
+ */
+function ExprTypeSelect({ expr, onChange, ctx, ariaLabel }: { expr: Expr; onChange: (next: Expr) => void; ctx: StepFormContext; ariaLabel: string }) {
+  const schema = useStepSchema()
+  const drafts = useRef(new Map<CalculationId, Expr>())
+  const bare = bareConstants(ctx.constants ?? [], ctx.columns)
+  const current = calculationOf(expr, ctx.variables, bare)
+  const value = computedValue(expr)
+  const valueType = value?.kind === "column" ? schema.typeOf(value.name) : null
+  const listed = CALCULATIONS.some((c) => c.id === current)
+  const general = CALCULATIONS.filter((c) => c.section === "General")
+  const entries = listed ? CALCULATIONS : [...general, calculationEntry(current), ...CALCULATIONS.slice(general.length)]
+  const options = entries
+    .filter((c) => c.id === current || !isFunction(c.id) || functionTakes(c.id, valueType))
+    .map((c) => ({ value: c.id, label: calculationLabel(c), group: c.section }))
   return (
     <Field label="Computed as">
-      <SelectField value={exprTypeValue(expr)} options={EXPR_TYPES} onChange={(type) => onChange(defaultExpr(type))} ariaLabel={ariaLabel} />
+      <SelectField
+        value={current}
+        options={options}
+        onChange={(id) => {
+          drafts.current.set(current, expr)
+          onChange(drafts.current.get(id) ?? calculationExpr(id, expr, ctx.variables, bare))
+        }}
+        ariaLabel={ariaLabel}
+      />
     </Field>
   )
 }
@@ -253,11 +274,6 @@ function FormulaEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { t
   const text = displayFormula(expr, ctx.variables, bareConstants(constants, ctx.columns))
   if (text === null) return <StructuredFormula expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
   return <FormulaField text={text} onCommit={onChange} variables={ctx.variables} constants={constants} columns={ctx.columns} depth={depth} />
-}
-
-/** A value or function typed as a formula stays a formula in the editor and the "Computed as" select. */
-function exprTypeValue(expr: Expr): Expr["type"] {
-  return typedAsFormula(expr) ? "binary" : expr.type
 }
 
 const WORD_BEFORE_CARET = /[A-Za-z_][A-Za-z0-9_]*$/
@@ -624,8 +640,10 @@ function FunctionArgs({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { ty
 }
 
 function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: (next: Expr) => void; ctx: StepFormContext; depth?: number }) {
-  const schema = useStepSchema()
-  const typedText = typedAsFormula(expr) ? displayFormula(expr, ctx.variables, bareConstants(ctx.constants ?? [], ctx.columns)) : null
+  const bare = bareConstants(ctx.constants ?? [], ctx.columns)
+  // A typed formula, and an unlisted function a formula can show, are edited as a formula.
+  const asFormula = typedAsFormula(expr) || (expr.type === "function" && calculationOf(expr, ctx.variables, bare) === "formula")
+  const typedText = asFormula ? displayFormula(expr, ctx.variables, bare) : null
   if (typedText !== null) return <FormulaField text={typedText} onCommit={onChange} variables={ctx.variables} constants={ctx.constants ?? []} columns={ctx.columns} depth={depth} />
   const operandProps = anyOperand(ctx, depth + 1)
   switch (expr.type) {
@@ -640,17 +658,6 @@ function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: 
     case "function":
       return (
         <>
-          <Field label="Function">
-            <SelectField
-              value={expr.fn}
-              options={FUNCTIONS.filter((f) => f.value === expr.fn || expr.operand.kind !== "column" || functionTakes(f.value, schema.typeOf(expr.operand.name))).map((f) => ({ value: f.value, label: f.label }))}
-              onChange={(fn) => {
-                const spec = FUNCTIONS.find((f) => f.value === fn)
-                onChange({ ...expr, fn, args: (spec?.args ?? []).map(defaultArgFor) })
-              }}
-              ariaLabel="Function"
-            />
-          </Field>
           <Field label="Of">
             <OperandField value={expr.operand} onChange={(operand) => onChange({ ...expr, operand })} ariaLabel="Function operand" {...operandProps} />
           </Field>
@@ -896,7 +903,7 @@ function WithColumnForm({ step, onChange, ctx }: FormProps<WithColumnStep>) {
       <Field label="Column name" htmlFor={ctx.firstFieldId}>
         <TextField id={ctx.firstFieldId} value={step.name} onCommit={(name) => onChange({ ...step, name })} ariaLabel="Column name" placeholder="new_column" mono />
       </Field>
-      <ExprTypeSelect expr={step.expr} onChange={(expr) => onChange({ ...step, expr })} ariaLabel="Expression type" />
+      <ExprTypeSelect expr={step.expr} onChange={(expr) => onChange({ ...step, expr })} ctx={ctx} ariaLabel="Expression type" />
       <ExprEditor expr={step.expr} onChange={(expr) => onChange({ ...step, expr })} ctx={ctx} />
     </>
   )

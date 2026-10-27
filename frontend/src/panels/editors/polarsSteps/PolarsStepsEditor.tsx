@@ -8,12 +8,12 @@ import type { StepStart } from "../../../utils/polarsStepInputs"
 import { InputSourcesBar, INPUT_STYLE } from "../_shared"
 import type { InputSource, OnReplaceConfig, OnUpdateConfig } from "../_shared"
 import AddStepMenu from "./AddStepMenu"
-import { createStep, kindLabel, stepDisplayLabel, stepProblem, variablesBefore } from "./catalogue"
+import { stepIcon, stepTitle } from "./calculations"
+import { createStep, stepDisplayLabel, stepProblem, variablesBefore } from "./catalogue"
 import { columnChange, columnNames, columnsAtEachStep, unknownColumnsOf, type ColumnSource } from "./derivedColumns"
 import { StepForm } from "./forms"
 import GeneratedCodePanel from "./GeneratedCodePanel"
 import StepCard, { type StepBadge } from "./StepCard"
-import { STEP_ICONS } from "./stepIcons"
 import { schemaFor } from "./stepSchema"
 import { summaryParts, unfinishedPart } from "./summary"
 import { readSteps, type Step, type StepKind } from "./types"
@@ -466,8 +466,8 @@ export default function PolarsStepsEditor({
                 return (
                   <div key={key} role="listitem">
                     <StepCard
-                      label={kindLabel(step.kind)}
-                      icon={STEP_ICONS[step.kind]}
+                      label={stepTitle(step)}
+                      icon={stepIcon(step)}
                       number={displayNumber}
                       summary={summaryParts(step)}
                       change={columnChange(step, before, columnStates[index + 1])}

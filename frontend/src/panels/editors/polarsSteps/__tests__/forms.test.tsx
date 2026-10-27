@@ -148,7 +148,7 @@ describe("step forms only build schema-valid payloads", () => {
     const places = screen.getByLabelText("Decimal places")
     expect(places).toHaveAttribute("type", "number")
     expect(places).toHaveAttribute("step", "1")
-    fireEvent.change(screen.getByLabelText("Function"), { target: { value: "clip" } })
+    fireEvent.change(screen.getByLabelText("Expression type"), { target: { value: "clip" } })
     const clipped = onChange.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
     expect(clipped.expr).toEqual({
       type: "function",
@@ -186,27 +186,32 @@ describe("step forms only build schema-valid payloads", () => {
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
     expect(latest.expr).toMatchObject({ args: [{ kind: "expr", expr: { type: "binary", text: "" } }, { kind: "column", name: "region" }] })
     expect(stepProblem(latest)).toBeNull()
-    // divide's divisor takes a number or any operand; fill_null takes text and
-    // true/false too; plain-value arguments stay plain.
-    fireEvent.change(screen.getByLabelText("Function"), { target: { value: "divide" } })
+    // divide's divisor takes a number or any operand; plain-value arguments stay plain.
+    fireEvent.change(screen.getByLabelText("Expression type"), { target: { value: "divide" } })
     expect(optionValues(screen.getByLabelText("Divisor kind"))).toEqual(["number", "column", "variable", "expr"])
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
     expect(latest.expr).toMatchObject({ fn: "divide", args: [{ kind: "literal", type: "number", value: 0 }] })
-    fireEvent.change(screen.getByLabelText("Function"), { target: { value: "fill_null" } })
-    expect(optionValues(screen.getByLabelText("Fill with kind"))).toEqual(["number", "text", "boolean", "column", "variable", "expr"])
-    fireEvent.change(screen.getByLabelText("Function"), { target: { value: "round" } })
+    fireEvent.change(screen.getByLabelText("Expression type"), { target: { value: "round" } })
     expect(screen.queryByLabelText("Decimal places kind")).not.toBeInTheDocument()
+    cleanup()
+    // fill_null, which a formula cannot show when it fills a window, takes text and true/false too.
+    const window: Expr = { type: "window", agg: "mean", of: { kind: "column", name: "premium" }, over: ["region"] }
+    render(<Stateful initial={{ ...step, expr: { type: "function", fn: "fill_null", operand: { kind: "expr", expr: window }, args: [{ kind: "literal", type: "number", value: 0 }] } }} spy={spy} />)
+    expect(screen.getByLabelText("Expression type")).toHaveValue("fill_null")
+    expect(optionValues(screen.getByLabelText("Fill with kind"))).toEqual(["number", "text", "boolean", "column", "variable", "expr"])
   })
 
-  it("cast offers the cast types through a Type select", () => {
+  it("a saved cast shows as its formula, and through a Type select where a formula cannot show it", () => {
     const onChange = vi.fn()
-    const step: Step = {
-      id: "w",
-      kind: "with_column",
-      name: "p",
-      expr: { type: "function", fn: "cast", operand: { kind: "column", name: "premium" }, args: [{ kind: "literal", type: "text", value: "Float64" }] },
-    }
+    const premium: Expr = { type: "function", fn: "cast", operand: { kind: "column", name: "premium" }, args: [{ kind: "literal", type: "text", value: "Float64" }] }
+    render(<StepForm step={{ id: "w", kind: "with_column", name: "p", expr: premium }} onChange={onChange} ctx={ctx} />)
+    expect(screen.getByLabelText("Expression type")).toHaveValue("formula")
+    expect(screen.getByLabelText("Formula")).toHaveValue("cast(premium, Float64)")
+    cleanup()
+    const window: Expr = { type: "window", agg: "sum", of: { kind: "column", name: "premium" }, over: ["region"] }
+    const step: Step = { id: "w", kind: "with_column", name: "p", expr: { type: "function", fn: "cast", operand: { kind: "expr", expr: window }, args: [{ kind: "literal", type: "text", value: "Float64" }] } }
     render(<StepForm step={step} onChange={onChange} ctx={ctx} />)
+    expect(screen.getByLabelText("Expression type")).toHaveValue("cast")
     // The common types first, each with its plain meaning, then the other widths.
     expect(optionValues(screen.getByLabelText("Type"))).toEqual(["Int64", "Float64", "String", "Boolean", "Date", "Datetime", "Categorical", "Int8", "Int16", "Int32", "UInt8", "UInt16", "UInt32", "UInt64", "Float32"])
     expect(within(screen.getByLabelText("Type")).getByRole("option", { name: "Int64 (whole number)" })).toBeInTheDocument()
@@ -328,7 +333,7 @@ describe("step forms only build schema-valid payloads", () => {
     const spy = vi.fn()
     const step: Step = { id: "s", kind: "with_column", name: "total", expr: { type: "binary", left: { kind: "column", name: "premium" }, op: "*", right: { kind: "literal", type: "number", value: 1 }, text: "" } }
     render(<Stateful initial={step} spy={spy} />)
-    fireEvent.change(screen.getByLabelText("Expression type"), { target: { value: "sum_horizontal" } })
+    fireEvent.change(screen.getByLabelText("Expression type"), { target: { value: "sum_across" } })
     let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
     expect(latest.expr).toEqual({ type: "sum_horizontal", parts: [{ kind: "column", name: "" }, { kind: "column", name: "" }] })
     expect(screen.queryByRole("button", { name: "Remove part 1" })).not.toBeInTheDocument()
@@ -449,7 +454,7 @@ describe("step forms only build schema-valid payloads", () => {
     expect(screen.getByLabelText("Formula")).toHaveAttribute("placeholder", "e.g. (premium + commission) * tax / 12")
     expect(screen.getByLabelText("Formula")).toHaveAttribute("title", "example: (premium + commission) * tax / 12")
     expect(screen.getByRole("img", { name: "example: (premium + commission) * tax / 12" })).toHaveAttribute("title", "example: (premium + commission) * tax / 12")
-    fireEvent.change(screen.getByLabelText("Function operand expression type"), { target: { value: "function" } })
+    fireEvent.change(screen.getByLabelText("Function operand expression type"), { target: { value: "abs" } })
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
     expect(latest.expr).toMatchObject({ operand: { kind: "expr", expr: { type: "function", fn: "abs" } } })
     // The deepest level the renderer accepts offers no further nesting.
@@ -579,7 +584,7 @@ describe("step forms only build schema-valid payloads", () => {
       expr: { type: "binary", left: { kind: "column", name: "premium" }, op: "/", right: { kind: "literal", type: "number", value: 12 } },
     }
     render(<Stateful initial={step} spy={spy} />)
-    expect(optionValues(screen.getByLabelText("Expression type"))[0]).toBe("operand")
+    expect(optionValues(screen.getByLabelText("Expression type"))[0]).toBe("formula")
     const input = screen.getByLabelText("Formula")
     expect(input).toHaveValue("premium / 12")
     fireEvent.change(input, { target: { value: "(premium + rate) * 1.05 / 12" } })
@@ -611,7 +616,7 @@ describe("step forms only build schema-valid payloads", () => {
     fireEvent.blur(screen.getByLabelText("Formula"))
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
     expect(latest.expr).toMatchObject({ type: "function", fn: "round", text: "round((premium + 1), 2)" })
-    expect(screen.getByLabelText("Expression type")).toHaveValue("binary")
+    expect(screen.getByLabelText("Expression type")).toHaveValue("formula")
     expect(screen.getByLabelText("Formula")).toHaveValue("round((premium + 1), 2)")
     fireEvent.change(screen.getByLabelText("Formula"), { target: { value: "(premium + 1" } })
     fireEvent.keyDown(screen.getByLabelText("Formula"), { key: "Enter" })
@@ -790,7 +795,7 @@ describe("step forms only build schema-valid payloads", () => {
     fireEvent.blur(input)
     const latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
     expect(latest.expr).toEqual({ type: "operand", operand: { kind: "column", name: "premium" }, text: "premium" })
-    expect(screen.getByLabelText("Expression type")).toHaveValue("binary")
+    expect(screen.getByLabelText("Expression type")).toHaveValue("formula")
     expect(screen.getByRole("combobox", { name: "Formula" })).toHaveValue("premium")
   })
 
@@ -1005,7 +1010,7 @@ describe("step forms only build schema-valid payloads", () => {
       },
     }
     render(<Stateful initial={step} spy={spy} />)
-    expect(screen.getByLabelText("Expression type")).toHaveValue("conditional")
+    expect(screen.getByLabelText("Expression type")).toHaveValue("if_then")
     expect(screen.getByLabelText("If condition 1 column")).toHaveValue("premium")
     fireEvent.change(screen.getByLabelText("Then value value"), { target: { value: "top" } })
     fireEvent.blur(screen.getByLabelText("Then value value"))
@@ -1322,6 +1327,43 @@ describe("a new Add column step", () => {
 })
 
 
+describe("Computed as", () => {
+  afterEach(cleanup)
+  const clipLoad: Step = {
+    id: "w",
+    kind: "with_column",
+    name: "capped",
+    expr: { type: "function", fn: "clip", operand: { kind: "column", name: "load" }, args: [{ kind: "literal", type: "number", value: 0.8 }, { kind: "literal", type: "number", value: 1.2 }] },
+  }
+
+  it("lists every calculation in its section, leaving the type conversions and fill_null to formulas", () => {
+    render(<StepForm step={clipLoad} onChange={vi.fn()} ctx={ctx} />)
+    const select = screen.getByLabelText("Expression type")
+    const sections = within(select).getAllByRole("group")
+    expect(sections.map((section) => section.getAttribute("label"))).toEqual(["General", "Number", "Text", "Dates"])
+    expect(within(sections[0]).getAllByRole("option").map((o) => o.textContent)).toEqual(["Formula", "If-then", "Window", "Sum across", "Join text", "Value"])
+    expect(within(sections[1]).getByRole("option", { name: "Divide (missing where the divisor is zero)" })).toBeInTheDocument()
+    for (const unlisted of ["cast", "try_cast", "to_date", "to_datetime", "try_to_date", "try_to_datetime", "fill_null"]) expect(optionValues(select)).not.toContain(unlisted)
+    expect(select).toHaveValue("clip")
+    expect(screen.queryByLabelText("Function")).not.toBeInTheDocument()
+    expect(screen.getByLabelText("Minimum")).toBeInTheDocument()
+  })
+
+  it("keeps the value, the arguments of the same kind and each calculation's draft across a switch", () => {
+    const spy = vi.fn()
+    render(<Stateful initial={clipLoad} spy={spy} />)
+    fireEvent.change(screen.getByLabelText("Expression type"), { target: { value: "round" } })
+    expect(spy).toHaveBeenLastCalledWith({ ...clipLoad, expr: { type: "function", fn: "round", operand: { kind: "column", name: "load" }, args: [{ kind: "literal", type: "number", value: 0 }] } })
+    fireEvent.change(screen.getByLabelText("Expression type"), { target: { value: "window" } })
+    expect(spy).toHaveBeenLastCalledWith({ ...clipLoad, expr: { type: "window", agg: "sum", of: { kind: "column", name: "load" }, over: [] } })
+    fireEvent.change(screen.getByLabelText("Expression type"), { target: { value: "clip" } })
+    expect(spy).toHaveBeenLastCalledWith(clipLoad)
+    fireEvent.change(screen.getByLabelText("Expression type"), { target: { value: "formula" } })
+    expect(screen.getByLabelText("Formula")).toHaveValue("clip(load, 0.8, 1.2)")
+    expect(spy).toHaveBeenLastCalledWith({ ...clipLoad, expr: { ...clipLoad.expr, text: "clip(load, 0.8, 1.2)" } })
+  })
+})
+
 describe("steps offer only what Polars 2 runs on the column types the editor knows", () => {
   afterEach(cleanup)
 
@@ -1468,6 +1510,16 @@ describe("steps offer only what Polars 2 runs on the column types the editor kno
       fn: "try_to_date",
       args: [{ kind: "literal", type: "text", value: "%Y-%m-%d" }],
     })
+  })
+
+  it("Computed as leaves out the functions a typed column cannot take", () => {
+    const context = contextFor([["region", "String"]])
+    const strip: Step = { id: "w", kind: "with_column", name: "r", expr: { type: "function", fn: "strip", operand: { kind: "column", name: "region" }, args: [] } }
+    render(<StatefulIn initial={strip} spy={vi.fn()} context={context} />)
+    const offered = optionValues(screen.getByLabelText("Expression type"))
+    expect(offered).toEqual(expect.arrayContaining(["formula", "window", "strip", "lower", "round"]))
+    expect(offered).not.toContain("log")
+    expect(offered).not.toContain("divide")
   })
 
   it("std and var are not offered for a duration", () => {

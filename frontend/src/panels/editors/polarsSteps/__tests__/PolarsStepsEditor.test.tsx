@@ -310,7 +310,7 @@ describe("PolarsStepsEditor", () => {
     const { rerender } = render(<Harness initial={{ steps: [source, { id: "w", kind: "with_column", name: "", expr: { type: "operand", operand: { kind: "column", name: "premium" } } }] }} inputSources={[quotes]} />)
     await waitFor(() => expect(screen.getByTestId("polars-code-note")).toHaveTextContent("Step 1 isn't finished: it needs a name for the new column."), { timeout: 5000 })
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
-    const card = screen.getByRole("button", { name: "Step 1: Add column" }).closest("[data-testid='polars-step-card']")
+    const card = screen.getByRole("button", { name: "Step 1: Value" }).closest("[data-testid='polars-step-card']")
     expect(card).toHaveTextContent("Needs a name for the new column.")
     expect(screen.getByRole("button", { name: "Switch to code" })).toBeDisabled()
     rerender(<Harness initial={{ steps: [source, { id: "w", kind: "with_column", name: "", expr: { type: "operand", operand: { kind: "column", name: "premium" } } }] }} inputSources={[quotes]} runError="Step 1: Column name must be a non-empty string." />)
@@ -706,7 +706,7 @@ describe("PolarsStepsEditor keys and focus", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add step" }))
     fireEvent.click(screen.getByRole("menuitem", { name: "Add column" }))
     await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Column name")), { timeout: 5000 })
-    expect(screen.getByLabelText("Expression type")).toHaveValue("binary")
+    expect(screen.getByLabelText("Expression type")).toHaveValue("formula")
     expect(screen.getByRole("combobox", { name: "Formula" })).toHaveAttribute("placeholder", "e.g. (premium + commission) * tax / 12")
   })
 })
@@ -803,8 +803,8 @@ describe("PolarsStepsEditor notes and linked code", () => {
     const total: Step = { id: "g", kind: "group_by", keys: [], aggregations: [{ column: "premium", agg: "sum", name: "total" }] }
     const fresh: Step = { id: "f2", kind: "filter", match: "all", conditions: [{ column: "", operator: "eq", value: { kind: "literal", type: "number", value: 0 } }] }
     render(<Harness initial={{ steps: [source, addGross, dropRegion, total, fresh] }} inputSources={[quotesTyped]} />)
-    expect(cardOf("Step 1: Add column")).toHaveTextContent("+gross")
-    expect(within(cardOf("Step 1: Add column")).getByText("gross").tagName).toBe("CODE")
+    expect(cardOf("Step 1: Formula")).toHaveTextContent("+gross")
+    expect(within(cardOf("Step 1: Formula")).getByText("gross").tagName).toBe("CODE")
     expect(cardOf("Step 2: Drop columns")).toHaveTextContent("−region")
     expect(cardOf("Step 3: Group and aggregate")).toHaveTextContent("total = sum of premium")
     expect(cardOf("Step 3: Group and aggregate")).toHaveTextContent("→ 1 column")
@@ -814,16 +814,16 @@ describe("PolarsStepsEditor notes and linked code", () => {
   it("shows a columnless window saved without its column once the columns are known", () => {
     const rowCount = { id: "n", kind: "with_column", name: "n", expr: { type: "window", agg: "len", over: [] } } as unknown as Step
     render(<Harness initial={{ steps: [source, rowCount] }} inputSources={[quotesTyped]} />)
-    expect(cardOf("Step 1: Add column")).toHaveTextContent("n = row count over all rows")
-    expect(cardOf("Step 1: Add column")).not.toHaveTextContent("Not in the data")
+    expect(cardOf("Step 1: Window")).toHaveTextContent("n = row count over all rows")
+    expect(cardOf("Step 1: Window")).not.toHaveTextContent("Not in the data")
   })
 
   it("states no column change where the columns are not exactly known", () => {
     const keepByType: Step = { id: "k", kind: "select", columns: ["premium"], dtypes: ["String"] }
     render(<Harness initial={{ steps: [source, freeCode, { ...addGross, id: "w1" }, keepByType, { ...addGross, id: "w2", name: "net" }] }} inputSources={[quotesTyped]} />)
-    expect(cardOf("Step 2: Add column")).not.toHaveTextContent("+gross")
+    expect(cardOf("Step 2: Formula")).not.toHaveTextContent("+gross")
     expect(cardOf("Step 3: Keep columns")).not.toHaveTextContent("−")
-    expect(cardOf("Step 4: Add column")).not.toHaveTextContent("+net")
+    expect(cardOf("Step 4: Formula")).not.toHaveTextContent("+net")
   })
 
   it("keeps three action slots on every card and lines the summary up with the label", () => {
