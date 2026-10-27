@@ -77,7 +77,7 @@ function calculationMenuEntry(id: CalculationId, extra: Partial<Entry> = {}): En
   }
 }
 
-const CHIP_CALCULATIONS: CalculationId[] = ["formula", "if_then", "window", "round", "clip"]
+const CHIP_CALCULATIONS: CalculationId[] = ["formula", "if_then", "window"]
 
 function windowEntry(agg: WindowAggregation, label: string): Entry {
   const expr: Expr = COLUMNLESS_AGGREGATIONS.has(agg)
@@ -95,6 +95,7 @@ const dateEntry = (dtype: "Date" | "Datetime"): CastEntry => ({ column: "", dtyp
 /** Every entry in reading order: the sections' own, each followed by the entries search finds there. */
 const ENTRIES: Entry[] = [
   ...CHIP_CALCULATIONS.map((id) => calculationMenuEntry(id, { shown: true })),
+  calculationMenuEntry("round", { id: "number-function", label: "Number function", description: "Round, cap, divide or take the log of numbers", method: null, shown: true }),
   calculationMenuEntry("strip", { id: "text-function", label: "Text function", description: "Trim, change case, replace or take part of text", method: "str", shown: true }),
   calculationMenuEntry("offset_by", { id: "date-function", label: "Date function", description: "Shift a date, or take its year, month, day or weekday", method: "dt", shown: true }),
   ...CALCULATIONS.filter((c) => !CHIP_CALCULATIONS.includes(c.id)).map((c) => calculationMenuEntry(c.id)),

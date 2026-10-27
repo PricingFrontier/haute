@@ -83,7 +83,7 @@ import {
 import { StepSchemaContext, UNKNOWN_SCHEMA, schemaFor, useStepSchema, type StepSchema } from "./stepSchema"
 import { useCompletionList, type Completion } from "./useCompletionList"
 import { useRowKeys } from "./useRowKeys"
-import { CALCULATIONS, calculationEntry, calculationExpr, calculationLabel, calculationOf, computedValue, type CalculationId } from "./calculations"
+import { CALCULATIONS, calculationEntry, calculationExpr, calculationLabel, calculationOf, computedValue, stepSection, type CalculationId, type FunctionSection } from "./calculations"
 import type {
   AggregationSpec,
   FunctionName,
@@ -212,17 +212,33 @@ type FormulaDraft = { over: string; text: string }
 type UnfinishedFormula = { draft: FormulaDraft | null; set: (next: FormulaDraft | null) => void }
 
 /**
- * A "Computed as" select with the form of the calculation it names, for a
- * step's own expression or a nested one. The two share what lets a switch
- * keep work while the form is open: the expression left for each calculation,
- * and a formula's unfinished text.
+ * An expression's select with the form of the calculation it names. A nested
+ * expression (`only` absent) offers every calculation in "Computed as"; a
+ * step's own expression offers its section's functions in "Function" where
+ * it is a function step, and no select otherwise (`only` null). The select
+ * and the form share what lets a switch keep work while the form is open: the
+ * expression left for each calculation, and a formula's unfinished text.
  */
-function ExpressionFields({ expr, onChange, ctx, depth, ariaLabel }: { expr: Expr; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number; ariaLabel: string }) {
+function ExpressionFields({
+  expr,
+  onChange,
+  ctx,
+  depth,
+  ariaLabel,
+  only,
+}: {
+  expr: Expr
+  onChange: (next: Expr) => void
+  ctx: StepFormContext
+  depth: number
+  ariaLabel: string
+  only?: FunctionSection | null
+}) {
   const [left, setLeft] = useState<ReadonlyMap<CalculationId, Expr>>(() => new Map())
   const [formulaDraft, setFormulaDraft] = useState<FormulaDraft | null>(null)
   return (
     <>
-      <ExprTypeSelect expr={expr} onChange={onChange} ctx={ctx} ariaLabel={ariaLabel} left={left} onLeave={(id, from) => setLeft((drafts) => new Map(drafts).set(id, from))} />
+      {only !== null && <ExprTypeSelect expr={expr} onChange={onChange} ctx={ctx} ariaLabel={ariaLabel} left={left} onLeave={(id, from) => setLeft((drafts) => new Map(drafts).set(id, from))} only={only} />}
       <ExprEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} unfinished={{ draft: formulaDraft, set: setFormulaDraft }} />
     </>
   )
@@ -233,8 +249,9 @@ const isFunction = (id: CalculationId): id is FunctionName => FUNCTIONS.some((f)
 /**
  * The "Computed as" select: every calculation, in its sections, with an
  * unlisted function a formula cannot show (the current one, or one left
- * earlier) kept as its own entry. While the expression computes from a column
- * of a known type, the functions it cannot take are left out. Choosing a
+ * earlier) kept as its own entry; or, with `only`, the "Function" select of
+ * one section's functions. While the expression computes from a column of a
+ * known type, the functions it cannot take are left out. Choosing a
  * calculation never discards work: the expression being left is kept in
  * `left` for its calculation, so going back restores it, and one not used
  * yet starts from what the last one computed (`calculationExpr`).
@@ -246,6 +263,7 @@ function ExprTypeSelect({
   ariaLabel,
   left,
   onLeave,
+  only,
 }: {
   expr: Expr
   onChange: (next: Expr) => void
@@ -253,6 +271,7 @@ function ExprTypeSelect({
   ariaLabel: string
   left: ReadonlyMap<CalculationId, Expr>
   onLeave: (id: CalculationId, from: Expr) => void
+  only?: FunctionSection
 }) {
   const schema = useStepSchema()
   const bare = bareConstants(ctx.constants ?? [], ctx.columns)
@@ -261,13 +280,13 @@ function ExprTypeSelect({
   const valueType = value?.kind === "column" ? schema.typeOf(value.name) : null
   const unlisted = [...new Set([current, ...left.keys()])].filter((id) => !CALCULATIONS.some((c) => c.id === id)).map(calculationEntry)
   const general = CALCULATIONS.filter((c) => c.section === "General")
-  const entries = [...general, ...unlisted, ...CALCULATIONS.slice(general.length)]
+  const entries = only ? CALCULATIONS.filter((c) => c.section === only) : [...general, ...unlisted, ...CALCULATIONS.slice(general.length)]
   const options = entries
     // A calculation left earlier comes back with its own value, so the current value's type does not decide it.
     .filter((c) => c.id === current || left.has(c.id) || !isFunction(c.id) || functionTakes(c.id, valueType))
-    .map((c) => ({ value: c.id, label: calculationLabel(c), group: c.section }))
+    .map((c) => ({ value: c.id, label: calculationLabel(c), group: only ? undefined : c.section }))
   return (
-    <Field label="Computed as">
+    <Field label={only ? "Function" : "Computed as"}>
       <SelectField
         value={current}
         options={options}
@@ -959,13 +978,15 @@ function SumAcrossEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, {
   )
 }
 
+/** An Add column step keeps the kind it was added as: a function step lists only its own section's functions. */
 function WithColumnForm({ step, onChange, ctx }: FormProps<WithColumnStep>) {
+  const section = stepSection(calculationOf(step.expr, ctx.variables, bareConstants(ctx.constants ?? [], ctx.columns)))
   return (
     <>
       <Field label="Column name" htmlFor={ctx.firstFieldId}>
         <TextField id={ctx.firstFieldId} value={step.name} onCommit={(name) => onChange({ ...step, name })} ariaLabel="Column name" placeholder="new_column" mono />
       </Field>
-      <ExpressionFields expr={step.expr} onChange={(expr) => onChange({ ...step, expr })} ctx={ctx} depth={1} ariaLabel="Expression type" />
+      <ExpressionFields expr={step.expr} onChange={(expr) => onChange({ ...step, expr })} ctx={ctx} depth={1} ariaLabel="Function" only={section} />
     </>
   )
 }

@@ -340,9 +340,10 @@ whatever control has focus: Delete and Backspace outside a text box, and the gra
 Ctrl+C, Ctrl+V, Ctrl+A and Ctrl+G; save, undo and redo, node search, fit view, help and
 Escape (once no open card has handled it) stay global. An `Add step` button under the last
 card (under the start card while there are no steps) opens, in place, a chooser of
-entries by icon and name in five sections: Add column (Formula, If-then, Window, Round,
-Clip, Text function and Date function, each adding an Add column step already computed as
-that, Text function as Trim whitespace and Date function as Shift date), Rows (Filter
+entries by icon and name in five sections: Add column (Formula, If-then, Window, Number
+function, Text function and Date function, each adding an Add column step of that kind,
+Number function as Round, Text function as Trim whitespace and Date function as Shift
+date), Rows (Filter
 rows, Sort rows, Remove duplicates, Limit rows), Columns (Keep columns, Drop columns,
 Rename columns, Change types, Fill missing values), Combine (Join another input, Append
 inputs, Group and aggregate, Pivot to columns, Unpivot to rows) and Other (Define
@@ -451,23 +452,30 @@ branches as "Otherwise, when [all] of these are true", the match select sitting 
 sentence. An if-then lists its branches, each a condition list and a Then value, boxed
 and removable ("Remove branch 2") while there are several, then "Add branch" (a new
 branch's condition starting from the previous branch's first column), and its
-Otherwise value last; a row takes the first branch whose conditions hold. "Computed as"
-is one select in four sections: General (Formula, If-then, Window, Sum across, Join
-text, Value), Number (Round, Clip, Divide, Absolute value, Round down, Round up, Square
-root, Natural log, Exponential), Text (Trim whitespace, Lower case, Upper case, Replace
-first match, Replace all matches, Replace by pattern, Substring, Split and take part,
-Extract pattern group, Text length) and Dates (Shift date, Duration in days, Year,
-Month, Day, Weekday); an entry whose name needs it carries its qualifier in the list
-("Divide (missing where the divisor is zero)", "Weekday (1 = Monday)", "Replace by
-pattern (regex)", "Extract pattern group (regex)") and only its name as a card title.
-A function's form is its value ("Of") and its labelled arguments.
-While that value is a column of a known type, the functions it cannot take are left out,
-the current entry always kept. The type conversions (cast, try_cast, to_date,
+Otherwise value last; a row takes the first branch whose conditions hold. The
+calculations are the General ones (Formula, If-then, Window, Sum across, Join text,
+Value) and the functions in three sections: Number (Round, Clip, Divide, Absolute value,
+Round down, Round up, Square root, Natural log, Exponential), Text (Trim whitespace,
+Lower case, Upper case, Replace first match, Replace all matches, Replace by pattern,
+Substring, Split and take part, Extract pattern group, Text length) and Dates (Shift
+date, Duration in days, Year, Month, Day, Weekday); an entry whose name needs it carries
+its qualifier in a list ("Divide (missing where the divisor is zero)", "Weekday (1 =
+Monday)", "Replace by pattern (regex)", "Extract pattern group (regex)") and only its
+name as a card title. A function's form is its value ("Of") and its labelled arguments.
+An Add column step keeps the kind it was added as, read from its expression with nothing
+stored for it: a Number, Text or Date function step offers, in a "Function" select, the
+functions of its own section only; a Formula (a function typed in the formula box
+included), If-then, Window, Sum across, Join text or Value step shows that calculation's
+form alone, with no select, and so does a step holding a conversion a formula cannot
+express. An operand's "Expression" source instead offers every calculation, in one
+"Computed as" select of four sections, General, Number, Text and Dates. While the
+value computed from is a column of a known type, the functions it cannot take are left
+out, the current entry always kept. The type conversions (cast, try_cast, to_date,
 to_datetime, try_to_date, try_to_datetime) and fill_null are not listed, Change types
 and Fill missing values being where they are chosen, but stay functions a formula types;
 a saved one is shown as its formula, or, where a formula cannot express it, keeps its
 own entry. A new column starts in Formula, its name field taking focus first. Changing
-"Computed as" never discards work and never wraps it: the value being computed (a
+the "Function" or "Computed as" select never discards work and never wraps it: the value being computed (a
 function's Of, a window's value, a sum across's or a text join's first part, a Value's
 value) carries into the new calculation's value where it has one, a function's arguments
 carry to a function taking the same kinds of argument, Formula shows the expression being
@@ -526,7 +534,7 @@ matching quoted text, a function, a variable or a function's plain-value argumen
 as a type); and an expression text cannot express (one
 holding a window, conditional or text join) is edited in the structured
 left/operator/right form instead. An operand field also offers an "Expression" source that
-opens a nested editor (the same "Computed as" select and expression form, indented under
+opens a nested editor (the four-section "Computed as" select and expression form, indented under
 the field); the source is withheld at the renderer's depth cap of twelve so the editor
 never builds a step it could not save. Formula commits obey the same cap, including
 their enclosing expression depth: an over-depth draft stays editable with an inline

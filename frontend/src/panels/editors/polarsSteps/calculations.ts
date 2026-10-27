@@ -76,6 +76,20 @@ export function calculationOf(expr: Expr, variables: readonly string[] = [], con
   return expr.fn
 }
 
+/** The sections whose functions a function step offers in its Function list. */
+export type FunctionSection = "Number" | "Text" | "Dates"
+
+/**
+ * The section an Add column step computed as `id` keeps, so its Function list
+ * offers that section's functions, or null for a step that keeps its one
+ * calculation (a Formula, If-then, Window, Sum across, Join text or Value, or
+ * an unlisted function).
+ */
+export function stepSection(id: CalculationId): FunctionSection | null {
+  const section = CALCULATIONS.find((calculation) => calculation.id === id)?.section
+  return section === "Number" || section === "Text" || section === "Dates" ? section : null
+}
+
 /** A calculation's entry; an unlisted function is named by what it does and listed under General. */
 export function calculationEntry(id: CalculationId): Calculation {
   const listed = CALCULATIONS.find((calculation) => calculation.id === id)
