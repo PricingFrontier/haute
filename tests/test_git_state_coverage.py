@@ -283,18 +283,23 @@ class TestReadTrashFallbacks:
 
 
 class TestRecordTrashCap:
-    def test_records_evict_oldest_beyond_the_cap(self, tmp_path: Path) -> None:
-        from haute._git_state import read_trash, record_trash
+    def test_trim_drops_and_returns_the_oldest_beyond_the_cap(self, tmp_path: Path) -> None:
+        from haute._git_state import read_trash, record_trash, trim_trash
 
-        # Exceed the cap by two — the two oldest tombstones are dropped and the
-        # newest survive, exercising the eviction loop.
+        # Exceed the cap by two — the two oldest tombstones are dropped (and
+        # returned, for their pins to go) and the newest survive.
         for i in range(22):
             record_trash(tmp_path, f"pricing/test-user/b{i:02d}", {"branch_tip": f"sha{i}"})
+        assert len(read_trash(tmp_path)) == 22
+        dropped = trim_trash(tmp_path)
+        assert [entry_id for entry_id, _ in dropped] == [
+            "pricing/test-user/b00",
+            "pricing/test-user/b01",
+        ]
         names = set(read_trash(tmp_path))
         assert len(names) == 20
-        assert "pricing/test-user/b00" not in names
-        assert "pricing/test-user/b01" not in names
         assert "pricing/test-user/b21" in names
+        assert trim_trash(tmp_path) == []
 
     def test_redelete_same_name_refreshes_recency(self, tmp_path: Path) -> None:
         from haute._git_state import read_trash, record_trash

@@ -205,7 +205,7 @@ def test_archive_state_failure_restores_head_and_association(
     assert read_working_branch(repo) == WORKING
 
 
-def test_restore_compensates_when_ledger_rename_fails(
+def test_restore_moves_nothing_when_its_ref_transaction_fails(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _set_up_pair(repo)
@@ -213,14 +213,14 @@ def test_restore_compensates_when_ledger_rename_fails(
     archived_ledger = f"{archived}-save"
     real_run = git_archive._run_git
 
-    def fail_ledger_rename(*args: str, **kwargs: object) -> str:
-        if args[:4] == ("branch", "-m", archived_ledger, LEDGER):
-            raise GitError("injected ledger rename failure")
+    def fail_transaction(*args: str, **kwargs: object) -> str:
+        if args[:2] == ("update-ref", "--stdin"):
+            raise GitError("injected ref transaction failure")
         return real_run(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(git_archive, "_run_git", fail_ledger_rename)
+    monkeypatch.setattr(git_archive, "_run_git", fail_transaction)
 
-    with pytest.raises(GitError, match="injected ledger rename failure"):
+    with pytest.raises(GitError, match="injected ref transaction failure"):
         restore_working_pair(archived, repo, cwd=repo)
 
     assert _git(repo, "branch", "--list", WORKING) == ""
@@ -233,20 +233,21 @@ def test_undelete_failure_removes_partial_heads_and_preserves_recovery_net(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _set_up_pair(repo)
-    delete_working_pair(WORKING, repo, confirm=True, cwd=repo)
+    entry_id = delete_working_pair(WORKING, repo, confirm=True, cwd=repo).trash_id
+    real_run = git_archive._run_git
 
-    import haute._git_state as git_state
+    def fail_transaction(*args: str, **kwargs: object) -> str:
+        if args[:2] == ("update-ref", "--stdin"):
+            raise GitError("injected ref transaction failure")
+        return real_run(*args, **kwargs)  # type: ignore[arg-type]
 
-    def fail_remove_trash(_project_root: Path, _branch: str) -> None:
-        raise OSError("injected tombstone failure")
+    monkeypatch.setattr(git_archive, "_run_git", fail_transaction)
 
-    monkeypatch.setattr(git_state, "remove_trash", fail_remove_trash)
-
-    with pytest.raises(OSError, match="injected tombstone failure"):
-        undelete_working_pair(WORKING, repo, cwd=repo)
+    with pytest.raises(GitError, match="injected ref transaction failure"):
+        undelete_working_pair(entry_id, repo, cwd=repo)
 
     assert _git(repo, "branch", "--list", WORKING) == ""
     assert _git(repo, "branch", "--list", LEDGER) == ""
-    assert _git(repo, "rev-parse", "--verify", f"refs/haute/trash/{WORKING}")
-    assert _git(repo, "rev-parse", "--verify", f"refs/haute/trash/{LEDGER}")
-    assert WORKING in read_trash(repo)
+    assert _git(repo, "rev-parse", "--verify", f"refs/haute/trash/{entry_id}/working")
+    assert _git(repo, "rev-parse", "--verify", f"refs/haute/trash/{entry_id}/ledger")
+    assert entry_id in read_trash(repo)

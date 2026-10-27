@@ -109,7 +109,9 @@ falls outside the loaded window. The rail is chrome: if the graph fetch fails, t
 still renders the row list without it, silently.
 
 **Branch manager.** Lists the current branch in its own box, other live branches, then
-archived branches, with a "Create" / "Create & Move" split control. Peeking (viewing
+archived branches, then the 20 most recent deletions. Each deletion carries a Restore, and
+a name box when its name is taken again. The manager has a "Create" / "Create & Move" split
+control. Peeking (viewing
 another branch's history) never switches the working branch; switching, archiving,
 deleting, and restoring do, each behind role-appropriate confirmation (switch has a
 persistable "don't ask again"; delete always confirms and names what it discards;

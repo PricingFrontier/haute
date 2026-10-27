@@ -140,7 +140,7 @@ describe("GitPanel", () => {
     mockGetPendingSaves.mockResolvedValue({ saves: [] })
     mockGetMilestoneSaves.mockResolvedValue({ saves: [] })
     mockCreateWorkingBranch.mockResolvedValue({ working_branch: "x", moved: false, switched: false, last_save_sha: null })
-    mockGetWorkingBranches.mockResolvedValue({ current: "pricing-dev", branches: [] })
+    mockGetWorkingBranches.mockResolvedValue({ current: "pricing-dev", deleted: [], branches: [] })
     mockGetGitGraph.mockResolvedValue(emptyGraph)
   })
 
@@ -818,7 +818,7 @@ describe("GitPanel", () => {
 
   it("derives in-row spawn chips from graph topology (twin-a)", async () => {
     mockGetGitGraph.mockResolvedValue(graphTwoBranch)
-    mockGetWorkingBranches.mockResolvedValue({ current: "pricing-dev", branches: [] })
+    mockGetWorkingBranches.mockResolvedValue({ current: "pricing-dev", deleted: [], branches: [] })
     render(<GitPanel {...defaultProps} />)
     await waitFor(() => expect(screen.getByTestId("git-panel-fork-link")).toBeInTheDocument())
     const chip = screen.getByTestId("git-panel-fork-link")

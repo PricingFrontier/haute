@@ -2225,13 +2225,15 @@ export function restoreBranch(
   return post<unknown>("/api/git/restore", { branch }, options).then(async (data) => expectGeneratedContract("GitRestoreResponse", (await gitValidators()).validateGitRestoreResponse, data))
 }
 
-/** Restore a deleted pair from the trash tombstone (the inverse of delete —
- *  pure ref/state ops, so it's instant and safe to drive from Undo). */
+/** Restore a deleted pair from its trash entry (the inverse of delete —
+ *  pure ref/state ops, so it's instant and safe to drive from Undo), under
+ *  `asName` when its own name is taken again. */
 export function undeleteBranch(
-  branch: string,
+  id: string,
+  asName: string | null = null,
   options?: { signal?: AbortSignal },
 ): Promise<GitUndeleteResponse> {
-  return post<unknown>("/api/git/undelete", { branch }, options).then(async (data) => expectGeneratedContract("GitUndeleteResponse", (await gitValidators()).validateGitUndeleteResponse, data))
+  return post<unknown>("/api/git/undelete", { id, as_name: asName }, options).then(async (data) => expectGeneratedContract("GitUndeleteResponse", (await gitValidators()).validateGitUndeleteResponse, data))
 }
 
 export function createWorkingBranch(

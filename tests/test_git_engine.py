@@ -2457,8 +2457,10 @@ class TestBranchManager:
         assert not self._branch_exists(repo, LEDGER)
         assert self._branch_exists(repo, f"archive/{WORKING}")
         assert self._branch_exists(repo, f"archive/{LEDGER}")  # ledger_name(archive/W)
-        # active pair → switched away to default + working branch forgotten
-        assert self._current_head(repo) == "main"
+        # active pair → HEAD detached at the working branch's last milestone, never
+        # another branch's files, and the working branch forgotten
+        assert self._current_head(repo) == "HEAD"
+        assert _git(repo, "rev-parse", "HEAD") == _git(repo, "rev-parse", f"archive/{WORKING}")
         from haute._git_state import read_working_branch
 
         assert read_working_branch(repo) is None
@@ -2488,10 +2490,12 @@ class TestBranchManager:
             delete_working_pair(WORKING, repo, confirm=False, cwd=repo)
         # branch still there after the refusal
         assert self._branch_exists(repo, WORKING)
+        working_tip = _git(repo, "rev-parse", WORKING)
         delete_working_pair(WORKING, repo, confirm=True, cwd=repo)
         assert not self._branch_exists(repo, WORKING)
         assert not self._branch_exists(repo, LEDGER)
-        assert self._current_head(repo) == "main"
+        assert self._current_head(repo) == "HEAD"
+        assert _git(repo, "rev-parse", "HEAD") == working_tip
 
     def test_delete_clean_pair_without_confirm(self, repo: Path) -> None:
         set_working_branch(WORKING, repo, cwd=repo)
@@ -2513,12 +2517,15 @@ class TestBranchManager:
         set_working_branch(WORKING, repo, cwd=repo)
         _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
         commit_milestone("m", repo, cwd=repo)
+        milestone = _git(repo, "rev-parse", WORKING)
         (repo / "rating.py").write_text("# uncommitted edit\n")  # dirty tree
         delete_working_pair(WORKING, repo, confirm=True, cwd=repo)
         assert not self._branch_exists(repo, WORKING)
         assert not self._branch_exists(repo, LEDGER)
-        # HEAD moved to the default branch; state cleared → startup chooser
-        assert _git(repo, "symbolic-ref", "--short", "HEAD") == "main"
+        # HEAD detached at the last milestone with the edit discarded; state
+        # cleared → the startup chooser
+        assert _git(repo, "rev-parse", "HEAD") == milestone
+        assert (repo / "rating.py").read_text() == "# v2\n"
         assert read_working_branch(repo) is None
 
     # -- review fixes ------------------------------------------------------

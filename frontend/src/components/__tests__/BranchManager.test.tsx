@@ -42,6 +42,7 @@ const branch = (over: Partial<Record<string, unknown>> = {}) => ({
 
 const listing = {
   current: "demo",
+  deleted: [],
   branches: [
     branch({ name: "demo", is_current: true }),
     branch({ name: "experiment", has_unmerged_saves: true }),
@@ -73,7 +74,7 @@ describe("BranchManager", () => {
     mockSetWorkingBranch.mockResolvedValue({})
     mockCreateWorkingBranch.mockResolvedValue({ working_branch: "x", moved: false, switched: false, last_save_sha: null })
     mockArchive.mockResolvedValue({ archived_as: "archive/x" })
-    mockDelete.mockResolvedValue({ status: "deleted", branch: "x" })
+    mockDelete.mockResolvedValue({ status: "deleted", branch: "x", trash_id: "x@20261027T131400Z" })
     mockRestore.mockResolvedValue({ restored_as: "old" })
     mockGetWorkingBranch.mockResolvedValue({ working_branch: "demo", state: "ready" })
     mockGetPrefs.mockResolvedValue({ skip_switch_confirm: false })
@@ -288,6 +289,7 @@ describe("BranchManager", () => {
   it("routes archive of a dirty current branch through a save dialog", async () => {
     mockGetWorkingBranches.mockResolvedValue({
       current: "demo",
+      deleted: [],
       branches: [branch({ name: "demo", is_current: true, has_uncommitted_changes: true })],
     })
     render(<BranchManager />)
@@ -307,6 +309,64 @@ describe("BranchManager", () => {
     await waitFor(() => expect(mockDelete).toHaveBeenCalledWith("experiment", true))
   })
 
+  it("lists deleted branches collapsed and restores one from the trash", async () => {
+    mockGetWorkingBranches.mockResolvedValue({
+      ...listing,
+      deleted: [
+        { id: "gone@20261027T131400Z", branch: "gone", deleted_at: "2026-10-27T13:14:00+00:00", was_archived: false },
+      ],
+    })
+    mockUndelete.mockResolvedValue({ status: "restored", branch: "gone" })
+    render(<BranchManager />)
+    await waitFor(() => expect(screen.getByTestId("branch-manager-deleted")).toHaveTextContent("Deleted (1)"))
+    expect(screen.queryByTestId("branch-manager-deleted-row")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId("branch-manager-deleted-toggle"))
+    expect(screen.getByTestId("branch-manager-deleted-row")).toHaveTextContent("gone")
+    fireEvent.click(screen.getByTestId("branch-manager-undelete"))
+
+    await waitFor(() => expect(mockUndelete).toHaveBeenCalledWith("gone@20261027T131400Z", null))
+    expect(screen.queryByTestId("branch-manager-restore-as-input")).not.toBeInTheDocument()
+  })
+
+  it("asks for another name when a branch has the deleted one's name again", async () => {
+    mockGetWorkingBranches.mockResolvedValue({
+      ...listing,
+      deleted: [
+        { id: "experiment@20261027T131400Z", branch: "experiment", deleted_at: null, was_archived: false },
+      ],
+    })
+    mockUndelete.mockResolvedValue({ status: "restored", branch: "experiment-old" })
+    render(<BranchManager />)
+    await waitFor(() => expect(screen.getByTestId("branch-manager-deleted")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("branch-manager-deleted-toggle"))
+    fireEvent.click(screen.getByTestId("branch-manager-undelete"))
+
+    expect(mockUndelete).not.toHaveBeenCalled()
+    const input = screen.getByTestId("branch-manager-restore-as-input")
+    expect(input).toHaveValue("experiment-restored")
+    fireEvent.change(input, { target: { value: "experiment-old" } })
+    fireEvent.click(screen.getByTestId("branch-manager-restore-as-go"))
+
+    await waitFor(() =>
+      expect(mockUndelete).toHaveBeenCalledWith("experiment@20261027T131400Z", "experiment-old"),
+    )
+  })
+
+  it("records the delete's trash entry for undo", async () => {
+    mockDelete.mockResolvedValue({ status: "deleted", branch: "experiment", trash_id: "experiment@20261027T131400Z" })
+    render(<BranchManager />)
+    await waitFor(() => expect(screen.getAllByTestId("branch-manager-delete").length).toBeGreaterThan(1))
+    fireEvent.click(screen.getAllByTestId("branch-manager-delete")[1])
+    fireEvent.click(screen.getByTestId("branch-manager-confirm-delete"))
+    await waitFor(() => expect(useGraphStore.getState().undoStack).toHaveLength(1))
+
+    await act(async () => {
+      await useGraphStore.getState().undo()
+    })
+    expect(mockUndelete).toHaveBeenCalledWith("experiment@20261027T131400Z")
+  })
+
   it("restores an archived branch", async () => {
     render(<BranchManager />)
     await waitFor(() => expect(screen.getByTestId("branch-manager-restore")).toBeInTheDocument())
@@ -317,6 +377,7 @@ describe("BranchManager", () => {
   it("shows both uncommitted and unsaved indicators on the current branch", async () => {
     mockGetWorkingBranches.mockResolvedValue({
       current: "demo",
+      deleted: [],
       branches: [branch({ name: "demo", is_current: true, has_uncommitted_changes: true, has_unmerged_saves: true })],
     })
     render(<BranchManager />)
@@ -328,6 +389,7 @@ describe("BranchManager", () => {
     mockGetWorkingBranches
       .mockResolvedValueOnce({
         current: "demo",
+        deleted: [],
         branches: [branch({
           name: "demo",
           is_current: true,
@@ -337,6 +399,7 @@ describe("BranchManager", () => {
       })
       .mockResolvedValue({
         current: "demo",
+        deleted: [],
         branches: [branch({ name: "demo", is_current: true })],
       })
 
@@ -358,6 +421,7 @@ describe("BranchManager", () => {
       .mockReturnValueOnce(initial)
       .mockResolvedValue({
         current: "demo",
+        deleted: [],
         branches: [branch({ name: "demo", is_current: true })],
       })
 
@@ -369,6 +433,7 @@ describe("BranchManager", () => {
     await act(async () => {
       resolveInitial({
         current: "demo",
+        deleted: [],
         branches: [branch({
           name: "demo",
           is_current: true,
@@ -388,6 +453,7 @@ describe("BranchManager", () => {
   it("keeps delete enabled even with uncommitted changes (always deletable)", async () => {
     mockGetWorkingBranches.mockResolvedValue({
       current: "demo",
+      deleted: [],
       branches: [branch({ name: "demo", is_current: true, has_uncommitted_changes: true })],
     })
     render(<BranchManager />)

@@ -72,8 +72,9 @@ class TestGitDeleteBranch:
 
 
 class TestGitUndelete:
-    """Delete pins the pair under ``refs/haute/trash/`` + a ``.haute/trash.json``
-    tombstone; undelete rebuilds the pair exactly and consumes both."""
+    """Delete pins the pair under ``refs/haute/trash/<id>/`` + a ``.haute/trash.json``
+    entry keyed by that id; undelete rebuilds the pair exactly (under its own name
+    or another) and consumes both."""
 
     _BRANCH = "pricing/test-user/dev"
     _FORK = "pricing/test-user/feat"
@@ -116,46 +117,102 @@ class TestGitUndelete:
             "DELETE", "/api/git/branches", json={"branch": self._FORK, "confirm": True}
         )
         assert res.status_code == 200
+        entry_id = res.json()["trash_id"]
+        assert entry_id.startswith(f"{self._FORK}@")
 
-        # Branch refs gone; trash pins + tombstone preserve the pair.
+        # Branch refs gone; the entry's pins + tombstone preserve the pair.
         assert self._FORK not in _git(tmp_path, "branch")
-        assert _git(tmp_path, "rev-parse", f"refs/haute/trash/{self._FORK}") == branch_tip
-        assert _git(tmp_path, "rev-parse", f"refs/haute/trash/{ledger}") == ledger_tip
-        tombstone = read_trash(tmp_path)[self._FORK]
+        assert _git(tmp_path, "rev-parse", f"refs/haute/trash/{entry_id}/working") == branch_tip
+        assert _git(tmp_path, "rev-parse", f"refs/haute/trash/{entry_id}/ledger") == ledger_tip
+        tombstone = read_trash(tmp_path)[entry_id]
+        assert tombstone["branch"] == self._FORK
         assert tombstone["branch_tip"] == branch_tip
         assert tombstone["ledger_tip"] == ledger_tip
         assert tombstone["was_archived"] is False
         assert tombstone["deleted_at"]
+        listing = client.get("/api/git/working-branches").json()
+        assert [d["branch"] for d in listing["deleted"]] == [self._FORK]
+        assert listing["deleted"][0]["id"] == entry_id
 
-        res = client.post("/api/git/undelete", json={"branch": self._FORK})
+        res = client.post("/api/git/undelete", json={"id": entry_id})
         assert res.status_code == 200
         assert res.json() == {"status": "restored", "branch": self._FORK}
         # Tips identical to before the delete; trash consumed.
         assert _git(tmp_path, "rev-parse", self._FORK) == branch_tip
         assert _git(tmp_path, "rev-parse", ledger) == ledger_tip
         assert read_trash(tmp_path) == {}
-        assert _git(tmp_path, "rev-parse", "--verify", f"refs/haute/trash/{self._FORK}") == ""
-        assert _git(tmp_path, "rev-parse", "--verify", f"refs/haute/trash/{ledger}") == ""
+        assert _git(tmp_path, "for-each-ref", "refs/haute/trash/") == ""
 
-    def test_undelete_unknown_name_is_a_domain_error(self, client: TestClient) -> None:
-        res = client.post("/api/git/undelete", json={"branch": "pricing/test-user/ghost"})
-        assert res.status_code == 400
-        assert (
-            res.json()["detail"] == "No deleted branch named 'pricing/test-user/ghost' to restore."
+    def test_undelete_unknown_entry_is_a_domain_error(self, client: TestClient) -> None:
+        res = client.post(
+            "/api/git/undelete", json={"id": "pricing/test-user/ghost@20260101T000000Z"}
         )
+        assert res.status_code == 400
+        assert res.json()["detail"] == "That deleted branch is no longer in the trash."
 
-    def test_undelete_refuses_when_name_reoccupied(
+    def test_undelete_refuses_a_reoccupied_name_and_restores_under_another(
         self, client: TestClient, tmp_path: Path
     ) -> None:
         self._seed_fork_with_history(tmp_path)
+        branch_tip = _git(tmp_path, "rev-parse", self._FORK)
         res = client.request(
             "DELETE", "/api/git/branches", json={"branch": self._FORK, "confirm": True}
         )
-        assert res.status_code == 200
+        entry_id = res.json()["trash_id"]
         _git(tmp_path, "branch", self._FORK)  # a NEW branch reclaims the name
-        res = client.post("/api/git/undelete", json={"branch": self._FORK})
+
+        res = client.post("/api/git/undelete", json={"id": entry_id})
         assert res.status_code == 400
         assert "already exists" in res.json()["detail"]
+        assert "another name" in res.json()["detail"]
+
+        res = client.post(
+            "/api/git/undelete", json={"id": entry_id, "as_name": "pricing/test-user/feat-old"}
+        )
+        assert res.status_code == 200
+        assert res.json()["branch"] == "pricing/test-user/feat-old"
+        assert _git(tmp_path, "rev-parse", "pricing/test-user/feat-old") == branch_tip
+
+    def test_a_name_deleted_twice_keeps_both_deletions(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        from haute._git_state import read_trash
+
+        self._seed_fork_with_history(tmp_path)
+        first_tip = _git(tmp_path, "rev-parse", self._FORK)
+        first = client.request(
+            "DELETE", "/api/git/branches", json={"branch": self._FORK, "confirm": True}
+        ).json()["trash_id"]
+        _git(tmp_path, "branch", self._FORK, "main")  # made again, elsewhere
+        second = client.request(
+            "DELETE", "/api/git/branches", json={"branch": self._FORK, "confirm": True}
+        ).json()["trash_id"]
+
+        assert first != second
+        assert set(read_trash(tmp_path)) == {first, second}
+        res = client.post("/api/git/undelete", json={"id": first})
+        assert res.status_code == 200
+        assert _git(tmp_path, "rev-parse", self._FORK) == first_tip
+
+    def test_a_tombstone_from_before_entry_ids_is_restored(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        from haute._git_state import read_trash, record_trash
+
+        tip = _git(tmp_path, "rev-parse", "HEAD")
+        _git(tmp_path, "update-ref", f"refs/haute/trash/{self._FORK}", tip)
+        record_trash(
+            tmp_path,
+            self._FORK,
+            {"branch_tip": tip, "ledger_tip": None, "was_archived": False, "deleted_at": "x"},
+        )
+
+        res = client.post("/api/git/undelete", json={"id": self._FORK})
+
+        assert res.status_code == 200
+        assert _git(tmp_path, "rev-parse", self._FORK) == tip
+        assert read_trash(tmp_path) == {}
+        assert _git(tmp_path, "for-each-ref", "refs/haute/trash/") == ""
 
     def test_archived_pair_roundtrip_restores_archived_state(
         self, client: TestClient, tmp_path: Path
@@ -180,9 +237,10 @@ class TestGitUndelete:
             "DELETE", "/api/git/branches", json={"branch": archived, "confirm": True}
         )
         assert res.status_code == 200
-        assert read_trash(tmp_path)[archived]["was_archived"] is True
+        entry_id = res.json()["trash_id"]
+        assert read_trash(tmp_path)[entry_id]["was_archived"] is True
 
-        res = client.post("/api/git/undelete", json={"branch": archived})
+        res = client.post("/api/git/undelete", json={"id": entry_id})
         assert res.status_code == 200
         assert _git(tmp_path, "rev-parse", archived) == tip
         assert _git(tmp_path, "rev-parse", f"{archived}-save") == ledger_tip
@@ -191,16 +249,39 @@ class TestGitUndelete:
         row = next(b for b in listing["branches"] if b["name"] == archived)
         assert row["is_archived"] is True
 
-    def test_trash_tombstones_cap_at_newest_twenty(self, tmp_path: Path) -> None:
+    def test_the_cap_drops_the_oldest_entry_with_its_pins(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
         from haute._git_state import read_trash, record_trash
 
-        for i in range(25):
-            record_trash(tmp_path, f"pricing/test-user/b{i:02d}", {"branch_tip": "x"})
+        tip = _git(tmp_path, "rev-parse", "HEAD")
+        for i in range(20):
+            entry_id = f"pricing/test-user/b{i:02d}@20260101T0000{i:02d}Z"
+            pin = f"refs/haute/trash/{entry_id}/working"
+            _git(tmp_path, "update-ref", pin, tip)
+            record_trash(
+                tmp_path,
+                entry_id,
+                {
+                    "branch": f"pricing/test-user/b{i:02d}",
+                    "branch_tip": tip,
+                    "working_pin": pin,
+                    "ledger_pin": f"refs/haute/trash/{entry_id}/ledger",
+                },
+            )
+        _git(tmp_path, "branch", self._FORK)
+
+        res = client.request(
+            "DELETE", "/api/git/branches", json={"branch": self._FORK, "confirm": True}
+        )
+
+        assert res.status_code == 200
         trash = read_trash(tmp_path)
         assert len(trash) == 20
-        assert "pricing/test-user/b04" not in trash  # oldest five dropped
-        assert "pricing/test-user/b05" in trash
-        assert "pricing/test-user/b24" in trash
+        oldest = "pricing/test-user/b00@20260101T000000Z"
+        assert oldest not in trash
+        assert res.json()["trash_id"] in trash
+        assert _git(tmp_path, "for-each-ref", f"refs/haute/trash/{oldest}/") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -1315,7 +1396,7 @@ class TestTreeChangesAreAnnounced:
                 "/api/git/branches",
                 {"branch": "b"},
                 "delete_working_pair",
-                {"status": "deleted", "branch": "b"},
+                {"status": "deleted", "branch": "b", "trash_id": "b@20261027T000000Z"},
             ),
             (
                 "post",

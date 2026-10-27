@@ -1053,6 +1053,7 @@ describe("git endpoints", () => {
     const data = {
       status: "deleted",
       branch: "stale-branch",
+      trash_id: "stale-branch@20261027T131400Z",
     }
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await gitDeleteBranch("stale-branch")
@@ -1065,7 +1066,7 @@ describe("git endpoints", () => {
   })
 
   it("gitDeleteBranch sends confirm=true when overriding the unmerged guard", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ status: "deleted", branch: "wip" }))
+    mockFetch.mockReturnValue(jsonResponse({ status: "deleted", branch: "wip", trash_id: "wip@20261027T131400Z" }))
     await gitDeleteBranch("wip", true)
     expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({ branch: "wip", confirm: true })
   })
@@ -1118,7 +1119,7 @@ describe("git endpoints", () => {
   })
 
   it("getWorkingBranches GETs /api/git/working-branches", async () => {
-    const data = { current: "demo", branches: [] }
+    const data = { current: "demo", deleted: [], branches: [] }
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await getWorkingBranches()
     expect(mockFetch.mock.calls[0][0]).toBe("/api/git/working-branches")
@@ -1135,14 +1136,23 @@ describe("git endpoints", () => {
     expect(result).toEqual({ restored_as: "demo" })
   })
 
-  it("undeleteBranch POSTs to /api/git/undelete and parses {status, branch}", async () => {
+  it("undeleteBranch POSTs the trash entry to /api/git/undelete and parses {status, branch}", async () => {
     mockFetch.mockReturnValue(jsonResponse({ status: "restored", branch: "demo" }))
-    const result = await undeleteBranch("demo")
+    const result = await undeleteBranch("demo@20261027T131400Z")
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/git/undelete")
     expect(opts.method).toBe("POST")
-    expect(JSON.parse(opts.body)).toEqual({ branch: "demo" })
+    expect(JSON.parse(opts.body)).toEqual({ id: "demo@20261027T131400Z", as_name: null })
     expect(result).toEqual({ status: "restored", branch: "demo" })
+  })
+
+  it("undeleteBranch sends the other name to restore under", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ status: "restored", branch: "demo-restored" }))
+    await undeleteBranch("demo@20261027T131400Z", "demo-restored")
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({
+      id: "demo@20261027T131400Z",
+      as_name: "demo-restored",
+    })
   })
 
   // Milestone / ledger-history endpoints (P3 commit + milestones; P5a saves)

@@ -1,10 +1,11 @@
 import { getWorkingBranches } from "../api/client"
-import type { GitManagedBranch } from "../api/types"
+import type { GitDeletedBranch, GitManagedBranch } from "../api/types"
 import { apiErrorMessage } from "../api/errors"
 import { createSingleFlight } from "./singleFlight"
 
 interface GitBranchState {
   branches: GitManagedBranch[]
+  deletedBranches: GitDeletedBranch[]
   branchesLoaded: boolean
   branchesLoading: boolean
   branchesError: string | null
@@ -46,6 +47,7 @@ export function loadGitBranches(
           if (isCurrent()) {
             set({
               branches: result.branches,
+              deletedBranches: result.deleted,
               branchesLoaded: true,
               branchesLoading: false,
               branchesError: null,

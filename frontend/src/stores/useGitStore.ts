@@ -20,7 +20,7 @@ import {
   pullGitUpstream,
   retryGitStorageSync,
 } from "../api/client"
-import type { GitBindStorageResponse, GitFastForwardResponse, GitForkStorageResponse, GitManagedBranch, GitUpstreamStatus, GitWorkingBranchResponse } from "../api/types"
+import type { GitBindStorageResponse, GitDeletedBranch, GitFastForwardResponse, GitForkStorageResponse, GitManagedBranch, GitUpstreamStatus, GitWorkingBranchResponse } from "../api/types"
 import { createSingleFlight } from "./singleFlight"
 
 const statusFlight = createSingleFlight<GitWorkingBranchResponse | null>()
@@ -67,6 +67,8 @@ interface GitData {
   loading: boolean
   statusError: string | null
   branches: GitManagedBranch[]
+  /** The trash: deleted branches, newest first, each restorable. */
+  deletedBranches: GitDeletedBranch[]
   branchesLoaded: boolean
   branchesLoading: boolean
   branchesError: string | null
@@ -175,6 +177,7 @@ const freshGitData = (): GitData => ({
   loading: false,
   statusError: null,
   branches: [],
+  deletedBranches: [],
   branchesLoaded: false,
   branchesLoading: false,
   branchesError: null,

@@ -419,7 +419,7 @@ def git_undelete(body: GitUndeleteRequest) -> GitUndeleteResponse:
     """Restore a deleted working pair from its trash refs + tombstone (the
     inverse of DELETE /branches). Pure ref/state ops — no checkout, no HEAD
     movement — so no watcher pause is needed."""
-    return undelete_working_pair(body.branch, Path.cwd())
+    return undelete_working_pair(body.id, Path.cwd(), as_name=body.as_name)
 
 
 # ---------------------------------------------------------------------------

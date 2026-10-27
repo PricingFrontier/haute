@@ -97,7 +97,7 @@ describe("useGitStore", () => {
     await resetGitStoreForTests()
 
     vi.mocked(getWorkingBranch).mockResolvedValueOnce(READY)
-    vi.mocked(getWorkingBranches).mockResolvedValueOnce({ current: "dev", branches: [] })
+    vi.mocked(getWorkingBranches).mockResolvedValueOnce({ current: "dev", deleted: [], branches: [] })
     await expect(useGitStore.getState().loadStatus()).resolves.toEqual(READY)
     await expect(useGitStore.getState().loadBranches()).resolves.toEqual([])
     expect(getWorkingBranch).toHaveBeenCalledTimes(2)
@@ -211,12 +211,12 @@ describe("useGitStore", () => {
       name: "dev", is_current: true, is_archived: false, has_unmerged_saves: false,
       has_uncommitted_changes: false,
     }]
-    let resolve!: (value: { current: string; branches: GitManagedBranch[] }) => void
+    let resolve!: (value: { current: string; branches: GitManagedBranch[]; deleted: [] }) => void
     vi.mocked(getWorkingBranches).mockReturnValue(new Promise((done) => { resolve = done }))
     const first = useGitStore.getState().loadBranches()
     const second = useGitStore.getState().loadBranches()
     await vi.waitFor(() => expect(getWorkingBranches).toHaveBeenCalledOnce())
-    resolve({ current: "dev", branches })
+    resolve({ current: "dev", deleted: [], branches })
     await expect(Promise.all([first, second])).resolves.toEqual([branches, branches])
     expect(useGitStore.getState()).toMatchObject({ branches, branchesLoaded: true, branchesLoading: false })
   })
@@ -230,8 +230,8 @@ describe("useGitStore", () => {
       name: "dev", is_current: true, is_archived: false, has_unmerged_saves: false,
       has_uncommitted_changes: false,
     }]
-    let resolveStale!: (value: { current: string; branches: GitManagedBranch[] }) => void
-    let resolveFresh!: (value: { current: string; branches: GitManagedBranch[] }) => void
+    let resolveStale!: (value: { current: string; branches: GitManagedBranch[]; deleted: [] }) => void
+    let resolveFresh!: (value: { current: string; branches: GitManagedBranch[]; deleted: [] }) => void
     vi.mocked(getWorkingBranches)
       .mockReturnValueOnce(new Promise((done) => { resolveStale = done }))
       .mockReturnValueOnce(new Promise((done) => { resolveFresh = done }))
@@ -243,7 +243,7 @@ describe("useGitStore", () => {
     await vi.waitFor(() => expect(getWorkingBranches).toHaveBeenCalledTimes(2))
 
     // The detached request resolves for its own awaiters but publishes nothing.
-    resolveStale({ current: "stale", branches: staleBranches })
+    resolveStale({ current: "stale", deleted: [], branches: staleBranches })
     await expect(stale).resolves.toEqual(staleBranches)
     expect(useGitStore.getState().branches).toEqual([])
 
@@ -252,7 +252,7 @@ describe("useGitStore", () => {
     const shared = useGitStore.getState().loadBranches()
     await new Promise((tick) => setTimeout(tick, 0))
     expect(getWorkingBranches).toHaveBeenCalledTimes(2)
-    resolveFresh({ current: "dev", branches: freshBranches })
+    resolveFresh({ current: "dev", deleted: [], branches: freshBranches })
     await expect(Promise.all([fresh, shared])).resolves.toEqual([freshBranches, freshBranches])
     expect(useGitStore.getState()).toMatchObject({
       branches: freshBranches, branchesLoaded: true, branchesLoading: false,

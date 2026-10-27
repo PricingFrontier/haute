@@ -136,19 +136,36 @@ def write_pref(project_root: Path, key: str, value: object) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Trash tombstones — recovery metadata for deleted working pairs, keyed by the
-# deleted working-branch name. Each entry records the pair's tips (the objects
-# themselves are pinned under ``refs/haute/trash/``), whether the pair was
-# archived, and when it was deleted — so
-# ``undelete_working_pair`` can rebuild the pair exactly. Per-clone (deletes
-# are local ref surgery), also untracked, capped to the newest
-# ``_TRASH_MAX_ENTRIES`` (insertion order IS recency: a re-recorded name moves
-# to the back).
+# Trash tombstones — recovery metadata for deleted working pairs, one entry per
+# deletion, keyed ``<branch>@<UTC stamp>`` so a name deleted, made again and
+# deleted again keeps both. Each entry records the branch, the pair's tips and
+# the refs pinning them (so gc cannot collect them), whether the pair was
+# archived, and when it was deleted — so ``undelete_working_pair`` can rebuild
+# the pair exactly. Per-clone (deletes are local ref surgery), also untracked,
+# trimmed to the newest ``_TRASH_MAX_ENTRIES`` once a delete has succeeded
+# (insertion order IS recency). An entry written before ids existed is keyed by
+# the bare branch name, with its pins at ``refs/haute/trash/<name>`` and
+# ``refs/haute/trash/<name>-save``.
 # ---------------------------------------------------------------------------
 
 
+def trash_entry_branch(entry_id: str, entry: dict[str, object]) -> str:
+    """The branch a trash entry restores (a bare-name entry's key is its branch)."""
+    branch = entry.get("branch")
+    return branch if isinstance(branch, str) else entry_id
+
+
+def trash_entry_pins(entry_id: str, entry: dict[str, object]) -> tuple[str, str]:
+    """The refs pinning a trash entry's working and ledger tips."""
+    working_pin = entry.get("working_pin")
+    ledger_pin = entry.get("ledger_pin")
+    if isinstance(working_pin, str) and isinstance(ledger_pin, str):
+        return working_pin, ledger_pin
+    return f"refs/haute/trash/{entry_id}", f"refs/haute/trash/{entry_id}-save"
+
+
 def read_trash(project_root: Path) -> dict[str, dict[str, object]]:
-    """Map of deleted working-branch name → its recovery tombstone
+    """Map of trash entry id → its recovery tombstone
     (oldest-first; empty when the file is missing/malformed)."""
     path = _trash_path(project_root)
     with repository_mutation(project_root):
@@ -170,21 +187,32 @@ def _write_trash(project_root: Path, trash: dict[str, dict[str, object]]) -> Non
     atomic_write_text(path, json.dumps(trash, indent=2) + "\n")
 
 
-def record_trash(project_root: Path, branch: str, entry: dict[str, object]) -> None:
-    """Record *branch*'s tombstone as the newest entry, dropping the oldest
-    beyond the cap (a re-deleted name replaces its old tombstone)."""
+def record_trash(project_root: Path, entry_id: str, entry: dict[str, object]) -> None:
+    """Record a deletion's tombstone as the newest entry."""
     with repository_mutation(project_root):
         trash = read_trash(project_root)
-        trash.pop(branch, None)  # re-insert at the back so recency is honest
-        trash[branch] = entry
-        while len(trash) > _TRASH_MAX_ENTRIES:
-            trash.pop(next(iter(trash)))
+        trash.pop(entry_id, None)  # re-insert at the back so recency is honest
+        trash[entry_id] = entry
         _write_trash(project_root, trash)
-    logger.info("git_trash_recorded", branch=branch)
+    logger.info("git_trash_recorded", entry=entry_id)
+
+
+def trim_trash(project_root: Path) -> list[tuple[str, dict[str, object]]]:
+    """Drop the oldest tombstones beyond the cap and return them, for the caller to
+    delete their pins: nothing could restore them any more."""
+    with repository_mutation(project_root):
+        trash = read_trash(project_root)
+        dropped: list[tuple[str, dict[str, object]]] = []
+        while len(trash) > _TRASH_MAX_ENTRIES:
+            oldest = next(iter(trash))
+            dropped.append((oldest, trash.pop(oldest)))
+        if dropped:
+            _write_trash(project_root, trash)
+    return dropped
 
 
 def remove_trash(project_root: Path, branch: str) -> None:
-    """Forget *branch*'s tombstone (e.g. after a successful undelete)."""
+    """Forget a tombstone by its entry id (e.g. after a successful undelete)."""
     with repository_mutation(project_root):
         trash = read_trash(project_root)
         if trash.pop(branch, None) is not None:

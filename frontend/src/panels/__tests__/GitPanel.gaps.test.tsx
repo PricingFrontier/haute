@@ -68,7 +68,7 @@ describe("GitPanel - uncovered fork/view/peek paths", () => {
     mockGetPendingSaves.mockResolvedValue({ saves: [] })
     mockGetMilestoneSaves.mockResolvedValue({ saves: [] })
     mockCreateWorkingBranch.mockResolvedValue({ working_branch: "x", moved: false, switched: false, last_save_sha: null })
-    mockGetWorkingBranches.mockResolvedValue({ current: "pricing-dev", branches: [] })
+    mockGetWorkingBranches.mockResolvedValue({ current: "pricing-dev", deleted: [], branches: [] })
   })
 
   afterEach(async () => {

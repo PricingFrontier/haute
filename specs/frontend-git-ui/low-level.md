@@ -14,7 +14,7 @@
 | `frontend/src/stores/gitBranchLoader.ts` | Lazily loaded branch-list request coordinator. It publishes results into `useGitStore` while delegating the in-flight/queued-refresh bookkeeping to `singleFlight.ts`, keeping branch-only client code out of the initial editor bundle. |
 | `frontend/src/stores/singleFlight.ts` | Shared resettable single-flight utility: request joining, the trailing-refresh queue (exactly one follow-up per active request, generation-anchored), and the stalled-request watchdog. Consumed by `useGitStore.ts` (working-branch status) and `gitBranchLoader.ts` (branch list). Test seam: both stores' `reset…ForTests` exports delegate to its `reset()`. |
 | `frontend/src/components/BranchIndicator.tsx` | Toolbar entry point: explicit repository/readiness/error labels with Retry (an `interrupted` clone's Retry calls `retryInterruptedGit` and reloads readiness), plus a ready branch-name button that opens the panel on the current branch. Truncated errors use the shared `Tooltip` to expose the full diagnostic on error hover or Retry focus; its function child places `aria-describedby` on Retry. |
-| `frontend/src/components/BranchManager.tsx` | Branch list/create/switch/archive/delete/restore, embedded in the Git panel; owns its own confirm dialogs and row context menu. |
+| `frontend/src/components/BranchManager.tsx` | Branch list/create/switch/archive/delete/restore, embedded in the Git panel; owns its own confirm dialogs and row context menu. Its Deleted section lists `deleted` from the branch listing with Restore (`undeleteBranch(id)`), and a "Restore as" name box when a live branch has the name. |
 | `frontend/src/hooks/useProjectDirty.ts` | `useProjectDirty`: whether the project holds unsaved edits, the canvas's (`useGraphStore`) or the workbench's form's (`useWorkbenchStore`'s `formDirty`, mirrored by the form store, a lazy chunk); what every navigation guard asks about. `discardFormEdits`: after a switch chosen over the form's unsaved edits has succeeded, the form read again (the form store imported then), so the destination's form shows; nothing while the form is as saved. `discardCanvasEdits`: after a switch chosen over the canvas's unsaved edits has succeeded, the canvas's edits dropped (`markSaved`, the sync banner cleared) and a resync requested (`requestResync`), so the destination's pipeline shows; nothing while the canvas is as saved. |
 | `frontend/src/components/GitNavigationConfirm.tsx` | Shared clean/dirty navigation confirmation used by branch-manager and graph-lane switches plus Create & Move; dirty mode offers Cancel, Discard, and Save first. |
 | `frontend/src/components/CommitBreadcrumb.tsx` | `CommitBreadcrumb` (version-relative label for a comparison canvas) and `ComparisonDelta` (historic↔current commit-count chip). |
@@ -213,8 +213,8 @@ wrapped by `leg()`, which toasts and resyncs (`loadStatus` + `notifyHistoryChang
 success and toasts + rethrows on failure so the store keeps the entry available for a
 retry rather than dropping it. Because the closures only touch stores (never component
 state), an entry keeps working after the panel that pushed it unmounts. Delete's inverse
-is `undeleteBranch` rather than a full re-create, since deletes are trash-preserving
-server-side.
+is `undeleteBranch` with the delete's `trash_id` rather than a full re-create, since deletes
+are trash-preserving server-side.
 
 **Restore flow.** `GitPanel`'s restore affordances (the row button and the row menu's
 "Restore this version") call `useGitStore.requestRestore({sha, label})`.

@@ -984,6 +984,7 @@ export interface GitSetWorkingBranchResponse {
 export interface GitWorkingBranchesResponse {
   branches: GitManagedBranch[];
   current: string | null;
+  deleted: GitDeletedBranch[];
 }
 export interface GitManagedBranch {
   has_uncommitted_changes: boolean;
@@ -991,6 +992,12 @@ export interface GitManagedBranch {
   is_archived: boolean;
   is_current: boolean;
   name: string;
+}
+export interface GitDeletedBranch {
+  branch: string;
+  deleted_at: string | null;
+  id: string;
+  was_archived: boolean;
 }
 export interface GitCreateWorkingBranchResponse {
   last_save_sha: string | null;
@@ -1099,6 +1106,7 @@ export interface GitArchiveResponse {
 export interface GitDeleteBranchResponse {
   branch: string;
   status: string;
+  trash_id: string;
 }
 export interface GitUndeleteResponse {
   branch: string;

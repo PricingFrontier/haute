@@ -85,7 +85,7 @@ describe("GitPanel stale refresh (generation guard)", () => {
     await resetGitStoreForTests()
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
     mockGetMilestoneSaves.mockResolvedValue({ saves: [] })
-    mockGetWorkingBranches.mockResolvedValue({ current: "pricing-dev", branches: [] })
+    mockGetWorkingBranches.mockResolvedValue({ current: "pricing-dev", deleted: [], branches: [] })
     mockGetGitGraph.mockResolvedValue(emptyGraph)
   })
 

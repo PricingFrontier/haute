@@ -9,7 +9,7 @@ specified in [the git-integration specification](../git-integration/high-level.m
 and [the git UI](../frontend-git-ui/high-level.md). These
 packages come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md);
 the Databricks IO defects the same review found are `BUG-44` and `BUG-45` in
-[bugs](bugs.md). `GIT-R14` and `GIT-R15` come from a review on 27 October 2026 of going
+[bugs](bugs.md). `GIT-R15` and `GIT-R16` come from a review on 27 October 2026 of going
 back to an earlier version (one Codex and two Fable reviews, every finding checked at
 its source), after an analyst restoring a version on the test project took six Move
 and return cycles and made and deleted two branches between 13:14 and 13:36.
@@ -25,8 +25,8 @@ and return cycles and made and deleted two branches between 13:14 and 13:36.
 | GIT-R06 | Decision | P3 | Automatic ledger saves either skip the project's git hooks or the specification says they run them. |
 | GIT-R07 | Planned | P2 | Every tree-changing action in the git UI passes the dirty-project guard and names what changes, a failed history read shows an error rather than an empty branch, a failed preference save is reported, and the dialogs and specification say what the server does. |
 | GIT-R08 | Planned | P3 | The git panel has one context menu, one dirty-navigation wrapper and one relative-time rule. |
-| GIT-R14 | Planned | P2 | Deleted branches stay restorable from the branch manager whatever their name, and deleting or archiving the current branch leaves the analyst on its last milestone rather than the default branch's seed project. |
 | GIT-R15 | Planned | P3 | The git UI's words are the analyst's: no "detached", "repo", "ledger", "fold" or "hexadecimal". |
+| GIT-R16 | Planned | P3 | A working branch left without its ledger, or half archived, is reported at startup with a Repair that leaves a whole pair. |
 
 ## Planned improvements
 
@@ -232,58 +232,6 @@ panel.
 `frontend/src/panels/assistant/relativeTime.ts`;
 `frontend/src/utils/formatTime.ts`.
 
-### GIT-R14 — Deleted branches stay restorable
-**Why:**
-- **Deleting or archiving the current pair:** `_switch_away_if_active` checks out
-  the default branch whenever one exists. On the test project `main` is the
-  "Initial commit" seed with no `rating/config`, so the canvas looks wiped. The
-  specification's "detaches at a preserved commit" describes only the fallback.
-- **Undelete:** it is reachable only from the toolbar's undo stack, which a page
-  reload clears, and a delete of the current branch reloads the page and records
-  nothing.
-- **Trash keyed by bare name:** the pin and tombstone are keyed by the branch name
-  alone (`_trash_ref`, `record_trash`).
-  - Deleting a recreated name again overwrites the first deletion's pin and
-    tombstone.
-  - The delete's compensation removes the tombstone and both pins whether or not
-    it wrote them.
-  - Undelete refuses while the name exists. The test project's `branch-testing`
-    tombstone is stuck behind the live branch of that name.
-  - When the 20-tombstone cap rolls over, the tombstone goes but the pin stays,
-    and undelete reads only the tombstone.
-- **A crash between two ref steps:** for example, between delete's two
-  `branch -D` or archive's two renames. It would leave an orphan ledger or a
-  half-archived pair that create, undelete and restore refuse, and nothing checks
-  pair health at startup. This one is inferred.
-
-**Plan:**
-- Key tombstones and pins by name and deletion time.
-- Show a Deleted list in the branch manager with Restore, and Restore under
-  another name when the name is taken.
-- Undelete from the pin when its tombstone has rolled over, or drop the pin with
-  it.
-- The delete's compensation removes only what it wrote.
-- Deleting or archiving the current pair detaches at the working branch's last
-  milestone and opens the chooser.
-- A startup check names orphan ledgers and half-archived pairs, with Repair.
-
-**Acceptance:** Delete, recreate and delete `x` again: both are restorable from
-the list, under another name while `x` exists. Deleting the current branch leaves
-its last milestone open with the chooser. An orphan `x-save` is reported with
-Repair.
-
-**Dependencies:** `GIT-R07` owns the delete dialog's wording; `GIT-R03` the dirty
-tree at delete.
-
-**Evidence:** `src/haute/_git_archive.py::_switch_away_if_active`;
-`src/haute/_git_archive.py::_trash_ref`;
-`src/haute/_git_archive.py::delete_working_pair`;
-`src/haute/_git_archive.py::undelete_working_pair`;
-`src/haute/_git_state.py::record_trash`;
-`src/haute/_git_state.py::read_trash`;
-`frontend/src/components/BranchManager.tsx`;
-`frontend/src/utils/vcHistory.ts`.
-
 ### GIT-R15 — The git UI in the analyst's words
 **Why:** The git UI shows its machinery:
 - the toolbar reads "Detached at <sha>";
@@ -313,3 +261,25 @@ and the tests asserting the old strings assert the new ones.
 `frontend/src/components/DivergenceModal.tsx`;
 `frontend/src/components/RemotePushControl.tsx`;
 `frontend/src/components/BranchManager.tsx`.
+
+### GIT-R16 — Broken pairs reported with Repair
+**Why:** Delete and archive used to move a pair's two refs one step at a time, so a
+crash between the steps could leave an orphan ledger (`x-save` with no `x`) or a
+half-archived pair (`archive/x` beside `x-save`). Both now move in one ref
+transaction, but a pair broken before that stays broken. Create, undelete and
+restore refuse such a name, and nothing checks pair health at startup. This is
+inferred: no broken pair has been seen.
+
+**Plan:**
+- A startup check lists orphan ledgers and half-archived pairs.
+- Repair finishes a half-done archive, and makes the missing working branch of an
+  orphan ledger at the ledger's last milestone.
+
+**Acceptance:** An orphan `x-save` and an `archive/x` beside `x-save` are both
+reported at startup, and Repair leaves each a whole pair.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_git_archive.py::archive_working_pair`;
+`src/haute/_git_transactions.py::check_invariants`;
+`src/haute/_git_read_models.py::working_branch_status`.

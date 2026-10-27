@@ -73,10 +73,16 @@ export function recordRestore(archivedName: string, restoredAs: string): void {
   })
 }
 
-export function recordDelete(branch: string): void {
+/** Each delete is its own trash entry: undo restores the entry the delete
+ *  made, and a redo's delete makes a new one, which the next undo restores. */
+export function recordDelete(branch: string, trashId: string): void {
+  let entry = trashId
   useGraphStore.getState().pushVcEntry({
     label: `delete ${branch}`,
-    undo: () => leg(() => undeleteBranch(branch), `Restored ${branch} from trash`),
-    redo: () => leg(() => gitDeleteBranch(branch, true), `Deleted ${branch}`),
+    undo: () => leg(() => undeleteBranch(entry), `Restored ${branch} from trash`),
+    redo: () =>
+      leg(async () => {
+        entry = (await gitDeleteBranch(branch, true)).trash_id
+      }, `Deleted ${branch}`),
   })
 }

@@ -182,16 +182,27 @@ also refuses when an untracked or ignored file sits where the target has a file,
 file, rather than overwriting it. If writing the files fails, history already holds the
 restore; the analyst sees the failure.
 
-**Recoverability.** Deleting a working pair does not destroy it: both tips are pinned under
-a non-head ref namespace and a tombstone is recorded before the branch refs are removed, so
-`undelete` can rebuild one of the 20 most recently tombstoned pairs exactly. Older trash
-pins remain reachable but lose their API tombstone when the cap rolls over. Multi-step ref
+**Recoverability.** Deleting a working pair does not destroy it. Each deletion is its own
+trash entry, keyed by the branch name and the moment of deletion, so deleting a name, making
+it again and deleting it again keeps both.
+- **Before the refs go:** both tips are pinned under the entry in a non-head ref namespace,
+  and a tombstone is recorded.
+- **The refs themselves:** the working and ledger refs are removed in one ref transaction,
+  so no crash leaves half a pair. Archiving and un-archiving move the pair in one
+  transaction too.
+- **Restoring:** the branch manager lists the 20 most recent deletions and restores any of
+  them exactly, under another name when its own is taken.
+- **The cap:** when it rolls over, the oldest entry's pins go with its tombstone, since
+  nothing could reach them any more.
+
+Multi-step ref
 mutations (branch selection, archive/delete/restore, fork with move or switch, branch-away,
 fast-forward, and branch-pair creation after any unborn-repository seed has succeeded) keep
 an operation snapshot and compensate on failure. An incomplete compensation is an explicit
-transaction failure and is never reported as success. When the active pair is the
-only/default local pair, archive or delete detaches at a preserved commit rather than trying
-to check out the branch being removed. The seed phase itself is outside that rollback
+transaction failure and is never reported as success. Archiving or deleting the active pair
+detaches at the working branch's tip, its last milestone, rather than checking out another
+branch: the analyst stays on the work they had committed. Its later saves stay with the
+archived ledger or the trash entry, and the branch chooser opens at the next startup. The seed phase itself is outside that rollback
 boundary: it may
 rename an unborn branch to `main`, append protective `.gitignore` entries, clear/rebuild the
 index, and create a permanent root commit before pair creation begins. A failure during that

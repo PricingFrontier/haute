@@ -12,8 +12,9 @@ import {
   restoreBranch,
   setGitPrefs,
   setWorkingBranch,
+  undeleteBranch,
 } from "../api/client"
-import type { GitManagedBranch } from "../api/types"
+import type { GitDeletedBranch, GitManagedBranch } from "../api/types"
 import useGitStore from "../stores/useGitStore"
 import useProjectDirty, { discardCanvasEdits, discardFormEdits } from "../hooks/useProjectDirty"
 import useToastStore from "../stores/useToastStore"
@@ -34,13 +35,15 @@ interface BranchManagerProps {
  * Branch manager in the Git sidebar panel (S19/S28/S38). The current branch sits
  * in its own box at the top; below it the other lines, then the create field
  * (Create spins off a parallel line at the latest milestone; Create & Move also
- * relocates your in-progress work and switches), then archived. Clicking a name
+ * relocates your in-progress work and switches), then archived, then the
+ * deleted ones (collapsed), each restorable. Clicking a name
  * PEEKS its history (onPeek) without switching. Switching prompts a confirm with
  * a "don't ask again" that persists to the local environment.
  */
 export default function BranchManager({ selectedBranch, onPeek, onSave }: BranchManagerProps) {
   const loadStatus = useGitStore((s) => s.loadStatus)
   const branches = useGitStore((s) => s.branches)
+  const deletedBranches = useGitStore((s) => s.deletedBranches)
   const loadBranches = useGitStore((s) => s.loadBranches)
   const openModal = useGitStore((s) => s.openModal)
   const branchesExpandNonce = useGitStore((s) => s.branchesExpandNonce)
@@ -56,6 +59,9 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
   const [actionError, setActionError] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
   const [createMenuOpen, setCreateMenuOpen] = useState(false)
+  const [deletedOpen, setDeletedOpen] = useState(false)
+  // The deletion being restored under another name, and that name.
+  const [restoreAs, setRestoreAs] = useState<{ id: string; name: string } | null>(null)
 
   // Dialog state (one open at a time).
   const [confirmDelete, setConfirmDelete] = useState<GitManagedBranch | null>(null)
@@ -219,12 +225,12 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
 
   const doDelete = (b: GitManagedBranch) =>
     run(b.name, "delete", async () => {
-      await gitDeleteBranch(b.name, true) // dialog already confirmed the loss
+      const res = await gitDeleteBranch(b.name, true) // dialog already confirmed the loss
       setConfirmDelete(null)
       addToast("success", `Deleted ${b.name}`)
       // Deletes are trash-preserving server-side, so undo (undelete) is an
       // instant ref restore. Current-branch deletes keep the reload flow.
-      if (!b.is_current) recordDelete(b.name)
+      if (!b.is_current) recordDelete(b.name, res.trash_id)
     }, { reloadOnDone: b.is_current })
 
   const restore = (b: GitManagedBranch) =>
@@ -233,6 +239,19 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
       addToast("success", `Restored ${b.name}`)
       recordRestore(b.name, res.restored_as)
     })
+
+  // A deletion whose name a branch has again restores under another name.
+  const undelete = (d: GitDeletedBranch, asName: string | null) =>
+    run(d.id, "restore", async () => {
+      const res = await undeleteBranch(d.id, asName)
+      setRestoreAs(null)
+      addToast("success", `Restored ${res.branch}`)
+    })
+  const nameTaken = (name: string) => branches.some((b) => b.name === name)
+  const onUndeleteClick = (d: GitDeletedBranch) => {
+    if (nameTaken(d.branch)) setRestoreAs({ id: d.id, name: `${d.branch}-restored` })
+    else void undelete(d, null)
+  }
 
   const current = branches.find((b) => b.is_current && !b.is_archived) ?? null
   const others = branches.filter((b) => !b.is_archived && !b.is_current)
@@ -390,6 +409,77 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
               </span>
               {archived.map((b) => (
                 <BranchRow key={b.name} {...rowProps(b)} />
+              ))}
+            </div>
+          )}
+
+          {/* Deleted: the trash, newest first, collapsed until asked for */}
+          {deletedBranches.length > 0 && (
+            <div data-testid="branch-manager-deleted" className="flex flex-col gap-0.5 pt-1.5" style={{ borderTop: "1px solid var(--border)" }}>
+              <button
+                type="button"
+                data-testid="branch-manager-deleted-toggle"
+                onClick={() => setDeletedOpen((o) => !o)}
+                className="flex items-center gap-1.5 mb-0.5 text-left"
+                style={{ color: "var(--text-muted)" }}
+              >
+                {deletedOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                <span className="text-[11px] font-medium uppercase tracking-wider">
+                  Deleted ({deletedBranches.length})
+                </span>
+              </button>
+              {deletedOpen && deletedBranches.map((d) => (
+                <div key={d.id} data-testid="branch-manager-deleted-row" className="flex flex-col gap-1">
+                  <div className="flex items-center gap-1.5 px-1.5 py-1">
+                    <Trash2 size={12} className="shrink-0" style={{ color: "var(--text-muted)" }} />
+                    <span className="flex-1 text-[12px] font-mono truncate min-w-0" style={{ color: "var(--text-muted)" }}>
+                      {d.branch}
+                    </span>
+                    {d.deleted_at && (
+                      <span className="text-[10px] shrink-0" style={{ color: "var(--text-muted)" }}>
+                        {deletedWhen(d.deleted_at)}
+                      </span>
+                    )}
+                    <Tooltip label={nameTaken(d.branch) ? "Restore under another name" : "Restore this branch"}>
+                      <button
+                        data-testid="branch-manager-undelete"
+                        onClick={() => onUndeleteClick(d)}
+                        disabled={anyBusy}
+                        className="p-1 rounded transition-colors text-[var(--text-muted)] hover:bg-[var(--branch-restore-hover-bg)] hover:text-[var(--branch-restore-text)] disabled:opacity-40"
+                      >
+                        <RotateCcw size={12} />
+                      </button>
+                    </Tooltip>
+                  </div>
+                  {restoreAs?.id === d.id && (
+                    <div className="flex gap-1.5 pl-[19px]">
+                      <input
+                        data-testid="branch-manager-restore-as-input"
+                        aria-label="Restore as"
+                        value={restoreAs.name}
+                        onChange={(e) => setRestoreAs({ id: d.id, name: e.target.value })}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && restoreAs.name.trim()) {
+                            e.preventDefault()
+                            void undelete(d, restoreAs.name.trim())
+                          } else if (e.key === "Escape") setRestoreAs(null)
+                        }}
+                        autoFocus
+                        className="flex-1 px-2 py-1 text-[12px] font-mono rounded-md focus:outline-none focus:ring-2 min-w-0"
+                        style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)", caretColor: "var(--accent)" }}
+                      />
+                      <button
+                        data-testid="branch-manager-restore-as-go"
+                        onClick={() => void undelete(d, restoreAs.name.trim())}
+                        disabled={restoreAs.name.trim() === "" || anyBusy}
+                        className="px-2 py-0.5 text-[11px] font-semibold rounded-md shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+                        style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
+                      >
+                        Restore
+                      </button>
+                    </div>
+                  )}
+                </div>
               ))}
             </div>
           )}
@@ -593,6 +683,13 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
       )}
     </div>
   )
+}
+
+/** When a branch was deleted, as a short local date and time. */
+function deletedWhen(iso: string): string {
+  const when = new Date(iso)
+  if (Number.isNaN(when.getTime())) return ""
+  return when.toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
 }
 
 /** Human phrase for what a delete throws away beyond the lineage itself. */

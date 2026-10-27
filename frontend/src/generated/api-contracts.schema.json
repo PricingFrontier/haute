@@ -6312,13 +6312,55 @@
           "default": "ok",
           "title": "Status",
           "type": "string"
+        },
+        "trash_id": {
+          "title": "Trash Id",
+          "type": "string"
         }
       },
       "required": [
         "status",
-        "branch"
+        "branch",
+        "trash_id"
       ],
       "title": "GitDeleteBranchResponse",
+      "type": "object"
+    },
+    "GitDeletedBranch": {
+      "properties": {
+        "branch": {
+          "title": "Branch",
+          "type": "string"
+        },
+        "deleted_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deleted At"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "was_archived": {
+          "default": false,
+          "title": "Was Archived",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "branch",
+        "deleted_at",
+        "was_archived"
+      ],
+      "title": "GitDeletedBranch",
       "type": "object"
     },
     "GitFastForwardResponse": {
@@ -7564,11 +7606,19 @@
           ],
           "default": null,
           "title": "Current"
+        },
+        "deleted": {
+          "items": {
+            "$ref": "#/$defs/GitDeletedBranch"
+          },
+          "title": "Deleted",
+          "type": "array"
         }
       },
       "required": [
         "current",
-        "branches"
+        "branches",
+        "deleted"
       ],
       "title": "GitWorkingBranchesResponse",
       "type": "object"

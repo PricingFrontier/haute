@@ -5451,9 +5451,19 @@ class GitManagedBranch(BaseModel):
     has_uncommitted_changes: bool = False
 
 
+class GitDeletedBranch(BaseModel):
+    # A trash entry: one deletion, restorable under its branch name or another.
+    id: str
+    branch: str
+    deleted_at: str | None = None
+    was_archived: bool = False
+
+
 class GitWorkingBranchesResponse(BaseModel):
     current: str | None = None
     branches: list[GitManagedBranch] = Field(default_factory=list)
+    # The trash, newest deletion first.
+    deleted: list[GitDeletedBranch] = Field(default_factory=list)
 
 
 class GitRestoreRequest(BaseModel):
@@ -5511,11 +5521,15 @@ class GitDeleteBranchRequest(BaseModel):
 class GitDeleteBranchResponse(BaseModel):
     status: str = "ok"
     branch: str
+    # The trash entry the deletion became, for an undo to restore.
+    trash_id: str
 
 
 class GitUndeleteRequest(BaseModel):
-    # Working-branch name to restore (a ledger name resolves to its pair).
-    branch: str
+    # The trash entry to restore.
+    id: str
+    # Restore under this name instead of the branch's own (when that is taken).
+    as_name: str | None = None
 
 
 class GitUndeleteResponse(BaseModel):

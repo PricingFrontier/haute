@@ -78,9 +78,13 @@ the `subprocess` module or construct a raw process call themselves.
 **Per-clone state files** (`_git_state.py`), all siblings under `<project_root>/.haute/`:
 `state.json` (`{"workingBranch": str}`), `prefs.json` (flat dict, currently one key:
 `skipSwitchConfirm`), `pushed.json`
-(`{"<remote>/<ref>": sha}`), `trash.json` (`{deleted_branch_name: {branch_tip, ledger_tip,
-was_archived, deleted_at}}`, capped at `_TRASH_MAX_ENTRIES = 20`, insertion
-order = recency). Every writer holds the repository mutation lock, stages a complete UTF-8
+(`{"<remote>/<ref>": sha}`), `trash.json` (`{entry_id: {branch, branch_tip, ledger_tip,
+working_pin, ledger_pin, was_archived, deleted_at}}`, capped at `_TRASH_MAX_ENTRIES = 20`,
+insertion order = recency). An entry id is `<branch>@<UTC YYYYMMDDTHHMMSSZ>`, with `-2`,
+`-3` and so on on a clash, and its pins are `refs/haute/trash/<entry_id>/working` and
+`/ledger`. An entry written before ids were introduced is keyed by the bare branch name,
+with no `branch` field. It is read with that name as its branch and its pins at
+`refs/haute/trash/<name>` and `refs/haute/trash/<name>-save`. Every writer holds the repository mutation lock, stages a complete UTF-8
 document beside its destination, and atomically replaces the target. Every read-modify-write
 helper holds that lock across both phases, preserving concurrent entries while readers
 observe either the old complete document or the new complete document.
@@ -137,9 +141,9 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 | `GET /api/git/milestones/{sha}/saves` | Commit SHA path | `GitLedgerSavesResponse {saves:[GitLedgerSave...]}` |
 | `GET /api/git/pending-saves` | Query `branch=null` | `GitLedgerSavesResponse` |
 | `POST /api/git/archive` | `GitArchiveRequest {branch}` | `GitArchiveResponse {archived_as}` |
-| `DELETE /api/git/branches` | `GitDeleteBranchRequest {branch,confirm=false}` | `GitDeleteBranchResponse {status="deleted",branch}` |
-| `POST /api/git/undelete` | `GitUndeleteRequest {branch}` | `GitUndeleteResponse {status="restored",branch}` |
-| `GET /api/git/working-branches` | None | `GitWorkingBranchesResponse {current?,branches:[GitManagedBranch...]}` |
+| `DELETE /api/git/branches` | `GitDeleteBranchRequest {branch,confirm=false}` | `GitDeleteBranchResponse {status="deleted",branch,trash_id}` |
+| `POST /api/git/undelete` | `GitUndeleteRequest {id,as_name=null}`: a trash entry, rebuilt under its branch name or *as_name* | `GitUndeleteResponse {status="restored",branch}`, the name it was rebuilt under |
+| `GET /api/git/working-branches` | None | `GitWorkingBranchesResponse {current?,branches:[GitManagedBranch...],deleted:[GitDeletedBranch {id,branch,deleted_at,was_archived}...]}`, `deleted` newest first |
 | `POST /api/git/restore` | `GitRestoreRequest {branch}` | `GitRestoreResponse {restored_as}` |
 | `POST /api/git/working-branches` | `GitCreateWorkingBranchRequest {name,at=null,move=false,switch=false}` | `GitCreateWorkingBranchResponse {working_branch,moved,switched,last_save_sha?}`; `move` and `switch` together are 400 |
 | `GET /api/git/prefs` | None | `GitPrefs {skip_switch_confirm=false}` |
@@ -527,20 +531,33 @@ the adopted tip rather than adopted. The whole sequence is wrapped with
 back, and restores HEAD) on any `GitError`/`OSError`; incomplete compensation raises
 `GitTransactionError`.
 
-**Archive/delete active-pair fallback.** The fallback is resolved immediately before the
-mutation and must not be either leg of the pair. A distinct existing local base branch is
-preferred; if none exists, HEAD detaches at the captured pair tip. This covers adopted
-repositories whose only apparent default is the active managed pair.
+**Archive/delete active pair.** HEAD detaches at the working branch's tip, its last
+milestone, through the tree fence. A confirmed delete forces it over a dirty tree. The
+ledger's later saves stay with the archived ledger or the trash pins. HEAD never moves to
+another branch, so the analyst is not left on a default branch's unrelated files. Archive
+moves the pair with one `update-ref --stdin` transaction: it creates `archive/<X>` and its
+ledger at their tips and deletes `<X>` and its ledger with their tips as expected values.
+Un-archive (`restore_working_pair`) is the same transaction the other way.
 
 **Delete / trash (`delete_working_pair` / `undelete_working_pair`).** Delete refuses on
-unmerged ledger saves unless `confirm=True`. Before removing the branch refs, both tips are
-pinned under `refs/haute/trash/<name>` (a plain, non-`refs/heads` ref that shields the
-objects from gc) and a tombstone is written to `trash.json` — deliberately in that order,
-so a failure between the two leaves at worst a harmless extra pin, never an unrecoverable
-delete. `undelete_working_pair` is the exact inverse: recreates both refs at their recorded
-tips (verifying each still resolves — a tombstone can outlive its objects if the trash refs
-were hand-deleted and gc ran), and consumes the trash
-refs + tombstone. The restored pair is NOT auto-adopted as the working branch.
+unmerged ledger saves unless `confirm=True`. It then:
+1. takes a fresh entry id;
+2. pins both tips under it, plain refs outside `refs/heads` that shield the objects from gc;
+3. writes the tombstone;
+4. removes the working and ledger refs in one `update-ref --stdin` transaction, with their
+   tips as expected values.
+
+A failure removes only this entry's pins and tombstone. Once the delete has succeeded,
+`trim_trash` drops the oldest entries beyond the cap and returns them, and their pins are
+deleted.
+
+`undelete_working_pair(id, as_name=None)` rebuilds the pair under *as_name* or the entry's
+branch. It refuses an unknown id, a name already taken by either ref ("Restore it under
+another name."), and a recorded commit that no longer resolves. It removes the tombstone,
+then creates both refs and deletes the entry's pins in one transaction; a failed transaction
+records the tombstone again, so the entry stays restorable. The restored pair
+is NOT auto-adopted as the working branch. `working_branches()` lists the tombstones, newest
+first, as `deleted`.
 
 **Historical extraction (`src/haute/_git_history.py::archive_commit` / `src/haute/routes/_helpers.py::commit_pipeline_graph`).** Bounded extraction is owned by `archive_commit`, while the parse step `commit_pipeline_graph` is owned by [server-api](../server-api/low-level.md). `ls-tree` first
 enumerates the selected commit and filters to `haute.toml`, Python modules, Haute sidecars,
@@ -687,7 +704,10 @@ process failures, and precise ref-movement races deterministic.
   other-branch, overwrite, identity and in-progress refusals, and a failure writing the
   files leaving the restore recorded and the caches in place), milestone
   history and commit-context breadcrumbs, rename-preserving ledger
-  expansion, the branch manager (archive/delete/undelete/restore), request-path no-fetch
+  expansion, the branch manager (archive/delete/undelete/restore; a name deleted, made
+  again and deleted again keeping both entries, undelete under another name, the cap
+  dropping the oldest entry's pins, a legacy bare-name tombstone restored, the active pair
+  detached at its last milestone), request-path no-fetch
   guarantees,
   the tree fence (`TestTreeFence`: a checkout that exits 0 with a file left stale put back
   and refused by name, a failed fast-forward's written files put back, a put-back that

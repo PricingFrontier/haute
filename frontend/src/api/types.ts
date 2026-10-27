@@ -1589,6 +1589,7 @@ export type {
   GitCommitResponse,
   GitCreateWorkingBranchResponse,
   GitDeleteBranchResponse,
+  GitDeletedBranch,
   GitFastForwardResponse,
   GitFileChange,
   GitForkStorageResponse,

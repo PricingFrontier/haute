@@ -27,7 +27,12 @@ from haute._git_core import (
 )
 from haute._git_setup import get_identity
 from haute._git_transactions import check_invariants
-from haute.schemas import GitManagedBranch, GitWorkingBranchesResponse, GitWorkingBranchResponse
+from haute.schemas import (
+    GitDeletedBranch,
+    GitManagedBranch,
+    GitWorkingBranchesResponse,
+    GitWorkingBranchResponse,
+)
 
 __all__ = ["ignore_rule", "pipeline_file_states", "working_branch_status", "working_branches"]
 
@@ -266,4 +271,18 @@ def working_branches(project_root: Path, cwd: Path | None = None) -> GitWorkingB
                 has_uncommitted_changes=is_current and tree_dirty,
             )
         )
-    return GitWorkingBranchesResponse(current=current, branches=entries)
+    from haute._git_state import read_trash, trash_entry_branch
+
+    # The trash, newest deletion first.
+    deleted: list[GitDeletedBranch] = []
+    for entry_id, entry in reversed(list(read_trash(project_root).items())):
+        deleted_at = entry.get("deleted_at")
+        deleted.append(
+            GitDeletedBranch(
+                id=entry_id,
+                branch=trash_entry_branch(entry_id, entry),
+                deleted_at=deleted_at if isinstance(deleted_at, str) else None,
+                was_archived=bool(entry.get("was_archived")),
+            )
+        )
+    return GitWorkingBranchesResponse(current=current, branches=entries, deleted=deleted)
