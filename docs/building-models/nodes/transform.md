@@ -29,25 +29,25 @@ With no input connected, the tab shows "Connect an input to start building steps
 
 **Add step**, under the last card, opens the step chooser in place:
 
-- The search box ("Search, e.g. join or group_by") filters the steps by name, by what they do, or by their Polars method: typing `join` finds **Join another input**, and `with_columns` finds **Add column**. **Enter** adds the first match.
-- The arrow keys move between the steps, and the foot of the chooser describes the step you point at, with its Polars method.
+- The search box ("Search steps and functions") finds steps and calculations by name, by what they do, or by their Polars method, best match first: typing `join` finds **Join another input** and **Join text**, `clip` finds **Clip**, `sum` finds **Window: sum** before **Group and aggregate**, and `to_date` finds **Text to date**. A match that adds a different step says which, such as **Add column** or **Change types**. **Enter** adds the first match.
+- The arrow keys move between the entries, and the foot of the chooser describes the entry you point at, with its Polars method.
 - **Esc**, or the × beside the search box, closes the chooser without adding a step.
 
-The steps are grouped as follows:
+The entries are grouped as follows:
 
-| Group | Steps |
+| Group | Entries |
 |---|---|
+| Add column | **Formula**, **If-then**, **Window**, **Round**, **Clip**, **Text function**, **Date function** |
 | Rows | **Filter rows**, **Sort rows**, **Remove duplicates**, **Limit rows** |
-| Columns | **Add column**, **Keep columns**, **Drop columns**, **Rename columns**, **Change types**, **Fill missing values** |
+| Columns | **Keep columns**, **Drop columns**, **Rename columns**, **Change types**, **Fill missing values** |
 | Combine | **Join another input**, **Append inputs**, **Group and aggregate**, **Pivot to columns**, **Unpivot to rows** |
-| Values | **Define variable** |
-| Code | **Free code** |
+| Other | **Define variable**, **Free code** |
 
-Choosing a step adds its card at the end of the list, open, with the cursor in its first field.
+Each entry in the **Add column** group adds an **Add column** step already computed as that: **Text function** starts as **Trim whitespace** and **Date function** as **Shift date**, and the step's **Computed as** changes it to any other calculation. Choosing an entry adds its card at the end of the list, open, with the cursor in its first field.
 
 ### Step cards
 
-Each step is a numbered card. Its header shows the number, the step's icon and its name. A closed card also shows a one-line summary of the step and the change it makes to the columns: `+loss_ratio` for a column it adds, `−` before columns it removes, or `→ 3 columns` after a grouping or pivot. Click the header to open the card and edit the step, and click it again (or press **Esc**) to close it.
+Each step is a numbered card. Its header shows the number, the step's icon and its name; an **Add column** card is named after what it computes, such as **Formula**, **If-then** or **Clip**. A closed card also shows a one-line summary of the step and the change it makes to the columns: `+loss_ratio` for a column it adds, `−` before columns it removes, or `→ 3 columns` after a grouping or pivot. Click the header to open the card and edit the step, and click it again (or press **Esc**) to close it.
 
 The buttons on the right of each card:
 
@@ -70,14 +70,14 @@ Each card reads as a sentence or a short form. The column boxes suggest the colu
 | Step | What it does | What you fill in |
 |---|---|---|
 | **Filter rows** | Keeps rows that match conditions (`filter`) | "Keep rows where", then one condition per row: a column, a test (**equals**, **is greater than**, **is one of**, **is missing**, **contains text**, **matches pattern (regex)** and more) and a value. **Add condition** adds a row; with several, choose whether **all** or **any** of them must be true. An **is one of** list of numbers is written as the kind of number its column holds (see [Column types](#column-types)). |
-| **Add column** | Computes a new or replaced column (`with_columns`) | **Column name**, then **Computed as**: **Value**, **Formula**, **Function**, **If-then**, **Window** or **Join text**. A formula is typed as text, e.g. `(premium + commission) * tax / 12`, and the box completes column names, earlier variables, [global constants](constant.md#global-constants) and function names. A function's extra arguments are plain values, except that **clip**'s bounds and **fill_null**'s value can also be a column, a variable or a formula, for example `clip(irpm_total, -irpm_cap, irpm_cap)`. `divide(premium, limit)` divides like `/` but gives a missing value where the divisor is zero or missing, where `/` gives infinity (or NaN for 0 / 0). `sum_horizontal(load_a, load_b, load_c)` adds up two or more values, skipping missing ones, so a row with every value missing gives 0 (with `+` one missing value makes the total missing); **Computed as** **Sum across** builds the same from a list of parts. An **If-then** gives each row the **Then** value of the first branch whose conditions hold, or the **Otherwise** value: **Add branch** adds another, led by "Otherwise, when", for bands or limits that pick one value per row. A **Window** gives each row an aggregate of its group (**Over**), of a column or of an **Expression** such as `limit * basic_load`; for the aggregates that sum up a group, such as sum, mean or row count, **More options** adds **Only rows where…**, so each group aggregates only its matching rows (a group with none sums to 0). |
+| **Add column** | Computes a new or replaced column (`with_columns`) | **Column name**, then **Computed as**, one list in four groups: **General** (**Formula**, **If-then**, **Window**, **Sum across**, **Join text**, **Value**), **Number** (**Round**, **Clip**, **Divide** and more), **Text** (**Trim whitespace**, **Lower case**, **Replace all matches** and more) and **Dates** (**Shift date**, **Duration in days**, **Year** and more). Changing **Computed as** keeps what you built: the column being computed carries over, and going back to an earlier choice brings it back as you left it. Types are changed, and missing values filled, by their own steps (**Change types**, **Fill missing values**); in a formula `cast`, `try_cast`, `to_date` and `fill_null` still work. A formula is typed as text, e.g. `(premium + commission) * tax / 12`, and the box completes column names, earlier variables, [global constants](constant.md#global-constants) and function names, also by what a function does: typing `trim` offers `strip`. A function's extra arguments are plain values, except that **clip**'s bounds and **fill_null**'s value can also be a column, a variable or a formula, for example `clip(irpm_total, -irpm_cap, irpm_cap)`. `divide(premium, limit)` divides like `/` but gives a missing value where the divisor is zero or missing, where `/` gives infinity (or NaN for 0 / 0). `sum_horizontal(load_a, load_b, load_c)` adds up two or more values, skipping missing ones, so a row with every value missing gives 0 (with `+` one missing value makes the total missing); **Computed as** **Sum across** builds the same from a list of parts. An **If-then** gives each row the **Then** value of the first branch whose conditions hold, or the **Otherwise** value: **Add branch** adds another, led by "Otherwise, when", for bands or limits that pick one value per row. A **Window** gives each row an aggregate of its group (**Over**), of a column or of an **Expression** such as `limit * basic_load`; for the aggregates that sum up a group, such as sum, mean or row count, **More options** adds **Only rows where…**, so each group aggregates only its matching rows (a group with none sums to 0). |
 | **Keep columns** | Keeps only the listed columns (`select`) | The columns to keep; **More options** adds **And every other column of type**. |
 | **Drop columns** | Removes the listed columns (`drop`) | The columns to drop; **More options** adds **And every other column of type**. |
 | **Rename columns** | Gives columns new names (`rename`) | "Rename *column* to *new name*"; **Add rename** adds another. |
-| **Change types** | Casts columns to another data type (`cast`) | "Change *column* to *type*", for example **Int64 (whole number)**, **Float64 (decimal number)**, **String (text)** or **Date (date)**. A text column becoming a date also takes the **format** its dates are written in (see [Column types](#column-types)). |
+| **Change types** | Casts columns to another data type (`cast`) | "Change *column* to *type*", for example **Int64 (whole number)**, **Float64 (decimal number)**, **String (text)** or **Date (date)**. A text column becoming a date also takes the **format** its dates are written in (see [Column types](#column-types)). **Values that don't convert become missing** gives a missing value where a value can't change type, or text doesn't match the format, instead of stopping the run. |
 | **Sort rows** | Orders rows by one or more columns (`sort`) | "Sort by *column*", "then by" further columns (**Add sort column**), each ascending or descending, and **Missing values last**. Rows that tie on every sort column keep the order they arrived in. |
 | **Remove duplicates** | Keeps one row per key (`unique`) | **Rows are duplicates when they match on** (empty means every column), and which row to keep: **the first row**, **the last row**, **any one row** or **no row (drop every duplicate)**. |
-| **Group and aggregate** | Summarises rows per group (`group_by().agg()`) | **Group by** (empty summarises the whole table) and **Aggregations**: a name, a function (sum, mean, count of values, row count and more) and a column each. **More options** adds a row filter per aggregation (**Only rows where…**). |
+| **Group and aggregate** | Summarises rows into one row per group (`group_by().agg()`) | **Group by** (empty summarises the whole table) and **Aggregations**: a name, a function (sum, mean, count of values, row count and more) and a column each. **More options** adds a row filter per aggregation (**Only rows where…**). |
 | **Join another input** | Combines columns from another input (`join`) | The join kind (for example **left: every row here, with matches added**) and the input to join, then **Match on** pairs ("a column here = a column there"). **More options** holds **Check key cardinality**, **Output row order** and **Suffix for clashing column names**. A new join keeps its inputs' order (**left, then right**; **right, then left** for a right join; **left input order** for a semi or anti join), and changing the join kind moves the order with it unless you chose another. |
 | **Append inputs** | Stacks rows from other inputs (`pl.concat`) | **Append rows from**: tick the inputs. **Columns** either **must match exactly** or **may differ (fill missing with null)**. |
 | **Fill missing values** | Replaces nulls with a value or strategy (`fill_null`) | **Fill missing values in** (empty means every column), then **With** a value or a strategy such as **the previous row's value (forward)** or **the column's mean (mean)**. |
@@ -93,7 +93,7 @@ A **Join another input** card on a node with a single input says "Connect the ta
 
 Where the editor knows a column's type, which it learns once the input has been previewed, it offers only what Polars can do with that type, so a step that would fail never gets built.
 
-- **Text that holds dates.** **Change types** turns a text column into a **Date** or **Datetime** by reading it with a format: a **format** box appears beside the type, starting at `%Y-%m-%d` (`2024-01-31`), or `%Y-%m-%d %H:%M:%S` for a date and time. Change it to match your data: `%d/%m/%Y` reads `31/01/2024`. `%Y` is the four-digit year, `%m` the month, `%d` the day, `%H`, `%M` and `%S` the hour, minute and second. In a formula, `to_date(start, '%d/%m/%Y')` and `to_datetime(...)` read text the same way and stop the run on a value that doesn't match; `try_to_date(...)` and `try_to_datetime(...)` give a missing value instead. `cast` and `try_cast` can't turn text into a date.
+- **Text that holds dates.** **Change types** turns a text column into a **Date** or **Datetime** by reading it with a format: a **format** box appears beside the type, starting at `%Y-%m-%d` (`2024-01-31`), or `%Y-%m-%d %H:%M:%S` for a date and time. Change it to match your data: `%d/%m/%Y` reads `31/01/2024`. `%Y` is the four-digit year, `%m` the month, `%d` the day, `%H`, `%M` and `%S` the hour, minute and second. In a formula, `to_date(start, '%d/%m/%Y')` and `to_datetime(...)` read text the same way and stop the run on a value that doesn't match; `try_to_date(...)` and `try_to_datetime(...)` give a missing value instead, as **Values that don't convert become missing** does for a whole **Change types** step. `cast` and `try_cast` can't turn text into a date.
 - **Which types a column can change to.** A category column changes only to **String (text)** or **Categorical (category)**: to make a number or a date of it, change it to **String (text)** first. A text column can't become **Boolean (true/false)**: compare it with a value in a condition instead. A number or a date can't become **Categorical (category)** directly.
 - **Numbers in "is one of".** A list of numbers is written the way its column holds numbers: whole numbers for a whole-number column (a fraction can never match, so the list refuses one), numbers with a decimal point for a decimal column, and exact decimals for a **Decimal** column, which also refuses a value with more decimal places than the column has. Where the column's type isn't known yet, a **Number type** select chooses.
 - **Functions and aggregations.** `log` and `exp` are for numbers, and **std** and **var** aren't offered for a duration: turn it into days first with `total_days`.
@@ -102,7 +102,7 @@ Where the editor doesn't know a column's type it offers everything. A step that 
 
 ### Free code
 
-When no step does what you need, choose **Add step → Code → Free code** to write Python between the other steps. The code starts with the current table in `df` and Polars available as `pl`; assign your result back to `df`:
+When no step does what you need, choose **Add step → Other → Free code** to write Python between the other steps. The code starts with the current table in `df` and Polars available as `pl`; assign your result back to `df`:
 
 ```python
 df = df.with_columns(
@@ -235,7 +235,7 @@ A node that adds each policy's loss ratio, from two inputs called `policies` and
 1. Connect `policies` and `claims` to a new Transform node. Its **TRANSFORM** tab lists both under **INPUTS**.
 2. In **Start from**, choose `policies`.
 3. Click **Add step**, type `join` and press **Enter** to add **Join another input**. Choose **left: every row here, with matches added**, join `claims`, and under **Match on** pick `policy_id` = `policy_id`.
-4. Click **Add step** and choose **Add column**. Type `loss_ratio` as the **Column name**, leave **Computed as** on **Formula**, and type `claim_amount / premium`.
+4. Click **Add step** and choose **Formula**. Type `loss_ratio` as the **Column name** and type `claim_amount / premium` as the formula.
 
 The closed cards read as a summary of the node, and the **Generated code** panel shows:
 

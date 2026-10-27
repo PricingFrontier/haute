@@ -1097,6 +1097,22 @@ describe("the formula box shows what it can do", () => {
     expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>).expr).toMatchObject({ type: "function", fn: "round", text: "round(premium, 2)" })
   })
 
+  it("offers a function by a word of what it does, inserting its own name", () => {
+    render(<Stateful initial={emptyFormula} spy={vi.fn()} />)
+    const input = screen.getByRole("combobox", { name: "Formula" }) as HTMLTextAreaElement
+    fireEvent.change(input, { target: { value: "trim", selectionStart: 4 } })
+    const strip = within(screen.getByRole("listbox")).getByRole("option", { name: "strip" })
+    expect(strip).toHaveTextContent("trim whitespace")
+    fireEvent.mouseDown(strip)
+    expect(input).toHaveValue("strip()")
+    expect(input.selectionStart).toBe(6)
+    fireEvent.change(input, { target: { value: "days", selectionStart: 4 } })
+    expect(within(screen.getByRole("listbox")).getByRole("option", { name: "total_days" })).toHaveTextContent("duration in days")
+    // Two letters are not yet a word of what a function does.
+    fireEvent.change(input, { target: { value: "tr", selectionStart: 2 } })
+    expect(screen.queryByRole("option", { name: "strip" })).not.toBeInTheDocument()
+  })
+
   it("names a call's arguments while the caret is inside it, the current one bold", () => {
     render(<Stateful initial={emptyFormula} spy={vi.fn()} />)
     fireEvent.change(screen.getByRole("combobox", { name: "Formula" }), { target: { value: "round(premium, " } })

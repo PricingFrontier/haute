@@ -319,10 +319,16 @@ function formulaCompletions(draft: string, caret: number, columns: string[], var
         : { value: `var:${name}`, label: name, note: "variable" },
     ),
     ...constantEntries,
-    ...FORMULA_FUNCTIONS.filter((f) => f.value.startsWith(lower) && f.value !== lower).map((f) => ({ value: `fn:${f.value}`, label: f.value, note: f.label === f.value ? null : f.label, mark: "ƒ" })),
+    ...[...FORMULA_FUNCTIONS.filter((f) => f.value.startsWith(lower) && f.value !== lower), ...functionsDoing(lower)].map((f) => ({ value: `fn:${f.value}`, label: f.value, note: f.label === f.value ? null : f.label, mark: "ƒ" })),
   ]
   const exact = columns.includes(prefix) || variables.includes(prefix) || constants.includes(prefix) || FORMULA_FUNCTIONS.some((f) => f.value === lower) ? prefix : null
   return { prefix, entries, exact }
+}
+
+/** Functions a word of whose label starts with `word` (three letters or more), other than those named so: `trim` finds strip. */
+function functionsDoing(word: string): typeof FORMULA_FUNCTIONS {
+  if (word.length < 3) return []
+  return FORMULA_FUNCTIONS.filter((f) => !f.value.startsWith(word) && f.label.toLowerCase().split(/[^a-z]+/).some((part) => part.startsWith(word)))
 }
 
 /** Argument names for the functions whose arguments need saying. */
