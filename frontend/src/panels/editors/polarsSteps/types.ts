@@ -114,7 +114,8 @@ export type DropStep = StepBase & { kind: "drop"; columns: string[]; dtypes?: Ca
 export type RenameStep = StepBase & { kind: "rename"; renames: Array<{ from: string; to: string }> }
 /** One column's new type; a text column becoming a Date or Datetime records its text's `format`. */
 export type CastEntry = { column: string; dtype: CastDtype; format?: string }
-export type CastStep = StepBase & { kind: "cast"; casts: CastEntry[] }
+/** `strict: false` makes a value that does not convert missing instead of failing the run. */
+export type CastStep = StepBase & { kind: "cast"; casts: CastEntry[]; strict: boolean }
 export type SortStep = StepBase & {
   kind: "sort"
   keys: OrderKey[]

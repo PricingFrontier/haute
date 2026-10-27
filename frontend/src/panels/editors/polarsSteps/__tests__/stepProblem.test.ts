@@ -213,7 +213,7 @@ describe("stepProblem", () => {
     ["join with a malformed validation", { id: "j", kind: "join", input: "r", how: "left", leftOn: [], rightOn: [], suffix: "", maintainOrder: "left_right", validate: 1 }, /malformed validation/],
     ["join without a row order", { id: "j", kind: "join", input: "r", how: "left", leftOn: [], rightOn: [], suffix: "" }, /maintainOrder/],
     ["join with an unknown row order", { id: "j", kind: "join", input: "r", how: "left", leftOn: [], rightOn: [], suffix: "", maintainOrder: "sideways" }, /unknown row order/],
-    ["cast with a malformed format", { id: "c", kind: "cast", casts: [{ column: "a", dtype: "Date", format: 7 }] }, /malformed format/],
+    ["cast with a malformed format", { id: "c", kind: "cast", strict: true, casts: [{ column: "a", dtype: "Date", format: 7 }] }, /malformed format/],
     [
       "membership with an unknown number type",
       { id: "f", kind: "filter", match: "all", conditions: [{ column: "a", operator: "is_in", values: [], numberType: "complex" }] },

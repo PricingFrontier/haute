@@ -250,7 +250,7 @@ describe("PolarsStepsEditor", () => {
 
   it("reorders steps by dragging a card onto another", async () => {
     const spy = vi.fn()
-    const cast: Step = { id: "c", kind: "cast", casts: [{ column: "premium", dtype: "Float64" }] }
+    const cast: Step = { id: "c", kind: "cast", strict: true, casts: [{ column: "premium", dtype: "Float64" }] }
     render(<Harness initial={{ steps: [source, filter, limit, cast] }} inputSources={[quotes]} spy={spy} />)
     const cardOf = (name: string) => screen.getByRole("button", { name }).closest("[data-testid='polars-step-card']") as HTMLElement
     const header = screen.getByRole("button", { name: "Step 3: Change types" }).parentElement as HTMLElement
@@ -491,7 +491,7 @@ describe("PolarsStepsEditor", () => {
 
   it("keeps the open card on its step when another card is dragged past it", async () => {
     const spy = vi.fn()
-    const cast: Step = { id: "c", kind: "cast", casts: [{ column: "premium", dtype: "Float64" }] }
+    const cast: Step = { id: "c", kind: "cast", strict: true, casts: [{ column: "premium", dtype: "Float64" }] }
     render(<Harness initial={{ steps: [source, filter, limit, cast] }} inputSources={[quotes]} spy={spy} />)
     fireEvent.click(screen.getByRole("button", { name: "Step 2: Limit rows" }))
     const cardOf = (name: string) => screen.getByRole("button", { name }).closest("[data-testid='polars-step-card']") as HTMLElement

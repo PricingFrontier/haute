@@ -69,7 +69,12 @@ def test_the_listed_gaps_are_still_outside_the_vocabulary() -> None:
         render_polars_steps(
             [
                 {"id": "s", "kind": "source", "input": "quotes"},
-                {"id": "c", "kind": "cast", "casts": [{"column": "region", "dtype": "Enum"}]},
+                {
+                    "id": "c",
+                    "kind": "cast",
+                    "strict": True,
+                    "casts": [{"column": "region", "dtype": "Enum"}],
+                },
             ],
             ["quotes"],
             start="input",

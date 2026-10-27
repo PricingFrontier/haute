@@ -480,7 +480,7 @@ export function createStep(kind: Exclude<StepKind, "source">, id: string): Step 
     case "rename":
       return { id, kind, renames: [{ from: "", to: "" }] }
     case "cast":
-      return { id, kind, casts: [{ column: "", dtype: "Float64" }] }
+      return { id, kind, casts: [{ column: "", dtype: "Float64" }], strict: true }
     case "sort":
       return { id, kind, keys: [{ column: "", descending: false }], nullsLast: false }
     case "unique":
@@ -714,7 +714,7 @@ const REQUIRED_FIELDS: Record<StepKind, Array<[string, Shape]>> = {
   select: [["columns", "array"]],
   drop: [["columns", "array"]],
   rename: [["renames", "array"]],
-  cast: [["casts", "array"]],
+  cast: [["casts", "array"], ["strict", "boolean"]],
   sort: [["keys", "array"], ["nullsLast", "boolean"]],
   unique: [["columns", "array"], ["keep", "string"]],
   group_by: [["keys", "array"], ["aggregations", "array"]],

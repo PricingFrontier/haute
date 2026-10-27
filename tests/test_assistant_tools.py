@@ -5057,7 +5057,12 @@ class TestAuthoringRendering:
 
     _STEPS = [
         {"id": "start", "kind": "source", "input": "quotes"},
-        {"id": "band", "kind": "cast", "casts": [{"column": "age", "dtype": "Nope"}]},
+        {
+            "id": "band",
+            "kind": "cast",
+            "strict": True,
+            "casts": [{"column": "age", "dtype": "Nope"}],
+        },
         {"id": "logic", "kind": "free_code", "code": "# Flag young drivers\ndf = df"},
     ]
 

@@ -982,63 +982,66 @@ function castEntryFor(entry: CastEntry, dtype: string | null): CastEntry {
 function CastForm({ step, onChange, ctx }: FormProps<CastStep>) {
   const schema = useStepSchema()
   return (
-    <RowList
-      rows={step.casts}
-      onChange={(casts) => onChange({ ...step, casts })}
-      label="Cast"
-      addLabel="Add column"
-      create={(): CastEntry => ({ column: "", dtype: "Float64" })}
-      renderRow={(entry, set, index) => {
-        const dtype = entry.column ? schema.typeOf(entry.column) : null
-        const targets = castTargetsFor(dtype)
-        const options = DTYPE_OPTIONS.filter((option) => targets.includes(option.value) || option.value === entry.dtype)
-        const parsing = parsesText(entry.dtype) && (castFamily(dtype) === "text" || (castFamily(dtype) === null && entry.format !== undefined))
-        const refused = castFamily(dtype) !== null && !targets.includes(entry.dtype)
-        return (
-          <>
-            <Words>{index === 0 ? "Change" : "and"}</Words>
-            <div className="flex-1 basis-28 min-w-0">
-              <ColumnPicker
-                id={index === 0 ? ctx.firstFieldId : undefined}
-                value={entry.column}
-                onCommit={(column) => set(castEntryFor({ ...entry, column }, schema.typeOf(column)))}
-                suggestions={ctx.columns}
-                ariaLabel={`Cast ${index + 1} column`}
-              />
-            </div>
-            <Words>to</Words>
-            <div className="flex-1 basis-28 min-w-0">
-              <SelectField value={entry.dtype} options={options} onChange={(next) => set(castEntryFor({ ...entry, dtype: next }, dtype))} ariaLabel={`Cast ${index + 1} type`} />
-            </div>
-            {parsing && (
-              <>
-                <Words>with format</Words>
-                <div className="flex-1 basis-28 min-w-0">
-                  <TextField
-                    value={entry.format ?? ""}
-                    // A text column needs its format: clearing it keeps the last one.
-                    onCommit={(format) => {
-                      if (format) set({ ...entry, format })
-                      else if (castFamily(dtype) !== "text") set(omitKeys(entry, ["format"]))
-                    }}
-                    ariaLabel={`Cast ${index + 1} format`}
-                    placeholder={parsesText(entry.dtype) ? DATE_FORMAT_DEFAULTS[entry.dtype] : undefined}
-                    mono
-                  />
-                </div>
-              </>
-            )}
-            {refused && (
-              <p role="alert" className="m-0 basis-full text-[11px]" style={{ color: "var(--warning)" }}>
-                {castFamily(dtype) === "category"
-                  ? `${entry.column} is a category, which Polars 2 casts only to text: change it to String first.`
-                  : `Polars 2 does not cast ${entry.column} from ${dtype} to ${entry.dtype}.`}
-              </p>
-            )}
-          </>
-        )
-      }}
-    />
+    <>
+      <RowList
+        rows={step.casts}
+        onChange={(casts) => onChange({ ...step, casts })}
+        label="Cast"
+        addLabel="Add column"
+        create={(): CastEntry => ({ column: "", dtype: "Float64" })}
+        renderRow={(entry, set, index) => {
+          const dtype = entry.column ? schema.typeOf(entry.column) : null
+          const targets = castTargetsFor(dtype)
+          const options = DTYPE_OPTIONS.filter((option) => targets.includes(option.value) || option.value === entry.dtype)
+          const parsing = parsesText(entry.dtype) && (castFamily(dtype) === "text" || (castFamily(dtype) === null && entry.format !== undefined))
+          const refused = castFamily(dtype) !== null && !targets.includes(entry.dtype)
+          return (
+            <>
+              <Words>{index === 0 ? "Change" : "and"}</Words>
+              <div className="flex-1 basis-28 min-w-0">
+                <ColumnPicker
+                  id={index === 0 ? ctx.firstFieldId : undefined}
+                  value={entry.column}
+                  onCommit={(column) => set(castEntryFor({ ...entry, column }, schema.typeOf(column)))}
+                  suggestions={ctx.columns}
+                  ariaLabel={`Cast ${index + 1} column`}
+                />
+              </div>
+              <Words>to</Words>
+              <div className="flex-1 basis-28 min-w-0">
+                <SelectField value={entry.dtype} options={options} onChange={(next) => set(castEntryFor({ ...entry, dtype: next }, dtype))} ariaLabel={`Cast ${index + 1} type`} />
+              </div>
+              {parsing && (
+                <>
+                  <Words>with format</Words>
+                  <div className="flex-1 basis-28 min-w-0">
+                    <TextField
+                      value={entry.format ?? ""}
+                      // A text column needs its format: clearing it keeps the last one.
+                      onCommit={(format) => {
+                        if (format) set({ ...entry, format })
+                        else if (castFamily(dtype) !== "text") set(omitKeys(entry, ["format"]))
+                      }}
+                      ariaLabel={`Cast ${index + 1} format`}
+                      placeholder={parsesText(entry.dtype) ? DATE_FORMAT_DEFAULTS[entry.dtype] : undefined}
+                      mono
+                    />
+                  </div>
+                </>
+              )}
+              {refused && (
+                <p role="alert" className="m-0 basis-full text-[11px]" style={{ color: "var(--warning)" }}>
+                  {castFamily(dtype) === "category"
+                    ? `${entry.column} is a category, which Polars 2 casts only to text: change it to String first.`
+                    : `Polars 2 does not cast ${entry.column} from ${dtype} to ${entry.dtype}.`}
+                </p>
+              )}
+            </>
+          )
+        }}
+      />
+      <ConfigCheckbox checked={!step.strict} onChange={(missing) => onChange({ ...step, strict: !missing })} label="Values that don't convert become missing" />
+    </>
   )
 }
 

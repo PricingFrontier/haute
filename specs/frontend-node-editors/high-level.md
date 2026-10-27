@@ -576,7 +576,11 @@ field, starting at `%Y-%m-%d`, or `%Y-%m-%d %H:%M:%S` for a date and time) and t
 parses with it (`str.to_date(format)`, `str.to_datetime(format)`); left empty where the
 column's type is unknown, the entry is a plain cast. Formulas parse text with
 `to_date`, `to_datetime`, `try_to_date` and `try_to_datetime`, each taking a required
-format, the `try_` forms giving null where a value does not parse. Change types offers
+format, the `try_` forms giving null where a value does not parse. Change types carries
+one checkbox, "Values that don't convert become missing": ticked, every cast and parse in
+the step gives a missing value where a value does not convert (the step's `strict` is
+`false`, rendered as `strict=False`); unticked, as a new step starts, `strict` is `true`
+and such a value fails the run. Change types offers
 each column only the types Polars 2 casts it to (a category becomes text or a
 category, a duration a number, binary data text, text anything but true/false, and no
 number or date becomes a category directly), the same table the renderer holds

@@ -896,12 +896,23 @@ describe("step forms only build schema-valid payloads", () => {
 
   it("cast rows pair a column with a type and can be added", () => {
     const spy = vi.fn()
-    render(<Stateful initial={{ id: "c", kind: "cast", casts: [{ column: "premium", dtype: "Float64" }] }} spy={spy} />)
+    render(<Stateful initial={{ id: "c", kind: "cast", strict: true, casts: [{ column: "premium", dtype: "Float64" }] }} spy={spy} />)
     fireEvent.change(screen.getByLabelText("Cast 1 type"), { target: { value: "Int64" } })
-    expect(spy).toHaveBeenLastCalledWith({ id: "c", kind: "cast", casts: [{ column: "premium", dtype: "Int64" }] })
+    expect(spy).toHaveBeenLastCalledWith({ id: "c", kind: "cast", strict: true, casts: [{ column: "premium", dtype: "Int64" }] })
     fireEvent.click(screen.getByRole("button", { name: "Add column" }))
-    expect(spy).toHaveBeenLastCalledWith({ id: "c", kind: "cast", casts: [{ column: "premium", dtype: "Int64" }, { column: "", dtype: "Float64" }] })
+    expect(spy).toHaveBeenLastCalledWith({ id: "c", kind: "cast", strict: true, casts: [{ column: "premium", dtype: "Int64" }, { column: "", dtype: "Float64" }] })
     expect(screen.getByRole("button", { name: "Remove cast 1" })).toBeInTheDocument()
+  })
+
+  it("Change types can make a value that doesn't convert missing", () => {
+    const spy = vi.fn()
+    render(<Stateful initial={{ id: "c", kind: "cast", strict: true, casts: [{ column: "premium", dtype: "Int64" }] }} spy={spy} />)
+    const lenient = screen.getByLabelText("Values that don't convert become missing")
+    expect(lenient).not.toBeChecked()
+    fireEvent.click(lenient)
+    expect(spy).toHaveBeenLastCalledWith({ id: "c", kind: "cast", strict: false, casts: [{ column: "premium", dtype: "Int64" }] })
+    fireEvent.click(screen.getByLabelText("Values that don't convert become missing"))
+    expect(spy).toHaveBeenLastCalledWith({ id: "c", kind: "cast", strict: true, casts: [{ column: "premium", dtype: "Int64" }] })
   })
 
   it("sort keys take a direction and nulls-last, and can be added and removed", () => {
@@ -1325,16 +1336,16 @@ describe("steps offer only what Polars 2 runs on the column types the editor kno
   it("Change types parses a text column into a date with its format", () => {
     const spy = vi.fn()
     const context = contextFor([["start", "String"]])
-    render(<StatefulIn initial={{ id: "c", kind: "cast", casts: [{ column: "start", dtype: "Float64" }] }} spy={spy} context={context} />)
+    render(<StatefulIn initial={{ id: "c", kind: "cast", strict: true, casts: [{ column: "start", dtype: "Float64" }] }} spy={spy} context={context} />)
 
     expect(optionValues(screen.getByLabelText("Cast 1 type"))).not.toContain("Boolean")
     fireEvent.change(screen.getByLabelText("Cast 1 type"), { target: { value: "Date" } })
-    expect(spy).toHaveBeenLastCalledWith({ id: "c", kind: "cast", casts: [{ column: "start", dtype: "Date", format: "%Y-%m-%d" }] })
+    expect(spy).toHaveBeenLastCalledWith({ id: "c", kind: "cast", strict: true, casts: [{ column: "start", dtype: "Date", format: "%Y-%m-%d" }] })
 
     const format = screen.getByLabelText("Cast 1 format")
     fireEvent.change(format, { target: { value: "%d/%m/%Y" } })
     fireEvent.blur(format)
-    expect(spy).toHaveBeenLastCalledWith({ id: "c", kind: "cast", casts: [{ column: "start", dtype: "Date", format: "%d/%m/%Y" }] })
+    expect(spy).toHaveBeenLastCalledWith({ id: "c", kind: "cast", strict: true, casts: [{ column: "start", dtype: "Date", format: "%d/%m/%Y" }] })
     expect(summarizeStep(spy.mock.calls.at(-1)?.[0] as Step)).toBe("start → Date from '%d/%m/%Y'")
     // A text column keeps its format: clearing the box does not turn the parse into a cast.
     const calls = spy.mock.calls.length
@@ -1343,20 +1354,20 @@ describe("steps offer only what Polars 2 runs on the column types the editor kno
     expect(spy.mock.calls.length).toBe(calls)
 
     fireEvent.change(screen.getByLabelText("Cast 1 type"), { target: { value: "String" } })
-    expect(spy).toHaveBeenLastCalledWith({ id: "c", kind: "cast", casts: [{ column: "start", dtype: "String" }] })
+    expect(spy).toHaveBeenLastCalledWith({ id: "c", kind: "cast", strict: true, casts: [{ column: "start", dtype: "String" }] })
     expect(screen.queryByLabelText("Cast 1 format")).not.toBeInTheDocument()
   })
 
   it("Change types offers a category only text, and says why a saved number cast fails", () => {
     const context = contextFor([["band", "Categorical"]])
-    render(<StatefulIn initial={{ id: "c", kind: "cast", casts: [{ column: "band", dtype: "Int64" }] }} spy={vi.fn()} context={context} />)
+    render(<StatefulIn initial={{ id: "c", kind: "cast", strict: true, casts: [{ column: "band", dtype: "Int64" }] }} spy={vi.fn()} context={context} />)
 
     expect(optionValues(screen.getByLabelText("Cast 1 type"))).toEqual(["Int64", "String", "Categorical"])
     expect(screen.getByRole("alert")).toHaveTextContent("band is a category, which Polars 2 casts only to text: change it to String first.")
   })
 
   it("Change types offers every type, and no format, while the column's type is unknown", () => {
-    render(<StatefulIn initial={{ id: "c", kind: "cast", casts: [{ column: "start", dtype: "Date" }] }} spy={vi.fn()} context={ctx} />)
+    render(<StatefulIn initial={{ id: "c", kind: "cast", strict: true, casts: [{ column: "start", dtype: "Date" }] }} spy={vi.fn()} context={ctx} />)
 
     expect(optionValues(screen.getByLabelText("Cast 1 type"))).toHaveLength(15)
     expect(screen.queryByLabelText("Cast 1 format")).not.toBeInTheDocument()

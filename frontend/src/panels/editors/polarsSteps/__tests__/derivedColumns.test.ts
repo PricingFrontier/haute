@@ -122,7 +122,7 @@ describe("column types", () => {
   it("are set by a cast, kept by a rename, and dropped when a step replaces the column", () => {
     const list: Step[] = [
       source("quotes"),
-      { id: "c", kind: "cast", casts: [{ column: "k", dtype: "Float64" }] },
+      { id: "c", kind: "cast", strict: true, casts: [{ column: "k", dtype: "Float64" }] },
       { id: "r", kind: "rename", renames: [{ from: "k", to: "key" }] },
       { id: "w", kind: "with_column", name: "premium", expr: { type: "binary", left: { kind: "column", name: "premium" }, op: "*", right: { kind: "literal", type: "number", value: 2 }, text: "premium * 2" } },
     ]
