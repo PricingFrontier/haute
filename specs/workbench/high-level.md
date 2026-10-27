@@ -313,14 +313,16 @@ Out of scope:
     Assistant, Help, the branch, Save and Commit) and shows the view's own, the same in
     both modes, so the toolbar keeps its layout as the mode changes: the form's Undo and
     Redo and Zoom In over Zoom Out, where the pipeline toolbar has its own Undo and Redo and
-    zoom, then Build over Preview and Schema over Display, then, in Preview, why pricing
-    the sample last failed; there is no Price and no Clear. Schema opens and closes the
+    zoom, then Build over Preview, Schema over Display and Reset, then, in Preview, why
+    pricing the sample last failed; there is no Price and no Clear. Reset starts the
+    sample again as a new quote (the sample, below). Schema opens and closes the
     schema's pane in either mode, pressed while it is open. A control the mode has no use
     for stays in its place, disabled, as the palette's components are in Preview:
 
     | Control | Disabled |
     |---|---|
     | Display | In Preview |
+    | Reset | While building, and while the sample holds a new quote's values and nothing else |
 
   - **The schema's pane.** Schema opens the schema editor in a pane that slides in from
     the left over the sheet, under the sheet tabs, covering the sheet's left part without
@@ -904,7 +906,10 @@ Out of scope:
   table id and column id; the server types them by their columns when the tables are made.
   Pressing a cell types there. The sample is part of the form: saved with it, undone like
   any edit, in Preview as while building, and dropped with a column or table removed from
-  the schema.
+  the schema. The toolbar's Reset, in Preview, starts it again as a new quote, as one
+  undo step and without asking: each one-row input table holding its columns' defaults,
+  nothing else, so each grid shows its starting rows, empty; a new quote's values alone
+  are not priced (below).
 - **Priced live.** While Preview shows, the sample is priced on the pipeline open in the
   editor whenever the schema, the sample or which of the sample's values are left out
   (Shown when, below) changes, 300ms after the last value entered (a text, number or date
@@ -919,7 +924,8 @@ Out of scope:
   nothing, and nothing is priced while building. A pipeline without a Workbench Input at
   its top level, which alone is given the sheets' values, is not priced: Preview says to
   replace the Quote Input the sheets never fill, or to add a Workbench Input or move the
-  one inside a submodel out of it. There is no Price and no Clear. The
+  one inside a submodel out of it. There is no Price and no Clear; Reset (above) starts
+  the sample again as a new quote. The
   sample is priced whatever its cells hold, a value that breaks its column's rules
   included; with nothing typed in the cells the sheets show, the defaults a new quote
   starts with aside, it is not priced, as a deployed request never holds a blank quote,
@@ -1779,8 +1785,10 @@ Out of scope:
   new quote's window, whose required columns of `quote_details` are an entry requirement
   of the quote's making alone: an alternative made at once, and every save after, keep a
   quote its rules mark. Clear is gone: it emptied a quote
-  at one press, and Preview's quote is the saved sample, while Undo takes back what was
-  typed.
+  at one press, after asking, and could not be undone. Preview's quote is the saved
+  sample, so Reset starts it again as a new quote through the form's history instead:
+  one undo step, so it asks nothing, and a new quote's defaults rather than nothing, as
+  Build draws the sheets and an underwriter's New quote opens.
 - **Rows matched as the server typed them.** A Table's output rows are matched through
   the typed sample the pricing answers with, not the text in the grid: the server leaves
   empty rows out and numbers the index as the grid does, so the filled grid rows are its

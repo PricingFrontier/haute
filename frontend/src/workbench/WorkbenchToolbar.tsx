@@ -1,4 +1,4 @@
-import { Database, Eye, Wrench } from "lucide-react"
+import { Database, Eye, RotateCcw, Wrench } from "lucide-react"
 import ProjectControls from "../components/ProjectControls"
 import SourcePipelineControls from "../components/SourcePipelineControls"
 import type { WsStatus } from "../hooks/useWebSocketSync"
@@ -6,6 +6,7 @@ import { ToolbarBrand, ToolbarButton, ToolbarColumn, UndoRedo, ZoomInOut } from 
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
+import { isNewQuoteSample, newQuoteSample } from "../utils/workbenchForm"
 import WorkbenchDisplay from "./WorkbenchDisplay"
 
 interface WorkbenchToolbarProps {
@@ -30,8 +31,8 @@ interface WorkbenchToolbarProps {
  * its place: the brand; the pipeline toolbar's Source over Pipeline; the form's Undo and Redo;
  * Zoom In over Zoom Out, these three where the pipeline toolbar has them; Build over Preview;
  * Schema, opening and closing the schema's pane in either mode, over Display and the box of
- * the sheets' colours it opens, disabled in Preview; in Preview, why pricing the sample last
- * failed; and
+ * the sheets' colours it opens, disabled in Preview; Reset, in Preview, starting the sample
+ * again as a new quote, one undo step; in Preview, why pricing the sample last failed; and
  * the project's controls, the host's and the same as the pipeline toolbar's: Save saves the
  * project, the form and then the pipeline, and Commit records a milestone after that save.
  */
@@ -47,6 +48,8 @@ export default function WorkbenchToolbar({
   const canRedo = useWorkbenchFormStore((s) => s.redoStack.length > 0)
   const undo = useWorkbenchFormStore((s) => s.undo)
   const redo = useWorkbenchFormStore((s) => s.redo)
+  const change = useWorkbenchFormStore((s) => s.change)
+  const newQuote = useWorkbenchFormStore((s) => s.form === null || isNewQuoteSample(s.form))
   const previewing = useWorkbenchViewStore((s) => s.mode === "preview")
   const schemaOpen = useWorkbenchViewStore((s) => s.schemaOpen)
   const showMode = useWorkbenchViewStore((s) => s.showMode)
@@ -74,6 +77,11 @@ export default function WorkbenchToolbar({
             Schema
           </ToolbarButton>
           <WorkbenchDisplay disabled={!ready || previewing} />
+        </ToolbarColumn>
+        <ToolbarColumn>
+          <ToolbarButton icon={RotateCcw} onClick={() => change(newQuoteSample)} disabled={!ready || !previewing || newQuote} title="Back to a new quote: the defaults alone">
+            Reset
+          </ToolbarButton>
         </ToolbarColumn>
         {previewing && error !== null && (
           <span

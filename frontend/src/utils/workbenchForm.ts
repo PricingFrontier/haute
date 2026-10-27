@@ -42,7 +42,8 @@ import {
   type Size,
 } from "./sheetGeometry"
 import { IDENTITY_COLUMNS, IDENTITY_NAMES, identityCount, isIdentityColumn, QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, sheetColumns } from "./quoteIdentity"
-import { cellProblem, filled, isDay, parseTypedNumber, presetColumn, pricedRows, valuesBasis, type PricedRows, type RowsByTable } from "./sheetValues"
+import { canonicalJson } from "./canonicalJson"
+import { cellProblem, filled, isDay, newQuoteValues, parseTypedNumber, presetColumn, pricedRows, valuesBasis, type PricedRows, type RowsByTable } from "./sheetValues"
 import {
   ALWAYS,
   columnKey,
@@ -1603,6 +1604,19 @@ export const withSampleRows = (spec: FormSpec, rowsByTable: Record<string, Sampl
   edit(spec, (draft) => {
     for (const [tableId, rows] of Object.entries(rowsByTable)) draft.sample[tableId] = rows
   })
+
+/**
+ * Whether the sample holds a new quote's values and nothing else (`newQuoteValues`): a row
+ * left empty in a grid shows, so it counts.
+ */
+export const isNewQuoteSample = (spec: FormSpec): boolean => canonicalJson(spec.sample) === canonicalJson(newQuoteValues(spec.schema))
+
+/**
+ * The sample started again as a new quote, its one-row tables' defaults alone, as Preview's
+ * Reset makes it; the form itself while the sample is one already.
+ */
+export const newQuoteSample = (spec: FormSpec): FormSpec =>
+  isNewQuoteSample(spec) ? spec : { ...spec, sample: structuredClone(newQuoteValues(spec.schema)) as Record<string, SampleRow[]> }
 
 /** `rows` with empty rows added to make `length`. */
 export const padRows = (rows: readonly SampleRow[], length: number): SampleRow[] => [

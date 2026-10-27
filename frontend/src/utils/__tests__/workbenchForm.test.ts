@@ -39,6 +39,7 @@ import {
   HEADING_OPTIONS,
   IMPORT_SOURCES,
   importColumns,
+  isNewQuoteSample,
   keptInside,
   labelColumns,
   linedUpOutputs,
@@ -49,6 +50,7 @@ import {
   moveSchemaTable,
   moveSection,
   moveWidget,
+  newQuoteSample,
   orderItems,
   pageProblems,
   parameterColumns,
@@ -1065,6 +1067,24 @@ describe("what the sheets show", () => {
     expect(spec.sample.equipment).toEqual([{ "equipment.item": "B" }])
     expect(spec.sample.premiums).toEqual([{ "premiums.item": "B" }])
     expect(spec.sample.policy).toEqual([{ "policy.state": "NY", "policy.year": true }])
+  })
+
+  it("starts the sample again as a new quote, its one-row tables' defaults alone, and leaves a new quote's sample as it is", () => {
+    const spec = updateSchemaColumn(sheet(), "policy", "policy.state", { default_value: "CA" })
+    expect(isNewQuoteSample(spec)).toBe(false)
+    const reset = newQuoteSample(spec)
+    expect(reset.sample).toEqual({ policy: [{ "policy.state": "CA" }] })
+    expect(reset.pages).toBe(spec.pages)
+    expect(isNewQuoteSample(reset)).toBe(true)
+    expect(newQuoteSample(reset)).toBe(reset)
+    // Typing into it afterwards leaves what a new quote starts with as it was.
+    reset.sample.policy[0]["policy.state"] = "NY"
+    expect(newQuoteSample(spec).sample).toEqual({ policy: [{ "policy.state": "CA" }] })
+
+    // Without defaults a new quote holds nothing; a row left empty in a grid shows, so it is not one.
+    const empty = newQuoteSample(sheet())
+    expect(empty.sample).toEqual({})
+    expect(isNewQuoteSample(withSampleRows(empty, { equipment: [{}] }))).toBe(false)
   })
 
   it("sets the rows a Table's grid starts with, starting its grid in the sample again at them and keeping every value typed", () => {

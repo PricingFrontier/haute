@@ -573,8 +573,9 @@ the answer keyed like each grid row, dimmed while a newer answer is on its way, 
 Chart plots the sample with what pricing it gave. A Table of output columns alone, such as
 a premium by peril, shows a row for each row of the answer, as a Chart of them does; until
 it is priced (or while its table has nothing connected) it shows its starting rows of
-dashes. There is no **Price** to press and no
-**Clear**: a sample with nothing typed is not priced, and its outputs show dashes. The
+dashes. There is no **Price** to press: a sample with nothing typed is not priced, and
+its outputs show dashes. **Reset** in the toolbar takes the sample back to a new quote,
+its columns' defaults and nothing else; **Undo** brings back what it cleared. The
 sample is priced whatever its cells hold. Once anything is typed, a cell that breaks its
 column's rules (a required cell left empty, a number that is not one, a whole number that
 is not whole, a date that is not one, a number outside its range, a value that is not one of the allowed ones) is
