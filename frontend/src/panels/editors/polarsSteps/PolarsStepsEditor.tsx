@@ -223,8 +223,9 @@ export default function PolarsStepsEditor({
     const base = isFrame || steps[0]?.kind === "source"
       ? steps
       : [{ id: newStepId(), kind: "source", input: effectiveStart } as Step, ...steps]
-    // A preset belongs to its own kind: an Add column's calculation, a Change types entry.
-    const step = { ...createStep(kind, newStepId()), ...preset } as Step
+    // A preset belongs to its own kind (an Add column's calculation, a Change types entry);
+    // each step gets its own copy, as the chooser hands every pick the same preset.
+    const step = { ...createStep(kind, newStepId()), ...structuredClone(preset) } as Step
     // With one input there is nothing to join; the card says to connect one.
     if (step.kind === "join") step.input = inputNames.find((name) => name !== effectiveStart) ?? ""
     setSteps([...base, step])

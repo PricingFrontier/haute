@@ -713,6 +713,15 @@ describe("PolarsStepsEditor keys and focus", () => {
     await waitFor(() => expect((lastSteps(spy) as Step[])[1]).toMatchObject({ kind: "with_column", expr: { type: "function", fn: "clip" } }), { timeout: 5000 })
     fireEvent.change(screen.getByLabelText("Expression type"), { target: { value: "formula" } })
     expect(screen.getByRole("button", { name: "Step 1: Formula" })).toBeInTheDocument()
+    // A second pick of the same entry starts from its own copy of the preset.
+    fireEvent.click(screen.getByRole("button", { name: "Add step" }))
+    fireEvent.click(screen.getByRole("menuitem", { name: "Clip" }))
+    fireEvent.click(screen.getByRole("button", { name: "Add step" }))
+    fireEvent.click(screen.getByRole("menuitem", { name: "Clip" }))
+    await waitFor(() => expect(lastSteps(spy)).toHaveLength(4), { timeout: 5000 })
+    const [, , second, third] = lastSteps(spy) as Array<Extract<Step, { kind: "with_column" }>>
+    expect(second.expr).toEqual(third.expr)
+    expect(second.expr).not.toBe(third.expr)
   })
 
   it("opens a new Add column step on its name, with the formula box showing its example", async () => {
