@@ -741,7 +741,7 @@ function ConditionalEditor({
   operandProps: ReturnType<typeof anyOperand>
 }) {
   const many = expr.branches.length > 1
-  const keys = useRowKeys(expr.branches)
+  const branchKeys = useRowKeys(expr.branches)
   const setBranch = (index: number, next: ConditionalBranch) => onChange({ ...expr, branches: expr.branches.map((b, i) => (i === index ? next : b)) })
   const addBranch = () => {
     // A new branch tests the previous branch's first column and starts from a value of its Then's type.
@@ -754,7 +754,7 @@ function ConditionalEditor({
       {expr.branches.map((branch, index) => {
         const name = index === 0 ? "If" : `Branch ${index + 1}`
         return (
-          <RowGroup key={keys[index]} label={`Branch ${index + 1}`} boxed={many}>
+          <RowGroup key={branchKeys.keys[index]} label={`Branch ${index + 1}`} boxed={many}>
             <div className="flex items-start gap-1.5">
               <div className="grid flex-1 gap-1.5 min-w-0">
                 <ConditionList
@@ -771,7 +771,15 @@ function ConditionalEditor({
                   <OperandField value={branch.then} onChange={(then) => setBranch(index, { ...branch, then })} ariaLabel={index === 0 ? "Then value" : `${name} then value`} {...operandProps} />
                 </Field>
               </div>
-              {many && <RowRemove label={`Remove branch ${index + 1}`} onClick={() => onChange({ ...expr, branches: expr.branches.filter((_, i) => i !== index) })} />}
+              {many && (
+                <RowRemove
+                  label={`Remove branch ${index + 1}`}
+                  onClick={() => {
+                    branchKeys.remove(index)
+                    onChange({ ...expr, branches: expr.branches.filter((_, i) => i !== index) })
+                  }}
+                />
+              )}
             </div>
           </RowGroup>
         )

@@ -1392,6 +1392,18 @@ describe("Computed as", () => {
     expect(latest.expr).toMatchObject({ parts: [{ kind: "expr", expr: { fn: "clip", operand: { name: "other_amount" }, args: [{ value: 0 }, { value: 0 }] } }, { kind: "expr", expr: clipPremium }] })
   })
 
+  it("tells apart rows that read the same but were built differently when one is removed", () => {
+    const spy = vi.fn()
+    const clip = (low: number, high: number): Operand => ({ kind: "expr", expr: { type: "function", fn: "clip", operand: { kind: "column", name: "premium" }, args: [{ kind: "literal", type: "number", value: low }, { kind: "literal", type: "number", value: high }] } })
+    render(<Stateful initial={{ id: "s", kind: "with_column", name: "total", expr: { type: "sum_horizontal", parts: [clip(0.8, 1.2), clip(0.9, 1.1), { kind: "column", name: "fee" }] } }} spy={spy} />)
+    fireEvent.change(screen.getByLabelText("Part 1 expression type"), { target: { value: "round" } })
+    fireEvent.change(screen.getByLabelText("Part 2 expression type"), { target: { value: "round" } })
+    fireEvent.click(screen.getByRole("button", { name: "Remove part 1" }))
+    fireEvent.change(screen.getByLabelText("Part 1 expression type"), { target: { value: "clip" } })
+    const parts = ((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>).expr as Extract<Expr, { type: "sum_horizontal" }>).parts
+    expect(parts[0]).toEqual(clip(0.9, 1.1))
+  })
+
   it("gives a row restored by an undo its own drafts, not a neighbour's", () => {
     const onChange = vi.fn()
     const part = (expr: Expr) => ({ kind: "expr" as const, expr })
