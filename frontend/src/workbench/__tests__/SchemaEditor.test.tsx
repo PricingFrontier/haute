@@ -13,7 +13,7 @@ import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { answerQuestion, asked } from "../../test-utils/question"
-import { BLANK_THEME, COLLECTION_OPTIONS, TABLE_OPTIONS, updateSchemaColumn } from "../../utils/workbenchForm"
+import { BLANK_THEME, COLLECTION_OPTIONS, createWidget, TABLE_OPTIONS, updateSchemaColumn } from "../../utils/workbenchForm"
 import SchemaEditor from "../SchemaEditor"
 import { detailsTable } from "./fixtures"
 
@@ -619,6 +619,28 @@ describe("SchemaEditor", () => {
     })
     await answerQuestion("confirm")
     expect(current().pages[0].show_when.conditions).toEqual([])
+  })
+
+  it("asks before removing a column or a table an Import or an Export uses, and takes it out of them", async () => {
+    const used = form(POLICY, LAYERS)
+    const condition = { table: "t_policy", column: "c_state", op: "filled" as const, values: [] }
+    used.pages[0].show_when = { match: "all", conditions: [condition] }
+    used.pages[0].sections[0].widgets = [
+      { ...createWidget("import", { x: 0, y: 0, w: 160, h: 40 }), id: "w_in", table: "t_policy", column_names: [{ column: "c_state", name: "State" }] },
+      { ...createWidget("export", { x: 176, y: 0, w: 160, h: 40 }), id: "w_out", tables: ["t_policy"] },
+    ]
+    load(used)
+    render(<SchemaEditor />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove column state" }))
+    expect(asked()?.text).toBe("Tested by the conditions of 1 sheet, section or component and used by 1 Import or Export; removing it takes it out of them too.")
+    await answerQuestion("confirm")
+    expect(current().pages[0].sections[0].widgets[0]).toMatchObject({ table: "t_policy", column_names: [] })
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete table policy_details" }))
+    expect(asked()?.text).toBe("Its columns are used by 2 Imports and Exports; deleting it takes them out of them too.")
+    await answerQuestion("confirm")
+    expect(current().pages[0].sections[0].widgets).toMatchObject([{ table: null }, { tables: [] }])
   })
 
   it("counts a section whose conditions test a column or a table in the confirmation, and takes those conditions out of it", async () => {

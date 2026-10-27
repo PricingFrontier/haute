@@ -4,8 +4,8 @@
  * Table's options say and boxes as their Collection's look says, an output box showing what pricing the sample gave, dimmed once the
  * sample has moved on, a Table's output columns matched to its rows by key, the cells that
  * break their column's rules marked once anything is typed, while building a new quote's
- * cells, empty and inert, the underwriter app's quote typed apart from the sample, and a
- * Heading drawn as its text.
+ * cells, empty and inert, the underwriter app's quote typed apart from the sample, a
+ * Heading drawn as its text, and an Import or an Export as a disabled button.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
@@ -16,7 +16,7 @@ import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { previewBasis } from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { valuesBasis } from "../../utils/sheetValues"
-import { addSchemaColumn, addSchemaTable, BLANK_THEME, createWidget, setColumnLook, toggleField, updateSchemaColumn, updateWidget, type WidgetPatch } from "../../utils/workbenchForm"
+import { addSchemaColumn, addSchemaTable, BLANK_THEME, createWidget, setColumnLook, setExportFormat, toggleField, updateSchemaColumn, updateWidget, type WidgetPatch } from "../../utils/workbenchForm"
 import SheetCanvas from "../SheetCanvas"
 import { SheetValuesContext, useNewQuoteValues, useQuoteValues, useSampleValues } from "../useSheetValues"
 import { everyField, spacersShown } from "../sheet/fieldCells"
@@ -1398,6 +1398,33 @@ describe("WidgetBody", () => {
     preview(true)
     rerender(body("w_head"))
     expect(container).toBeEmptyDOMElement()
+  })
+
+  it("draws an Import or an Export as a disabled button, its format's mark beside its label, faded in Preview", () => {
+    const form = sheetForm()
+    addTo(form, { ...createWidget("import", { x: 16, y: 380, w: 160, h: 40 }), id: "w_in", label: "Import schedule" })
+    addTo(form, { ...createWidget("export", { x: 192, y: 380, w: 160, h: 40 }), id: "w_out", label: "" })
+    loadForm(form)
+    const { rerender } = renderBody("w_in")
+
+    const button = screen.getByRole("button", { name: "Import schedule" })
+    expect(button).toBeDisabled()
+    expect(button).toHaveTextContent("Import schedule")
+    expect(button.style.border).toBe("1px solid var(--border)")
+    expect(button).toHaveStyle({ background: "var(--bg-panel)" })
+    expect(button.querySelector("svg.lucide-file-text")).not.toBeNull()
+    expect(button).not.toHaveClass("opacity-60")
+    act(() => useWorkbenchViewStore.setState({ mode: "preview" }))
+    rerender(body("w_in"))
+    expect(screen.getByRole("button", { name: "Import schedule" })).toHaveClass("opacity-60")
+    act(() => useWorkbenchViewStore.setState({ mode: "build" }))
+
+    // With no label, its mark alone, named by its kind; a database's mark once it writes to one.
+    act(() => useWorkbenchFormStore.getState().change((spec) => setExportFormat(spec, "w_out", "sql")))
+    rerender(body("w_out"))
+    const empty = screen.getByRole("button", { name: "Export" })
+    expect(empty).toHaveTextContent("")
+    expect(empty.querySelector("svg.lucide-database")).not.toBeNull()
   })
 
   it("draws a Heading's description under it, both aligned as it says, and no description while it has no text", () => {

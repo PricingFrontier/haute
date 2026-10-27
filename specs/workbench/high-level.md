@@ -4,8 +4,9 @@
 
 The workbench is where a pricing team lays out the quote an underwriter keys in: a schema
 of typed tables, the sheets, each a stack of sections holding Tables and Collections that
-show those tables' columns, Charts that plot them and Headings that name them, and the
-sample quote typed into them in Preview. It is part of Haute, switched on per
+show those tables' columns, Charts that plot them, Headings that name them and Imports
+and Exports, the buttons laid out to fill them from a file or a database and to take them
+out, and the sample quote typed into them in Preview. It is part of Haute, switched on per
 project in `haute.toml`, and its form is a file in the project, `forms/form.json`, versioned
 beside the pipeline.
 
@@ -45,8 +46,9 @@ In scope:
   which a column's allowed values are read from (and Banding's categorical rules imported).
 - The Workbench view: how it is shown beside the pipeline editor and what the pipeline
   editor does meanwhile, its toolbar and keyboard shortcuts, its schema editor, its sheets
-  (the canvas and its sections, the Table, the Collection, the Chart and the Heading, their
-  palette and properties panel, and the sheet tabs), drawn while building as a new quote,
+  (the canvas and its sections, the Table, the Collection, the Chart, the Heading, the
+  Import and the Export, their palette and properties panel, and the sheet tabs), drawn
+  while building as a new quote,
   Preview, where the sample is keyed into the sheets as an underwriter keys a quote and
   priced live on the pipeline, and how the form is read into it and saved from it.
 - The Workbench Input, the node type that holds a copy of the tables and sample, which the
@@ -72,6 +74,9 @@ Out of scope:
 - Where a deployment's quote store is configured and migrated, the server databases it
   will run on, and the app's Save, Open and list of quotes
   ([WB-10](../roadmap/workbench.md#wb-10--the-quote-store)).
+- Running an Import or an Export: reading a file or a database into a table
+  ([WB-09](../roadmap/workbench.md#wb-09--actions-that-fill-the-sheets)) and writing the
+  quote's tables out ([WB-11](../roadmap/workbench.md#wb-11--exports-from-the-app)).
 - `haute init`'s other scaffolding ([cli](../cli/high-level.md),
   [pipeline-config](../pipeline-config/high-level.md)).
 
@@ -193,14 +198,35 @@ Out of scope:
   columns, with what labels the rows of its many-row tables, `category`, a schema column
   named as a field is or null to number them, and how it draws: `chart_type` (`column`,
   `line`, `area` or `pie`), `orientation` (`vertical` or `horizontal`), `stacked`, `legend`
-  (`bottom`, `top`, `left`, `right` or `none`) and `data_labels`) or a Heading (`heading`,
+  (`bottom`, `top`, `left`, `right` or `none`) and `data_labels`), a Heading (`heading`,
   its `text`, naming a section of the sheet, the `description` under it, its `size`,
-  `large`, `medium` or `small`, and its `align`, `left`, `center` or `right`),
+  `large`, `medium` or `small`, and its `align`, `left`, `center` or `right`), an Import
+  (`import`, a button an underwriter presses to fill an input table: its `label`, the text
+  on it; its `source`, by `format`, a CSV (`csv`, its `delimiter`, `auto`, `comma`,
+  `semicolon` or `tab`), an Excel workbook (`excel`, its `sheet` by name, `""` for its
+  first, and its `header_row`, 1 to 100, the row naming its columns) or a database (`sql`,
+  its `connection`, a named connection whose credentials the environment holds, `""` for
+  none chosen, its `query`, and its `parameters`, each a `:name` in the query, by `name`,
+  an identifier, given the value of a column by `table` and `column`, no name twice); the
+  input table it fills, `table` by id, or null for none; how it fills a many-row table,
+  `mode`, `replace`, `append` or `update` (its rows matched by the table's keys); and
+  `column_names`, the columns of that table read from a column named otherwise, each by
+  `column` id with that `name`, never blank, one each at most and none while it fills no
+  table) or an Export (`export`, a button an underwriter presses to take the quote's tables
+  out: its `label`; the `tables` it exports, by id, in the order chosen, none twice; and its
+  `target`, by `format`, a CSV (`csv`) or an Excel workbook (`excel`), each with its
+  `file_name`, its extension left out, `{name}` in it standing for the value of that column
+  of `quote_details`, whether a column is headed by its name or its label (`headers`,
+  `names` or `labels`) and whether its values are as the quote holds them or as the sheets
+  show them, in their columns' formats (`values`, `raw` or `formatted`), and a CSV with the
+  `delimiter` that splits its fields (`comma`, `semicolon` or `tab`); or a database (`sql`,
+  its `connection` and its `table_names`, the tables written to a table named otherwise,
+  each by `table`, one it exports, with that `name`, never blank, one each at most)),
   each placed in its section by its `x`, `y`, `w`, `h`, measured from the section's top-left
   corner and inside it, its `y` plus its `h` at most the section's `height` and its `x` plus
   its `w` at most the sheet's `width`, and with a
-  `show_when` of its own, and each but a
-  Heading with a `title` and showing its `fields`, schema columns named by table id and
+  `show_when` of its own, and each Table, Collection and Chart with a `title` and showing
+  its `fields`, schema columns named by table id and
   column id so a rename keeps them. A `show_when` holds `conditions` and whether `all`
   of them must hold, `any`, or at least a whole number of them, 1 or more (`match`); with
   none, the sheet, section, component or field always shows.
@@ -404,12 +430,17 @@ Out of scope:
   until renamed, an Integer whose type cannot change, numbering the rows from 1, which
   neither a drag nor Alt+Up and Alt+Down moves or passes; switching a table to one row clears its keys
   and drops its index, with what shows it, and switching it to many rows clears its
-  columns' defaults. Removing a column or a table a sheet shows, or a
-  sheet's, a section's or a component's condition tests, asks first, and takes it off the
-  sheet, out of those conditions and out of the sample: a column takes a test of a list's
+  columns' defaults. Removing a column or a table a sheet shows, a
+  sheet's, a section's or a component's condition tests, or an Import or an Export uses,
+  asks first, and takes it off the
+  sheet, out of those conditions, out of the Imports and Exports and out of the sample: a
+  column takes a test of a list's
   rows on it alone, the list's condition going with it once it has no test while it needs
   one (in any or every row) or when it totals the column; a group left with none goes with
-  them; and a table takes every condition on its rows. The editor says what would stop
+  them; a table takes every condition on its rows; a column takes the name an Import
+  read it from and the parameters it gave a value; and a table leaves the Import that
+  filled it filling none, its column names gone too, takes the parameters its columns
+  gave, and stops being exported, with the name it was written to. The editor says what would stop
   the schema being the pipeline's tables: a table's name is held to the port rules the
   Quote Input's labels are held to (an identifier, none of the document's reserved labels,
   unique whatever its case), a column's name is an identifier that is not a Python keyword,
@@ -556,7 +587,8 @@ Out of scope:
   lower than the box beside it is read with it. Where two overlap, the one added later is
   drawn over the other (a copy just over its original) and the selected one over both. A component with a problem (no fields, a Heading with no text, a column no longer in the schema, a table
   of the other kind, tables whose rows do not line up, a Chart's field that is not a number
-  or is an index, a pie of many rows with more than one field, or one of its conditions',
+  or is an index, a pie of many rows with more than one field, an Import's or an Export's
+  (Imports and Exports, below), or one of its conditions',
   Shown when below) gets a dashed frame in the warning colour naming the problem, on hover and to
   a screen reader. One with no fields asks for them, while building, from the panel on
   the right; in Preview, which has no panel, it is its frame alone, as a Heading with no
@@ -566,7 +598,8 @@ Out of scope:
   the schema or the pipeline editor) and on Ctrl/Cmd+1.
 - **The palette.** The view's left column is Haute's palette shell with a Section and a
   Heading, in the structure colour, a Collection and a Table, in the entry colour, a Chart,
-  in Explore's colour, and the switcher under them. A Section dragged onto the sheet
+  in Explore's colour, an Import and an Export, in the data colour the Data Input and the
+  Data Output have, and the switcher under them. A Section dragged onto the sheet
   shows a line across it where the new section would start, and released there starts it:
   inside a section, at the grid line nearest the pointer, moved to the nearer edge of any
   component the line would cut through, so it never runs through one, and never less than
@@ -583,7 +616,11 @@ Out of scope:
   dragged component moves (a Table 720 by 200 with 3 rows, numbered, compact,
   lined between rows, striped and not fixed, a Collection 720 by 120 with 3 columns
   across, a Chart 480 by 280 of columns, upright, unstacked, its rows numbered, its legend
-  at the bottom and no data labels, a Heading 480 by 48 of medium size, aligned left),
+  at the bottom and no data labels, a Heading 480 by 48 of medium size, aligned left, an
+  Import 160 by 40 labelled "Import", from a CSV whose delimiter is found from the file,
+  filling no table and replacing a many-row table's rows, an Export 160 by 40 labelled
+  "Export", of no tables, to a CSV named `{quote_reference}-{quote_option}`, headed by the
+  columns' names, its values as held and its fields split by commas),
   showing nothing yet, and selected.
   A click adds nothing. Each item is a button in the tab order: Enter or Space adds its
   component, at that size, into the selected section, else the selected component's,
@@ -666,7 +703,36 @@ Out of scope:
   panel stays one list. A Heading's panel has its text in the title's place and its description under
   it, each committed on blur or Enter, its Show when, and its look: its size, Large, Medium
   or Small, and its alignment, Left, Centre or Right, one of three toggles the arrow keys
-  also move between. While building, the showing sheet's tab has a settings
+  also move between. An Import's and an Export's panels are in the two panes too:
+  **Config**, what it does, and **Display**, its Label, committed on blur or Enter, and its
+  Show when. Config starts with its Format, CSV, Excel or SQL, three toggles the arrow keys
+  also move between, a format chosen starting with a new component's settings for it but
+  for an Export's file name, headers and values, which a CSV and an Excel workbook share.
+  An Import's then holds its format's settings: a CSV's Delimiter (Auto, Comma, Semicolon
+  or Tab); a workbook's Sheet, blank for its first, and Header row, a whole number from 1
+  to 100 otherwise refused at the field; or a database's Connection and Query, each
+  committed on blur, and Parameters, a row for each `:name` the query holds outside its
+  quoted text and comments (a `::` cast is none), in the order it first holds them, each
+  with a select of the columns of the one-row input tables, by table, each by its label,
+  "None" while it has none, a parameter the query stops holding losing its column with the
+  same edit, and a column given a parameter it does not hold, as a hand edit can leave
+  one, a row of its own with a cross that takes it away. Then Into, a select of the input
+  tables, "None" first, a table chosen
+  dropping the column names given for the last; while it fills a many-row table, Rows,
+  Replace, Append or Update by key; and while it fills a table, Columns, a row for each of
+  the table's columns an underwriter types (neither the quote's identity nor its index,
+  and in quote_details no column the app sets), each with its type's icon, its label, and
+  the name it is read from in a text field showing the column's own while it has none,
+  committed on blur or Enter, a blank one taking the column's name away, and a name given
+  a column it cannot fill a row of its own, the column's label or "Missing column", with a
+  cross that takes the name away. An Export's then
+  holds a file's File name, a CSV's Delimiter (Comma, Semicolon or Tab), Headers (Names or
+  Labels) and Values (Raw or Formatted), or a database's Connection; then Tables, a
+  checkbox per schema table, with its role, ticked in order, and, to a database, beside
+  each one ticked the name of the table it is written to, showing the table's own while
+  it has none; unticking a table drops its name; and a table it exports that is no longer
+  in the schema a row of its own, "Missing table", with a cross. Each change is one undo
+  step. While building, the showing sheet's tab has a settings
   mark, and no delete of its own, that opens the sheet's own panel in the same place, with its
   title, its Show when and its layout, its width in whole pixels (no less than 240 or
   than its components reach, a value below that refused at the field) and its height in
@@ -732,7 +798,8 @@ Out of scope:
   resize grows them, a burst of nudges or resizes within 800ms being one undo step, kept
   inside its section, a nudge or resize that cannot change it recording nothing. Selected or not,
   Ctrl/Cmd+V pastes a copy of the component copied, as it was when copied but for the
-  columns the schema has lost since, which it no longer shows or tests, onto the sheet
+  columns and tables the schema has lost since, which it no longer shows, tests, reads,
+  gives a parameter or exports, as removing them takes them from it, onto the sheet
   showing: into the section selected, else the selected component's, else the section it
   was copied from while it is on that sheet, else the sheet's first; where it sat, moved
   16px down and to the right while a component there sits at exactly that place, kept
@@ -917,6 +984,36 @@ Out of scope:
   typed. While building, a Heading with no text says "Type its text in the panel on the
   right", its description not drawn; in Preview it shows no text, only the dashed frame
   any component with a problem has.
+- **Imports and Exports.** An Import and an Export are buttons on a sheet: each fills its
+  box, its label centred beside its format's mark (a CSV's, a workbook's or a
+  database's), with no label its mark alone, in a frame of the sheets' border colour on the
+  components' background, in their font, and is a button to a screen reader, named by its
+  label. Neither shows schema columns nor takes anything typed. They are laid out and
+  their settings chosen before anything runs them: reading a file or a database into a
+  table is [WB-09](../roadmap/workbench.md#wb-09--actions-that-fill-the-sheets)'s and
+  writing the quote's tables out [WB-11](../roadmap/workbench.md#wb-11--exports-from-the-app)'s,
+  so in Preview and in the underwriter app each is drawn disabled, faded, and a press does
+  nothing. What its settings say it is for: an Import reads the file the underwriter
+  picks as they press it, a CSV split by its delimiter, found from the file while Auto, or
+  a workbook's sheet under its header row, or runs its query on its connection, each
+  parameter given the value its column holds, and fills its table, each column from the
+  column of the name given it, else of its own name or label, whatever its case; a
+  one-row table from the first row, a many-row table's rows replaced, added to, or
+  updated by its keys, the rows no key matches added. An Export writes the tables it
+  exports, a CSV of its one table or a workbook of a sheet per table named by it, under
+  the file name with each `{name}` the quote's value for it, headed and filled as it says,
+  or each to a table of the database of its own name or the name given it, the quote's
+  rows there written again. The view names an Import's problems on its frame as any
+  component's: no label; no table, a table no longer in the schema or an output table,
+  which pricing fills; a column named that is no longer in the schema or that an
+  underwriter does not type; replacing or adding to the rows of a table with a row for
+  each allowed value, which only Update by key keeps; and, from a database, no
+  connection, no query, a parameter given no column, a column no longer in the schema or
+  not of a one-row input table, or a column given to a parameter its query does not hold.
+  And an Export's: no label; no tables; a table no longer in the schema; more than one
+  table to a CSV, which holds one; a file with no name or naming a column `quote_details`
+  does not have; and, to a database, no connection. None is refused: the form is saved as
+  it is.
 - **Preview.** The toolbar's Build over Preview switches the view between building and
   the sheets as an underwriter uses them: the same sheets, their sections that show stacked
   one under the next and each component where it sits in its section, read and
@@ -1901,6 +1998,17 @@ Out of scope:
   source's name, and codegen, parsing, projection and tracing rely on it, so the table a frame
   fills is the connection's target port, as an Edge Join's role is, rather than its input
   name. The price is that a node fills one table.
+- **Buttons laid out before they run.** Where an Import or an Export sits, what it says
+  and which tables and columns it touches are the sheets' design, decided with them and
+  kept in the form beside the schema whose ids they name, so a rename keeps them and a
+  removal takes them away as it takes a field; how they run (the route, the drivers and
+  the credentials) is WB-09's and WB-11's to decide, building on that shape. They are two
+  kinds rather than one Button with an action, or one per format: an Import names one
+  input table and where its columns come from, an Export the tables it writes, and a
+  format is a choice within either, changed without laying the button out again. A
+  connection is a name the environment resolves, never a credential, as a Data Input's
+  is. Until they run, a press does nothing and the button is drawn disabled, rather than
+  hidden, so a sheet is laid out as it will be used.
 
 ## Interactions
 

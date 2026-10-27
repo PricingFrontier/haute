@@ -8,7 +8,7 @@ import useRefocusAfterMove, { altArrowMove, type RefocusAfterMove } from "../../
 import { confirmed } from "../../stores/useQuestionStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { isIdentityColumn } from "../../utils/quoteIdentity"
-import { addSchemaColumn, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, moveSchemaColumn, moveSchemaTable, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_MANAGED, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
+import { addSchemaColumn, buttonUses, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, moveSchemaColumn, moveSchemaTable, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_MANAGED, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
 import { ColumnRow } from "./ColumnRow"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
@@ -59,10 +59,11 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
   const block = useRef<HTMLElement>(null)
   const shown = fieldUses(form, table.id).length
   const tested = conditionUses(form, table.id).length
-  const uses = shown + tested
-  // A table a sheet shows or a condition tests is deleted once the question is answered yes.
+  const used = buttonUses(form, table.id).length
+  const uses = shown + tested + used
+  // A table a sheet shows, a condition tests or an Import or an Export uses is deleted once the question is answered yes.
   const remove = async () => {
-    const text = `Its columns are ${usedBy(shown, tested)}; deleting it takes them out of ${uses === 1 ? "it" : "them"} too.`
+    const text = `Its columns are ${usedBy(shown, tested, used)}; deleting it takes them out of ${uses === 1 ? "it" : "them"} too.`
     if (uses > 0 && !(await confirmed({ title: `Delete table ${table.name}?`, text, confirm: "Delete", danger: true }))) return
     change((f) => removeSchemaTable(f, table.id))
   }

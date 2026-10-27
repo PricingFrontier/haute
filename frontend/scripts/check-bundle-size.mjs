@@ -172,7 +172,12 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // The step menus' redesign (the Add step chooser's entries and ranked search, the grouped
 // Computed as list with its drafts, and the calculations' icons, in the lazy step editor
 // chunk) brings it to 1,705.0 KiB; 1,707 KiB restores about 2 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1707
+// The workbench's Import and Export buttons (their panels, the form's operations and
+// problems for them, and the form's validators for their settings, in the lazy workbench
+// chunks of the builder and the app; their format marks in the eager vendor-ui chunk, as
+// every lucide icon is, the initial bundle 298.8 KiB) bring it to 1,712.7 KiB; 1,715 KiB
+// restores about 2.3 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1715
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

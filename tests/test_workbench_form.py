@@ -17,6 +17,8 @@ from haute._workbench_form import (
     BLANK_SECTION_HEIGHT,
     BLANK_SHEET_WIDTH,
     COLLECTION_COLUMNS_MAX,
+    EXPORT_FILE_NAME,
+    HEADER_ROW_MAX,
     QUOTE_DETAILS_COLUMNS,
     QUOTE_DETAILS_MANAGED,
     QUOTE_DETAILS_REFUSAL,
@@ -393,6 +395,8 @@ def test_the_editor_mirrors_the_forms_limits_and_words() -> None:
     assert json.loads(constant("utils/workbenchForm.ts", "QUOTE_DETAILS_REFUSAL")) == (
         QUOTE_DETAILS_REFUSAL
     )
+    assert int(constant("utils/workbenchForm.ts", "HEADER_ROW_MAX")) == HEADER_ROW_MAX
+    assert json.loads(constant("utils/workbenchForm.ts", "EXPORT_FILE_NAME")) == EXPORT_FILE_NAME
 
 
 def test_the_blank_form_is_one_empty_sheet_named_after_the_project() -> None:
@@ -993,6 +997,196 @@ def test_a_collection_s_spacers_at_one_place_or_at_either_end_read(tmp_path: Pat
     spec = read_form_document(config(tmp_path)).spec
 
     assert widgets(json.loads(render_form(spec)))[0]["spacers"] == [0, 1, 1, 2]
+
+
+#: An Import of each format and an Export of each, every field written, as the view makes them.
+IMPORTS: dict[str, dict[str, Any]] = {
+    "csv": {"format": "csv", "delimiter": "semicolon"},
+    "excel": {"format": "excel", "sheet": "Schedule", "header_row": 3},
+    "sql": {
+        "format": "sql",
+        "connection": "policy_db",
+        "query": "select limit_ from layers where policy = :reference",
+        "parameters": [{"name": "reference", "table": "t_policy", "column": "c_state"}],
+    },
+}
+EXPORTS: dict[str, dict[str, Any]] = {
+    "csv": {
+        "file_name": "{quote_reference}",
+        "headers": "labels",
+        "values": "formatted",
+        "format": "csv",
+        "delimiter": "tab",
+    },
+    "excel": {
+        "file_name": "{quote_reference}-{quote_option}",
+        "headers": "names",
+        "values": "raw",
+        "format": "excel",
+    },
+    "sql": {
+        "format": "sql",
+        "connection": "warehouse",
+        "table_names": [{"table": "t_layers", "name": "quote_layers"}],
+    },
+}
+
+
+def _with_buttons(*buttons: dict[str, Any]) -> dict[str, Any]:
+    """The test form with a third section holding *buttons*, side by side."""
+    form = json.loads(json.dumps(FORM))
+    placed = [
+        {"id": f"w_button_{at}", "x": 16 + 176 * at, "y": 8, "w": 160, "h": 40, **button}
+        for at, button in enumerate(buttons)
+    ]
+    form["pages"][0]["sections"].append(
+        {
+            "id": "s_buttons",
+            "title": "Buttons",
+            "height": 56,
+            "show_when": ALWAYS,
+            "widgets": placed,
+        }
+    )
+    return form
+
+
+def _import(source: dict[str, Any], **rest: Any) -> dict[str, Any]:
+    return {
+        "type": "import",
+        "label": "Import layers",
+        "show_when": ALWAYS,
+        "source": source,
+        "table": "t_layers",
+        "mode": "update",
+        "column_names": [{"column": "c_limit", "name": "Limit (GBP)"}],
+        **rest,
+    }
+
+
+def _export(target: dict[str, Any], **rest: Any) -> dict[str, Any]:
+    return {
+        "type": "export",
+        "label": "Send to rating",
+        "show_when": ALWAYS,
+        "target": target,
+        "tables": ["t_layers", "t_policy"],
+        **rest,
+    }
+
+
+@pytest.mark.parametrize("format_", ["csv", "excel", "sql"])
+def test_an_import_and_an_export_of_each_format_read_and_write_as_they_are(
+    tmp_path: Path, format_: str
+) -> None:
+    form = _with_buttons(_import(IMPORTS[format_]), _export(EXPORTS[format_]))
+    path = tmp_path / "form.json"
+
+    write_form(path, FormSpec.model_validate(form))
+
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert (
+        written["pages"][0]["sections"][2]["widgets"] == form["pages"][0]["sections"][2]["widgets"]
+    )
+
+
+def test_an_import_and_an_export_written_without_their_defaults_take_them() -> None:
+    form = _with_buttons(
+        {"type": "import", "source": {"format": "csv"}},
+        {"type": "export", "target": {"format": "csv"}},
+    )
+
+    imported, exported = FormSpec.model_validate(form).model_dump(mode="json")["pages"][0][
+        "sections"
+    ][2]["widgets"]
+
+    assert {key: imported[key] for key in ("label", "source", "table", "mode", "column_names")} == {
+        "label": "",
+        "source": {"format": "csv", "delimiter": "auto"},
+        "table": None,
+        "mode": "replace",
+        "column_names": [],
+    }
+    assert exported["tables"] == []
+    assert exported["target"] == {
+        "file_name": "{quote_reference}-{quote_option}",
+        "headers": "names",
+        "values": "raw",
+        "format": "csv",
+        "delimiter": "comma",
+    }
+
+
+@pytest.mark.parametrize(
+    ("button", "where"),
+    [
+        (_import({"format": "parquet"}), "parquet"),
+        (_import({"format": "csv", "delimiter": "pipe"}), "delimiter"),
+        (_import({"format": "csv", "sheet": "One"}), "sheet"),
+        (_import({"format": "excel", "header_row": 0}), "header_row"),
+        (_import({"format": "excel", "header_row": 101}), "header_row"),
+        (
+            _import(
+                {**IMPORTS["sql"], "parameters": [{"name": "1st", "table": "t", "column": "c"}]}
+            ),
+            "name",
+        ),
+        (
+            _import(
+                {
+                    **IMPORTS["sql"],
+                    "parameters": [{"name": "ref", "table": "t", "column": "c"}] * 2,
+                }
+            ),
+            "'ref' twice among its parameters",
+        ),
+        (_import(IMPORTS["csv"], table=None), "names columns but fills no table"),
+        (
+            _import(IMPORTS["csv"], column_names=[{"column": "c_limit", "name": "A"}] * 2),
+            "'c_limit' twice among its column names",
+        ),
+        (_import(IMPORTS["csv"], column_names=[{"column": "c_limit", "name": "  "}]), "name"),
+        (_import(IMPORTS["csv"], mode="merge"), "mode"),
+        (
+            _export(EXPORTS["csv"], tables=["t_layers", "t_layers"]),
+            "'t_layers' twice among its tables",
+        ),
+        (_export({**EXPORTS["csv"], "table_names": []}), "table_names"),
+        (_export({**EXPORTS["excel"], "headers": "both"}), "headers"),
+        (
+            _export(EXPORTS["sql"], tables=["t_policy"]),
+            "names a table 't_layers' it does not export",
+        ),
+        (
+            _export({**EXPORTS["sql"], "table_names": [{"table": "t_layers", "name": "a"}] * 2}),
+            "'t_layers' twice among its table names",
+        ),
+        (_export({**EXPORTS["sql"], "file_name": "x"}), "file_name"),
+    ],
+)
+def test_an_import_or_an_export_out_of_its_shape_is_refused(
+    button: dict[str, Any], where: str
+) -> None:
+    with pytest.raises(ValidationError) as caught:
+        FormSpec.model_validate(_with_buttons(button))
+    assert where in str(caught.value)
+
+
+def test_a_repair_names_an_import_or_an_export_by_its_label(tmp_path: Path) -> None:
+    merged = _with_buttons(_import(IMPORTS["csv"], label=""), _export(EXPORTS["csv"]))
+    merged["pages"][0]["sections"][2]["widgets"][1]["y"] = 24
+    merged["pages"][0]["sections"][2]["height"] = 40
+    (tmp_path / "forms").mkdir()
+    (tmp_path / "forms" / "form.json").write_text(json.dumps(merged), encoding="utf-8")
+
+    assert read_form_document(config(tmp_path)).repairs == (
+        'Section "Buttons" grew from 40px to 64px tall to hold the Export "Send to rating".',
+    )
+    merged["pages"][0]["sections"][2]["widgets"][0]["y"] = 32
+    (tmp_path / "forms" / "form.json").write_text(json.dumps(merged), encoding="utf-8")
+    assert read_form_document(config(tmp_path)).repairs == (
+        'Section "Buttons" grew from 40px to 72px tall to hold an Import.',
+    )
 
 
 def test_a_sheet_holding_its_own_components_is_refused_with_what_replaced_them(

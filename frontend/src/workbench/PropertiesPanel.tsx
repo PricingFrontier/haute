@@ -13,7 +13,9 @@
  * with it are greyed out. A Table's and a Collection's are in two panes, as Haute's node
  * panel puts an Explore node's in panes: Config, the fields and their order, and Display,
  * the rest; a Chart's are one list. A Heading's panel is its text and description, when it
- * shows, and its size and alignment. Opened from the showing sheet's tab instead, it is the
+ * shows, and its size and alignment. An Import's and an Export's are in the two panes too:
+ * Config, its format and what it reads or writes, and Display, its label and when it
+ * shows. Opened from the showing sheet's tab instead, it is the
  * sheet's panel: its title, when it shows and its width, and deleting it, asked first in a
  * dialog of the editor's own; opened from a section's header, the
  * section's: its title, when it shows, its height, and adding a section under it or
@@ -25,8 +27,10 @@ import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { activePage } from "../stores/useWorkbenchViewStore"
 import { findSection, findWidget } from "../utils/workbenchForm"
 import { COMPONENT_COLOR, WIDGET_KINDS } from "./widgetKinds"
+import { ExportSettings } from "./panel/ExportSettings"
 import { FieldsSettings } from "./panel/FieldsSettings"
 import { HeadingSettings } from "./panel/HeadingSettings"
+import { ImportSettings } from "./panel/ImportSettings"
 import { SectionSettings } from "./panel/SectionSettings"
 import { SheetSettings } from "./panel/SheetSettings"
 
@@ -72,6 +76,10 @@ export default function PropertiesPanel() {
       {/* Keyed by the component, as a section's settings are by the section, so a value refused for one is never shown, or saved, for the next. */}
       {found.widget.type === "heading" ? (
         <HeadingSettings key={found.widget.id} form={form} widget={found.widget} />
+      ) : found.widget.type === "import" ? (
+        <ImportSettings key={found.widget.id} form={form} widget={found.widget} />
+      ) : found.widget.type === "export" ? (
+        <ExportSettings key={found.widget.id} form={form} widget={found.widget} />
       ) : (
         <FieldsSettings key={found.widget.id} form={form} widget={found.widget} />
       )}

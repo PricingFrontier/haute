@@ -4,7 +4,7 @@
  * and what would stop the schema being the pipeline's tables.
  */
 import { describe, expect, it } from "vitest"
-import type { ChartWidget, CollectionWidget, Condition, FieldRef, FormSchema, FormSpec, RowCount, RowsCondition, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen } from "../../api/types"
+import type { ChartWidget, CollectionWidget, Condition, ExportWidget, FieldRef, FormSchema, FormSpec, ImportWidget, RowCount, RowsCondition, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen, SqlImport } from "../../api/types"
 import {
   addPage,
   addSchemaColumn,
@@ -12,6 +12,8 @@ import {
   addSection,
   addSpacer,
   addWidget,
+  bindParameter,
+  buttonUses,
   BLANK_THEME,
   changeSchemaColumnType,
   CHART_OPTIONS,
@@ -29,11 +31,14 @@ import {
   duplicateWidget,
   fieldColumn,
   fieldUses,
+  fileNameTokens,
   findSection,
   findWidget,
   fitSection,
   hasOwnLook,
   HEADING_OPTIONS,
+  IMPORT_SOURCES,
+  importColumns,
   keptInside,
   labelColumns,
   linedUpOutputs,
@@ -46,12 +51,14 @@ import {
   moveWidget,
   orderItems,
   pageProblems,
+  parameterColumns,
   PLAIN_COLUMN_LOOK,
   pasteWidget,
   addWidgetInFreePlace,
   placeWidget,
   plottable,
   pricingBasis,
+  queryParameters,
   readableName,
   removePage,
   removeSchemaColumn,
@@ -66,6 +73,12 @@ import {
   sectionName,
   sectionProblems,
   setColumnLook,
+  setColumnName,
+  setExportFormat,
+  setImportFormat,
+  setImportMode,
+  setImportQuery,
+  setImportTable,
   setPageHeight,
   setPageShowWhen,
   setPageWidth,
@@ -73,6 +86,7 @@ import {
   setSchemaTableRows,
   setSectionHeight,
   setSectionShowWhen,
+  setTableName,
   setTableRows,
   setThemeColour,
   shownFields,
@@ -81,9 +95,12 @@ import {
   splitSection,
   TABLE_OPTIONS,
   tableGrain,
+  toggleExportTable,
   toggleField,
   uniqueName,
   updateSchemaColumn,
+  updateExportTarget,
+  updateImportSource,
   updateSchemaTable,
   updateWidget,
   widgetName,
@@ -91,9 +108,10 @@ import {
   withCell,
   withSampleCell,
   withSampleRows,
+  type FieldsWidget,
   type Widget,
 } from "../workbenchForm"
-import { identityCount } from "../quoteIdentity"
+import { identityCount, QUOTE_DETAILS_ID } from "../quoteIdentity"
 import { columnKey, sheetVisibility, testableColumns } from "../sheetVisibility"
 
 /** A section `height` tall holding `widgets`, always shown unless `showWhen` says otherwise. */
@@ -883,7 +901,7 @@ describe("what the sheets show", () => {
     spec = moveInOrder(spec, "w_grid", 1, 0)
     expect(fields(spec, "w_grid")).toEqual(["equipment.value", "equipment.item"])
     // A Table's order is its fields alone.
-    expect(orderItems(widgetsOf(spec)[1] as Exclude<Widget, { type: "heading" }>)).toEqual([
+    expect(orderItems(widgetsOf(spec)[1] as FieldsWidget)).toEqual([
       { kind: "field", field: { table: "equipment", column: "equipment.value" } },
       { kind: "field", field: { table: "equipment", column: "equipment.item" } },
     ])
@@ -2178,5 +2196,210 @@ describe("output tables lined up with a grid's rows", () => {
     const lined = linedUpOutputs([equipment], [premiums], held, 2, price([{ item: "A" }]), quoted)
 
     expect(lined.get("t_premiums")).toEqual([undefined, { item: "A", premium: 10 }])
+  })
+})
+
+describe("Imports and Exports", () => {
+  const rect = { x: 16, y: 16, w: 160, h: 40 }
+  const details = table(QUOTE_DETAILS_ID, QUOTE_DETAILS_ID, {
+    columns: [column("qd_reference", "quote_reference"), column("qd_option", "quote_option", { type: "int" }), column("qd_insured", "insured"), column("qd_stage", "stage")],
+  })
+  const layers = table("layers", "layers", {
+    rows: "many",
+    columns: [
+      column("quote_reference", "quote_reference"),
+      column("quote_option", "quote_option", { type: "int" }),
+      column("layers.row", "row_number", { type: "int", index: true }),
+      column("layers.limit", "limit", { type: "float", key: true }),
+      column("layers.excess", "excess", { type: "float" }),
+    ],
+  })
+  const premiums = table("premiums", "premiums", { role: "output", columns: [column("premiums.total", "total", { type: "float" })] })
+  /** A form with quote_details, a many-row input table and an output table, and an Import and an Export on its sheet. */
+  const buttons = (): FormSpec => {
+    let spec = blank()
+    for (const added of [details, layers, premiums]) spec = addSchemaTable(spec, added)
+    spec = addWidget(spec, "s", { ...createWidget("import", rect), id: "w_in" })
+    return addWidget(spec, "s", { ...createWidget("export", { ...rect, x: 192 }), id: "w_out" })
+  }
+  const imported = (spec: FormSpec) => findWidget(spec, "w_in")!.widget as ImportWidget
+  const exported = (spec: FormSpec) => findWidget(spec, "w_out")!.widget as ExportWidget
+  const parameters = (spec: FormSpec) => (imported(spec).source as SqlImport).parameters
+  const problems = (spec: FormSpec, id: string) => widgetProblems(spec).flatMap((problem) => (problem.widgetId === id ? [problem.message] : []))
+
+  it("starts an Import from a CSV filling no table and an Export of no tables to a CSV, each labelled with its kind", () => {
+    const spec = buttons()
+
+    expect(imported(spec)).toEqual({
+      id: "w_in",
+      ...rect,
+      type: "import",
+      label: "Import",
+      show_when: { match: "all", conditions: [] },
+      source: IMPORT_SOURCES.csv,
+      table: null,
+      mode: "replace",
+      column_names: [],
+    })
+    expect(exported(spec).target).toEqual({ file_name: "{quote_reference}-{quote_option}", headers: "names", values: "raw", format: "csv", delimiter: "comma" })
+    expect(showsFields(imported(spec))).toBe(false)
+    expect(shownFields(spec.schema, imported(spec))).toEqual([])
+    expect(problems(spec, "w_in")).toEqual(['Import "Import" fills no table'])
+    expect(problems(spec, "w_out")).toEqual(['Export "Export" exports no tables'])
+    expect(problems(updateWidget(spec, "w_in", { label: "  " }), "w_in")).toEqual(["An Import has no label", "An Import fills no table"])
+    expect(() => updateWidget(spec, "w_in", { title: "x" })).toThrow("An Import has no title")
+    const withHeading = addWidget(spec, "s", { ...createWidget("heading", { ...rect, y: 80 }), id: "w_head" })
+    expect(() => updateWidget(withHeading, "w_head", { label: "x" })).toThrow("Only an Import or an Export has label")
+  })
+
+  it("starts a format's settings afresh, keeping an Import's table and an Export's file between a CSV and a workbook", () => {
+    let spec = setImportTable(buttons(), "w_in", "layers")
+    spec = setColumnName(spec, "w_in", "layers.limit", "Limit (GBP)")
+    spec = updateImportSource(spec, "w_in", { delimiter: "tab" })
+    spec = setImportFormat(spec, "w_in", "excel")
+    expect(imported(spec).source).toEqual({ format: "excel", sheet: "", header_row: 1 })
+    expect(imported(spec).column_names).toEqual([{ column: "layers.limit", name: "Limit (GBP)" }])
+    expect(setImportFormat(spec, "w_in", "excel")).toBe(spec)
+    expect(() => updateImportSource(spec, "w_in", { delimiter: "comma" })).toThrow("An Import from excel has no delimiter")
+
+    spec = updateExportTarget(spec, "w_out", { file_name: "{insured}", headers: "labels" })
+    spec = setExportFormat(spec, "w_out", "excel")
+    expect(exported(spec).target).toEqual({ file_name: "{insured}", headers: "labels", values: "raw", format: "excel" })
+    spec = setExportFormat(spec, "w_out", "sql")
+    expect(exported(spec).target).toEqual({ format: "sql", connection: "", table_names: [] })
+    expect(updateExportTarget(spec, "w_out", { connection: "" })).toBe(spec)
+  })
+
+  it("drops an Import's column names as its table changes and takes a blank name away", () => {
+    let spec = setImportTable(buttons(), "w_in", "layers")
+    spec = setColumnName(spec, "w_in", "layers.limit", "Limit")
+    spec = setColumnName(spec, "w_in", "layers.excess", "XS")
+    spec = setColumnName(spec, "w_in", "layers.limit", "Limit (GBP)")
+    expect(imported(spec).column_names).toEqual([
+      { column: "layers.limit", name: "Limit (GBP)" },
+      { column: "layers.excess", name: "XS" },
+    ])
+    expect(setColumnName(spec, "w_in", "layers.excess", "XS")).toBe(spec)
+    spec = setColumnName(spec, "w_in", "layers.excess", "  ")
+    expect(imported(spec).column_names).toEqual([{ column: "layers.limit", name: "Limit (GBP)" }])
+    spec = setImportTable(spec, "w_in", QUOTE_DETAILS_ID)
+    expect(imported(spec).column_names).toEqual([])
+  })
+
+  it("fills only the columns an underwriter types, and gives a parameter a one-row input table's columns", () => {
+    expect(importColumns(layers).map((c) => c.id)).toEqual(["layers.limit", "layers.excess"])
+    expect(importColumns(details).map((c) => c.id)).toEqual(["qd_insured"])
+    expect(parameterColumns(details).map((c) => c.id)).toEqual(["qd_reference", "qd_option", "qd_insured", "qd_stage"])
+    expect(parameterColumns(layers)).toEqual([])
+    expect(parameterColumns(premiums)).toEqual([])
+  })
+
+  it("finds a query's parameters outside its quoted text and comments, a cast none", () => {
+    const query = "select * from t where a = :ref and b=:ref and c in (:opt, ':quoted', \"x:col\") -- :comment\n/* :block */ and d::int = :Day_1"
+    expect(queryParameters(query)).toEqual(["ref", "opt", "Day_1"])
+    expect(queryParameters("select 'it''s :not' as x, :yes")).toEqual(["yes"])
+    expect(queryParameters("")).toEqual([])
+  })
+
+  it("keeps a parameter's column while its query holds it, and says what a database's settings lack", () => {
+    let spec = setImportTable(setImportFormat(buttons(), "w_in", "sql"), "w_in", "layers")
+    expect(problems(spec, "w_in")).toEqual(['Import "Import" names no connection', 'Import "Import" has no query'])
+    spec = updateImportSource(spec, "w_in", { connection: "policy_db" })
+    spec = setImportQuery(spec, "w_in", "select * from layers where policy = :ref and option = :opt")
+    spec = bindParameter(spec, "w_in", "ref", { table: QUOTE_DETAILS_ID, column: "qd_reference" })
+    spec = bindParameter(spec, "w_in", "opt", { table: "layers", column: "layers.limit" })
+    expect(problems(spec, "w_in")).toEqual(['Import "Import" gives :opt a column of a many-row table'])
+    spec = bindParameter(spec, "w_in", "opt", null)
+    expect(problems(spec, "w_in")).toEqual(['Import "Import" gives :opt no column'])
+    spec = bindParameter(spec, "w_in", "opt", { table: QUOTE_DETAILS_ID, column: "qd_stage" })
+    expect(problems(spec, "w_in")).toEqual([])
+    expect(bindParameter(spec, "w_in", "opt", { table: QUOTE_DETAILS_ID, column: "qd_stage" })).toBe(spec)
+
+    spec = setImportQuery(spec, "w_in", "select * from layers where policy = :ref")
+    expect(parameters(spec)).toEqual([{ name: "ref", table: QUOTE_DETAILS_ID, column: "qd_reference" }])
+    const stray = structuredClone(spec)
+    parameters(stray).push({ name: "gone", table: QUOTE_DETAILS_ID, column: "qd_insured" })
+    expect(problems(stray, "w_in")).toEqual(['Import "Import" gives a column to :gone, which its query does not hold'])
+  })
+
+  it("says what stops an Import filling its table", () => {
+    const spec = buttons()
+    expect(problems(setImportTable(spec, "w_in", "premiums"), "w_in")).toEqual(['Import "Import" fills an output table, which pricing fills'])
+    expect(problems(setImportTable(spec, "w_in", "missing"), "w_in")).toEqual(['Import "Import" fills a table that is no longer in the schema'])
+    const index = structuredClone(setImportTable(spec, "w_in", "layers"))
+    imported(index).column_names = [
+      { column: "layers.row", name: "Row" },
+      { column: "layers.gone", name: "Gone" },
+    ]
+    expect(problems(index, "w_in")).toEqual([
+      'Import "Import" reads into a column that is no longer in the schema',
+      'Import "Import" reads into a column an underwriter does not type',
+    ])
+    const perils = updateSchemaColumn(setImportTable(spec, "w_in", "layers"), "layers", "layers.excess", { type: "str", options: ["Fire", "Flood"], row_per_value: true })
+    expect(problems(perils, "w_in")).toEqual(['Import "Import" replaces the rows of layers, which has a row for each allowed value; only Update by key keeps them'])
+    expect(problems(setImportMode(perils, "w_in", "update"), "w_in")).toEqual([])
+  })
+
+  it("exports each table once in the order ticked, names a database's tables, and says what stops it", () => {
+    let spec = toggleExportTable(buttons(), "w_out", "layers")
+    spec = toggleExportTable(spec, "w_out", QUOTE_DETAILS_ID)
+    expect(exported(spec).tables).toEqual(["layers", QUOTE_DETAILS_ID])
+    expect(problems(spec, "w_out")).toEqual(['Export "Export" exports more than one table to a CSV, which holds one'])
+    spec = updateExportTarget(spec, "w_out", { file_name: "{insured}-{broker}" })
+    expect(problems(setExportFormat(spec, "w_out", "excel"), "w_out")).toEqual(['Export "Export" names its file by {broker}, which is not a column of quote_details'])
+    expect(fileNameTokens("{a}-{b}{a}")).toEqual(["a", "b", "a"])
+
+    spec = setExportFormat(spec, "w_out", "sql")
+    expect(problems(spec, "w_out")).toEqual(['Export "Export" names no connection'])
+    spec = setTableName(spec, "w_out", "layers", "quote_layers")
+    expect(exported(spec).target).toEqual({ format: "sql", connection: "", table_names: [{ table: "layers", name: "quote_layers" }] })
+    expect(() => setTableName(spec, "w_out", "premiums", "p")).toThrow("does not export premiums")
+    spec = toggleExportTable(spec, "w_out", "layers")
+    expect(exported(spec)).toMatchObject({ tables: [QUOTE_DETAILS_ID], target: { table_names: [] } })
+  })
+
+  it("finds the Imports and Exports a table or a column is used by, and removing it takes it out of them", () => {
+    let spec = setImportFormat(setImportTable(buttons(), "w_in", "layers"), "w_in", "sql")
+    spec = setColumnName(spec, "w_in", "layers.excess", "XS")
+    spec = setImportQuery(spec, "w_in", "select :ref, :ins")
+    spec = bindParameter(spec, "w_in", "ref", { table: QUOTE_DETAILS_ID, column: "qd_reference" })
+    spec = bindParameter(spec, "w_in", "ins", { table: QUOTE_DETAILS_ID, column: "qd_insured" })
+    spec = setTableName(setExportFormat(toggleExportTable(spec, "w_out", "layers"), "w_out", "sql"), "w_out", "layers", "quote_layers")
+
+    expect(buttonUses(spec, "layers").map((w) => w.id)).toEqual(["w_in", "w_out"])
+    expect(buttonUses(spec, "layers", "layers.excess").map((w) => w.id)).toEqual(["w_in"])
+    expect(buttonUses(spec, "layers", "layers.limit")).toEqual([])
+    expect(buttonUses(spec, QUOTE_DETAILS_ID, "qd_insured").map((w) => w.id)).toEqual(["w_in"])
+
+    expect(parameters(removeSchemaColumn(spec, QUOTE_DETAILS_ID, "qd_insured")).map((p) => p.name)).toEqual(["ref"])
+    expect(imported(removeSchemaColumn(spec, "layers", "layers.excess")).column_names).toEqual([])
+    const noLayers = removeSchemaTable(spec, "layers")
+    expect(imported(noLayers)).toMatchObject({ table: null, column_names: [] })
+    expect(exported(noLayers)).toMatchObject({ tables: [], target: { table_names: [] } })
+    expect(parameters(removeSchemaTable(spec, QUOTE_DETAILS_ID))).toEqual([])
+  })
+
+  it("pastes an Import or an Export without what the schema has lost since it was copied", () => {
+    let spec = setImportFormat(setImportTable(buttons(), "w_in", "layers"), "w_in", "sql")
+    spec = setColumnName(spec, "w_in", "layers.excess", "XS")
+    spec = bindParameter(setImportQuery(spec, "w_in", "select :ins"), "w_in", "ins", { table: QUOTE_DETAILS_ID, column: "qd_insured" })
+    spec = toggleExportTable(spec, "w_out", "layers")
+    const copiedIn = imported(spec)
+    const copiedOut = exported(spec)
+    spec = removeSchemaColumn(removeSchemaColumn(spec, "layers", "layers.excess"), QUOTE_DETAILS_ID, "qd_insured")
+
+    const pastedIn = pasteWidget(spec, copiedIn, "s")
+    expect(findWidget(pastedIn.spec, pastedIn.id)!.widget).toMatchObject({ table: "layers", column_names: [], source: { parameters: [] } })
+    const withoutLayers = removeSchemaTable(spec, "layers")
+    const pastedOut = pasteWidget(withoutLayers, copiedOut, "s")
+    expect(findWidget(pastedOut.spec, pastedOut.id)!.widget).toMatchObject({ tables: [] })
+    const pastedInto = pasteWidget(withoutLayers, copiedIn, "s")
+    expect(findWidget(pastedInto.spec, pastedInto.id)!.widget).toMatchObject({ table: null, column_names: [] })
+  })
+
+  it("names an Import or an Export by its label", () => {
+    const spec = updateWidget(buttons(), "w_out", { label: "Send to rating" })
+    expect(widgetName(exported(spec))).toBe('Export "Send to rating"')
+    expect(widgetName(imported(updateWidget(spec, "w_in", { label: "" })))).toBe("An Import")
   })
 })

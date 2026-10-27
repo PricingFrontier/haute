@@ -222,7 +222,7 @@ It is a stack of **sections**: strips across its whole width, one under the next
 holding the components placed in it. A new sheet is one section; hide a section and, in
 Preview, the sections under it move up to close the gap (see
 [Showing sheets, sections, components and fields conditionally](#showing-sheets-sections-components-and-fields-conditionally)).
-The palette on the left offers four components and a section; drag a component onto the
+The palette on the left offers six components and a section; drag a component onto the
 sheet (a ghost shows where it lands) and it goes into the section under the top of the
 ghost. From the keyboard, Tab to an item and press Enter: a component goes into the
 selected section (or the selected component's, else the sheet's first) at the first free
@@ -241,6 +241,14 @@ one:
   optional description under it saying what the section is for, aligned left, centre or
   right. It holds no values; give it the conditions of the section it names and it hides
   with it.
+- An **Import** is a button that fills an input table from a CSV or an Excel workbook the
+  underwriter picks, or from a database.
+- An **Export** is a button that takes the quote's tables out to a CSV, an Excel workbook
+  or a database.
+
+For now you can lay Imports and Exports out and set what they will do, but nothing runs
+them yet: in Preview and the underwriter app they are greyed out and pressing one does
+nothing.
 
 While building, **Display** in the toolbar opens the sheets' colours: the **Sheet
 background**, the **Component background** of framed Tables, Collections and Charts, their
@@ -279,6 +287,30 @@ panes: **Config**, the fields it shows and their order, and **Display**, its tit
 shows, its layout and its look. A Heading's properties are its **Text** and
 **Description**, when it shows, its **Size** and its **Align**ment.
 
+An Import's and an Export's properties are in the same two panes: **Display** holds its
+**Label**, the text on the button, and when it shows; **Config** starts with its
+**Format**, CSV, Excel or SQL. Changing the format starts that format's settings afresh,
+though an Export keeps its file name, headers and values between CSV and Excel.
+
+- An Import from a **CSV** has a **Delimiter** (Auto finds it from the file); from
+  **Excel**, the **Sheet** to read (blank for the first) and the **Header row** that names
+  its columns; from **SQL**, the **Connection** (a name your environment supplies the
+  credentials for, never the credentials themselves), the **Query**, and a row under
+  **Parameters** for each `:name` in the query, where you choose the one-row input column
+  whose value it takes. **Into** is the input table it fills. For a many-row table,
+  **Rows** says whether the rows it brings **Replace** the table's rows, **Append** to
+  them, or **Update by key**, matching rows on the table's keys. **Columns** lists the
+  table's columns an underwriter types; a column is read from the column of the same name
+  or label, whatever its case, unless you type the name it has in the file or the query's
+  answer.
+- An Export tick-lists the **Tables** it writes, inputs and outputs alike. To a **CSV**
+  (one table) or **Excel** (a sheet per table) it has a file **Name**, where `{name}`
+  stands for that column of quote_details (`{quote_reference}-{quote_option}` to start),
+  **Headers** (the columns' names or labels) and **Values** (raw, or formatted as the
+  sheets show them), and a CSV a **Delimiter**. To **SQL** it has a **Connection**, and
+  beside each table you tick, the name of the database table it is written to (blank for
+  the table's own name).
+
 Drag a component to move it and any of its eight handles to resize it; everything snaps
 to the grid. A component stays inside its section: it stops at the section's edges, and
 moves into another section only once its top is over it. Resizing a component past its
@@ -295,7 +327,8 @@ it is left out of the copy. Ctrl+1 fits the sheet to the
 window, and the zoom runs from 25% to 200%. A component with a problem — no fields, a
 Heading with no text, a column no longer in the schema, a table of the other kind, a
 Chart's field that is not a number or is an index, tables whose rows do not line up, a pie
-of many rows with more than one field — gets a dashed frame that names the problem. Tab,
+of many rows with more than one field, an Import or an Export with no label or missing
+what its format needs — gets a dashed frame that names the problem. Tab,
 and a screen reader, go through the sheet section by section, each section's bar and then
 its components as they sit, row by row from the top and left to right along each row,
 whatever order you added them in.

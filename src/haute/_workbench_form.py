@@ -3,8 +3,9 @@
 
 ``forms/form.json`` is the file the workbench edits: the schema of typed tables the quote is
 keyed into, the sheets, each a stack of sections holding Tables and Collections that show
-those tables' columns, Charts that plot them and Headings that name them, and the sample
-quote typed into them while building. It is one JSON
+those tables' columns, Charts that plot them, Headings that name them and the Imports and
+Exports that will fill them and take them out, and the sample quote typed into them while
+building. It is one JSON
 document with one spelling: every field is written, defaults included, and an unknown
 field is refused by name. Nothing migrates an older spelling: a sheet holding its
 components itself, as sheets did before sections, is refused with what replaced it.
@@ -113,6 +114,25 @@ HeadingSize = Literal["large", "medium", "small"]
 
 #: Where a Heading's text sits across its width.
 HeadingAlign = Literal["left", "center", "right"]
+
+#: How an Import fills a many-row table: its rows replaced, added to, or updated by the
+#: table's keys, the rows no key matches added.
+ImportMode = Literal["replace", "append", "update"]
+
+#: Whether an Export's file heads each column by its name or by its label, and holds each
+#: value as the quote holds it or as the sheets show it, in its column's format.
+ExportHeaders = Literal["names", "labels"]
+ExportValues = Literal["raw", "formatted"]
+
+#: The furthest down a workbook's sheet an Import's header row can be, as the view's
+#: properties panel takes it (``frontend/src/utils/workbenchForm.ts``).
+HEADER_ROW_MAX = 100
+
+#: What a new Export names its file: the quote's reference and option.
+EXPORT_FILE_NAME = "{quote_reference}-{quote_option}"
+
+#: A query parameter's name, as ``:name`` in an Import's query: an identifier.
+PARAMETER_NAME = r"^[A-Za-z_][A-Za-z0-9_]*$"
 
 #: What a condition tests its column's value for: a tick box ticked or not; any other
 #: column filled or empty, or equal to a value or not; a Text or number column one of some
@@ -493,8 +513,163 @@ class HeadingWidget(_Placed):
     align: HeadingAlign = "left"
 
 
+def _check_once(widget_id: str, things: str, keys: list[str]) -> None:
+    """Refuse a key a button's list holds twice: one name per column, one per table."""
+    seen: set[str] = set()
+    for key in keys:
+        if key in seen:
+            raise ValueError(f"widget {widget_id} has {key!r} twice among its {things}")
+        seen.add(key)
+
+
+class CsvImport(_Strict):
+    """A CSV the underwriter picks as they press the Import, its fields split by its
+    ``delimiter``, found from the file while ``auto``."""
+
+    format: Literal["csv"]
+    delimiter: Literal["auto", "comma", "semicolon", "tab"] = "auto"
+
+
+class ExcelImport(_Strict):
+    """A sheet of an Excel workbook the underwriter picks, its columns named by its
+    ``header_row``, counted from 1, and its rows those under it."""
+
+    format: Literal["excel"]
+    #: The workbook's sheet by its name; empty for its first.
+    sheet: str = ""
+    header_row: int = Field(default=1, ge=1, le=HEADER_ROW_MAX)
+
+
+class QueryParameter(_Strict):
+    """A ``:name`` in an Import's query, given the value of a column by table and column id."""
+
+    name: Annotated[str, Field(pattern=PARAMETER_NAME)]
+    table: str
+    column: str
+
+
+class SqlImport(_Strict):
+    """A query run on a named connection, whose credentials the environment holds, never
+    the form, each of its parameters given the value of the column bound to it."""
+
+    format: Literal["sql"]
+    #: The connection by name; empty while none is chosen.
+    connection: str = ""
+    query: str = ""
+    parameters: list[QueryParameter] = Field(default_factory=list)
+
+
+ImportSource = Annotated[CsvImport | ExcelImport | SqlImport, Field(discriminator="format")]
+
+
+class ColumnName(_Strict):
+    """A column of the table an Import fills, by id, and the name of the column it is read
+    from in the file or the query's answer."""
+
+    column: str
+    name: Annotated[str, Field(min_length=1, pattern=r"\S")]
+
+
+class ImportWidget(_Placed):
+    """An Import: a button an underwriter presses to fill an input table from a file or a
+    database. It shows no schema columns and takes nothing typed; nothing runs it yet, so
+    it is drawn disabled where the sheets are used."""
+
+    type: Literal["import"]
+    #: The text on the button.
+    label: str = ""
+    show_when: ShowWhen = Field(default_factory=ShowWhen)
+    source: ImportSource
+    #: The input table it fills, by id; None while it fills none.
+    table: str | None = None
+    mode: ImportMode = "replace"
+    #: The columns of its table read from a column named otherwise, in no set order; a column
+    #: without one is read from the column of its own name or label, whatever its case.
+    column_names: list[ColumnName] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _names_each_once(self) -> ImportWidget:
+        if self.column_names and self.table is None:
+            raise ValueError(f"widget {self.id} names columns but fills no table")
+        _check_once(self.id, "column names", [named.column for named in self.column_names])
+        if isinstance(self.source, SqlImport):
+            _check_once(self.id, "parameters", [given.name for given in self.source.parameters])
+        return self
+
+
+class _FileExport(_Strict):
+    """A file an Export writes: its name, each ``{name}`` in it standing for the quote's
+    value of that column of quote_details, its extension left out, how its columns are
+    headed and how its values are written."""
+
+    file_name: str = EXPORT_FILE_NAME
+    headers: ExportHeaders = "names"
+    values: ExportValues = "raw"
+
+
+class CsvExport(_FileExport):
+    """A CSV of the one table an Export exports, its fields split by its ``delimiter``."""
+
+    format: Literal["csv"]
+    delimiter: Literal["comma", "semicolon", "tab"] = "comma"
+
+
+class ExcelExport(_FileExport):
+    """An Excel workbook of a sheet per table an Export exports, each named by its table."""
+
+    format: Literal["excel"]
+
+
+class TableName(_Strict):
+    """A table an Export writes to a database, by id, and the name of the table it is
+    written to there."""
+
+    table: str
+    name: Annotated[str, Field(min_length=1, pattern=r"\S")]
+
+
+class SqlExport(_Strict):
+    """The tables an Export writes to a database on a named connection, each to the table
+    of its own name or the name given it, the quote's rows there written again."""
+
+    format: Literal["sql"]
+    #: The connection by name; empty while none is chosen.
+    connection: str = ""
+    #: The tables written to a table named otherwise, in no set order.
+    table_names: list[TableName] = Field(default_factory=list)
+
+
+ExportTarget = Annotated[CsvExport | ExcelExport | SqlExport, Field(discriminator="format")]
+
+
+class ExportWidget(_Placed):
+    """An Export: a button an underwriter presses to take the quote's tables out to a file
+    or a database. It shows no schema columns and takes nothing typed; nothing runs it yet,
+    so it is drawn disabled where the sheets are used."""
+
+    type: Literal["export"]
+    #: The text on the button.
+    label: str = ""
+    show_when: ShowWhen = Field(default_factory=ShowWhen)
+    target: ExportTarget
+    #: The tables it exports, by id, in the order chosen.
+    tables: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _exports_each_table_once(self) -> ExportWidget:
+        _check_once(self.id, "tables", self.tables)
+        if isinstance(self.target, SqlExport):
+            named = [entry.table for entry in self.target.table_names]
+            _check_once(self.id, "table names", named)
+            for table in named:
+                if table not in self.tables:
+                    raise ValueError(f"widget {self.id} names a table {table!r} it does not export")
+        return self
+
+
 Widget = Annotated[
-    TableInputWidget | CollectionWidget | ChartWidget | HeadingWidget, Field(discriminator="type")
+    TableInputWidget | CollectionWidget | ChartWidget | HeadingWidget | ImportWidget | ExportWidget,
+    Field(discriminator="type"),
 ]
 
 
@@ -985,14 +1160,27 @@ def _refuse_page_widgets(config: WorkbenchConfig, parsed: object) -> None:
 
 
 #: Each kind of component as the editor names it.
-_KINDS = {"tableInput": "Table", "collection": "Collection", "chart": "Chart", "heading": "Heading"}
+_KINDS = {
+    "tableInput": "Table",
+    "collection": "Collection",
+    "chart": "Chart",
+    "heading": "Heading",
+    "import": "Import",
+    "export": "Export",
+}
+
+#: What names a component of each kind other than by its title.
+_NAMED_BY = {"heading": "text", "import": "label", "export": "label"}
 
 
 def _component_named(widget: dict[str, Any]) -> str:
-    """A component as a repair names it: its kind and its title, a Heading's text."""
+    """A component as a repair names it: its kind and its title, a Heading's text or a
+    button's label."""
     kind = _KINDS.get(str(widget.get("type")), "component")
-    said = widget.get("text") if widget.get("type") == "heading" else widget.get("title")
-    return f'the {kind} "{said.strip()}"' if isinstance(said, str) and said.strip() else f"a {kind}"
+    said = widget.get(_NAMED_BY.get(str(widget.get("type")), "title"))
+    if isinstance(said, str) and said.strip():
+        return f'the {kind} "{said.strip()}"'
+    return f"an {kind}" if kind[0] in "AEIOU" else f"a {kind}"
 
 
 def _whole(value: object) -> int | None:

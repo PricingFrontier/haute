@@ -1,6 +1,6 @@
 /**
- * The workbench's palette (specs/workbench): a Section, then Heading, Collection, Table and
- * Chart, in Haute's palette shell with the switcher under them, collapsing with the node
+ * The workbench's palette (specs/workbench): a Section, then Heading, Collection, Table,
+ * Chart, Import and Export, in Haute's palette shell with the switcher under them, collapsing with the node
  * palette, and disabled in Preview.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -23,7 +23,7 @@ describe("WorkbenchPalette", () => {
     useWorkbenchViewStore.setState({ mode: "build", schemaOpen: false, creating: null })
   })
 
-  it("offers a Section, then a Heading, a Collection, a Table and a Chart, with the switcher at the bottom", () => {
+  it("offers a Section, then a Heading, a Collection, a Table, a Chart, an Import and an Export, with the switcher at the bottom", () => {
     render(<WorkbenchPalette />)
 
     expect(screen.getByRole("heading", { name: "Components" })).toBeInTheDocument()
@@ -33,11 +33,15 @@ describe("WorkbenchPalette", () => {
       "palette-item-collection",
       "palette-item-tableInput",
       "palette-item-chart",
+      "palette-item-import",
+      "palette-item-export",
     ])
     expect(screen.getByTestId("palette-item-tableInput")).toHaveTextContent("Table")
     expect(screen.getByTestId("palette-item-collection")).toHaveTextContent("Collection")
     expect(screen.getByTestId("palette-item-chart")).toHaveTextContent("Chart")
     expect(screen.getByTestId("palette-item-heading")).toHaveTextContent("Heading")
+    expect(screen.getByTestId("palette-item-import")).toHaveTextContent("Import")
+    expect(screen.getByTestId("palette-item-export")).toHaveTextContent("Export")
     expect(screen.getByTestId("palette-item-heading")).toHaveAttribute("title", "Text naming a section of the sheet: a title, a heading or a label")
     expect(screen.getByTestId("palette-item-section")).toHaveTextContent("Section")
     expect(screen.getByTestId("palette-item-section")).toHaveAttribute("title", "A strip across the sheet that hides and shows as one; drop it where a section should start")

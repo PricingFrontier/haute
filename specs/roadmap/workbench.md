@@ -42,7 +42,7 @@ what the review found in the Workbench view and the underwriter app in the brows
 |---|---|---:|---|
 | WB-07 | Planned | P3 | The underwriter app runs on a Databricks App, on AWS or on an internal platform as it runs on Azure Container Apps, each signing underwriters in its own way. |
 | WB-08 | Planned | P2 | A merge to `main` takes a workbench project's form, pipeline and app, tested together in CI, to staging and, after approval, to production on the project's host, Azure Container Apps first. |
-| WB-09 | Decision | P2 | A Button on a sheet, or a lookup beside a key cell, runs an action the project declares against a database or an API and fills input cells with what comes back, through the server with no credential in the browser, while pricing stays as pure as it is. |
+| WB-09 | Decision | P2 | An Import on a sheet, or a lookup beside a key cell, runs against a file, a database or an API and fills input cells with what comes back, through the server with no credential in the browser, while pricing stays as pure as it is. |
 | WB-10 | Planned | P2 | The quote store runs on the SQL instance the project's IT team provides, migrated by the deploy under an identity of its own, with the release before a candidate proved to work on the schema the candidate leaves. |
 | WB-11 | Decision | P2 | An underwriter exports a saved quote from the app in the formats the project needs, naming the release that priced it. |
 | WB-12 | Decision | P3 | Analysts keep test quotes and price them again as the pipeline changes, built again after the first version was taken out. |
@@ -202,12 +202,17 @@ exists: one path for a sheet's values, the sample in Preview and the quote in th
 underwriter app, through which a result can land exactly as typing does, so the rule marks
 follow it and it is priced as typing is; a Databricks SQL reach on the server, which
 validates a statement as a single SELECT, builds connection settings from the workspace
-credentials and takes a service principal's, used today to snapshot tables; and a
+credentials and takes a service principal's, used today to snapshot tables; a
 credential policy for the editor's data access, environment variables named in the docs
-and never a value in a file. What does not exist: a driver for any database but
-Databricks, an outbound HTTP pattern, a place to declare an action and bind it to cells,
-a component on the sheets that is neither a Table nor a Collection, and a credential model
-for a project whose sheets reach several systems.
+and never a value in a file; and the Import, a button on the sheets whose settings, kept
+in the form, name its format (a CSV the underwriter picks, an Excel workbook's sheet and
+header row, or a database's named connection, its query and the column giving each of
+its parameters), the input table it fills, how it fills a many-row table (replace,
+append or update by key) and the names its columns are read from, flagged on its frame
+as a component is, and drawn disabled in Preview and the app since nothing runs it.
+What does not exist: a driver for any database but Databricks, an outbound HTTP
+pattern, a route that runs an Import, the file read in the browser, and a credential
+model for a project whose sheets reach several systems.
 
 **Plan:** Decision first, recorded here before the first slice. The auth model: how a
 source's credentials are named and supplied (a variable per source, a secret scope on
@@ -219,24 +224,23 @@ the Databricks one is, with SELECT-only validation per dialect generalising the 
 that exists, and HTTP APIs with allow-listed hosts, a timeout and a mapping from the
 response's JSON onto columns. Whether actions are declared alone (a statement or a
 request with named parameters) or Python actions are allowed too. Where the pieces live:
-the action's bindings beside the schema in the form file, since they name tables and
-columns by id and version with the sheets; the source's connection and the names of its
-credential variables in `haute.toml`; the values in the environment, never in a file the
-ledger pushes. Whether a many-row result replaces the table's rows or appends to them.
-Whether a press in Build writes the sample, which Save then writes to disk, or actions
-run in Preview alone. Then the slices: the action model, read strictly and written
-canonically as the form is, with parameters bound to input columns or constants and a
-result mapped onto one input table's columns, typed by the column; the sources table of
-`haute.toml`; a route under the workbench router that takes the sheet's values, resolves
-the bindings, runs the source on the server with a row cap and returns rows in the
-sample's shape; the Button component, the first component that is neither a Table nor a
-Collection, so the kinds, the factory, the problems check and the strict reader
-generalise with it, and a bound column that leaves the schema is flagged on the Button as
-a missing column is on a component; a lookup beside a key cell as the same action from a
-column property; and the underwriter app running the same actions on its server.
+the Import's settings beside the schema in the form file, as they are, since they name
+tables and columns by id and version with the sheets; the connection its name stands
+for and the names of its credential variables in `haute.toml`; the values in the
+environment, never in a file the ledger pushes. Whether a press in Build writes the
+sample, which Save then writes to disk, or actions run in Preview alone. Then the
+slices: the sources table of `haute.toml`, which an Import's connection names; a route
+under the workbench router that takes the sheet's values, resolves the Import's
+parameters, runs its query on the server with a row cap and returns rows in the
+sample's shape, typed by the columns they fill; a CSV or a workbook the underwriter
+picks read into the same shape; the Import enabled in Preview, its rows landing as
+typing does, replacing, adding to or updating the table's rows as its settings say,
+asking first before it replaces rows already typed; an HTTP request as another of its
+formats; a lookup beside a key cell as the same action from a column property; and the
+underwriter app running the same actions on its server.
 
-**Acceptance:** With a source declared in `haute.toml` and an action in the form, pressing
-its Button in Preview fills the bound input cells with the query's values, typed by their
+**Acceptance:** With a source declared in `haute.toml` and an Import in the form, pressing
+it in Preview fills the bound input cells with the query's values, typed by their
 columns and marked where a value breaks a rule, and priced as typed values are, the
 action itself never calling the pipeline; the same action runs against a database that is not
 Databricks, and an HTTP action fills cells from a response; no credential value appears
@@ -255,9 +259,9 @@ other.
 **Evidence:** `frontend/src/workbench/useSheetValues.ts::useSampleValues` and
 `::useQuoteValues` (the one path for a sheet's values);
 `frontend/src/stores/useWorkbenchPricingStore.ts::priceForm` (the sample priced as it is typed);
-`frontend/src/workbench/widgetKinds.ts` and
-`frontend/src/utils/workbenchForm.ts::createWidget` and `::widgetProblems` (the two kinds
-of component); `src/haute/_workbench_form.py::FormSpec` (the strict reader);
+`src/haute/_workbench_form.py::ImportWidget` (the Import's settings, read strictly);
+`frontend/src/workbench/panel/ImportSettings.tsx` (where they are chosen);
+`frontend/src/utils/workbenchForm.ts::importProblems` (what the view flags on it);
 `src/haute/routes/workbench.py` (the workbench router);
 `src/haute/_databricks_io.py::_validate_select_clause`, `::_connection_settings` and
 `::_service_principal_credentials` (the Databricks SQL reach); `pyproject.toml` (the
@@ -325,12 +329,18 @@ insert-if-absent and otherwise a read first).
 ### WB-11 — Exports from the app
 **Why:** Underwriters take what they need out of the app themselves: a quote's tables for a
 spreadsheet, a file another system imports, a document for a broker. Nothing in Haute
-exports a quote; the sheets show it and Preview's results stay in the browser.
+exports a quote; the sheets show it and Preview's results stay in the browser. The
+Export, a button on the sheets, holds what an export would be, kept in the form: the
+tables, a CSV of one or a workbook of a sheet each under a file name made of the quote's
+details, headed by names or labels, its values raw or formatted, or a database's named
+connection and the tables each is written to; it is drawn disabled in Preview and the
+app, since nothing runs it.
 
 **Plan:** Decision first, recorded here before the first slice: which formats the first
 release needs (the quote's tables as CSV or a spreadsheet, an import file for another
-system, a document from a template), and whether a quote exported again later reproduces the
-template it was first exported with or uses the current one. Then exports of a saved quote's
+system, a document from a template), whether the Export on the sheets is how the app
+exports or the quote's bar offers exports beside it, and whether a quote exported again
+later reproduces the template it was first exported with or uses the current one. Then exports of a saved quote's
 revision, never of an unsaved draft passed off as priced, so every export names the revision
 and the release that priced it; run on the app's server for the signed-in underwriter and
 recorded on the quote. Templates and mappings, where a format needs them, live in the
@@ -344,7 +354,9 @@ starts the workflow, and the template's output for the test quotes is checked in
 
 **Dependencies:** The decision above.
 
-**Evidence:** `frontend/src/utils/sheetValues.ts::pricedRows` (the priced rows the sheets
+**Evidence:** `src/haute/_workbench_form.py::ExportWidget` (the Export's settings, read
+strictly); `frontend/src/workbench/panel/ExportSettings.tsx` (where they are chosen);
+`frontend/src/utils/sheetValues.ts::pricedRows` (the priced rows the sheets
 show); `frontend/src/workbench/useSheetValues.ts` (the one path for a sheet's values);
 `src/haute/_workbench_tables.py::quote_schema` (a quote's columns as typed).
 

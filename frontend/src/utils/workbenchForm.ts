@@ -5,7 +5,28 @@
  * pipeline's tables or a sheet, a section or a component showing what it should. Each
  * operation returns a new form and leaves its input untouched.
  */
-import type { ChartWidget, ColumnLook, FieldRef, FormSchema, FormSpec, HeadingWidget, Page, SchemaColumn, SchemaTable, Section, ShowWhen, Theme } from "../api/types"
+import type {
+  ChartWidget,
+  ColumnLook,
+  CsvExport,
+  CsvImport,
+  ExcelExport,
+  ExcelImport,
+  ExportWidget,
+  FieldRef,
+  FormSchema,
+  FormSpec,
+  HeadingWidget,
+  ImportWidget,
+  Page,
+  SchemaColumn,
+  SchemaTable,
+  Section,
+  ShowWhen,
+  SqlExport,
+  SqlImport,
+  Theme,
+} from "../api/types"
 import { ASCII_IDENTIFIER_RE, apiInputLabelIssue, apiInputLabelIssueMessage } from "./apiInputPorts"
 import { PYTHON_KEYWORDS } from "./globalConstants"
 import {
@@ -47,13 +68,15 @@ import {
   type SingleCondition,
 } from "./sheetVisibility"
 
-/** A section's widget: a Table, a Collection, a Chart or a Heading. */
+/** A section's widget: a Table, a Collection, a Chart, a Heading, an Import or an Export. */
 export type Widget = Section["widgets"][number]
 export type WidgetType = Widget["type"]
 /** What the palette adds: a component of a kind, or a section. */
 export type PaletteType = WidgetType | "section"
-/** A component that shows schema columns: a Table, a Collection or a Chart. A Heading shows none. */
-export type FieldsWidget = Exclude<Widget, HeadingWidget>
+/** A button on a sheet: an Import or an Export. Neither shows schema columns nor takes anything typed. */
+export type ButtonWidget = ImportWidget | ExportWidget
+/** A component that shows schema columns: a Table, a Collection or a Chart. A Heading and a button show none. */
+export type FieldsWidget = Exclude<Widget, HeadingWidget | ButtonWidget>
 /** A column's type: the Quote Input's column types. */
 export type ColumnType = SchemaColumn["type"]
 /**
@@ -165,8 +188,12 @@ export const pageWidgets = (page: Page): Widget[] => page.sections.flatMap((sect
 
 export const allWidgets = (spec: FormSpec): Widget[] => spec.pages.flatMap(pageWidgets)
 
-/** Whether a component shows schema columns: a Table, a Collection or a Chart, not a Heading. */
-export const showsFields = (widget: Widget): widget is FieldsWidget => widget.type !== "heading"
+/** Whether a component shows schema columns: a Table, a Collection or a Chart, not a Heading or a button. */
+export const showsFields = (widget: Widget): widget is FieldsWidget =>
+  widget.type === "tableInput" || widget.type === "collection" || widget.type === "chart"
+
+/** Whether a component is a button: an Import or an Export. */
+export const isButton = (widget: Widget): widget is ButtonWidget => widget.type === "import" || widget.type === "export"
 
 const edit = (spec: FormSpec, change: (draft: FormSpec) => void): FormSpec => {
   const draft = structuredClone(spec)
@@ -304,6 +331,28 @@ const dropFields = (draft: FormSpec, drop: (field: FieldRef) => boolean): void =
 }
 
 /**
+ * Take what an Import or an Export uses of the tables `table` matches and the columns
+ * `column` matches out of it: an Import filling such a table fills none, its column names
+ * going with it; a column's name and the parameters given such a column go; and an Export
+ * stops exporting such a table, with the name it was written to.
+ */
+const dropButtonUses = (widget: Widget, table: (id: string) => boolean, column: (field: FieldRef) => boolean): void => {
+  if (widget.type === "import") {
+    const filled = widget.table
+    if (filled !== null && table(filled)) {
+      widget.table = null
+      widget.column_names = []
+    } else if (filled !== null) {
+      widget.column_names = widget.column_names.filter((named) => !column({ table: filled, column: named.column }))
+    }
+    if (widget.source.format === "sql") widget.source.parameters = widget.source.parameters.filter((given) => !table(given.table) && !column(given))
+  } else if (widget.type === "export") {
+    widget.tables = widget.tables.filter((id) => !table(id))
+    if (widget.target.format === "sql") widget.target.table_names = widget.target.table_names.filter((named) => !table(named.table))
+  }
+}
+
+/**
  * A `show_when` with each condition as `keep` leaves it, those it gives null taken out, a
  * group left with none going too, as it would hold nothing to test.
  */
@@ -352,13 +401,14 @@ function withoutColumn(condition: SingleCondition, tableId: string, columnId: st
 
 /**
  * Removing a table removes its columns from the widgets that show them, or label a Chart's
- * rows, and the conditions on it, and its sample rows.
+ * rows, the conditions on it, what Imports and Exports use of it, and its sample rows.
  */
 export const removeSchemaTable = (spec: FormSpec, id: string): FormSpec =>
   edit(spec, (draft) => {
     draft.schema.tables = draft.schema.tables.filter((table) => table.id !== id)
     dropFields(draft, (field) => field.table === id)
     dropConditions(draft, (condition) => (condition.table === id ? null : condition))
+    for (const widget of allWidgets(draft)) dropButtonUses(widget, (table) => table === id, (field) => field.table === id)
     delete draft.sample[id]
   })
 
@@ -483,8 +533,10 @@ export const removeSchemaColumn = (spec: FormSpec, tableId: string, columnId: st
     : edit(spec, (draft) => {
         const table = schemaTableOf(draft, tableId)
         table.columns = table.columns.filter((column) => column.id !== columnId)
-        dropFields(draft, (field) => field.table === tableId && field.column === columnId)
+        const gone = (field: FieldRef) => field.table === tableId && field.column === columnId
+        dropFields(draft, gone)
         dropConditions(draft, (condition) => withoutColumn(condition, tableId, columnId))
+        for (const widget of allWidgets(draft)) dropButtonUses(widget, () => false, gone)
         for (const row of draft.sample[tableId] ?? []) delete row[columnId]
       })
 
@@ -495,6 +547,20 @@ export const fieldUses = (spec: FormSpec, tableId: string, columnId?: string): W
       (field) => field.table === tableId && (columnId === undefined || field.column === columnId),
     ),
   )
+
+/**
+ * The Imports and Exports using a schema table: filling it, giving a parameter one of its
+ * columns or exporting it; or, given one of its columns, reading it or giving a parameter it.
+ */
+export const buttonUses = (spec: FormSpec, tableId: string, columnId?: string): ButtonWidget[] =>
+  allWidgets(spec)
+    .filter(isButton)
+    .filter((widget) => {
+      if (widget.type === "export") return columnId === undefined && widget.tables.includes(tableId)
+      const reads = widget.table === tableId && (columnId === undefined || widget.column_names.some((named) => named.column === columnId))
+      const gives = widget.source.format === "sql" && widget.source.parameters.some((given) => given.table === tableId && (columnId === undefined || given.column === columnId))
+      return reads || gives
+    })
 
 /** The sheets, sections and widgets whose conditions, or whose fields' conditions, are on a schema table, or test just one of its columns. */
 export const conditionUses = (spec: FormSpec, tableId: string, columnId?: string): (Page | Section | Widget)[] => {
@@ -933,6 +999,10 @@ export function createWidget(type: WidgetType, rect: Rect): Widget {
       return { ...placed, type, ...showing, rows: 3, ...TABLE_OPTIONS, column_looks: [] }
     case "heading":
       return { ...placed, type, text: "", description: "", show_when: alwaysShown(), ...HEADING_OPTIONS }
+    case "import":
+      return { ...placed, type, label: "Import", show_when: alwaysShown(), source: structuredClone(IMPORT_SOURCES.csv), table: null, mode: "replace", column_names: [] }
+    case "export":
+      return { ...placed, type, label: "Export", show_when: alwaysShown(), target: structuredClone(EXPORT_TARGETS.csv), tables: [] }
   }
 }
 
@@ -990,8 +1060,10 @@ export function addWidgetInFreePlace(spec: FormSpec, sectionId: string, type: Wi
 /**
  * What any component can be given; `rows` and the Table's options are a Table's alone,
  * `columns` and the Collection's options a Collection's, but for the look the two share
- * (`SharedLook`), the Chart's options a Chart's, and `text`, `description` and the
- * Heading's options a Heading's, which has no `title` or `fields`.
+ * (`SharedLook`), the Chart's options a Chart's, `text`, `description` and the
+ * Heading's options a Heading's, and `label` a button's; only a Table, a Collection and a
+ * Chart have a `title` and `fields`. What an Import or an Export does changes through its
+ * own operations (`setImportFormat` and those after it).
  */
 export type WidgetPatch = Partial<Rect> & {
   title?: string
@@ -1001,6 +1073,7 @@ export type WidgetPatch = Partial<Rect> & {
   columns?: number
   text?: string
   description?: string
+  label?: string
 } & Partial<TableOptions> &
   Partial<CollectionOptions> &
   Partial<ChartOptions> &
@@ -1012,8 +1085,9 @@ const TABLE_ONLY = ["rows", ...Object.keys(TABLE_OPTIONS).filter((key) => !TABLE
 const COLLECTION_ONLY = ["columns", ...Object.keys(COLLECTION_OPTIONS).filter((key) => !TABLE_OR_COLLECTION.includes(key))]
 const CHART_ONLY = Object.keys(CHART_OPTIONS)
 const HEADING_ONLY = ["text", "description", ...Object.keys(HEADING_OPTIONS)]
-/** What every component but a Heading has. */
-const NOT_HEADING = ["title", "fields"]
+const BUTTON_ONLY = ["label"]
+/** What a Table, a Collection and a Chart have, and neither a Heading nor a button. */
+const FIELDS_ONLY = ["title", "fields"]
 
 /**
  * Change a component as `patch` says; grown past its section's bottom, as a resize grows it,
@@ -1035,8 +1109,10 @@ export function updateWidget(spec: FormSpec, id: string, patch: WidgetPatch): Fo
   if (chartOnly !== undefined && widget.type !== "chart") throw new Error(`Only a Chart has ${chartOnly}`)
   const headingOnly = HEADING_ONLY.find((key) => key in patch)
   if (headingOnly !== undefined && widget.type !== "heading") throw new Error(`Only a Heading has ${headingOnly}`)
-  const notHeading = NOT_HEADING.find((key) => key in patch)
-  if (notHeading !== undefined && widget.type === "heading") throw new Error(`A Heading has no ${notHeading}`)
+  const buttonOnly = BUTTON_ONLY.find((key) => key in patch)
+  if (buttonOnly !== undefined && !isButton(widget)) throw new Error(`Only an Import or an Export has ${buttonOnly}`)
+  const fieldsOnly = FIELDS_ONLY.find((key) => key in patch)
+  if (fieldsOnly !== undefined && !showsFields(widget)) throw new Error(`${kindArticle(widget.type)} ${KIND_NAMES[widget.type]} has no ${fieldsOnly}`)
   return editLayout(spec, found.page.id, [found.section.id], (page) => {
     const section = sectionIn(page, found.section.id)
     const changed = Object.assign({ ...widget }, patch)
@@ -1137,6 +1213,7 @@ export function pasteWidget(spec: FormSpec, widget: Widget, sectionId: string): 
   const copy: Widget = { ...structuredClone(widget), id, ...at }
   const gone = (field: FieldRef) => fieldColumn(spec, field) === null
   dropShown(copy, gone)
+  dropButtonUses(copy, (table) => !spec.schema.tables.some((candidate) => candidate.id === table), gone)
   const keep = (condition: SingleCondition): SingleCondition | null => {
     if (!spec.schema.tables.some((table) => table.id === condition.table)) return null
     let kept: SingleCondition | null = condition
@@ -1285,6 +1362,219 @@ export const removeSpacer = (spec: FormSpec, widgetId: string, at: number): Form
     setOrder(widget, items)
   })
 
+// ─── Imports and Exports ─────────────────────────────────────────────────
+
+/** Where an Import reads from: a CSV, an Excel workbook or a database. */
+export type ImportFormat = ImportWidget["source"]["format"]
+/** Where an Export writes to: a CSV, an Excel workbook or a database. */
+export type ExportFormat = ExportWidget["target"]["format"]
+
+/**
+ * The furthest down a workbook's sheet an Import's header row can be, as the server's form
+ * takes it (`HEADER_ROW_MAX` in `src/haute/_workbench_form.py`).
+ */
+export const HEADER_ROW_MAX = 100
+
+/** What a new Export names its file, as the server's form has it (`EXPORT_FILE_NAME`). */
+export const EXPORT_FILE_NAME = "{quote_reference}-{quote_option}"
+
+/** Each format's settings as a new Import starts them, in the file's order: a CSV's delimiter found from the file, a workbook's first sheet under its first row, no connection or query. */
+export const IMPORT_SOURCES: { readonly [F in ImportFormat]: Readonly<Extract<ImportWidget["source"], { format: F }>> } = {
+  csv: { format: "csv", delimiter: "auto" },
+  excel: { format: "excel", sheet: "", header_row: 1 },
+  sql: { format: "sql", connection: "", query: "", parameters: [] },
+}
+
+/** Each format's settings as a new Export starts them, in the file's order: a file named by the quote's reference and option, headed by names, its values raw, a CSV's split by commas; no connection. */
+export const EXPORT_TARGETS: { readonly [F in ExportFormat]: Readonly<Extract<ExportWidget["target"], { format: F }>> } = {
+  csv: { file_name: EXPORT_FILE_NAME, headers: "names", values: "raw", format: "csv", delimiter: "comma" },
+  excel: { file_name: EXPORT_FILE_NAME, headers: "names", values: "raw", format: "excel" },
+  sql: { format: "sql", connection: "", table_names: [] },
+}
+
+function importOf(spec: FormSpec, id: string): ImportWidget {
+  const widget = widgetOf(spec, id)
+  if (widget.type !== "import") throw new Error(`Component ${id} is not an Import`)
+  return widget
+}
+
+function exportOf(spec: FormSpec, id: string): ExportWidget {
+  const widget = widgetOf(spec, id)
+  if (widget.type !== "export") throw new Error(`Component ${id} is not an Export`)
+  return widget
+}
+
+/** An Import reading another format, its settings for it as a new Import's (`IMPORT_SOURCES`), its table and column names kept. */
+export const setImportFormat = (spec: FormSpec, id: string, format: ImportFormat): FormSpec =>
+  importOf(spec, id).source.format === format
+    ? spec
+    : edit(spec, (draft) => {
+        importOf(draft, id).source = structuredClone(IMPORT_SOURCES[format])
+      })
+
+/** The settings a format of an Import has of its own, beside the query and its parameters. */
+export type ImportSourcePatch = Partial<Pick<CsvImport, "delimiter"> & Pick<ExcelImport, "sheet" | "header_row"> & Pick<SqlImport, "connection">>
+
+const SOURCE_KEYS: Record<ImportFormat, readonly string[]> = { csv: ["delimiter"], excel: ["sheet", "header_row"], sql: ["connection"] }
+
+/** Change the settings of an Import's format: a CSV's delimiter, a workbook's sheet or header row, a database's connection. */
+export function updateImportSource(spec: FormSpec, id: string, patch: ImportSourcePatch): FormSpec {
+  const { source } = importOf(spec, id)
+  const foreign = Object.keys(patch).find((key) => !SOURCE_KEYS[source.format].includes(key))
+  if (foreign !== undefined) throw new Error(`An Import from ${source.format} has no ${foreign}`)
+  const held: Record<string, unknown> = { ...source }
+  if (Object.entries(patch).every(([key, value]) => held[key] === value)) return spec
+  return edit(spec, (draft) => {
+    Object.assign(importOf(draft, id).source, patch)
+  })
+}
+
+/** An Import filling another input table, or none: the column names given for the last dropped. */
+export const setImportTable = (spec: FormSpec, id: string, table: string | null): FormSpec =>
+  importOf(spec, id).table === table
+    ? spec
+    : edit(spec, (draft) => {
+        const widget = importOf(draft, id)
+        widget.table = table
+        widget.column_names = []
+      })
+
+/** How an Import fills a many-row table: its rows replaced, added to, or updated by its keys. */
+export const setImportMode = (spec: FormSpec, id: string, mode: ImportWidget["mode"]): FormSpec =>
+  importOf(spec, id).mode === mode
+    ? spec
+    : edit(spec, (draft) => {
+        importOf(draft, id).mode = mode
+      })
+
+/** The name an Import reads a column of its table from; blank takes it away, the column then read from the column of its own name or label. */
+export function setColumnName(spec: FormSpec, id: string, column: string, name: string): FormSpec {
+  const named = importOf(spec, id).column_names.find((entry) => entry.column === column)
+  const blank = name.trim() === ""
+  if (blank ? named === undefined : named?.name === name) return spec
+  return edit(spec, (draft) => {
+    const widget = importOf(draft, id)
+    if (blank) widget.column_names = widget.column_names.filter((entry) => entry.column !== column)
+    else if (named !== undefined) widget.column_names = widget.column_names.map((entry) => (entry.column === column ? { column, name } : entry))
+    else widget.column_names.push({ column, name })
+  })
+}
+
+/** A query's quoted text, `'…'` and `"…"`, and its comments, `--` to the line's end and `/* … *\/`, where a `:name` is no parameter. */
+const NOT_PARAMETERS = /'(?:[^']|'')*'|"(?:[^"]|"")*"|--[^\n]*|\/\*[\s\S]*?\*\//g
+
+/** A `:name` that is no `::` cast and no part of a word. */
+const PARAMETER = /(?<![:\w]):([A-Za-z_]\w*)/g
+
+/** The `:name`s a query holds, in the order it first holds them, once each, outside its quoted text and comments. */
+export const queryParameters = (query: string): string[] => [...new Set(Array.from(query.replace(NOT_PARAMETERS, " ").matchAll(PARAMETER), (found) => found[1]))]
+
+function sqlImportOf(spec: FormSpec, id: string): SqlImport {
+  const { source } = importOf(spec, id)
+  if (source.format !== "sql") throw new Error(`Component ${id} imports from ${source.format}, which has no query`)
+  return source
+}
+
+/** An Import's query, each parameter it no longer holds losing its column. */
+export const setImportQuery = (spec: FormSpec, id: string, query: string): FormSpec =>
+  sqlImportOf(spec, id).query === query
+    ? spec
+    : edit(spec, (draft) => {
+        const source = sqlImportOf(draft, id)
+        const held = new Set(queryParameters(query))
+        source.query = query
+        source.parameters = source.parameters.filter((given) => held.has(given.name))
+      })
+
+/** Give a parameter of an Import's query the value of a column, or none. */
+export function bindParameter(spec: FormSpec, id: string, name: string, field: FieldRef | null): FormSpec {
+  const given = sqlImportOf(spec, id).parameters.find((parameter) => parameter.name === name)
+  if (field === null ? given === undefined : given?.table === field.table && given.column === field.column) return spec
+  return edit(spec, (draft) => {
+    const source = sqlImportOf(draft, id)
+    if (field === null) source.parameters = source.parameters.filter((parameter) => parameter.name !== name)
+    else if (given !== undefined) source.parameters = source.parameters.map((parameter) => (parameter.name === name ? { name, ...field } : parameter))
+    else source.parameters.push({ name, ...field })
+  })
+}
+
+/** The columns of a table an Import fills: those an underwriter types, neither the quote's identity nor its index, nor in quote_details a column the app sets. */
+export const importColumns = (table: SchemaTable): SchemaColumn[] =>
+  sheetColumns(table).filter((column) => !column.index && !(table.id === QUOTE_DETAILS_ID && QUOTE_DETAILS_MANAGED.has(column.id)))
+
+/** The columns a query's parameter can be given: a one-row input table's. */
+export const parameterColumns = (table: SchemaTable): SchemaColumn[] => (table.role === "input" && table.rows === "one" ? sheetColumns(table) : [])
+
+/** Whether an Export writes a file: a CSV or an Excel workbook. */
+const isFile = (target: ExportWidget["target"]): target is CsvExport | ExcelExport => target.format !== "sql"
+
+/** An Export writing another format, its settings for it as a new Export's (`EXPORT_TARGETS`), its file name, headers and values kept between a CSV and a workbook. */
+export function setExportFormat(spec: FormSpec, id: string, format: ExportFormat): FormSpec {
+  const { target } = exportOf(spec, id)
+  if (target.format === format) return spec
+  return edit(spec, (draft) => {
+    const next = structuredClone(EXPORT_TARGETS[format])
+    if (isFile(next) && isFile(target)) Object.assign(next, { file_name: target.file_name, headers: target.headers, values: target.values })
+    exportOf(draft, id).target = next
+  })
+}
+
+/** The settings a format of an Export has of its own, beside the names of the tables it writes to. */
+export type ExportTargetPatch = Partial<Pick<CsvExport, "file_name" | "headers" | "values" | "delimiter"> & Pick<SqlExport, "connection">>
+
+const TARGET_KEYS: Record<ExportFormat, readonly string[]> = {
+  csv: ["file_name", "headers", "values", "delimiter"],
+  excel: ["file_name", "headers", "values"],
+  sql: ["connection"],
+}
+
+/** Change the settings of an Export's format: a file's name, headers and values, a CSV's delimiter, a database's connection. */
+export function updateExportTarget(spec: FormSpec, id: string, patch: ExportTargetPatch): FormSpec {
+  const { target } = exportOf(spec, id)
+  const foreign = Object.keys(patch).find((key) => !TARGET_KEYS[target.format].includes(key))
+  if (foreign !== undefined) throw new Error(`An Export to ${target.format} has no ${foreign}`)
+  const held: Record<string, unknown> = { ...target }
+  if (Object.entries(patch).every(([key, value]) => held[key] === value)) return spec
+  return edit(spec, (draft) => {
+    Object.assign(exportOf(draft, id).target, patch)
+  })
+}
+
+/** Export a table, after those it exports, or stop exporting it, the name it was written to going too. */
+export const toggleExportTable = (spec: FormSpec, id: string, table: string): FormSpec =>
+  edit(spec, (draft) => {
+    const widget = exportOf(draft, id)
+    if (!widget.tables.includes(table)) {
+      widget.tables.push(table)
+      return
+    }
+    widget.tables = widget.tables.filter((exported) => exported !== table)
+    if (widget.target.format === "sql") widget.target.table_names = widget.target.table_names.filter((named) => named.table !== table)
+  })
+
+function sqlExportOf(spec: FormSpec, id: string): SqlExport {
+  const { target } = exportOf(spec, id)
+  if (target.format !== "sql") throw new Error(`Component ${id} exports to ${target.format}, which names no tables`)
+  return target
+}
+
+/** The name of the database table an Export writes one of its tables to; blank takes it away, the table then written to the table of its own name. */
+export function setTableName(spec: FormSpec, id: string, table: string, name: string): FormSpec {
+  if (!exportOf(spec, id).tables.includes(table)) throw new Error(`Component ${id} does not export ${table}`)
+  const named = sqlExportOf(spec, id).table_names.find((entry) => entry.table === table)
+  const blank = name.trim() === ""
+  if (blank ? named === undefined : named?.name === name) return spec
+  return edit(spec, (draft) => {
+    const target = sqlExportOf(draft, id)
+    if (blank) target.table_names = target.table_names.filter((entry) => entry.table !== table)
+    else if (named !== undefined) target.table_names = target.table_names.map((entry) => (entry.table === table ? { table, name } : entry))
+    else target.table_names.push({ table, name })
+  })
+}
+
+/** The `{name}`s a file name holds, in order. */
+export const fileNameTokens = (fileName: string): string[] => Array.from(fileName.matchAll(/\{([^{}]*)\}/g), (found) => found[1])
+
 // ─── The sample ──────────────────────────────────────────────────────────
 
 /** A value typed into the sample: text, or a tick. The server types it by its column. */
@@ -1427,20 +1717,32 @@ export interface WidgetProblem {
   message: string
 }
 
-const KIND_NAMES: Record<WidgetType, string> = { tableInput: "Table", collection: "Collection", chart: "Chart", heading: "Heading" }
+const KIND_NAMES: Record<WidgetType, string> = {
+  tableInput: "Table",
+  collection: "Collection",
+  chart: "Chart",
+  heading: "Heading",
+  import: "Import",
+  export: "Export",
+}
 
-/** `Table "Layers"`, a Heading by its text, `Heading "Cover"`, or `A Table` while it has no title. */
+/** "A" or "An", as a kind of component's name takes it. */
+const kindArticle = (type: WidgetType): string => (/^[AEIOU]/.test(KIND_NAMES[type]) ? "An" : "A")
+
+/** `Table "Layers"`, a Heading by its text, `Heading "Cover"`, a button by its label, `Import "Schedule"`, or `A Table` and `An Import` while it has none. */
 export const widgetName = (widget: Widget): string => {
-  const name = widget.type === "heading" ? widget.text.trim() : widget.title
-  return name ? `${KIND_NAMES[widget.type]} "${name}"` : `A ${KIND_NAMES[widget.type]}`
+  const name = widget.type === "heading" ? widget.text.trim() : isButton(widget) ? widget.label.trim() : widget.title
+  return name ? `${KIND_NAMES[widget.type]} "${name}"` : `${kindArticle(widget.type)} ${KIND_NAMES[widget.type]}`
 }
 
 /**
  * What stops a component showing what it should: no fields, a column no longer in the
  * schema, a table of the other kind (as when a table is switched between one row and
  * many after its columns were chosen), tables whose rows do not line up, or what stops
- * a Chart plotting what it should (`chartProblems`); a Heading's blank text; and what
- * stops its conditions doing what they say (`conditionProblems`).
+ * a Chart plotting what it should (`chartProblems`); a Heading's blank text; a button's
+ * blank label and what stops an Import or an Export doing what its settings say
+ * (`importProblems`, `exportProblems`); and what stops its conditions doing what they say
+ * (`conditionProblems`).
  */
 export function widgetProblems(spec: FormSpec): WidgetProblem[] {
   const problems: WidgetProblem[] = []
@@ -1450,6 +1752,9 @@ export function widgetProblems(spec: FormSpec): WidgetProblem[] {
     const problem = (message: string) => problems.push({ widgetId: widget.id, message: `${name} ${message}` })
     if (widget.type === "heading") {
       if (widget.text.trim() === "") problem("has no text")
+    } else if (isButton(widget)) {
+      if (widget.label.trim() === "") problem("has no label")
+      for (const message of widget.type === "import" ? importProblems(spec, widget) : exportProblems(spec, widget)) problem(message)
     } else {
       if (widget.fields.length === 0) problem("shows no fields")
       const found = widget.fields.map((field) => fieldColumn(spec, field))
@@ -1508,6 +1813,70 @@ function chartProblems(spec: FormSpec, widget: ChartWidget): string[] {
   const grain = chartGrain(spec.schema, widget)
   if (widget.chart_type === "pie" && grain !== null && grain !== "one" && widget.fields.length > 1) {
     problems.push("is a pie of many rows, so it plots only its first field")
+  }
+  return problems
+}
+
+/**
+ * What stops an Import doing what its settings say: no table, one gone or an output
+ * table; a column named that is gone or that an underwriter does not type; replacing or
+ * adding to the rows of a table with a row for each allowed value; and, from a database,
+ * no connection or query, a parameter its query holds given no column, or a column gone
+ * or of no one-row input table, or a column given a parameter its query does not hold.
+ */
+function importProblems(spec: FormSpec, widget: ImportWidget): string[] {
+  const problems: string[] = []
+  const table = widget.table === null ? undefined : spec.schema.tables.find((candidate) => candidate.id === widget.table)
+  if (widget.table === null) problems.push("fills no table")
+  else if (table === undefined) problems.push("fills a table that is no longer in the schema")
+  else if (table.role === "output") problems.push("fills an output table, which pricing fills")
+  else {
+    const typed = new Set(importColumns(table).map((column) => column.id))
+    const named = widget.column_names.map((entry) => table.columns.find((column) => column.id === entry.column))
+    if (named.includes(undefined)) problems.push("reads into a column that is no longer in the schema")
+    if (named.some((column) => column !== undefined && !typed.has(column.id))) problems.push("reads into a column an underwriter does not type")
+    if (widget.mode !== "update" && presetColumn(table) !== null) {
+      problems.push(`${widget.mode === "replace" ? "replaces" : "adds to"} the rows of ${table.name}, which has a row for each allowed value; only Update by key keeps them`)
+    }
+  }
+  if (widget.source.format === "sql") {
+    const { connection, query, parameters } = widget.source
+    if (connection.trim() === "") problems.push("names no connection")
+    if (query.trim() === "") problems.push("has no query")
+    const held = queryParameters(query)
+    for (const name of held) {
+      const given = parameters.find((parameter) => parameter.name === name)
+      const found = given === undefined ? undefined : fieldColumn(spec, given)
+      if (found === undefined) problems.push(`gives :${name} no column`)
+      else if (found === null) problems.push(`gives :${name} a column that is no longer in the schema`)
+      else if (parameterColumns(found.table).length === 0) problems.push(`gives :${name} a column of ${found.table.role === "output" ? "an output" : "a many-row"} table`)
+    }
+    for (const given of parameters) {
+      if (!held.includes(given.name)) problems.push(`gives a column to :${given.name}, which its query does not hold`)
+    }
+  }
+  return problems
+}
+
+/**
+ * What stops an Export doing what its settings say: no tables, one gone, more than one to
+ * a CSV, a file with no name or naming a column quote_details does not have, and, to a
+ * database, no connection.
+ */
+function exportProblems(spec: FormSpec, widget: ExportWidget): string[] {
+  const problems: string[] = []
+  const { target, tables } = widget
+  if (tables.length === 0) problems.push("exports no tables")
+  if (tables.some((id) => !spec.schema.tables.some((table) => table.id === id))) problems.push("exports a table that is no longer in the schema")
+  if (target.format === "sql") {
+    if (target.connection.trim() === "") problems.push("names no connection")
+    return problems
+  }
+  if (target.format === "csv" && tables.length > 1) problems.push("exports more than one table to a CSV, which holds one")
+  if (target.file_name.trim() === "") problems.push("has no file name")
+  const details = spec.schema.tables.find((table) => table.id === QUOTE_DETAILS_ID)
+  for (const token of new Set(fileNameTokens(target.file_name))) {
+    if (!details?.columns.some((column) => column.name === token)) problems.push(`names its file by {${token}}, which is not a column of quote_details`)
   }
   return problems
 }

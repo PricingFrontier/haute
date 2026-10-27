@@ -1,7 +1,8 @@
 /**
  * How a component looks on a sheet (specs/workbench): a Collection's fields as labelled
  * boxes and a Table's as the columns of a grid, drawn as its options say, a Chart's
- * plotted (`ChartBody`), and a Heading as its text. An input column takes the values the
+ * plotted (`ChartBody`), a Heading as its text, and an Import or an Export as a button
+ * (`ButtonBody`). An input column takes the values the
  * sheet holds, none while building, as a new quote holds none, and the sample or the
  * underwriter app's quote in Preview, through the control its type calls for, marked when
  * the value breaks the column's rules; an output column is shaded and shows what pricing
@@ -10,8 +11,9 @@
  */
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
-import { BLANK_THEME, type Widget } from "../utils/workbenchForm"
+import { BLANK_THEME, isButton, type Widget } from "../utils/workbenchForm"
 import ChartBody from "./ChartBody"
+import { ButtonBody } from "./sheet/ButtonBody"
 import { FieldBoxes } from "./sheet/FieldBoxes"
 import { LINE_WIDTH, type DrawnFields } from "./sheet/fieldCells"
 import { FieldGrid } from "./sheet/FieldGrid"
@@ -22,6 +24,7 @@ export default function WidgetBody({ widget, drawn }: { widget: Widget; drawn: D
   const previewing = useWorkbenchViewStore((s) => s.mode === "preview")
   const colours = sheetColours(useWorkbenchFormStore((s) => s.form?.theme ?? BLANK_THEME))
   if (widget.type === "heading") return <HeadingBody widget={widget} colours={colours} />
+  if (isButton(widget)) return <ButtonBody widget={widget} colours={colours} previewing={previewing} />
   // A Table or a Collection without its frame sits on the sheet as its title and fields alone.
   const framed = widget.type === "chart" || widget.frame
   // A Table's or a Collection's frame, and the rule under its title, in its own colour and weight while it sets them.
