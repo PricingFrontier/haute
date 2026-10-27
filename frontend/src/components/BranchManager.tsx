@@ -243,9 +243,18 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
   // A deletion whose name a branch has again restores under another name.
   const undelete = (d: GitDeletedBranch, asName: string | null) =>
     run(d.id, "restore", async () => {
-      const res = await undeleteBranch(d.id, asName)
-      setRestoreAs(null)
-      addToast("success", `Restored ${res.branch}`)
+      try {
+        const res = await undeleteBranch(d.id, asName)
+        setRestoreAs(null)
+        addToast("success", `Restored ${res.branch}`)
+      } catch (err) {
+        // The listing hides ledgers, so a name can be taken by one it never
+        // showed: the server's refusal opens the name box all the same.
+        if (asName === null && apiErrorMessage(err, "").includes("another name")) {
+          setRestoreAs({ id: d.id, name: `${d.branch}-restored` })
+        }
+        throw err
+      }
     })
   const nameTaken = (name: string) => branches.some((b) => b.name === name)
   const onUndeleteClick = (d: GitDeletedBranch) => {

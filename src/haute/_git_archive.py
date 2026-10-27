@@ -350,8 +350,7 @@ def undelete_working_pair(
     for taken in (working, ledger):
         if _rev_parse(taken, cwd=cwd) is not None:
             raise GitDomainError(
-                f"Cannot restore: a branch named '{taken}' already exists. "
-                "Restore it under another name."
+                f"A branch named '{taken}' already exists. Restore it under another name."
             )
 
     branch_tip = entry.get("branch_tip")

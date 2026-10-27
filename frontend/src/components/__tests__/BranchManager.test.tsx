@@ -353,6 +353,23 @@ describe("BranchManager", () => {
     )
   })
 
+  it("opens the name box when the server finds the name taken by a hidden ref", async () => {
+    mockGetWorkingBranches.mockResolvedValue({
+      ...listing,
+      deleted: [{ id: "gone@20261027T131400Z", branch: "gone", deleted_at: null, was_archived: false }],
+    })
+    mockUndelete.mockRejectedValue(
+      new Error("A branch named 'gone-save' already exists. Restore it under another name."),
+    )
+    render(<BranchManager />)
+    await waitFor(() => expect(screen.getByTestId("branch-manager-deleted")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("branch-manager-deleted-toggle"))
+    fireEvent.click(screen.getByTestId("branch-manager-undelete"))
+
+    await waitFor(() => expect(screen.getByTestId("branch-manager-restore-as-input")).toHaveValue("gone-restored"))
+    expect(screen.getByTestId("branch-manager-error")).toHaveTextContent("Restore it under another name")
+  })
+
   it("records the delete's trash entry for undo", async () => {
     mockDelete.mockResolvedValue({ status: "deleted", branch: "experiment", trash_id: "experiment@20261027T131400Z" })
     render(<BranchManager />)
