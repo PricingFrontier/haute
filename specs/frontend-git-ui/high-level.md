@@ -21,7 +21,7 @@ of branch operations.
 In scope:
 - The toolbar working-branch indicator (`BranchIndicator`) — the branch name, and the entry
   point into the panel.
-- The Git side panel (`GitPanel`): out-of-version (pending) save list, milestone list with
+- The Git side panel (`GitPanel`): pending save list, milestone list with
   expandable folded saves, the graph rail (lanes, spawn stubs, magnifiers), right-click
   context menus for forking/viewing/restoring/switching, and the fork-naming dialog.
 - The branch manager (`BranchManager`), embedded in the panel: list/create/switch/archive/
@@ -70,15 +70,15 @@ repository. When the compact toolbar truncates the detail, the complete diagnost
 available in a tooltip on hover over the error or keyboard focus on Retry, and describes
 the Retry button for assistive technology. Successful responses render distinct labels and
 remediation for no repository, unset working branch, invalid state, attached divergence,
-and detached HEAD (including its short SHA). An interrupted clone reads "Files in use", with
+and a detached HEAD, which reads "Viewing an earlier version". An interrupted clone reads "Files in use", with
 the files in its tooltip and a Retry that asks the server to write them again. Startup opens
 no chooser for it. A ready state shows the working branch name
 alone; clicking it opens the panel on the current branch. The indicator carries no save
 SHA — the commit code belongs to the history panel, which shows it in context.
 
 **Panel — save history.** The panel shows, top to bottom: the remote push control, the
-branch manager, an optional "peeking another branch" banner, out-of-version (pending)
-saves in a highlighted box, then the milestone list. Every milestone can be expanded to
+branch manager, an optional "peeking another branch" banner, the pending saves in a
+highlighted box headed "Saves since the last milestone (n)", then the milestone list. Every milestone can be expanded to
 reveal the individual saves folded into it. Milestones and saves each carry: a version
 label or "init" tag, message, short SHA with a tooltip, a relative time, a view (read-only
 compare) affordance, and — when a branch was spawned from that exact point — clickable
@@ -115,8 +115,9 @@ control. Peeking (viewing
 another branch's history) never switches the working branch; switching, archiving,
 deleting, and restoring do, each behind role-appropriate confirmation (switch has a
 persistable "don't ask again"; delete always confirms and names what it discards;
-archiving the current branch with uncommitted tracked project changes redirects to "commit
-a milestone first" instead of proceeding). A switch or Create & Move that would replace
+archiving the current branch with tracked project changes not yet saved redirects to
+"commit a milestone first" instead of proceeding). A row's badges read "not saved" (project
+files changed since the last save) and "saves to commit" (saves not yet in a milestone). A switch or Create & Move that would replace
 unsaved edits, in the canvas or the workbench's form, always requires Cancel, Discard, or
 Save first; the persisted
 preference to skip clean switch confirmation never bypasses this dirty-work guard.
@@ -148,8 +149,14 @@ would fork the remote" warning with an explicit "commit anyway" override rather 
 dead-end error. `DivergenceModal` appears when the recorded working branch and the actual
 HEAD disagree (the repo was moved outside Haute) and offers three resolutions: return to
 the recorded branch, adopt the current one (only if attached and eligible), or defer to the
-branch manager. Detached HEAD is named as detached at its commit, never as a branch called
-`HEAD`; Haute never detaches it, so it comes only from a checkout outside Haute.
+branch manager. A detached HEAD reads "Viewing an earlier version", never a branch called
+`HEAD`; Haute leaves HEAD detached only after archiving or deleting the current branch, at
+its last milestone, so otherwise it comes from a checkout outside Haute.
+
+**Words.** The git UI's visible text uses the analyst's words: version, save, milestone,
+branch and project. It never shows "detached", "repo", "ledger", "fold" or "hexadecimal",
+and a save's short SHA is its "commit code". How versions work is explained in the
+guide `docs/building-models/versions.md`, not on screen.
 
 `RestoreConfirmModal` gates every restore (`GitPanel`'s row button and row menu item):
 - The title is "Restore <label>?" and the line below it reads "Your branch carries on from

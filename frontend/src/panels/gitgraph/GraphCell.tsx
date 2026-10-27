@@ -406,8 +406,8 @@ function Magnifier({
       data-expanded={magnifier.expanded || undefined}
       title={
         magnifier.expanded
-          ? "Hide the saves folded into this milestone"
-          : "Show the saves folded into this milestone"
+          ? "Hide the saves in this milestone"
+          : "Show the saves in this milestone"
       }
       onClick={(e) => {
         e.stopPropagation()

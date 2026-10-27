@@ -579,15 +579,15 @@ function PushConfirm({
   onConfirm: () => void
 }) {
   return (
-    <ModalShell ariaLabel="Confirm push with out-of-version saves" onClose={onCancel} testId="git-push-confirm">
+    <ModalShell ariaLabel="Confirm push with saves not in a milestone" onClose={onCancel} testId="git-push-confirm">
       <div className="p-4 flex flex-col gap-3">
         <span className="text-[13px] font-semibold" style={{ color: "var(--text-primary)" }}>
-          Push with out-of-version saves?
+          Push with saves not in a milestone?
         </span>
         <span className="text-[12px]" style={{ color: "var(--text-secondary)" }}>
-          {count} save{count === 1 ? "" : "s"} on the ledger {count === 1 ? "isn't" : "aren't"}{" "}
-          folded into a milestone yet. {count === 1 ? "It" : "They"}&rsquo;ll be pushed on the
-          ledger branch, but won&rsquo;t appear as a milestone on{" "}
+          {count} save{count === 1 ? "" : "s"} {count === 1 ? "isn't" : "aren't"} in a milestone
+          yet. {count === 1 ? "It" : "They"}&rsquo;ll be pushed with the branch&rsquo;s save
+          history, but won&rsquo;t appear as a milestone on{" "}
           <span className="font-mono">{remote}</span>.
         </span>
         <div className="flex justify-end gap-2 pt-1">

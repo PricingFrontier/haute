@@ -103,7 +103,7 @@ describe("BranchIndicator", () => {
 
   it("labels detached, invalid, and divergent Git states distinctly", () => {
     const cases = [
-      [status({ state: "detached", head_sha: "1234567890" }), "Detached at 1234567"],
+      [status({ state: "detached", head_sha: "1234567890" }), "Viewing an earlier version"],
       [status({ state: "invalid" }), "Git needs attention"],
       [status({ state: "divergent" }), "Branch changed externally"],
     ] as const

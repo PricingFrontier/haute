@@ -267,7 +267,7 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
       : status.state === "divergent"
         ? { label: "Branch changed externally", modal: "divergence" as const }
         : status.state === "detached"
-          ? { label: `Detached at ${status.head_sha?.slice(0, 7) ?? "unknown"}`, modal: "select" as const }
+          ? { label: "Viewing an earlier version", modal: "select" as const }
           : { label: "Git needs attention", modal: "select" as const }
     return wrapWithChildren(
       <button

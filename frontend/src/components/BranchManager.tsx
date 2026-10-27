@@ -555,9 +555,9 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
               style={{ background: "var(--warning-soft, var(--accent-soft-faint))", border: "1px solid var(--warning-border)" }}
             >
               <span className="text-[12px]" style={{ color: "var(--text-primary)" }}>
-                <span className="font-mono">{archiveDirty.name}</span> has uncommitted tracked
-                project changes. Create a milestone to capture them before archiving. In-memory
-                canvas edits are protected separately and never ride into an archive.
+                <span className="font-mono">{archiveDirty.name}</span> has changes not yet
+                saved. Commit a milestone to keep them before archiving. Edits on the canvas are
+                kept separately and never go into an archive.
               </span>
               <div className="flex justify-end gap-2">
                 <button onClick={() => setArchiveDirty(null)} className="px-2.5 py-1 text-[12px] font-medium rounded-md" style={{ color: "var(--text-secondary)" }}>
@@ -756,16 +756,16 @@ function BranchRow({
 
       {/* State indicators (distinct) */}
       {b.has_uncommitted_changes && (
-        <Tooltip label="Uncommitted changes in the working tree">
+        <Tooltip label="Project files changed since the last save">
           <span data-testid="branch-manager-uncommitted" className="text-[10px]" style={{ color: "var(--warning)" }}>
-            uncommitted
+            not saved
           </span>
         </Tooltip>
       )}
       {b.has_unmerged_saves && (
         <Tooltip label="Saves not yet committed to a milestone">
           <span data-testid="branch-manager-unsaved" className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-            unsaved
+            saves to commit
           </span>
         </Tooltip>
       )}

@@ -15,6 +15,7 @@ This section covers how to build pricing models in Haute - from loading your dat
 | Understand what each node type does and how to configure it | [Node Types](nodes/index.md) |
 | Understand how Haute plans a run and what its diagnostics mean | [Execution Strategy](execution-strategy.md) |
 | Know where data, models and outputs go, and which are versioned | [Project Files](project-files.md) |
+| Go back to an earlier version, start a branch from one, or restore a deleted branch | [Versions](versions.md) |
 | Share a pipeline between machines, operating systems or network drives | [Filesystem Portability](filesystem-portability.md) |
 | Open a pipeline that has a problem in it | [Recovering a Pipeline](recovering-a-pipeline.md) |
 | See how a value in the preview was calculated | [Price tracing](../getting-started/polars.md#price-tracing) |

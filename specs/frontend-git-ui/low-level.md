@@ -451,7 +451,8 @@ Library component/unit tests (no e2e for this surface).
   over them succeeds and kept when it fails, and likewise the canvas's edits, a resync
   requested once they are dropped), archive
   (direct and the dirty-current redirect), delete with confirm, restore, the
-  uncommitted/unsaved indicator display, the persistent error banner, and the full row
+  "not saved" / "saves to commit" indicator display, the Deleted section (restore, and
+  restore under another name when the name is taken), the persistent error banner, and the full row
   context-menu surface (open, per-state item visibility, each action's routing, backdrop
   dismiss).
 - **`frontend/src/components/__tests__/BranchManager.gaps.test.tsx`** — the `reloadOnDone` matrix:

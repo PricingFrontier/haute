@@ -9,7 +9,7 @@ specified in [the git-integration specification](../git-integration/high-level.m
 and [the git UI](../frontend-git-ui/high-level.md). These
 packages come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md);
 the Databricks IO defects the same review found are `BUG-44` and `BUG-45` in
-[bugs](bugs.md). `GIT-R15` and `GIT-R16` come from a review on 27 October 2026 of going
+[bugs](bugs.md). `GIT-R16` comes from a review on 27 October 2026 of going
 back to an earlier version (one Codex and two Fable reviews, every finding checked at
 its source), after an analyst restoring a version on the test project took six Move
 and return cycles and made and deleted two branches between 13:14 and 13:36.
@@ -25,7 +25,6 @@ and return cycles and made and deleted two branches between 13:14 and 13:36.
 | GIT-R06 | Decision | P3 | Automatic ledger saves either skip the project's git hooks or the specification says they run them. |
 | GIT-R07 | Planned | P2 | Every tree-changing action in the git UI passes the dirty-project guard and names what changes, a failed history read shows an error rather than an empty branch, a failed preference save is reported, and the dialogs and specification say what the server does. |
 | GIT-R08 | Planned | P3 | The git panel has one context menu, one dirty-navigation wrapper and one relative-time rule. |
-| GIT-R15 | Planned | P3 | The git UI's words are the analyst's: no "detached", "repo", "ledger", "fold" or "hexadecimal". |
 | GIT-R16 | Planned | P3 | A working branch left without its ledger, or half archived, is reported at startup with a Repair that leaves a whole pair. |
 
 ## Planned improvements
@@ -231,36 +230,6 @@ panel.
 `frontend/src/components/CommitBreadcrumb.tsx`;
 `frontend/src/panels/assistant/relativeTime.ts`;
 `frontend/src/utils/formatTime.ts`.
-
-### GIT-R15 — The git UI in the analyst's words
-**Why:** The git UI shows its machinery:
-- the toolbar reads "Detached at <sha>";
-- the commit-code tooltip explains a "longer hexadecimal string";
-- the pending box reads "Out-of-version saves (n) - to fold into next milestone";
-- the divergence dialog says "the repo is" and "a save ledger";
-- the push control's warning reads "saves on the ledger … folded into a milestone"
-  and "pushed on the ledger branch";
-- the branch manager's badges read "uncommitted" and "unsaved".
-
-**Plan:**
-- **The toolbar on a detached project:** "Viewing an earlier version"; the branch
-  chooser it opens already starts on a new branch.
-- **The tooltip:** no hexadecimal.
-- **The pending box:** "Saves since the last milestone".
-- **The divergence dialog:** plain words.
-- **The badges:** "changes not saved" and "saves not in a milestone".
-- **Explanations:** go in `docs/`, not on screen.
-
-**Acceptance:** None of the listed words appears in the git UI's visible text,
-and the tests asserting the old strings assert the new ones.
-
-**Dependencies:** `GIT-R07` owns the delete dialog's wording.
-
-**Evidence:** `frontend/src/components/BranchIndicator.tsx`;
-`frontend/src/panels/GitPanel.tsx`;
-`frontend/src/components/DivergenceModal.tsx`;
-`frontend/src/components/RemotePushControl.tsx`;
-`frontend/src/components/BranchManager.tsx`.
 
 ### GIT-R16 — Broken pairs reported with Repair
 **Why:** Delete and archive used to move a pair's two refs one step at a time, so a

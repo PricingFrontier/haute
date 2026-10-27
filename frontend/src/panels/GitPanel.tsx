@@ -27,9 +27,7 @@ interface SpawnChipBranch {
   colorIndex?: number
 }
 
-const HASH_TOOLTIP =
-  "Commit hash - a unique ID for every save or milestone. Fragment of a much " +
-  "longer hexadecimal string."
+const HASH_TOOLTIP = "Commit code - a short ID unique to each save or milestone."
 
 // Rail-cell node centres: aligned with the first text line of each row kind
 // (milestone rows carry py-2 + 12px text; save rows 11px text, plus the 6px
@@ -522,7 +520,7 @@ function GitPanelBranchScope({
                 className={`text-[10px] font-medium uppercase tracking-wider block mb-1.5${rail !== null ? " px-2.5" : ""}`}
                 style={{ color: "var(--text-muted)" }}
               >
-                Out-of-version saves ({pending.length}) - to fold into next milestone
+                Saves since the last milestone ({pending.length})
               </span>
               <div className={rail !== null ? "flex flex-col pr-2.5" : "flex flex-col gap-1.5 pl-2"}>
                 {pending.map((s, i) => {
