@@ -24,8 +24,8 @@ vi.mock("../../api/client", () => ({
 }))
 
 import WorkingBranchModal from "../WorkingBranchModal"
-import useGitStore from "../../stores/useGitStore"
-import { setGitIdentity, setWorkingBranch } from "../../api/client"
+import useGitStore, { resetGitStatusRequestForTests } from "../../stores/useGitStore"
+import { getWorkingBranch, setGitIdentity, setWorkingBranch } from "../../api/client"
 import type { GitWorkingBranchResponse } from "../../api/types"
 import { makeGitWorkingBranch } from "../../test-utils/factories"
 
@@ -84,6 +84,26 @@ describe("WorkingBranchModal", () => {
     fireEvent.click(screen.getByTestId("working-branch-confirm"))
     await waitFor(() => expect(onConfirmed).toHaveBeenCalledOnce())
     expect(setWorkingBranch).toHaveBeenCalledWith("dev", false)
+  })
+
+  it("reads the status the new branch left, not an older read still under way", async () => {
+    // A refusal's status read is still under way, slow, when a corrected name
+    // succeeds: joining it would leave the toolbar on the version before.
+    resetGitStatusRequestForTests()
+    let answerOlderRead: (value: GitWorkingBranchResponse) => void = () => {}
+    vi.mocked(getWorkingBranch)
+      .mockImplementationOnce(() => new Promise((resolve) => { answerOlderRead = resolve }))
+      .mockImplementationOnce(() => Promise.resolve(status({ state: "ready", working_branch: "dev" })))
+    void useGitStore.getState().loadStatus({ refresh: true })
+    const onConfirmed = vi.fn()
+    render(<WorkingBranchModal onConfirmed={onConfirmed} onClose={vi.fn()} />)
+
+    fireEvent.click(screen.getByTestId("working-branch-confirm"))
+    await waitFor(() => expect(setWorkingBranch).toHaveBeenCalledWith("dev", false))
+    answerOlderRead(status({ state: "detached" }))
+
+    await waitFor(() => expect(onConfirmed).toHaveBeenCalledOnce())
+    expect(useGitStore.getState().status?.state).toBe("ready")
   })
 
   it("creates a new branch when the create option is chosen", async () => {

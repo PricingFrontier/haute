@@ -226,6 +226,12 @@ vi.mock("../api/client", async () => {
       }),
     ),
     getMilestones: vi.fn(() => Promise.resolve({ working_branch: "dev", entries: [] })),
+    // What the Git panel reads when it opens.
+    getMilestoneSaves: vi.fn(() => Promise.resolve({ saves: [] })),
+    getPendingSaves: vi.fn(() => Promise.resolve({ saves: [] })),
+    getGitGraph: vi.fn(() => Promise.resolve({ working_branch: null, order: [], branches: [] })),
+    getWorkingBranches: vi.fn(() => Promise.resolve({ current: "dev", deleted: [], branches: [] })),
+    getGitPrefs: vi.fn(() => Promise.resolve({ skip_switch_confirm: false })),
     restoreVersion: vi.fn(() =>
       Promise.resolve({
         sha: "fed4321abc",
@@ -856,6 +862,44 @@ describe("App integration - restoring a version", () => {
     fireEvent.click(await screen.findByTestId("restore-confirm"))
 
     await waitFor(() => expect(useGitStore.getState().status?.state).toBe("interrupted"))
+  })
+
+  it("Save and Commit with files in use say to close them, not to choose a branch", async () => {
+    vi.mocked(api.getWorkingBranch).mockResolvedValue(makeGitWorkingBranch({
+      working_branch: "dev", state: "interrupted", errors: ["b.txt is open in another program."],
+      current_branch: "dev-save", last_save_sha: "abc1234def", eligible_branches: ["dev"],
+      identity_set: true, user_name: "Test User", user_email: "test@example.com",
+    }))
+    render(<App />)
+    await waitForAppReady()
+    await waitFor(() => expect(useGitStore.getState().status?.state).toBe("interrupted"))
+
+    fireEvent.click(screen.getByTestId("toolbar-save"))
+    fireEvent.click(screen.getByTestId("toolbar-save-commit"))
+
+    await waitFor(() => expect(useToastStore.getState().toasts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "error", text: expect.stringContaining("choose Retry in the toolbar before saving") }),
+      expect.objectContaining({ type: "error", text: expect.stringContaining("choose Retry in the toolbar before committing") }),
+    ])))
+    expect(useGitStore.getState().modal).toBeNull()
+    expect(vi.mocked(api.savePipeline)).not.toHaveBeenCalled()
+  })
+
+  it("opens the Git panel beside a pipeline the version now open does not have", async () => {
+    render(<App />)
+    await waitForAppReady()
+    act(() => {
+      useDocumentStatusStore.getState().setSystemFailure(
+        "This pipeline isn't in the version now open. Switch back to see it.",
+      )
+    })
+    expect(await screen.findByTestId("pipeline-load-failure")).toBeInTheDocument()
+
+    // Switching back is the way out, so the branch name must still open the panel.
+    fireEvent.click(screen.getByTestId("branch-indicator-name"))
+
+    expect(await screen.findByTestId("git-panel")).toBeInTheDocument()
+    expect(screen.getByTestId("pipeline-load-failure")).toBeInTheDocument()
   })
 
   it("reloads after a restore, and the reloaded page says what was restored", async () => {

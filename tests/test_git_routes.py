@@ -166,6 +166,13 @@ class TestGitUndelete:
         assert "already exists" in res.json()["detail"]
         assert "another name" in res.json()["detail"]
 
+        res = client.post("/api/git/undelete", json={"id": entry_id, "as_name": "feat old"})
+        assert res.status_code == 400
+        assert res.json()["detail"] == (
+            "'feat old' can't be used as a branch name. "
+            "Use letters, numbers, dashes and slashes, with no spaces."
+        )
+
         res = client.post(
             "/api/git/undelete", json={"id": entry_id, "as_name": "pricing/test-user/feat-old"}
         )

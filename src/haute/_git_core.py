@@ -774,6 +774,13 @@ def is_eligible_working_branch(branch: str) -> bool:
 
 
 def _assert_eligible_working(branch: str) -> None:
+    # A name git cannot use (a space typed into the name box) would otherwise fail
+    # as raw git stderr, which the routes can only report as "Operation failed".
+    if branch in {"HEAD", "@"} or not _is_valid_full_ref_name(f"refs/heads/{branch}"):
+        raise GitDomainError(
+            f"'{branch}' can't be used as a branch name. "
+            "Use letters, numbers, dashes and slashes, with no spaces."
+        )
     category = branch_category(branch)
     if category == "protected":
         raise GitGuardrailError(
@@ -781,8 +788,8 @@ def _assert_eligible_working(branch: str) -> None:
         )
     if category == "ledger":
         raise GitGuardrailError(
-            f"'{branch}' is a save ledger (managed by haute) and cannot be used as a "
-            "working branch."
+            f"'{branch}' ends in '{LEDGER_SUFFIX}', which Haute keeps for each branch's "
+            "saves. Choose another name."
         )
 
 
@@ -1143,8 +1150,13 @@ def _rewrite_tree(*args: str, cwd: Path | None = None) -> None:
             # index entry moved on, and checkout refuses to overwrite such a "change".
             # Staging what is on disk lets checkout carry it back untouched.
             literal = [f":(literal){path}" for path in out_of_step]
-            _run_git_ok("add", "--", *literal, cwd=cwd)
-            _run_git_ok("checkout", *detach, previous, cwd=cwd)
+            staged, _ = _run_git_ok("add", "--", *literal, cwd=cwd)
+            # A file held with no sharing (Excel's open CSV) cannot even be read to
+            # stage, and checkout then refuses over it. With nothing changed before
+            # the command a forced put-back discards nothing, and the held file
+            # keeps what is on disk.
+            force = () if staged or before else ("-f",)
+            _run_git_ok("checkout", *force, *detach, previous, cwd=cwd)
     left = sorted(_tracked_changes(cwd) - before)
     if left:
         _run_git_ok(

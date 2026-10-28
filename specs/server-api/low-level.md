@@ -227,7 +227,12 @@ silence the rest. `PipelineDocumentUpdatePayload` is a closed required-key contr
 containing `document`, `document_fingerprint`, and `source_file`; `ParseErrorPayload`
 contains `error` and `source_file`. They are the two currently-declared typed events;
 `default_bus` is the module-level singleton `server.py`'s watcher and WebSocket
-translator share.
+translator share. The translator (`_broadcast_event_as_ws_message`) schedules each frame's
+`broadcast` on the running event loop; a publisher on a worker thread has none (a git
+route's `git.tree.changed` background task runs in the threadpool), so the frame is handed
+to the server's own loop, which `_lifespan` records as `_server_loop` for the app's
+lifetime, with `asyncio.run_coroutine_threadsafe`. With neither (a unit test calling it
+bare) it logs `event_bus_broadcast_skipped` and returns.
 
 **`SupersessionCoordinator._SupersessionState`** (`routes/_supersession.py`) is one
 `asyncio.Condition` + `latest_generation: int` + `active: bool` + `references: int` +
@@ -438,7 +443,9 @@ background task, after the response is sent, so the acting client has its answer
 frames arrive. The handler:
 1. reads the pipelines known before the action: the route's `pipelines_before`, which a
    save cannot clear, with `_known_pipeline_paths()` (the index and the last broadcasts)
-   added; then calls `invalidate_pipeline_index()`;
+   added; then calls `invalidate_pipeline_index()`. Discovery refusing after the action
+   (`haute.toml` names a pipeline the version lacks, or cannot be read) counts as no
+   pipeline on disk, so each known one is announced as not in the version;
 2. for each `_discovered_pipeline_paths()` entry, loads the editor document, records the raw
    bytes' hash in `_last_broadcast_fp` (the watcher's next real edit is judged against the
    new content), and publishes `pipeline.document.update`, or `parse.error` with the fixed

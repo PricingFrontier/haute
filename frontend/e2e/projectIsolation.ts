@@ -136,8 +136,29 @@ export function resetE2eProject(): void {
     runGit(["tag", "--delete", tag])
   }
 
+  // A deleted branch pair stays restorable through its pins under
+  // refs/haute/trash/, which branch deletion leaves behind; left over, they
+  // would list one test's deleted branch in the next test's Deleted section.
+  const hauteRefs = runGit(["for-each-ref", "--format=%(refname)", "refs/haute/"])
+    .split(/\r?\n/)
+    .map((ref) => ref.trim())
+    .filter((ref) => ref.startsWith("refs/haute/"))
+
+  for (const ref of hauteRefs) {
+    runGit(["update-ref", "-d", ref])
+  }
+
   removeUntrackedFiles()
   seedWorkingBranch()
+}
+
+// Run git in the e2e project, for a spec that sets up what a user does outside
+// Haute (a checkout in a terminal) or reads back what the app did. Verifies the
+// toplevel first, like the reset, so a vanished .git can never send the command
+// to the real repository.
+export function e2eGit(args: string[]): string {
+  assertGitToplevelIsE2eProject()
+  return runGit(args)
 }
 
 // Model a fresh, never-configured clone (first-run): HEAD on main, no working

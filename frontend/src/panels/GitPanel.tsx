@@ -36,6 +36,9 @@ const MILESTONE_DOT_Y = 16
 const SAVE_DOT_Y = 8
 const SAVE_ROW_GAP = 6
 
+// How close the fork naming step may come to the window's edges.
+const VIEWPORT_MARGIN = 8
+
 // How a new branch from the history relates to the current one: a parallel line
 // you stay off, one opened at once, or one the later saves move to.
 type ForkMode = "parallel" | "switch" | "move"
@@ -134,9 +137,28 @@ function GitPanelBranchScope({
     } | null
   >(null)
   const [forkDraft, setForkDraft] = useState<
-    { sha: string; mode: ForkMode; name: string; x: number; y: number } | null
+    { sha: string; mode: ForkMode; name: string; x: number; y: number; error?: string } | null
   >(null)
   const [forking, setForking] = useState(false)
+  // The naming step, moved back inside the window once its size is known: the row
+  // button sits at the panel's right edge, where an unmoved box would put Create
+  // off screen.
+  const forkDialogRef = useRef<HTMLDivElement>(null)
+  const [forkDialogAt, setForkDialogAt] = useState<{ left: number; top: number } | null>(null)
+  const forkX = forkDraft?.x
+  const forkY = forkDraft?.y
+  const forkError = forkDraft?.error // a refusal line makes the box taller
+  useLayoutEffect(() => {
+    const dialog = forkDialogRef.current
+    if (forkX === undefined || forkY === undefined || !dialog) {
+      setForkDialogAt(null)
+      return
+    }
+    setForkDialogAt({
+      left: Math.max(VIEWPORT_MARGIN, Math.min(forkX, window.innerWidth - dialog.offsetWidth - VIEWPORT_MARGIN)),
+      top: Math.max(VIEWPORT_MARGIN, Math.min(forkY, window.innerHeight - dialog.offsetHeight - VIEWPORT_MARGIN)),
+    })
+  }, [forkX, forkY, forkError])
   // Context menus on the rail (feedback round 2): a milestone dot offers the
   // commit actions, a lane line offers its branch's actions.
   const [dotMenu, setDotMenu] = useState<{ sha: string; x: number; y: number } | null>(null)
@@ -189,8 +211,10 @@ function GitPanelBranchScope({
       }
       await refresh()
     } catch (err) {
+      // Said in the naming step, which stays open with the name to put right: a
+      // toast would sit over its Create button at the window's right edge.
       const detail = apiErrorMessage(err, "unknown error")
-      addToast("error", `Could not create branch: ${detail}`)
+      setForkDraft((draft) => draft && { ...draft, error: `Could not create branch: ${detail}` })
       void loadStatus({ refresh: true }) // a held file can leave the clone interrupted
     } finally {
       setForking(false)
@@ -217,7 +241,7 @@ function GitPanelBranchScope({
       addToast("success", `Switched to ${branch}`)
       if (from !== null) recordSwitch(from, branch)
       setViewBranch(null)
-      await loadStatus()
+      await loadStatus({ refresh: true }) // not a read begun before the action
       await refresh()
     } catch (err) {
       const detail = apiErrorMessage(err, "unknown error")
@@ -880,8 +904,9 @@ function GitPanelBranchScope({
         </>
       )}
 
-      {/* Naming step for the fork */}
-      {forkDraft && (
+      {/* Naming step for the fork, hidden while the unsaved-edits question is open
+          (its overlay would cover the question) and back with the name on Cancel. */}
+      {forkDraft && !dirtyNavigation && (
         <>
           <div
             className="fixed inset-0 z-40"
@@ -889,9 +914,15 @@ function GitPanelBranchScope({
             onContextMenu={(e) => { e.preventDefault(); if (!forking) setForkDraft(null) }}
           />
           <div
+            ref={forkDialogRef}
             data-testid="git-panel-fork-dialog"
             className="fixed z-50 rounded-lg p-3 w-[260px] flex flex-col gap-2 shadow-lg"
-            style={{ left: forkDraft.x, top: forkDraft.y, background: "var(--bg-panel)", border: "1px solid var(--border)" }}
+            style={{
+              left: forkDialogAt?.left ?? forkDraft.x,
+              top: forkDialogAt?.top ?? forkDraft.y,
+              background: "var(--bg-panel)",
+              border: "1px solid var(--border)",
+            }}
           >
             <span className="text-[12px] font-medium" style={{ color: "var(--text-primary)" }}>
               {FORK_DIALOG[forkDraft.mode].title}
@@ -900,12 +931,17 @@ function GitPanelBranchScope({
               autoFocus
               data-testid="git-panel-fork-name"
               value={forkDraft.name}
-              onChange={(e) => setForkDraft({ ...forkDraft, name: e.target.value })}
+              onChange={(e) => setForkDraft({ ...forkDraft, name: e.target.value, error: undefined })}
               onKeyDown={(e) => { if (e.key === "Enter") requestForkSubmit() }}
               placeholder="New branch name…"
               className="px-2 py-1 text-[12px] rounded-md focus:outline-none focus:ring-2"
               style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)", caretColor: "var(--accent)" }}
             />
+            {forkDraft.error && (
+              <p data-testid="git-panel-fork-error" role="alert" className="text-[11px]" style={{ color: "var(--danger)" }}>
+                {forkDraft.error}
+              </p>
+            )}
             <div className="flex justify-end gap-2">
               <button onClick={() => setForkDraft(null)} disabled={forking} className="px-2.5 py-1 text-[12px] rounded-md" style={{ color: "var(--text-secondary)" }}>
                 Cancel

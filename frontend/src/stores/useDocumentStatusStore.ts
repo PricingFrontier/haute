@@ -175,7 +175,9 @@ const useDocumentStatusStore = create<DocumentStatusStore>()((set) => ({
   })),
   // Persisting this canvas doesn't replace the document that owns running jobs.
   // Keep their original config/version stamps so edited results still read stale.
-  acknowledgeSave: (sourceRevision) => set({ sourceRevision }),
+  // The canvas now holds the saved document, which no response fingerprinted: the
+  // one first loaded must not be taken for it when a switch brings it back.
+  acknowledgeSave: (sourceRevision) => set({ sourceRevision, documentFingerprint: null }),
   reset: () => set((state) => ({ ...initialState(), executionGeneration: state.executionGeneration + 1 })),
 }))
 

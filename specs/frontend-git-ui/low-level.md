@@ -183,7 +183,15 @@ stringified geometry key short-circuits `setRowGeom` when nothing actually moved
 **Branch mutation flows.** `GitPanel.submitFork` → `createWorkingBranch(name, {at: sha,
 move, switch})`, from the fork draft's mode: `"parallel"` (New branch from here),
 `"switch"` (Start a branch from this version, the row button or the menu item) or
-`"move"` (Move the later saves to a new branch). On `res.switched` it does a full
+`"move"` (Move the later saves to a new branch). The naming step opens at the row
+button or the menu's point and is moved back inside the window, 8px from its edges, once
+its size is known: the row button sits at the panel's right edge, so a box opened there
+would otherwise put Create off screen. While the unsaved-edits question below is open
+the naming step is hidden, since its overlay would cover the question, and Cancel brings
+it back with the name typed. A refused create (a name git cannot use, a protected or
+taken name) is said inside the naming step (`git-panel-fork-error`), which stays open
+with the name until it is changed, rather than in a toast, which would sit over Create at
+the window's right edge. On `res.switched` it does a full
 `window.location.reload()`, since the checkout replaces the working tree and the client
 can't safely reconcile in place. A parallel create instead just calls `refresh()`. Before
 any switch, switch-mode or move-mode create,

@@ -287,6 +287,26 @@ describe("useWebSocketSync - WS sync must not corrupt undo history (#8)", () => 
     expect(useToastStore.getState().addToast).not.toHaveBeenCalled()
   })
 
+  it("applies a frame of the document first loaded once a save has replaced it", async () => {
+    const params = makeHookParams()
+    const document = makePipelineEditorDocument({
+      source_file: SOURCE_FILE,
+      source_revision: "revision-test",
+      nodes: [{ ...baseNode, id: "n1" }],
+    })
+    renderHook(() => useWebSocketSync(params))
+    act(() => { latestWS().onopen?.(new Event("open")) })
+    const frame = JSON.stringify(pipelineDocumentFrame(document, "fingerprint-as-loaded"))
+    await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: frame })) })
+
+    // The canvas is saved as something else, then a switch lands on a branch
+    // holding the document first loaded: the canvas must show it.
+    act(() => { useDocumentStatusStore.getState().acknowledgeSave("revision-saved") })
+    await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: frame })) })
+
+    expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledTimes(2)
+  })
+
   it("asks for the document without its fingerprint on a resync request, and applies a frame a dirty canvas blocked", async () => {
     const params = makeHookParams()
     const graphStore = useGraphStore.getState()

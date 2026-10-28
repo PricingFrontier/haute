@@ -36,6 +36,14 @@ describe("useDocumentStatusStore", () => {
     store.reset()
   })
 
+  it("forgets the accepted document's fingerprint once a save replaces that document", () => {
+    const store = useDocumentStatusStore.getState()
+    store.loadDocumentStatus(loaded, true, "fingerprint-as-loaded")
+    store.acknowledgeSave("r2")
+    expect(useDocumentStatusStore.getState().documentFingerprint).toBeNull()
+    store.reset()
+  })
+
   it("atomically loads authoritative document state and resets it", () => {
     useDocumentStatusStore.getState().loadDocumentStatus(loaded, false)
     expect(useDocumentStatusStore.getState().graphSynchronized).toBe(false)

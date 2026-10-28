@@ -169,6 +169,10 @@ const proOptions = { hideAttribution: true }
 // on the next startup so the reloaded page can say what was restored.
 const JUST_RESTORED_KEY = "haute:justRestored"
 
+// Save and Commit while a git action left files out of step (the toolbar's Files in use).
+const filesInUseRefusal = (doing: "saving" | "committing") =>
+  `Some files are still open in another program. Close them and choose Retry in the toolbar before ${doing}.`
+
 const edgeJoinSwapFailureMessages: Record<EdgeJoinSwapInputsFailureReason, string> = {
   "edge-join-node-not-found": "Edge join swap rejected: selected edge join is no longer available",
   "target-node-not-edge-join": "Edge join swap rejected: selected node is not an edge join",
@@ -1385,10 +1389,16 @@ function FlowEditor() {
       void saveProject()
       return
     }
+    // Files left out of step: a save would record the version they were left at,
+    // and no branch choice puts them back.
+    if (st.state === "interrupted") {
+      addToast("error", filesInUseRefusal("saving"))
+      return
+    }
     useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {
       pendingAction: "save",
     })
-  }, [saveProject])
+  }, [addToast, saveProject])
 
   // Commit uses the same readiness gate, but a ready repository first flushes
   // the fenced graph and only then opens the milestone modal.
@@ -1409,6 +1419,10 @@ function FlowEditor() {
     }
     if (st.state === "ready") {
       void flushSaveThenMilestone()
+      return
+    }
+    if (st.state === "interrupted") {
+      addToast("error", filesInUseRefusal("committing"))
       return
     }
     useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {
@@ -1924,7 +1938,20 @@ function FlowEditor() {
         data-testid="pipeline-view"
       >
       {loadError || documentSystemFailure ? (
-        <PipelineLoadFailureView detail={loadError ?? documentSystemFailure ?? "Unknown failure"} />
+        // The Git panel still opens beside it: a switch to a branch the open pipeline
+        // is not on ends here, and switching back is the way out.
+        <div className="flex-1 flex min-h-0">
+          <PipelineLoadFailureView detail={loadError ?? documentSystemFailure ?? "Unknown failure"} />
+          {gitOpen && (
+            <aside aria-label="Version control">
+              <ErrorBoundary name="GitPanel">
+                <Suspense fallback={null}>
+                  <GitPanel onClose={() => setGitOpen(false)} onSave={saveProject} />
+                </Suspense>
+              </ErrorBoundary>
+            </aside>
+          )}
+        </div>
       ) : documentLoadStatus === "source_only" ? (
         <SourceRecoveryView />
       ) : comparison ? (

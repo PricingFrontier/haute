@@ -48,7 +48,7 @@ export default function DivergenceModal({ onConfirmed, onClose }: DivergenceModa
     setBusy(true)
     try {
       await setWorkingBranch(target, false)
-      await loadStatus()
+      await loadStatus({ refresh: true }) // not a read begun before the action
       addToast("success", `Working branch set to ${target}`)
       onConfirmed()
     } catch (err: unknown) {

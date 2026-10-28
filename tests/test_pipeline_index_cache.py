@@ -368,7 +368,10 @@ class TestNoManualInvalidation:
         Allowed:
           - the function definition itself (if the helper is kept for
             internal use by the watcher),
-          - the single call site inside ``haute.server._file_watcher``, and
+          - the single call site inside ``haute.server._file_watcher``,
+          - ``haute.server._broadcast_tree_change``, the watcher's stand-in
+            after a git action that rewrote the files: the route paused the
+            watcher, so no watcher batch rebuilds the index for it, and
           - ``haute.routes._save_pipeline`` at the end of a successful
             save — self-writes early-return from the file-watcher on the
             ``is_self_write()`` cooldown, so the save path must
@@ -412,12 +415,13 @@ class TestNoManualInvalidation:
         # "is this inside _file_watcher?" check by walking the function
         # def hierarchy for each offender.
         def _in_file_watcher(py: Path, lineno: int) -> bool:
-            """True iff ``lineno`` in ``py`` is inside ``_file_watcher`` or a nested def."""
+            """True iff ``lineno`` in ``py`` is inside ``_file_watcher`` or
+            ``_broadcast_tree_change`` (or a def nested in either)."""
             tree = ast.parse(py.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                     continue
-                if node.name != "_file_watcher":
+                if node.name not in {"_file_watcher", "_broadcast_tree_change"}:
                     continue
                 start = node.lineno
                 end = node.end_lineno or start

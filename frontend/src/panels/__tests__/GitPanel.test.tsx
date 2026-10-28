@@ -195,6 +195,25 @@ describe("GitPanel", () => {
     )
   })
 
+  it("a refused name is said in the naming step, which keeps the name until it changes", async () => {
+    mockCreateWorkingBranch.mockRejectedValueOnce(
+      new Error("'motor pricing' can't be used as a branch name. Use letters, numbers, dashes and slashes, with no spaces."),
+    )
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone")).toHaveLength(2))
+    fireEvent.click(within(screen.getAllByTestId("git-panel-milestone")[1]).getByTestId("git-panel-start-branch"))
+    fireEvent.change(await screen.findByTestId("git-panel-fork-name"), { target: { value: "motor pricing" } })
+    fireEvent.click(screen.getByTestId("git-panel-fork-create"))
+
+    const refusal = await screen.findByTestId("git-panel-fork-error")
+    expect(refusal).toHaveTextContent("Could not create branch: 'motor pricing' can't be used as a branch name.")
+    expect(screen.getByTestId("git-panel-fork-name")).toHaveValue("motor pricing")
+    expect(useToastStore.getState().toasts.filter((t) => t.type === "error")).toHaveLength(0)
+
+    fireEvent.change(screen.getByTestId("git-panel-fork-name"), { target: { value: "motor-pricing" } })
+    expect(screen.queryByTestId("git-panel-fork-error")).not.toBeInTheDocument()
+  })
+
   describe("restoring a version", () => {
     it("is offered on every row but the current version: the newest milestone and its newest save", async () => {
       mockGetMilestoneSaves.mockResolvedValue({

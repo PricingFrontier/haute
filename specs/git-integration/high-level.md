@@ -217,7 +217,9 @@ written, and a restore stops part-way.
 
 So every git command that rewrites the working tree runs through one fence. It compares the
 tracked changes before and after, and a new one means the tree is out of step with HEAD. The
-fence then puts HEAD back where it was, writes the out-of-step files from it, and refuses
+fence then puts HEAD back where it was (forcing it when a file is held too tightly to be
+read, as Excel holds an open CSV, and nothing was changed before the command), writes the
+out-of-step files from it, and refuses
 with the files named: "<files> are open in another program, so Haute could not replace them.
 Close them and try again."
 

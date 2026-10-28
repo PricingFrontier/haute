@@ -61,7 +61,7 @@ export default function WorkingBranchModal({ onConfirmed, onClose }: WorkingBran
         await setGitIdentity(userName.trim(), userEmail.trim(), setGlobal)
       }
       await setWorkingBranch(branchName, creating)
-      await loadStatus()
+      await loadStatus({ refresh: true }) // not a read begun before the action
       addToast("success", `Working branch set to ${branchName}`)
       onConfirmed()
     } catch (err: unknown) {

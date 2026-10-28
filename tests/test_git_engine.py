@@ -864,6 +864,10 @@ class TestSetWorkingBranch:
         with pytest.raises(GitGuardrailError):
             set_working_branch(LEDGER, repo, cwd=repo)
 
+    def test_create_refuses_a_name_git_cannot_use(self, repo: Path) -> None:
+        with pytest.raises(GitDomainError, match="can't be used as a branch name"):
+            set_working_branch("motor pricing", repo, create=True, cwd=repo)
+
     @staticmethod
     def _detach_at(repo: Path, sha: str) -> None:
         """Leave the project on *sha*, unlinked, as a checkout outside Haute would."""
@@ -1687,6 +1691,33 @@ class TestTreeFence:
         assert (repo / "b.txt").read_text() == "b.txt on main\n"
         assert _git(repo, "status", "--porcelain", "--untracked-files=no") == ""
         assert read_interrupted(repo) is None
+
+    def test_a_file_held_too_tightly_to_read_is_put_back_by_force(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Excel holds an open CSV with no sharing, so git cannot even read it to
+        stage it for the put-back, and a plain checkout back then refuses over it:
+        HEAD stayed on the new branch. With nothing changed before the command the
+        put-back is forced, and HEAD goes back."""
+        from haute._git_core import GitFilesInUseError, _rewrite_tree
+
+        self._two_branches(repo)
+        self._hold(monkeypatch, repo, "b.txt", "b.txt on main\n")
+        real_ok = git_core._run_git_ok
+
+        def add_unreadable(*args: str, cwd: Path | None = None) -> tuple[bool, str]:
+            if args[0] == "add":
+                return False, 'error: open("b.txt"): Permission denied'
+            return real_ok(*args, cwd=cwd)
+
+        monkeypatch.setattr(git_core, "_run_git_ok", add_unreadable)
+
+        with pytest.raises(GitFilesInUseError, match="b.txt is open in another program"):
+            _rewrite_tree("checkout", "other", cwd=repo)
+
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == "main"
+        assert (repo / "a.txt").read_text() == "a.txt on main\n"
+        assert _git(repo, "status", "--porcelain", "--untracked-files=no") == ""
 
     def test_a_file_the_checkout_could_not_remove_is_put_back_and_refused(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch
@@ -2984,6 +3015,17 @@ class TestCreateWorkingBranch:
         create_working_branch("dup", repo, cwd=repo)
         with pytest.raises(GitDomainError, match="already exists"):
             create_working_branch("dup", repo, cwd=repo)
+
+    @pytest.mark.parametrize("name", ["motor pricing", "a..b", "x.lock", "ends/", "@"])
+    def test_a_name_git_cannot_use_is_refused_in_words(self, repo: Path, name: str) -> None:
+        """A space typed into the name box reached git as a raw failure the server
+        could only report as "Operation failed"; it is refused before git, saying
+        why, and nothing is created."""
+        _fork_setup(repo)
+        before = _git(repo, "for-each-ref", "refs/heads/")
+        with pytest.raises(GitDomainError, match="can't be used as a branch name"):
+            create_working_branch(name, repo, cwd=repo)
+        assert _git(repo, "for-each-ref", "refs/heads/") == before
 
     def test_rejects_flag_shaped_at(self, repo: Path) -> None:
         # `at` is user input — it must go through the same ref-name guard as

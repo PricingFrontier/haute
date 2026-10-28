@@ -9,6 +9,7 @@ Route handlers live in ``haute.routes.*`` — see:
 """
 
 import asyncio
+import concurrent.futures
 import hashlib
 import json
 import mimetypes
@@ -59,6 +60,7 @@ from haute._pipeline_settings import (
 )
 from haute._sandbox import _get_project_root
 from haute._workbench_config import WorkbenchConfigError, read_workbench_config
+from haute.errors import ConfigError
 from haute.hosted import FORWARDED_USER_SCOPE_KEY
 from haute.routes._error_handlers import install_exception_handlers
 from haute.routes._helpers import (
@@ -169,36 +171,48 @@ def _ws_message_frame(wire_type: str, payload: dict[str, Any]) -> dict[str, Any]
     return {"type": wire_type, **payload}
 
 
+# The server's event loop for the app's lifetime (set by ``_lifespan``): a publisher
+# on a worker thread, such as a git route's background task, has no loop of its own.
+_server_loop: asyncio.AbstractEventLoop | None = None
+
+
 def _broadcast_event_as_ws_message(wire_type: str, payload: dict[str, Any]) -> None:
     """Schedule ``broadcast`` of a WebSocket frame derived from *payload*.
 
     ``broadcast`` is async because ``websocket.send_text`` is; but the
     event bus is synchronous so a subscriber cannot ``await`` directly.
-    We schedule the coroutine on the running event loop instead — the
-    file-watcher that publishes these events runs on the server's
-    loop, so :func:`asyncio.get_running_loop` is always available in
-    the production path.  A plain-sync call (e.g. from a unit test
-    with no loop) logs the missed broadcast and returns; the test can
+    We schedule the coroutine on the running event loop instead, as for
+    the file-watcher, which runs on the server's loop. A publisher on a
+    worker thread (a git route's ``git.tree.changed`` background task)
+    hands it to the server's loop. A plain-sync call with neither (e.g.
+    from a unit test) logs the missed broadcast and returns; the test can
     assert on the event-bus side directly in that case.
     """
+    frame = _ws_message_frame(wire_type, payload)
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
+        if _server_loop is not None and not _server_loop.is_closed():
+            future = asyncio.run_coroutine_threadsafe(broadcast(frame), _server_loop)
+            future.add_done_callback(_log_broadcast_task_result)
+            return
         logger.debug(
             "event_bus_broadcast_skipped",
             wire_type=wire_type,
             reason="no_running_loop",
         )
         return
-    task = loop.create_task(broadcast(_ws_message_frame(wire_type, payload)))
+    task = loop.create_task(broadcast(frame))
     task.add_done_callback(_log_broadcast_task_result)
 
 
-def _log_broadcast_task_result(task: asyncio.Task[None]) -> None:
+def _log_broadcast_task_result(
+    task: asyncio.Future[None] | concurrent.futures.Future[None],
+) -> None:
     """Log unexpected failures from fire-and-forget broadcast tasks."""
     try:
         exc = task.exception()
-    except asyncio.CancelledError:
+    except (asyncio.CancelledError, concurrent.futures.CancelledError):
         return
     if exc is None:
         return
@@ -221,7 +235,14 @@ def _discovered_pipeline_paths() -> dict[str, Path]:
 
 def _known_pipeline_paths() -> dict[str, Path]:
     """Return pipelines already known to the server before the latest edit."""
-    paths = {str(path.resolve()): path for path in _ensure_pipeline_index().values()}
+    try:
+        index = _ensure_pipeline_index()
+    except (OSError, ConfigError) as exc:
+        # An index rebuilt after the edit sees what the edit left: haute.toml naming
+        # a pipeline that is gone refuses it. The last broadcasts still know theirs.
+        logger.warning("pipeline_index_unavailable", error=str(exc))
+        index = {}
+    paths = {str(path.resolve()): path for path in index.values()}
     paths.update({key: Path(key) for key in _last_broadcast_fp})
     return paths
 
@@ -465,9 +486,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # callback that is allowed to (re)build this index — see
     # ``haute.routes._helpers`` for the full contract.
     _ensure_pipeline_index()
-    global _watcher_task, _artifact_reaper_task
+    global _watcher_task, _artifact_reaper_task, _server_loop
     _watcher_task = None
     _artifact_reaper_task = None
+    _server_loop = asyncio.get_running_loop()
     # The editor's streaming chunk size is process configuration: fix it from the
     # pipeline settings before any worker is spawned so every child inherits it,
     # and follow the settings file from here on.
@@ -501,6 +523,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                     shutdown_interactive_worker_pool()
                 finally:
                     stop_following_chunk_rows()
+                    _server_loop = None
 
 
 app = FastAPI(title="Haute", version=__version__, lifespan=_lifespan)
@@ -858,7 +881,13 @@ def _broadcast_tree_change(payload: dict[str, Any]) -> None:
     if isinstance(before, list):
         known.update({key: Path(key) for key in before if isinstance(key, str)})
     invalidate_pipeline_index()
-    discovered = _discovered_pipeline_paths()
+    try:
+        discovered = _discovered_pipeline_paths()
+    except (OSError, ConfigError) as exc:
+        # haute.toml names a pipeline this version lacks, or cannot be read: none of
+        # the known pipelines is on disk to open.
+        logger.warning("git_tree_change_discovery_failed", error=str(exc))
+        discovered = {}
     for pipeline_path in discovered.values():
         _publish_pipeline_document(pipeline_path, skip_unchanged=False)
     for key, pipeline_path in known.items():

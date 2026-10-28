@@ -2081,6 +2081,34 @@ class TestEventBusBroadcastBridge:
 
         asyncio.run(_run())
 
+    def test_a_publisher_on_a_worker_thread_reaches_the_server_loop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A git route's background task publishes from a threadpool worker, which
+        has no running loop: its frames went nowhere, so the canvas never followed a
+        switch. They are handed to the server's loop instead."""
+        from unittest.mock import AsyncMock
+
+        from haute import server
+
+        async def _run() -> None:
+            fake_broadcast = AsyncMock()
+            monkeypatch.setattr(server, "broadcast", fake_broadcast)
+            monkeypatch.setattr(server, "_server_loop", asyncio.get_running_loop())
+            await asyncio.to_thread(
+                server._broadcast_event_as_ws_message,
+                "parse_error",
+                {"error": "gone", "source_file": "x.py"},
+            )
+            for _ in range(3):
+                await asyncio.sleep(0)
+
+            fake_broadcast.assert_awaited_once_with(
+                {"type": "parse_error", "error": "gone", "source_file": "x.py"}
+            )
+
+        asyncio.run(_run())
+
     def test_ws_message_frame_rejects_payload_type_collision(self) -> None:
         from haute.server import _ws_message_frame
 
@@ -5420,6 +5448,33 @@ class TestBroadcastTreeChange:
             ("workbench.form.changed", None),
         ]
         assert ("workbench.form.changed", {"form": "forms/form.json"}) in events
+
+    def test_the_configured_pipeline_missing_from_the_version_is_announced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Discovery refuses when haute.toml names a pipeline the version lacks; the
+        announcement must still go out, naming it, not stop at that refusal."""
+        from haute import server
+        from haute._event_bus import default_bus
+        from haute.routes._helpers import invalidate_pipeline_index
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(server, "_last_broadcast_fp", {})
+        monkeypatch.setattr(server, "_workbench_form_file", lambda _root: None)
+        (tmp_path / "haute.toml").write_text('[project]\npipeline = "main.py"\n')
+        (tmp_path / "main.py").write_text('import haute\n\npipeline = haute.Pipeline("p")\n')
+        before = [str((tmp_path / "main.py").resolve())]
+        (tmp_path / "main.py").unlink()  # the switch's destination lacks it
+        invalidate_pipeline_index()
+        events: list[dict[str, object]] = []
+        unsubscribe = default_bus.subscribe("parse.error", events.append)
+        try:
+            server._broadcast_tree_change({"pipelines_before": before})
+        finally:
+            unsubscribe()
+            invalidate_pipeline_index()
+
+        assert events == [{"error": server.PIPELINE_NOT_IN_VERSION, "source_file": "main.py"}]
 
     def test_a_pipeline_the_action_took_away_is_announced_as_not_in_this_version(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

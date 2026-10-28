@@ -134,7 +134,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
         reloadApp()
         return
       }
-      await loadStatus()
+      await loadStatus({ refresh: true }) // not a read begun before the action
       // A branch op changes the fork forest — nudge the Git panel to refetch
       // its history + graph; BranchManager's nonce effect performs the one
       // shared branch-list refresh.

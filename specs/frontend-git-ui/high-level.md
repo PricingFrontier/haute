@@ -74,7 +74,7 @@ and a detached HEAD, which reads "Viewing an earlier version". An interrupted cl
 the files in its tooltip and a Retry that asks the server to write them again. Every git
 action that can rewrite the files (restore, switch, branch creation, archive, delete, catch
 up, spin off, and the undo of a branch operation) reads the readiness again when it fails,
-so an interruption shows at once. Startup opens no chooser for it. A ready state shows the working branch name
+so an interruption shows at once. After a git action succeeds, the readiness is read with a request issued after it (`loadStatus({ refresh: true })`), never by joining a read already under way, which may describe the project before the action. Startup opens no chooser for an interrupted clone, and neither do Save and Commit: each refuses with a toast to close the files and choose Retry in the toolbar first, since a save then would record the version the files were left at. A ready state shows the working branch name
 alone; clicking it opens the panel on the current branch. The indicator carries no save
 SHA — the commit code belongs to the history panel, which shows it in context.
 

@@ -26,7 +26,7 @@ import { apiErrorMessage } from "../api/errors"
 /** Re-sync git state everywhere after an inverse ran: status (toolbar,
  *  branch manager) + the history nonce (Git panel refetch). */
 async function resyncGit(): Promise<void> {
-  await useGitStore.getState().loadStatus()
+  await useGitStore.getState().loadStatus({ refresh: true }) // not a read begun before the inverse
   useGitStore.getState().notifyHistoryChanged()
 }
 

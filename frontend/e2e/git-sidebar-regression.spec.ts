@@ -2,10 +2,10 @@ import { expect, test, type Page } from "@playwright/test"
 
 import { resetE2eProject } from "./projectIsolation"
 
-// Regression contract for the EXISTING git sidebar: every selector and
-// behaviour asserted here predates the graph-rail work, so this file must
-// pass unmodified against a main-built install as well as this branch's.
-// Keep it that way — no graph selectors, no harness changes.
+// Regression contract for the git sidebar: the selectors and behaviour
+// asserted here predate the graph-rail work. Keep it that way — no graph
+// selectors, no harness changes. (Move to this version is gone, so its tests
+// now drive the restore prompt and the move variant's current wording.)
 //
 // The seeded e2e project has exactly one commit (the "Initial scaffold" root,
 // with the working pair at main's tip), so each test builds the history it
@@ -237,7 +237,7 @@ test.describe("git sidebar regression", () => {
 
     const dialog = page.getByTestId("git-panel-fork-dialog")
     await expect(dialog).toBeVisible()
-    await expect(dialog).toContainText("move your work here")
+    await expect(dialog).toContainText("Move the later saves to a new branch")
     await page.getByTestId("git-panel-fork-name").fill("fork-move-a")
     await expect(page.getByTestId("git-panel-fork-create")).toHaveText("Create & Move")
     await page.getByTestId("git-panel-fork-create").click()
@@ -264,17 +264,20 @@ test.describe("git sidebar regression", () => {
     await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
   })
 
-  test("the move affordance opens the pre-move confirmation and cancel backs out", async ({
+  test("the restore affordance opens the restore confirmation and cancel backs out", async ({
     page,
   }) => {
+    // The root is the current version until a save lands on top of it, and a
+    // restore is never offered on the current version.
     await page.goto("/")
+    await renameNodeAndSave(page, "priced_restore_probe")
     await openGitPanel(page)
 
-    await page.getByTestId("git-panel-move").first().click()
-    const modal = page.getByTestId("move-confirm-modal")
+    await page.getByTestId("git-panel-milestone").first().getByTestId("git-panel-restore").click()
+    const modal = page.getByTestId("restore-confirm-modal")
     await expect(modal).toBeVisible()
     // Clean canvas → the simple confirm variant (no save/discard fork).
-    await expect(page.getByTestId("move-confirm")).toBeVisible()
+    await expect(page.getByTestId("restore-confirm")).toBeVisible()
 
     await modal.getByRole("button", { name: "Cancel" }).click()
     await expect(modal).toHaveCount(0)

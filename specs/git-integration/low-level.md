@@ -42,7 +42,10 @@ conversion in the routes).
 `branch_category(branch)` classifies any branch name into `"protected" | "ledger" |
 "working"` by checking membership in `_protected_branches()` first, then the ledger-suffix
 pattern; anything else is a working-branch candidate. `is_eligible_working_branch` and
-`_assert_eligible_working` build on this classification.
+`_assert_eligible_working` build on this classification. `_assert_eligible_working`, which
+every path naming a new branch runs (create, adopt-create, undelete), first refuses a name
+git cannot use as a branch (a space, `..`, a trailing `/` or `.lock`, `@`) with a
+`GitDomainError` saying so in words, before any git command can fail on it.
 
 **Content-addressed cache keys**: every `@lru_cache`-decorated inner function
 (`_merge_base_cached`, `_is_ancestor_cached`, `_first_parent_spine_cached`,
