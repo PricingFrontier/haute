@@ -172,7 +172,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // The step menus' redesign (the Add step chooser's entries and ranked search, the grouped
 // Computed as list with its drafts, and the calculations' icons, in the lazy step editor
 // chunk) brings it to 1,705.0 KiB; 1,707 KiB restores about 2 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1707
+// The git restore work (restore and start-a-branch, the deleted branches, Files in use,
+// the naming step kept on screen with its refusal, and the Git panel beside a pipeline
+// the version lacks; GitPanel 18.0 -> 18.2 KiB, the editor's index 169.7 -> 169.9 KiB)
+// brings it to 1,707.1 KiB; 1,709 KiB restores about 2 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1709
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
