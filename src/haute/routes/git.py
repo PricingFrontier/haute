@@ -16,6 +16,8 @@ handler, which answers through :func:`git_error_http_exception`.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
@@ -58,7 +60,12 @@ from haute._logging import get_logger
 from haute._project_layout import pipeline_folder
 from haute.graph_utils import PipelineGraph
 from haute.hosted import FORWARDED_USER_SCOPE_KEY
-from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, commit_pipeline_graph, pause_watcher
+from haute.routes._helpers import (
+    _INTERNAL_ERROR_DETAIL,
+    commit_pipeline_graph,
+    discover_pipelines,
+    pause_watcher,
+)
 from haute.routes._save_pipeline import capture_save_in_ledger
 from haute.schemas import (
     GitArchiveRequest,
@@ -210,9 +217,8 @@ def git_retry_interrupted(background: BackgroundTasks) -> GitWorkingBranchRespon
     """Write HEAD's version of the files a git action left out of step (a file
     another program held open), once the analyst has closed them, and answer the
     readiness after. Files still held are 400, naming them."""
-    with pause_watcher():
+    with _rewriting_tree(background):
         retry_interrupted(Path.cwd())
-    _announce_tree_change(background)
     return _with_storage_state(working_branch_status(Path.cwd()))
 
 
@@ -221,12 +227,18 @@ def git_retry_interrupted(background: BackgroundTasks) -> GitWorkingBranchRespon
 # ---------------------------------------------------------------------------
 
 
-def _announce_tree_change(background: BackgroundTasks) -> None:
-    """After a git action that may have rewritten the files, once the response is
-    sent: the watcher was paused through it, so the server broadcasts what is on
-    disk now (``_broadcast_tree_change``). An error response runs no background
-    task, so a refused action announces nothing."""
-    background.add_task(default_bus.publish, "git.tree.changed", {})
+@contextmanager
+def _rewriting_tree(background: BackgroundTasks) -> Iterator[None]:
+    """Run a git action that may rewrite the files, with the watcher paused through
+    it; once the response is sent, the server broadcasts what is on disk
+    (``_broadcast_tree_change``). The pipelines on disk before the action go with
+    the announcement, so one it took away is named even when no cache still holds
+    it (a save invalidates them). A refused action raises out of the block and
+    announces nothing."""
+    before = [str(path.resolve()) for path in discover_pipelines()]
+    with pause_watcher():
+        yield
+    background.add_task(default_bus.publish, "git.tree.changed", {"pipelines_before": before})
 
 
 @router.post("/working-branch", response_model=GitSetWorkingBranchResponse)
@@ -235,9 +247,8 @@ def git_set_working_branch(
 ) -> GitSetWorkingBranchResponse:
     """Adopt a working branch for this clone, spawning its ledger and recording
     the association. Confirms both the startup modal and the save-gate."""
-    with pause_watcher():  # M4: adopting a branch checks out its ledger (tree swap)
+    with _rewriting_tree(background):  # M4: adopting a branch checks out its ledger
         response = set_working_branch(body.branch, Path.cwd(), create=body.create)
-    _announce_tree_change(background)
     return response
 
 
@@ -256,12 +267,11 @@ def git_restore_version(
     recorded first, the restore save next, the files last; the branch is not left.
     The new saves are published like any save's when the project is bound to
     durable storage."""
-    with pause_watcher():
+    with _rewriting_tree(background):
         response = restore_version(
             body.sha, Path.cwd(), pipeline_folder=pipeline_folder(Path.cwd())
         )
     _project_storage.enqueue_push()
-    _announce_tree_change(background)
     return response
 
 
@@ -386,9 +396,8 @@ def git_pending_saves(branch: str | None = Query(None)) -> GitLedgerSavesRespons
 @router.post("/archive", response_model=GitArchiveResponse)
 def git_archive(body: GitArchiveRequest, background: BackgroundTasks) -> GitArchiveResponse:
     """Archive a working branch and its ledger together (S32, pair-aware)."""
-    with pause_watcher():  # M4: archiving the active pair switches away (tree swap)
+    with _rewriting_tree(background):  # M4: archiving the active pair switches away
         response = archive_working_pair(body.branch, Path.cwd())
-    _announce_tree_change(background)
     return response
 
 
@@ -403,9 +412,8 @@ def git_delete_branch(
 ) -> GitDeleteBranchResponse:
     """Delete a working branch and its ledger together; refuses on unmerged
     ledger saves unless ``confirm`` (§8, pair-aware)."""
-    with pause_watcher():  # M4: deleting the active pair switches away (tree swap)
+    with _rewriting_tree(background):  # M4: deleting the active pair switches away
         response = delete_working_pair(body.branch, Path.cwd(), confirm=body.confirm)
-    _announce_tree_change(background)
     return response
 
 
@@ -451,11 +459,10 @@ def git_create_working_branch(
     """Fork a new working branch off the current one. ``at`` selects the fork
     point, ``move`` whether in-progress work is relocated onto it, and ``switch``
     whether the new branch is opened (S38)."""
-    with pause_watcher():  # M4: move and switch forks check out the new ledger (tree swap)
+    with _rewriting_tree(background):  # M4: move and switch forks check out the new ledger
         response = create_working_branch(
             body.name, Path.cwd(), at=body.at, move=body.move, switch=body.switch
         )
-    _announce_tree_change(background)
     return response
 
 
@@ -704,9 +711,8 @@ def git_pull_upstream(background: BackgroundTasks) -> GitFastForwardResponse:
     One-directional by design (parent → fork). The watcher is paused for
     the wholesale tree replacement, exactly as the remote catch-up does."""
     try:
-        with pause_watcher():
+        with _rewriting_tree(background):
             response = _project_storage.pull_upstream(Path.cwd())
-        _announce_tree_change(background)
         return response
     except _project_storage.StorageConfigError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -739,9 +745,8 @@ def git_fast_forward(
     a pure ref advance, never a merge. Refuses anything that isn't a clean
     fast-forward (the user spins off a copy instead). The watcher is paused for
     the wholesale tree replacement (S30/M4)."""
-    with pause_watcher():
+    with _rewriting_tree(background):
         response = fast_forward_pair(body.remote, Path.cwd())
-    _announce_tree_change(background)
     return response
 
 
@@ -758,7 +763,6 @@ def git_branch_away(
     repointing the canonical name to the remote's tips (M3) — both lineages kept,
     nothing rewritten, never a merge. The watcher is paused for the tree
     replacement (S30/M4)."""
-    with pause_watcher():
+    with _rewriting_tree(background):
         response = branch_away(body.remote, Path.cwd())
-    _announce_tree_change(background)
     return response

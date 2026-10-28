@@ -1442,4 +1442,4 @@ class TestTreeChangesAreAnnounced:
             unsubscribe()
 
         assert res.status_code == 200, res.text
-        assert announced == [{}]
+        assert [set(payload) for payload in announced] == [{"pipelines_before"}]

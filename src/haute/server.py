@@ -841,7 +841,7 @@ def _publish_pipeline_document(path: Path, *, skip_unchanged: bool) -> None:
         )
 
 
-def _broadcast_tree_change(_payload: dict[str, Any]) -> None:
+def _broadcast_tree_change(payload: dict[str, Any]) -> None:
     """Announce what is on disk after a git action that rewrote the files.
 
     The action ran with the watcher paused, so no watcher batch saw its changes:
@@ -850,8 +850,13 @@ def _broadcast_tree_change(_payload: dict[str, Any]) -> None:
     client already showing a document drops its frame; a dirty one gets the
     banner. A pipeline known before the action and gone after it is announced as
     a load failure, so a client showing it stops treating it as on disk, where a
-    save would bring it back."""
+    save would bring it back. The route sends the pipelines on disk before the
+    action (``pipelines_before``); the server's own index and broadcasts add any
+    it knew, since a save can have cleared those."""
     known = _known_pipeline_paths()
+    before = payload.get("pipelines_before")
+    if isinstance(before, list):
+        known.update({key: Path(key) for key in before if isinstance(key, str)})
     invalidate_pipeline_index()
     discovered = _discovered_pipeline_paths()
     for pipeline_path in discovered.values():

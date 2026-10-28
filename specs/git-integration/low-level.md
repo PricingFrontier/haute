@@ -125,7 +125,7 @@ transport/server failures remain non-200 responses.
 **HTTP contracts.** Every handler is synchronous `def`, so FastAPI runs git subprocess work
 in its thread pool. Request bodies are the named Pydantic models; omitted fields take the
 defaults shown. Query bounds are enforced by FastAPI and invalid input uses its standard 422
-validation envelope. The `/api/git/storage/*` endpoints hosted in this router and the post-commit push enqueue on `POST /api/git/commit` are owned by [hosted-project-storage](../hosted-project-storage/low-level.md). Every route that holds `pause_watcher()` publishes `git.tree.changed` on `default_bus` as a background task once it has answered successfully. These are working-branch selection, branch creation, restore-version, archive, delete, fast-forward and branch-away. The server then broadcasts what is on disk ([server-api](../server-api/low-level.md)).
+validation envelope. The `/api/git/storage/*` endpoints hosted in this router and the post-commit push enqueue on `POST /api/git/commit` are owned by [hosted-project-storage](../hosted-project-storage/low-level.md). Every route that holds `pause_watcher()` does so through `_rewriting_tree(background)`, which lists the pipelines on disk first and publishes `git.tree.changed` on `default_bus`, with that list as `pipelines_before`, as a background task once the route has answered successfully. These are working-branch selection, branch creation, restore-version, archive, delete, fast-forward and branch-away. The server then broadcasts what is on disk ([server-api](../server-api/low-level.md)).
 
 | Method and path | Input | Success response |
 |---|---|---|

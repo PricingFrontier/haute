@@ -5460,3 +5460,37 @@ class TestBroadcastTreeChange:
             "parse.error",
             {"error": server.PIPELINE_NOT_IN_VERSION, "source_file": "gone.py"},
         ) in events
+
+    def test_a_pipeline_no_cache_still_holds_is_named_from_the_route_inventory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A save invalidates the index and the watcher forgets the broadcast hash,
+        so after a switch only the route's inventory, taken before the action,
+        still knows the pipeline the destination lacks."""
+        from haute import server
+        from haute._event_bus import default_bus
+        from haute.routes._helpers import invalidate_pipeline_index
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(server, "_last_broadcast_fp", {})
+        monkeypatch.setattr(server, "_workbench_form_file", lambda _root: None)
+        for name in ("kept", "gone"):
+            (tmp_path / f"{name}.py").write_text(
+                f'import haute\n\npipeline = haute.Pipeline("{name}")\n'
+            )
+        before = [str((tmp_path / name).resolve()) for name in ("kept.py", "gone.py")]
+        (tmp_path / "gone.py").unlink()  # the switch's destination lacks it
+        invalidate_pipeline_index()  # nothing cached from before the switch
+        events: list[tuple[str, dict[str, object]]] = []
+        unsubscribe = default_bus.subscribe(
+            "parse.error", lambda p: events.append(("parse.error", p))
+        )
+        try:
+            server._broadcast_tree_change({"pipelines_before": before})
+        finally:
+            unsubscribe()
+            invalidate_pipeline_index()
+
+        assert events == [
+            ("parse.error", {"error": server.PIPELINE_NOT_IN_VERSION, "source_file": "gone.py"})
+        ]
