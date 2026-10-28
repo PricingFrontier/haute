@@ -329,10 +329,11 @@ Out of scope:
   of its own. Haute reads the folder whole whenever it needs the form and never keeps it,
   so an edit made outside the view reaches the next request; a read takes the files the
   index names and refuses any other file in the folder (Failure model). A read takes each
-  file's bytes once and the revision is the hash of those bytes; the editor's server reads
-  under the repository's lock, which saves and branch switches hold, and every reader
-  reads again when the folder changed while it was being read, so no read mixes two
-  saves. A folder that does not exist is refused, pointing to version history, never taken
+  file's bytes once and the revision is the hash of those bytes; every reader, in the
+  editor, another Haute process or the command line, holds the form folder's lock, which
+  every save holds while it writes, and reads again when the folder changed while it was
+  being read by a writer that takes no lock, such as git outside Haute, so no read mixes
+  two saves. A folder that does not exist is refused, pointing to version history, never taken
   for a blank form.
 - **Status.** `GET /api/workbench` answers `enabled` and, while enabled, `form`, the form
   folder's path from the project root (`rating/workbench`). The editor reads it once when it starts. While the workbench is not

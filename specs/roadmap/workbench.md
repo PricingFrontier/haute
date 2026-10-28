@@ -744,8 +744,8 @@ it are in Scope above.
   an unlisted file, a file whose name is not in lower case, a sheet without its layout
   file or the reverse, an identity column written, a rule on an output column, an unknown
   key and an unknown version. A read never mixes two saves: it takes each file's bytes
-  once, under the repository's lock in the server, and reads again when the folder
-  changed meanwhile.
+  once under the form folder's lock, which every save holds while it writes, in any
+  process, and reads again when a writer that takes no lock changed the folder meanwhile.
 - A sample keeps its rows' places, empty rows included, so index numbers and preset rows
   are priced as before; a value under an unknown column is kept and priced nowhere.
 - Every path a save or `haute init --workbench` writes or deletes passes the project's

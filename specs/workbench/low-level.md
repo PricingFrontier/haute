@@ -262,7 +262,12 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   out of it).
 - **The form folder's files** (`_workbench_folder.py`, the folder module): strict pydantic
   models of the files, separate from `FormSpec`, each `extra="forbid"`, read from JSON that
-  refuses a key given twice (`object_pairs_hook`). A field with a default in `FormSpec`'s
+  refuses a key given twice (`object_pairs_hook`). The keys that say what a thing is are
+  required in the file models, with no default, though `FormSpec` gives some of them one:
+  the index's `version`, `name`, `schema` and `sheets`; a table's `id`, `role`, `rows` and
+  `columns`; a column's `id`, `name` and `type`; a sheet's and a section's `id` and
+  `title`, with their `sections` and `components`; a component's `id` and `type`; every
+  layout number. Of the other fields, one with a default in `FormSpec`'s
   model has the same default in its file model and is left out at it; a field with none
   (an `ImportWidget`'s `label`, `source`, `table`, `mode` and `column_names`, an
   `ExportWidget`'s `label`, `target` and `tables`, their sources' and targets' fields, a
@@ -728,15 +733,19 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
     files, and `_release_input_dirs` names no folder for the form, the pipeline folder
     already holding it.
 16. **The form, read.** `GET /api/workbench/form` reads the config through `_enabled_config`
-    (404 while disabled) and `read_form_document` (the folder module) in the thread pool,
-    under `repository_mutation`, the lock saves and branch switches hold, as do the tables
-    routes' reads. It lists the folder (`os.scandir`, recursively, entries' names as the
-    disk spells them), refuses a missing folder, reads `form.json` and then each file the
-    index names, each file's bytes once into memory, and lists the folder again: when the
-    second listing or any file's size and modification time differ from the first, it
-    reads again from the start, and refuses after three tries ("<folder> changed while it
-    was being read: try again"). Every reader does so, `haute app build` and deploy too,
-    which take no server lock. It refuses any file the listing holds that the index does
+    (404 while disabled) and `read_form_document` (the folder module) in the thread pool. A
+    read holds the form folder's lock, a `FileLock` of the project's own (a file under the
+    system temp folder named by the hash of the project root's resolved, case-normalised
+    path), which every save holds from its stale check to its last write and every reader
+    holds while it reads, in the editor's server, in another server process and in the
+    CLI (`haute app build`, deploy) alike, so no reader sees a save half written; the
+    server's routes also read under `repository_mutation`, which a branch switch holds. It
+    lists the folder (`os.scandir`, recursively, entries' names as the disk spells them),
+    refuses a missing folder, reads `form.json` and then each file the index names, each
+    file's bytes once into memory, and lists the folder again: when the second listing or
+    any file's size and modification time differ from the first, a writer that takes no
+    lock (git outside Haute, an editor) changed it, and the read starts again, refusing
+    after three tries ("<folder> changed while it was being read: try again"). It refuses any file the listing holds that the index does
     not name (a sample file for a table the schema does not hold or for an output table
     included) and any file whose name on disk is not its name in lower case. It checks each file against
     its model, builds the `FormSpec` (the tables in the index's order, each sheet's
@@ -769,7 +778,7 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
 19. **Saved.** Save in either toolbar, and Ctrl/Cmd+S in either view, call the host's
     `requestSave` (`App.tsx`): the git readiness gate, then `saveProject`, the project's
     save (item 27), whose form step is the store's `save`. `save` takes its turn after the
-    saves and syncs before it and PUTs the form with `revision` as `base_revision`. `_save_form`, under `save_lock`, reads `folder_revision` and refuses
+    saves and syncs before it and PUTs the form with `revision` as `base_revision`. `_save_form`, under `save_lock` and `repository_mutation` and holding the form folder's lock until its last write, reads `folder_revision` and refuses
     with `StaleDocumentRevisionError` when it is not `base_revision` (a missing folder
     included); else `write_form` (the folder module) renders every file of the form
     (`folder_files`: path from the folder to bytes; it raises `FormFolderNameError`, naming
@@ -1679,8 +1688,8 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   (`rating/main.py` giving `rating/workbench`, a pipeline at the root giving `workbench`),
   and each refusal (not a table, an unknown key, `form` refused with what replaced it,
   `enabled` missing or not a boolean, an enabled workbench in a project with no pipeline
-  file, a `workbench` folder that is a junction or symlink, inside the project or out of it,
-  malformed TOML, a `haute.toml` that is not UTF-8, `app` not a table, a key beside
+  file, a `workbench` folder that is a junction or symlink to somewhere outside the
+  project (one inside it is the save's and init's to refuse), malformed TOML, a `haute.toml` that is not UTF-8, `app` not a table, a key beside
   `host` and `edit_role`, a host outside `APP_HOSTS` or not a string, an `edit_role` blank
   or not a string), `[workbench.app] host` and `edit_role` read, and that
   `DeployConfig.from_toml`'s whole-file check accepts the table, with `app`, and refuses an
@@ -1759,10 +1768,13 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   holding a key twice, an unknown key, an identity column written, a Haute setting on
   quote_details, a rule on an output column, a layout entry too many or too few, a sample
   file for an output table or a table the schema does not hold, an empty sample file,
-  `version` 2), each naming the file and the place; a read paused after its first listing
-  while a save, and then a branch switch, change the folder, reading again and answering
-  one side's files and revision whole, and a folder changing on each of three tries
-  refused; every name `write_form` refuses (two tables of one name by case, two columns of
+  `version` 2), each naming the file and the place; a save paused between its first and
+  second file while a reader in another process waits on the form folder's lock and then
+  answers the saved form's files and revision whole; a read paused after its first
+  listing while a writer that takes no lock changes a file, reading again and answering
+  one side's files whole, and a folder changing on each of three tries refused; the file
+  models refusing a file without a key that says what a thing is (a table's `role` or
+  `rows`, a column's `type`, the index's `version`), each at its default value too; every name `write_form` refuses (two tables of one name by case, two columns of
   one name, a name not an identifier, `con` and `COM1` as a table and as a sheet's name, a
   title of no letters or digits, two titles of one name, a path past 240 characters),
   nothing written; a junction inside the project at `workbench/schema/` and one to a
