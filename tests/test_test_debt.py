@@ -42,6 +42,10 @@ _EXPECTED_DEBT_IDS = {
     # unsupported filesystems are covered separately by cache-bypass tests.
     "b37a0e4332ab67a7",
     "d60cb6e25d9d0a46",
+    # A file held open with open() blocks its replacement only on Windows, where
+    # the git tree fence's real case lives; other platforms run the same fence
+    # through a faked half-swap (tests/test_git_engine.py::TestTreeFence).
+    "4fc6a9bab5654bdf",
     # Offset-through-serving suite — every test trains a real model, so each
     # leg importorskips its optional modelling engine (rustystats for the GLM
     # legs, catboost for the boosted / numeric-only legs), matching the
@@ -393,6 +397,14 @@ _EXPECTED_FRONTEND_DEBT_REASONS: dict[str, str] = {
         "installs jsdom's Storage class. If vitest changes that, this "
         "it.fails flips to failing, which is the signal to redesign the "
         "provenance check."
+    ),
+    "39442a180206c699": (
+        "Platform-only journey (the git restore PR): only on Windows does a file "
+        "another program holds open stop git replacing it, so the browser test "
+        "that switches branches over a held file (Excel's lock, and a "
+        "read-sharing one) has nothing to exercise on the Linux CI lane and "
+        "runs on Windows machines. The fence itself is unit-tested everywhere "
+        "in tests/test_git_engine.py::TestTreeFence."
     ),
 }
 

@@ -1061,8 +1061,9 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
 - A form save checks the file's revision, writes it and captures it under the repository's
   lock (`repository_mutation`), which a branch switch holds too, so no switch lands between
   the check and the capture.
-- A form save on the ledger is the pipeline save's capture: no working branch, no capture;
-  a failed capture is a warning on a 200, the file written; the file is tracked from its
+- A form save on the ledger is the pipeline save's capture: no repository, no capture; no
+  working branch chosen, or a failed capture, is a warning on a 200, the file written and
+  named in `uncaptured`; the file is tracked from its
   first captured save, so a milestone's sweep takes a hand edit to it.
 - A save saves the form only while it holds unsaved edits: a save
   or a milestone from the pipeline editor, the form as saved, makes no form request and

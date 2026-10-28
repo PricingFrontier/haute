@@ -228,6 +228,8 @@ class TestRollbackBranchAway:
 
         old_w = _git(repo, "rev-parse", WORKING)
         old_l = _git(repo, "rev-parse", LEDGER)
+        # Caches are wiped only once the adopted tree is in place.
+        (repo / ".haute_cache").mkdir()
 
         # Fail the canonical working re-point (`branch <working> <remote_w>`),
         # which runs after BOTH refs were renamed aside — so the rollback must
@@ -250,6 +252,7 @@ class TestRollbackBranchAway:
         # No dated set-aside pair was left behind.
         aside_refs = _git(repo, "branch", "--list", f"{WORKING}-local-*")
         assert aside_refs == ""
+        assert (repo / ".haute_cache").is_dir()
 
 
 class TestBranchAwayGuards:

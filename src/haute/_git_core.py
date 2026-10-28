@@ -36,11 +36,11 @@ PROTECTED_BRANCHES = DEFAULT_PROTECTED_BRANCHES
 _BRANCH_PREFIX = "pricing"
 _ARCHIVE_PREFIX = "archive"
 
-# Not ``output``: optimiser results were published there by default, and Apply
-# Optimisation prices from them.
+# Reconstructable caches only. Not ``outputs``: the analyst's local results, which
+# git cannot bring back. Not ``output``: optimiser results were published there by
+# default, and Apply Optimisation prices from them.
 _VOLATILE_ARTEFACTS = (
     "__pycache__",
-    "outputs",
     ".haute_cache",
     ".cache",
     ".pytest_cache",
@@ -167,6 +167,31 @@ class GitTransactionError(GitDomainError):
 
 class GitHistoryReadError(GitDomainError):
     """A historical pipeline could not be materialised or parsed safely."""
+
+
+# How many files a refusal over files in use names.
+_FILES_NAMED = 5
+
+
+def files_in_use_message(files: list[str]) -> str:
+    """The analyst's message for *files* another program holds open."""
+    named = ", ".join(files[:_FILES_NAMED]) + (
+        f" and {len(files) - _FILES_NAMED} more" if len(files) > _FILES_NAMED else ""
+    )
+    one = len(files) == 1
+    return (
+        f"{named} {'is' if one else 'are'} open in another program, so Haute could not "
+        f"replace {'it' if one else 'them'}. Close {'it' if one else 'them'} and try again."
+    )
+
+
+class GitFilesInUseError(GitDomainError):
+    """A command that rewrites the working tree could not write *files*: on Windows
+    git cannot replace a file another program holds open."""
+
+    def __init__(self, files: list[str]) -> None:
+        self.files = files
+        super().__init__(files_in_use_message(files))
 
 
 class _GitProcessTimeoutError(TimeoutError):
@@ -759,6 +784,13 @@ def is_eligible_working_branch(branch: str) -> bool:
 
 
 def _assert_eligible_working(branch: str) -> None:
+    # A name git cannot use (a space typed into the name box) would otherwise fail
+    # as raw git stderr, which the routes can only report as "Operation failed".
+    if branch in {"HEAD", "@"} or not _is_valid_full_ref_name(f"refs/heads/{branch}"):
+        raise GitDomainError(
+            f"'{branch}' can't be used as a branch name. "
+            "Use letters, numbers, dashes and slashes, with no spaces."
+        )
     category = branch_category(branch)
     if category == "protected":
         raise GitGuardrailError(
@@ -766,8 +798,8 @@ def _assert_eligible_working(branch: str) -> None:
         )
     if category == "ledger":
         raise GitGuardrailError(
-            f"'{branch}' is a save ledger (managed by haute) and cannot be used as a "
-            "working branch."
+            f"'{branch}' ends in '{LEDGER_SUFFIX}', which Haute keeps for each branch's "
+            "saves. Choose another name."
         )
 
 
@@ -1015,8 +1047,7 @@ def _assert_no_git_op_in_progress(cwd: Path | None = None) -> None:
     )
     if in_progress:
         raise GitDomainError(
-            "A git operation is in progress; finish or abort it outside haute "
-            "before moving to another version."
+            "A git operation is in progress; finish or abort it outside Haute first."
         )
 
 
@@ -1033,6 +1064,126 @@ def _wipe_volatile_artefacts(repo_root: Path) -> None:
                 target.unlink(missing_ok=True)
         except OSError as exc:  # pragma: no cover - defensive; rmtree swallows most
             logger.warning("volatile_wipe_failed", path=name, error=str(exc))
+
+
+# git's messages for a file Windows would not let it replace ("unlink old") or
+# remove ("unlink"); LC_ALL=C keeps them fixed.
+_UNLINK_FAILED = re.compile(r"unable to unlink (?:old )?'(.+?)'")
+
+
+def _tracked_changes(cwd: Path | None = None) -> set[str]:
+    """Tracked paths whose index or working content differs from HEAD."""
+    # Read raw: each entry's two status letters may begin with a space, which a
+    # stripped output would lose along with the path's first character.
+    result = subprocess.run(
+        ["git", "status", "--porcelain", "-z", "--untracked-files=no"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=cwd or Path.cwd(),
+        env=_git_env(),
+    )
+    if result.returncode != 0:
+        logger.warning("git_command_failed", cmd=["git", "status"], stderr=result.stderr.strip())
+        raise GitError(result.stderr.strip() or "git status failed")
+    tokens = result.stdout.split("\0")
+    paths: set[str] = set()
+    i = 0
+    while i < len(tokens):
+        entry = tokens[i]
+        i += 1
+        if len(entry) < 4:
+            continue
+        paths.add(entry[3:])
+        if entry[0] in "RC" or entry[1] in "RC":
+            i += 1  # a rename's or copy's source path follows
+    return paths
+
+
+def _held_files(stderr: str) -> list[str]:
+    """The files git said it could not replace, in the order it said so."""
+    return list(dict.fromkeys(_UNLINK_FAILED.findall(stderr)))
+
+
+def _run_git_capture(*args: str, cwd: Path | None = None) -> tuple[int, str]:
+    """Run a git command and return (returncode, stderr). Never raises."""
+    result = subprocess.run(
+        ["git", *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=cwd or Path.cwd(),
+        env=_git_env(),
+    )
+    return result.returncode, result.stderr.strip()
+
+
+def _rewrite_tree(*args: str, cwd: Path | None = None) -> None:
+    """Run a git command that rewrites the working tree (a checkout, a fast-forward
+    merge), failing loud on a file it could not write.
+
+    On Windows git cannot replace or remove a file another program holds open. A
+    checkout still exits 0, leaving that file at the old version under the new
+    HEAD (or behind, untracked, when the new HEAD drops it); a fast-forward exits
+    1 with the other files already written. So the files git names as not
+    replaced or removed, and any tracked file that became changed, are out of
+    step with HEAD: the stderr catches a file that was already changed before a
+    forced checkout, or left untracked, which the status comparison cannot. HEAD
+    is then put back where it was and the out-of-step files written from it; any
+    still out of step record the clone interrupted, for the analyst to retry once
+    the file is closed. Either way ``GitFilesInUseError`` names the files, and
+    the caller's own compensation runs as for any failure."""
+    _assert_no_git_op_in_progress(cwd)
+    attached, head = _run_git_ok("symbolic-ref", "--short", "-q", "HEAD", cwd=cwd)
+    previous = head if attached else _run_git("rev-parse", "HEAD", cwd=cwd)
+    before = _tracked_changes(cwd)
+    code, stderr = _run_git_capture(*args, cwd=cwd)
+    reported = _held_files(stderr)
+    out_of_step = sorted((_tracked_changes(cwd) - before) | set(reported))
+    if not out_of_step:
+        if code != 0:
+            logger.warning("git_command_failed", cmd=["git", *args], stderr=stderr)
+            raise GitError(stderr or f"git {args[0]} failed")
+        return
+    logger.warning("git_tree_out_of_step", cmd=["git", *args], files=out_of_step, stderr=stderr)
+    held = reported or out_of_step
+    moved_ok, now = _run_git_ok("symbolic-ref", "--short", "-q", "HEAD", cwd=cwd)
+    current = now if moved_ok else _run_git("rev-parse", "HEAD", cwd=cwd)
+    if current != previous:
+        detach = () if attached else ("--detach",)
+        if "-f" in args or "--force" in args:
+            # The command was to discard changes anyway: the put-back may too,
+            # and a file still held keeps what is on disk.
+            _run_git_ok("checkout", "-f", *detach, previous, cwd=cwd)
+        else:
+            # A file git left unreplaced still holds the previous version while its
+            # index entry moved on, and checkout refuses to overwrite such a "change".
+            # Staging what is on disk lets checkout carry it back untouched.
+            literal = [f":(literal){path}" for path in out_of_step]
+            staged, _ = _run_git_ok("add", "--", *literal, cwd=cwd)
+            # A file held with no sharing (Excel's open CSV) cannot even be read to
+            # stage, and checkout then refuses over it. With nothing changed before
+            # the command a forced put-back discards nothing, and the held file
+            # keeps what is on disk.
+            force = () if staged or before else ("-f",)
+            _run_git_ok("checkout", *force, *detach, previous, cwd=cwd)
+    left = sorted(_tracked_changes(cwd) - before)
+    if left:
+        _run_git_ok(
+            "restore",
+            "--source=HEAD",
+            "--staged",
+            "--worktree",
+            "--",
+            *[f":(literal){path}" for path in left],
+            cwd=cwd,
+        )
+        left = sorted(_tracked_changes(cwd) - before)
+    if left:
+        from haute._git_state import record_interrupted
+
+        record_interrupted(cwd or Path.cwd(), args[0], left)
+    raise GitFilesInUseError(held)
 
 
 def _remote_names(cwd: Path | None = None) -> list[str]:

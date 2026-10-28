@@ -73,6 +73,7 @@ The panel opens on the list of chats for the pipeline on the canvas. If the assi
 | Resolve the working-branch divergence in the Git panel before using assistant mutations. | Bring the working branch back in line from the Git panel. |
 | Attach HEAD by selecting or creating a working branch in the Git panel before using assistant mutations. | You are looking at an earlier version; choose a working branch in the Git panel. |
 | Git is not available on this host; assistant edits need Git to record each change. | Install Git, then restart Haute. |
+| Close the files named in the Git panel and choose Retry before using assistant mutations. | A git action could not replace a file another program holds open. Close it, then choose Retry beside the branch indicator. |
 | [assistant.egress].max_sensitivity is "public" | The egress policy lets the assistant read nothing from the project; see below. |
 
 **Assistant settings could not be read** means `haute.toml` itself has a mistake, such as a misspelt key or a value of the wrong kind. The card names the problem. Fix `haute.toml`, then click **Check again**.

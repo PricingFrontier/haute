@@ -34,6 +34,7 @@ from haute._git_core import (
     _remote_env,
     _remote_names,
     _rev_parse,
+    _rewrite_tree,
     _run_git,
     _run_git_ok,
     _run_git_process,
@@ -1026,9 +1027,6 @@ def fast_forward_pair_from_tracking(
     if w_leg.status != "behind" and l_leg.status != "behind":
         raise GitDomainError(f"Already up to date with '{label}'.")
 
-    # Volatile caches must not survive into the caught-up tree (S12).
-    _wipe_volatile_artefacts(cwd or Path.cwd())
-
     fast_forwarded: list[str] = []
     old_ledger = _rev_parse(ledger, cwd=cwd)
     old_working = _rev_parse(working, cwd=cwd)
@@ -1037,7 +1035,7 @@ def fast_forward_pair_from_tracking(
     try:
         # Ledger first (it's HEAD; merge --ff-only advances it and the working tree).
         if l_leg.status == "behind":
-            _run_git("merge", "--ff-only", f"refs/remotes/{remote}/{ledger}", cwd=cwd)
+            _rewrite_tree("merge", "--ff-only", f"refs/remotes/{remote}/{ledger}", cwd=cwd)
             ledger_advanced = True
             fast_forwarded.append(ledger)
         # Working ref (not checked out): CAS-advance it to its remote tip.
@@ -1067,6 +1065,10 @@ def fast_forward_pair_from_tracking(
                 "repository before retrying."
             ) from exc
         raise
+
+    # Volatile caches must not survive into the caught-up tree (S12); wiped only
+    # once it is in place, so a refused catch-up deletes nothing.
+    _wipe_volatile_artefacts(cwd or Path.cwd())
 
     logger.info("fast_forwarded_pair", remote=remote, refs=fast_forwarded)
     return GitFastForwardResponse(
@@ -1184,9 +1186,6 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
     aside = _unique_aside_name(working, cwd=cwd)
     aside_ledger = ledger_name(aside)
 
-    # Volatile caches must not bleed from the local tree into the adopted one (S12).
-    _wipe_volatile_artefacts(cwd or Path.cwd())
-
     renamed_w = renamed_l = created_w = created_l = False
     try:
         # Free the pair for renaming (HEAD is on the ledger): detach at its tip —
@@ -1201,7 +1200,7 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
         if remote_l is not None:
             _run_git("branch", ledger, remote_l, cwd=cwd)
             created_l = True
-            _run_git("checkout", ledger, cwd=cwd)
+            _rewrite_tree("checkout", ledger, cwd=cwd)
         else:
             # X2: no remote ledger — respawn it at the adopted working tip + checkout.
             resolve_ledger(working, cwd=cwd)
@@ -1224,6 +1223,10 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
                 "incomplete. Inspect the repository before retrying."
             ) from exc
         raise
+
+    # Volatile caches must not bleed from the local tree into the adopted one (S12);
+    # wiped only once it is in place, so a refused spin-off deletes nothing.
+    _wipe_volatile_artefacts(cwd or Path.cwd())
 
     logger.info("branched_away", working=working, set_aside=aside, remote=remote)
     return GitBranchAwayResponse(working_branch=working, set_aside_as=aside)

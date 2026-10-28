@@ -46,7 +46,7 @@ export default function IdentityPromptModal({ onClose }: IdentityPromptModalProp
     setBusy(true)
     try {
       await setGitIdentity(userName.trim(), userEmail.trim(), setGlobal)
-      await loadStatus()
+      await loadStatus({ refresh: true }) // not a read begun before the action
       onClose()
       void captureUncaptured()
     } catch (err: unknown) {

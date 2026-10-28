@@ -365,7 +365,8 @@ describe("useWebSocketSync - gap tests", () => {
       })
       await act(async () => {
         latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify(pipelineDocumentFrame(doc2)),
+          // A different document carries its own fingerprint (an identical one is dropped).
+          data: JSON.stringify(pipelineDocumentFrame(doc2, "document-fingerprint-2")),
         }))
       })
 

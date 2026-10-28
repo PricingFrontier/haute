@@ -55,6 +55,10 @@ export interface DocumentExecutionFence {
 }
 
 export interface DocumentStatusStore extends DocumentStatusState {
+  /** Bumped by `requestResync`: the socket asks for the document whatever its fingerprint. */
+  resyncRequests: number
+  /** Ask `/ws/sync` for the document on disk, as after a git action replaced it. */
+  requestResync: () => void
   loadDocumentStatus: (
     document: PipelineEditorDocument,
     graphSynchronized?: boolean,
@@ -145,6 +149,8 @@ function documentState(
 
 const useDocumentStatusStore = create<DocumentStatusStore>()((set) => ({
   ...initialState(),
+  resyncRequests: 0,
+  requestResync: () => set((state) => ({ resyncRequests: state.resyncRequests + 1 })),
   loadDocumentStatus: (document, graphSynchronized = true, documentFingerprint = null) =>
     set((state) => documentState(
       document, graphSynchronized, state.executionGeneration + 1, documentFingerprint,
@@ -169,7 +175,9 @@ const useDocumentStatusStore = create<DocumentStatusStore>()((set) => ({
   })),
   // Persisting this canvas doesn't replace the document that owns running jobs.
   // Keep their original config/version stamps so edited results still read stale.
-  acknowledgeSave: (sourceRevision) => set({ sourceRevision }),
+  // The canvas now holds the saved document, which no response fingerprinted: the
+  // one first loaded must not be taken for it when a switch brings it back.
+  acknowledgeSave: (sourceRevision) => set({ sourceRevision, documentFingerprint: null }),
   reset: () => set((state) => ({ ...initialState(), executionGeneration: state.executionGeneration + 1 })),
 }))
 

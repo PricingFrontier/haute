@@ -226,12 +226,18 @@ vi.mock("../api/client", async () => {
       }),
     ),
     getMilestones: vi.fn(() => Promise.resolve({ working_branch: "dev", entries: [] })),
-    moveToVersion: vi.fn(() =>
+    // What the Git panel reads when it opens.
+    getMilestoneSaves: vi.fn(() => Promise.resolve({ saves: [] })),
+    getPendingSaves: vi.fn(() => Promise.resolve({ saves: [] })),
+    getGitGraph: vi.fn(() => Promise.resolve({ working_branch: null, order: [], branches: [] })),
+    getWorkingBranches: vi.fn(() => Promise.resolve({ current: "dev", deleted: [], branches: [] })),
+    getGitPrefs: vi.fn(() => Promise.resolve({ skip_switch_confirm: false })),
+    restoreVersion: vi.fn(() =>
       Promise.resolve({
-        sha: "abc1234def",
-        short_sha: "abc1234",
-        prior_branch: "dev-save",
-        is_detached: true,
+        sha: "fed4321abc",
+        short_sha: "fed4321",
+        restored_from: "target-sha",
+        working_branch: "dev",
       }),
     ),
     gitArchiveBranch: vi.fn(() => Promise.resolve({ archived_as: "" })),
@@ -340,7 +346,7 @@ function resetAllStores(): void {
     loading: false,
     modal: null,
     pendingAction: null,
-    moveTarget: null,
+    restoreTarget: null,
   })
   useNodeResultsStore.setState({
     previews: {},
@@ -578,8 +584,8 @@ beforeEach(() => {
   vi.mocked(api.setGitIdentity).mockReset().mockResolvedValue({ user_name: "", user_email: "", scope: "local" })
   vi.mocked(api.commitMilestone).mockReset().mockResolvedValue({ sha: "deadbeef0000", short_sha: "deadbee", working_branch: "dev", version_label: null })
   vi.mocked(api.getMilestones).mockReset().mockResolvedValue({ working_branch: "dev", entries: [] })
-  vi.mocked(api.moveToVersion).mockReset().mockResolvedValue({ sha: "abc1234def", short_sha: "abc1234", prior_branch: "dev-save", is_detached: true })
-  useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, moveTarget: null, uncaptured: [] })
+  vi.mocked(api.restoreVersion).mockReset().mockResolvedValue({ sha: "fed4321abc", short_sha: "fed4321", restored_from: "target-sha", working_branch: "dev" })
+  useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, restoreTarget: null, uncaptured: [] })
 })
 
 afterEach(() => {
@@ -816,28 +822,121 @@ describe("App integration - degraded execution fence", () => {
   })
 })
 
-describe("App integration - move failure recovery", () => {
-  it("closes the busy move modal when the checkout request rejects", async () => {
-    vi.mocked(api.moveToVersion).mockRejectedValueOnce(new Error("checkout failed"))
+describe("App integration - restoring a version", () => {
+  it("closes the busy restore modal when the restore request rejects", async () => {
+    vi.mocked(api.restoreVersion).mockRejectedValueOnce(new Error("This is already the current version."))
     render(<App />)
     await waitForAppReady()
 
     act(() => {
-      useGitStore.getState().requestMove({ sha: "target-sha", label: "v2.0" })
+      useGitStore.getState().requestRestore({ sha: "target-sha", label: "v1.0" })
     })
-    fireEvent.click(await screen.findByTestId("move-confirm"))
+    fireEvent.click(await screen.findByTestId("restore-confirm"))
 
     await waitFor(() => {
-      expect(vi.mocked(api.moveToVersion)).toHaveBeenCalledWith("target-sha")
-      expect(useGitStore.getState().moveTarget).toBeNull()
+      expect(vi.mocked(api.restoreVersion)).toHaveBeenCalledWith("target-sha")
+      expect(useGitStore.getState().restoreTarget).toBeNull()
     })
-    expect(screen.queryByTestId("move-confirm-modal")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("restore-confirm-modal")).not.toBeInTheDocument()
     expect(useToastStore.getState().toasts).toContainEqual(
       expect.objectContaining({
         type: "error",
-        text: "Could not move to this version: checkout failed",
+        text: "Could not restore this version: This is already the current version.",
       }),
     )
+  })
+
+  it("shows Files in use when a restore stops on a file held open", async () => {
+    vi.mocked(api.restoreVersion).mockRejectedValueOnce(new Error("b.txt is open in another program."))
+    render(<App />)
+    await waitForAppReady()
+    vi.mocked(api.getWorkingBranch).mockResolvedValue(makeGitWorkingBranch({
+      working_branch: "dev", state: "interrupted", errors: ["b.txt is open in another program."],
+      current_branch: "dev-save", last_save_sha: "abc1234def", eligible_branches: ["dev"],
+      identity_set: true, user_name: "Test User", user_email: "test@example.com",
+    }))
+
+    act(() => {
+      useGitStore.getState().requestRestore({ sha: "target-sha", label: "v1.0" })
+    })
+    fireEvent.click(await screen.findByTestId("restore-confirm"))
+
+    await waitFor(() => expect(useGitStore.getState().status?.state).toBe("interrupted"))
+  })
+
+  it("Save and Commit with files in use say to close them, not to choose a branch", async () => {
+    vi.mocked(api.getWorkingBranch).mockResolvedValue(makeGitWorkingBranch({
+      working_branch: "dev", state: "interrupted", errors: ["b.txt is open in another program."],
+      current_branch: "dev-save", last_save_sha: "abc1234def", eligible_branches: ["dev"],
+      identity_set: true, user_name: "Test User", user_email: "test@example.com",
+    }))
+    render(<App />)
+    await waitForAppReady()
+    await waitFor(() => expect(useGitStore.getState().status?.state).toBe("interrupted"))
+
+    fireEvent.click(screen.getByTestId("toolbar-save"))
+    fireEvent.click(screen.getByTestId("toolbar-save-commit"))
+
+    await waitFor(() => expect(useToastStore.getState().toasts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "error", text: expect.stringContaining("choose Retry in the toolbar before saving") }),
+      expect.objectContaining({ type: "error", text: expect.stringContaining("choose Retry in the toolbar before committing") }),
+    ])))
+    expect(useGitStore.getState().modal).toBeNull()
+    expect(vi.mocked(api.savePipeline)).not.toHaveBeenCalled()
+  })
+
+  it("opens the Git panel beside a pipeline the version now open does not have", async () => {
+    render(<App />)
+    await waitForAppReady()
+    act(() => {
+      useDocumentStatusStore.getState().setSystemFailure(
+        "This pipeline isn't in the version now open. Switch back to see it.",
+      )
+    })
+    expect(await screen.findByTestId("pipeline-load-failure")).toBeInTheDocument()
+
+    // Switching back is the way out, so the branch name must still open the panel.
+    fireEvent.click(screen.getByTestId("branch-indicator-name"))
+
+    expect(await screen.findByTestId("git-panel")).toBeInTheDocument()
+    expect(screen.getByTestId("pipeline-load-failure")).toBeInTheDocument()
+  })
+
+  it("reloads after a restore, and the reloaded page says what was restored", async () => {
+    const originalLocation = window.location
+    const reload = vi.fn()
+    Object.defineProperty(window, "location", {
+      value: { ...originalLocation, reload },
+      configurable: true,
+    })
+    try {
+      const first = render(<App />)
+      await waitForAppReady()
+      act(() => {
+        useGitStore.getState().requestRestore({ sha: "target-sha", label: "v1.0" })
+      })
+      fireEvent.click(await screen.findByTestId("restore-confirm"))
+
+      await waitFor(() => expect(reload).toHaveBeenCalledTimes(1))
+      expect(vi.mocked(api.restoreVersion)).toHaveBeenCalledWith("target-sha")
+      expect(sessionStorage.getItem("haute:justRestored")).toBe("v1.0")
+
+      // The reload is a fresh start: the page reads the flag once and toasts.
+      first.unmount()
+      useToastStore.setState({ toasts: [] })
+      render(<App />)
+      await waitForAppReady()
+      expect(useToastStore.getState().toasts).toContainEqual(
+        expect.objectContaining({ type: "success", text: "Restored v1.0 as a new save." }),
+      )
+      expect(sessionStorage.getItem("haute:justRestored")).toBeNull()
+    } finally {
+      sessionStorage.removeItem("haute:justRestored")
+      Object.defineProperty(window, "location", {
+        value: originalLocation,
+        configurable: true,
+      })
+    }
   })
 })
 
@@ -1412,6 +1511,31 @@ describe("App integration - save pipeline", () => {
     })
   })
 
+  it("a project left on an earlier version opens the branch chooser at startup", async () => {
+    vi.mocked(api.getWorkingBranch).mockResolvedValue(makeGitWorkingBranch({
+      working_branch: null,
+      state: "detached",
+      errors: [],
+      current_branch: "",
+      head_sha: "a".repeat(40),
+      last_save_sha: null,
+      eligible_branches: ["dev"],
+      identity_set: true,
+      user_name: "U",
+      user_email: "u@x.y",
+    }))
+    render(<App />)
+    await waitForAppReady()
+
+    await waitFor(
+      () => {
+        expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument()
+      },
+      { timeout: MODAL_TIMEOUT_MS },
+    )
+    expect((screen.getByTestId("working-branch-select") as HTMLSelectElement).value).toBe("__create__")
+  })
+
   it("save-gate: with no working branch, Save opens the modal first, then runs on confirm", async () => {
     // No working branch configured for this clone.
     vi.mocked(api.getWorkingBranch).mockResolvedValue(makeGitWorkingBranch({
@@ -1569,6 +1693,34 @@ describe("App integration - server status", () => {
 })
 
 describe("App integration - error handling", () => {
+  it("reloads once a git action changes the version a failed first load was on", async () => {
+    const originalLocation = window.location
+    const reload = vi.fn()
+    Object.defineProperty(window, "location", {
+      value: { ...originalLocation, reload },
+      configurable: true,
+    })
+    try {
+      vi.mocked(api.loadPipeline).mockRejectedValueOnce(new Error("The pipeline isn't on disk"))
+      render(<App />)
+      await waitForAppReady()
+      await waitFor(() => expect(useGitStore.getState().status?.current_branch).toBe("dev-save"))
+      expect(await screen.findByTestId("pipeline-load-failure")).toBeInTheDocument()
+      expect(reload).not.toHaveBeenCalled()
+
+      // A switch back from the Git panel beside the failure view.
+      act(() => {
+        useGitStore.setState((state) => ({
+          status: state.status && { ...state.status, working_branch: "main-line", current_branch: "main-line-save" },
+        }))
+      })
+
+      await waitFor(() => expect(reload).toHaveBeenCalledTimes(1))
+    } finally {
+      Object.defineProperty(window, "location", { value: originalLocation, configurable: true })
+    }
+  })
+
   it("shows an error toast when loadPipeline rejects, without crashing", async () => {
     vi.mocked(api.loadPipeline).mockRejectedValueOnce(new Error("Backend offline"))
 

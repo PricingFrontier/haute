@@ -259,6 +259,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/GitBranchAwayResponse"},
         },
     },
+    "/api/git/interrupted/retry": {
+        "POST": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/GitWorkingBranchResponse"},
+        },
+    },
     "/api/git/fast-forward": {
         "POST": {
             "request_ref": "#/components/schemas/GitFastForwardRequest",
@@ -269,12 +275,6 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         "GET": {
             "request_ref": None,
             "success_schema": {"$ref": "#/components/schemas/GitGraphResponse"},
-        },
-    },
-    "/api/git/move": {
-        "POST": {
-            "request_ref": "#/components/schemas/GitMoveRequest",
-            "success_schema": {"$ref": "#/components/schemas/GitMoveResponse"},
         },
     },
     "/api/git/pending-saves": {
@@ -305,6 +305,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         "POST": {
             "request_ref": "#/components/schemas/GitRestoreRequest",
             "success_schema": {"$ref": "#/components/schemas/GitRestoreResponse"},
+        },
+    },
+    "/api/git/restore-version": {
+        "POST": {
+            "request_ref": "#/components/schemas/GitRestoreVersionRequest",
+            "success_schema": {"$ref": "#/components/schemas/GitRestoreVersionResponse"},
         },
     },
     "/api/git/show/{sha}": {

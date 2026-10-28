@@ -1,7 +1,7 @@
 import { Fragment, useState, useEffect, useLayoutEffect, useMemo, useRef } from "react"
 import {
   GitFork, GitBranch, Clock, ChevronRight, ChevronDown, RefreshCw, History,
-  Pencil, Plus, Minus, ArrowRightLeft, Copy, CornerDownRight, FileText, Eye, RotateCcw,
+  Pencil, Plus, Minus, ArrowRightLeft, Copy, CornerDownRight, FileText, Eye, Undo2,
 } from "lucide-react"
 import PanelShell from "./PanelShell"
 import BranchManager from "../components/BranchManager"
@@ -10,7 +10,7 @@ import RemotePushControl from "../components/RemotePushControl"
 import Tooltip from "../components/Tooltip"
 import useToastStore from "../stores/useToastStore"
 import useGitStore from "../stores/useGitStore"
-import useProjectDirty, { discardFormEdits } from "../hooks/useProjectDirty"
+import useProjectDirty, { discardCanvasEdits, discardFormEdits } from "../hooks/useProjectDirty"
 import { createWorkingBranch, setWorkingBranch } from "../api/client"
 import type { GitLedgerSave, GitFileChange } from "../api/types"
 import { computeGitGraphLayout, computeRailRuns, railWidth } from "./gitgraph/layout"
@@ -27,9 +27,7 @@ interface SpawnChipBranch {
   colorIndex?: number
 }
 
-const HASH_TOOLTIP =
-  "Commit hash - a unique ID for every save or milestone. Fragment of a much " +
-  "longer hexadecimal string."
+const HASH_TOOLTIP = "Commit code - a short ID unique to each save or milestone."
 
 // Rail-cell node centres: aligned with the first text line of each row kind
 // (milestone rows carry py-2 + 12px text; save rows 11px text, plus the 6px
@@ -37,6 +35,19 @@ const HASH_TOOLTIP =
 const MILESTONE_DOT_Y = 16
 const SAVE_DOT_Y = 8
 const SAVE_ROW_GAP = 6
+
+// How close the fork naming step may come to the window's edges.
+const VIEWPORT_MARGIN = 8
+
+// How a new branch from the history relates to the current one: a parallel line
+// you stay off, one opened at once, or one the later saves move to.
+type ForkMode = "parallel" | "switch" | "move"
+
+const FORK_DIALOG: Record<ForkMode, { title: string; create: string }> = {
+  parallel: { title: "New branch from this point", create: "Create" },
+  switch: { title: "Start a branch from this version", create: "Create & open" },
+  move: { title: "Move the later saves to a new branch", create: "Create & Move" },
+}
 
 interface GitPanelProps {
   onClose: () => void
@@ -120,10 +131,34 @@ function GitPanelBranchScope({
   // Right-click "new branch from here" (S38): the anchor is the menu position +
   // fork point; the draft is the naming step once an option is picked.
   const [forkAnchor, setForkAnchor] = useState<
-    { x: number; y: number; sha: string; canMove: boolean; peeking: boolean; label: string } | null
+    {
+      x: number; y: number; sha: string; canMove: boolean; canRestore: boolean; peeking: boolean
+      label: string
+    } | null
   >(null)
-  const [forkDraft, setForkDraft] = useState<{ sha: string; move: boolean; name: string; x: number; y: number } | null>(null)
+  const [forkDraft, setForkDraft] = useState<
+    { sha: string; mode: ForkMode; name: string; x: number; y: number; error?: string } | null
+  >(null)
   const [forking, setForking] = useState(false)
+  // The naming step, moved back inside the window once its size is known: the row
+  // button sits at the panel's right edge, where an unmoved box would put Create
+  // off screen.
+  const forkDialogRef = useRef<HTMLDivElement>(null)
+  const [forkDialogAt, setForkDialogAt] = useState<{ left: number; top: number } | null>(null)
+  const forkX = forkDraft?.x
+  const forkY = forkDraft?.y
+  const forkError = forkDraft?.error // a refusal line makes the box taller
+  useLayoutEffect(() => {
+    const dialog = forkDialogRef.current
+    if (forkX === undefined || forkY === undefined || !dialog) {
+      setForkDialogAt(null)
+      return
+    }
+    setForkDialogAt({
+      left: Math.max(VIEWPORT_MARGIN, Math.min(forkX, window.innerWidth - dialog.offsetWidth - VIEWPORT_MARGIN)),
+      top: Math.max(VIEWPORT_MARGIN, Math.min(forkY, window.innerHeight - dialog.offsetHeight - VIEWPORT_MARGIN)),
+    })
+  }, [forkX, forkY, forkError])
   // Context menus on the rail (feedback round 2): a milestone dot offers the
   // commit actions, a lane line offers its branch's actions.
   const [dotMenu, setDotMenu] = useState<{ sha: string; x: number; y: number } | null>(null)
@@ -138,17 +173,21 @@ function GitPanelBranchScope({
   const openForkMenu = (e: React.MouseEvent, sha: string, canMove: boolean, label: string) => {
     e.preventDefault()
     e.stopPropagation()
-    setForkAnchor({ x: e.clientX, y: e.clientY, sha, canMove, peeking, label })
+    setForkAnchor({
+      x: e.clientX, y: e.clientY, sha, canMove, canRestore: restorable(sha), peeking, label,
+    })
   }
 
-  const startFork = (move: boolean) => {
+  const startFork = (mode: ForkMode) => {
     if (!forkAnchor) return
-    const openDraft = () => {
-      setForkDraft({ sha: forkAnchor.sha, move, name: "", x: forkAnchor.x, y: forkAnchor.y })
-      setForkAnchor(null)
-    }
-    openDraft()
+    setForkDraft({ sha: forkAnchor.sha, mode, name: "", x: forkAnchor.x, y: forkAnchor.y })
+    setForkAnchor(null)
   }
+
+  // The row button's "Start a branch from this version": the naming step at the
+  // button, for a branch opened at that version.
+  const startBranchAt = (sha: string, x: number, y: number) =>
+    setForkDraft({ sha, mode: "switch", name: "", x, y })
 
   const submitFork = async () => {
     if (!forkDraft || !forkDraft.name.trim()) return
@@ -156,11 +195,12 @@ function GitPanelBranchScope({
     try {
       const res = await createWorkingBranch(forkDraft.name.trim(), {
         at: forkDraft.sha,
-        move: forkDraft.move,
+        move: forkDraft.mode === "move",
+        switch: forkDraft.mode === "switch",
       })
       addToast(
         "success",
-        forkDraft.move
+        forkDraft.mode === "move"
           ? `Created ${res.working_branch} and moved your work`
           : `Created ${res.working_branch}`,
       )
@@ -171,15 +211,19 @@ function GitPanelBranchScope({
       }
       await refresh()
     } catch (err) {
+      // Said in the naming step, which stays open with the name to put right: a
+      // toast would sit over its Create button at the window's right edge.
       const detail = apiErrorMessage(err, "unknown error")
-      addToast("error", `Could not create branch: ${detail}`)
+      setForkDraft((draft) => draft && { ...draft, error: `Could not create branch: ${detail}` })
+      void loadStatus({ refresh: true }) // a held file can leave the clone interrupted
     } finally {
       setForking(false)
     }
   }
 
   const requestForkSubmit = () => {
-    if (forkDraft?.move) guardNavigation(() => { void submitFork() })
+    // Opening the new branch replaces the canvas: unsaved edits are asked about first.
+    if (forkDraft && forkDraft.mode !== "parallel") guardNavigation(() => { void submitFork() })
     else void submitFork()
   }
 
@@ -192,15 +236,17 @@ function GitPanelBranchScope({
     const from = workingBranch
     try {
       await setWorkingBranch(branch, false)
+      discardCanvasEdits()
       await discardFormEdits()
       addToast("success", `Switched to ${branch}`)
       if (from !== null) recordSwitch(from, branch)
       setViewBranch(null)
-      await loadStatus()
+      await loadStatus({ refresh: true }) // not a read begun before the action
       await refresh()
     } catch (err) {
       const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Could not switch branch: ${detail}`)
+      void loadStatus({ refresh: true }) // a held file can leave the clone interrupted
     } finally {
       setSwitching(false)
     }
@@ -214,10 +260,26 @@ function GitPanelBranchScope({
   // Open the read-only side-by-side comparison on a version (S11).
   const viewVersion = (sha: string, label: string) => openComparison({ sha, label })
 
-  // Begin a MOVE to a version (P6 §3.4): a real checkout, gated by the pre-move
-  // save/discard/confirm prompt. Distinct from viewVersion's read-only compare.
-  const moveVersion = (sha: string, label: string) =>
-    useGitStore.getState().requestMove({ sha, label })
+  // Begin a RESTORE of a version: written back as a new save on the current
+  // branch, gated by the same save/discard/confirm prompt.
+  const restoreVersion = (sha: string, label: string) =>
+    useGitStore.getState().requestRestore({ sha, label })
+
+  // Restore offers itself on the current branch's own rows only, and never on the
+  // current version, where it would change nothing: the newest pending save, or
+  // with none pending the newest milestone and the newest save folded into it.
+  const currentVersion = new Set<string>()
+  if (pending.length > 0) {
+    currentVersion.add(pending[0].sha)
+  } else if (milestones.length > 0) {
+    currentVersion.add(milestones[0].sha)
+    const newestFolded = expanded[milestones[0].sha]
+    if (Array.isArray(newestFolded) && newestFolded.length > 0) currentVersion.add(newestFolded[0].sha)
+  }
+  const ownRows = !peeking && workingBranch !== null && rowsBranch === workingBranch
+  const restorable = (sha: string) => ownRows && !currentVersion.has(sha)
+  const restoreAt = (sha: string) => (restorable(sha) ? restoreVersion : undefined)
+  const startBranch = ownRows ? startBranchAt : undefined
 
   // ---------------------------------------------------------------------------
   // Graph rail (D-B): the visual row list in render order + its rail model.
@@ -484,7 +546,7 @@ function GitPanelBranchScope({
                 className={`text-[10px] font-medium uppercase tracking-wider block mb-1.5${rail !== null ? " px-2.5" : ""}`}
                 style={{ color: "var(--text-muted)" }}
               >
-                Out-of-version saves ({pending.length}) - to fold into next milestone
+                Saves since the last milestone ({pending.length})
               </span>
               <div className={rail !== null ? "flex flex-col pr-2.5" : "flex flex-col gap-1.5 pl-2"}>
                 {pending.map((s, i) => {
@@ -497,7 +559,8 @@ function GitPanelBranchScope({
                       selected={selectedSha === s.sha}
                       onSelect={setSelectedSha}
                       onView={viewVersion}
-                      onMove={moveVersion}
+                      onRestore={restoreAt(s.sha)}
+                      onStartBranch={startBranch}
                       onContextMenu={(e) => { setSelectedSha(s.sha); openForkMenu(e, s.sha, true, s.message) }}
                     />
                   )
@@ -614,11 +677,14 @@ function GitPanelBranchScope({
                           label={m.version_label || m.message}
                           onView={viewVersion}
                         />
-                        <MoveToVersionButton
-                          sha={m.sha}
-                          label={m.version_label || m.message}
-                          onMove={moveVersion}
-                        />
+                        {restorable(m.sha) && (
+                          <RestoreVersionButton
+                            sha={m.sha}
+                            label={m.version_label || m.message}
+                            onRestore={restoreVersion}
+                          />
+                        )}
+                        {startBranch && <StartBranchButton sha={m.sha} onStart={startBranch} />}
                         <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-secondary)" }}>
                           <Tooltip label={HASH_TOOLTIP} side="bottom">
                             <span>{m.short_sha}</span>
@@ -663,7 +729,8 @@ function GitPanelBranchScope({
                                 selected={selectedSha === s.sha}
                                 onSelect={setSelectedSha}
                                 onView={viewVersion}
-                                onMove={moveVersion}
+                                onRestore={restoreAt(s.sha)}
+                                onStartBranch={startBranch}
                                 onContextMenu={(e) => { setSelectedSha(s.sha); openForkMenu(e, s.sha, false, s.message) }}
                               />
                             </div>
@@ -693,7 +760,8 @@ function GitPanelBranchScope({
                               selected={selectedSha === s.sha}
                               onSelect={setSelectedSha}
                               onView={viewVersion}
-                              onMove={moveVersion}
+                              onRestore={restoreAt(s.sha)}
+                              onStartBranch={startBranch}
                               onContextMenu={(e) => { setSelectedSha(s.sha); openForkMenu(e, s.sha, false, s.message) }}
                             />
                           ))}
@@ -728,21 +796,29 @@ function GitPanelBranchScope({
             {!forkAnchor.peeking && (
               <>
                 <button
-                  data-testid="git-panel-fork-here"
-                  onClick={() => startFork(false)}
+                  data-testid="git-panel-fork-switch"
+                  onClick={() => startFork("switch")}
                   className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
                   style={{ color: "var(--text-primary)" }}
                 >
-                  <GitBranch size={12} style={{ color: "var(--accent)" }} /> New branch from here
+                  <GitBranch size={12} style={{ color: "var(--accent)" }} /> Start a branch from this version
+                </button>
+                <button
+                  data-testid="git-panel-fork-here"
+                  onClick={() => startFork("parallel")}
+                  className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
+                  style={{ color: "var(--text-primary)" }}
+                >
+                  <GitFork size={12} style={{ color: "var(--accent)" }} /> New branch from here, stay on this branch
                 </button>
                 {forkAnchor.canMove && (
                   <button
                     data-testid="git-panel-fork-move"
-                    onClick={() => startFork(true)}
+                    onClick={() => startFork("move")}
                     className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
                     style={{ color: "var(--text-primary)" }}
                   >
-                    <ArrowRightLeft size={12} style={{ color: "var(--accent)" }} /> New branch &amp; move work here
+                    <ArrowRightLeft size={12} style={{ color: "var(--accent)" }} /> Move the later saves to a new branch
                   </button>
                 )}
               </>
@@ -755,14 +831,16 @@ function GitPanelBranchScope({
             >
               <Eye size={12} style={{ color: "var(--accent)" }} /> View side-by-side
             </button>
-            <button
-              data-testid="git-panel-menu-move"
-              onClick={() => { moveVersion(forkAnchor.sha, forkAnchor.label); setForkAnchor(null) }}
-              className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
-              style={{ color: "var(--text-primary)" }}
-            >
-              <RotateCcw size={12} style={{ color: "var(--accent)" }} /> Move to this version
-            </button>
+            {forkAnchor.canRestore && (
+              <button
+                data-testid="git-panel-menu-restore"
+                onClick={() => { restoreVersion(forkAnchor.sha, forkAnchor.label); setForkAnchor(null) }}
+                className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
+                style={{ color: "var(--text-primary)" }}
+              >
+                <Undo2 size={12} style={{ color: "var(--accent)" }} /> Restore this version
+              </button>
+            )}
           </div>
         </>
       )}
@@ -786,14 +864,6 @@ function GitPanelBranchScope({
                 style={{ color: "var(--text-primary)" }}
               >
                 <Eye size={12} style={{ color: "var(--accent)" }} /> View side-by-side
-              </button>
-              <button
-                data-testid="git-graph-dot-menu-move"
-                onClick={() => { moveVersion(dotMenu.sha, label); setDotMenu(null) }}
-                className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
-                style={{ color: "var(--text-primary)" }}
-              >
-                <RotateCcw size={12} style={{ color: "var(--accent)" }} /> Move to this version
               </button>
             </div>
           </>
@@ -834,8 +904,9 @@ function GitPanelBranchScope({
         </>
       )}
 
-      {/* Naming step for the fork */}
-      {forkDraft && (
+      {/* Naming step for the fork, hidden while the unsaved-edits question is open
+          (its overlay would cover the question) and back with the name on Cancel. */}
+      {forkDraft && !dirtyNavigation && (
         <>
           <div
             className="fixed inset-0 z-40"
@@ -843,23 +914,34 @@ function GitPanelBranchScope({
             onContextMenu={(e) => { e.preventDefault(); if (!forking) setForkDraft(null) }}
           />
           <div
+            ref={forkDialogRef}
             data-testid="git-panel-fork-dialog"
             className="fixed z-50 rounded-lg p-3 w-[260px] flex flex-col gap-2 shadow-lg"
-            style={{ left: forkDraft.x, top: forkDraft.y, background: "var(--bg-panel)", border: "1px solid var(--border)" }}
+            style={{
+              left: forkDialogAt?.left ?? forkDraft.x,
+              top: forkDialogAt?.top ?? forkDraft.y,
+              background: "var(--bg-panel)",
+              border: "1px solid var(--border)",
+            }}
           >
             <span className="text-[12px] font-medium" style={{ color: "var(--text-primary)" }}>
-              {forkDraft.move ? "New branch - move your work here" : "New branch from this point"}
+              {FORK_DIALOG[forkDraft.mode].title}
             </span>
             <input
               autoFocus
               data-testid="git-panel-fork-name"
               value={forkDraft.name}
-              onChange={(e) => setForkDraft({ ...forkDraft, name: e.target.value })}
+              onChange={(e) => setForkDraft({ ...forkDraft, name: e.target.value, error: undefined })}
               onKeyDown={(e) => { if (e.key === "Enter") requestForkSubmit() }}
               placeholder="New branch name…"
               className="px-2 py-1 text-[12px] rounded-md focus:outline-none focus:ring-2"
               style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)", caretColor: "var(--accent)" }}
             />
+            {forkDraft.error && (
+              <p data-testid="git-panel-fork-error" role="alert" className="text-[11px]" style={{ color: "var(--danger)" }}>
+                {forkDraft.error}
+              </p>
+            )}
             <div className="flex justify-end gap-2">
               <button onClick={() => setForkDraft(null)} disabled={forking} className="px-2.5 py-1 text-[12px] rounded-md" style={{ color: "var(--text-secondary)" }}>
                 Cancel
@@ -871,7 +953,7 @@ function GitPanelBranchScope({
                 className="px-2.5 py-1 text-[12px] font-semibold rounded-md disabled:opacity-50"
                 style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
               >
-                {forkDraft.move ? "Create & Move" : "Create"}
+                {FORK_DIALOG[forkDraft.mode].create}
               </button>
             </div>
           </div>
@@ -893,7 +975,8 @@ function SaveRow({
   selected,
   onSelect,
   onView,
-  onMove,
+  onRestore,
+  onStartBranch,
   onContextMenu,
 }: {
   save: GitLedgerSave
@@ -903,7 +986,8 @@ function SaveRow({
   selected?: boolean
   onSelect?: (sha: string) => void
   onView?: (sha: string, label: string) => void
-  onMove?: (sha: string, label: string) => void
+  onRestore?: (sha: string, label: string) => void
+  onStartBranch?: (sha: string, x: number, y: number) => void
   onContextMenu?: (e: React.MouseEvent) => void
 }) {
   return (
@@ -925,7 +1009,10 @@ function SaveRow({
           <ForkLinks branches={forkLinks} onPeek={onPeek} />
         )}
         {onView && <ViewVersionButton sha={save.sha} label={save.message} onView={onView} />}
-        {onMove && <MoveToVersionButton sha={save.sha} label={save.message} onMove={onMove} />}
+        {onRestore && (
+          <RestoreVersionButton sha={save.sha} label={save.message} onRestore={onRestore} />
+        )}
+        {onStartBranch && <StartBranchButton sha={save.sha} onStart={onStartBranch} />}
         <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-secondary)" }}>
           <Tooltip label={HASH_TOOLTIP} side="bottom">
             <span>{save.short_sha}</span>
@@ -1070,33 +1157,63 @@ function ViewVersionButton({
   )
 }
 
-// Move-to-version affordance (P6 §3.4): a real checkout that materialises this
-// version on the canvas (gated by the pre-move prompt). Sibling to the read-only
-// Eye; same role="button" span so it can sit inside the milestone row's <button>.
-function MoveToVersionButton({
+// "Start a branch from this version": the naming step opens at the button, for a
+// branch created at this version and opened. Same role="button" span as the Eye.
+function StartBranchButton({
+  sha,
+  onStart,
+}: {
+  sha: string
+  onStart: (sha: string, x: number, y: number) => void
+}) {
+  const start = (e: React.SyntheticEvent<HTMLSpanElement>) => {
+    e.stopPropagation()
+    const box = e.currentTarget.getBoundingClientRect()
+    onStart(sha, box.left, box.bottom)
+  }
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      data-testid="git-panel-start-branch"
+      title="Start a branch from this version"
+      onClick={start}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") start(e) }}
+      // self-center for the same cross-row alignment reason as the Eye.
+      className="shrink-0 self-center inline-flex items-center justify-center p-0.5 rounded cursor-pointer hover:bg-[var(--bg-hover)]"
+      style={{ color: "var(--text-muted)" }}
+    >
+      <GitBranch size={12} />
+    </span>
+  )
+}
+
+// Restore affordance: this version written back as a new save on the current
+// branch (gated by the restore prompt). Same role="button" span as the Eye.
+function RestoreVersionButton({
   sha,
   label,
-  onMove,
+  onRestore,
 }: {
   sha: string
   label: string
-  onMove: (sha: string, label: string) => void
+  onRestore: (sha: string, label: string) => void
 }) {
   return (
     <span
       role="button"
       tabIndex={0}
-      data-testid="git-panel-move"
-      title="Move to this version"
-      onClick={(e) => { e.stopPropagation(); onMove(sha, label) }}
+      data-testid="git-panel-restore"
+      title="Restore this version"
+      onClick={(e) => { e.stopPropagation(); onRestore(sha, label) }}
       onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); onMove(sha, label) }
+        if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); onRestore(sha, label) }
       }}
       // self-center for the same cross-row alignment reason as the Eye.
       className="shrink-0 self-center inline-flex items-center justify-center p-0.5 rounded cursor-pointer hover:bg-[var(--bg-hover)]"
       style={{ color: "var(--text-muted)" }}
     >
-      <RotateCcw size={12} />
+      <Undo2 size={12} />
     </span>
   )
 }

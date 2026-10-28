@@ -12,7 +12,7 @@
 | `src/haute/errors.py` | The `HauteError` hierarchy, including execution, bounded-memory, schema/contract, deployment, and feature errors. Route-visible public subclasses carry stable `error_code` and `public_fields` metadata consumed by `_contract_errors.py`. |
 | `src/haute/_validation_error.py` | `HauteValidationError` — the ValueError-derived marker for haute-authored validation messages (re-exported by `errors.py`); the modelling worker boundary keys its curated-message promotion on it. |
 | `src/haute/_logging.py` | `configure_logging()` (structlog + stdlib bridge, dev-console vs. JSON-lines modes) and `get_logger()`. |
-| `src/haute/_event_bus.py` | `EventBus` — thread-safe synchronous pub/sub with typed `parse.error` and `pipeline.document.update` overloads; `default_bus` is the module-level singleton the watcher and server wire together. |
+| `src/haute/_event_bus.py` | `EventBus` — thread-safe synchronous pub/sub with typed `parse.error` and `pipeline.document.update` overloads; `default_bus` is the module-level singleton the watcher and server wire together. The git routes publish the git.tree.changed event, carrying the pipelines on disk before the action, after a git action that rewrote the files. |
 | `src/haute/_types.py` | `NodeType` (`StrEnum`), the decorator↔NodeType maps, `SINK_ONLY_NODE_TYPES` (the types with no output, mirrored by the editor), every per-node-type config `TypedDict`, the `SolveResultLike` Protocol family, and the canonical `NodeData` / `GraphNode` / `GraphEdge` / `PipelineGraph` Pydantic models (with `PipelineGraph`'s cached-property-invalidating `model_copy` override). `GlobalConstant` (a named, typed constant, uniform or split by source, validated as the global constants file requires) and the `PipelineGraph` fields `global_constants` and `global_constants_error`, which every field-by-field graph copy carries. |
 | `src/haute/_pipeline_revision.py` | [submodels](../submodels/low-level.md)-owned canonical parsed-graph revision plus the editor recovery revision over a contained, role-qualified raw-artifact manifest with explicit missing sentinels. |
 | `src/haute/_pipeline_recovery.py` | Side-effect-free editor loader: AST skeleton discovery (a syntax-invalid file becomes a source-only document carrying the syntax error), isolated node resolution, availability/diagnostic propagation, typed sidecar merge, raw-artifact revision assembly, and ready/degraded/source-only classification, plus `pipeline_document_fingerprint`, the one digest of a dumped editor document shared by the load routes, resync, and live-sync frames. It never returns a canonical `PipelineGraph`. Submodel imports are read one statement at a time (`_recover_ast_submodel_registrations`), so a malformed import is its own diagnostic while the well-formed ones still name their files, and each registration is then extracted against that import table. Both load paths carry the global constants and their load error into the document, read once through the load's capture, and `_source_references` lists the declared constants file so the revision authenticates the bytes the document carries. |
@@ -36,7 +36,7 @@
 | `src/haute/routes/_node_data_service.py` | `NodeDataService`: consumer point responses, delegation, explicit node-output build jobs in isolated workers, the data-profile job, supersession, cancellation, and clear. `points_for_graph` resolves every node of a graph against one resolver for the per-node cache report, returning each node's input-snapshot identity digest alongside its point. |
 | `src/haute/routes/_synchronous_analysis.py` | Request-time analyses of a leased point: admitted execution, memoisation by data version, and client-disconnect cancellation. |
 | `src/haute/routes/utility.py` | `/api/utility` CRUD (list/read/create/update/delete) for `utility/*.py` helper modules, with AST syntax validation on every write; create first refuses (`_validate_new_module_name`) a hard keyword or `is_windows_reserved_filename` stem (400) and a case-folded duplicate of an existing `utility/*.py` (409); create and update first run `_refuse_new_name_violations`, which parses each discovered pipeline mentioning `utility` with the current and the edited utility reader and refuses the support-code violations only the edit adds. |
-| `src/haute/routes/_save_pipeline.py` | `SavePipelineService` — the transactional save orchestrator: singleton/name-collision/load-error validation, codegen invocation (`_write_generated_code_files` stages every generated file through the output allowlist, then an empty package marker in each `modules/` folder it wrote a definition module into that has none, never overwriting one), config-file + sidecar writes, stale-config cleanup, and rollback. Global constants: save takes the constants load state from the file on disk (`_adopt_disk_global_constants_state`), `validate_graph` refuses what would shadow the reserved name or read an undefined constant (`_validate_global_constants`), and the constants file is written with the node configs, retired with the stale ones, and left untouched while it fails to load. `capture_save_in_ledger` commits a save's files on the clone's ledger — no working branch, no capture; a missing identity reported; a failure a warning — for the pipeline save and the workbench's form save alike. |
+| `src/haute/routes/_save_pipeline.py` | `SavePipelineService` — the transactional save orchestrator: singleton/name-collision/load-error validation, codegen invocation (`_write_generated_code_files` stages every generated file through the output allowlist, then an empty package marker in each `modules/` folder it wrote a definition module into that has none, never overwriting one), config-file + sidecar writes, stale-config cleanup, and rollback. Global constants: save takes the constants load state from the file on disk (`_adopt_disk_global_constants_state`), `validate_graph` refuses what would shadow the reserved name or read an undefined constant (`_validate_global_constants`), and the constants file is written with the node configs, retired with the stale ones, and left untouched while it fails to load. `capture_save_in_ledger` commits a save's files on the clone's ledger — no repository, no capture; no working branch chosen a warning with the files left uncaptured; a missing identity reported; a failure a warning — for the pipeline save and the workbench's form save alike. |
 | `src/haute/routes/_supersession.py` | `SupersessionCoordinator` / `_SupersessionState` — generation-counted "run latest, cancel/skip the rest" concurrency primitive used by preview, trace and the free-code column resolution. |
 | `src/haute/routes/output_assemble.py` | `POST /api/output-assemble/dry-run` — validates an unsaved `outputMapping`, swaps it into the target node's in-memory config, executes up to that node, returns the rendered document. |
 | `src/haute/routes/_contract_errors.py` | Shared public-contract-error adapter: validates the closed public error set, emits stable payloads, maps synchronous failures to HTTP 422, and supplies the matching contract-error fields for background jobs. Also owns `memory_limit_http_exception`, the one memory-limit → 507 mapping; a job-backed surface passes its operation noun so the detail also carries the curated message. |
@@ -227,7 +227,12 @@ silence the rest. `PipelineDocumentUpdatePayload` is a closed required-key contr
 containing `document`, `document_fingerprint`, and `source_file`; `ParseErrorPayload`
 contains `error` and `source_file`. They are the two currently-declared typed events;
 `default_bus` is the module-level singleton `server.py`'s watcher and WebSocket
-translator share.
+translator share. The translator (`_broadcast_event_as_ws_message`) schedules each frame's
+`broadcast` on the running event loop; a publisher on a worker thread has none (a git
+route's `git.tree.changed` background task runs in the threadpool), so the frame is handed
+to the server's own loop, which `_lifespan` records as `_server_loop` for the app's
+lifetime, with `asyncio.run_coroutine_threadsafe`. With neither (a unit test calling it
+bare) it logs `event_bus_broadcast_skipped` and returns.
 
 **`SupersessionCoordinator._SupersessionState`** (`routes/_supersession.py`) is one
 `asyncio.Condition` + `latest_generation: int` + `active: bool` + `references: int` +
@@ -431,6 +436,29 @@ crash. Every filesystem event batches into `pending_changes`; a 300ms debounce t
    from `pending_changes`, tries each change once in isolation so healthy paths still
    broadcast, and logs/drops each still-failing event. A later event for a dropped path is a
    fresh attempt; no retry task is recursively scheduled.
+
+**After a git action (`_broadcast_tree_change`).** `server.py` subscribes
+`_broadcast_tree_change` to `git.tree.changed`. The git routes publish it as a FastAPI
+background task, after the response is sent, so the acting client has its answer before the
+frames arrive. The handler:
+1. reads the pipelines known before the action: the route's `pipelines_before`, which a
+   save cannot clear, with `_known_pipeline_paths()` (the index and the last broadcasts)
+   added; then calls `invalidate_pipeline_index()`. Discovery refusing after the action
+   (`haute.toml` names a pipeline the version lacks, or cannot be read) counts as no
+   pipeline on disk, so each known one is announced as not in the version;
+2. for each `_discovered_pipeline_paths()` entry, loads the editor document, records the raw
+   bytes' hash in `_last_broadcast_fp` (the watcher's next real edit is judged against the
+   new content), and publishes `pipeline.document.update`, or `parse.error` with the fixed
+   safe message when the document cannot be loaded, each file on its own;
+3. for each pipeline known before and not discovered now, forgets its broadcast hash and
+   publishes `parse.error` with `PIPELINE_NOT_IN_VERSION` ("This pipeline isn't in the
+   version now open. Switch back to see it."). A client showing it then fails loud with
+   saving blocked, rather than keeping a document a save would write back;
+4. publishes `workbench.form.changed` when the form file exists.
+
+A client whose graph is dirty gets the dirty banner, as for any external edit, and a client
+already showing that document drops the frame (see
+[frontend-graph-canvas](../frontend-graph-canvas/low-level.md)).
 
 **Pipeline save (`SavePipelineService.save`)**, run inside the process-wide `save_lock` (an
 `asyncio.Lock`, so it serialises against concurrent submodel create/dissolve as well as
@@ -1203,7 +1231,9 @@ for route-level tests, and direct unit tests for the pure-function modules.
   other JSON and a disabled workbench not, content-identity self-write suppression: an external write to a
   server-written path before the coalesced flush is broadcast, an unchanged self-write
   and a self-deletion are suppressed, an external recreate and an unrelated same-batch
-  edit are broadcast with their actual document content).
+  edit are broadcast with their actual document content), and `_broadcast_tree_change`
+  announcing each pipeline's document, a pipeline whose document cannot be loaded as its
+  own `parse.error`, and the form's change.
 - **`test_pipeline_recovery.py`** — editor-document DTO separation, degraded/source-only
   recovery, authored-structure conservation, bounded diagnostics, raw-artifact revision safety,
   mutation fences, and server-owned ready-closure preview admission.

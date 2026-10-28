@@ -484,7 +484,7 @@ describe("#83 behavioral: GitPanel history load failure surfaces a toast", () =>
       last_save_sha: null,
       errors: [],
     })
-    H.getWorkingBranches.mockResolvedValue({ current: "demo", branches: [] })
+    H.getWorkingBranches.mockResolvedValue({ current: "demo", deleted: [], branches: [] })
     H.getPendingSaves.mockResolvedValue({ saves: [] })
   })
   afterEach(cleanup)

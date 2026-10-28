@@ -271,6 +271,28 @@ export default function useWebSocketSync({
         : null
     }
 
+    // Ask for the current document. With the accepted fingerprint the server answers
+    // nothing when it still matches; without it (a git action replaced the files) it
+    // always answers with the document on disk.
+    function sendResync(withFingerprint: boolean) {
+      const sourceFile = currentDocumentSource()?.trim()
+      if (!sourceFile || !ws || ws.readyState !== WebSocket.OPEN) return
+      try {
+        const resyncPayload: Record<string, string | number> = {
+          type: "resync",
+          source_file: sourceFile,
+          document_schema_version: DOCUMENT_SCHEMA_VERSION,
+        }
+        const documentFingerprint = withFingerprint ? acceptedDocumentFingerprintFor(sourceFile) : null
+        if (documentFingerprint) {
+          resyncPayload[DOCUMENT_FINGERPRINT_FIELD] = documentFingerprint
+        }
+        ws.send(JSON.stringify(resyncPayload))
+      } catch (err) {
+        addToast("error", `WebSocket sync error: ${formatSyncError(err)}`)
+      }
+    }
+
     function markSessionExpired(reason: string, notify = true) {
       retriesRef.current = MAX_RETRIES + 1
       setStatus("disconnected")
@@ -320,23 +342,7 @@ export default function useWebSocketSync({
         setStatus("connected")
         // The form's file may have changed while no frame could say so: read it again.
         useWorkbenchStore.setState((state) => ({ formChanges: state.formChanges + 1 }))
-        const sourceFile = currentDocumentSource()?.trim()
-        if (sourceFile) {
-          try {
-            const resyncPayload: Record<string, string | number> = {
-              type: "resync",
-              source_file: sourceFile,
-              document_schema_version: DOCUMENT_SCHEMA_VERSION,
-            }
-            const documentFingerprint = acceptedDocumentFingerprintFor(sourceFile)
-            if (documentFingerprint) {
-              resyncPayload[DOCUMENT_FINGERPRINT_FIELD] = documentFingerprint
-            }
-            ws?.send(JSON.stringify(resyncPayload))
-          } catch (err) {
-            addToast("error", `WebSocket sync error: ${formatSyncError(err)}`)
-          }
-        }
+        sendResync(true)
       }
 
       ws.onmessage = async (event) => {
@@ -357,6 +363,14 @@ export default function useWebSocketSync({
             return
           }
           if (!isCurrentSourceFile(frame.sourceFile, currentDocumentSource())) {
+            return
+          }
+          // The document already shown: a git action's broadcast, or the answer to
+          // a forced resync, of what the canvas holds. Nothing to apply or announce.
+          if (
+            useDocumentStatusStore.getState().graphSynchronized
+            && frame.documentFingerprint === acceptedDocumentFingerprintFor(frame.sourceFile)
+          ) {
             return
           }
           const updateSeq = ++graphUpdateSeq
@@ -524,9 +538,14 @@ export default function useWebSocketSync({
     }
 
     connect()
+    // A git action replaced the files and the canvas dropped its edits for it.
+    const stopResyncRequests = useDocumentStatusStore.subscribe((state, previous) => {
+      if (state.resyncRequests !== previous.resyncRequests) sendResync(false)
+    })
 
     return () => {
       mounted = false
+      stopResyncRequests()
       if (reconnectTimer) clearTimeout(reconnectTimer)
       for (const timer of delayedTimers) {
         clearTimeout(timer)

@@ -5090,6 +5090,7 @@ class OptimiserMlflowLogResponse(MlflowLogResponse):
 GitWorkingBranchState = Literal[
     "git-unavailable",
     "no-repository",
+    "interrupted",
     "unset",
     "detached",
     "invalid",
@@ -5249,26 +5250,24 @@ class GitCaptureRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Move through history (P6): materialise a historical commit as the working
-# directory (detached checkout). Creates nothing — the next save spawns a fresh
-# working branch there (S13).
+# Restore a version: an earlier version's files written back as one new save on
+# the current branch's ledger. The branch is not left and no other ref moves.
 # ---------------------------------------------------------------------------
 
 
-class GitMoveRequest(BaseModel):
-    # The commit to move to — its tree becomes the working directory.
+class GitRestoreVersionRequest(BaseModel):
+    # A milestone or save in the current branch's history.
     sha: str
 
 
-class GitMoveResponse(BaseModel):
-    # The commit now checked out (detached HEAD).
+class GitRestoreVersionResponse(BaseModel):
+    # The new save on the ledger that holds the restored files.
     sha: str
     short_sha: str
-    # The branch HEAD was on before the move. The move detaches rather than
-    # moving any ref, so this branch stays put and fully reachable.
-    prior_branch: str
-    # Always True: a move leaves HEAD detached with no working branch recorded.
-    is_detached: bool = True
+    # The full SHA of the version restored.
+    restored_from: str
+    # The working branch the restore was saved on, unchanged by it.
+    working_branch: str
 
 
 # ---------------------------------------------------------------------------
@@ -5452,9 +5451,19 @@ class GitManagedBranch(BaseModel):
     has_uncommitted_changes: bool = False
 
 
+class GitDeletedBranch(BaseModel):
+    # A trash entry: one deletion, restorable under its branch name or another.
+    id: str
+    branch: str
+    deleted_at: str | None = None
+    was_archived: bool = False
+
+
 class GitWorkingBranchesResponse(BaseModel):
     current: str | None = None
     branches: list[GitManagedBranch] = Field(default_factory=list)
+    # The trash, newest deletion first.
+    deleted: list[GitDeletedBranch] = Field(default_factory=list)
 
 
 class GitRestoreRequest(BaseModel):
@@ -5468,12 +5477,16 @@ class GitRestoreResponse(BaseModel):
 class GitCreateWorkingBranchRequest(BaseModel):
     # New working-branch name.
     name: str
-    # Fork point: a milestone sha, or a pending-save sha (crystallized into an
-    # anchoring milestone). None → the current branch's latest milestone (S38).
+    # Fork point: a milestone sha, or the sha of a pending save or of a save
+    # folded into a milestone (crystallized into an anchoring milestone). None →
+    # the current branch's latest milestone (S38).
     at: str | None = None
     # Relocate the work after the fork point onto the new branch and switch to
     # it, rewinding the current branch (vs. spinning off a parallel line).
     move: bool = False
+    # Open the new branch at once, leaving the current branch's refs as they
+    # were. Not with ``move``, which already opens it.
+    switch: bool = False
 
 
 class GitCreateWorkingBranchResponse(BaseModel):
@@ -5508,11 +5521,15 @@ class GitDeleteBranchRequest(BaseModel):
 class GitDeleteBranchResponse(BaseModel):
     status: str = "ok"
     branch: str
+    # The trash entry the deletion became, for an undo to restore.
+    trash_id: str
 
 
 class GitUndeleteRequest(BaseModel):
-    # Working-branch name to restore (a ledger name resolves to its pair).
-    branch: str
+    # The trash entry to restore.
+    id: str
+    # Restore under this name instead of the branch's own (when that is taken).
+    as_name: str | None = None
 
 
 class GitUndeleteResponse(BaseModel):

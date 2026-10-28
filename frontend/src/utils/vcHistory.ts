@@ -26,18 +26,20 @@ import { apiErrorMessage } from "../api/errors"
 /** Re-sync git state everywhere after an inverse ran: status (toolbar,
  *  branch manager) + the history nonce (Git panel refetch). */
 async function resyncGit(): Promise<void> {
-  await useGitStore.getState().loadStatus()
+  await useGitStore.getState().loadStatus({ refresh: true }) // not a read begun before the inverse
   useGitStore.getState().notifyHistoryChanged()
 }
 
 /** Run one leg of an entry: toast success, resync; toast + rethrow on
- *  failure so the store puts the entry back for a retry. */
+ *  failure so the store puts the entry back for a retry, reading the status
+ *  again since a file held open can leave the clone interrupted. */
 async function leg(action: () => Promise<unknown>, doneMessage: string): Promise<void> {
   try {
     await action()
   } catch (err) {
     const detail = apiErrorMessage(err, "unknown error")
     useToastStore.getState().addToast("error", `Undo/redo failed: ${detail}`)
+    void useGitStore.getState().loadStatus({ refresh: true })
     throw err
   }
   useToastStore.getState().addToast("success", doneMessage)
@@ -73,10 +75,16 @@ export function recordRestore(archivedName: string, restoredAs: string): void {
   })
 }
 
-export function recordDelete(branch: string): void {
+/** Each delete is its own trash entry: undo restores the entry the delete
+ *  made, and a redo's delete makes a new one, which the next undo restores. */
+export function recordDelete(branch: string, trashId: string): void {
+  let entry = trashId
   useGraphStore.getState().pushVcEntry({
     label: `delete ${branch}`,
-    undo: () => leg(() => undeleteBranch(branch), `Restored ${branch} from trash`),
-    redo: () => leg(() => gitDeleteBranch(branch, true), `Deleted ${branch}`),
+    undo: () => leg(() => undeleteBranch(entry), `Restored ${branch} from trash`),
+    redo: () =>
+      leg(async () => {
+        entry = (await gitDeleteBranch(branch, true)).trash_id
+      }, `Deleted ${branch}`),
   })
 }

@@ -1083,6 +1083,7 @@ describe("client runtime contracts", () => {
   it("getWorkingBranches rejects malformed branch payloads", async () => {
     mockFetch.mockReturnValue(jsonResponse({
       current: "demo",
+      deleted: [],
       branches: [{ name: 123, is_current: true, is_archived: false, has_unmerged_saves: false, has_uncommitted_changes: false }],
     }))
     await expect(getWorkingBranches()).rejects.toThrow("GitWorkingBranchesResponse: invalid contract at /branches/0/name: type")

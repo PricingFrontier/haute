@@ -20,7 +20,7 @@ import {
   pullGitUpstream,
   retryGitStorageSync,
 } from "../api/client"
-import type { GitBindStorageResponse, GitFastForwardResponse, GitForkStorageResponse, GitManagedBranch, GitUpstreamStatus, GitWorkingBranchResponse } from "../api/types"
+import type { GitBindStorageResponse, GitDeletedBranch, GitFastForwardResponse, GitForkStorageResponse, GitManagedBranch, GitUpstreamStatus, GitWorkingBranchResponse } from "../api/types"
 import { createSingleFlight } from "./singleFlight"
 
 const statusFlight = createSingleFlight<GitWorkingBranchResponse | null>()
@@ -67,6 +67,8 @@ interface GitData {
   loading: boolean
   statusError: string | null
   branches: GitManagedBranch[]
+  /** The trash: deleted branches, newest first, each restorable. */
+  deletedBranches: GitDeletedBranch[]
   branchesLoaded: boolean
   branchesLoading: boolean
   branchesError: string | null
@@ -92,11 +94,11 @@ interface GitData {
   /** The version under read-only inspection in the side-by-side comparison view,
    *  or null when not comparing (S11). Drives the dual-canvas overlay. */
   comparison: GitComparison | null
-  /** A version the user has asked to MOVE to (a real detached checkout), pending
-   *  the pre-move save/discard/confirm prompt (P6 §3.4). null when no move is
-   *  pending. Distinct from `comparison` (read-only view) — a move mutates the
-   *  working tree. */
-  moveTarget: GitComparison | null
+  /** A version of the current branch the user has asked to RESTORE (written back as
+   *  a new save on the branch), pending the save/discard/confirm prompt. null when
+   *  no restore is pending. Distinct from `comparison` (read-only view) — a restore
+   *  rewrites the files. */
+  restoreTarget: GitComparison | null
   /** The files, relative to the project, that writes reported uncaptured (a capture
    *  skipped for want of an identity, or failed), kept by `reportSaveCapture` until
    *  `captureUncaptured` takes them. */
@@ -125,11 +127,11 @@ interface GitActions {
   openComparison: (comparison: GitComparison) => void
   /** Close the comparison view, returning to the live editor (S11). */
   closeComparison: () => void
-  /** Begin a move: open the pre-move save/discard/confirm prompt for *target*
-   *  (P6 §3.4). The actual checkout runs only once the prompt is confirmed. */
-  requestMove: (target: GitComparison) => void
-  /** Dismiss the pre-move prompt without moving. */
-  closeMove: () => void
+  /** Begin a restore: open the save/discard/confirm prompt for *target*. The
+   *  restore runs only once the prompt is confirmed. */
+  requestRestore: (target: GitComparison) => void
+  /** Dismiss the restore prompt without restoring. */
+  closeRestore: () => void
   /** Update just the last-save SHA after a save (cheaper than a full reload). */
   setLastSaveSha: (sha: string | null) => void
   /** Bind the state volume to a remote for durable storage, then refresh readiness. */
@@ -175,6 +177,7 @@ const freshGitData = (): GitData => ({
   loading: false,
   statusError: null,
   branches: [],
+  deletedBranches: [],
   branchesLoaded: false,
   branchesLoading: false,
   branchesError: null,
@@ -185,7 +188,7 @@ const freshGitData = (): GitData => ({
   historyNonce: 0,
   commitNonce: 0,
   comparison: null,
-  moveTarget: null,
+  restoreTarget: null,
   uncaptured: [],
 })
 
@@ -263,8 +266,8 @@ const useGitStore = create<GitState>()((set, get) => ({
   notifyMilestoneCommitted: () => set((s) => ({ commitNonce: s.commitNonce + 1 })),
   openComparison: (comparison) => set({ comparison }),
   closeComparison: () => set({ comparison: null }),
-  requestMove: (target) => set({ moveTarget: target }),
-  closeMove: () => set({ moveTarget: null }),
+  requestRestore: (target) => set({ restoreTarget: target }),
+  closeRestore: () => set({ restoreTarget: null }),
 
   setLastSaveSha: (sha) =>
     set((s) => (s.status ? { status: { ...s.status, last_save_sha: sha } } : s)),

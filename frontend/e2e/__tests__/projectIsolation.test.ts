@@ -22,6 +22,7 @@ vi.mock("node:fs", () => ({
 }))
 
 import {
+  e2eGit,
   e2eProjectRoot,
   e2eWorkingBranch,
   repoRoot,
@@ -44,13 +45,15 @@ function stubPlatform(platform: NodeJS.Platform): void {
 function mockGit({
   toplevel,
   branches = "main\n",
+  hauteRefs = "",
 }: {
   toplevel: string
   branches?: string
+  hauteRefs?: string
 }): void {
   execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
     if (args[0] === "rev-parse") return `${toplevel}\n`
-    if (args[0] === "for-each-ref") return branches
+    if (args[0] === "for-each-ref") return args.at(-1) === "refs/haute/" ? hauteRefs : branches
     return ""
   })
 }
@@ -59,7 +62,7 @@ function gitCalls(): string[][] {
   return execFileSyncMock.mock.calls.map((call) => call[1] as string[])
 }
 
-function fullResetSequence(branchDeletes: string[][]): string[][] {
+function fullResetSequence(branchDeletes: string[][], refDeletes: string[][] = []): string[][] {
   return [
     ["rev-parse", "--show-toplevel"],
     ["switch", "--force", "main"],
@@ -68,6 +71,9 @@ function fullResetSequence(branchDeletes: string[][]): string[][] {
     ...branchDeletes,
     // Version-label tag scrub (the mocked list reports none to delete).
     ["tag", "--list", "version/*"],
+    // Deleted branches' trash pins.
+    ["for-each-ref", "--format=%(refname)", "refs/haute/"],
+    ...refDeletes,
     // The store's process-liveness marker is held open by the running backend
     // for its whole life, so the scrub must exclude it or it can never pass.
     ["clean", "-fdx", "-e", "/.haute_cache/inputs/.processes/"],
@@ -103,6 +109,26 @@ describe("resetE2eProject", () => {
       ]),
     )
     expect(execFileSyncMock.mock.calls.every((call) => call[0] === "git")).toBe(true)
+  })
+
+  it("deletes the pins a deleted branch left under refs/haute/", () => {
+    mockGit({
+      toplevel: e2eProjectRoot,
+      hauteRefs:
+        "refs/haute/trash/old@20261028T071200Z/ledger\nrefs/haute/trash/old@20261028T071200Z/working\n",
+    })
+
+    resetE2eProject()
+
+    expect(gitCalls()).toEqual(
+      fullResetSequence(
+        [],
+        [
+          ["update-ref", "-d", "refs/haute/trash/old@20261028T071200Z/ledger"],
+          ["update-ref", "-d", "refs/haute/trash/old@20261028T071200Z/working"],
+        ],
+      ),
+    )
   })
 
   it("records the seeded working branch in .haute/state.json", () => {
@@ -246,6 +272,30 @@ describe("resetE2eProject", () => {
       expect(options.env).not.toHaveProperty("GIT_DIR")
       expect(options.env).not.toHaveProperty("GIT_WORK_TREE")
     }
+  })
+})
+
+describe("e2eGit", () => {
+  beforeEach(() => {
+    execFileSyncMock.mockReset()
+  })
+
+  it("runs the command in the e2e project after verifying the toplevel", () => {
+    mockGit({ toplevel: e2eProjectRoot })
+
+    e2eGit(["switch", "--detach", "main"])
+
+    expect(gitCalls()).toEqual([
+      ["rev-parse", "--show-toplevel"],
+      ["switch", "--detach", "main"],
+    ])
+  })
+
+  it("refuses to run anything when git finds another repository", () => {
+    mockGit({ toplevel: repoRoot })
+
+    expect(() => e2eGit(["switch", "--detach", "main"])).toThrow(e2eProjectRoot)
+    expect(gitCalls()).toEqual([["rev-parse", "--show-toplevel"]])
   })
 })
 

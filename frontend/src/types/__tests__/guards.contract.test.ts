@@ -73,10 +73,10 @@ import {
   validateGitFastForwardResponse,
   validateGitForkStorageResponse,
   validateGitGraphResponse,
-  validateGitMoveResponse,
   validateGitPrefs,
   validateGitPushResponse,
   validateGitRemotesResponse,
+  validateGitRestoreVersionResponse,
   validateGitWorkingBranchResponse,
 } from "../../generated/api-contracts.git.validators.mjs"
 import { makeGitWorkingBranch } from "../../test-utils/factories"
@@ -441,8 +441,8 @@ const gitBindStorage = (value: unknown) =>
   expectGeneratedContract("GitBindStorageResponse", validateGitBindStorageResponse, value)
 const gitForkStorage = (value: unknown) =>
   expectGeneratedContract("GitForkStorageResponse", validateGitForkStorageResponse, value)
-const gitMove = (value: unknown) =>
-  expectGeneratedContract("GitMoveResponse", validateGitMoveResponse, value)
+const gitRestoreVersion = (value: unknown) =>
+  expectGeneratedContract("GitRestoreVersionResponse", validateGitRestoreVersionResponse, value)
 const gitRemotes = (value: unknown) =>
   expectGeneratedContract("GitRemotesResponse", validateGitRemotesResponse, value)
 const gitFastForward = (value: unknown) =>
@@ -1488,23 +1488,23 @@ describe("API response guards", () => {
     ).toThrow(/node_id/i)
   })
 
-  it("parses a git move response", () => {
-    const parsed = gitMove({
-      sha: "a".repeat(40),
-      short_sha: "aaaaaaaa",
-      prior_branch: "pricing/test/dev-save",
-      is_detached: true,
+  it("parses a git restore-version response", () => {
+    const parsed = gitRestoreVersion({
+      sha: "b".repeat(40),
+      short_sha: "bbbbbbbb",
+      restored_from: "a".repeat(40),
+      working_branch: "pricing/test/dev",
     })
 
-    expect(parsed.sha).toBe("a".repeat(40))
-    expect(parsed.prior_branch).toBe("pricing/test/dev-save")
-    expect(parsed.is_detached).toBe(true)
+    expect(parsed.sha).toBe("b".repeat(40))
+    expect(parsed.restored_from).toBe("a".repeat(40))
+    expect(parsed.working_branch).toBe("pricing/test/dev")
   })
 
-  it("rejects a git move response missing prior_branch", () => {
+  it("rejects a git restore-version response missing restored_from", () => {
     expect(() =>
-      gitMove({ sha: "abc", short_sha: "abc", is_detached: true }),
-    ).toThrow(/prior_branch/i)
+      gitRestoreVersion({ sha: "abc", short_sha: "abc", working_branch: "dev" }),
+    ).toThrow(/restored_from/i)
   })
 
   it("parses trace responses including waterfall entries", () => {
@@ -3799,7 +3799,9 @@ describe("API response guards", () => {
     const base = makeGitWorkingBranch({ current_branch: "", identity_set: false })
 
     for (const state of [
+      "git-unavailable",
       "no-repository",
+      "interrupted",
       "unset",
       "detached",
       "invalid",

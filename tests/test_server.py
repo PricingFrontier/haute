@@ -2081,6 +2081,34 @@ class TestEventBusBroadcastBridge:
 
         asyncio.run(_run())
 
+    def test_a_publisher_on_a_worker_thread_reaches_the_server_loop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A git route's background task publishes from a threadpool worker, which
+        has no running loop: its frames went nowhere, so the canvas never followed a
+        switch. They are handed to the server's loop instead."""
+        from unittest.mock import AsyncMock
+
+        from haute import server
+
+        async def _run() -> None:
+            fake_broadcast = AsyncMock()
+            monkeypatch.setattr(server, "broadcast", fake_broadcast)
+            monkeypatch.setattr(server, "_server_loop", asyncio.get_running_loop())
+            await asyncio.to_thread(
+                server._broadcast_event_as_ws_message,
+                "parse_error",
+                {"error": "gone", "source_file": "x.py"},
+            )
+            for _ in range(3):
+                await asyncio.sleep(0)
+
+            fake_broadcast.assert_awaited_once_with(
+                {"type": "parse_error", "error": "gone", "source_file": "x.py"}
+            )
+
+        asyncio.run(_run())
+
     def test_ws_message_frame_rejects_payload_type_collision(self) -> None:
         from haute.server import _ws_message_frame
 
@@ -5371,3 +5399,153 @@ class TestStaticBuildReady:
         (static / "index.html").write_text("<html></html>")
         (static / "assets").mkdir()
         assert static_build_ready(static)
+
+
+class TestBroadcastTreeChange:
+    """After a git action that rewrote the files (the watcher paused), the server
+    publishes what is on disk: each pipeline's document, or its load failure on its
+    own, and the form's change."""
+
+    def test_each_pipeline_and_the_form_are_announced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import server
+        from haute._event_bus import default_bus
+
+        monkeypatch.chdir(tmp_path)
+        # Pipelines other tests broadcast would count as known, and gone.
+        monkeypatch.setattr(server, "_last_broadcast_fp", {})
+        server.invalidate_pipeline_index()
+        for name in ("good", "broken"):
+            (tmp_path / f"{name}.py").write_text(
+                f'import haute\n\npipeline = haute.Pipeline("{name}")\n'
+            )
+        real_load = server.load_pipeline_editor_document
+
+        def load(path: Path, **kwargs: object) -> object:
+            if path.name == "broken.py":
+                raise RuntimeError("cannot recover")
+            return real_load(path, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(server, "load_pipeline_editor_document", load)
+        monkeypatch.setattr(
+            server, "_workbench_form_file", lambda _root: ("forms/form.json", "form.json")
+        )
+        events: list[tuple[str, dict[str, object]]] = []
+        unsubscribes = [
+            default_bus.subscribe(kind, lambda payload, kind=kind: events.append((kind, payload)))
+            for kind in ("pipeline.document.update", "parse.error", "workbench.form.changed")
+        ]
+        try:
+            server._broadcast_tree_change({})
+        finally:
+            for unsubscribe in unsubscribes:
+                unsubscribe()
+
+        assert sorted((kind, payload.get("source_file")) for kind, payload in events) == [
+            ("parse.error", "broken.py"),
+            ("pipeline.document.update", "good.py"),
+            ("workbench.form.changed", None),
+        ]
+        assert ("workbench.form.changed", {"form": "forms/form.json"}) in events
+
+    def test_the_configured_pipeline_missing_from_the_version_is_announced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Discovery refuses when haute.toml names a pipeline the version lacks; the
+        announcement must still go out, naming it, not stop at that refusal."""
+        from haute import server
+        from haute._event_bus import default_bus
+        from haute.routes._helpers import invalidate_pipeline_index
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(server, "_last_broadcast_fp", {})
+        monkeypatch.setattr(server, "_workbench_form_file", lambda _root: None)
+        (tmp_path / "haute.toml").write_text('[project]\npipeline = "main.py"\n')
+        (tmp_path / "main.py").write_text('import haute\n\npipeline = haute.Pipeline("p")\n')
+        before = [str((tmp_path / "main.py").resolve())]
+        (tmp_path / "main.py").unlink()  # the switch's destination lacks it
+        invalidate_pipeline_index()
+        events: list[dict[str, object]] = []
+        unsubscribe = default_bus.subscribe("parse.error", events.append)
+        try:
+            server._broadcast_tree_change({"pipelines_before": before})
+        finally:
+            unsubscribe()
+            invalidate_pipeline_index()
+
+        assert events == [{"error": server.PIPELINE_NOT_IN_VERSION, "source_file": "main.py"}]
+
+    def test_a_pipeline_the_action_took_away_is_announced_as_not_in_this_version(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import server
+        from haute._event_bus import default_bus
+        from haute.routes._helpers import invalidate_pipeline_index
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(server, "_last_broadcast_fp", {})
+        monkeypatch.setattr(server, "_workbench_form_file", lambda _root: None)
+        invalidate_pipeline_index()
+        for name in ("kept", "gone"):
+            (tmp_path / f"{name}.py").write_text(
+                f'import haute\n\npipeline = haute.Pipeline("{name}")\n'
+            )
+        server._broadcast_tree_change({})  # both known, as before a switch
+        (tmp_path / "gone.py").unlink()  # the switch's destination lacks it
+        events: list[tuple[str, dict[str, object]]] = []
+        unsubscribes = [
+            default_bus.subscribe(kind, lambda payload, kind=kind: events.append((kind, payload)))
+            for kind in ("pipeline.document.update", "parse.error")
+        ]
+        try:
+            server._broadcast_tree_change({})
+            server._broadcast_tree_change({})  # announced once, not on every change
+        finally:
+            for unsubscribe in unsubscribes:
+                unsubscribe()
+            invalidate_pipeline_index()
+
+        assert sorted((kind, payload.get("source_file")) for kind, payload in events) == [
+            ("parse.error", "gone.py"),
+            ("pipeline.document.update", "kept.py"),
+            ("pipeline.document.update", "kept.py"),
+        ]
+        assert (
+            "parse.error",
+            {"error": server.PIPELINE_NOT_IN_VERSION, "source_file": "gone.py"},
+        ) in events
+
+    def test_a_pipeline_no_cache_still_holds_is_named_from_the_route_inventory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A save invalidates the index and the watcher forgets the broadcast hash,
+        so after a switch only the route's inventory, taken before the action,
+        still knows the pipeline the destination lacks."""
+        from haute import server
+        from haute._event_bus import default_bus
+        from haute.routes._helpers import invalidate_pipeline_index
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(server, "_last_broadcast_fp", {})
+        monkeypatch.setattr(server, "_workbench_form_file", lambda _root: None)
+        for name in ("kept", "gone"):
+            (tmp_path / f"{name}.py").write_text(
+                f'import haute\n\npipeline = haute.Pipeline("{name}")\n'
+            )
+        before = [str((tmp_path / name).resolve()) for name in ("kept.py", "gone.py")]
+        (tmp_path / "gone.py").unlink()  # the switch's destination lacks it
+        invalidate_pipeline_index()  # nothing cached from before the switch
+        events: list[tuple[str, dict[str, object]]] = []
+        unsubscribe = default_bus.subscribe(
+            "parse.error", lambda p: events.append(("parse.error", p))
+        )
+        try:
+            server._broadcast_tree_change({"pipelines_before": before})
+        finally:
+            unsubscribe()
+            invalidate_pipeline_index()
+
+        assert events == [
+            ("parse.error", {"error": server.PIPELINE_NOT_IN_VERSION, "source_file": "gone.py"})
+        ]

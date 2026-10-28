@@ -428,11 +428,12 @@ test.describe("git graph rail — rich topology", () => {
     ).not.toHaveAttribute("data-selected", "true")
 
     // Right-click on the dot: the commit actions. "View side-by-side" opens
-    // the read-only comparison (a pure client view).
+    // the read-only comparison (a pure client view); Move to this version is
+    // gone (a restore or a new branch takes its place on the row).
     await dot.dispatchEvent("contextmenu")
     await expect(page.getByTestId("git-graph-dot-menu")).toBeVisible()
     await expect(page.getByTestId("git-graph-dot-menu-view")).toBeVisible()
-    await expect(page.getByTestId("git-graph-dot-menu-move")).toBeVisible()
+    await expect(page.getByTestId("git-graph-dot-menu").getByRole("button")).toHaveCount(1)
     await page.getByTestId("git-graph-dot-menu-view").click()
     await expect(page.getByTestId("git-graph-dot-menu")).toHaveCount(0)
 

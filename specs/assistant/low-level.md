@@ -175,7 +175,8 @@ orphaned halves).
   them to resolve divergence in the Git panel; `"invalid"` → the response's `errors` list
   joined verbatim (the one state that carries git-layer text); `"git-unavailable"` → fixed
   message that Git is not available on this host and assistant edits need it to record
-  each change. `working_branch_status` is total for those seven repository/readiness
+  each change; `"interrupted"` → fixed message directing them to close the files named in
+  the Git panel and choose Retry. `working_branch_status` is total for those eight repository/readiness
   states, and a state outside them is a programming error that raises. An unexpected
   git-domain `HauteError`
   raised while computing readiness likewise maps to disabled with that error's message as
@@ -2718,8 +2719,8 @@ fixture for route tests). The implemented coverage is:
   from a validated `DATABRICKS_HOST`, reads `DATABRICKS_TOKEN`, and fails
   loudly/redacted for missing or malformed values; `max_output_tokens` unset-defaults-to-8192 and
   malformed/non-positive-fails-readiness behaviour (named reason, no silent default);
-  `mutations_enabled`/`mutations_reason` across all seven `working_branch_status` states
-  (ready, no-repository, unset, detached, divergent, invalid, git-unavailable — asserting
+  `mutations_enabled`/`mutations_reason` across all eight `working_branch_status` states
+  (ready, no-repository, unset, detached, divergent, invalid, git-unavailable, interrupted — asserting
   each state's mapped reason, including invalid's joined `errors`), and the named
   policy reason under `trust = "external"`; an Anthropic model without adaptive thinking
   is not ready, with the adapter's reason; the egress table is closed and requires every

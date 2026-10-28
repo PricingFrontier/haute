@@ -19,6 +19,7 @@ from haute._git_core import (
     _run_git,
     _run_git_ok,
     branch_category,
+    files_in_use_message,
     git_binary_available,
     is_eligible_working_branch,
     ledger_name,
@@ -26,7 +27,12 @@ from haute._git_core import (
 )
 from haute._git_setup import get_identity
 from haute._git_transactions import check_invariants
-from haute.schemas import GitManagedBranch, GitWorkingBranchesResponse, GitWorkingBranchResponse
+from haute.schemas import (
+    GitDeletedBranch,
+    GitManagedBranch,
+    GitWorkingBranchesResponse,
+    GitWorkingBranchResponse,
+)
 
 __all__ = ["ignore_rule", "pipeline_file_states", "working_branch_status", "working_branches"]
 
@@ -119,6 +125,8 @@ def working_branch_status(project_root: Path, cwd: Path | None = None) -> GitWor
                       git); distinct from "no-repository" so the UI can say
                       "git is not available here" instead of offering init
       - "no-repository" — the project has no Git repository
+      - "interrupted" — a git action left files out of step with HEAD (a file
+                      another program held open); ``errors`` names them
       - "unset"     — no working branch recorded
       - "detached"  — HEAD resolves but is not attached to a branch
       - "invalid"   — recorded branch missing / ineligible / invariants violated
@@ -126,7 +134,7 @@ def working_branch_status(project_root: Path, cwd: Path | None = None) -> GitWor
                       ledger (user moved the repo outside haute)
       - "ready"     — recorded branch is the current lineage and healthy
     """
-    from haute._git_state import read_working_branch
+    from haute._git_state import read_interrupted, read_working_branch
 
     if not git_binary_available():
         return GitWorkingBranchResponse(
@@ -159,6 +167,18 @@ def working_branch_status(project_root: Path, cwd: Path | None = None) -> GitWor
         user_name=name,
         user_email=email,
     )
+
+    interrupted = read_interrupted(project_root)
+    if interrupted is not None:
+        files = interrupted["files"]
+        assert isinstance(files, list)
+        base.state = "interrupted"
+        base.errors = [
+            files_in_use_message(files)
+            if files
+            else "A git action left files out of step with version history."
+        ]
+        return base
 
     if not attached:
         base.state = "detached"
@@ -251,4 +271,18 @@ def working_branches(project_root: Path, cwd: Path | None = None) -> GitWorkingB
                 has_uncommitted_changes=is_current and tree_dirty,
             )
         )
-    return GitWorkingBranchesResponse(current=current, branches=entries)
+    from haute._git_state import read_trash, trash_entry_branch
+
+    # The trash, newest deletion first.
+    deleted: list[GitDeletedBranch] = []
+    for entry_id, entry in reversed(list(read_trash(project_root).items())):
+        deleted_at = entry.get("deleted_at")
+        deleted.append(
+            GitDeletedBranch(
+                id=entry_id,
+                branch=trash_entry_branch(entry_id, entry),
+                deleted_at=deleted_at if isinstance(deleted_at, str) else None,
+                was_archived=bool(entry.get("was_archived")),
+            )
+        )
+    return GitWorkingBranchesResponse(current=current, branches=entries, deleted=deleted)

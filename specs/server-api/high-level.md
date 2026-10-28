@@ -138,7 +138,16 @@ request a targeted resync over the same socket by sending
 `{"type": "resync", "source_file": ..., "document_schema_version": 1,
 "document_fingerprint": ...}`; the server replies only to that client, and skips the
 reply entirely if the client's document fingerprint already matches (no redundant
-payload). Edits the server itself makes (via
+payload).
+
+A git action that rewrites the files runs with the watcher paused, so the watcher never sees
+its changes. Such actions are a branch switch, Start a branch, Create & Move, a restore,
+Catch up, Spin off a copy, and an archive or delete of the current branch. Once the action
+has answered, the server invalidates the name→path index, then publishes every discovered
+pipeline's document and the form's change, as the watcher would for an edit. Every open
+canvas follows a git action as it follows an IDE edit.
+
+Edits the server itself makes (via
 `/api/pipeline/save`) are tagged as self-writes so they never round-trip back through the watcher
 as a phantom external edit. A change to a `modules/*.py` file re-parses only the pipelines
 that import it, `from modules import <name>`, for a registration; a pipeline whose imports or
@@ -146,8 +155,8 @@ registrations the parser refuses is left out of that module-dependency index wit
 rather than breaking it for every pipeline. A change to a `config/*.json` file re-parses every discovered pipeline (a
 config change can affect any pipeline that reads it). Direct pipeline `.py` additions,
 modifications, and deletions invalidate the name→path index; module/config-only batches do
-not. Startup priming, watcher invalidation, and successful save invalidation are the index's
-lifecycle mutation points. The module-dependency index scans under its own build lock and
+not. Startup priming, watcher invalidation, successful save invalidation, and a git action
+that rewrites the files are the index's lifecycle mutation points. The module-dependency index scans under its own build lock and
 publishes only when the pipeline-index generation it observed is still current, so
 invalidation does not block on the AST scan and an in-flight rebuild cannot overwrite it. A
 failed debounced batch is retried at most three times with exponential backoff; after that

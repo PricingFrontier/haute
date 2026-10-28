@@ -2,20 +2,22 @@
 
 ## Scope
 
-The working-branch model on top of git: saves and milestones, move, archive,
+The working-branch model on top of git: saves and milestones, restore, archive,
 delete, catch-up, spin-off and push, the unborn-repo seed, the history views and
 the remote handling, and the git panel that drives them. Current behaviour is
 specified in [the git-integration specification](../git-integration/high-level.md)
 and [the git UI](../frontend-git-ui/high-level.md). These
 packages come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md);
 the Databricks IO defects the same review found are `BUG-44` and `BUG-45` in
-[bugs](bugs.md).
+[bugs](bugs.md). `GIT-R16` comes from a review on 27 October 2026 of going
+back to an earlier version (one Codex and two Fable reviews, every finding checked at
+its source), after an analyst restoring a version on the test project took six Move
+and return cycles and made and deleted two branches between 13:14 and 13:36.
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| GIT-R01 | Decision | P1 | Move, Catch up and Spin off a copy stop deleting the project's `outputs/` folder, or the specification and the UI say plainly that they do. |
 | GIT-R02 | Planned | P2 | Every git failure the analyst can act on is answered with its reason: an invalid typed branch name, a push or fetch that times out or fails authentication, an unreadable history, a save during an in-progress git operation, and an SSH command of the user's own. |
 | GIT-R03 | Planned | P2 | Deleting the active pair without confirmation keeps a dirty tree, and the first commit never seeds a virtual environment. |
 | GIT-R04 | Planned | P3 | Commit context and historical extraction pass their SHAs and paths through stdin, so a long branch or a large commit does not fail on Windows' command-line limit. |
@@ -23,35 +25,9 @@ the Databricks IO defects the same review found are `BUG-44` and `BUG-45` in
 | GIT-R06 | Decision | P3 | Automatic ledger saves either skip the project's git hooks or the specification says they run them. |
 | GIT-R07 | Planned | P2 | Every tree-changing action in the git UI passes the dirty-project guard and names what changes, a failed history read shows an error rather than an empty branch, a failed preference save is reported, and the dialogs and specification say what the server does. |
 | GIT-R08 | Planned | P3 | The git panel has one context menu, one dirty-navigation wrapper and one relative-time rule. |
+| GIT-R16 | Planned | P3 | A working branch left without its ledger, or half archived, is reported at startup with a Repair that leaves a whole pair. |
 
 ## Planned improvements
-
-### GIT-R01 — `outputs/` survives a move
-**Why:** `_VOLATILE_ARTEFACTS` names `outputs` beside the caches, and
-`_wipe_volatile_artefacts` removes each entry with `shutil.rmtree` before the
-detached checkout, so Move, Catch up and Spin off a copy delete the project's
-`outputs/` folder wholesale, even when the checkout is then refused. `outputs/`
-is the documented local, unversioned folder of analyst results (`LOCAL_FOLDERS`):
-the Files panel serves it and a model's data export defaults into it, and git
-cannot restore it. The comment beside the list already exempts `output`
-(singular) because Apply Optimisation prices from results there; the same hazard
-applies. The specification lists `outputs` among the wiped folders, so code and
-specification agree and the choice is the owner's.
-
-**Plan:** Decide. The review's recommendation: remove `outputs` from the list
-(keep the caches), run the wipe after a successful checkout, and update the
-specification; otherwise make the UI name the deletion before the action and
-record the choice.
-
-**Acceptance:** A move with a file in `outputs/` leaves it in place (or the move
-dialog names its deletion); a refused checkout deletes nothing.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_git_core.py::_VOLATILE_ARTEFACTS`;
-`src/haute/_git_core.py::_wipe_volatile_artefacts`;
-`src/haute/_git_archive.py::move_to_commit`;
-`src/haute/_project_layout.py::LOCAL_FOLDERS`.
 
 ### GIT-R02 — Git failures the analyst can act on
 **Why:** A typed branch name git refuses but `_validate_ref_name` admits (a
@@ -68,8 +44,10 @@ that works in the shell fails in Haute with the sanitized message. An unreadable
 history (`git log` failing for a resolved tip) is returned as an empty,
 successful milestone list. Saves and milestones do not check for an in-progress
 merge, rebase or cherry-pick, so every canvas save then fails with the sanitized
-"cannot do a partial commit during a merge" while move, catch-up and spin-off
-refuse with the hand-written reason.
+"cannot do a partial commit during a merge" while restore, catch-up and spin-off
+refuse with the hand-written reason. `commit_save` reads a failed `git status` as
+"nothing changed" and returns no save, so a failing status check skips the capture
+without a word.
 
 **Plan:** Validate typed names with `git check-ref-format --branch` and raise
 `GitDomainError` naming the rule; raise `GitDomainError` with the refresh
@@ -85,7 +63,8 @@ timeout, including on Windows. A custom transport must obey the noninteractive
 contract; an outer deadline bounds a transport that hangs rather than proving it
 honours OpenSSH environment settings. Let the history error propagate; call
 `_assert_no_git_op_in_progress` at the top of
-`commit_save` and `commit_milestone`.
+`commit_save` and `commit_milestone`, and let a failed status check in `commit_save`
+raise rather than return no save.
 
 **Acceptance:** `my branch` is refused naming the rule; a push against an
 unreachable remote answers the refresh message. Behavioural subprocess tests show a
@@ -94,7 +73,7 @@ a non-OpenSSH wrapper; the wrapper receives no injected OpenSSH flags. A prompti
 hanging fake transport is terminated with its children within the deadline and reports
 the refresh message. A corrupt object store
 answers an error, not an empty list; a save during a merge answers the
-in-progress message.
+in-progress message; a save whose status check fails answers an error.
 
 **Dependencies:** None.
 
@@ -199,9 +178,8 @@ save.
 `src/haute/_scaffold.py::pre_commit_hook`.
 
 ### GIT-R07 — The git UI guards and reports every tree change
-**Why:** Catch up and Spin off a copy update the working tree (and wipe
-`outputs/` while `GIT-R01` stands) from one click with no confirmation and
-without the dirty-project guard every other tree-changing action has, so unsaved
+**Why:** Catch up and Spin off a copy update the working tree from one click
+with no confirmation and without the dirty-project guard every other tree-changing action has, so unsaved
 in-memory canvas and form edits meet the change unannounced (the server refuses
 a dirty tracked tree, so what is exposed is the in-memory state); the toolbar's
 undo and redo of a branch switch check out the other branch with no guard and
@@ -223,7 +201,7 @@ the preference failure; word the delete as recoverable; list every error; add
 failure shows an error with Retry, not the empty state; a failed preference save
 toasts; the guard test iterates seven states.
 
-**Dependencies:** `GIT-R01` decides the `outputs/` wording.
+**Dependencies:** None.
 
 **Evidence:** `frontend/src/components/RemotePushControl.tsx`;
 `frontend/src/utils/vcHistory.ts`; `frontend/src/panels/git/useGitHistory.ts`;
@@ -252,3 +230,25 @@ panel.
 `frontend/src/components/CommitBreadcrumb.tsx`;
 `frontend/src/panels/assistant/relativeTime.ts`;
 `frontend/src/utils/formatTime.ts`.
+
+### GIT-R16 — Broken pairs reported with Repair
+**Why:** Delete and archive used to move a pair's two refs one step at a time, so a
+crash between the steps could leave an orphan ledger (`x-save` with no `x`) or a
+half-archived pair (`archive/x` beside `x-save`). Both now move in one ref
+transaction, but a pair broken before that stays broken. Create, undelete and
+restore refuse such a name, and nothing checks pair health at startup. This is
+inferred: no broken pair has been seen.
+
+**Plan:**
+- A startup check lists orphan ledgers and half-archived pairs.
+- Repair finishes a half-done archive, and makes the missing working branch of an
+  orphan ledger at the ledger's last milestone.
+
+**Acceptance:** An orphan `x-save` and an `archive/x` beside `x-save` are both
+reported at startup, and Repair leaves each a whole pair.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_git_archive.py::archive_working_pair`;
+`src/haute/_git_transactions.py::check_invariants`;
+`src/haute/_git_read_models.py::working_branch_status`.

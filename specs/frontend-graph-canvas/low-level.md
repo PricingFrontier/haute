@@ -35,7 +35,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/hooks/useActiveNodeReveal.ts` | Keeps the inspector's active node visible in the canvas area its inspector and preview pane leave: arms on each active-node change or node-search centre request, re-checks when React Flow's canvas size or the armed node's measured size changes, glides only the first placement, and disarms on a user pan/zoom gesture. Returns `handleMoveStart` for React Flow's `onMoveStart` and `centreNode` for node search. |
 | `frontend/src/utils/nodeReveal.ts` | Pure `nodeRevealViewport` geometry: the zoom-preserving least pan that places a node `NODE_REVEAL_MARGIN_PX` inside the canvas (centring on an axis it cannot fit), or a centred placement at a requested zoom; `null` when a nearest placement needs no move. |
 | `frontend/src/hooks/usePipelineAPI.ts` | Pipeline editor-document load-on-mount; recovery-to-React-Flow adaptation; atomic document-status/revision plus graph ingestion; request-facing refs; preview lifecycle; and capability-fenced Save. |
-| `frontend/src/stores/useDocumentStatusStore.ts` | Authoritative editor-document status, diagnostics, capabilities, raw revision, source-only text, and last accepted document identity, including its `documentFingerprint` (null when the accepting response named none) that every `/ws/sync` resync sends. A ready document loaded with name violations keeps them as `nameViolations` with a `nameFence` (the fenced and the lifted capabilities); `setNameViolations` adopts a revalidated list and switches the capabilities between the two, and is a no-op for a document loaded without violations. Graph state/history remain in `useGraphStore`. |
+| `frontend/src/stores/useDocumentStatusStore.ts` | Authoritative editor-document status, diagnostics, capabilities, raw revision, source-only text, and last accepted document identity, including its `documentFingerprint` (null when the accepting response named none) that every `/ws/sync` resync sends. `acknowledgeSave` clears it: the canvas then holds the saved document, which no response has fingerprinted, so a later frame of the document first loaded (a switch to a branch that holds it) is not taken for the one shown. `requestResync()` bumps `resyncRequests`, asking the socket for the document whatever its fingerprint (the git UI, after dropping the canvas's edits for a git action). A ready document loaded with name violations keeps them as `nameViolations` with a `nameFence` (the fenced and the lifted capabilities); `setNameViolations` adopts a revalidated list and switches the capabilities between the two, and is a no-op for a document loaded without violations. Graph state/history remain in `useGraphStore`. |
 | `frontend/src/types/pipelineDocument.ts` | Strict version-1 editor-document wire types/guards and the single adapter from recovery nodes/edges/submodels into render-only React Flow snapshots, including required node identities, edge input identities, submodel input-port identities, and reserved API-frame labels. Recovery wire values are never accepted as canonical graph values. |
 | `frontend/src/components/PipelineRecoveryBanner.tsx` | Accessible degraded-document summary and issues entry point. |
 | `frontend/src/components/NameViolationsBanner.tsx` | The ready document's remaining name violations from the document status store, each row selecting its nodes through App's violation handler. |
@@ -229,7 +229,8 @@ reconciliation rather than dropping them or committing a second mutation.
   selectors (`isDirty`, `canUndo`, `canRedo`). `loadGraphSnapshot` is the
   separate whole-document boundary: it deep-clones and installs all four
   persisted fields, sets the saved baseline and both persisted
-  fingerprints to that snapshot, clears both history stacks, recomputes the
+  fingerprints to that snapshot, clears both history stacks of graph snapshots (keeping
+  VC entries, API inverses a switch's own document load must not erase), recomputes the
   structural and panel-context fingerprints, and increments both versions
   exactly once in one Zustand transition.
   Test seam: `resetGraphStoreForTests()` restores the full initial state and throws
@@ -478,7 +479,7 @@ reconciliation rather than dropping them or committing a second mutation.
    structural, panel-context, and persisted fingerprints, installs all four
    graph fields, records a separate clone as `lastSavedSnapshot`, copies the
    persisted fingerprint to `savedPersistedFingerprint`, sets `dirty=false`,
-   clears `undoStack`/`redoStack`, and increments
+   drops the graph snapshots from `undoStack`/`redoStack` (VC entries stay), and increments
    `structuralVersion`/`panelContextVersion` once regardless of fingerprint
    equality. Versions are never reset: a document switch that changes only
    submodels must still receive a fresh preview/result-cache identity.
@@ -849,9 +850,14 @@ reconciliation rather than dropping them or committing a second mutation.
     generation, and validated document nodes always carry finite display
     positions, so updates apply synchronously with no layout pass. Source
     matching tolerates absolute-vs-relative spelling, but if
-    either side has an identity then both must resolve to the same file. If
-    the store is `dirty`, the update is blocked and a sync banner shown
-    instead of applied. Otherwise the incoming `submodels` value must be a
+    either side has an identity then both must resolve to the same file. A
+    frame whose `document_fingerprint` is the accepted one while the graph is
+    synchronized changes nothing and is dropped before any store is touched
+    (a git action's broadcast or a forced resync of the document already
+    shown). If the store is `dirty`, the update is blocked and a sync banner
+    shown instead of applied. Each bump of `resyncRequests` sends a `resync`
+    without `document_fingerprint`, so the server always answers with the
+    document on disk. Otherwise the incoming `submodels` value must be a
     plain map, except that the backend's explicit `null` empty-collection
     representation is normalised to `{}`; an omitted field still fails
     loudly. Edges are normalised and partitioned by live endpoint/handle
@@ -1293,7 +1299,12 @@ array-only payload or omitted-edge compatibility branch is supported.
   snapshot; all mutation and execution handlers consume the shared capability fence. A current-source system `parse_error` sets
   the document store's `systemFailure`, marks graph state unsynchronised, and renders
   `PipelineLoadFailureView`; the next valid document transition clears the failure before
-  publishing its graph.
+  publishing its graph. The Git panel still opens beside the failure view from the
+  toolbar's branch name: a switch to a branch the open pipeline is not on ends here, and
+  switching back is the way out. A page whose first load failed (opened, or reloaded, on
+  such a branch) has no document for live sync to replace, so once a git action changes
+  the version (the readiness's working branch, checked-out branch or latest save) it
+  reloads, starting again from the files on disk.
 - **An active-node glide is tracked by its end time, not by `setViewport`'s
   promise.** React Flow resolves that promise on the d3 transition's `end`
   event, which never fires when a user gesture interrupts the transition, so
@@ -1702,7 +1713,9 @@ again through the editor and save paths.
   - `frontend/src/hooks/__tests__/useWebSocketSync.undoHistory.test.ts` (#8) — `pipeline_document_update` only ever
     installs one complete saved snapshot, never a history-aware editor action,
     so external sync never pollutes undo/redo or publishes an occurrence
-    before its definition registry.
+    before its definition registry. A frame of the document already shown is
+    dropped without a toast, and a `requestResync` sends a resync without a
+    fingerprint whose answer applies a document a dirty canvas had blocked.
   - `frontend/src/__tests__/hooks/useWebSocketSync.test.ts` also pins the assistant
     origin: such a frame focuses the named nodes the new graph has instead of fitting
     the view, a later frame without an origin clears the focus, and a malformed origin

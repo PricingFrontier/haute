@@ -6364,13 +6364,55 @@
           "default": "ok",
           "title": "Status",
           "type": "string"
+        },
+        "trash_id": {
+          "title": "Trash Id",
+          "type": "string"
         }
       },
       "required": [
         "status",
-        "branch"
+        "branch",
+        "trash_id"
       ],
       "title": "GitDeleteBranchResponse",
+      "type": "object"
+    },
+    "GitDeletedBranch": {
+      "properties": {
+        "branch": {
+          "title": "Branch",
+          "type": "string"
+        },
+        "deleted_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deleted At"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "was_archived": {
+          "default": false,
+          "title": "Was Archived",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "branch",
+        "deleted_at",
+        "was_archived"
+      ],
+      "title": "GitDeletedBranch",
       "type": "object"
     },
     "GitFastForwardResponse": {
@@ -6842,35 +6884,6 @@
       "title": "GitMilestonesResponse",
       "type": "object"
     },
-    "GitMoveResponse": {
-      "properties": {
-        "is_detached": {
-          "default": true,
-          "title": "Is Detached",
-          "type": "boolean"
-        },
-        "prior_branch": {
-          "title": "Prior Branch",
-          "type": "string"
-        },
-        "sha": {
-          "title": "Sha",
-          "type": "string"
-        },
-        "short_sha": {
-          "title": "Short Sha",
-          "type": "string"
-        }
-      },
-      "required": [
-        "sha",
-        "short_sha",
-        "prior_branch",
-        "is_detached"
-      ],
-      "title": "GitMoveResponse",
-      "type": "object"
-    },
     "GitPrefs": {
       "properties": {
         "skip_switch_confirm": {
@@ -7125,6 +7138,34 @@
       "title": "GitRestoreResponse",
       "type": "object"
     },
+    "GitRestoreVersionResponse": {
+      "properties": {
+        "restored_from": {
+          "title": "Restored From",
+          "type": "string"
+        },
+        "sha": {
+          "title": "Sha",
+          "type": "string"
+        },
+        "short_sha": {
+          "title": "Short Sha",
+          "type": "string"
+        },
+        "working_branch": {
+          "title": "Working Branch",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha",
+        "short_sha",
+        "restored_from",
+        "working_branch"
+      ],
+      "title": "GitRestoreVersionResponse",
+      "type": "object"
+    },
     "GitSetIdentityResponse": {
       "properties": {
         "scope": {
@@ -7170,6 +7211,7 @@
           "enum": [
             "git-unavailable",
             "no-repository",
+            "interrupted",
             "unset",
             "detached",
             "invalid",
@@ -7485,6 +7527,7 @@
           "enum": [
             "git-unavailable",
             "no-repository",
+            "interrupted",
             "unset",
             "detached",
             "invalid",
@@ -7627,11 +7670,19 @@
           ],
           "default": null,
           "title": "Current"
+        },
+        "deleted": {
+          "items": {
+            "$ref": "#/$defs/GitDeletedBranch"
+          },
+          "title": "Deleted",
+          "type": "array"
         }
       },
       "required": [
         "current",
-        "branches"
+        "branches",
+        "deleted"
       ],
       "title": "GitWorkingBranchesResponse",
       "type": "object"
@@ -17358,9 +17409,6 @@
     "GitMilestonesResponse": {
       "$ref": "#/$defs/GitMilestonesResponse"
     },
-    "GitMoveResponse": {
-      "$ref": "#/$defs/GitMoveResponse"
-    },
     "GitPrefs": {
       "$ref": "#/$defs/GitPrefs"
     },
@@ -17375,6 +17423,9 @@
     },
     "GitRestoreResponse": {
       "$ref": "#/$defs/GitRestoreResponse"
+    },
+    "GitRestoreVersionResponse": {
+      "$ref": "#/$defs/GitRestoreVersionResponse"
     },
     "GitSetIdentityResponse": {
       "$ref": "#/$defs/GitSetIdentityResponse"
@@ -17641,7 +17692,7 @@
     "GitCreateWorkingBranchResponse",
     "GitSetIdentityResponse",
     "GitPrefs",
-    "GitMoveResponse",
+    "GitRestoreVersionResponse",
     "GitCommitResponse",
     "GitCommitContext",
     "GitMilestonesResponse",
@@ -17752,7 +17803,7 @@
       "GitCreateWorkingBranchResponse",
       "GitSetIdentityResponse",
       "GitPrefs",
-      "GitMoveResponse",
+      "GitRestoreVersionResponse",
       "GitCommitResponse",
       "GitCommitContext",
       "GitMilestonesResponse",

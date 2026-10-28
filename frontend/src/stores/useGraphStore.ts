@@ -957,8 +957,11 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           globalConstants: loaded.globalConstants ?? [],
           globalConstantsError: loaded.globalConstantsError ?? null,
           lastSavedSnapshot,
-          undoStack: [],
-          redoStack: [],
+          // Graph snapshots from before the load would bring back the old
+          // document; a version-control entry is an API inverse, still valid
+          // (a switch's own document arrives through this load).
+          undoStack: state.undoStack.filter(isVcEntry),
+          redoStack: state.redoStack.filter(isVcEntry),
           structuralFingerprint,
           structuralVersion: state.structuralVersion + 1,
           panelContextFingerprint,

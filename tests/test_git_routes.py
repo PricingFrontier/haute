@@ -72,8 +72,9 @@ class TestGitDeleteBranch:
 
 
 class TestGitUndelete:
-    """Delete pins the pair under ``refs/haute/trash/`` + a ``.haute/trash.json``
-    tombstone; undelete rebuilds the pair exactly and consumes both."""
+    """Delete pins the pair under ``refs/haute/trash/<id>/`` + a ``.haute/trash.json``
+    entry keyed by that id; undelete rebuilds the pair exactly (under its own name
+    or another) and consumes both."""
 
     _BRANCH = "pricing/test-user/dev"
     _FORK = "pricing/test-user/feat"
@@ -116,46 +117,109 @@ class TestGitUndelete:
             "DELETE", "/api/git/branches", json={"branch": self._FORK, "confirm": True}
         )
         assert res.status_code == 200
+        entry_id = res.json()["trash_id"]
+        assert entry_id.startswith(f"{self._FORK}@")
 
-        # Branch refs gone; trash pins + tombstone preserve the pair.
+        # Branch refs gone; the entry's pins + tombstone preserve the pair.
         assert self._FORK not in _git(tmp_path, "branch")
-        assert _git(tmp_path, "rev-parse", f"refs/haute/trash/{self._FORK}") == branch_tip
-        assert _git(tmp_path, "rev-parse", f"refs/haute/trash/{ledger}") == ledger_tip
-        tombstone = read_trash(tmp_path)[self._FORK]
+        assert _git(tmp_path, "rev-parse", f"refs/haute/trash/{entry_id}/working") == branch_tip
+        assert _git(tmp_path, "rev-parse", f"refs/haute/trash/{entry_id}/ledger") == ledger_tip
+        tombstone = read_trash(tmp_path)[entry_id]
+        assert tombstone["branch"] == self._FORK
         assert tombstone["branch_tip"] == branch_tip
         assert tombstone["ledger_tip"] == ledger_tip
         assert tombstone["was_archived"] is False
         assert tombstone["deleted_at"]
+        listing = client.get("/api/git/working-branches").json()
+        assert [d["branch"] for d in listing["deleted"]] == [self._FORK]
+        assert listing["deleted"][0]["id"] == entry_id
 
-        res = client.post("/api/git/undelete", json={"branch": self._FORK})
+        res = client.post("/api/git/undelete", json={"id": entry_id})
         assert res.status_code == 200
         assert res.json() == {"status": "restored", "branch": self._FORK}
         # Tips identical to before the delete; trash consumed.
         assert _git(tmp_path, "rev-parse", self._FORK) == branch_tip
         assert _git(tmp_path, "rev-parse", ledger) == ledger_tip
         assert read_trash(tmp_path) == {}
-        assert _git(tmp_path, "rev-parse", "--verify", f"refs/haute/trash/{self._FORK}") == ""
-        assert _git(tmp_path, "rev-parse", "--verify", f"refs/haute/trash/{ledger}") == ""
+        assert _git(tmp_path, "for-each-ref", "refs/haute/trash/") == ""
 
-    def test_undelete_unknown_name_is_a_domain_error(self, client: TestClient) -> None:
-        res = client.post("/api/git/undelete", json={"branch": "pricing/test-user/ghost"})
-        assert res.status_code == 400
-        assert (
-            res.json()["detail"] == "No deleted branch named 'pricing/test-user/ghost' to restore."
+    def test_undelete_unknown_entry_is_a_domain_error(self, client: TestClient) -> None:
+        res = client.post(
+            "/api/git/undelete", json={"id": "pricing/test-user/ghost@20260101T000000Z"}
         )
+        assert res.status_code == 400
+        assert res.json()["detail"] == "That deleted branch is no longer in the trash."
 
-    def test_undelete_refuses_when_name_reoccupied(
+    def test_undelete_refuses_a_reoccupied_name_and_restores_under_another(
         self, client: TestClient, tmp_path: Path
     ) -> None:
         self._seed_fork_with_history(tmp_path)
+        branch_tip = _git(tmp_path, "rev-parse", self._FORK)
         res = client.request(
             "DELETE", "/api/git/branches", json={"branch": self._FORK, "confirm": True}
         )
-        assert res.status_code == 200
+        entry_id = res.json()["trash_id"]
         _git(tmp_path, "branch", self._FORK)  # a NEW branch reclaims the name
-        res = client.post("/api/git/undelete", json={"branch": self._FORK})
+
+        res = client.post("/api/git/undelete", json={"id": entry_id})
         assert res.status_code == 400
         assert "already exists" in res.json()["detail"]
+        assert "another name" in res.json()["detail"]
+
+        res = client.post("/api/git/undelete", json={"id": entry_id, "as_name": "feat old"})
+        assert res.status_code == 400
+        assert res.json()["detail"] == (
+            "'feat old' can't be used as a branch name. "
+            "Use letters, numbers, dashes and slashes, with no spaces."
+        )
+
+        res = client.post(
+            "/api/git/undelete", json={"id": entry_id, "as_name": "pricing/test-user/feat-old"}
+        )
+        assert res.status_code == 200
+        assert res.json()["branch"] == "pricing/test-user/feat-old"
+        assert _git(tmp_path, "rev-parse", "pricing/test-user/feat-old") == branch_tip
+
+    def test_a_name_deleted_twice_keeps_both_deletions(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        from haute._git_state import read_trash
+
+        self._seed_fork_with_history(tmp_path)
+        first_tip = _git(tmp_path, "rev-parse", self._FORK)
+        first = client.request(
+            "DELETE", "/api/git/branches", json={"branch": self._FORK, "confirm": True}
+        ).json()["trash_id"]
+        _git(tmp_path, "branch", self._FORK, "main")  # made again, elsewhere
+        second = client.request(
+            "DELETE", "/api/git/branches", json={"branch": self._FORK, "confirm": True}
+        ).json()["trash_id"]
+
+        assert first != second
+        assert set(read_trash(tmp_path)) == {first, second}
+        res = client.post("/api/git/undelete", json={"id": first})
+        assert res.status_code == 200
+        assert _git(tmp_path, "rev-parse", self._FORK) == first_tip
+
+    def test_a_tombstone_from_before_entry_ids_is_restored(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        from haute._git_state import read_trash, record_trash
+
+        tip = _git(tmp_path, "rev-parse", "HEAD")
+        _git(tmp_path, "update-ref", f"refs/haute/trash/{self._FORK}", tip)
+        record_trash(
+            tmp_path,
+            self._FORK,
+            {"branch_tip": tip, "ledger_tip": None, "was_archived": False, "deleted_at": "x"},
+        )
+
+        res = client.post("/api/git/undelete", json={"id": self._FORK})
+
+        assert res.status_code == 200
+        assert _git(tmp_path, "rev-parse", self._FORK) == tip
+        assert read_trash(tmp_path) == {}
+        assert _git(tmp_path, "for-each-ref", "refs/haute/trash/") == ""
 
     def test_archived_pair_roundtrip_restores_archived_state(
         self, client: TestClient, tmp_path: Path
@@ -180,9 +244,10 @@ class TestGitUndelete:
             "DELETE", "/api/git/branches", json={"branch": archived, "confirm": True}
         )
         assert res.status_code == 200
-        assert read_trash(tmp_path)[archived]["was_archived"] is True
+        entry_id = res.json()["trash_id"]
+        assert read_trash(tmp_path)[entry_id]["was_archived"] is True
 
-        res = client.post("/api/git/undelete", json={"branch": archived})
+        res = client.post("/api/git/undelete", json={"id": entry_id})
         assert res.status_code == 200
         assert _git(tmp_path, "rev-parse", archived) == tip
         assert _git(tmp_path, "rev-parse", f"{archived}-save") == ledger_tip
@@ -191,16 +256,39 @@ class TestGitUndelete:
         row = next(b for b in listing["branches"] if b["name"] == archived)
         assert row["is_archived"] is True
 
-    def test_trash_tombstones_cap_at_newest_twenty(self, tmp_path: Path) -> None:
+    def test_the_cap_drops_the_oldest_entry_with_its_pins(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
         from haute._git_state import read_trash, record_trash
 
-        for i in range(25):
-            record_trash(tmp_path, f"pricing/test-user/b{i:02d}", {"branch_tip": "x"})
+        tip = _git(tmp_path, "rev-parse", "HEAD")
+        for i in range(20):
+            entry_id = f"pricing/test-user/b{i:02d}@20260101T0000{i:02d}Z"
+            pin = f"refs/haute/trash/{entry_id}/working"
+            _git(tmp_path, "update-ref", pin, tip)
+            record_trash(
+                tmp_path,
+                entry_id,
+                {
+                    "branch": f"pricing/test-user/b{i:02d}",
+                    "branch_tip": tip,
+                    "working_pin": pin,
+                    "ledger_pin": f"refs/haute/trash/{entry_id}/ledger",
+                },
+            )
+        _git(tmp_path, "branch", self._FORK)
+
+        res = client.request(
+            "DELETE", "/api/git/branches", json={"branch": self._FORK, "confirm": True}
+        )
+
+        assert res.status_code == 200
         trash = read_trash(tmp_path)
         assert len(trash) == 20
-        assert "pricing/test-user/b04" not in trash  # oldest five dropped
-        assert "pricing/test-user/b05" in trash
-        assert "pricing/test-user/b24" in trash
+        oldest = "pricing/test-user/b00@20260101T000000Z"
+        assert oldest not in trash
+        assert res.json()["trash_id"] in trash
+        assert _git(tmp_path, "for-each-ref", f"refs/haute/trash/{oldest}/") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +316,26 @@ class TestGitCreateWorkingBranch:
         self._adopt(client)
         client.post("/api/git/working-branches", json={"name": "pricing/test-user/x"})
         res = client.post("/api/git/working-branches", json={"name": "pricing/test-user/x"})
+        assert res.status_code == 400
+
+    def test_switch_opens_the_new_branch(self, client: TestClient, tmp_path: Path) -> None:
+        self._adopt(client)
+        res = client.post(
+            "/api/git/working-branches",
+            json={"name": "pricing/test-user/idea", "switch": True},
+        )
+        assert res.status_code == 200
+        assert res.json()["switched"] is True and res.json()["moved"] is False
+        assert _git(tmp_path, "symbolic-ref", "--short", "HEAD") == "pricing/test-user/idea-save"
+        status = client.get("/api/git/working-branch").json()
+        assert status["working_branch"] == "pricing/test-user/idea"
+
+    def test_move_and_switch_together_rejected(self, client: TestClient) -> None:
+        self._adopt(client)
+        res = client.post(
+            "/api/git/working-branches",
+            json={"name": "pricing/test-user/x", "move": True, "switch": True},
+        )
         assert res.status_code == 400
 
 
@@ -442,11 +550,13 @@ class TestGitShow:
 
 
 # ---------------------------------------------------------------------------
-# POST /api/git/move — move to a historical commit (detached checkout, §3.4)
+# A working branch adopted through the API, for the routes that act on its history
 # ---------------------------------------------------------------------------
 
 
-class TestGitMove:
+class _AdoptedBranch:
+    """A working branch adopted through the API, with saves committed on its ledger."""
+
     def _adopt(self, client: TestClient) -> None:
         res = client.post(
             "/api/git/working-branch",
@@ -460,41 +570,67 @@ class TestGitMove:
         _git(tmp_path, "commit", "-m", "save")
         return _git(tmp_path, "rev-parse", "HEAD")
 
-    def test_move_detaches_and_clears_working_branch(
+
+# ---------------------------------------------------------------------------
+# POST /api/git/restore-version — an earlier version back as a new save
+# ---------------------------------------------------------------------------
+
+
+class TestGitRestoreVersion(_AdoptedBranch):
+    def test_restore_saves_the_version_on_the_same_branch(
+        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import _project_storage
+
+        pushes: list[bool] = []
+        monkeypatch.setattr(_project_storage, "enqueue_push", lambda: pushes.append(True))
+        self._adopt(client)
+        sha1 = self._commit(tmp_path, "# v1\n")
+        sha2 = self._commit(tmp_path, "# v2\n")
+
+        res = client.post("/api/git/restore-version", json={"sha": sha1})
+
+        assert res.status_code == 200
+        body = res.json()
+        assert body["restored_from"] == sha1
+        assert body["working_branch"] == "pricing/test-user/dev"
+        assert body["short_sha"] == body["sha"][:8]
+        assert _git(tmp_path, "rev-parse", "pricing/test-user/dev-save") == body["sha"]
+        assert _git(tmp_path, "rev-parse", f"{body['sha']}^") == sha2
+        assert (tmp_path / "rating.py").read_text() == "# v1\n"
+        status = client.get("/api/git/working-branch").json()
+        assert status["state"] == "ready"
+        assert status["working_branch"] == "pricing/test-user/dev"
+        assert pushes == [True]
+
+    def test_restore_repairs_a_configured_pipeline_that_went_missing(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """Listing the pipelines before the action must not refuse it when the
+        configured pipeline is gone: restoring a version is how it comes back."""
+        self._adopt(client)
+        (tmp_path / "haute.toml").write_text('[project]\npipeline = "rating.py"\n')
+        _git(tmp_path, "add", "haute.toml")
+        sha1 = self._commit(tmp_path, 'import haute\n\npipeline = haute.Pipeline("p")\n')
+        self._commit(tmp_path, 'import haute\n\npipeline = haute.Pipeline("p2")\n')
+        (tmp_path / "rating.py").unlink()  # deleted by accident, the server still running
+
+        res = client.post("/api/git/restore-version", json={"sha": sha1})
+
+        assert res.status_code == 200, res.text
+        assert 'haute.Pipeline("p")' in (tmp_path / "rating.py").read_text()
+
+    def test_restore_of_the_current_version_returns_400(
         self, client: TestClient, tmp_path: Path
     ) -> None:
         self._adopt(client)
-        sha1 = self._commit(tmp_path, "# v1\n")
-        self._commit(tmp_path, "# v2\n")
+        self._commit(tmp_path, "# v1\n")
+        sha2 = self._commit(tmp_path, "# v2\n")
 
-        res = client.post("/api/git/move", json={"sha": sha1})
-        assert res.status_code == 200
-        body = res.json()
-        assert body["sha"] == sha1
-        assert body["short_sha"] == sha1[:8]
-        assert body["is_detached"] is True
-        assert body["prior_branch"] == "pricing/test-user/dev-save"
-        # HEAD detached at the old commit; working tree restored to that version.
-        assert _git(tmp_path, "rev-parse", "HEAD") == sha1
-        assert (tmp_path / "rating.py").read_text() == "# v1\n"
-        # Working branch cleared → the next save re-prompts (S13).
-        status = client.get("/api/git/working-branch").json()
-        assert status["working_branch"] is None
+        res = client.post("/api/git/restore-version", json={"sha": sha2})
 
-    def test_move_refuses_dirty_tree_returns_400(self, client: TestClient, tmp_path: Path) -> None:
-        self._adopt(client)
-        sha1 = self._commit(tmp_path, "# v1\n")
-        self._commit(tmp_path, "# v2\n")
-        (tmp_path / "rating.py").write_text("# uncommitted edit\n")
-
-        res = client.post("/api/git/move", json={"sha": sha1})
         assert res.status_code == 400
-        assert "unsaved changes" in res.json()["detail"]
-
-    def test_move_unknown_sha_returns_400(self, client: TestClient) -> None:
-        self._adopt(client)
-        res = client.post("/api/git/move", json={"sha": "0" * 40})
-        assert res.status_code == 400
+        assert res.json()["detail"] == "This is already the current version."
 
 
 # ---------------------------------------------------------------------------
@@ -1132,7 +1268,7 @@ class TestRefMoversPauseWatcher:
     @pytest.mark.parametrize(
         "method, path, body",
         [
-            ("post", "/api/git/move", {"sha": "HEAD"}),
+            ("post", "/api/git/restore-version", {"sha": "HEAD"}),
             ("post", "/api/git/fast-forward", {"remote": "origin"}),
             ("post", "/api/git/branch-away", {"remote": "origin"}),
             (
@@ -1170,3 +1306,165 @@ class TestRefMoversPauseWatcher:
         # call, so even an erroring op must record an entry.
         client.request(method.upper(), path, json=body)
         assert entered, f"{method.upper()} {path} did not pause the watcher (M4)"
+
+
+class TestTreeChangesAreAnnounced:
+    """A git action that rewrites the files runs with the watcher paused, so once it
+    has answered the server announces what is on disk: every open canvas follows it
+    as it follows an IDE edit, and the name→path index sees the files as they are."""
+
+    _PIPELINE = 'import haute\n\npipeline = haute.Pipeline("{name}", description="{description}")\n'
+
+    def _commit_pipeline(self, repo: Path, file: str, name: str, description: str) -> None:
+        (repo / file).write_text(self._PIPELINE.format(name=name, description=description))
+        _git(repo, "add", file)
+        _git(repo, "commit", "-m", f"save {description}")
+
+    def _two_branches(self, client: TestClient, repo: Path) -> None:
+        """``dev`` holds Pipeline X; ``other``, opened last, holds Pipeline Y and a
+        second pipeline dev lacks."""
+        res = client.post(
+            "/api/git/working-branch", json={"branch": "pricing/test-user/dev", "create": True}
+        )
+        assert res.status_code == 200
+        self._commit_pipeline(repo, "test_pipeline.py", "test_pipeline", "Pipeline X")
+        res = client.post(
+            "/api/git/working-branches", json={"name": "pricing/test-user/other", "switch": True}
+        )
+        assert res.status_code == 200
+        self._commit_pipeline(repo, "test_pipeline.py", "test_pipeline", "Pipeline Y")
+        self._commit_pipeline(repo, "second.py", "second", "Second")
+
+    def test_a_switch_broadcasts_the_destinations_document(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        from haute._event_bus import default_bus
+
+        self._two_branches(client, tmp_path)
+        frames: list[dict[str, object]] = []
+        unsubscribe = default_bus.subscribe("pipeline.document.update", frames.append)
+        try:
+            res = client.post("/api/git/working-branch", json={"branch": "pricing/test-user/dev"})
+        finally:
+            unsubscribe()
+
+        assert res.status_code == 200
+        documents = {frame["source_file"]: frame["document"] for frame in frames}
+        assert documents["test_pipeline.py"]["pipeline_description"] == "Pipeline X"  # type: ignore[index]
+        assert "second.py" not in documents
+
+    def test_a_switch_refreshes_the_pipeline_index(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        from haute.routes._helpers import _ensure_pipeline_index
+
+        self._two_branches(client, tmp_path)
+        client.post("/api/git/working-branch", json={"branch": "pricing/test-user/dev"})
+        assert "second" not in _ensure_pipeline_index()
+
+        res = client.post("/api/git/working-branch", json={"branch": "pricing/test-user/other"})
+
+        assert res.status_code == 200
+        assert "second" in _ensure_pipeline_index()
+
+    def test_a_refused_action_announces_nothing(self, client: TestClient) -> None:
+        from haute._event_bus import default_bus
+
+        announced: list[object] = []
+        unsubscribe = default_bus.subscribe("git.tree.changed", announced.append)
+        try:
+            res = client.post("/api/git/working-branch", json={"branch": "main"})
+        finally:
+            unsubscribe()
+
+        assert res.status_code == 403
+        assert announced == []
+
+    @pytest.mark.parametrize(
+        "method, path, body, engine, answer",
+        [
+            (
+                "post",
+                "/api/git/working-branch",
+                {"branch": "b"},
+                "set_working_branch",
+                {"working_branch": "b", "state": "ready"},
+            ),
+            (
+                "post",
+                "/api/git/working-branches",
+                {"name": "b"},
+                "create_working_branch",
+                {"working_branch": "b", "moved": False, "switched": True},
+            ),
+            (
+                "post",
+                "/api/git/restore-version",
+                {"sha": "HEAD"},
+                "restore_version",
+                {
+                    "sha": "a" * 40,
+                    "short_sha": "a" * 8,
+                    "restored_from": "b" * 40,
+                    "working_branch": "b",
+                },
+            ),
+            (
+                "post",
+                "/api/git/archive",
+                {"branch": "b"},
+                "archive_working_pair",
+                {"archived_as": "archive/b"},
+            ),
+            (
+                "delete",
+                "/api/git/branches",
+                {"branch": "b"},
+                "delete_working_pair",
+                {"status": "deleted", "branch": "b", "trash_id": "b@20261027T000000Z"},
+            ),
+            (
+                "post",
+                "/api/git/fast-forward",
+                {"remote": "origin"},
+                "fast_forward_pair",
+                {"remote": "origin", "working_branch": "b"},
+            ),
+            (
+                "post",
+                "/api/git/branch-away",
+                {"remote": "origin"},
+                "branch_away",
+                {"working_branch": "b", "set_aside_as": "b-local"},
+            ),
+        ],
+    )
+    def test_every_route_that_pauses_the_watcher_announces_the_change(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+        method: str,
+        path: str,
+        body: dict[str, object],
+        engine: str,
+        answer: dict[str, object],
+    ) -> None:
+        from haute._event_bus import default_bus
+        from haute.routes import git as git_route
+
+        # The engine call answers as it would on success, with the route's own model.
+        response_model = next(
+            route.response_model  # type: ignore[attr-defined]
+            for route in git_route.router.routes
+            if route.path == path and method.upper() in route.methods  # type: ignore[attr-defined]
+        )
+        monkeypatch.setattr(git_route, engine, lambda *_a, **_k: response_model(**answer))
+        announced: list[object] = []
+        unsubscribe = default_bus.subscribe("git.tree.changed", announced.append)
+        try:
+            res = client.request(method.upper(), path, json=body)
+        finally:
+            unsubscribe()
+
+        assert res.status_code == 200, res.text
+        assert [set(payload) for payload in announced] == [{"pipelines_before"}]
