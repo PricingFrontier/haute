@@ -183,7 +183,7 @@ command as written.
 
 **Evidence:** `src/haute/_scaffold.py::starter_pipeline` and `::starter_test_quote`;
 `src/haute/deploy/_pruner.py` ("No output node found");
-`src/haute/cli/_ci.py::_run_gh` (no `--repo`); `src/haute/server.py` (`_load_env` at start);
+`src/haute/cli/_ci.py::_set_every_secret` (no `--repo`); `src/haute/server.py` (`_load_env` at start);
 `src/haute/cli/_impact.py::handle_impact` and `::_impact_records` (one quote per request
 without a sample, and a missing production endpoint taken as a first deploy).
 

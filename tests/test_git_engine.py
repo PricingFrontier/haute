@@ -3606,6 +3606,24 @@ class TestRemotesAndPush:
         with pytest.raises(GitError):
             remote_holds_other_history("origin", repo, cwd=repo)
 
+    def test_remote_is_empty_only_until_it_advertises_a_ref(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """The editor's Push asks this to know a first publication is coming."""
+        from haute._git import remote_is_empty
+
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        assert remote_is_empty("origin", cwd=repo) is True
+
+        _git(repo, "tag", "outside")
+        _git(repo, "push", "origin", "refs/tags/outside")
+        assert remote_is_empty("origin", cwd=repo) is False
+
+        _git(repo, "remote", "set-url", "origin", str(bare.parent / "missing.git"))
+        with pytest.raises(GitError):
+            remote_is_empty("origin", cwd=repo)
+
     def test_tags_only_remote_is_not_mistaken_for_empty(self, repo: Path, tmp_path: Path) -> None:
         """A tag is an object ref, so it cannot authorize default bootstrap."""
         self._setup_pair(repo)

@@ -5555,6 +5555,22 @@ class GitPushRequest(BaseModel):
     remote: str
 
 
+class GitCiSecrets(BaseModel):
+    # The deploy's GitHub secrets on a pushed remote's repository (OWNER/REPO), as a
+    # Push or Set from .env found them (specs/cli). `ready`: it has every one; `missing`:
+    # it lacks `missing`; `unknown`: its secrets could not be read. `problem` says why
+    # they could not be read or set.
+    repository: str
+    state: Literal["ready", "missing", "unknown"]
+    missing: list[str] = Field(default_factory=list)
+    newly_set: list[str] = Field(default_factory=list)
+    problem: str | None = None
+
+
+class GitCiSecretsRequest(BaseModel):
+    remote: str
+
+
 class GitPushResponse(BaseModel):
     remote: str
     working_branch: str
@@ -5563,6 +5579,8 @@ class GitPushResponse(BaseModel):
     bootstrapped_default: bool = False
     # Explicit branch refs submitted (never --follow-tags additions).
     pushed_refs: list[str] = Field(default_factory=list)
+    # Null for a remote the deploy's secrets do not apply to (not GitHub, say).
+    ci_secrets: GitCiSecrets | None = None
 
 
 class GitBranchAwayRequest(BaseModel):

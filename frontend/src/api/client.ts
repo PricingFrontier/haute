@@ -46,6 +46,7 @@ import type {
   GitPrefs,
   GitRemotesResponse,
   GitPushResponse,
+  GitCiSecrets,
   GitFastForwardResponse,
   GitBranchAwayResponse,
   GitBindStorageResponse,
@@ -2274,6 +2275,15 @@ export function gitPush(
   options?: { signal?: AbortSignal },
 ): Promise<GitPushResponse> {
   return post<unknown>("/api/git/push", { remote }, options).then(async (data) => expectGeneratedContract("GitPushResponse", (await gitValidators()).validateGitPushResponse, data))
+}
+
+/** Set the deploy's GitHub secrets the remote's repository lacks, from `.env` (the push
+ *  panel's Set from .env); a secret the repository has is never overwritten. */
+export function gitSetCiSecrets(
+  remote: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitCiSecrets> {
+  return post<unknown>("/api/git/ci-secrets", { remote }, options).then(async (data) => expectGeneratedContract("GitCiSecrets", (await gitValidators()).validateGitCiSecrets, data))
 }
 
 /** Catch the working pair up to a remote by fast-forward only (P7 D1/D2) — a

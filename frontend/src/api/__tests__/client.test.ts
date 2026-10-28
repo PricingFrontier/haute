@@ -47,6 +47,7 @@ import {
   getWorkingBranches,
   getGitRemotes,
   gitPush,
+  gitSetCiSecrets,
   gitFastForward,
   gitBranchAway,
   restoreBranch,
@@ -1112,6 +1113,37 @@ describe("git endpoints", () => {
     )
 
     await expect(gitPush("origin")).rejects.toThrow(/default_branch/i)
+  })
+
+  it("gitSetCiSecrets POSTs /api/git/ci-secrets with the remote", async () => {
+    const data = {
+      repository: "acme/motor",
+      state: "ready",
+      missing: [],
+      newly_set: ["DATABRICKS_RATING_TOKEN"],
+      problem: null,
+    }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await gitSetCiSecrets("origin")
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/ci-secrets")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({ remote: "origin" })
+    expect(result).toEqual(data)
+  })
+
+  it("gitSetCiSecrets rejects a state outside ready, missing and unknown", async () => {
+    mockFetch.mockReturnValue(
+      jsonResponse({
+        repository: "acme/motor",
+        state: "partial",
+        missing: [],
+        newly_set: [],
+        problem: null,
+      }),
+    )
+
+    await expect(gitSetCiSecrets("origin")).rejects.toThrow(/state/i)
   })
 
   it("getWorkingBranches GETs /api/git/working-branches", async () => {

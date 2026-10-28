@@ -22,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from haute import _project_storage
 from haute._artifact_paths import ordinary_path_problem
+from haute._ci_secrets import CiSecretsError, push_with_ci_secrets, set_missing_ci_secrets
 from haute._git import (
     GitDomainError,
     GitError,
@@ -41,7 +42,6 @@ from haute._git import (
     milestone_saves,
     move_to_commit,
     pending_ledger_saves,
-    push_working_pair,
     restore_working_pair,
     set_identity,
     set_prefs,
@@ -66,6 +66,8 @@ from haute.schemas import (
     GitBranchAwayRequest,
     GitBranchAwayResponse,
     GitCaptureRequest,
+    GitCiSecrets,
+    GitCiSecretsRequest,
     GitCommitContext,
     GitCommitRequest,
     GitCommitResponse,
@@ -484,12 +486,35 @@ def git_push(body: GitPushRequest) -> GitPushResponse:
 
     A non-fast-forward rejection returns **409** with a structured
     :class:`GitPushRejection` body (per-leg divergence + a leg-naming message) so
-    the client can show the honest fork instead of a dead-end (M7)."""
+    the client can show the honest fork instead of a dead-end (M7).
+
+    On a GitHub remote the response's ``ci_secrets`` reports the deploy's secrets
+    there; a first publication sets the missing ones before the default branch is
+    created (:func:`haute._ci_secrets.push_with_ci_secrets`)."""
     try:
-        return push_working_pair(body.remote, Path.cwd())
+        return push_with_ci_secrets(body.remote, Path.cwd())
     except GitPushRejectedError as e:
         logger.warning("git_push_rejected", remote=body.remote, message=e.rejection.message)
         raise HTTPException(status_code=409, detail=e.rejection.model_dump())
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/ci-secrets — set the deploy's missing GitHub secrets from .env
+# ---------------------------------------------------------------------------
+
+
+@router.post("/ci-secrets", response_model=GitCiSecrets)
+def git_set_ci_secrets(body: GitCiSecretsRequest) -> GitCiSecrets:
+    """The push panel's Set from .env: store the deploy's secrets the remote's GitHub
+    repository lacks, from ``.env``, never overwriting one.
+
+    A remote they do not apply to, or a step that cannot be taken (a value unset or
+    a placeholder, a pair Databricks refuses, no ``gh``), is a 400 naming why."""
+    try:
+        return set_missing_ci_secrets(body.remote, Path.cwd())
+    except CiSecretsError as e:
+        logger.info("git_ci_secrets_not_set", remote=body.remote)
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ---------------------------------------------------------------------------

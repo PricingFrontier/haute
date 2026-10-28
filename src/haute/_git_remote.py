@@ -62,6 +62,7 @@ __all__ = [
     "ensure_remote",
     "remote_url",
     "adopt_cloned_lineage",
+    "remote_is_empty",
     "remote_holds_other_history",
     "clone_project",
     "bundle_create",
@@ -135,6 +136,17 @@ def adopt_cloned_lineage(working: str, remote: str = "origin", cwd: Path | None 
     else:
         _run_git("checkout", working, cwd=cwd)
     logger.info("cloned_lineage_adopted", working=working)
+
+
+def remote_is_empty(remote: str, cwd: Path | None = None) -> bool:
+    """Whether *remote* advertises no object ref, the state in which a Push bootstraps it.
+
+    The strict advertisement read :func:`push_working_pair` makes; an inspection failure
+    propagates as :class:`GitError`. The Push itself inspects again and owns the decision.
+    """
+    _validate_ref_name(remote)
+    _, _, has_object_refs = _inspect_remote(remote, cwd=cwd)
+    return not has_object_refs
 
 
 def remote_holds_other_history(remote: str, project_root: Path, cwd: Path | None = None) -> bool:
