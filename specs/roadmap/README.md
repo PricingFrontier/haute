@@ -52,7 +52,7 @@ records corrections to that audit's claims and proposed remedies.
 | [Submodels](submodels.md) | A Load File child keeping its second input across a boundary, dead rewrites and hidden-port fields, one parse per create; one reuse mechanism; node instances after multi-frame sources working in full preview, CLI and assistant preview | `SUB-R04` |
 | [t-boost](t-boost.md) | What rating-table models make possible: cell-level holdout A/E, unfolding into rating steps, model comparison with premium attribution, measured analyst adjustments (all awaiting a decision) | `TBOOST-02` |
 | [Tracing](tracing.md) | Input sources from the value lineage, expression facts from the located expression, proven matches kept strict, dead trace paths and clones; the trace panel showing an additive step as one; statement-time scalar bindings, unary grouping and quoted literals retained in explanations | `TRACE-R01` |
-| [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's CI/CD: a merge to `main` takes form, pipeline and app, tested together, to staging and production; the quote store on the server (its engine awaiting IT); managing quotes in the app past the Quotes page: comparing revisions, outcomes, many quotes at once; exports from the app (awaiting a decision on formats); test quotes analysts keep and price again, built again after the first version was taken out (awaiting decisions); actions that fill the sheets from databases and APIs (awaiting decisions on auth and sources); what is left of the review of 15 October 2026: Preview priced in one run, the form's file changed outside the editor, the app's sign-in, and building the sheets without a pointer; and more for Show when to test: other fields and the price; pricings that outrun their timeout and concurrent first saves of a form revision; quote actions that say what they did, number lists in Show when and the quote_details ids from one map, one copy of each workbench helper, typed-in allowed values (a decision); local request boundaries and archive/restore refreshes retaining the current query | `WB-08` |
+| [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's CI/CD: a merge to `main` takes form, pipeline and app, tested together, to staging and production; the quote store on the server (its engine awaiting IT); managing quotes in the app past the Quotes page: comparing revisions, outcomes, many quotes at once; exports from the app (awaiting a decision on formats); test quotes analysts keep and price again, built again after the first version was taken out (awaiting decisions); actions that fill the sheets from databases and APIs (awaiting decisions on auth and sources); the app's sign-in (a decision); more for Show when to test: other fields and the price; pricings that outrun their timeout; quote actions that say what they did, number lists in Show when and the quote_details ids from one map, one copy of each workbench helper, typed-in allowed values (a decision); local request boundaries and archive/restore refreshes retaining the current query | `WB-08` |
 
 ## Delivery plan
 
@@ -69,10 +69,11 @@ review of going back to a version.
 
 The [codebase review](codebase-review-2026-09-23.md) is a whole-repository
 review for brittleness, over-engineering, weak areas with stronger standard
-solutions, and duplication, made at `main` `9319b11d`. It records its method,
-limits and evidence, and maps every finding to the package that tracks it.
-It is a dated supporting report and owns no work; the packages in the
-component roadmaps above carry the plans.
+solutions, and duplication, made at `main` `9319b11d`. It keeps its method and
+limits and the findings still open, each mapped to the package that tracks it;
+findings whose packages were delivered have been removed. It is a dated
+supporting report and owns no work; the packages in the component roadmaps
+above carry the plans.
 
 ## Codebase review — 25 October 2026
 
@@ -83,53 +84,17 @@ use, with particular attention to the deployment and serving code. Every area
 was read in full by the main session or by a reviewer whose findings the main
 session verified at their source lines, with probes where a finding turned on
 behaviour. It records its method, limits, probes and evidence, and maps every
-finding to the package that tracks it. It is a dated supporting report and
-owns no work; the packages in the component roadmaps above carry the plans.
-
-## Workbench review — 15 October 2026
-
-The [Workbench review](workbench-review-2026-10-15.md) is a review of what pull
-requests #303 to #309 built, made at `main` `db7d03a5` by five Codex passes and
-six Fable 5.1 reviews, every finding verified at its source lines. It looked for
-defects, duplicated mechanisms and drift between the specifications and the code.
-It records its method, limits and evidence, and maps every finding to the package
-made for it: `WB-14` to `WB-22`, `BUG-32` to `BUG-36` and `FSH-R04`. It is a
-dated supporting report and owns no work; the packages in the component
-roadmaps above carry the plans.
-
-## Polars 2 review — 17 October 2026
-
-The [Polars 2 review](polars-2-review-2026-10-17.md) records what moving Haute
-from Polars 1.44.2 to Polars 2.0 breaks, changes silently, makes redundant and
-makes possible, made at `5c184d8d`: its sources, side-by-side probes of both
-versions, bounded test runs under Polars 2.0.0, a row-order audit and an
-API-surface audit. It is a dated supporting report and owns no work; the
-[Polars 2 roadmap](polars-2.md) carries the packages.
-
-## t-boost improvements — 4 October 2026
-
-The [t-boost improvements](t-boost-improvements.md) are a handover
-specification for the t-boost project: the library changes (a validation set
-with ensemble-level early stopping, reported round counts, a metrics callback,
-a metadata slot, offsets, an unknown-category policy and smaller items) that
-would let Haute integrate t-boost exactly like its other boosted families, with
-their status at t-boost 0.8.0. It is a supporting report and owns no Haute work.
+open finding to the package that tracks it; findings whose packages were
+delivered have been removed. It is a dated supporting report and owns no work;
+the packages in the component roadmaps above carry the plans.
 
 ## price-contour on Polars 2 — 18 October 2026
 
 The [price-contour on Polars 2](price-contour-polars-2.md) plan is a handover
-specification for the price-contour project. No Rust Polars or pyo3-polars
-release matches Python Polars 2.0.0 yet. So it says what price-contour 0.7.0 can
-change now:
-- declaring and testing Polars 2;
-- stating the row order of four joins;
-- sending only the columns a native call reads;
-- moving to pyo3-polars 0.28.
-
-It also says what Haute changes when it moves to that release. It is a supporting
-report and owns no Haute work. price-contour 0.7.0 shipped stages 1 and 2 on
-19 October 2026, and Haute pins it; stage 3 (Polars' own 2.0 Rust crates) waits
-for those crates.
+specification for the price-contour project: what is left of it is stage 3,
+moving price-contour to Polars' own 2.0 Rust crates once Polars publishes them,
+and what Haute checks when it takes that release. It is a supporting report and
+owns no Haute work.
 
 ## Codebase review — 28 October 2026
 

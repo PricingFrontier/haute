@@ -16,8 +16,8 @@ and how it enters the margin, and the binary class labels) in t-boost's
 ``metadata`` slot, so plain t-boost still loads it and no pickle is involved.
 
 A categorical value the fit never saw is scored by t-boost itself, in the
-cell its ``unknown_category`` policy names (Haute sets it); Haute reports such
-values and never refuses them. t-boost refuses temporal columns,
+cell its ``unknown_category`` policy names (Haute sets it); Haute never refuses
+such values. t-boost refuses temporal columns,
 so Haute casts every non-categorical feature to ``Float64``, as for the other
 families.
 """
