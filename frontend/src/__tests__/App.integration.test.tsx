@@ -840,6 +840,24 @@ describe("App integration - restoring a version", () => {
     )
   })
 
+  it("shows Files in use when a restore stops on a file held open", async () => {
+    vi.mocked(api.restoreVersion).mockRejectedValueOnce(new Error("b.txt is open in another program."))
+    render(<App />)
+    await waitForAppReady()
+    vi.mocked(api.getWorkingBranch).mockResolvedValue(makeGitWorkingBranch({
+      working_branch: "dev", state: "interrupted", errors: ["b.txt is open in another program."],
+      current_branch: "dev-save", last_save_sha: "abc1234def", eligible_branches: ["dev"],
+      identity_set: true, user_name: "Test User", user_email: "test@example.com",
+    }))
+
+    act(() => {
+      useGitStore.getState().requestRestore({ sha: "target-sha", label: "v1.0" })
+    })
+    fireEvent.click(await screen.findByTestId("restore-confirm"))
+
+    await waitFor(() => expect(useGitStore.getState().status?.state).toBe("interrupted"))
+  })
+
   it("reloads after a restore, and the reloaded page says what was restored", async () => {
     const originalLocation = window.location
     const reload = vi.fn()

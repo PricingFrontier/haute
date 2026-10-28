@@ -31,13 +31,15 @@ async function resyncGit(): Promise<void> {
 }
 
 /** Run one leg of an entry: toast success, resync; toast + rethrow on
- *  failure so the store puts the entry back for a retry. */
+ *  failure so the store puts the entry back for a retry, reading the status
+ *  again since a file held open can leave the clone interrupted. */
 async function leg(action: () => Promise<unknown>, doneMessage: string): Promise<void> {
   try {
     await action()
   } catch (err) {
     const detail = apiErrorMessage(err, "unknown error")
     useToastStore.getState().addToast("error", `Undo/redo failed: ${detail}`)
+    void useGitStore.getState().loadStatus({ refresh: true })
     throw err
   }
   useToastStore.getState().addToast("success", doneMessage)

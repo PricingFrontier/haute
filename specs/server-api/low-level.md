@@ -436,12 +436,17 @@ crash. Every filesystem event batches into `pending_changes`; a 300ms debounce t
 `_broadcast_tree_change` to `git.tree.changed`. The git routes publish it as a FastAPI
 background task, after the response is sent, so the acting client has its answer before the
 frames arrive. The handler:
-1. calls `invalidate_pipeline_index()`;
+1. reads the pipelines known before the action (`_known_pipeline_paths()`: the index and
+   the last broadcasts), then calls `invalidate_pipeline_index()`;
 2. for each `_discovered_pipeline_paths()` entry, loads the editor document, records the raw
    bytes' hash in `_last_broadcast_fp` (the watcher's next real edit is judged against the
    new content), and publishes `pipeline.document.update`, or `parse.error` with the fixed
    safe message when the document cannot be loaded, each file on its own;
-3. publishes `workbench.form.changed` when the form file exists.
+3. for each pipeline known before and not discovered now, forgets its broadcast hash and
+   publishes `parse.error` with `PIPELINE_NOT_IN_VERSION` ("This pipeline isn't in the
+   version now open. Switch back to see it."). A client showing it then fails loud with
+   saving blocked, rather than keeping a document a save would write back;
+4. publishes `workbench.form.changed` when the form file exists.
 
 A client whose graph is dirty gets the dirty banner, as for any external edit, and a client
 already showing that document drops the frame (see

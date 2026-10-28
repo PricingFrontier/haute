@@ -485,6 +485,8 @@ describe("BranchManager", () => {
     fireEvent.click(screen.getAllByTestId("branch-manager-archive")[1]) // experiment
     await waitFor(() => expect(screen.getByTestId("branch-manager-error")).toHaveTextContent("unsaved changes"))
     expect(screen.getByTestId("branch-manager-error")).toBeInTheDocument()
+    // A held file can leave the clone interrupted: the toolbar status is read again.
+    await waitFor(() => expect(mockGetWorkingBranch).toHaveBeenCalled())
   })
 
   // ── Row context menu ─────────────────────────────────────────────────────

@@ -54,6 +54,7 @@ export default function DivergenceModal({ onConfirmed, onClose }: DivergenceModa
     } catch (err: unknown) {
       const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Could not switch working branch: ${detail}`)
+      void loadStatus({ refresh: true }) // a held file can leave the clone interrupted
     } finally {
       setBusy(false)
     }

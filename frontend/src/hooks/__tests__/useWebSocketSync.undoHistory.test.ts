@@ -63,6 +63,7 @@ vi.mock("../../stores/useGraphStore.ts", () => {
     preamble: "",
     undoStack: [] as unknown[],
     redoStack: [] as unknown[],
+    markSaved: vi.fn(() => { store.dirty = false }),
     loadGraphSnapshot: vi.fn((snapshot: {
       nodes: unknown[]
       edges: unknown[]
@@ -86,6 +87,7 @@ vi.mock("../../stores/useGraphStore.ts", () => {
 })
 
 import useWebSocketSync from "../../hooks/useWebSocketSync.ts"
+import { discardCanvasEdits } from "../../hooks/useProjectDirty.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useUIStore from "../../stores/useUIStore.ts"
 import useGraphStore from "../../stores/useGraphStore.ts"
@@ -316,6 +318,32 @@ describe("useWebSocketSync - WS sync must not corrupt undo history (#8)", () => 
     expect(graphStore.loadGraphSnapshot).toHaveBeenCalledWith(
       expect.objectContaining({ nodes: [expect.objectContaining({ id: "destination" })] }),
     )
+  })
+
+  it("replaces discarded edits with the destination's document even when it is the one last accepted", async () => {
+    const params = makeHookParams()
+    const graphStore = useGraphStore.getState()
+    const document = makePipelineEditorDocument({
+      source_file: SOURCE_FILE,
+      source_revision: "revision-test",
+      nodes: [{ ...baseNode, id: "n1", data: { label: "As saved", nodeType: "polars", config: {} } }],
+    })
+    renderHook(() => useWebSocketSync(params))
+    act(() => { latestWS().onopen?.(new Event("open")) })
+    const frame = JSON.stringify(pipelineDocumentFrame(document, "fingerprint-both-branches"))
+    await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: frame })) })
+
+    // An unsaved edit, then a switch to a branch with the same document, chosen
+    // over the edit.
+    graphStore.nodes = [{ ...baseNode, id: "n1", data: { label: "Edited", nodeType: "polars", config: {} } }]
+    graphStore.dirty = true
+    act(() => { discardCanvasEdits() })
+    await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: frame })) })
+
+    expect(graphStore.dirty).toBe(false)
+    expect(graphStore.nodes).toEqual([
+      expect.objectContaining({ id: "n1", data: expect.objectContaining({ label: "As saved" }) }),
+    ])
   })
 
   it("retains an exact dirty column configuration and its history when a watcher update arrives", async () => {

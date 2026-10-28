@@ -140,6 +140,8 @@ PIPELINE_DOCUMENT_SCHEMA_VERSION = 1
 PIPELINE_DOCUMENT_LOAD_ERROR = (
     "Pipeline document could not be loaded. Check the server logs for details."
 )
+# A git action took the pipeline away: the version now open does not have it.
+PIPELINE_NOT_IN_VERSION = "This pipeline isn't in the version now open. Switch back to see it."
 
 
 @dataclass(frozen=True)
@@ -846,10 +848,21 @@ def _broadcast_tree_change(_payload: dict[str, Any]) -> None:
     the name→path index is invalidated, then every discovered pipeline's document
     and the form's change are published, as the watcher does for an edit. A
     client already showing a document drops its frame; a dirty one gets the
-    banner."""
+    banner. A pipeline known before the action and gone after it is announced as
+    a load failure, so a client showing it stops treating it as on disk, where a
+    save would bring it back."""
+    known = _known_pipeline_paths()
     invalidate_pipeline_index()
-    for pipeline_path in _discovered_pipeline_paths().values():
+    discovered = _discovered_pipeline_paths()
+    for pipeline_path in discovered.values():
         _publish_pipeline_document(pipeline_path, skip_unchanged=False)
+    for key, pipeline_path in known.items():
+        if key not in discovered:
+            _last_broadcast_fp.pop(key, None)
+            default_bus.publish(
+                "parse.error",
+                {"error": PIPELINE_NOT_IN_VERSION, "source_file": _wire_source_file(pipeline_path)},
+            )
     form_file = _workbench_form_file(Path.cwd())
     if form_file is not None:
         default_bus.publish("workbench.form.changed", {"form": form_file[0]})

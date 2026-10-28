@@ -195,16 +195,21 @@ Catch up's `merge --ff-only`. The fence:
 1. checks for a git operation in progress, then records HEAD (its branch, or its SHA when
    detached) and `_tracked_changes` (`status --porcelain -z --untracked-files=no`);
 2. runs the command, keeping its stderr;
-3. treats any tracked change that was not there before as out of step. With none, a non-zero
+3. treats as out of step any tracked change that was not there before, and every file stderr
+   names as not replaced (`unable to unlink old '<path>'`) or not removed (`unable to unlink
+   '<path>'`). The stderr catches a file that was already changed before a forced checkout,
+   and one left behind untracked, which the status comparison cannot. With none, a non-zero
    exit is an ordinary `GitError`.
 
 When files are out of step, the fence puts HEAD back if it moved (`checkout` of the recorded
-branch or `--detach` SHA). It then writes the still-out-of-step files from HEAD
+branch or `--detach` SHA). An ordinary command's put-back first stages the out-of-step files
+so the checkout carries them back untouched; a forced command's put-back is forced too, since
+its changes were to be discarded. It then writes the still-out-of-step files from HEAD
 (`restore --source=HEAD --staged --worktree`). Anything still out of step after that records
 the clone interrupted (`record_interrupted`).
 
-Either way it raises `GitFilesInUseError`, naming the files stderr's `unable to unlink old`
-reports, else the out-of-step ones. The caller's own compensation then runs as for any
+Either way it raises `GitFilesInUseError`, naming the files stderr reports, else the
+out-of-step ones. The caller's own compensation then runs as for any
 failure: deleting the branch it created, restoring a ref.
 
 **Interrupted (`.haute/interrupted.json`).** `record_interrupted(project_root, operation,

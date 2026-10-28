@@ -18,6 +18,7 @@ import {
   parseGitPushRejection,
 } from "../api/client"
 import type { GitPushRejection, GitRemote, GitRemoteLeg } from "../api/types"
+import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 import { apiErrorMessage } from "../api/errors"
 import ModalShell from "./ModalShell"
@@ -174,6 +175,7 @@ export default function RemotePushControl({
     } catch (err) {
       const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Couldn't catch up: ${detail}`)
+      void useGitStore.getState().loadStatus({ refresh: true }) // a held file can interrupt the clone
     } finally {
       setCatchingUp(false)
     }
@@ -203,6 +205,7 @@ export default function RemotePushControl({
     } catch (err) {
       const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Couldn't spin off a copy: ${detail}`)
+      void useGitStore.getState().loadStatus({ refresh: true }) // a held file can interrupt the clone
     } finally {
       setBranchingAway(false)
     }

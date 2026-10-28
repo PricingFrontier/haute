@@ -143,6 +143,8 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
       const detail = apiErrorMessage(err, "unknown error")
       setActionError(`Could not ${verb}: ${detail}`) // persistent
       addToast("error", `Could not ${verb}: ${detail}`) // splash
+      // A file held open can leave the clone interrupted: show it in the toolbar.
+      void loadStatus({ refresh: true })
     } finally {
       setBusy(null)
     }

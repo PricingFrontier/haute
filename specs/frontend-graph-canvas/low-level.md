@@ -229,7 +229,8 @@ reconciliation rather than dropping them or committing a second mutation.
   selectors (`isDirty`, `canUndo`, `canRedo`). `loadGraphSnapshot` is the
   separate whole-document boundary: it deep-clones and installs all four
   persisted fields, sets the saved baseline and both persisted
-  fingerprints to that snapshot, clears both history stacks, recomputes the
+  fingerprints to that snapshot, clears both history stacks of graph snapshots (keeping
+  VC entries, API inverses a switch's own document load must not erase), recomputes the
   structural and panel-context fingerprints, and increments both versions
   exactly once in one Zustand transition.
   Test seam: `resetGraphStoreForTests()` restores the full initial state and throws
@@ -478,7 +479,7 @@ reconciliation rather than dropping them or committing a second mutation.
    structural, panel-context, and persisted fingerprints, installs all four
    graph fields, records a separate clone as `lastSavedSnapshot`, copies the
    persisted fingerprint to `savedPersistedFingerprint`, sets `dirty=false`,
-   clears `undoStack`/`redoStack`, and increments
+   drops the graph snapshots from `undoStack`/`redoStack` (VC entries stay), and increments
    `structuralVersion`/`panelContextVersion` once regardless of fingerprint
    equality. Versions are never reset: a document switch that changes only
    submodels must still receive a fresh preview/result-cache identity.

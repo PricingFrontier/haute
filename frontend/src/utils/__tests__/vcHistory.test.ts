@@ -143,14 +143,16 @@ describe("leg side effects", () => {
     expect(useGitStore.getState().historyNonce).toBe(1)
   })
 
-  it("a failing leg toasts the error, skips the resync and rethrows for the store", async () => {
+  it("a failing leg toasts the error, reads the status again, and rethrows for the store", async () => {
     mockUndelete.mockRejectedValue(new Error("tombstone missing"))
     recordDelete("experiment", "experiment@20261027T131400Z")
 
     await expect(lastEntry().undo()).rejects.toThrow("tombstone missing")
 
     expect(toastTexts()).toEqual([["error", "Undo/redo failed: tombstone missing"]])
-    expect(mockGetWorkingBranch).not.toHaveBeenCalled()
+    // A held file can leave the clone interrupted, which only the status shows…
+    expect(mockGetWorkingBranch).toHaveBeenCalledTimes(1)
+    // …but nothing changed for the Git panel to refetch.
     expect(useGitStore.getState().historyNonce).toBe(0)
   })
 

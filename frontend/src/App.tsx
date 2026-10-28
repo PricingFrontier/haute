@@ -1444,6 +1444,8 @@ function FlowEditor() {
         const detail = apiErrorMessage(err, "unknown error")
         addToast("error", `Could not restore this version: ${detail}`)
         closeRestore()
+        // A restore stopped by a file held open leaves the clone interrupted.
+        void useGitStore.getState().loadStatus({ refresh: true })
       }
     },
     [addToast, saveProject],

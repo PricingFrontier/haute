@@ -1688,6 +1688,55 @@ class TestTreeFence:
         assert _git(repo, "status", "--porcelain", "--untracked-files=no") == ""
         assert read_interrupted(repo) is None
 
+    def test_a_file_the_checkout_could_not_remove_is_put_back_and_refused(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The new HEAD drops c.txt but git cannot remove it: it stays behind,
+        untracked, where the status comparison never looks. git's own message
+        names it."""
+        from haute._git_core import GitFilesInUseError, _rewrite_tree
+
+        self._two_branches(repo)
+        (repo / "c.txt").write_text("c.txt on main\n")
+        _git(repo, "add", "c.txt")
+        _git(repo, "commit", "-q", "-m", "c on main")
+        real = git_core._run_git_capture
+
+        def checkout_leaving_a_removed_file(*args: str, cwd: Path | None = None) -> tuple[int, str]:
+            code, stderr = real(*args, cwd=cwd)
+            if args[0] == "checkout":
+                (repo / "c.txt").write_text("c.txt on main\n")
+                return 0, "warning: unable to unlink 'c.txt': Permission denied"
+            return code, stderr
+
+        monkeypatch.setattr(git_core, "_run_git_capture", checkout_leaving_a_removed_file)
+
+        with pytest.raises(GitFilesInUseError, match="c.txt"):
+            _rewrite_tree("checkout", "other", cwd=repo)
+
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == "main"
+        assert (repo / "c.txt").read_text() == "c.txt on main\n"
+        assert _git(repo, "status", "--porcelain") == ""
+
+    def test_a_forced_checkout_over_a_changed_file_it_could_not_replace_is_refused(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """b.txt was already changed, so a status comparison sees nothing new when
+        a forced checkout leaves it as it was; git's own message names it. The
+        put-back is forced too, since the changes were to be discarded."""
+        from haute._git_core import GitFilesInUseError, _rewrite_tree
+
+        self._two_branches(repo)
+        (repo / "b.txt").write_text("edited, not saved\n")
+        self._hold(monkeypatch, repo, "b.txt", "edited, not saved\n")
+
+        with pytest.raises(GitFilesInUseError, match="b.txt"):
+            _rewrite_tree("checkout", "-f", "other", cwd=repo)
+
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == "main"
+        assert (repo / "a.txt").read_text() == "a.txt on main\n"
+        assert _git(repo, "status", "--porcelain", "--untracked-files=no") == ""
+
     def test_a_failed_fast_forward_puts_the_files_it_wrote_back(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

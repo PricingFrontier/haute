@@ -39,5 +39,8 @@ export function discardCanvasEdits(): void {
   if (!useGraphStore.getState().dirty) return
   useGraphStore.getState().markSaved()
   useUIStore.getState().setSyncBanner(null)
+  // The canvas still holds the edits, not the document it last accepted: the
+  // answer must replace it even when the destination's document is that one.
+  useDocumentStatusStore.getState().setGraphSynchronized(false)
   useDocumentStatusStore.getState().requestResync()
 }

@@ -67,6 +67,7 @@ export default function WorkingBranchModal({ onConfirmed, onClose }: WorkingBran
     } catch (err: unknown) {
       const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Could not set working branch: ${detail}`)
+      void loadStatus({ refresh: true }) // a held file can leave the clone interrupted
     } finally {
       setBusy(false)
     }

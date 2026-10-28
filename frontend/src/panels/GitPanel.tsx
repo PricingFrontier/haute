@@ -191,6 +191,7 @@ function GitPanelBranchScope({
     } catch (err) {
       const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Could not create branch: ${detail}`)
+      void loadStatus({ refresh: true }) // a held file can leave the clone interrupted
     } finally {
       setForking(false)
     }
@@ -221,6 +222,7 @@ function GitPanelBranchScope({
     } catch (err) {
       const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Could not switch branch: ${detail}`)
+      void loadStatus({ refresh: true }) // a held file can leave the clone interrupted
     } finally {
       setSwitching(false)
     }

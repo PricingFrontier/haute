@@ -1049,8 +1049,9 @@ def _wipe_volatile_artefacts(repo_root: Path) -> None:
             logger.warning("volatile_wipe_failed", path=name, error=str(exc))
 
 
-# git's message for a file Windows would not let it replace (LC_ALL=C keeps it fixed).
-_UNLINK_FAILED = re.compile(r"unable to unlink old '(.+?)'")
+# git's messages for a file Windows would not let it replace ("unlink old") or
+# remove ("unlink"); LC_ALL=C keeps them fixed.
+_UNLINK_FAILED = re.compile(r"unable to unlink (?:old )?'(.+?)'")
 
 
 def _tracked_changes(cwd: Path | None = None) -> set[str]:
@@ -1104,36 +1105,46 @@ def _rewrite_tree(*args: str, cwd: Path | None = None) -> None:
     """Run a git command that rewrites the working tree (a checkout, a fast-forward
     merge), failing loud on a file it could not write.
 
-    On Windows git cannot replace a file another program holds open. A checkout
-    still exits 0, leaving that file at the old version under the new HEAD; a
-    fast-forward exits 1 with the other files already written. So the tracked
-    changes are compared before and after: a new one means the tree is out of
-    step with HEAD. HEAD is then put back where it was and the out-of-step files
-    written from it; any still out of step record the clone interrupted, for the
-    analyst to retry once the file is closed. Either way ``GitFilesInUseError``
-    names the files, and the caller's own compensation runs as for any failure."""
+    On Windows git cannot replace or remove a file another program holds open. A
+    checkout still exits 0, leaving that file at the old version under the new
+    HEAD (or behind, untracked, when the new HEAD drops it); a fast-forward exits
+    1 with the other files already written. So the files git names as not
+    replaced or removed, and any tracked file that became changed, are out of
+    step with HEAD: the stderr catches a file that was already changed before a
+    forced checkout, or left untracked, which the status comparison cannot. HEAD
+    is then put back where it was and the out-of-step files written from it; any
+    still out of step record the clone interrupted, for the analyst to retry once
+    the file is closed. Either way ``GitFilesInUseError`` names the files, and
+    the caller's own compensation runs as for any failure."""
     _assert_no_git_op_in_progress(cwd)
     attached, head = _run_git_ok("symbolic-ref", "--short", "-q", "HEAD", cwd=cwd)
     previous = head if attached else _run_git("rev-parse", "HEAD", cwd=cwd)
     before = _tracked_changes(cwd)
     code, stderr = _run_git_capture(*args, cwd=cwd)
-    out_of_step = sorted(_tracked_changes(cwd) - before)
+    reported = _held_files(stderr)
+    out_of_step = sorted((_tracked_changes(cwd) - before) | set(reported))
     if not out_of_step:
         if code != 0:
             logger.warning("git_command_failed", cmd=["git", *args], stderr=stderr)
             raise GitError(stderr or f"git {args[0]} failed")
         return
     logger.warning("git_tree_out_of_step", cmd=["git", *args], files=out_of_step, stderr=stderr)
-    held = _held_files(stderr) or out_of_step
+    held = reported or out_of_step
     moved_ok, now = _run_git_ok("symbolic-ref", "--short", "-q", "HEAD", cwd=cwd)
     current = now if moved_ok else _run_git("rev-parse", "HEAD", cwd=cwd)
     if current != previous:
-        # A file git left unreplaced still holds the previous version while its
-        # index entry moved on, and checkout refuses to overwrite such a "change".
-        # Staging what is on disk lets checkout carry it back untouched.
-        literal = [f":(literal){path}" for path in out_of_step]
-        _run_git_ok("add", "--", *literal, cwd=cwd)
-        _run_git_ok("checkout", *(() if attached else ("--detach",)), previous, cwd=cwd)
+        detach = () if attached else ("--detach",)
+        if "-f" in args or "--force" in args:
+            # The command was to discard changes anyway: the put-back may too,
+            # and a file still held keeps what is on disk.
+            _run_git_ok("checkout", "-f", *detach, previous, cwd=cwd)
+        else:
+            # A file git left unreplaced still holds the previous version while its
+            # index entry moved on, and checkout refuses to overwrite such a "change".
+            # Staging what is on disk lets checkout carry it back untouched.
+            literal = [f":(literal){path}" for path in out_of_step]
+            _run_git_ok("add", "--", *literal, cwd=cwd)
+            _run_git_ok("checkout", *detach, previous, cwd=cwd)
     left = sorted(_tracked_changes(cwd) - before)
     if left:
         _run_git_ok(

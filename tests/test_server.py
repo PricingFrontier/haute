@@ -5385,6 +5385,9 @@ class TestBroadcastTreeChange:
         from haute._event_bus import default_bus
 
         monkeypatch.chdir(tmp_path)
+        # Pipelines other tests broadcast would count as known, and gone.
+        monkeypatch.setattr(server, "_last_broadcast_fp", {})
+        server.invalidate_pipeline_index()
         for name in ("good", "broken"):
             (tmp_path / f"{name}.py").write_text(
                 f'import haute\n\npipeline = haute.Pipeline("{name}")\n'
@@ -5417,3 +5420,43 @@ class TestBroadcastTreeChange:
             ("workbench.form.changed", None),
         ]
         assert ("workbench.form.changed", {"form": "forms/form.json"}) in events
+
+    def test_a_pipeline_the_action_took_away_is_announced_as_not_in_this_version(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import server
+        from haute._event_bus import default_bus
+        from haute.routes._helpers import invalidate_pipeline_index
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(server, "_last_broadcast_fp", {})
+        monkeypatch.setattr(server, "_workbench_form_file", lambda _root: None)
+        invalidate_pipeline_index()
+        for name in ("kept", "gone"):
+            (tmp_path / f"{name}.py").write_text(
+                f'import haute\n\npipeline = haute.Pipeline("{name}")\n'
+            )
+        server._broadcast_tree_change({})  # both known, as before a switch
+        (tmp_path / "gone.py").unlink()  # the switch's destination lacks it
+        events: list[tuple[str, dict[str, object]]] = []
+        unsubscribes = [
+            default_bus.subscribe(kind, lambda payload, kind=kind: events.append((kind, payload)))
+            for kind in ("pipeline.document.update", "parse.error")
+        ]
+        try:
+            server._broadcast_tree_change({})
+            server._broadcast_tree_change({})  # announced once, not on every change
+        finally:
+            for unsubscribe in unsubscribes:
+                unsubscribe()
+            invalidate_pipeline_index()
+
+        assert sorted((kind, payload.get("source_file")) for kind, payload in events) == [
+            ("parse.error", "gone.py"),
+            ("pipeline.document.update", "kept.py"),
+            ("pipeline.document.update", "kept.py"),
+        ]
+        assert (
+            "parse.error",
+            {"error": server.PIPELINE_NOT_IN_VERSION, "source_file": "gone.py"},
+        ) in events

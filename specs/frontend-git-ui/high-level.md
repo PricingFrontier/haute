@@ -71,8 +71,10 @@ available in a tooltip on hover over the error or keyboard focus on Retry, and d
 the Retry button for assistive technology. Successful responses render distinct labels and
 remediation for no repository, unset working branch, invalid state, attached divergence,
 and a detached HEAD, which reads "Viewing an earlier version". An interrupted clone reads "Files in use", with
-the files in its tooltip and a Retry that asks the server to write them again. Startup opens
-no chooser for it. A ready state shows the working branch name
+the files in its tooltip and a Retry that asks the server to write them again. Every git
+action that can rewrite the files (restore, switch, branch creation, archive, delete, catch
+up, spin off, and the undo of a branch operation) reads the readiness again when it fails,
+so an interruption shows at once. Startup opens no chooser for it. A ready state shows the working branch name
 alone; clicking it opens the panel on the current branch. The indicator carries no save
 SHA — the commit code belongs to the history panel, which shows it in context.
 
