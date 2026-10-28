@@ -595,6 +595,23 @@ class TestGitRestoreVersion(_AdoptedBranch):
         assert status["working_branch"] == "pricing/test-user/dev"
         assert pushes == [True]
 
+    def test_restore_repairs_a_configured_pipeline_that_went_missing(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """Listing the pipelines before the action must not refuse it when the
+        configured pipeline is gone: restoring a version is how it comes back."""
+        self._adopt(client)
+        (tmp_path / "haute.toml").write_text('[project]\npipeline = "rating.py"\n')
+        _git(tmp_path, "add", "haute.toml")
+        sha1 = self._commit(tmp_path, 'import haute\n\npipeline = haute.Pipeline("p")\n')
+        self._commit(tmp_path, 'import haute\n\npipeline = haute.Pipeline("p2")\n')
+        (tmp_path / "rating.py").unlink()  # deleted by accident, the server still running
+
+        res = client.post("/api/git/restore-version", json={"sha": sha1})
+
+        assert res.status_code == 200, res.text
+        assert 'haute.Pipeline("p")' in (tmp_path / "rating.py").read_text()
+
     def test_restore_of_the_current_version_returns_400(
         self, client: TestClient, tmp_path: Path
     ) -> None:

@@ -58,6 +58,7 @@ from haute._git import (
 from haute._git_lock import repository_mutation
 from haute._logging import get_logger
 from haute._project_layout import pipeline_folder
+from haute.errors import ConfigError
 from haute.graph_utils import PipelineGraph
 from haute.hosted import FORWARDED_USER_SCOPE_KEY
 from haute.routes._helpers import (
@@ -235,7 +236,14 @@ def _rewriting_tree(background: BackgroundTasks) -> Iterator[None]:
     the announcement, so one it took away is named even when no cache still holds
     it (a save invalidates them). A refused action raises out of the block and
     announces nothing."""
-    before = [str(path.resolve()) for path in discover_pipelines()]
+    try:
+        before = [str(path.resolve()) for path in discover_pipelines()]
+    except (OSError, ConfigError) as exc:
+        # The configured pipeline missing or damaged is what a restore or a switch
+        # may be repairing: the action goes ahead, the server's caches alone naming
+        # what it takes away.
+        logger.warning("git_pipeline_inventory_failed", error=str(exc))
+        before = []
     with pause_watcher():
         yield
     background.add_task(default_bus.publish, "git.tree.changed", {"pipelines_before": before})
