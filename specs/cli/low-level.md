@@ -226,14 +226,16 @@ being set redacted from it.
 `remote_secrets(remote, project_dir)` reads only local state. The remote comes first: its
 fetch URL (`git remote get-url`) must be on `github.com` (`https://`, `ssh://` or scp-like
 `git@github.com:OWNER/REPO`, with any userinfo, port, trailing `/` or `.git` dropped), and
-every URL a push to it lands on (`remote_push_urls`) must name the same repository, since
-the secrets belong where `main` arrives. `github_repository` reads exactly two path
-segments, an owner of letters, digits and `-` and a repository of letters, digits, `.`, `_`
-and `-`; another host, a local path or another shape is not GitHub. Then the project's
-`haute.toml` must set `[ci] provider = "github"` and its target have secret names. Where they
-do not apply, the response carries no `ci_secrets` and `gh` is never run. Settings that
-cannot be read (`DeployConfig.from_toml` failing on an unreadable or malformed `haute.toml`
-or `.env`) are the response's `unknown` with that `problem`, and the push goes ahead. Where
+every URL a push to it lands on (`remote_push_urls`) must name the same repository, compared
+without regard to case as GitHub's names are, since the secrets belong where `main` arrives.
+`github_repository` reads exactly two path segments, an owner of letters, digits and `-` and
+a repository of letters, digits, `.`, `_` and `-`; another host, a local path or another
+shape is not GitHub. Then the project's `haute.toml` must set `[ci] provider = "github"` and
+its target have secret names. Where they do not apply, the response carries no `ci_secrets`
+and `gh` is never run. Settings that cannot be used (an unreadable or malformed `haute.toml`
+or `.env`, or a value `DeployConfig.from_toml` or the target lookup refuses, an unknown
+target or an unpinned container image, say) are the response's `unknown` with that
+`problem`, and the push goes ahead. Where
 they apply, the remote is inspected first (`remote_is_empty`, the strict advertisement read
 the Push itself makes, whose failure fails the Push as the Push's own would). A remote with no
 object refs is a first publication: before `push_working_pair` creates the default branch,
@@ -427,10 +429,12 @@ Key files and what they cover:
   value, a refused pair and a failed `gh secret set` each report `missing` with the problem
   while the push still lands; no `gh` and a failed listing report `unknown`; a later Push lists
   and sets nothing; a secret someone sets during the Databricks check is left as it is, on
-  Push and on Set from .env; a malformed `haute.toml` or an undecodable `.env` reports
-  `unknown` and the push still lands; Set from .env sets the missing ones and is a 400 for a
-  remote off GitHub, one pushing to another repository, unreadable settings or any failure; a
-  remote off GitHub, one pushing elsewhere and a GitLab project run no `gh`.
+  Push and on Set from .env; a malformed `haute.toml`, an undecodable `.env`, an unknown
+  target and an unpinned container image each report `unknown` and the push still lands; Set
+  from .env sets the missing ones, for a remote whose URLs name its repository in another
+  case too, and is a 400 for a remote off GitHub, one pushing to another repository, settings
+  it cannot use or any failure; a remote off GitHub, one pushing elsewhere and a GitLab
+  project run no `gh`.
   `github_repository` reads each URL form and refuses other hosts and shapes; `run_gh`
   redacts a value from `gh`'s message and turns a timeout into `CiSecretsError`.
 - `test_cli_ux.py` — cross-cutting UX contracts: shared `ENDPOINT_SUFFIX_HELP` string reused across

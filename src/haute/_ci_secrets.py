@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlsplit
 
 from haute import _git
-from haute.errors import HauteError
+from haute.errors import ConfigError, DeployError, HauteError
 
 if TYPE_CHECKING:
     from haute.schemas import GitCiSecrets, GitPushResponse
@@ -288,7 +288,8 @@ def _remote_secrets_or_reason(remote: str, project_dir: Path) -> RemoteSecrets |
             f"'{remote}' is not a repository on github.com, where Haute sets the deploy's secrets."
         )
     pushes = _git.remote_push_urls(remote, cwd=project_dir)
-    if any(github_repository(push) != repository for push in pushes):
+    # GitHub's owner and repository names are case-insensitive.
+    if any((github_repository(push) or "").lower() != repository.lower() for push in pushes):
         return (
             f"'{remote}' pushes somewhere other than {repository}, which it fetches from: Haute "
             "sets the deploy's secrets only where a remote fetches from and pushes to one "
@@ -299,16 +300,16 @@ def _remote_secrets_or_reason(remote: str, project_dir: Path) -> RemoteSecrets |
         return "No haute.toml found: this is not a Haute project."
     try:
         config = DeployConfig.from_toml(toml_path)
-    except (OSError, ValueError) as exc:
+        if config.ci.provider != "github":
+            return (
+                f"This project's CI provider is {config.ci.provider}: Haute sets the deploy's "
+                "secrets on GitHub only."
+            )
+        names = tuple(ci_secret_names(config.target))
+    except (OSError, ValueError, ConfigError, DeployError) as exc:
         raise _SettingsUnreadableError(
             f"Haute could not read this project's haute.toml and .env: {exc}", repository
         ) from exc
-    if config.ci.provider != "github":
-        return (
-            f"This project's CI provider is {config.ci.provider}: Haute sets the deploy's "
-            "secrets on GitHub only."
-        )
-    names = tuple(ci_secret_names(config.target))
     if not names:
         return f"The {config.target} target needs no CI secrets."
     return RemoteSecrets(project_dir, config.target, repository, names)

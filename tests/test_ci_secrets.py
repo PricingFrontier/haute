@@ -387,11 +387,28 @@ def test_a_secret_set_during_the_databricks_check_is_not_replaced(
     assert "DATABRICKS_RATING_TOKEN" not in gh.sets
 
 
+_UNUSABLE_SETTINGS = (
+    "malformed haute.toml",
+    "undecodable .env",
+    "unknown target",
+    "unpinned container image",
+)
+
+
 def _break_settings(project: Path, case: str) -> None:
+    toml = project / "haute.toml"
+    text = toml.read_text(encoding="utf-8")
     if case == "malformed haute.toml":
-        (project / "haute.toml").write_text("[deploy\ntarget = ", encoding="utf-8")
-    else:
+        toml.write_text("[deploy\ntarget = ", encoding="utf-8")
+    elif case == "undecodable .env":
         (project / ".env").write_bytes(b"DATABRICKS_RATING_TOKEN=\xff\xfe\n")
+    elif case == "unknown target":
+        toml.write_text(text.replace('target = "databricks"', 'target = "databrikcs"'), "utf-8")
+    else:
+        container = '\n[deploy.container]\nbase_image = "python:3.11-slim"\n'
+        toml.write_text(
+            text.replace('target = "databricks"', 'target = "container"') + container, "utf-8"
+        )
 
 
 @pytest.mark.parametrize(
@@ -401,8 +418,10 @@ def _break_settings(project: Path, case: str) -> None:
         ("no gh", "https://cli.github.com"),
         ("off GitHub", "is not a repository on github.com"),
         ("pushes elsewhere", "pushes somewhere other than acme/motor"),
-        ("malformed haute.toml", "Haute could not read this project's haute.toml and .env"),
-        ("undecodable .env", "Haute could not read this project's haute.toml and .env"),
+        *(
+            (case, "Haute could not read this project's haute.toml and .env")
+            for case in _UNUSABLE_SETTINGS
+        ),
     ],
 )
 def test_set_from_env_that_cannot_set_them_is_a_400(
@@ -423,7 +442,7 @@ def test_set_from_env_that_cannot_set_them_is_a_400(
         shutil.copyfile(project / ".env.example", project / ".env")
     else:
         _env_file(project, _VALUES)
-    if case in ("malformed haute.toml", "undecodable .env"):
+    if case in _UNUSABLE_SETTINGS:
         _break_settings(project, case)
     gh = _Gh(log)
 
@@ -462,8 +481,25 @@ def test_a_push_the_secrets_do_not_apply_to_runs_no_gh(
     assert _published(project)
 
 
+def test_a_remote_naming_its_repository_in_another_case_still_applies(
+    client: TestClient, project: Path, log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GitHub's owner and repository names are case-insensitive."""
+    _point_origin_at(
+        monkeypatch, "https://github.com/Acme/Motor.git", "git@github.com:acme/motor.git"
+    )
+    _env_file(project, _VALUES)
+    gh = _Gh(log)
+
+    res = _post(client, "/api/git/ci-secrets", gh)
+
+    assert res.status_code == 200, res.text
+    assert res.json()["repository"] == "Acme/Motor"
+    assert res.json()["newly_set"] == _NAMES
+
+
 @pytest.mark.usefixtures("on_github")
-@pytest.mark.parametrize("case", ["malformed haute.toml", "undecodable .env"])
+@pytest.mark.parametrize("case", _UNUSABLE_SETTINGS)
 def test_a_push_whose_settings_cannot_be_read_still_lands(
     client: TestClient, project: Path, log: Path, case: str
 ) -> None:
