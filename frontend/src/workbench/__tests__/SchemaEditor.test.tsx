@@ -631,10 +631,18 @@ describe("SchemaEditor", () => {
     ]
     load(used)
     render(<SchemaEditor />)
+    const policyColumns = () => current().schema.tables.find((t) => t.id === "t_policy")!.columns.map((c) => c.id)
+
+    // The Import reads exposure by its own name and the Export writes it with its table.
+    fireEvent.click(screen.getByRole("button", { name: "Remove column exposure" }))
+    expect(asked()?.text).toBe("Used by 2 Imports and Exports; removing it takes it out of them too.")
+    await answerQuestion(null)
+    expect(policyColumns()).toContain("c_exposure")
 
     fireEvent.click(screen.getByRole("button", { name: "Remove column state" }))
-    expect(asked()?.text).toBe("Tested by the conditions of 1 sheet, section or component and used by 1 Import or Export; removing it takes it out of them too.")
+    expect(asked()?.text).toBe("Tested by the conditions of 1 sheet, section or component and used by 2 Imports and Exports; removing it takes it out of them too.")
     await answerQuestion("confirm")
+    expect(policyColumns()).not.toContain("c_state")
     expect(current().pages[0].sections[0].widgets[0]).toMatchObject({ table: "t_policy", column_names: [] })
 
     fireEvent.click(screen.getByRole("button", { name: "Delete table policy_details" }))

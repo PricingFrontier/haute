@@ -2387,8 +2387,8 @@ describe("Imports and Exports", () => {
     spec = setTableName(setExportFormat(toggleExportTable(spec, "w_out", "layers"), "w_out", "sql"), "w_out", "layers", "quote_layers")
 
     expect(buttonUses(spec, "layers").map((w) => w.id)).toEqual(["w_in", "w_out"])
-    expect(buttonUses(spec, "layers", "layers.excess").map((w) => w.id)).toEqual(["w_in"])
-    expect(buttonUses(spec, "layers", "layers.limit")).toEqual([])
+    expect(buttonUses(spec, "layers", "layers.excess").map((w) => w.id)).toEqual(["w_in", "w_out"])
+    expect(buttonUses(spec, "layers", "layers.limit").map((w) => w.id)).toEqual(["w_in", "w_out"])
     expect(buttonUses(spec, QUOTE_DETAILS_ID, "qd_insured").map((w) => w.id)).toEqual(["w_in"])
 
     expect(parameters(removeSchemaColumn(spec, QUOTE_DETAILS_ID, "qd_insured")).map((p) => p.name)).toEqual(["ref"])
@@ -2397,6 +2397,18 @@ describe("Imports and Exports", () => {
     expect(imported(noLayers)).toMatchObject({ table: null, column_names: [] })
     expect(exported(noLayers)).toMatchObject({ tables: [], target: { table_names: [] } })
     expect(parameters(removeSchemaTable(spec, QUOTE_DETAILS_ID))).toEqual([])
+  })
+
+  it("counts an Import as using each column it reads, by its own name or another, and an Export each column of a table it exports", () => {
+    let spec = setImportTable(buttons(), "w_in", "layers")
+
+    expect(buttonUses(spec, "layers", "layers.limit").map((w) => w.id)).toEqual(["w_in"])
+    expect(buttonUses(spec, "layers", "layers.row")).toEqual([])
+    expect(buttonUses(spec, "premiums", "premiums.total")).toEqual([])
+
+    spec = toggleExportTable(spec, "w_out", "premiums")
+    expect(buttonUses(spec, "premiums", "premiums.total").map((w) => w.id)).toEqual(["w_out"])
+    expect(buttonUses(spec, "layers", "layers.row")).toEqual([])
   })
 
   it("pastes an Import or an Export without what the schema has lost since it was copied", () => {

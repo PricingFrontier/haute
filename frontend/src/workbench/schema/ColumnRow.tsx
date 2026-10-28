@@ -43,7 +43,7 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
   const tested = conditionUses(form, table.id, column.id).length
   const used = buttonUses(form, table.id, column.id).length
   const uses = shown + tested + used
-  // A column a sheet shows, a condition tests or an Import uses is removed once the question is answered yes.
+  // A column a sheet shows, a condition tests or an Import or an Export uses is removed once the question is answered yes.
   const remove = async () => {
     const text = `${usedBy(shown, tested, used).replace(/^./, (first) => first.toUpperCase())}; removing it takes it out of ${uses === 1 ? "that" : "them"} too.`
     if (uses > 0 && !(await confirmed({ title: `Remove column ${column.name}?`, text, confirm: "Remove", danger: true }))) return

@@ -551,17 +551,23 @@ export const fieldUses = (spec: FormSpec, tableId: string, columnId?: string): W
 
 /**
  * The Imports and Exports using a schema table: filling it, giving a parameter one of its
- * columns or exporting it; or, given one of its columns, reading it or giving a parameter it.
+ * columns or exporting it; or, given one of its columns, reading it, by its own name or
+ * another, giving a parameter it or exporting it with its table.
  */
-export const buttonUses = (spec: FormSpec, tableId: string, columnId?: string): ButtonWidget[] =>
-  allWidgets(spec)
+export const buttonUses = (spec: FormSpec, tableId: string, columnId?: string): ButtonWidget[] => {
+  const table = spec.schema.tables.find((candidate) => candidate.id === tableId)
+  const read = new Set(table === undefined ? [] : importColumns(table).map((column) => column.id))
+  return allWidgets(spec)
     .filter(isButton)
     .filter((widget) => {
-      if (widget.type === "export") return columnId === undefined && widget.tables.includes(tableId)
-      const reads = widget.table === tableId && (columnId === undefined || widget.column_names.some((named) => named.column === columnId))
+      if (widget.type === "export") return widget.tables.includes(tableId)
+      const reads =
+        widget.table === tableId &&
+        (columnId === undefined || read.has(columnId) || widget.column_names.some((named) => named.column === columnId))
       const gives = widget.source.format === "sql" && widget.source.parameters.some((given) => given.table === tableId && (columnId === undefined || given.column === columnId))
       return reads || gives
     })
+}
 
 /** The sheets, sections and widgets whose conditions, or whose fields' conditions, are on a schema table, or test just one of its columns. */
 export const conditionUses = (spec: FormSpec, tableId: string, columnId?: string): (Page | Section | Widget)[] => {
