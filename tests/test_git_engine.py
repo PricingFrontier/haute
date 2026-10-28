@@ -2890,7 +2890,7 @@ class TestRemotesAndPush:
             push_working_pair("does-not-exist", repo, cwd=repo)
 
     def test_first_push_bootstraps_default_and_reports_it(self, repo: Path, tmp_path: Path) -> None:
-        """An advertised-empty remote receives the local merge target atomically.
+        """An advertised-empty remote receives the local merge target with the pair.
 
         This is the analyst's first-push journey: the working pair alone is not a
         useful shared history unless its local default branch is published too.
@@ -3297,6 +3297,7 @@ class TestRemotesAndPush:
     ) -> None:
         """The create-only lease rejects even a concurrent fast-forwardable main."""
         import haute._git as git_mod
+        from haute._git import GitBootstrapIncompleteError
 
         self._setup_pair(repo)
         bare = self._add_bare_remote(repo, tmp_path)
@@ -3315,6 +3316,8 @@ class TestRemotesAndPush:
             push_working_pair("origin", repo, cwd=repo)
 
         assert not isinstance(exc.value, GitPushRejectedError)
+        # Nothing of this call landed, so it must not claim the default was published.
+        assert not isinstance(exc.value, GitBootstrapIncompleteError)
         advertised = _git(repo, "ls-remote", str(bare))
         assert _git(repo, "ls-remote", str(bare), "refs/heads/main").split()[0] == remote_tip
         assert f"refs/heads/{WORKING}" not in advertised
@@ -3341,6 +3344,267 @@ class TestRemotesAndPush:
         advertised = _git(repo, "ls-remote", "origin")
         assert f"refs/heads/{WORKING}" in advertised
         assert f"refs/heads/{LEDGER}" in advertised
+
+    # -- default-first bootstrap ---------------------------------------------
+
+    @staticmethod
+    def _log_receive_sessions(bare: Path) -> Path:
+        """Record each receive session's refs: a pre-receive hook runs once per push."""
+        hook = bare / "hooks" / "pre-receive"
+        hook.write_text(
+            "#!/bin/sh\n"
+            'echo "--- session" >> receive-sessions.log\n'
+            'while read old new ref; do echo "$ref" >> receive-sessions.log; done\n',
+            newline="\n",
+        )
+        hook.chmod(0o755)
+        return bare / "receive-sessions.log"
+
+    @staticmethod
+    def _receive_sessions(log: Path) -> list[list[str]]:
+        sessions: list[list[str]] = []
+        for line in log.read_text(encoding="utf-8").splitlines():
+            if line == "--- session":
+                sessions.append([])
+            elif line:
+                sessions[-1].append(line)
+        return sessions
+
+    @staticmethod
+    def _refuse_all_but_main(bare: Path) -> Path:
+        """A host rule that accepts the default branch and refuses every other ref."""
+        hook = bare / "hooks" / "pre-receive"
+        hook.write_text(
+            "#!/bin/sh\n"
+            "while read old new ref; do\n"
+            '  [ "$ref" = refs/heads/main ] || { echo "SECRET-STDERR branch rule" >&2; exit 1; }\n'
+            "done\n",
+            newline="\n",
+        )
+        hook.chmod(0o755)
+        return hook
+
+    @staticmethod
+    def _remote_refs(repo: Path, bare: Path) -> list[str]:
+        refs = (line.split()[1] for line in _git(repo, "ls-remote", str(bare)).splitlines())
+        return sorted(ref for ref in refs if ref != "HEAD")
+
+    def test_bootstrap_initialising_push_carries_only_the_default(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """An empty remote's first receive session is the default alone.
+
+        GitHub never triggers push or pull_request workflows in a repository whose
+        first push created several refs. A configured ``push.followTags`` must not
+        add the default's label to that push; the label travels with the pair.
+        """
+        self._setup_pair(repo)
+        _git(repo, "config", "push.followTags", "true")
+        _git(repo, "tag", "-a", "version/0.0.0", "-m", "seed label", "main")
+        bare = self._add_bare_remote(repo, tmp_path)
+        log = self._log_receive_sessions(bare)
+
+        result = push_working_pair("origin", repo, cwd=repo)
+
+        first, *rest = self._receive_sessions(log)
+        assert first == ["refs/heads/main"]
+        assert [sorted(session) for session in rest] == [
+            sorted([f"refs/heads/{WORKING}", f"refs/heads/{LEDGER}", "refs/tags/version/0.0.0"])
+        ]
+        assert result.bootstrapped_default is True
+        assert result.pushed_refs == ["main", WORKING, LEDGER]
+
+    def test_pair_refused_after_the_default_landed_names_the_published_default(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        from haute._git import GitBootstrapIncompleteError
+        from haute._git_state import read_pushed_shas
+
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        self._refuse_all_but_main(bare)
+
+        with pytest.raises(GitBootstrapIncompleteError) as exc:
+            push_working_pair("origin", repo, cwd=repo)
+
+        message = str(exc.value)
+        assert message.startswith("'main' is now on 'origin' as your merge target")
+        assert "did not accept" in message
+        assert "SECRET-STDERR" not in message  # stderr is logged, never returned
+        assert self._remote_refs(repo, bare) == ["refs/heads/main"]
+        assert read_pushed_shas(repo) == {}
+
+    def test_push_after_an_interrupted_bootstrap_publishes_the_pair(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        from haute._git import GitBootstrapIncompleteError
+        from haute._git_state import read_pushed_shas
+
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        rule = self._refuse_all_but_main(bare)
+        with pytest.raises(GitBootstrapIncompleteError):
+            push_working_pair("origin", repo, cwd=repo)
+        rule.unlink()
+
+        result = push_working_pair("origin", repo, cwd=repo)
+
+        assert result.bootstrapped_default is False
+        assert result.pushed_refs == [WORKING, LEDGER]
+        assert self._remote_refs(repo, bare) == sorted(
+            ["refs/heads/main", f"refs/heads/{WORKING}", f"refs/heads/{LEDGER}"]
+        )
+        assert read_pushed_shas(repo) == {
+            f"origin/{WORKING}": _git(repo, "rev-parse", WORKING),
+            f"origin/{LEDGER}": _git(repo, "rev-parse", LEDGER),
+        }
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            subprocess.TimeoutExpired(["git", "push"], 1),
+            OSError("injected launch failure"),
+            # A non-zero exit is not a refusal: the remote may have applied the refs.
+            subprocess.CompletedProcess(
+                ["git", "push"], 128, "", "fatal: the remote end hung up unexpectedly\n"
+            ),
+        ],
+        ids=["timeout", "launch-failure", "lost-connection"],
+    )
+    def test_pair_transport_failure_after_the_default_landed_is_unconfirmed(
+        self,
+        repo: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        failure: Exception | subprocess.CompletedProcess[str],
+    ) -> None:
+        from haute._git import GitBootstrapIncompleteError
+
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        real_run = git_core.subprocess.run
+        pushes = 0
+
+        def fail_the_pair_push(
+            cmd: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            nonlocal pushes
+            if cmd[:2] == ["git", "push"]:
+                pushes += 1
+                if pushes == 2:
+                    if isinstance(failure, Exception):
+                        raise failure
+                    return failure
+            return real_run(cmd, **kwargs)  # type: ignore[return-value]
+
+        monkeypatch.setattr(git_core.subprocess, "run", fail_the_pair_push)
+
+        with pytest.raises(GitBootstrapIncompleteError, match="could not confirm"):
+            push_working_pair("origin", repo, cwd=repo)
+
+        assert self._remote_refs(repo, bare) == ["refs/heads/main"]
+
+    def test_working_branch_landing_between_the_two_pushes_is_the_structured_rejection(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A teammate's same-named working branch can only land once the default exists."""
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        default_tip = _git(repo, "rev-parse", "main")
+        teammate = tmp_path / "teammate"
+        real_run = git_core.subprocess.run
+        pushes = 0
+
+        def teammate_pushes_in_the_gap(
+            cmd: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            nonlocal pushes
+            if cmd[:2] == ["git", "push"]:
+                pushes += 1
+                if pushes == 2:
+                    identity = ["-c", "user.name=Teammate", "-c", "user.email=t@example.com"]
+                    for args in (
+                        ["clone", str(bare), str(teammate)],
+                        [*identity, "-C", str(teammate), "commit", "--allow-empty", "-m", "theirs"],
+                        ["-C", str(teammate), "push", "origin", f"HEAD:refs/heads/{WORKING}"],
+                    ):
+                        real_run(["git", *args], check=True, capture_output=True)
+            return real_run(cmd, **kwargs)  # type: ignore[return-value]
+
+        monkeypatch.setattr(git_core.subprocess, "run", teammate_pushes_in_the_gap)
+
+        with pytest.raises(GitPushRejectedError) as exc:
+            push_working_pair("origin", repo, cwd=repo)
+
+        # The remote has no ledger yet; the fork must still be measured, not "untracked".
+        rejection = exc.value.rejection
+        assert rejection.working.status in ("behind", "diverged")
+        assert "working branch" in rejection.message
+        remote = dict(
+            reversed(line.split()) for line in _git(repo, "ls-remote", str(bare)).splitlines()
+        )
+        assert remote["refs/heads/main"] == default_tip
+        assert remote[f"refs/heads/{WORKING}"] == _git(teammate, "rev-parse", "HEAD")
+        assert f"refs/heads/{LEDGER}" not in remote  # the pair is atomic
+
+    def test_remote_holds_no_other_history_when_empty_or_only_our_default(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        from haute._git import remote_holds_other_history
+
+        self._setup_pair(repo)
+        self._add_bare_remote(repo, tmp_path)
+        assert remote_holds_other_history("origin", repo, cwd=repo) is False
+
+        _git(repo, "push", "origin", "main")
+
+        assert remote_holds_other_history("origin", repo, cwd=repo) is False
+
+    @pytest.mark.parametrize("extra", ["a tag", "another branch", "a default past ours"])
+    def test_remote_holds_other_history_beyond_our_own_default(
+        self, repo: Path, tmp_path: Path, extra: str
+    ) -> None:
+        from haute._git import remote_holds_other_history
+
+        self._setup_pair(repo)
+        self._add_bare_remote(repo, tmp_path)
+        main_sha = _git(repo, "rev-parse", "main")
+        _git(repo, "tag", "-a", "elsewhere", "-m", "someone's label", "main")
+        tree = _git(repo, "rev-parse", f"{main_sha}^{{tree}}")
+        ahead = _git(repo, "commit-tree", tree, "-p", main_sha, "-m", "someone's commit")
+        refspecs = {
+            "a tag": ["refs/heads/main", "refs/tags/elsewhere"],
+            "another branch": ["refs/heads/main", f"{main_sha}:refs/heads/other"],
+            "a default past ours": [f"{ahead}:refs/heads/main"],
+        }[extra]
+        _git(repo, "push", "origin", *refspecs)
+
+        assert remote_holds_other_history("origin", repo, cwd=repo) is True
+
+    def test_remote_advertising_only_head_holds_other_history(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """Hidden refs can leave an object-valued HEAD as the whole advertisement."""
+        from haute._git import remote_holds_other_history
+
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        _git(repo, "push", "origin", "main")
+        _git(bare, "symbolic-ref", "HEAD", "refs/heads/main")
+        _git(bare, "config", "uploadpack.hideRefs", "refs/heads/")
+
+        assert remote_holds_other_history("origin", repo, cwd=repo) is True
+
+    def test_remote_holds_other_history_propagates_an_unreachable_remote(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        from haute._git import remote_holds_other_history
+
+        self._setup_pair(repo)
+        _git(repo, "remote", "add", "origin", str(tmp_path / "missing.git"))
+
+        with pytest.raises(GitError):
+            remote_holds_other_history("origin", repo, cwd=repo)
 
     def test_tags_only_remote_is_not_mistaken_for_empty(self, repo: Path, tmp_path: Path) -> None:
         """A tag is an object ref, so it cannot authorize default bootstrap."""

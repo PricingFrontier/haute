@@ -41,8 +41,8 @@ In scope:
   history, ledger save expansion, whole-forest graph topology, and commit "breadcrumb"
   context. There is no separate generic status endpoint without a UI contract.
 - Remote interaction: listing locally-known remotes, deliberate hardened fetch, deliberate
-  atomic publication of the resolved local default branch (only when bootstrapping an
-  advertised-empty remote) plus the working+ledger pair, fast-forward catch-up, and
+  publication of the resolved local default branch on its own (only when bootstrapping an
+  advertised-empty remote) followed by the atomic working+ledger pair, fast-forward catch-up, and
   "branch away" fork resolution — never an automatic push, fetch-and-merge, or force-push.
 - Per-clone local state: which working branch this clone serves, local UI preferences,
   the fork-point map, trash tombstones, and last-pushed SHAs (all untracked, all living
@@ -108,11 +108,14 @@ disabled and a hard timeout. Only a successful advertisement containing zero obj
 means "empty"; an unborn symbolic `HEAD` alone is still empty, while any branch or tag makes
 the remote non-empty. Timeout, authentication/network failure, or an unreadable
 advertisement is an inspection failure and refuses the push rather than being treated as an
-empty remote. An empty remote receives the resolved default branch, working branch, and the
-save ledger when it exists in one atomic push, creating the merge target at the same time
-the work is shared. A create-only lease on the default ref makes that bootstrap a
-compare-and-create: a default branch that appears after inspection is never advanced or
-replaced.
+empty remote. An empty remote first receives the resolved default branch on its own, then
+the working branch and the save ledger when it exists in one atomic push, so the merge
+target is created as the work is shared. The first push carries the default alone because
+GitHub never triggers workflows in a repository whose first push created several branches. A
+create-only lease on the default ref makes that bootstrap a compare-and-create: a default
+branch that appears after inspection is never advanced or replaced. If the pair push then
+fails, the remote holds only the default and Haute says so in its own words; the next Push
+publishes the pair.
 
 For a non-empty remote, the expected default branch must already exist. Haute fetches that
 ref and validates that it shares history with the local working line before publishing the
@@ -189,16 +192,25 @@ complete old or new document, never torn JSON.
   answer "was this rewritten".
 - **Bootstrap at explicit Push, not project setup.** The local root/default commit is an
   input to branch creation, but publishing it is a remote side effect. Folding an empty-
-  remote bootstrap into the already-deliberate atomic Push gives a new project a merge
+  remote bootstrap into the already-deliberate Push gives a new project a merge
   target without making `init`, `serve`, or branch selection depend on a remote, network,
   or credentials. Existing remote defaults are validation inputs, never implicit push
   targets, so this convenience cannot rewrite or advance an established shared branch.
 - **Create-only lease is not a force update.** Bootstrap attaches an empty expected value to
   the default ref. It can never authorize replacing or advancing an existing default. If a
   concurrent writer creates the exact commit Haute intended, Git may treat that default as
-  already up to date and safely publish the pair; a different commit loses the lease and the
-  atomic push fails. All branch sources are the validated commit snapshots, the working and
-  ledger destinations remain ordinary non-force updates, and the submitted set is atomic.
+  already up to date and safely publish the pair; a different commit loses the lease and
+  nothing is published. All branch sources are the validated commit snapshots, the working
+  and ledger destinations remain ordinary non-force updates, and the pair is atomic.
+- **The default goes first, alone.** A repository's first push decides whether GitHub ever
+  runs its workflows: one whose first push created several refs never triggers `push` or
+  `pull_request` workflows, atomic or not, while one initialised with a single branch behaves
+  normally (observed 27 October 2026). Publishing the default by itself before the pair keeps
+  every new repository in the working state on every host. The price is one partial state,
+  the default without the pair, which is an ordinary established remote: the next Push
+  completes it, and the failure is reported in hand-written words instead of being hidden.
+  Rolling the default back instead would need a remote deletion, which the never-force rule
+  forbids.
 - **Content-addressed caching.** Git's own objects are immutable once written, so any pure
   function of a full 40-hex commit SHA (merge-base, ancestry, first-parent spine, a
   commit's tree, its parents) is cached forever with no invalidation story — only ref-name

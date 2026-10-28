@@ -285,6 +285,7 @@ If you're the only person on the team, the process is the same but simpler:
 - **On PR:** Make sure the PR targets the `main` branch (not another branch)
 - **On merge:** Make sure the `deploy-staging.yml` paths filter matches your changed files. If you only changed a markdown file, it won't trigger (by design)
 - **Check the Actions tab:** Go to your repo → **Actions** → look for the workflow run
+- **Nothing has ever run in a new repository:** if **Run workflow** works but no push or pull request has ever started a run, the repository's first push created more than one branch. GitHub never runs workflows from pushes or pull requests in such a repository, and later pushes do not change that. Haute 0.6.0 and earlier pushed like this the first time you pushed a project to an empty repository; later versions publish `main` on its own first. Create a new, empty repository and push the project to it. If you create a repository's first branch yourself, push `main` on its own first (`git push origin main`)
 
 ### "Credentials not found" or "Authentication failed"
 

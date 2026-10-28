@@ -351,14 +351,37 @@ come from another canonical remote by accident.
 
 For a zero-object-ref remote, the local default, working, and optional ledger refs are first
 resolved to commit-SHA snapshots and must share history; a missing ref or missing merge base
-refuses before mutation. The explicit branch refspecs pin those validated sources:
-`<default_sha>:refs/heads/<default> <working_sha>:refs/heads/<working>
-[<ledger_sha>:refs/heads/<ledger>]`. The push also supplies a create-only lease
-`--force-with-lease=refs/heads/<default>:`: its empty expected value can never authorize
-updating an existing default. If a concurrent writer creates that ref at the exact validated
-`default_sha`, Git may classify the refspec as already up to date and submit no update for
-that ref; allowing the atomic pair to proceed is safe because the required merge target is
-already identical. A different-SHA concurrent default fails the lease.
+refuses before mutation. Bootstrap then publishes in two pushes, in order, with nothing else
+touching the network between them:
+
+1. The default alone, through `_create_remote_default`: `git push --no-follow-tags
+   --force-with-lease=refs/heads/<default>: <remote> <default_sha>:refs/heads/<default>`.
+   The push that initialises a remote carries exactly one ref because GitHub was observed
+   (27 October 2026) never to trigger `push` or `pull_request` workflows in a repository
+   whose first push created more than one ref, atomic or not, while a repository initialised
+   with one branch behaves normally; later pushes do not repair such a repository.
+   `--no-follow-tags` stops a configured `push.followTags` from adding labels to this push.
+   The create-only lease's empty expected value can never authorize updating an existing
+   default. If a concurrent writer creates that ref at the exact validated `default_sha`, Git
+   reports it up to date and bootstrap continues, because the required merge target is
+   already identical. A different-SHA concurrent default fails the lease. That failure, like
+   every other failure of this push, is a sanitized `GitError` that never goes through
+   `_push_rejection`, and nothing from this call is published.
+2. The working/ledger pair, with exactly the established-remote pair command below. Labels
+   reachable from the pair travel with it, including labels on default commits the working
+   line contains; a label reachable only from default commits outside the pair's history is
+   not published.
+
+When the default lands and the pair push fails, the remote holds only the validated default,
+which is an established remote, and `GitBootstrapIncompleteError` (a `GitDomainError`) is
+raised. Its hand-written message names the published default and never carries git stderr;
+it describes a refusal only when the remote explicitly rejected the pair (`[remote rejected]`
+in stderr), and an unconfirmed publication otherwise — a timeout, a launch failure, or any
+other non-zero exit, since git also exits non-zero when the connection drops after the remote
+applied the refs. A `non-fast-forward`, `fetch first` or `[rejected]` pair failure
+is the structured rejection described below even during bootstrap, because a teammate's
+same-named branch can only have landed after the default existed. The next Push takes the
+established-remote path and completes the publication.
 For a non-empty remote, the resolved expected default ref must be advertised; it is fetched
 authoritatively with `--no-tags` and checked for a merge base with the local working history
 and ledger when present. The existing remote default is validation-only and is omitted from the push
@@ -368,21 +391,23 @@ git error before either pair ref is published. Haute does not configure the remo
 repository-level default-branch setting.
 
 After preflight, `_tag_collisions` still checks `version/*` labels (best-effort — git's tag
-rejection remains the backstop), then the pinned-SHA refspecs are submitted with `git push
---atomic --follow-tags` and, only for bootstrap, the create-only default lease described
-above. No path supplies `--force`, a force refspec, or a lease that expects an existing
-object. The push subprocess uses the prompt-proof remote environment and a hard
-`_PUSH_TIMEOUT_SECONDS` ceiling; `TimeoutExpired` and process-launch `OSError` are converted
-to sanitized `GitError` failures, after which the repository mutation lock is released. The
-default, working, and optional ledger therefore all land or none lands during bootstrap; on
-an established remote the working/ledger pair remains atomic. Any bootstrap
-rejection, including a different-SHA default winning the create-only race, follows a safe
-non-409 push-failure path and is never misreported as working/ledger divergence. On an
-established remote, a
+rejection remains the backstop). Then, after the bootstrap's default push when there is one,
+the pinned-SHA pair refspecs `<working_sha>:refs/heads/<working>
+[<ledger_sha>:refs/heads/<ledger>]` are submitted with `git push --atomic --follow-tags`; the
+pair push never names the default and never carries a lease. No path supplies `--force`, a
+force refspec, or a lease that expects an existing object. Every push subprocess runs through
+`_run_push`, with the prompt-proof remote environment and a hard `_PUSH_TIMEOUT_SECONDS`
+ceiling; `TimeoutExpired` and process-launch `OSError` are converted to sanitized `GitError`
+failures (for a bootstrap's pair push, to `GitBootstrapIncompleteError`), after which the
+repository mutation lock is released. The working/ledger pair is always atomic, so one pair
+ref never lands without the other. A bootstrap default-push rejection, including a
+different-SHA default winning the create-only race, follows a safe non-409 push-failure path
+and is never misreported as working/ledger divergence. A
 working/ledger non-fast-forward failure (`non-fast-forward` / `fetch first` / `[rejected]`
 in stderr) is turned into `_push_rejection`, which force-fetches past the throttle (a
-rejection is authoritative, not a poll), recomputes both legs, and checks `_is_rewrite` per
-leg using the last-pushed-SHA record. The same validated working/ledger SHA snapshots used
+rejection is authoritative, not a poll) in the namespace form, so a pair leg the remote
+lacks reads as a missing tracking ref instead of failing the fetch, recomputes both legs,
+and checks `_is_rewrite` per leg using the last-pushed-SHA record. The same validated working/ledger SHA snapshots used
 as push sources are recorded on success via `_git_state.record_pushed_shas`, so a concurrent
 local branch move can neither publish an unvalidated tip nor record a tip that was not
 submitted. The one-time default is deliberately omitted because
@@ -391,14 +416,27 @@ established default is validation-only and never Haute-owned.
 
 `GitPushResponse.default_branch` is the selected-remote-aware default used by the preflight.
 `bootstrapped_default` is a required boolean response member whose model default is `false`;
-it is `true` only when the successful atomic push submitted the default ref to a zero-ref
-remote. `pushed_refs` lists the names from explicit branch refspecs, excluding annotated tags
-that `--follow-tags` may add; it is not a claim that every named ref advanced. Bootstrap
-returns `[default, working]` plus the ledger when that local ref exists, while an established
-remote returns `[working]` plus that optional ledger. `ledger_branch` continues to name the
-managed ledger even when it has not spawned and is therefore absent from `pushed_refs`.
-Repeating a successful push is idempotent and reports `bootstrapped_default=false` once the
-remote advertises refs.
+it is `true` only when the call found a zero-ref remote, its default push created the default
+(or found it already at `default_sha`), and its pair push succeeded. `pushed_refs` lists the
+names from explicit branch refspecs, excluding annotated tags that `--follow-tags` may add; it
+is not a claim that every named ref advanced. Bootstrap returns `[default, working]` plus the
+ledger when that local ref exists, while an established remote returns `[working]` plus that
+optional ledger. `ledger_branch` continues to name the managed ledger even when it has not
+spawned and is therefore absent from `pushed_refs`. Repeating a successful push is idempotent
+and reports `bootstrapped_default=false` once the remote advertises refs; so does the Push
+that completes an interrupted bootstrap, since it finds an established remote.
+
+**Adoptable remote (`remote_holds_other_history`).** Hosted binding asks whether a remote
+holds history other than what this clone itself bootstraps there. The answer is `False` for
+a zero-object-ref remote, and for exactly the state an interrupted bootstrap leaves: the only
+object ref other than `HEAD` is `refs/heads/<default>`, where `<default>` is what the
+empty-remote resolution rules above choose for this clone (using the advertised `HEAD`
+target), that ref is at exactly the local default's tip, and an advertised `HEAD` object, if
+any, agrees. Every other state — another branch, a tag, another tip (a descendant included),
+an advertisement holding only an object-valued `HEAD` (hidden refs), or no working branch
+recorded — answers `True`. It reads the same strict advertisement parse
+as Push inspection (`_read_advertisement`, which `_inspect_remote` wraps), and an inspection
+failure propagates: an unreachable remote never reads as adoptable.
 
 **Fast-forward (`fast_forward_pair`).** Requires HEAD to currently be on the ledger (refuses
 mid-move/detached states) and a clean tracked tree. Fetches and prunes the configured remote
@@ -493,8 +531,10 @@ without replacing a successfully parsed response with a cleanup error.
   submitting any refspec. “Empty” describes the strict preflight snapshot: a different
   branch or tag may appear afterward and coexist safely. A concurrently-created default at
   a different SHA fails the empty-value lease; one at the exact submitted SHA may be an
-  up-to-date no-op and safely coexist with successful pair publication. Atomicity prevents
-  any failure from partially creating the submitted default/working/optional-ledger set.
+  up-to-date no-op and safely coexist with successful pair publication. The initialising push
+  carries the default alone; the pair push's atomicity prevents a failure from creating one
+  pair ref without the other, and a bootstrap whose pair push fails leaves only the validated
+  default, which the next Push treats as an established remote.
 - **Rename detection in ledger-save history** — `_parse_ledger_saves` runs `git log -M
   --name-status` so a renamed config file shows as one rename entry, not a delete+add pair.
 - **Unicode / space-containing paths in log output** — `core.quotepath=false` is passed
@@ -583,8 +623,18 @@ process failures, and precise ref-movement races deterministic.
   canonical-remote resolution, fork/create-working-branch (both move and non-move), archive-
   commit read-only extraction, remotes/push/fast-forward/branch-away, the milestone fork
   gate, protected-branch env-var configuration, and subprocess text-encoding. Push coverage
-  includes the full unborn-repo → first working branch → explicit Push journey; atomic
-  publication of resolved default + working + optional ledger to a zero-object-ref remote;
+  includes the full unborn-repo → first working branch → explicit Push journey; default-first
+  publication to a zero-object-ref remote, whose initialising receive session carries the
+  resolved default alone (even with `push.followTags` set and a label on the default) before
+  the pair and its labels follow atomically; a pair failure after the default landed reported
+  as `GitBootstrapIncompleteError` with only the default left on the remote — worded as a
+  refusal for an explicit remote rejection and as unconfirmed for a timeout, launch failure or
+  lost connection — and the next Push completing the publication; a teammate's same-named
+  working branch landing between the two pushes surfacing as the structured rejection with
+  the working leg measured although the remote has no ledger;
+  `remote_holds_other_history` answering `False` only for an empty remote or this clone's own
+  default at its exact tip (a `HEAD`-only advertisement counts as content), and propagating
+  an inspection failure;
   required response metadata and explicit-branch-refspec reporting; absent-ledger behavior;
   idempotent re-push; selected-remote and custom-default resolution; preservation of an
   existing related default; both outcomes of an empty-snapshot/concurrent-default race;
@@ -638,4 +688,8 @@ process failures, and precise ref-movement races deterministic.
   by-default semantics.
 - **Known gaps**: provider control-plane behaviour is intentionally outside this suite;
   tests assert git refs only and do not claim that GitHub/GitLab/another host changes its
-  repository-level default-branch setting after the bootstrap push.
+  repository-level default-branch setting after the bootstrap push. GitHub's response to the
+  bootstrap's push shape (workflows trigger in a repository initialised by a single-ref push,
+  and never in one whose initialising push created several refs) was qualified by hand
+  against GitHub on 27 October 2026; the suite pins the git-level shape, one ref in the
+  initialising receive session, not the host's behaviour.

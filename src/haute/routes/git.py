@@ -477,10 +477,10 @@ def git_commit_context(sha: str, base: str | None = Query(None)) -> GitCommitCon
 def git_push(body: GitPushRequest) -> GitPushResponse:
     """Deliberately publish managed history to a chosen existing remote.
 
-    An advertised-empty remote receives its resolved default branch and the
-    working/ledger pair atomically.  Established remotes receive only the pair,
-    after their default branch has been fetched and validated.  Existing refs
-    are never force-updated (S16/S33), and plain saves never invoke this route.
+    An advertised-empty remote first receives its resolved default branch on its
+    own, then the working/ledger pair atomically.  Established remotes receive only
+    the pair, after their default branch has been fetched and validated.  Existing
+    refs are never force-updated (S16/S33), and plain saves never invoke this route.
 
     A non-fast-forward rejection returns **409** with a structured
     :class:`GitPushRejection` body (per-leg divergence + a leg-naming message) so

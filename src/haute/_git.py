@@ -11,6 +11,7 @@ from haute._git_core import (
     DEFAULT_PROTECTED_BRANCHES,
     LEDGER_SUFFIX,
     PROTECTED_BRANCHES,
+    GitBootstrapIncompleteError,
     GitDomainError,
     GitError,
     GitGuardrailError,
@@ -88,7 +89,7 @@ from haute._git_remote import (
     list_remotes,
     pair_divergence,
     push_working_pair,
-    remote_has_content,
+    remote_holds_other_history,
     remote_url,
 )
 from haute._git_setup import (
@@ -114,6 +115,7 @@ __all__ = [
     "DEFAULT_PROTECTED_BRANCHES",
     "LEDGER_SUFFIX",
     "PROTECTED_BRANCHES",
+    "GitBootstrapIncompleteError",
     "GitDomainError",
     "GitError",
     "GitGuardrailError",
@@ -194,7 +196,7 @@ __all__ = [
     "pending_ledger_saves",
     "pipeline_file_states",
     "push_working_pair",
-    "remote_has_content",
+    "remote_holds_other_history",
     "remote_url",
     "resolve_ledger",
     "restore_working_pair",
