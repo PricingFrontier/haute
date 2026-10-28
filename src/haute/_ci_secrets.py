@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +42,9 @@ _SCP_LIKE = re.compile(r"(?:[^@/:]+@)?(?P<host>[^/:]+):(?P<path>.+)")
 _OWNER = re.compile(r"[A-Za-z0-9-]+")
 _REPOSITORY = re.compile(r"[A-Za-z0-9._-]+")
 
+# The editor's secrets steps run one at a time, so two never fill the same gap.
+_EDITOR_STEP = threading.Lock()
+
 
 class CiSecretsError(HauteError):
     """A step toward the deploy's CI secrets that could not be taken.
@@ -51,6 +55,14 @@ class CiSecretsError(HauteError):
 
 class DatabricksRefusedError(CiSecretsError):
     """Databricks did not accept a host and token pair read from ``.env``."""
+
+
+class _SettingsUnreadableError(CiSecretsError):
+    """The project's settings could not be read for a remote on GitHub's *repository*."""
+
+    def __init__(self, message: str, repository: str) -> None:
+        super().__init__(message)
+        self.repository = repository
 
 
 # ── The GitHub CLI ──────────────────────────────────────────────────
@@ -138,7 +150,10 @@ def secret_values(project_dir: Path, names: Sequence[str]) -> tuple[dict[str, st
     from dotenv import dotenv_values
 
     env_file = project_dir / ".env"
-    from_file = dotenv_values(env_file) if env_file.is_file() else {}
+    try:
+        from_file = dotenv_values(env_file) if env_file.is_file() else {}
+    except (OSError, ValueError) as exc:
+        raise CiSecretsError(f"Haute could not read .env: {exc}") from exc
     values: dict[str, str] = {}
     sources: dict[str, str] = {}
     for name in names:
@@ -255,22 +270,15 @@ class RemoteSecrets:
 
 
 def _remote_secrets_or_reason(remote: str, project_dir: Path) -> RemoteSecrets | str:
-    """The deploy's secrets on *remote*'s repository, or why they do not apply there."""
+    """The deploy's secrets on *remote*'s repository, or why they do not apply there.
+
+    The remote comes first: its fetch URL and every push URL must name one repository on
+    github.com, since the secrets belong where the push lands. Then the project's
+    settings, whose read failure raises :class:`_SettingsUnreadableError`.
+    """
     from haute._scaffold import ci_secret_names
     from haute.deploy._config import DeployConfig
 
-    toml_path = project_dir / "haute.toml"
-    if not toml_path.is_file():
-        return "No haute.toml found: this is not a Haute project."
-    config = DeployConfig.from_toml(toml_path)
-    if config.ci.provider != "github":
-        return (
-            f"This project's CI provider is {config.ci.provider}: Haute sets the deploy's "
-            "secrets on GitHub only."
-        )
-    names = tuple(ci_secret_names(config.target))
-    if not names:
-        return f"The {config.target} target needs no CI secrets."
     url = _git.remote_url(remote, cwd=project_dir)
     if url is None:
         return f"No remote named '{remote}' is configured."
@@ -279,21 +287,46 @@ def _remote_secrets_or_reason(remote: str, project_dir: Path) -> RemoteSecrets |
         return (
             f"'{remote}' is not a repository on github.com, where Haute sets the deploy's secrets."
         )
+    pushes = _git.remote_push_urls(remote, cwd=project_dir)
+    if any(github_repository(push) != repository for push in pushes):
+        return (
+            f"'{remote}' pushes somewhere other than {repository}, which it fetches from: Haute "
+            "sets the deploy's secrets only where a remote fetches from and pushes to one "
+            "GitHub repository."
+        )
+    toml_path = project_dir / "haute.toml"
+    if not toml_path.is_file():
+        return "No haute.toml found: this is not a Haute project."
+    try:
+        config = DeployConfig.from_toml(toml_path)
+    except (OSError, ValueError) as exc:
+        raise _SettingsUnreadableError(
+            f"Haute could not read this project's haute.toml and .env: {exc}", repository
+        ) from exc
+    if config.ci.provider != "github":
+        return (
+            f"This project's CI provider is {config.ci.provider}: Haute sets the deploy's "
+            "secrets on GitHub only."
+        )
+    names = tuple(ci_secret_names(config.target))
+    if not names:
+        return f"The {config.target} target needs no CI secrets."
     return RemoteSecrets(project_dir, config.target, repository, names)
 
 
 def remote_secrets(remote: str, project_dir: Path) -> RemoteSecrets | None:
     """The deploy's secrets on *remote*'s repository, or ``None`` where they do not apply.
 
-    They apply when ``haute.toml`` names the ``github`` CI provider, the deploy target has
-    secrets, and the remote's URL is on github.com. Reads only local state.
+    They apply when the remote fetches from and pushes to one repository on github.com,
+    ``haute.toml`` names the ``github`` CI provider, and the deploy target has secrets.
+    Reads only local state; settings that cannot be read raise :class:`CiSecretsError`.
     """
     found = _remote_secrets_or_reason(remote, project_dir)
     return found if isinstance(found, RemoteSecrets) else None
 
 
 def _report(
-    secrets: RemoteSecrets,
+    repository: str,
     state: Literal["ready", "missing", "unknown"],
     *,
     missing: Sequence[str] = (),
@@ -303,7 +336,7 @@ def _report(
     from haute.schemas import GitCiSecrets
 
     return GitCiSecrets(
-        repository=secrets.repository,
+        repository=repository,
         state=state,
         missing=list(missing),
         newly_set=list(newly_set),
@@ -311,41 +344,48 @@ def _report(
     )
 
 
-def _set_missing(
-    secrets: RemoteSecrets, gh: str, missing: Sequence[str], newly_set: list[str]
-) -> None:
-    """Set each of *missing* from ``.env``, appending it to *newly_set* once stored.
+def _set_missing(secrets: RemoteSecrets, gh: str, missing: list[str], newly_set: list[str]) -> None:
+    """Set each name in *missing* from ``.env``, moving it to *newly_set* once stored.
 
     Every one of the deploy's values must be usable and the Databricks pairs accepted
-    before the first is set. Raises :class:`CiSecretsError`.
+    first. The pairs' check takes seconds, so the repository is listed again after it,
+    and a name it gained meanwhile leaves *missing* without being set. Raises
+    :class:`CiSecretsError`; *missing* then holds the names still absent.
     """
     if not missing:
         return
     values, _ = usable_secret_values(secrets.project_dir, secrets.target, secrets.names)
     if secrets.target == "databricks":
         verify_databricks(values)
-    for name in missing:
+    present = github_secret_names(gh, secrets.project_dir, secrets.repository)
+    missing[:] = [name for name in missing if name not in present]
+    for name in list(missing):
         set_github_secret(gh, secrets.project_dir, name, values[name], secrets.repository)
+        missing.remove(name)
         newly_set.append(name)
 
 
 def _fill_before_first_publication(secrets: RemoteSecrets) -> GitCiSecrets:
     """Set the secrets the repository lacks; what was found and done, never a raise."""
-    try:
-        gh = resolve_gh()
-        present = github_secret_names(gh, secrets.project_dir, secrets.repository)
-    except CiSecretsError as exc:
-        return _report(secrets, "unknown", problem=str(exc))
-    missing = [name for name in secrets.names if name not in present]
-    newly_set: list[str] = []
-    try:
-        _set_missing(secrets, gh, missing, newly_set)
-    except CiSecretsError as exc:
-        still_missing = [name for name in missing if name not in newly_set]
-        return _report(
-            secrets, "missing", missing=still_missing, newly_set=newly_set, problem=str(exc)
-        )
-    return _report(secrets, "ready", newly_set=newly_set)
+    with _EDITOR_STEP:
+        try:
+            gh = resolve_gh()
+            present = github_secret_names(gh, secrets.project_dir, secrets.repository)
+        except CiSecretsError as exc:
+            return _report(secrets.repository, "unknown", problem=str(exc))
+        missing = [name for name in secrets.names if name not in present]
+        newly_set: list[str] = []
+        try:
+            _set_missing(secrets, gh, missing, newly_set)
+        except CiSecretsError as exc:
+            return _report(
+                secrets.repository,
+                "missing",
+                missing=missing,
+                newly_set=newly_set,
+                problem=str(exc),
+            )
+        return _report(secrets.repository, "ready", newly_set=newly_set)
 
 
 def _listed(secrets: RemoteSecrets) -> GitCiSecrets:
@@ -353,9 +393,9 @@ def _listed(secrets: RemoteSecrets) -> GitCiSecrets:
     try:
         present = github_secret_names(resolve_gh(), secrets.project_dir, secrets.repository)
     except CiSecretsError as exc:
-        return _report(secrets, "unknown", problem=str(exc))
+        return _report(secrets.repository, "unknown", problem=str(exc))
     missing = [name for name in secrets.names if name not in present]
-    return _report(secrets, "missing" if missing else "ready", missing=missing)
+    return _report(secrets.repository, "missing" if missing else "ready", missing=missing)
 
 
 def push_with_ci_secrets(remote: str, project_dir: Path) -> GitPushResponse:
@@ -364,11 +404,15 @@ def push_with_ci_secrets(remote: str, project_dir: Path) -> GitPushResponse:
     A first publication (the remote advertises no ref) sets the secrets the repository
     lacks from ``.env`` before :func:`haute._git.push_working_pair` creates the default
     branch, so the workflow runs that branch starts have them; after any other Push they
-    are listed once it has landed. Either outcome is the response's ``ci_secrets``, and
-    neither stops the push. A remote they do not apply to gets no ``ci_secrets``.
+    are listed once it has landed. Either outcome, and settings that cannot be read, is
+    the response's ``ci_secrets``; none of it stops the push. A remote they do not apply
+    to gets no ``ci_secrets``.
     """
-    secrets = remote_secrets(remote, project_dir)
     report: GitCiSecrets | None = None
+    try:
+        secrets = remote_secrets(remote, project_dir)
+    except _SettingsUnreadableError as exc:
+        secrets, report = None, _report(exc.repository, "unknown", problem=str(exc))
     if secrets is not None and _git.remote_is_empty(remote, cwd=project_dir):
         report = _fill_before_first_publication(secrets)
     response = _git.push_working_pair(remote, project_dir, cwd=project_dir)
@@ -387,9 +431,10 @@ def set_missing_ci_secrets(remote: str, project_dir: Path) -> GitCiSecrets:
     found = _remote_secrets_or_reason(remote, project_dir)
     if not isinstance(found, RemoteSecrets):
         raise CiSecretsError(found)
-    gh = resolve_gh()
-    present = github_secret_names(gh, project_dir, found.repository)
-    missing = [name for name in found.names if name not in present]
-    newly_set: list[str] = []
-    _set_missing(found, gh, missing, newly_set)
-    return _report(found, "ready", newly_set=newly_set)
+    with _EDITOR_STEP:
+        gh = resolve_gh()
+        present = github_secret_names(gh, project_dir, found.repository)
+        missing = [name for name in found.names if name not in present]
+        newly_set: list[str] = []
+        _set_missing(found, gh, missing, newly_set)
+        return _report(found.repository, "ready", newly_set=newly_set)

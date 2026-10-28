@@ -433,6 +433,11 @@ inspection failure propagates. The editor's Push asks it before calling `push_wo
 to know a first publication is coming ([cli](../cli/low-level.md)); `push_working_pair`
 inspects the remote again itself and owns the decision to bootstrap.
 
+**Push destination (`remote_push_urls`).** Where a push to a remote lands: `git remote
+get-url --push --all`, its `pushurl` entries when it has any, else its URL, with
+`insteadOf` and `pushInsteadOf` applied; empty for an absent remote. `remote_url` is the
+fetch URL. The editor's Push sets the deploy's secrets only when both name one repository.
+
 **Adoptable remote (`remote_holds_other_history`).** Hosted binding asks whether a remote
 holds history other than what this clone itself bootstraps there. The answer is `False` for
 a zero-object-ref remote, and for exactly the state an interrupted bootstrap leaves: the only
@@ -642,7 +647,8 @@ process failures, and precise ref-movement races deterministic.
   `remote_holds_other_history` answering `False` only for an empty remote or this clone's own
   default at its exact tip (a `HEAD`-only advertisement counts as content), and propagating
   an inspection failure; `remote_is_empty` answering `True` only for a zero-object-ref
-  remote and propagating an inspection failure;
+  remote and propagating an inspection failure; `remote_push_urls` giving a remote's URL, its
+  `pushurl` entries once it has any, and nothing for an absent remote;
   required response metadata and explicit-branch-refspec reporting; absent-ledger behavior;
   idempotent re-push; selected-remote and custom-default resolution; preservation of an
   existing related default; both outcomes of an empty-snapshot/concurrent-default race;

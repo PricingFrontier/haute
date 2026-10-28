@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
@@ -125,17 +126,27 @@ def log(project: Path) -> Path:
     return project.parent / "origin.git" / "receive-sessions.log"
 
 
+def _point_origin_at(monkeypatch: pytest.MonkeyPatch, fetch: str, push: str | None = None) -> None:
+    """``origin`` reads as fetching from *fetch* and pushing to *push* (else *fetch*);
+    git itself still pushes to the bare remote."""
+    from haute import _git
+
+    real_url, real_pushes = _git.remote_url, _git.remote_push_urls
+
+    def remote_url(name: str, cwd: Path | None = None) -> str | None:
+        return fetch if name == "origin" else real_url(name, cwd)
+
+    def remote_push_urls(name: str, cwd: Path | None = None) -> list[str]:
+        return [push or fetch] if name == "origin" else real_pushes(name, cwd)
+
+    monkeypatch.setattr(_git, "remote_url", remote_url)
+    monkeypatch.setattr(_git, "remote_push_urls", remote_push_urls)
+
+
 @pytest.fixture
 def on_github(monkeypatch: pytest.MonkeyPatch) -> None:
     """``origin`` reads as GitHub's ``acme/motor``; git still pushes to the bare remote."""
-    from haute import _git
-
-    real = _git.remote_url
-
-    def remote_url(name: str, cwd: Path | None = None) -> str | None:
-        return "https://github.com/acme/motor.git" if name == "origin" else real(name, cwd)
-
-    monkeypatch.setattr(_git, "remote_url", remote_url)
+    _point_origin_at(monkeypatch, "https://github.com/acme/motor.git")
 
 
 def _env_file(project: Path, values: dict[str, str]) -> None:
@@ -151,10 +162,13 @@ def _post(
     *,
     installed: bool = True,
     refuse: Exception | None = None,
+    during_check: Callable[[], None] | None = None,
 ) -> Any:
     def user(host: str, token: str) -> str:
         if refuse is not None:
             raise refuse
+        if during_check is not None:
+            during_check()
         return "ci-bot@example.com"
 
     def which(name: str, *args: Any, **kwargs: Any) -> str | None:
@@ -351,12 +365,44 @@ def test_set_from_env_sets_only_the_missing_secrets(
     }
 
 
+@pytest.mark.usefixtures("on_github")
+@pytest.mark.parametrize("path", ["/api/git/push", "/api/git/ci-secrets"])
+def test_a_secret_set_during_the_databricks_check_is_not_replaced(
+    client: TestClient, project: Path, log: Path, path: str
+) -> None:
+    """The pairs' check takes seconds; a secret someone sets meanwhile stays theirs."""
+    _env_file(project, _VALUES)
+    gh = _Gh(log)
+
+    def someone_sets_it() -> None:
+        gh.secrets.setdefault("DATABRICKS_RATING_TOKEN", "set meanwhile")
+
+    res = _post(client, path, gh, during_check=someone_sets_it)
+
+    assert res.status_code == 200, res.text
+    report = res.json() if path.endswith("ci-secrets") else res.json()["ci_secrets"]
+    assert report["state"] == "ready"
+    assert report["newly_set"] == _NAMES[:3]
+    assert gh.secrets["DATABRICKS_RATING_TOKEN"] == "set meanwhile"
+    assert "DATABRICKS_RATING_TOKEN" not in gh.sets
+
+
+def _break_settings(project: Path, case: str) -> None:
+    if case == "malformed haute.toml":
+        (project / "haute.toml").write_text("[deploy\ntarget = ", encoding="utf-8")
+    else:
+        (project / ".env").write_bytes(b"DATABRICKS_RATING_TOKEN=\xff\xfe\n")
+
+
 @pytest.mark.parametrize(
     ("case", "detail"),
     [
         ("placeholder", "Still .env.example's placeholder"),
         ("no gh", "https://cli.github.com"),
         ("off GitHub", "is not a repository on github.com"),
+        ("pushes elsewhere", "pushes somewhere other than acme/motor"),
+        ("malformed haute.toml", "Haute could not read this project's haute.toml and .env"),
+        ("undecodable .env", "Haute could not read this project's haute.toml and .env"),
     ],
 )
 def test_set_from_env_that_cannot_set_them_is_a_400(
@@ -367,14 +413,18 @@ def test_set_from_env_that_cannot_set_them_is_a_400(
     case: str,
     detail: str,
 ) -> None:
-    if case != "off GitHub":
-        monkeypatch.setattr(
-            "haute._git.remote_url", lambda name, cwd=None: "git@github.com:acme/motor.git"
+    if case == "pushes elsewhere":
+        _point_origin_at(
+            monkeypatch, "git@github.com:acme/motor.git", "https://github.com/acme/other.git"
         )
+    elif case != "off GitHub":
+        _point_origin_at(monkeypatch, "git@github.com:acme/motor.git")
     if case == "placeholder":
         shutil.copyfile(project / ".env.example", project / ".env")
     else:
         _env_file(project, _VALUES)
+    if case in ("malformed haute.toml", "undecodable .env"):
+        _break_settings(project, case)
     gh = _Gh(log)
 
     res = _post(client, "/api/git/ci-secrets", gh, installed=case != "no gh")
@@ -384,7 +434,7 @@ def test_set_from_env_that_cannot_set_them_is_a_400(
     assert gh.sets == []
 
 
-@pytest.mark.parametrize("case", ["off GitHub", "GitLab project"])
+@pytest.mark.parametrize("case", ["off GitHub", "pushes elsewhere", "GitLab project"])
 def test_a_push_the_secrets_do_not_apply_to_runs_no_gh(
     client: TestClient,
     project: Path,
@@ -392,10 +442,12 @@ def test_a_push_the_secrets_do_not_apply_to_runs_no_gh(
     monkeypatch: pytest.MonkeyPatch,
     case: str,
 ) -> None:
-    if case == "GitLab project":
-        monkeypatch.setattr(
-            "haute._git.remote_url", lambda name, cwd=None: "https://github.com/acme/motor"
+    if case == "pushes elsewhere":
+        _point_origin_at(
+            monkeypatch, "https://github.com/acme/motor", "git@github.com:acme/other.git"
         )
+    if case == "GitLab project":
+        _point_origin_at(monkeypatch, "https://github.com/acme/motor")
         toml = project / "haute.toml"
         text = toml.read_text(encoding="utf-8")
         toml.write_text(text.replace('provider = "github"', 'provider = "gitlab"'), "utf-8")
@@ -406,6 +458,26 @@ def test_a_push_the_secrets_do_not_apply_to_runs_no_gh(
 
     assert res.status_code == 200, res.text
     assert res.json()["ci_secrets"] is None
+    assert gh.calls == []
+    assert _published(project)
+
+
+@pytest.mark.usefixtures("on_github")
+@pytest.mark.parametrize("case", ["malformed haute.toml", "undecodable .env"])
+def test_a_push_whose_settings_cannot_be_read_still_lands(
+    client: TestClient, project: Path, log: Path, case: str
+) -> None:
+    _env_file(project, _VALUES)
+    _break_settings(project, case)
+    gh = _Gh(log)
+
+    res = _post(client, "/api/git/push", gh)
+
+    assert res.status_code == 200, res.text
+    report = res.json()["ci_secrets"]
+    assert report["repository"] == "acme/motor"
+    assert report["state"] == "unknown"
+    assert "Haute could not read this project's haute.toml and .env" in report["problem"]
     assert gh.calls == []
     assert _published(project)
 
@@ -464,5 +536,6 @@ def test_a_gh_call_past_its_timeout_fails_as_ci_secrets_error(tmp_path: Path) ->
 
 def test_remote_secrets_need_haute_toml(tmp_path: Path) -> None:
     init_repo(tmp_path)
+    _git(tmp_path, "remote", "add", "origin", "https://github.com/acme/motor.git")
 
     assert _ci_secrets.remote_secrets("origin", tmp_path) is None

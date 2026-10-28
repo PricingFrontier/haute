@@ -52,7 +52,10 @@ problem }`, the deploy's secrets as a Push or Set from .env found them ([cli](..
 `state` is `"ready" | "missing" | "unknown"`, `missing` and `newly_set` are secret names, and
 `problem` is the reason they could not be read or set, else `null`. `gitPush` validates it
 inside `GitPushResponse`, and `gitSetCiSecrets(remote)` (`POST /api/git/ci-secrets`) returns
-one, both through the generated validators.
+one, both through the generated validators. Neither sets a browser deadline: the server
+bounds each of their steps (git's, `gh`'s and Databricks' own timeouts), and a first
+publication runs several, so a deadline would report a failure while the push or the
+secrets still land.
 
 **`GitRemote`** — `{ name, url, working, ledger }`. `working` and `ledger` are
 `GitRemoteLeg | null` and are the only divergence fields; the working leg is not duplicated
@@ -515,7 +518,9 @@ Library component/unit tests (no e2e for this surface).
   client/guard contract requires `default_branch` and `bootstrapped_default`, preserves
   submitted `pushed_refs`, accepts both boolean values, and rejects missing or wrongly typed
   bootstrap metadata rather than inventing a default. `gitSetCiSecrets` posts the remote to
-  `/api/git/ci-secrets` and rejects a `GitCiSecrets` whose state is not one of the three.
+  `/api/git/ci-secrets` and rejects a `GitCiSecrets` whose state is not one of the three, and
+  both it and `gitPush` still answer after five minutes, where the default deadline would
+  have ended them.
   The guard suite also accepts exactly
   the six working-branch readiness states, preserves detached `head_sha`, and rejects an
   unknown state.

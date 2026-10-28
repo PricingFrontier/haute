@@ -223,34 +223,43 @@ non-zero exit or timeout raised as `CiSecretsError` with `gh`'s own message, eve
 being set redacted from it.
 
 **The deploy's secrets on Push** (`push_with_ci_secrets`, which `POST /api/git/push` calls).
-`remote_secrets(remote, project_dir)` reads only local state, and applies when the project's
-`haute.toml` sets `[ci] provider = "github"`, its target has secret names, and
-`git remote get-url` gives a URL on `github.com` (`https://`, `ssh://` or scp-like
-`git@github.com:OWNER/REPO`, with any userinfo, port, trailing `/` or `.git` dropped).
-`github_repository` reads exactly two path segments, an owner of letters, digits and `-` and a
-repository of letters, digits, `.`, `_` and `-`; another host, a local path or another shape
-is not GitHub, and then the response carries no `ci_secrets` and `gh` is never run. Where it
-applies, the remote is inspected first (`remote_is_empty`, the strict advertisement read the
-Push itself makes, whose failure fails the Push as the Push's own would). A remote with no
+`remote_secrets(remote, project_dir)` reads only local state. The remote comes first: its
+fetch URL (`git remote get-url`) must be on `github.com` (`https://`, `ssh://` or scp-like
+`git@github.com:OWNER/REPO`, with any userinfo, port, trailing `/` or `.git` dropped), and
+every URL a push to it lands on (`remote_push_urls`) must name the same repository, since
+the secrets belong where `main` arrives. `github_repository` reads exactly two path
+segments, an owner of letters, digits and `-` and a repository of letters, digits, `.`, `_`
+and `-`; another host, a local path or another shape is not GitHub. Then the project's
+`haute.toml` must set `[ci] provider = "github"` and its target have secret names. Where they
+do not apply, the response carries no `ci_secrets` and `gh` is never run. Settings that
+cannot be read (`DeployConfig.from_toml` failing on an unreadable or malformed `haute.toml`
+or `.env`) are the response's `unknown` with that `problem`, and the push goes ahead. Where
+they apply, the remote is inspected first (`remote_is_empty`, the strict advertisement read
+the Push itself makes, whose failure fails the Push as the Push's own would). A remote with no
 object refs is a first publication: before `push_working_pair` creates the default branch,
 the repository's secrets are listed and the ones it lacks are set from `.env`, so the
 workflow runs the default's creation starts already have them. Every one of the deploy's
 secrets must be readable from `.env` or the environment and not a placeholder, and each
-Databricks pair checked, before any is set; one the repository has is never overwritten. The
-outcome is the response's `ci_secrets`: `ready` with `newly_set` naming what was set (empty
-when the repository already had every one); `missing` with the names still absent and
-`problem` saying why (a value unset or a placeholder, a pair Databricks refused, a `gh secret
-set` failure, after which the ones already set stay set and are left out of `missing`); or
-`unknown` with `problem` saying why the list could not be read (no `gh`, not logged in, no
-access to the repository's secrets, a timeout). None of these stops the push. After any other
-Push the repository's secrets are listed once the push has landed and reported `ready`,
-`missing` (with no `problem`) or `unknown`; nothing is set. A push that fails raises as before,
-and secrets a first publication set before it stay set.
+Databricks pair checked, before any is set; that check takes seconds, so the repository is
+listed again after it, and a secret it gained meanwhile is left as it is. The editor's
+secrets steps run one at a time (a process-wide lock). Nothing Haute lists is overwritten;
+GitHub's API creates or updates, so a write by someone else between that last listing and
+Haute's own cannot be excluded. The outcome is the response's `ci_secrets`: `ready` with
+`newly_set` naming what was set (empty when the repository already had every one); `missing`
+with the names still absent and `problem` saying why (a value unset or a placeholder, `.env`
+unreadable, a pair Databricks refused, a `gh secret set` failure, after which the ones
+already set stay set and are left out of `missing`); or `unknown` with `problem` saying why
+the list could not be read (no `gh`, not logged in, no access to the repository's secrets, a
+timeout). None of these stops the push. After any other Push the repository's secrets are
+listed once the push has landed and reported `ready`, `missing` (with no `problem`) or
+`unknown`; nothing is set. A push that fails raises as before, and secrets a first
+publication set before it stay set.
 
 `POST /api/git/ci-secrets {remote}` (`set_missing_ci_secrets`) sets the secrets the
-repository lacks the same way, never overwriting one, and answers `ready` with `newly_set`.
-A remote the step does not apply to (not configured, not on `github.com`, a project whose
-provider is not GitHub or whose target has no secrets) and every `CiSecretsError` are a 400
+repository lacks the same way, never overwriting one it lists, and answers `ready` with
+`newly_set`. A remote the step does not apply to (not configured, not on `github.com`,
+pushing somewhere other than it fetches from, a project whose provider is not GitHub or whose
+target has no secrets), settings that cannot be read, and every `CiSecretsError` are a 400
 naming why; a secret set before a later one failed stays set.
 
 **`ci update`**: `handle_ci_update` regenerates the CI files `haute init` would write for the
@@ -313,9 +322,15 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
 - **`impact`'s sampling only triggers when it would shrink the dataset** (`config.sample > 0 and
   total_rows > config.sample`) — a larger value, zero, or any negative value scores every row;
   the negative-value behaviour is an unvalidated current gap rather than a documented option.
-- **The editor never overwrites a deploy secret.** `push_with_ci_secrets` and
-  `set_missing_ci_secrets` set only names the repository's list lacks; only `haute ci secrets`
-  replaces a value the repository has.
+- **The editor never overwrites a deploy secret it can see.** `push_with_ci_secrets` and
+  `set_missing_ci_secrets` set only names the repository's list lacks, listed again after the
+  Databricks check and one editor step at a time; only `haute ci secrets` replaces a value the
+  repository has. GitHub's API creates or updates, so a write by someone else after the last
+  listing is the one case Haute cannot rule out.
+- **Secrets go where the push lands.** A remote whose push URLs name another repository than
+  its fetch URL, or several, gets none: Haute will not guess which repository runs the deploy.
+- **The secrets never block the push.** Settings or `.env` that cannot be read are reported
+  in `ci_secrets`, and the push goes ahead.
 - **A first publication sets the secrets before the default exists.** They are set ahead of
   `push_working_pair`, so a push that then fails leaves them set, and the next Push's listing
   finds them. A remote emptied between the inspection and the push is bootstrapped by the push
@@ -411,10 +426,13 @@ Key files and what they cover:
   `gh` stub and the remote's pre-receive hook) and overwrites none; an unset or placeholder
   value, a refused pair and a failed `gh secret set` each report `missing` with the problem
   while the push still lands; no `gh` and a failed listing report `unknown`; a later Push lists
-  and sets nothing; Set from .env sets the missing ones and is a 400 for a remote off GitHub or
-  any failure; a remote off GitHub runs no `gh`. `github_repository` reads each URL form and
-  refuses other hosts and shapes; `run_gh` redacts a value from `gh`'s message and turns a
-  timeout into `CiSecretsError`.
+  and sets nothing; a secret someone sets during the Databricks check is left as it is, on
+  Push and on Set from .env; a malformed `haute.toml` or an undecodable `.env` reports
+  `unknown` and the push still lands; Set from .env sets the missing ones and is a 400 for a
+  remote off GitHub, one pushing to another repository, unreadable settings or any failure; a
+  remote off GitHub, one pushing elsewhere and a GitLab project run no `gh`.
+  `github_repository` reads each URL form and refuses other hosts and shapes; `run_gh`
+  redacts a value from `gh`'s message and turns a timeout into `CiSecretsError`.
 - `test_cli_ux.py` — cross-cutting UX contracts: shared `ENDPOINT_SUFFIX_HELP` string reused across
   commands, `init --force`, `train` progress-bar flushing, `status --version-only` exit codes,
   Windows pre-commit chmod skip.

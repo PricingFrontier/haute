@@ -1695,6 +1695,45 @@ describe("request() edge cases", () => {
     }
   })
 
+  it("lets a slow Push and Set from .env answer: the server bounds their every step", async () => {
+    vi.useFakeTimers()
+    try {
+      const pushBody = loadUiContractFixture("git_push_response")
+      const secretsBody = {
+        repository: "acme/motor",
+        state: "ready",
+        missing: [],
+        newly_set: [],
+        problem: null,
+      }
+      mockFetch.mockImplementation(
+        (url: string, options?: RequestInit) =>
+          new Promise((resolve, reject) => {
+            const signal = options?.signal as AbortSignal | undefined
+            signal?.addEventListener(
+              "abort",
+              () => reject(new DOMException("Aborted", "AbortError")),
+              { once: true },
+            )
+            // A first publication setting the secrets can take minutes.
+            setTimeout(
+              () => resolve(jsonResponse(url === "/api/git/push" ? pushBody : secretsBody)),
+              5 * 60 * 1000,
+            )
+          }),
+      )
+
+      const push = gitPush("origin")
+      const secrets = gitSetCiSecrets("origin")
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000)
+
+      await expect(push).resolves.toEqual(pushBody)
+      await expect(secrets).resolves.toEqual(secretsBody)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("preserves caller-initiated aborts as AbortError", async () => {
     mockFetch.mockImplementation((_url: string, options?: RequestInit) =>
       new Promise((_resolve, reject) => {

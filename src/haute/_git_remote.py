@@ -61,6 +61,7 @@ logger = get_logger(component="git")
 __all__ = [
     "ensure_remote",
     "remote_url",
+    "remote_push_urls",
     "adopt_cloned_lineage",
     "remote_is_empty",
     "remote_holds_other_history",
@@ -101,6 +102,17 @@ def remote_url(name: str, cwd: Path | None = None) -> str | None:
     _validate_ref_name(name)
     ok, url = _run_git_ok("remote", "get-url", name, cwd=cwd)
     return url.strip() if ok and url.strip() else None
+
+
+def remote_push_urls(name: str, cwd: Path | None = None) -> list[str]:
+    """Where a push to remote *name* lands: its ``pushurl`` entries, else its URL.
+
+    ``git remote get-url --push --all``, with ``insteadOf`` and ``pushInsteadOf``
+    applied; empty when the remote is absent.
+    """
+    _validate_ref_name(name)
+    ok, urls = _run_git_ok("remote", "get-url", "--push", "--all", name, cwd=cwd)
+    return [url.strip() for url in urls.splitlines() if url.strip()] if ok else []
 
 
 def adopt_cloned_lineage(working: str, remote: str = "origin", cwd: Path | None = None) -> None:
