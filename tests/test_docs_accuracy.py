@@ -164,7 +164,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "frontend-shared",
     "git-integration",
     "io-layer",
-    "json-shredding",
     "model-scoring",
     "modelling",
     "name-collisions",

@@ -20,7 +20,7 @@ import {
   commonRootPath,
   dropMappingHeader,
 } from "./outputPathTools"
-import { parsePath } from "./jsonpath"
+import { makeOutputPath, parsePath, segmentPrefix, type Seg } from "./jsonpath"
 import { isRequestInputType } from "../../utils/nodeTypes"
 import { authoritativeSourceHandles, edgeInputName, requestInputFrameColumns } from "../../utils/apiInputPorts"
 
@@ -283,6 +283,8 @@ export default function OutputEditor({
   // An OUTPUT level takes one frame (the backend rejects two), so frames that
   // emit at the same array level are flagged before a run or save fails.
   const sharedLevels = useMemo(() => framesSharingALevel(v2.outputMapping), [v2.outputMapping])
+  // Rows whose paths the backend refuses together, in any frames (absolute indices).
+  const pathConflicts = useMemo(() => mappingPathConflicts(v2.outputMapping), [v2.outputMapping])
 
   // Editor-only row status (Inferred pill). Never persisted. Keyed by ABSOLUTE
   // index into v2.outputMapping.
@@ -811,6 +813,7 @@ export default function OutputEditor({
                   port={port}
                   columns={columns}
                   rows={rows}
+                  pathConflicts={pathConflicts}
                   isOpen={isOpen}
                   frameEnabled={anyEnabled}
                   rowStatus={rowStatus}
@@ -857,6 +860,7 @@ function FrameBlock({
   port,
   columns,
   rows,
+  pathConflicts,
   isOpen,
   frameEnabled,
   rowStatus,
@@ -880,6 +884,8 @@ function FrameBlock({
   port: string
   columns: string[]
   rows: { entry: OutputMappingEntryV2; index: number }[]
+  /** Absolute indices of the mapping's conflicting rows, over every frame. */
+  pathConflicts: ReadonlySet<number>
   isOpen: boolean
   frameEnabled: boolean
   rowStatus: RowStatusMap
@@ -901,12 +907,6 @@ function FrameBlock({
   /** Replace this frame's rows from a pasted tab-separated grid. */
   onPasteRows: (grid: string[][]) => void
 }) {
-  // Best-effort conflict detection, scoped to this frame (= source_port),
-  // mirroring the backend's per-port rules: among ENABLED rows, two different
-  // columns mapping to the same path, or two paths that are prefix-comparable.
-  // Returns the set of ABSOLUTE indices that participate in a conflict.
-  const conflicts = useMemo(() => detectConflicts(rows), [rows])
-
   // The frame's "header path" — shown in the header with a pencil. It defaults
   // to the rows' common root (a sensible starting prefix); literal storage means
   // there is no header/suffix split, so this is purely the prefix the user is
@@ -1225,7 +1225,7 @@ function FrameBlock({
               entry={r.entry}
               columns={columns}
               status={rowStatus[r.index] ?? "Confirmed"}
-              pathConflict={conflicts.has(r.index)}
+              pathConflict={pathConflicts.has(r.index)}
               onColumn={(source_column) => {
                 onUpdateEntry(r.index, { source_column })
                 onMarkConfirmed(r.index)
@@ -1244,78 +1244,82 @@ function FrameBlock({
   )
 }
 
-/**
- * Best-effort per-frame conflict detection over a frame's rows. Returns the
- * set of ABSOLUTE indices (`r.index`) that participate in a conflict — the
- * same coordinate the rows render and look up their status by. Mirrors the
- * backend's `validate_v2_output_mapping` per-port rules over ENABLED rows:
- *   - injectivity: two distinct columns → same path;
- *   - prefix-incomparability: two distinct paths where one's segment list is a
- *     prefix of the other's (comparing `(name, isArray)` pairs, per the backend
- *     `_Seg` equality — a scalar leaf and an array container at the same name
- *     are NOT comparable).
- * Only grammatically valid paths take part (invalid paths surface their own
- * error). The backend remains the authority.
- */
-function detectConflicts(rows: { entry: OutputMappingEntryV2; index: number }[]): Set<number> {
-  const conflicting = new Set<number>()
-  const valid = rows.filter(
-    ({ entry }) =>
-      entry.enabled && entry.output_path && validateOutputPath(entry.output_path) === null,
+/** Whether a mapping row takes part in the backend's validation: enabled, with a
+ * column and a grammatical path (`is_active_mapping_entry` plus the grammar). */
+function isActiveRow(entry: OutputMappingEntryV2): boolean {
+  return (
+    entry.enabled &&
+    entry.source_column.trim() !== "" &&
+    entry.output_path.trim() !== "" &&
+    validateOutputPath(entry.output_path) === null
   )
-  for (let a = 0; a < valid.length; a++) {
-    for (let b = a + 1; b < valid.length; b++) {
-      const ea = valid[a].entry
-      const eb = valid[b].entry
-      const samePath = ea.output_path === eb.output_path
-      const dup = samePath && ea.source_column !== eb.source_column
-      const prefix = !samePath && prefixComparable(ea.output_path, eb.output_path)
-      if (dup || prefix) {
-        conflicting.add(valid[a].index)
-        conflicting.add(valid[b].index)
-      }
+}
+
+/** A path's level: its segments through its last `[:]`, object hops included.
+ * Mirror of the backend `_array_prefix`. */
+function arrayPrefix(path: string): Seg[] {
+  const segments = parsePath(path).segments
+  return segments.slice(0, segments.map((seg) => seg.isArray).lastIndexOf(true) + 1)
+}
+
+/**
+ * Best-effort conflict detection over the whole mapping. Returns the ABSOLUTE
+ * indices (into `outputMapping`) of the active rows the backend's
+ * `validate_v2_output_mapping` refuses together:
+ *   - injectivity: two distinct columns of one frame on one path;
+ *   - one kind per place: across every frame, a place a path steps through is an
+ *     object (`.name`) or an array (`[:]`) and the place it ends at is a field, and
+ *     a place used as two kinds (`$[:].items` beside `$[:].items[:].value`)
+ *     marks every row that uses it. One field mapped by several frames is one
+ *     kind, so a shared relation key is not a conflict.
+ * The backend remains the authority.
+ */
+function mappingPathConflicts(mapping: OutputMappingEntryV2[]): Set<number> {
+  const conflicting = new Set<number>()
+  const columnsByPath = new Map<string, Map<string, number[]>>()
+  const kindsByPlace = new Map<string, Map<string, number[]>>()
+  const record = (groups: Map<string, Map<string, number[]>>, key: string, value: string, index: number) => {
+    const values = groups.get(key) ?? new Map<string, number[]>()
+    values.set(value, [...(values.get(value) ?? []), index])
+    groups.set(key, values)
+  }
+  mapping.forEach((entry, index) => {
+    if (!isActiveRow(entry)) return
+    record(columnsByPath, JSON.stringify([entry.source_port, entry.output_path]), entry.source_column, index)
+    const segments = parsePath(entry.output_path).segments
+    segments.forEach((seg, i) => {
+      const kind = i === segments.length - 1 ? "field" : seg.isArray ? "array" : "object"
+      record(kindsByPlace, JSON.stringify(segments.slice(0, i + 1).map((s) => s.name)), kind, index)
+    })
+  })
+  for (const groups of [columnsByPath, kindsByPlace]) {
+    for (const values of groups.values()) {
+      if (values.size > 1) for (const indices of values.values()) indices.forEach((i) => conflicting.add(i))
     }
   }
   return conflicting
 }
 
-/** True when one path's segment list is a prefix of the other's (or equal),
- * comparing `(name, isArray)` PAIRS — mirroring the backend `_prefix_comparable`
- * over `_Seg` tuples. A scalar leaf `$[:].obj` and an array container
- * `$[:].obj[:].x` differ at the `obj` segment's `isArray` flag, so they are NOT
- * prefix-comparable (the backend accepts them; the editor must not false-flag). */
-function prefixComparable(a: string, b: string): boolean {
-  const sa = parsePath(a).segments
-  const sb = parsePath(b).segments
-  const n = Math.min(sa.length, sb.length)
-  for (let i = 0; i < n; i++) {
-    if (sa[i].name !== sb[i].name || sa[i].isArray !== sb[i].isArray) return false
-  }
-  return true
-}
-
 /**
  * The array levels more than one frame emits at, mirroring the backend's
- * one-frame-per-level rule (`validate_v2_output_mapping`). Over ACTIVE rows
- * (enabled, with a column and a grammatical path), a path's level is the names
- * of its `[:]` segments and a frame emits at its deepest one. A frame whose
- * levels do not form one chain is rejected for that on its own, so it takes no
- * part here. Each shared level is returned as a path (`$[:]`, `$[:].a[:]`) with
- * its frames in mapping order.
+ * one-frame-per-level rule (`validate_v2_output_mapping`). Over active rows a
+ * path's level is its segments through its last `[:]` (object hops included, so
+ * `$[:].left.items[:]` and `$[:].right.items[:]` are two levels) and a frame
+ * emits at its deepest one. A frame whose levels do not form one chain is
+ * rejected for that on its own, so it takes no part here. Each shared level is
+ * returned as a path (`$[:]`, `$[:].a[:]`) with its frames in mapping order.
  */
 function framesSharingALevel(mapping: OutputMappingEntryV2[]): { level: string; ports: string[] }[] {
-  const levelsByPort = new Map<string, string[][]>()
+  const levelsByPort = new Map<string, Seg[][]>()
   for (const entry of mapping) {
-    if (!entry.enabled || !entry.source_column.trim() || !entry.output_path.trim()) continue
-    if (validateOutputPath(entry.output_path) !== null) continue
-    const level = parsePath(entry.output_path).segments.filter((s) => s.isArray).map((s) => s.name)
-    levelsByPort.set(entry.source_port, [...(levelsByPort.get(entry.source_port) ?? []), level])
+    if (!isActiveRow(entry)) continue
+    levelsByPort.set(entry.source_port, [...(levelsByPort.get(entry.source_port) ?? []), arrayPrefix(entry.output_path)])
   }
   const portsByLevel = new Map<string, string[]>()
   for (const [port, levels] of levelsByPort) {
     const deepest = levels.reduce((a, b) => (b.length > a.length ? b : a))
-    if (!levels.every((level) => level.every((name, i) => deepest[i] === name))) continue
-    const path = `$[:]${deepest.map((name) => `.${name}[:]`).join("")}`
+    if (!levels.every((level) => segmentPrefix(level, deepest))) continue
+    const path = makeOutputPath(deepest)
     portsByLevel.set(path, [...(portsByLevel.get(path) ?? []), port])
   }
   return [...portsByLevel]
@@ -1396,7 +1400,7 @@ function MappingRow({
         containerClassName="flex-1 min-w-0"
         className="w-full text-[11px] px-1.5 py-0.5 rounded font-mono"
         style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-muted)" }}
-        warning={pathConflict ? "Conflicts with another field's path in this frame (best-effort)." : null}
+        warning={pathConflict ? "Conflicts with another field's path (best-effort)." : null}
       />
       {status === "Inferred" && (
         <span

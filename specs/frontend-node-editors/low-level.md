@@ -680,12 +680,17 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   retained as identifying text plus a visible warning marker), never a normal-looking fallback.
 - The Output editor mirrors the backend's one-frame-per-array-level rule
   ([JSON shredding](../json-shredding/high-level.md)): over the active rows (enabled, with a
-  column and a grammatical path) a frame emits at the deepest array prefix of its paths, and
-  when two frames emit at the same level a danger banner names the frames and the level and
-  says to join them upstream (for example with a Join node) or map one of them to a different
-  level. A frame whose array prefixes do not form one chain is left to its own error. Like the
-  per-frame path-conflict warning, the banner never blocks an edit; the backend validator is
-  the authority.
+  column and a grammatical path) a frame emits at the deepest array prefix of its paths (a
+  path's segments through its last `[:]`, object hops included, so `$[:].left.items[:]` and
+  `$[:].right.items[:]` are two levels), and when two frames emit at the same level a danger
+  banner names the frames and the level and says to join them upstream (for example with a
+  Join node) or map one of them to a different level. A frame whose array prefixes do not form
+  one chain is left to its own error. The path-conflict warning marks, over the active rows of
+  every frame, two columns of one frame on one path and every row that uses a place in the
+  document as a different kind from another row (a field, an object or an array, such as
+  `$[:].cover` beside `$[:].cover.drivers[:].driver_id`); one field mapped by several frames is
+  not a conflict. A path ending at `[:]` is refused as it is typed. The banner and the warning
+  never block an edit; the backend validator is the authority.
 - The API Input label, table-path and column name/path fields and the Output mapping path
   field are the shared `ValidatedTextField`
   ([frontend shared](../frontend-shared/low-level.md)): the API Input fields pass the

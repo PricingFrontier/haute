@@ -58,8 +58,9 @@ follow-up checked the job log.
 
 Priorities follow the roadmap convention: P1 threatens saved work, calculated
 results or security; P2 materially affects correctness, UX or assurance; P3 covers
-the limited-impact or rare-input items. The 42 groups comprise 13 P1, 25 P2 and 4 P3.
-The first table preserves the ten initial finding groups (seven P1 and three P2).
+the limited-impact or rare-input items. The review recorded 42 groups: 13 P1, 25 P2 and
+4 P3. Groups whose packages were delivered have since been removed, so the tables hold
+the open ones. The first table keeps what is open of the ten initial finding groups.
 The following table adds the full-source findings, including additions to existing
 owners. A group is not an individual failing assertion or a release-wide blocker count.
 
@@ -68,7 +69,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P1 | An IDE save after assistant plan verification is overwritten by apply; the rename and post-save verification still succeed. | [ASSIST-61](assistant.md#assist-61--keep-the-authenticated-revision-through-commit) | Real temporary pipeline and transactional save; deterministic edit before commit. |
 | P1 | A concurrent milestone captures the Python from an in-flight save before its referenced configuration exists. | [GIT-R17](git-integration.md#git-r17--pipeline-saves-share-the-git-transaction-boundary) | Real Git repository, save and milestone with a barrier between artifact writes; both operations succeed. |
 | P1 | Local underwriter app accepts a foreign Host for reads and pricing as the analyst. | [WB-39](workbench.md#wb-39--enforce-the-local-apps-request-boundary) | Both requests returned 200; the pricing response contained premium 500. Browser and quote-mutation consequences are source-supported. |
-| P1 | OUTPUT loses object hops before arrays, merges distinct level identities, and overwrites a scalar with an array. | [JSON-R06](json-shredding.md#json-r06--output-preserves-the-complete-destination-path) | Three direct mapping probes; schema derivation also confirms the wrong nesting. |
 | P2 | Two independent API Input edits before identity resolution completes retain only the second edit. | [FSH-R10](frontend-shared.md#fsh-r10--retain-edits-during-input-identity-resolution) | Actual controller: expected `[false, false]`, received `[true, false]`; `onUpdateNode` surfaces the superseded edit as an error toast. |
 | P1 | Cancellation of A finishes after B starts; A's reply retires B or publishes A's result under B's calculation identity. | [FSH-R11](frontend-shared.md#fsh-r11--cancellation-replies-belong-to-one-job) | Two pivot hook/store probes. Training has the same source pattern but was not separately executed. |
 | P1 | Inference for `first.json` returns after the user selected `second.json` and added a table; old path/tables are written back. | [FNED-R06](frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft) | Actual API Input editor with delayed inference response. |
@@ -80,7 +80,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 
 | Priority | Trigger and observed consequence | Owning package | Evidence and practical limit |
 |---|---|---|---|
-| P1 | Malformed scalar/null/list elements in a non-emitting ancestor array disappear from a strict deployed request. Valid siblings still price at 100. | [JSON-R07](json-shredding.md#json-r07--malformed-ancestors-cannot-hide-skipped-request-data) | Real QuoteRequest and score_graph; three ancestor shapes. Missing/empty optional arrays are a separate valid case. |
 | P2 | Building 0.10.0 beside stale 0.9.0 bundles the old wheel because selection is lexicographic. | [BUG-40](bugs.md#bug-40--the-hosted-app-boots-from-a-lock), extended | Unchanged shell builder in a temporary layout; deterministic builder output and local digest-tool adapter, no actual deployment. |
 | P2 | Invalid connect endpoints/keywords/ports are dropped or repaired; parameter inference can hide the discarded call. | [PCFG-R20](pipeline-config.md#pcfg-r20--malformed-connect-calls-are-parse-errors) | Actual strict parse/codegen versus executing original Python; four malformed call shapes. Existing helper tests preserve some wrong behavior. |
 | P1 | A keyword-only factor default disappears on Save; a preamble name takes over and changes 120 to 90. | [PCFG-R21](pipeline-config.md#pcfg-r21--node-signatures-retain-their-configuration-bindings) | Actual original and regenerated functions, strict file parse. |
@@ -164,15 +163,7 @@ their transactions and regressions. Those variants are source-supported; the
 executed interleaving above uses the full save transaction. Submodel
 create/dissolve are in-memory transforms whose persistence uses explicit Save.
 
-### OUTPUT and evaluation
-
-Map a one-row frame containing `quote_id="q1"` and `vehicle_id="v1"` to
-`$[:].id` and `$[:].cover.vehicles[:].id`. The observed result is
-`[{"id":"q1","vehicles":[{"id":"v1"}]}]`; the path requires
-`[{"id":"q1","cover":{"vehicles":[{"id":"v1"}]}}]`.
-Separate frames mapped to `left.items[:]` and `right.items[:]` instead receive
-a false same-level refusal. A scalar mapped to `$[:].items` disappears when a
-second frame maps a child to `$[:].items[:].value`.
+### Evaluation
 
 The evaluation witnesses use canonical row order `0..99` and seed 42:
 
@@ -255,7 +246,7 @@ adds a finding group or changes the 42-group count.
 | `_submodel_instances.py` merged support code / `_support_code_names.py` | **Ordinary strict-parse conflict is guarded; broader variant unverified.** A confirming case must pass strict parsing with two valid occurrence scopes and then show support-name rebinding after flatten/execution. Existing ordinary preamble rejection is not evidence that dynamic imports/all reuse scopes are safe; the note contains no such witness. |
 | `src/haute/modelling/_ebm.py` grouped categorical axis | **Unverified.** Fit/load a real EBM with multiple category labels sharing one bin; compare exported term labels/scores with native prediction for every grouped level. No completed reproduction or rebuttal was recorded. No GPU issue follows from this shared note. |
 | `src/haute/_rating.py` null-factor/miss handling | **Unverified contract question separate from accepted `value` collision.** Run a valid table containing a null level through ordinary lookup with each declared miss policy, compare with the specified null/missing behavior, and show an incorrect match/default/refusal. The note already says nulls are deliberately treated as misses; it does not prove that policy violates the contract. |
-| `src/haute/_api_input_schema.py` typed codec | **Partly duplicate / otherwise underspecified.** Persisted editor-only `origin`/`key` belongs to FNED-R01/PCFG-R08, and reserved leaves to JSON-R03. Any other claim must first identify an exact unknown key or valid level/path shape, then demonstrate accepted data lost on codec round trip. The general note gives no other concrete case. |
+| `src/haute/_api_input_schema.py` typed codec | **Partly duplicate / otherwise underspecified.** Persisted editor-only `origin`/`key` belongs to FNED-R01/PCFG-R08. Any other claim must first identify an exact unknown key or valid level/path shape, then demonstrate accepted data lost on codec round trip. The general note gives no other concrete case. |
 | `.github/workflows/performance.yml` execution-engine-platform job | **Unverified.** Inspect or execute the exact macOS locked install and named certification tests, showing a required engine fails import/is skipped unexpectedly. No macOS execution or native dependency failure was recorded. Existing pin/coverage packages do not prove this platform-specific case. |
 | `hatch_build.py` frontend freshness input closure | **Unverified residual suspicion.** Identify a real imported frontend build dependency omitted from the hook's closure, modify it, then demonstrate a build incorrectly reuses stale output. The source note supplies no omitted file; ENGQ-R06 already owns its machine-specific Node fallback, not every possible closure defect. |
 | Frontend scratch report; `SchemaTableCard.tsx` search state | **Unverified.** Apply a search while the schema exceeds its search-control threshold, refresh to fewer columns without remounting, and observe hidden search state continuing to filter with no visible way to clear it. The full report explicitly left this without a demonstrated transition. |
@@ -289,7 +280,6 @@ adds a finding group or changes the 42-group count.
 | Databricks append | Duplicate **BUG-45**. |
 | dirty delete / broken pairs | Duplicates **GIT-R03**, **GIT-R16**. |
 | recurring Git failures/compensation | The named failure-surfacing concern is **GIT-R02**; duplicate compensation mechanisms are **GIT-R05**. These broad notes do not establish any additional specific exception path. |
-| existing inference date/null/reserved leaves | Duplicate **JSON-R03**. |
 | non-SQLite form insertion | Duplicate **WB-10** for non-SQLite form insertion (the scratch spelling WB-R10 is not another package). The note gives no additional concrete database defect. |
 | sandbox project globals | Duplicate **PCFG-R04**. |
 | match/type-alias support binding | Duplicate **PCFG-R19**. This does not settle the separate Polars module-alias shape candidate. |
@@ -298,7 +288,6 @@ adds a finding group or changes the 42-group count.
 | CLI/init/deploy existing gaps | Duplicates **DEP-R11** for impact alignment, **DEP-R12A** for build ownership, **DEP-R09** for dependency closure, and **CLI-R01**, **CLI-R04**, **CLI-R06** for init overwrite, TOML mutation and hook behavior. The scratch shorthand DEP-R12 predates its split; generic CLI errors/eager reads name no additional concrete case. |
 | inactive source-switch branch | Duplicate **EXEC-R14**. |
 | Literal-only chunked selects | Duplicate **EXEC-R09**; the deployed request-order witness is included in its accepted extension above. |
-| Permissive Edge Join `coalesce` | Duplicate **JSON-R03**; retain the canonical typed option contract. |
 | Submodel source conservation | Duplicate **BUG-19** for dropped authored statements; no additional unspecified conservation failure is claimed. |
 | Model diagnostic weights | Duplicate **MOD-R05**. |
 | Hosted sign-in headers | Duplicate **WB-25**; separate local Host-boundary finding remains WB-39. |
@@ -324,7 +313,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | blocked recovery inspector | **FGC-R09**. |
 | API Input / Data Input schema identity | **FNED-R06**. |
 | cached file browser error | **FNED-R02**. |
-| OUTPUT object-hop folding | **JSON-R06**. |
 | reserved rating `value` | **BUG-46**. |
 | cached pivot response consumer node identity | **EDA-R01**; numbers remain correct as recorded in the accepted report. |
 | tuning status fields | **MOD-R08**. |
@@ -336,7 +324,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | keyword-only defaults | **PCFG-R21**. |
 | local app Host boundary | **WB-39**. |
 | save/repair Git transaction gap | **GIT-R17**. |
-| descendant malformed ancestor skip | **JSON-R07**. |
 | pyfunc classifier output shape | **MSC-11**. |
 | initial binding restart branch | **BUG-47**. |
 | literal select row proof | **EXEC-R09**. |
@@ -384,8 +371,8 @@ that regression. This was same-family review, not cross-family validation.
 
 The subsequent **cross-family review by Claude** checked the decisive code for all
 42 finding groups and reported no false positives; it did not check MOD-R05's integer
-PDP-label item. It reproduced JSON-R06, JSON-R07, MOD-R07, PCFG-R21 and the parser half
-of NAME-10, and supplied the hosted ENGQ-R07 evidence cited above. This documentation
+PDP-label item. It reproduced MOD-R07, PCFG-R21, the parser half of NAME-10 and two
+findings since delivered, and supplied the hosted ENGQ-R07 evidence cited above. This documentation
 follow-up incorporates its coverage qualifications, candidate dispositions, package
 splits, priorities, ownership, ordering and link corrections. Neither review approval
 claims that the recorded production defects have been fixed.

@@ -6,7 +6,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, NoReturn, cast
+from typing import Any, NamedTuple, NoReturn, cast
 
 import orjson
 import polars as pl
@@ -19,6 +19,7 @@ from haute._api_input_schema import (
     ColumnType,
     PathSeg,
     array_depth,
+    make_table_path,
     parse_column_path_full,
     parse_table_path,
     validate_v2_schema,
@@ -403,6 +404,15 @@ def _emitting_table_specs(v2_config: dict[str, Any]) -> tuple[_EmittingTableSpec
     return tuple(table_specs)
 
 
+class _RowSkip(NamedTuple):
+    """One row a table lost: the record it was in, the place, and what the table reads there."""
+
+    label: str
+    record: int
+    path: str
+    expected: str  # "an object", "a scalar" or "an array"
+
+
 def shred_to_buffers(
     records: Iterable[dict[str, Any]],
     v2_config: dict[str, Any],
@@ -411,6 +421,7 @@ def shred_to_buffers(
     _table_specs: tuple[_EmittingTableSpec, ...] | None = None,  # pragma: no mutate
     _row_sink: Callable[[str, _Row], None] | None = None,  # pragma: no mutate
     _emitted_counts: dict[str, int] | None = None,  # pragma: no mutate
+    _on_row_skip: Callable[[_RowSkip], None] | None = None,  # pragma: no mutate
 ) -> dict[str, list[dict[str, Any]]]:
     """Shred *records* according to *v2_config*, returning per-frame row buffers.
 
@@ -432,7 +443,12 @@ def shred_to_buffers(
 
     A value that is not a list where the schema declares an array is counted
     against every table at or below that array, since all their rows from it are
-    lost; a missing key or a null is no array. Records read from an XML file
+    lost; a missing key or a null is no array. Likewise an array element that is
+    not an object, or a present value that is not an object where the schema steps
+    into one on the way to an array, holds none of the arrays below it, so it is
+    counted against every table below — whether or not a table emits where it sits.
+    *_on_row_skip* receives every counted row with its record and place; a strict
+    caller raises from it. Records read from an XML file
     reach the walk through :func:`file_records`, which makes each single element
     at a declared array a one-element list first.
     """
@@ -500,6 +516,16 @@ def shred_to_buffers(
         for descents in descents_by_pos.values()
         for _obj_prefix, _array_key, child_pos in descents
     }
+    # The emitting tables strictly below each position an element sits at: an
+    # element that is not an object holds none of the arrays they read.
+    labels_below = {
+        pos: tuple(
+            label
+            for label, segments, _cols in emit_tables
+            if len(segments) > len(pos) and segments[: len(pos)] == pos
+        )
+        for pos in descents_by_pos
+    }
 
     # The public path retains its historic per-table buffers.  Direct runtime
     # loading supplies a sink, so the walk instead hands each row to its bounded
@@ -516,9 +542,17 @@ def shred_to_buffers(
             _row_sink(label, row)
         progress.advance("json_shred_rows")
 
-    def _count_row_skip(label: str) -> None:
+    record_index = 0
+
+    def _count_row_skip(label: str, place: Sequence[PathSeg], expected: str) -> None:
         if stats is not None:
             stats.count_row_skip(label)
+        if _on_row_skip is not None:
+            _on_row_skip(_RowSkip(label, record_index, make_table_path(place), expected))
+
+    def _count_skips_below(pos: tuple[PathSeg, ...]) -> None:
+        for label in labels_below.get(pos, ()):
+            _count_row_skip(label, pos, "an object")
 
     def _emit_at(pos: tuple[PathSeg, ...], record: Any, ancestors: tuple[Any, ...]) -> None:
         # Process one element located at ``pos`` (a root or array element):
@@ -536,23 +570,33 @@ def shred_to_buffers(
         for label, is_scalar_table, read_row in tables_by_pos.get(pos, []):
             shape_matches = is_scalar if is_scalar_table else is_dict
             if not shape_matches:
-                _count_row_skip(label)
+                _count_row_skip(label, pos, "a scalar" if is_scalar_table else "an object")
                 continue
             _deliver_row(label, read_row(record, ancestors))
 
         if not is_dict:
+            _count_skips_below(pos)
             return
 
         # Descend to each child array, navigating any 1-1 object hops that
         # locate it. The object hops don't advance depth; this dict is the
-        # ancestor element for the child array's level.
+        # ancestor element for the child array's level. A missing or null hop
+        # holds no array; any other value that is not an object loses the rows
+        # of every table at or below that array.
         child_ancestors = ancestors + (record,)
         for obj_prefix, array_key, child_pos in descents_by_pos.get(pos, ()):
             container: Any = record
-            for okey in obj_prefix:
-                container = container.get(okey) if isinstance(container, dict) else None
-            arr = container.get(array_key) if isinstance(container, dict) else None
-            _walk_array(arr, child_pos, child_ancestors)
+            for hops, okey in enumerate(obj_prefix, start=1):
+                container = container.get(okey)
+                if not isinstance(container, dict):
+                    break
+            else:
+                _walk_array(container.get(array_key), child_pos, child_ancestors)
+                continue
+            if container is not None:
+                place = (*pos, *((key, False) for key in obj_prefix[:hops]))
+                for label in labels_at_or_below[child_pos]:
+                    _count_row_skip(label, place, "an object")
 
     def _walk_array(arr: Any, pos: tuple[PathSeg, ...], ancestors: tuple[Any, ...]) -> None:
         # Iterate the array at ``pos``, emitting a row per element. A missing
@@ -561,23 +605,26 @@ def shred_to_buffers(
         if not isinstance(arr, list):
             if arr is not None:
                 for label in labels_at_or_below[pos]:
-                    _count_row_skip(label)
+                    _count_row_skip(label, pos, "an array")
             return
         for item in arr:
             if item is None:
                 # A null *element* is a real value for a scalar child table (its
                 # $value resolves to None; ancestor columns still distribute), a
-                # non-record for an object table (counted as a dropped row).
+                # non-record for an object table (counted as a dropped row), and
+                # holds none of the arrays below it.
                 for label, is_scalar_table, read_row in tables_by_pos.get(pos, []):
                     if is_scalar_table:
                         _deliver_row(label, read_row(None, ancestors))
                     else:
-                        _count_row_skip(label)
+                        _count_row_skip(label, pos, "an object")
+                _count_skips_below(pos)
                 continue
             _emit_at(pos, item, ancestors)
 
     for record in records:
         _emit_at((), record, ())
+        record_index += 1
         progress.advance("json_shred_rows")
 
     progress.checkpoint("json_shred_after_rows")
@@ -673,9 +720,11 @@ def shred_request(
     """A served request's quotes, shredded in memory into a frame per emitting table.
 
     The same walk and typed frames as a build, keyed by table label in schema order.
-    Strict where a build counts a skip: a quote that is not an object, or an array
-    element whose shape does not fit its table, refuses the request naming the table,
-    since an answer must not silently lose a quote's rows (specs/deploy).
+    Strict where a build counts a skip: a quote that is not an object, or a value whose
+    shape does not fit the place a table reads (an array element, an array, or an
+    object on the way to one, whether or not a table emits there), refuses the request
+    naming the quote, the place and the table, since an answer must not silently lose
+    a quote's rows (specs/deploy).
     """
     for index, record in enumerate(records):
         if not isinstance(record, Mapping):
@@ -686,23 +735,24 @@ def shred_request(
             )
     table_specs = _emitting_table_specs(v2_config)
     rows: dict[str, list[_Row]] = {spec.label: [] for spec in table_specs}
-    stats = ShredSkipStats()
+
+    def refuse(skip: _RowSkip) -> NoReturn:
+        raise ApiInputSchemaError(
+            f"The request does not fit this Quote Input's tables: quote {skip.record} holds "
+            f"a value that is not {skip.expected} at {skip.path}, where table {skip.label!r} "
+            f"reads {skip.expected}.",
+            quote=skip.record,
+            path=skip.path,
+            table=skip.label,
+        )
+
     shred_to_buffers(
         (dict(record) for record in records),
         v2_config,
-        stats=stats,
         _table_specs=table_specs,
         _row_sink=lambda label, row: rows[label].append(row),
+        _on_row_skip=refuse,
     )
-    if stats.skipped_rows_by_table:
-        skipped = ", ".join(
-            f"{count} in {label!r}" for label, count in sorted(stats.skipped_rows_by_table.items())
-        )
-        raise ApiInputSchemaError(
-            "The request does not fit this Quote Input's tables: array elements whose "
-            f"shape does not fit their table ({skipped}).",
-            skipped_rows=dict(stats.skipped_rows_by_table),
-        )
     return {spec.label: _rows_to_frame(rows[spec.label], spec.leaf_specs) for spec in table_specs}
 
 
@@ -716,6 +766,7 @@ _POLARS_TYPE_MAP: dict[ColumnType, type[pl.DataType]] = {
     "bool": pl.Boolean,
     "date": pl.Date,
 }
+_ISO_DATE_FORMAT = "%Y-%m-%d"
 
 
 def _declared_frame_schema(table_spec: _EmittingTableSpec) -> pl.Schema:
@@ -726,6 +777,22 @@ def _declared_frame_schema(table_spec: _EmittingTableSpec) -> pl.Schema:
             for name, _leaf, type_token, _depth in table_spec.columns
         },
     )
+
+
+def _iso_dates(strings: pl.Series) -> pl.Series:
+    """A declared date column's strings as dates, refusing any that is not ``YYYY-MM-DD``."""
+    dates = strings.str.to_date(_ISO_DATE_FORMAT, strict=False)
+    unparsed = strings.filter(dates.is_null() & strings.is_not_null())
+    if unparsed.len():
+        raise ApiInputSchemaError(
+            f"column {strings.name!r} is declared 'date' but holds {unparsed[0]!r}, which is "
+            'not an ISO-8601 date; write dates year first (e.g. "2024-01-15") or change the '
+            "column's type",
+            column=strings.name,
+            declared_type="date",
+            value=unparsed[0],
+        )
+    return dates
 
 
 def _rows_to_frame(
@@ -780,7 +847,11 @@ def _rows_to_frame(
                 declared_type=col_type,
             )
         try:
-            series_list.append(pl.Series(col_name, list(values), dtype=dtype, strict=True))
+            # A date column holds strings, built as such and parsed year first:
+            # Polars' own Date build guesses the format, reading 01/02/2024 as
+            # 1 February without a word.
+            build_dtype = pl.String if col_type == "date" else dtype
+            series = pl.Series(col_name, list(values), dtype=build_dtype, strict=True)
         except (pl.exceptions.PolarsError, TypeError, OverflowError, ValueError) as exc:
             raise ApiInputSchemaError(
                 f"column {col_name!r} has values that don't match its declared "
@@ -789,6 +860,7 @@ def _rows_to_frame(
                 column=col_name,
                 declared_type=col_type,
             ) from exc
+        series_list.append(_iso_dates(series) if col_type == "date" else series)
         progress.checkpoint("json_shred_frame_column")
     frame = pl.DataFrame(series_list)
     progress.checkpoint("json_shred_frame_after")

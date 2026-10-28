@@ -126,9 +126,9 @@ class _ObservedArray:
             choices: list[Any] = [_native_scalar(kind, json_mode) for kind in self.scalar_types]
             if self.null_only_seen:
                 choices.append(type(None))
-            # A [1, null] observation infers int, but a later [null] widens it
-            # to str. Until null-only evidence is collected, nullable scalar
-            # arrays deliberately fail the filter and use the exact walker.
+            # The walker takes no type from a null item. Until null-only
+            # evidence is collected, nullable scalar arrays still fail the
+            # filter and use the exact walker.
             if not choices:
                 return Annotated[list[None], msgspec.Meta(max_length=0)]
             item_type = reduce(operator.or_, choices)

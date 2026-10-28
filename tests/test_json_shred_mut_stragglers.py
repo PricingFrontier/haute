@@ -9,11 +9,13 @@ The kill strategy for each is spelled out in its docstring.
 
 from __future__ import annotations
 
+import io
+
 import orjson
 import pytest
 
 from haute._api_input_schema import ApiInputSchemaError
-from haute._json_shred._records import _read_root_array_value
+from haute._json_shred._records import _iter_root_array_values
 from haute._json_shred._shred import _resolve_leaf
 
 # ─── 546 — _resolve_leaf list descent takes cur[0], not cur[-1] ──────
@@ -28,39 +30,20 @@ def test_resolve_leaf_dotted_through_list_fails_loud() -> None:
         _resolve_leaf({"claims": [{"amount": 3}, {"amount": 9}]}, "claims.amount")
 
 
-# ─── 486 — _read_root_array_value raises on a depth-0 '}' ────────────
+# ─── A root-array element's depth-0 '}' is unbalanced ────────────────
 
 
-def _byte_reader(rest: bytes):  # noqa: ANN202
-    it = iter(rest)
-
-    def read_byte() -> bytes:
-        try:
-            return bytes([next(it)])
-        except StopIteration:
-            return b""
-
-    return read_byte
+def test_root_array_rejects_an_unbalanced_close_brace() -> None:
+    # At depth 0 a ']' ends the element and a '}' is unbalanced: '{}}' drives
+    # depth 1 -> 0, then the bare '}' raises at the byte after it.
+    with pytest.raises(orjson.JSONDecodeError, match="unexpected '}'") as raised:
+        list(_iter_root_array_values(io.BytesIO(b"{}}]"), 1, 1 << 20))
+    assert raised.value.pos == 4
 
 
-def test_read_root_array_value_rejects_unbalanced_close_brace() -> None:
-    # ``if b == b"]"`` (L486) sits inside ``if b in {b"}", b"]"}`` at depth 0:
-    # a ']' returns the value, a '}' is unbalanced and must raise "unexpected
-    # '}'". Eq->GtE makes ``b >= b"]"`` true for '}' (0x7d >= ']' 0x5d), so the
-    # stray brace would be accepted as a value-end and RETURNED instead of
-    # raising. Input '{}}' drives depth 1 -> 0 then hits the bare '}'.
-    pos = [3]
-    with pytest.raises(orjson.JSONDecodeError, match="unexpected '}'"):
-        _read_root_array_value(b"{", _byte_reader(b"}}"), lambda: pos[0])
-
-
-def test_read_root_array_value_returns_on_top_level_close_bracket() -> None:
-    # The companion happy path: a balanced object value terminates at the
-    # top-level ']' delimiter, returning the buffer. (Pins that the GtE-killing
-    # test above isn't just asserting "always raises".)
-    value, delim = _read_root_array_value(b"{", _byte_reader(b'"a":1}]'), lambda: 0)
-    assert orjson.loads(value) == {"a": 1}
-    assert delim == b"]"
+def test_root_array_element_ends_at_the_top_level_close_bracket() -> None:
+    # The companion happy path: a balanced object ends at the top-level ']'.
+    assert list(_iter_root_array_values(io.BytesIO(b'{"a":1}]'), 1, 1 << 20)) == [{"a": 1}]
 
 
 # ─── 1123 — is_per_port_cache_valid: schema_mode must equal "v2" exactly ──

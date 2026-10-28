@@ -38,6 +38,7 @@ from haute._json_shred._shred import (
     _compile_row_reader,
     _resolve_leaf,
     _WalkSpec,
+    shred_request,
     shred_to_buffers,
 )
 from haute._sandbox import set_project_root
@@ -980,3 +981,164 @@ def test_a_missing_null_or_empty_array_loses_nothing(drivers: object) -> None:
 
     assert buffers["drivers"] == []
     assert stats.skipped_rows_by_table == {}
+
+
+def _tags_v2() -> dict[str, Any]:
+    return {
+        "tables": [
+            {
+                "path": "$[:].tags[:]",
+                "label": "tags",
+                "emit": True,
+                "columns": [
+                    {
+                        "name": "value",
+                        "path": "$[:].tags[:].$value",
+                        "type": "str",
+                        "selected": True,
+                    }
+                ],
+            }
+        ]
+    }
+
+
+@pytest.mark.parametrize(
+    ("v2", "drivers_emit", "quote", "where", "expected", "table"),
+    [
+        (_tags_v2, True, {"tags": ["a", {"b": 1}]}, "$[:].tags[:]", "a scalar", "tags"),
+        (
+            _drivers_and_claims_v2,
+            True,
+            {"drivers": {"age": 1}},
+            "$[:].drivers[:]",
+            "an array",
+            "drivers",
+        ),
+        (_drivers_and_claims_v2, True, {"drivers": [5]}, "$[:].drivers[:]", "an object", "drivers"),
+        (
+            _drivers_and_claims_v2,
+            True,
+            {"drivers": [None]},
+            "$[:].drivers[:]",
+            "an object",
+            "drivers",
+        ),
+        (
+            _drivers_and_claims_v2,
+            False,
+            {"drivers": [[]]},
+            "$[:].drivers[:]",
+            "an object",
+            "claims",
+        ),
+        (
+            _drivers_and_claims_v2,
+            False,
+            {"drivers": [{"claims": "x"}]},
+            "$[:].drivers[:].claims[:]",
+            "an array",
+            "claims",
+        ),
+    ],
+    ids=["scalar-table", "array", "element", "null-element", "ancestor", "below-ancestor"],
+)
+def test_a_served_request_is_refused_at_its_first_misshapen_value(
+    v2: Any, drivers_emit: bool, quote: dict[str, Any], where: str, expected: str, table: str
+) -> None:
+    config = v2()
+    if v2 is _drivers_and_claims_v2:
+        config["tables"][1]["emit"] = drivers_emit
+    quotes = [{"quote_id": 1, "tags": [], "drivers": []}, {"quote_id": 2, **quote}]
+
+    with pytest.raises(ApiInputSchemaError) as refused:
+        shred_request(quotes, config)
+
+    assert str(refused.value).startswith(
+        f"The request does not fit this Quote Input's tables: quote 1 holds a value that is "
+        f"not {expected} at {where}, where table {table!r} reads {expected}."
+    )
+    assert {key: refused.value.context[key] for key in ("quote", "path", "table")} == {
+        "quote": 1,
+        "path": where,
+        "table": table,
+    }
+
+
+@pytest.mark.parametrize(
+    "element",
+    [5, None, [{"age": 50, "claims": [{"amount": 9}]}]],
+    ids=["scalar", "null", "nested-list"],
+)
+@pytest.mark.parametrize("drivers_emit", [True, False], ids=["emitting", "not-emitting"])
+def test_an_element_that_is_not_an_object_counts_against_every_table_below_it(
+    element: object, drivers_emit: bool
+) -> None:
+    """A driver that is not an object holds none of the claims below it.
+
+    Whether or not the drivers table emits, the claims table counts the driver it
+    lost, beside the drivers table's own count when it emits.
+    """
+    v2 = _drivers_and_claims_v2()
+    v2["tables"][1]["emit"] = drivers_emit
+    stats = ShredSkipStats()
+    record = {"quote_id": 1, "drivers": [{"age": 30, "claims": [{"amount": 5}]}, element]}
+
+    buffers = shred_to_buffers([record], v2, stats=stats)
+
+    assert buffers["claims"] == [{"amount": 5}]
+    assert stats.skipped_rows_by_table == (
+        {"drivers": 1, "claims": 1} if drivers_emit else {"claims": 1}
+    )
+
+
+def test_a_value_that_is_not_an_object_on_the_way_to_an_array_counts_against_the_tables_below() -> (
+    None
+):
+    v2 = {
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": "quotes",
+                "emit": True,
+                "columns": [
+                    {"name": "quote_id", "path": "$[:].quote_id", "type": "int", "selected": True}
+                ],
+            },
+            {
+                "path": "$[:].cover.vehicles[:]",
+                "label": "vehicles",
+                "emit": True,
+                "columns": [
+                    {
+                        "name": "make",
+                        "path": "$[:].cover.vehicles[:].make",
+                        "type": "str",
+                        "selected": True,
+                    }
+                ],
+            },
+        ]
+    }
+    stats = ShredSkipStats()
+    records = [
+        {"quote_id": 1, "cover": {"vehicles": [{"make": "a"}]}},
+        {"quote_id": 2, "cover": [{"vehicles": [{"make": "b"}]}]},
+        {"quote_id": 3, "cover": "x"},
+        {"quote_id": 4, "cover": None},
+        {"quote_id": 5},
+    ]
+
+    buffers = shred_to_buffers(records, v2, stats=stats)
+
+    assert [row["quote_id"] for row in buffers["quotes"]] == [1, 2, 3, 4, 5]
+    assert buffers["vehicles"] == [{"make": "a"}]
+    assert stats.skipped_rows_by_table == {"vehicles": 2}
+    with pytest.raises(
+        ApiInputSchemaError,
+        match=re.escape(
+            "quote 1 holds a value that is not an object at $[:].cover, where table "
+            "'vehicles' reads an object."
+        ),
+    ):
+        shred_request(records, v2)

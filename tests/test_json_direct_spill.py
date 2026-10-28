@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import shutil
@@ -69,45 +70,41 @@ def test_root_array_parser_accepts_empty_input_and_whitespace_array(tmp_path: Pa
     assert list(_records._iter_records(empty)) == []
 
 
-def test_root_array_value_counts_quote_and_nested_delimiters_at_the_exact_limit() -> None:
-    """The incremental reader must account for every structural byte.
-
-    This deliberately exercises the quote, nested-open, and nested-close
-    append paths with a limit exactly equal to the encoded element; a smaller
-    limit is rejected by the same reader in the record-limit tests above.
-    """
-    encoded = b'{"note":"x","nested":[1]}'
-    remaining = iter(bytes((byte,)) for byte in encoded[1:] + b",")
-
-    value, delimiter = _records._read_root_array_value(
-        encoded[:1], lambda: next(remaining, b""), lambda: len(encoded), max_bytes=len(encoded)
-    )
-
-    assert value == encoded
-    assert delimiter == b","
+def _root_array_elements(body: bytes, *, limit: int) -> list[Any]:
+    """The elements of the root array whose bytes after its ``[`` are *body*."""
+    return list(_records._iter_root_array_values(io.BytesIO(body), 1, limit))
 
 
 @pytest.mark.parametrize(
-    ("first", "remainder"),
+    "encoded",
+    [b'{"note":"x","nested":[1]}', b'{"note":"x[","nested":[1]}'],
+    ids=["one-match", "string-bracket-found-exactly"],
+)
+def test_root_array_value_counts_quote_and_nested_delimiters_at_the_exact_limit(
+    encoded: bytes,
+) -> None:
+    """The scanner must account for every byte of an element, strings and nested
+    containers included, whether one bracket-counting match finds it or a bracket
+    in a string leaves it to the exact scan; a smaller limit is rejected by the
+    same scanner in the record-limit tests above.
+    """
+    assert _root_array_elements(encoded + b",1]", limit=len(encoded)) == [
+        orjson.loads(encoded),
+        1,
+    ]
+
+
+@pytest.mark.parametrize(
+    "element",
     [
-        pytest.param(b"x", b'"', id="quote-after-token"),
-        pytest.param(b"x", b"{", id="nested-open-after-token"),
-        pytest.param(b"{", b"}", id="nested-close"),
+        pytest.param(b'x"', id="quote-after-token"),
+        pytest.param(b"x{", id="nested-open-after-token"),
+        pytest.param(b"{}", id="nested-close"),
     ],
 )
-def test_root_array_value_rejects_each_structural_append_beyond_limit(
-    first: bytes,
-    remainder: bytes,
-) -> None:
-    source = iter(bytes((byte,)) for byte in remainder)
-
+def test_root_array_value_rejects_each_structural_append_beyond_limit(element: bytes) -> None:
     with pytest.raises(ApiInputSchemaError, match="JSON array element exceeds"):
-        _records._read_root_array_value(
-            first,
-            lambda: next(source, b""),
-            lambda: 1,
-            max_bytes=1,
-        )
+        _root_array_elements(element, limit=1)
 
 
 def test_bounded_writer_rejects_unknown_labels_before_buffering(
@@ -938,33 +935,11 @@ def test_xml_root_invariant_and_missing_document_fail_closed(
 
 
 def test_root_array_value_scanner_covers_string_nested_and_scalar_terminators() -> None:
-    def scanner(payload: bytes, position: int) -> tuple[bytes, bytes]:
-        source = iter(payload)
-        first = bytes((next(source),))
-        return _records._read_root_array_value(
-            first,
-            lambda: bytes((next(source, 0),)),
-            current_pos=lambda: position,
-            max_bytes=20,
-        )
+    assert _root_array_elements(b'"x",{"a":[1]},123]', limit=20) == ["x", {"a": [1]}, 123]
 
-    value, delimiter = scanner(b'"x",', 1)
-    assert value == b'"x"' and delimiter == b","
-    value, delimiter = scanner(b'{"a":[1]},', 2)
-    assert value == b'{"a":[1]}' and delimiter == b","
-    value, delimiter = scanner(b"123]", 3)
-    assert value == b"123" and delimiter == b"]"
-
-    for payload in (b'"xx",', b"{xx},", b"[xx],", b"xx]"):
+    for payload in (b'"xx",1]', b"{xx},1]", b"[xx],1]", b"xx]"):
         with pytest.raises(ApiInputSchemaError, match="JSON array element exceeds"):
-            first = payload[:1]
-            rest = iter(payload[1:])
-            _records._read_root_array_value(
-                first,
-                lambda: bytes((next(rest, 0),)),
-                current_pos=lambda: 4,
-                max_bytes=1,
-            )
+            _root_array_elements(payload, limit=1)
 
 
 def test_xml_record_size_validation_fails_closed() -> None:

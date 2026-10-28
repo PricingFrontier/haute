@@ -101,9 +101,11 @@ were sent, are shredded in memory through its tables by the shared shredder, eac
 receiving its own table's rows in its declared types, and its dry run reads its sample's
 first quote the same way (an XML sample's single elements at the tables' arrays read as
 lists of one, the JSON shape a served request takes). Where a build counts a skipped row, a served request is refused
-instead, naming the table (HTTP 422 from a container): a quote that is not an object, an
-array element whose shape does not fit its table, or a value that does not fit its column's
-type would otherwise be answered without it ([JSON shredding](../json-shredding/high-level.md)).
+instead, naming the quote, the place and the table (HTTP 422 from a container): a quote that
+is not an object, an array element whose shape does not fit its table or that is not an
+object where tables below it read objects (whether or not a table emits at its array), or a
+value that does not fit its column's type would otherwise be answered without it
+([JSON shredding](../json-shredding/high-level.md)).
 Any other Quote Input reads the request as one frame typed by the input schema the manifest
 records (the sample file's columns and types), never by inference from the JSON values, so a
 request types its columns as the dry run and the test quotes do. A key the schema does not

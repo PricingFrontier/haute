@@ -8,7 +8,7 @@
  * — never renamed). Only UI LABEL STRINGS say "frame".
  */
 
-import { validateOutputPathCore } from "./jsonpath"
+import { parsePath, validateOutputPathCore } from "./jsonpath"
 
 export type OutputRowStatus = "Confirmed" | "Inferred"
 
@@ -105,8 +105,10 @@ export function emptyV2(): OutputConfigV2 {
  *     path enters the array-outer document through `$[:]`; a non-array root like
  *     `$.x` or `$.values[:].a` is rejected, symmetric with INPUT)
  *   - dot-name segments: `.name` (name = [A-Za-z_][A-Za-z0-9_]*)
- *   - the whole-array selector `[:]` may follow any segment name
- *   - must name at least one leaf segment (not the bare root array)
+ *   - the whole-array selector `[:]` may follow any segment name but the last
+ *   - must name at least one leaf segment (not the bare root array) and end at
+ *     it, so a path ending at `[:]` is rejected like the backend's
+ *     `_parse_output_path`
  *
  * Rejected (mirrors the backend): a non-`$[:]` root, index `[0]`, ranges
  * `[1:2]`, filters `[?(...)]`, wildcards `[*]` / `.*`, descendant `..`, the bare
@@ -120,7 +122,9 @@ export function validateOutputPath(path: string): string | null {
   // editor UX is unchanged.
   const core = validateOutputPathCore(path)
   if (core === null) {
-    return null
+    return parsePath(path).segments.at(-1)?.isArray
+      ? "Output path must end at a field name, not at '[:]'."
+      : null
   }
   if (core.startsWith("output path must start with '$[:]'")) {
     return "Output path must start with the root array '$[:]', e.g. $[:].field."

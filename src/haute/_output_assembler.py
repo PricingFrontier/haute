@@ -10,21 +10,25 @@ its parent objects by the relation keys the child carries. The assembler never
 joins frames: frames that describe the same objects are joined upstream.
 
 Vocabulary: a *frame* is one source Polars frame the OUTPUT node consumes; a
-*field* is an output path a frame populates; a *level* is an array prefix.
+*field* is an output path a frame populates; a *level* is an array prefix: a
+path's segments through its last ``[:]``, object hops included.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
 import polars as pl
 
 from haute._execution_context import ExecutionContext, current_execution_context
-from haute._jsonpath import _ParsedPath, make_output_path, parse_path
+from haute._jsonpath import _ParsedPath, _Seg, make_output_path, parse_path
 from haute._polars_utils import execution_collect
 from haute.errors import HauteError
+
+#: A level of the document: the segments of a path through its last ``[:]``.
+_Level = tuple[_Seg, ...]
 
 _OUTPUT_ASSEMBLY_CHECKPOINT_ROWS = 1_024
 
@@ -82,9 +86,17 @@ def _parse_output_path(raw: str) -> _ParsedPath:
     A thin OUTPUT-side wrapper over :func:`haute._jsonpath.parse_path`: it injects
     :class:`OutputMappingSchemaError` so a rejected selector raises the type
     OUTPUT routes discriminate on, while the grammar (the accepted subset, the
-    rejections, and messages) lives once in the shared core.
+    rejections, and messages) lives once in the shared core. An output path names
+    a field, so one ending at ``[:]`` is refused here; the core also parses INPUT
+    table paths, which end at an array.
     """
-    return parse_path(raw, OutputMappingSchemaError)
+    parsed = parse_path(raw, OutputMappingSchemaError)
+    if parsed.segments[-1].is_array:
+        raise OutputMappingSchemaError(
+            "output path must end at a field name, not at an array selector '[:]'",
+            output_path=raw,
+        )
+    return parsed
 
 
 def _set_nested(obj: dict[str, Any], keys: list[str], value: Any) -> None:
@@ -98,9 +110,69 @@ def _set_nested(obj: dict[str, Any], keys: list[str], value: Any) -> None:
     obj[keys[-1]] = value
 
 
-def _array_prefix(parsed: _ParsedPath) -> tuple[str, ...]:
-    """A path's position in the array tree — the names of its ``[:]`` segments."""
-    return tuple(seg.name for seg in parsed.segments if seg.is_array)
+def _array_prefix(parsed: _ParsedPath) -> _Level:
+    """A path's level — its segments through its last ``[:]``, object hops included.
+
+    ``$[:].cover.vehicles[:].id`` sits at ``$[:].cover.vehicles[:]``, and
+    ``$[:].left.items[:]`` and ``$[:].right.items[:]`` are two levels. A path with
+    no ``[:]`` after the root sits at the root level, ``()``.
+    """
+    last_array = max((i for i, seg in enumerate(parsed.segments) if seg.is_array), default=-1)
+    return parsed.segments[: last_array + 1]
+
+
+def _ancestor_levels(level: _Level) -> list[_Level]:
+    """*level* and every level above it, root first: its prefixes that end at a ``[:]``."""
+    return [(), *(level[: i + 1] for i, seg in enumerate(level) if seg.is_array)]
+
+
+def _parent_level(level: _Level) -> _Level:
+    """The level a non-root *level* nests directly under."""
+    return _ancestor_levels(level)[-2]
+
+
+def _child_hop(parent: _Level, child: _Level) -> list[str]:
+    """Where a child level's array sits in a parent object: its object hops, then its key."""
+    return [seg.name for seg in child[len(parent) :]]
+
+
+_KIND_FIELD, _KIND_OBJECT, _KIND_ARRAY = "a field", "an object", "an array"
+
+
+def _location_conflict(
+    paths: Iterable[tuple[str, str, _ParsedPath]],
+) -> OutputMappingSchemaError | None:
+    """The first location of the document two of *paths* use as different kinds.
+
+    *paths* are ``(source_port, output_path, parsed)`` over every frame. Each place a
+    path steps through is an object (an object hop) or an array (a ``[:]`` hop), and
+    the place it ends at is a field. One place holds one kind, so a field that
+    another path steps into, or an object that another path iterates as an array,
+    is refused: assembly would otherwise overwrite one with the other. One field
+    mapped by several frames (a shared relation key) is one kind and stays valid.
+    """
+    claimed: dict[tuple[str, ...], tuple[str, str, str]] = {}
+    for port, path, parsed in paths:
+        last = len(parsed.segments) - 1
+        for i, seg in enumerate(parsed.segments):
+            kind = _KIND_FIELD if i == last else _KIND_ARRAY if seg.is_array else _KIND_OBJECT
+            location = tuple(s.name for s in parsed.segments[: i + 1])
+            first_kind, first_port, first_path = claimed.setdefault(location, (kind, port, path))
+            if first_kind != kind:
+                place = make_output_path((*parsed.segments[:i], _Seg(seg.name, False)))
+                frames: dict[str, Any] = (
+                    {"source_port": port}
+                    if first_port == port
+                    else {"source_ports": [first_port, port]}
+                )
+                return OutputMappingSchemaError(
+                    f"output paths use {place} as two things: {first_kind} in {first_path} "
+                    f"and {kind} in {path}. A place in the response holds one field, object "
+                    f"or array, so map one of them to a different path",
+                    output_path=f"{first_path} vs {path}",
+                    **frames,
+                )
+    return None
 
 
 def _own_subpath(parsed: _ParsedPath) -> list[str]:
@@ -319,15 +391,21 @@ def _assemble_document(
         columns = frame.collect_schema().names()
         port_paths[port] = {column: _parse_output_path(column) for column in columns}
     progress.checkpoint("output_assembly_schema")
+    # The structural validator refuses these before any caller reaches here; a
+    # direct caller gets the same typed failures.
+    location_error = _location_conflict(
+        (port, path, parsed) for port, paths in port_paths.items() for path, parsed in paths.items()
+    )
+    if location_error is not None:
+        raise location_error
 
     all_paths: dict[str, _ParsedPath] = {c: p for pp in port_paths.values() for c, p in pp.items()}
-    emit_prefix: dict[str, tuple[str, ...]] = {
+    emit_prefix: dict[str, _Level] = {
         port: max((_array_prefix(p) for p in pp.values()), key=len, default=())
         for port, pp in port_paths.items()
     }
-    # One frame per level; the structural validator rejects a second before any
-    # caller reaches here, and a direct caller gets the same typed failure.
-    port_at: dict[tuple[str, ...], str] = {}
+    # One frame per level.
+    port_at: dict[_Level, str] = {}
     for port, pref in emit_prefix.items():
         if pref in port_at:
             raise _same_level_error(
@@ -342,12 +420,9 @@ def _assemble_document(
         raise nesting_error
 
     # The array-prefix tree: every frame's emit prefix and all its ancestors.
-    nodes: set[tuple[str, ...]] = set()
-    for pref in emit_prefix.values():
-        for i in range(len(pref) + 1):
-            nodes.add(pref[:i])
+    nodes = {level for pref in emit_prefix.values() for level in _ancestor_levels(pref)}
     # Paths carried at or below each node — the keys available to match a child up.
-    carries: dict[tuple[str, ...], set[str]] = {n: set() for n in nodes}
+    carries: dict[_Level, set[str]] = {n: set() for n in nodes}
     for port, pref in emit_prefix.items():
         for n in nodes:
             if pref[: len(n)] == n:
@@ -361,7 +436,7 @@ def _assemble_document(
     nonnull_keys_by_port: dict[str, set[str]] = {port: set() for port in field_frames}
     for parent in nodes:
         parent_own = {c for c, parsed in all_paths.items() if _array_prefix(parsed) == parent}
-        for child in (n for n in nodes if len(n) == len(parent) + 1 and n[: len(parent)] == parent):
+        for child in (n for n in nodes if n and _parent_level(n) == parent):
             relation_keys = tuple(sorted(parent_own & carries[child]))
             if not relation_keys:
                 continue
@@ -390,11 +465,11 @@ def _assemble_document(
         marker_errors_by_port[port] = marker_errors
         planned_frames[port] = frame.with_columns(marker_exprs) if marker_exprs else frame
 
-    # Materialise every emitting level's frame exactly once.
-    rows_by_prefix: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    # Materialise every emitting level's frame exactly once, ancestors first.
+    rows_by_prefix: dict[_Level, list[dict[str, Any]]] = {}
     emitting_prefixes = list(dict.fromkeys(emit_prefix.values()))
     limit_root = row_limit is not None and () in emitting_prefixes
-    collected_by_prefix: dict[tuple[str, ...], pl.DataFrame] = {}
+    collected_by_prefix: dict[_Level, pl.DataFrame] = {}
     for prefix in sorted(emitting_prefixes, key=len):
         port = port_at[prefix]
         output_plan = planned_frames[port]
@@ -415,15 +490,13 @@ def _assemble_document(
             marker_errors=marker_errors_by_port[port],
         )
 
-    def children_of(prefix: tuple[str, ...]) -> list[tuple[str, ...]]:
-        return sorted(n for n in nodes if len(n) == len(prefix) + 1 and n[: len(prefix)] == prefix)
+    def children_of(prefix: _Level) -> list[_Level]:
+        return sorted(n for n in nodes if n and _parent_level(n) == prefix)
 
-    level_rows_cache: dict[tuple[str, ...], list[dict[str, Any]]] = {}
-    indexes: dict[
-        tuple[tuple[str, ...], tuple[str, ...]], dict[tuple[Any, ...], list[dict[str, Any]]]
-    ] = {}
+    level_rows_cache: dict[_Level, list[dict[str, Any]]] = {}
+    indexes: dict[tuple[_Level, tuple[str, ...]], dict[tuple[Any, ...], list[dict[str, Any]]]] = {}
 
-    def level_rows_for(prefix: tuple[str, ...]) -> list[dict[str, Any]]:
+    def level_rows_for(prefix: _Level) -> list[dict[str, Any]]:
         if prefix in level_rows_cache:
             return level_rows_cache[prefix]
         if prefix not in port_at:
@@ -442,7 +515,7 @@ def _assemble_document(
         level_rows_cache[prefix] = level_rows
         return level_rows
 
-    def scoped_rows(prefix: tuple[str, ...], scope: dict[str, Any]) -> list[dict[str, Any]]:
+    def scoped_rows(prefix: _Level, scope: dict[str, Any]) -> list[dict[str, Any]]:
         if not scope:
             return level_rows_for(prefix)
         keys = tuple(sorted(scope))
@@ -459,7 +532,7 @@ def _assemble_document(
                 )
         return indexes[cache_key].get(tuple(_identity(scope[key]) for key in keys), [])
 
-    def build(prefix: tuple[str, ...], scope: dict[str, Any]) -> list[dict[str, Any]]:
+    def build(prefix: _Level, scope: dict[str, Any]) -> list[dict[str, Any]]:
         rows = scoped_rows(prefix, scope)
 
         own = [c for c, p in all_paths.items() if _array_prefix(p) == prefix]
@@ -486,7 +559,7 @@ def _assemble_document(
                 child_scope.update({c: grp[0].get(c) for c in own if c in carries[child]})
                 kids = build(child, child_scope)
                 if kids:
-                    _set_nested(obj, [child[-1]], kids)
+                    _set_nested(obj, _child_hop(prefix, child), kids)
             objects.append(obj)
         return objects
 
@@ -506,21 +579,19 @@ def _assemble_document(
 def _limit_level_plan(
     plan: pl.LazyFrame,
     *,  # pragma: no mutate
-    prefix: tuple[str, ...],
+    prefix: _Level,
     row_limit: int,
     level_paths: set[str],
     all_paths: Mapping[str, _ParsedPath],
-    collected_by_prefix: Mapping[tuple[str, ...], pl.DataFrame],
+    collected_by_prefix: Mapping[_Level, pl.DataFrame],
 ) -> pl.LazyFrame:
     """Bound one emitting level's read to the rows a limited document needs."""
     if not prefix:
         return plan.head(row_limit)
     # The root level is always collected before a deeper level is limited, so the
-    # longest collected proper prefix exists.
+    # nearest collected ancestor level exists.
     ancestor = next(
-        prefix[:depth]
-        for depth in reversed(range(len(prefix)))
-        if prefix[:depth] in collected_by_prefix
+        level for level in reversed(_ancestor_levels(prefix)[:-1]) if level in collected_by_prefix
     )
     ancestor_own = {
         column for column, parsed in all_paths.items() if _array_prefix(parsed) == ancestor
@@ -577,9 +648,8 @@ def _same_level_error(
 
 
 def _level_path(parsed: _ParsedPath) -> str:
-    """The array level a path sits at, spelled as a path: ``$[:].a[:].b[:]``."""
-    last_array = max((i for i, seg in enumerate(parsed.segments) if seg.is_array), default=-1)
-    return make_output_path(parsed.segments[: last_array + 1])
+    """The array level a path sits at, spelled as a path: ``$[:].a[:].b.c[:]``."""
+    return make_output_path(_array_prefix(parsed))
 
 
 def _nesting_key_error(
@@ -599,15 +669,15 @@ def _nesting_key_error(
         if paths
     }
     emit_prefix = {port: _array_prefix(parsed) for port, parsed in emit_path.items()}
-    own: dict[tuple[str, ...], set[str]] = {}
+    own: dict[_Level, set[str]] = {}
     for paths in port_paths.values():
         for path, parsed in paths.items():
             own.setdefault(_array_prefix(parsed), set()).add(path)
-    levels = {prefix[:depth] for prefix in emit_prefix.values() for depth in range(len(prefix) + 1)}
+    levels = {level for prefix in emit_prefix.values() for level in _ancestor_levels(prefix)}
     for child in sorted(levels, key=lambda level: (len(level), level)):
         if not child:
             continue
-        parent = child[:-1]
+        parent = _parent_level(child)
         subtree = sorted(
             port for port, prefix in emit_prefix.items() if prefix[: len(child)] == child
         )
@@ -636,11 +706,13 @@ def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
     Fires on the mapping regardless of data, before any frame is collected.
     Checks (raising :class:`OutputMappingSchemaError`):
 
-    * every ``output_path`` parses in the accepted ``[:]``-only subset;
+    * every ``output_path`` parses in the accepted ``[:]``-only subset and ends at
+      a field;
     * **injectivity** — within one source frame, no two *different* columns map to
       the same path;
-    * **pairwise prefix-incomparability** — within one source frame, no two
-      distinct paths are prefix-comparable (a leaf cannot also be a container);
+    * **one kind per location** — across every frame, no place in the document is
+      used as two of a field, an object and an array (a leaf cannot also be a
+      container, and an object hop cannot also iterate an array);
     * **one output branch per frame** — every path for one source frame has a
       prefix-comparable array prefix;
     * **one frame per array level** — no two source frames emit at the same
@@ -667,7 +739,6 @@ def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
         _cached_parse(path)  # grammar — raises on a rejected selector
         by_port.setdefault(entry["source_port"], []).append((entry["source_column"], path))
 
-    emitting_port: dict[tuple[str, ...], tuple[str, str]] = {}
     for port, entries in by_port.items():
         path_to_col: dict[str, str] = {}
         for col, path in entries:
@@ -679,21 +750,19 @@ def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
                 )
             path_to_col[path] = col
 
-        distinct = sorted(
-            dict.fromkeys(path for _, path in entries),
-            key=lambda path: _cached_parse(path).segments,
-        )
-        for a, b in zip(distinct, distinct[1:], strict=False):
-            a_segments = _cached_parse(a).segments
-            b_segments = _cached_parse(b).segments
-            if a_segments == b_segments[: len(a_segments)]:
-                raise OutputMappingSchemaError(
-                    "output paths within a source frame must be pairwise "
-                    "prefix-incomparable (a leaf cannot also be a container)",
-                    source_port=port,
-                    output_path=f"{a} vs {b}",
-                )
+    distinct_by_port = {
+        port: list(dict.fromkeys(path for _, path in entries)) for port, entries in by_port.items()
+    }
+    location_error = _location_conflict(
+        (port, path, _cached_parse(path))
+        for port, paths in distinct_by_port.items()
+        for path in paths
+    )
+    if location_error is not None:
+        raise location_error
 
+    emitting_port: dict[_Level, tuple[str, str]] = {}
+    for port, distinct in distinct_by_port.items():
         prefixes = [(path, _array_prefix(_cached_parse(path))) for path in distinct]
         prefixes.sort(key=lambda item: item[1])
         for (a, a_prefix), (b, b_prefix) in zip(prefixes, prefixes[1:], strict=False):
@@ -712,8 +781,8 @@ def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
 
     nesting_error = _nesting_key_error(
         {
-            port: {path: _cached_parse(path) for _, path in entries}
-            for port, entries in by_port.items()
+            port: {path: _cached_parse(path) for path in distinct}
+            for port, distinct in distinct_by_port.items()
         }
     )
     if nesting_error is not None:
@@ -794,7 +863,8 @@ def output_document_schema(
       its own array element, so an ancestor key carried by a deeper frame for
       matching is emitted at the level it belongs to and never re-emitted
       inside the child element;
-    * each child array is attached under its own final name, after the level's
+    * each child array is attached at its path below the level
+      (:func:`_child_hop`: its object hops, then its key), after the level's
       own fields, children in sorted order — where ``_set_nested`` puts it.
 
     Raises :class:`OutputMappingSchemaError` when the mapping is structurally
@@ -850,25 +920,19 @@ def output_document_schema(
                 paths.append(path)
         port_paths[port] = paths
 
-    emit_prefix: dict[str, tuple[str, ...]] = {
+    emit_prefix: dict[str, _Level] = {
         port: max((_array_prefix(all_paths[p]) for p in paths), key=len, default=())
         for port, paths in port_paths.items()
     }
-    nodes: set[tuple[str, ...]] = set()
-    for pref in emit_prefix.values():
-        for i in range(len(pref) + 1):
-            nodes.add(pref[:i])
+    nodes = {level for pref in emit_prefix.values() for level in _ancestor_levels(pref)}
 
-    def level(prefix: tuple[str, ...]) -> dict[str, Any]:
+    def level(prefix: _Level) -> dict[str, Any]:
         obj: dict[str, Any] = {}
         for path, parsed in all_paths.items():
             if _array_prefix(parsed) == prefix:
                 _set_nested(obj, _own_subpath(parsed), leaf_dtypes[path])
-        children = sorted(
-            n for n in nodes if len(n) == len(prefix) + 1 and n[: len(prefix)] == prefix
-        )
-        for child in children:
-            _set_nested(obj, [child[-1]], ("list", level(child)))
+        for child in sorted(n for n in nodes if n and _parent_level(n) == prefix):
+            _set_nested(obj, _child_hop(prefix, child), ("list", level(child)))
         return obj
 
     return pl.Schema({key: _document_dtype(value) for key, value in level(()).items()})

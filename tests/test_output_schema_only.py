@@ -146,12 +146,33 @@ def _siblings_corpus() -> Corpus:
     )
 
 
+def _object_hop_arrays_corpus() -> Corpus:
+    """Arrays reached through object hops, before and between them, beside an own field."""
+    return (
+        {
+            "policies": pl.LazyFrame({"pid": [1, 2], "prem": [10.5, 20.5]}),
+            "drivers": pl.LazyFrame({"pid": [1, 1, 2], "did": [10, 11, 20]}),
+            "claims": pl.LazyFrame({"pid": [1, 1, 2], "did": [10, 11, 20], "amt": [5, 6, 7]}),
+        },
+        [
+            _entry("policies", "pid", "$[:].policy_id"),
+            _entry("policies", "prem", "$[:].cover.premium"),
+            _entry("drivers", "pid", "$[:].policy_id"),
+            _entry("drivers", "did", "$[:].cover.drivers[:].driver_id"),
+            _entry("claims", "pid", "$[:].policy_id"),
+            _entry("claims", "did", "$[:].cover.drivers[:].driver_id"),
+            _entry("claims", "amt", "$[:].cover.drivers[:].history.claims[:].amount"),
+        ],
+    )
+
+
 CORPUS: dict[str, Callable[[], Corpus]] = {
     "flat": _flat_corpus,
     "nested_object": _nested_object_corpus,
     "one_array": _one_array_corpus,
     "two_arrays": _two_arrays_corpus,
     "siblings": _siblings_corpus,
+    "object_hop_arrays": _object_hop_arrays_corpus,
 }
 
 
@@ -475,6 +496,31 @@ def test_container_relation_keys_nest_children_under_their_parent(
     assert derived["drivers"] == pl.List(pl.Struct({"driver_id": pl.Int64}))
     declared = pl.LazyFrame(document, schema=derived).collect()
     assert render_output_document(declared) == _prune(document)
+
+
+def test_object_hops_place_arrays_in_the_derived_schema() -> None:
+    frames, mapping = _object_hop_arrays_corpus()
+
+    assert output_document_schema(_source_schemas(frames), mapping) == pl.Schema(
+        {
+            "policy_id": pl.Int64,
+            "cover": pl.Struct(
+                {
+                    "premium": pl.Float64,
+                    "drivers": pl.List(
+                        pl.Struct(
+                            {
+                                "driver_id": pl.Int64,
+                                "history": pl.Struct(
+                                    {"claims": pl.List(pl.Struct({"amount": pl.Int64}))}
+                                ),
+                            }
+                        )
+                    ),
+                }
+            ),
+        }
+    )
 
 
 # ---------------------------------------------------------------------------

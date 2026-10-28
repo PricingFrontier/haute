@@ -45,8 +45,8 @@ Each column row has, from left to right:
 |---|---|
 | Tick box | Whether the column is kept. Untick the columns you don't need. |
 | Name | The column's name in the table. It is required and must be unique in its table. A name used in another table for a different field is shaded, with a warning that a name should mean one field everywhere. |
-| Path | Where the value sits in the request, such as `$[:].proposer.date_of_birth`. It must name a field at the table's own level or a shallower one; a path deeper than the table, or on another branch, is flagged under the row. |
-| Type | `int`, `float`, `str`, `bool` or `date`. A column typed `date` arrives as a date, so no parsing code is needed downstream. |
+| Path | Where the value sits in the request, such as `$[:].proposer.date_of_birth`. It must name a field at the table's own level or a shallower one; a path deeper than the table, or on another branch, is flagged under the row. Each key in a path is written after a dot and must be an ASCII identifier (letters, digits and underscores, not starting with a digit): a request whose keys hold a hyphen, a space or a dot, or start with a digit, cannot be read, and **Infer Tables** stops naming the key, so rename it in the source. |
+| Type | `int`, `float`, `str`, `bool` or `date`. A column typed `date` arrives as a date, so no parsing code is needed downstream. Its values must be ISO-8601 dates, written year first such as `2024-01-15`; any other value, such as `15/01/2024`, stops the build with an error naming the column and the value. |
 | Key icon | Marks the column as a key: it is confirmed and moves into the keys at the top of the table. Click again to unmark it. |
 | Origin chip | Where the column came from: **INFERRED**, **INHERITED** (a key copied from a shallower table) or **MANUAL** (typed in by hand), with a tick once confirmed. |
 | Confirm tick | Confirms the column (shown until it is confirmed). Editing a column's name, path or type also confirms it. |

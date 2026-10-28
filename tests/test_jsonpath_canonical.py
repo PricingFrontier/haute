@@ -60,12 +60,12 @@ def test_make_output_path_mixed_array_and_object() -> None:
 
 
 def test_parse_data_path_plain_array_outer() -> None:
-    p = parse_data_path("$[:].a.b", _reject)
+    p = parse_data_path("$[:].a.b", _reject, noun="column path")
     assert p.segments == (_Seg("a", False), _Seg("b", False))
 
 
 def test_parse_data_path_allow_root_accepts_bare_root_array() -> None:
-    p = parse_data_path("$[:]", _reject, allow_root=True)
+    p = parse_data_path("$[:]", _reject, noun="column path", allow_root=True)
     assert p.segments == ()
 
 
@@ -75,23 +75,33 @@ def test_parse_data_path_default_allow_root_is_false() -> None:
     # reject by default, yet be accepted when allow_root is explicitly True. The
     # two answers differ, so the default genuinely matters.
     with pytest.raises(ValueError):
-        parse_data_path("$[:]", _reject)
-    accepted = parse_data_path("$[:]", _reject, allow_root=True)
+        parse_data_path("$[:]", _reject, noun="column path")
+    accepted = parse_data_path("$[:]", _reject, noun="column path", allow_root=True)
     assert accepted.segments == ()
 
 
 def test_parse_data_path_reserved_leaf_as_trailing_hop() -> None:
     # ``$value`` is peeled before the identifier-pure parse, then re-appended as
     # a final NON-array object segment.
-    p = parse_data_path("$[:].a.$value", _reject, reserved_leaf="$value")
-    assert p.segments == (_Seg("a", False), _Seg("$value", False))
+    p = parse_data_path("$[:].a[:].$value", _reject, noun="column path", reserved_leaf="$value")
+    assert p.segments == (_Seg("a", True), _Seg("$value", False))
     assert p.segments[-1].is_array is False
+
+
+@pytest.mark.parametrize("raw", ["$[:].a.$value", "$[:].a[:].b.$value"])
+def test_parse_data_path_refuses_reserved_leaf_after_an_object_hop(raw: str) -> None:
+    # ``$value`` names an array element itself; after an object hop it would read a
+    # literal ``"$value"`` key instead.
+    with pytest.raises(ValueError, match=r"must follow '\[:\]'"):
+        parse_data_path(raw, _reject, noun="column path", reserved_leaf="$value")
 
 
 def test_parse_data_path_reserved_leaf_directly_on_root() -> None:
     # ``$[:].$value`` — the sentinel sits on the root array, naming a leaf even
     # without allow_root.
-    p = parse_data_path("$[:].$value", _reject, reserved_leaf="$value", allow_root=False)
+    p = parse_data_path(
+        "$[:].$value", _reject, noun="column path", reserved_leaf="$value", allow_root=False
+    )
     assert p.segments == (_Seg("$value", False),)
 
 
@@ -99,7 +109,7 @@ def test_parse_data_path_reserved_leaf_only_peeled_when_configured() -> None:
     # Without reserved_leaf set, a ``.$value`` tail is NOT special and the
     # non-identifier ``$`` fails the dotted-name parse.
     with pytest.raises(ValueError):
-        parse_data_path("$[:].a.$value", _reject)
+        parse_data_path("$[:].a.$value", _reject, noun="column path")
 
 
 @pytest.mark.parametrize(
@@ -111,7 +121,7 @@ def test_parse_data_path_reserved_leaf_only_peeled_when_configured() -> None:
 )
 def test_parse_data_path_rejects_non_array_root(bad: str) -> None:
     with pytest.raises(ValueError):
-        parse_data_path(bad, _reject)
+        parse_data_path(bad, _reject, noun="column path")
 
 
 def test_parse_path_rejects_non_root_start() -> None:
@@ -169,3 +179,28 @@ def test_parsed_path_is_frozen() -> None:
 def test_parse_path_rejection_messages_are_branch_specific(bad: str, message: str) -> None:
     with pytest.raises(ValueError, match=message):
         parse_path(bad, _reject)
+
+
+@pytest.mark.parametrize(
+    ("bad", "message"),
+    [
+        ("x", "{noun} must start with '$[:]'"),
+        ("$[:]-x", "malformed {noun}"),
+        ("$[:].5", "unsupported {dashed} selector"),
+        ("$[:].a['b']", "malformed {noun}"),
+    ],
+)
+@pytest.mark.parametrize("noun", ["table path", "column path"])
+def test_an_input_path_rejection_names_the_input_path(bad: str, message: str, noun: str) -> None:
+    raised: list[tuple[str, dict[str, Any]]] = []
+
+    def capture(text: str, **context: Any) -> Exception:
+        raised.append((text, context))
+        return ValueError(text)
+
+    with pytest.raises(ValueError):
+        parse_data_path(bad, capture, noun=noun, allow_root=True)
+
+    ((text, context),) = raised
+    assert text.startswith(message.format(noun=noun, dashed=noun.replace(" ", "-")))
+    assert context == {noun.replace(" ", "_"): bad}

@@ -145,7 +145,6 @@ target dependency resolution. The component roadmaps now carry the resulting pla
 | `DEP-R11` | Check every response batch before positional pairing; require explicit first-deploy intent or authoritative absence, never infer absence from an outage. |
 | `DEP-R09`, `BUG-40` | Resolve and verify dependency locks for each target Python/platform and extras. |
 | `WB-10` | Shipped SQLite already has atomic insert-if-absent. Require a real selected-engine concurrency test and correct transaction recovery. |
-| `JSON-R02` | Keep the throughput issue and remove the whole-file delay claim: decoded records are yielded incrementally. |
 | `GIT-R02` | Preserve configured SSH commands and Git precedence; use process-level noninteractive execution, deadlines and transport cleanup. Appended OpenSSH options do not reliably override earlier ones. |
 
 The build-directory work is split into `DEP-R12A` (P2, isolated owned bundles
@@ -247,10 +246,6 @@ these are the Majors still open.
   `ASSIST-57`): every save, write and other server process on the project waits
   for the profile; 47 ms of descriptor construction per tool result on the
   event-loop thread.
-- **The root JSON array tokeniser reads one byte per Python call** (Major,
-  `JSON-R02`): the original probe reported forty-one times the JSONL total scan
-  time. The approximately three-minute extrapolation for 1 GB is throughput cost;
-  records are yielded as they are decoded, not after the whole file is read.
 - **A WebSocket reconnect after a save discards every running job's tracking
   and the undo history** (Major, `FSH-R05`): the save stores no document
   fingerprint, so the resync is answered with a full document the client takes
@@ -364,10 +359,6 @@ production:
 | Assistant | ASB-1, ASB-2, ASB-10, ASB-12 | `ASSIST-57` |
 | Assistant | ASB-4, ASB-5, ASB-6, ASB-8, ASB-9 | `ASSIST-58` |
 | Assistant | ASB-3, ASB-7, ASB-11 | `ASSIST-59` |
-| JSON shredding | JSN-2 | `JSON-R02` |
-| JSON shredding | JSN-4, JSN-5, JSN-8, JSN-9 | `JSON-R03` |
-| JSON shredding | JSN-6, JSN-7 | `JSON-R04` |
-| JSON shredding | JSN-10, JSN-11, JSN-12 | `JSON-R05` |
 | Submodels | SUB-1 | `SUB-R04` |
 | Submodels | SUB-2, SUB-3, SUB-4, SUB-11 | `SUB-R05` |
 | Explore / EDA | SUB-5, SUB-6, SUB-7, SUB-10 | `EDA-R01` |
@@ -450,9 +441,8 @@ browser's hand-written contract mirrors (`API-R03`), `hashConfig`'s exclusion
 list (`PCFG-R08`), the results store's optimiser logic (`FSH-R03`) and the dead
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
 (`ENGQ-R01`); the editors' unused barrel and unlisted `@lezer/highlight`
-(`ENGQ-R01`), Banding's `_prevRules` stash (`PCFG-R08`), the path-grammar
-mirrors, which agree construct for construct (`JSON-R04`), the Edge Join
-editor's `coalesce` (`JSON-R03`) and the API Input label rule (`NAME-09`); the dead
+(`ENGQ-R01`), Banding's `_prevRules` stash (`PCFG-R08`) and the API Input label
+rule (`NAME-09`); the dead
 `submodelGraphFromMetadata` and two dead duplicate exports in the hooks and
 utilities (`ENGQ-R01`), and the sheet-visibility fault on an output condition
 (`WB-29`); Banding's `_id` and the step error string inside the config

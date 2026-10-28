@@ -6,12 +6,14 @@ with its parallelism policy lives beside the readers it partitions."""
 from __future__ import annotations
 
 import os
+import re
 import xml.etree.ElementTree as ET
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass, field
+from functools import cache
 from itertools import islice
 from pathlib import Path
-from typing import Any, Literal, NoReturn, cast
+from typing import Any, BinaryIO, Literal, NoReturn, cast
 from xml.parsers import expat
 
 import orjson
@@ -433,10 +435,6 @@ def _iter_records(
     never counted. Malformed JSON still raises.
     """
 
-    def _count_record_skip() -> None:
-        if stats is not None:
-            stats.count_record_skip()
-
     record_limit = _structured_input_record_limit()
     if record_format(data_path) == "xml":
         yield from _iter_xml_records(data_path)
@@ -447,35 +445,12 @@ def _iter_records(
             while raw_line := f.readline(record_limit + 1):
                 if len(raw_line) > record_limit:
                     raise _record_limit_error("JSONL record", record_limit)
-                stripped = raw_line.strip()
-                if not stripped:
-                    continue
-                obj = orjson.loads(stripped)
-                if isinstance(obj, dict):
-                    yield obj
-                else:
-                    _count_record_skip()
+                record = _jsonl_record(raw_line, stats)
+                if record is not None:
+                    yield record
         return
-    # A root array can be arbitrarily large.  Read precisely one complete
-    # element at a time, while still consuming and validating the complete
-    # document (including the closing bracket and any trailing bytes).
-    pos = 0
     with data_path.open("rb") as f:
-
-        def _read_byte() -> bytes:
-            nonlocal pos
-            byte = f.read(1)
-            if byte:
-                pos += 1
-            return byte
-
-        def _read_non_ws() -> bytes:
-            while True:
-                byte = _read_byte()
-                if not byte or byte not in b" \t\r\n":
-                    return byte
-
-        first = _read_non_ws()
+        first, pos = _read_first_non_whitespace(f)
         if not first:
             return
         if first != b"[":
@@ -489,35 +464,40 @@ def _iter_records(
             obj = orjson.loads(document)
             if isinstance(obj, dict):
                 yield obj
-            else:
-                _count_record_skip()
+            elif stats is not None:
+                stats.count_record_skip()
             return
+        # A root array can be arbitrarily large: it is read one element at a
+        # time, still consuming and validating the complete document.
+        yield from _iter_root_array_records(f, pos, limit=record_limit, stats=stats)
 
-        expect_value = False
-        while True:
-            first = _read_non_ws()
-            if not first:
-                raise _json_decode_error("unexpected end of data", pos)
-            if first == b"]":
-                if expect_value:
-                    raise _json_decode_error("trailing comma in array", pos)
-                pos = _validate_json_trailing_whitespace(f, pos)
-                return
-            value, delimiter = _read_root_array_value(
-                first,
-                _read_byte,
-                lambda: pos,
-                max_bytes=record_limit,
-            )
-            obj = orjson.loads(value)
-            if isinstance(obj, dict):
-                yield obj
-            else:
-                _count_record_skip()
-            expect_value = delimiter == b","
-            if delimiter == b"]":
-                pos = _validate_json_trailing_whitespace(f, pos)
-                return
+
+def _jsonl_record(raw_line: bytes, stats: ShredSkipStats | None) -> dict[str, Any] | None:
+    """One JSONL line's record, or ``None`` for a blank line or a non-object value.
+
+    A blank line is formatting and counts nothing; *stats*, when given, counts a
+    line whose value is not an object.
+    """
+    stripped = raw_line.strip()
+    if not stripped:
+        return None
+    value = orjson.loads(stripped)
+    if isinstance(value, dict):
+        return value
+    if stats is not None:
+        stats.count_record_skip()
+    return None
+
+
+def _read_first_non_whitespace(f: BinaryIO) -> tuple[bytes, int]:
+    """A JSON file's first byte that is not whitespace (empty when there is none),
+    and the number of bytes read up to and including it."""
+    pos = 0
+    while byte := f.read(1):
+        pos += 1
+        if byte not in _JSON_WHITESPACE:
+            return byte, pos
+    return b"", pos
 
 
 def _json_decode_error(message: str, pos: int) -> orjson.JSONDecodeError:
@@ -546,126 +526,201 @@ def _iter_sampled_json_array_records(
     unsampled inference still parse the whole file so malformed data is caught
     before any cache is materialised.
     """
-    yielded = 0
-    pos = 0
-    expect_value = False
-
     with data_path.open("rb") as f:
-
-        def _read_byte() -> bytes:
-            nonlocal pos
-            b = f.read(1)
-            if b:
-                pos += 1
-            return b
-
-        def _read_non_ws() -> bytes:
-            while True:
-                b = _read_byte()
-                if not b or b not in b" \t\r\n":  # pragma: no mutate
-                    return b
-
-        first = _read_non_ws()
+        first, pos = _read_first_non_whitespace(f)
         if not first:
             return
         if first != b"[":
             yield from islice(_iter_records(data_path), sample_size)
             return
-
-        def _validate_eof() -> None:
-            nonlocal pos
-            pos = _validate_json_trailing_whitespace(f, pos)
-
-        while yielded < sample_size:  # pragma: no mutate
-            first = _read_non_ws()
-            if not first:
-                raise _json_decode_error("unexpected end of data", pos)
-            if first == b"]":  # pragma: no mutate
-                if expect_value:
-                    raise _json_decode_error("trailing comma in array", pos)
-                _validate_eof()
-                return
-
-            value, delimiter = _read_root_array_value(
-                first,
-                _read_byte,
-                lambda: pos,
-                max_bytes=_structured_input_record_limit(),
-            )
-            obj = orjson.loads(value)
-            if isinstance(obj, dict):
-                yield obj
-                yielded += 1
-            expect_value = delimiter == b","  # pragma: no mutate
-            if delimiter == b"]":  # pragma: no mutate
-                _validate_eof()
-                return
+        records = _iter_root_array_records(
+            f, pos, limit=_structured_input_record_limit(), stats=None
+        )
+        yield from islice(records, sample_size)
 
 
-def _read_root_array_value(
-    first: bytes,
-    read_byte: Callable[[], bytes],
-    current_pos: Callable[[], int],
-    *,  # pragma: no mutate
-    max_bytes: int | None = None,  # pragma: no mutate
-) -> tuple[bytes, bytes]:
-    """Read one value from a root JSON array and return its delimiter."""
-    limit = _structured_input_record_limit() if max_bytes is None else max_bytes
-    buf = bytearray(first)
-    depth = 1 if first in {b"{", b"["} else 0
-    in_string = first == b'"'  # pragma: no mutate
-    escaped = False
+_JSON_WHITESPACE = b" \t\r\n"
+_QUOTE, _BACKSLASH, _CLOSE_ARRAY, _CLOSE_OBJECT = b'"\\]}'
+_OPENERS = b"{["
 
+# Inside a string only a quote or a backslash matters. Outside one, a comma or a
+# closing bracket at an element's top level ends it, and inside a container only
+# brackets and quotes do. Each run pattern skips, in one native call, every byte
+# that cannot end or nest the element, whole strings included; a string that a
+# chunk boundary splits stops a run at its opening quote.
+_STRING_STOP = re.compile(rb'["\\]')
+_TOP_LEVEL_RUN = re.compile(rb'(?:[^"{}\[\],]++|"(?:[^"\\]++|\\.)*+")*+', re.DOTALL)
+_NESTED_RUN = re.compile(rb'(?:[^"{}\[\]]++|"(?:[^"\\]++|\\.)*+")*+', re.DOTALL)
+_NON_WHITESPACE = re.compile(rb"[^ \t\r\n]")
+
+# Where a root-array scan is: between elements, in one, or in one of its strings.
+_SEEK, _ELEMENT, _STRING = range(3)
+
+# The levels of containers inside an element that one bracket-counting match follows.
+_BRACKETED_ELEMENT_LEVELS = 8
+
+
+@cache
+def _bracketed_element() -> re.Pattern[bytes]:
+    """A guess at an element and its delimiter in one native match: whitespace, an
+    object or array closed in this chunk, its brackets paired by kind with at most
+    ``_BRACKETED_ELEMENT_LEVELS`` levels inside and strings ignored, whitespace,
+    then ``,`` or ``]``.
+
+    A bracket inside a string can mislead the count, so a guess is an element only
+    when orjson parses it: a guess that ends early is a strict prefix of a JSON
+    value, one that ends late holds the delimiter after it, and neither parses.
+    Compiled on first use, since the pattern is long.
+    """
+    content = rb"[^{}\[\]]*+"
+    for _ in range(_BRACKETED_ELEMENT_LEVELS):
+        container = rb"\{" + content + rb"\}|\[" + content + rb"\]"
+        content = rb"[^{}\[\]]*+(?:(?:" + container + rb")[^{}\[\]]*+)*+"
+    element = rb"\{" + content + rb"\}|\[" + content + rb"\]"
+    return re.compile(rb"[ \t\r\n]*+(" + element + rb")[ \t\r\n]*+([,\]])")
+
+
+def _iter_root_array_values(f: BinaryIO, pos: int, limit: int) -> Iterator[Any]:
+    """Yield each element of a root JSON array, parsed, *f* just past the ``[``.
+
+    *pos* is the number of bytes already read. The file is read in fixed chunks.
+    An element is first guessed by counting its brackets in one native match and
+    kept when orjson parses the guess (:func:`_bracketed_element`). Otherwise it is
+    found exactly: each chunk is searched with compiled patterns for the bytes that
+    open or close a string, an object or an array or end an element, carrying the
+    string, escape and depth state across chunks, and the element is sliced out of
+    the chunks it spans, its trailing whitespace stripped, and parsed. An element
+    longer than *limit* bytes is refused before more than one chunk past the limit
+    is held. The closing bracket and everything after it are read and checked too;
+    decode errors carry the number of bytes read when they were found.
+    """
+    chunk_size = _STRUCTURED_INPUT_PARSE_CHUNK_BYTES
+    bracketed_element = _bracketed_element()
+    chunk = b""
+    view = memoryview(chunk)
+    base = pos  # the file offset of chunk[0]
+    at = 0  # the next byte of chunk to scan
+    state = _SEEK
+    start = 0  # where the element begins in chunk
+    held = bytearray()  # the element's bytes from chunks before this one
+    depth = 0
+    expect_value = False
     while True:
-        b = read_byte()
-        if not b:
-            raise _json_decode_error("unexpected end of data", current_pos())
-
-        if in_string:
-            buf.extend(b)
-            if len(buf) > limit:
-                raise _record_limit_error("JSON array element", limit)
-            if escaped:
-                escaped = False
-            elif b == b"\\":  # pragma: no mutate
-                escaped = True
-            elif b == b'"':  # pragma: no mutate
-                in_string = False
-            continue
-
-        if b == b'"':  # pragma: no mutate
-            buf.extend(b)
-            if len(buf) > limit:
-                raise _record_limit_error("JSON array element", limit)
-            in_string = True
-            continue
-
-        if b in {b"{", b"["}:
-            depth += 1
-            buf.extend(b)
-            if len(buf) > limit:
-                raise _record_limit_error("JSON array element", limit)
-            continue
-
-        if b in {b"}", b"]"}:
-            if depth > 0:  # pragma: no mutate
-                depth -= 1
-                buf.extend(b)
-                if len(buf) > limit:
+        if at >= len(chunk):
+            if state != _SEEK:
+                if len(held) + len(chunk) - start > limit:
                     raise _record_limit_error("JSON array element", limit)
+                held += chunk[start:]
+                start = 0
+            # An escape that ends a chunk skips the first byte of the next one.
+            carry = at - len(chunk)
+            base += len(chunk)
+            chunk = f.read(chunk_size)
+            if not chunk:
+                raise _json_decode_error("unexpected end of data", base)
+            view = memoryview(chunk)
+            at = carry
+            continue
+        if state == _STRING:
+            stop = _STRING_STOP.search(chunk, at)
+            if stop is None:
+                at = len(chunk)
+            elif chunk[stop.start()] == _BACKSLASH:
+                at = stop.end() + 1
+            else:
+                at = stop.end()
+                state = _ELEMENT
+            continue
+        if state == _SEEK:
+            guess = bracketed_element.match(chunk, at)
+            if guess is not None and guess.start(2) - guess.start(1) <= limit:
+                try:
+                    value = orjson.loads(view[guess.start(1) : guess.end(1)])
+                except orjson.JSONDecodeError:
+                    pass  # misled by a string, or malformed: found exactly below
+                else:
+                    yield value
+                    at = guess.end()
+                    if chunk[at - 1] == _CLOSE_ARRAY:
+                        _validate_after_array(f, chunk, at, base)
+                        return
+                    expect_value = True
+                    continue
+            found = _NON_WHITESPACE.search(chunk, at)
+            if found is None:
+                at = len(chunk)
                 continue
-            if b == b"]":  # pragma: no mutate
-                return bytes(buf).rstrip(), b
-            raise _json_decode_error("unexpected '}'", current_pos())
-
-        # A depth-0 ``]`` is already handled by the close-delimiter block above,
-        # so only the comma remains as a value terminator here.
-        if depth == 0 and b == b",":
-            return bytes(buf).rstrip(), b
-
-        buf.extend(b)
-        if len(buf) > limit:
+            at = found.start()
+            byte = chunk[at]
+            if byte == _CLOSE_ARRAY:
+                if expect_value:
+                    raise _json_decode_error("trailing comma in array", base + at + 1)
+                _validate_after_array(f, chunk, at + 1, base)
+                return
+            start = at
+            held.clear()
+            depth = 1 if byte in _OPENERS else 0
+            state = _STRING if byte == _QUOTE else _ELEMENT
+            at += 1
+            continue
+        run = (_NESTED_RUN if depth else _TOP_LEVEL_RUN).match(chunk, at)
+        assert run is not None  # both patterns match the empty run
+        at = run.end()
+        if at >= len(chunk):
+            continue
+        byte = chunk[at]
+        if byte == _QUOTE:
+            state = _STRING
+            at += 1
+        elif byte in _OPENERS:
+            depth += 1
+            at += 1
+        elif depth:
+            depth -= 1
+            at += 1
+        elif len(held) + at - start > limit:
             raise _record_limit_error("JSON array element", limit)
+        elif byte == _CLOSE_OBJECT:
+            raise _json_decode_error("unexpected '}'", base + at + 1)
+        else:
+            # A top-level comma or closing bracket ends the element.
+            element = bytes(held) + chunk[start:at] if held else chunk[start:at]
+            yield orjson.loads(element.rstrip())
+            at += 1
+            if byte == _CLOSE_ARRAY:
+                _validate_after_array(f, chunk, at, base)
+                return
+            expect_value = True
+            state = _SEEK
+
+
+def _validate_after_array(f: BinaryIO, chunk: bytes, at: int, base: int) -> None:
+    """Refuse anything but whitespace after a root array's closing bracket.
+
+    *chunk*, at file offset *base*, holds the bracket, and *at* is just past it.
+    """
+    trailing = _NON_WHITESPACE.search(chunk, at)
+    if trailing is not None:
+        raise _json_decode_error("unexpected trailing data", base + trailing.start())
+    _validate_json_trailing_whitespace(f, base + len(chunk))
+
+
+def _iter_root_array_records(
+    f: BinaryIO,
+    pos: int,
+    *,  # pragma: no mutate
+    limit: int,
+    stats: ShredSkipStats | None,
+) -> Iterator[dict[str, Any]]:
+    """Each object element of a root JSON array, *f* just past its ``[``.
+
+    *stats*, when given, counts each element that is not an object.
+    """
+    for value in _iter_root_array_values(f, pos, limit):
+        if isinstance(value, dict):
+            yield value
+        elif stats is not None:
+            stats.count_record_skip()
 
 
 def _iter_records_for_inference(
@@ -766,14 +821,9 @@ def _iter_range_records(
     ``orjson`` validates UTF-8 itself, so decoding stays inside the JSON parse.
     """
     for raw_line in _iter_range_lines(data_path, start, end):
-        stripped = raw_line.strip()
-        if not stripped:
-            continue
-        obj = orjson.loads(stripped)
-        if isinstance(obj, dict):
-            yield obj
-        elif stats is not None:
-            stats.count_record_skip()
+        record = _jsonl_record(raw_line, stats)
+        if record is not None:
+            yield record
 
 
 @dataclass(frozen=True)  # pragma: no mutate - declaration metadata, not runtime logic

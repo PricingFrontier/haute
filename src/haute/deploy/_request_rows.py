@@ -513,6 +513,7 @@ class _Walk:
     def response(
         self, node: GraphNode, edges: Sequence[GraphEdge], inputs: Sequence[_FrameFacts]
     ) -> _FrameFacts:
+        from haute._jsonpath import _Seg
         from haute._output_assembler import (
             _array_prefix,
             _parse_output_path,
@@ -521,7 +522,7 @@ class _Walk:
 
         from_request = any(facts.from_request for facts in inputs)
         try:
-            prefixes: dict[str, tuple[str, ...]] = {}
+            prefixes: dict[str, tuple[_Seg, ...]] = {}
             for entry in node.data.config.get("outputMapping") or []:
                 if not is_active_mapping_entry(entry):
                     continue

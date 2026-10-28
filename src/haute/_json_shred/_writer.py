@@ -4,7 +4,7 @@ artifacts and leased runtime spill bundles."""
 from __future__ import annotations
 
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,42 +73,20 @@ def _shred_chunk(
     writer: _BoundedParquetRowGroupWriter | None = None  # pragma: no mutate
     try:
         table_specs = _shred._emitting_table_specs(v2_config)
-        stats = ShredSkipStats()
-        record_count = 0
-        emitted_counts: dict[str, int] = {spec.label: 0 for spec in table_specs}
         writer = _BoundedParquetRowGroupWriter(
             tmp_dir,
             table_specs,
             filename_suffix=f".{index:06d}.part",
         )
-
-        def _counted() -> Iterator[dict[str, Any]]:
-            nonlocal record_count
-            for record in _records._iter_range_records(data_path, start, end, stats):
-                record_count += 1
-                yield record
-
-        _shred.shred_to_buffers(
-            _counted(),
-            v2_config,
-            stats=stats,
-            _table_specs=table_specs,
-            _row_sink=writer.emit,
-            _emitted_counts=emitted_counts,
-        )
-
         # Ranges tile the file exactly, so holding conservation on every chunk
         # holds it on the whole file and localises a violation to its range.
-        _shred._assert_root_conservation(
+        stats, record_count = _shred_records_into(
+            writer,
+            lambda stats: _records._iter_range_records(data_path, start, end, stats),
+            v2_config,
             table_specs,
-            {},
-            stats,
-            record_count,
             location=f" in byte range [{start}, {end})",
-            emitted_counts=emitted_counts,
         )
-        writer.flush()
-        writer.close()
 
         return _ChunkResult(
             index=index,
@@ -133,6 +111,51 @@ def _shred_chunk(
             part_paths={},
             failure=_records._failure_from_exception(exc),
         )
+
+
+def _shred_records_into(
+    writer: _BoundedParquetRowGroupWriter,
+    records: Callable[[ShredSkipStats], Iterable[dict[str, Any]]],
+    v2_config: dict[str, Any],
+    table_specs: tuple[_EmittingTableSpec, ...],
+    *,  # pragma: no mutate
+    location: str = "",
+) -> tuple[ShredSkipStats, int]:
+    """Shred *records* into *writer*, prove root conservation, then flush and close it.
+
+    *records* receives the shred's skip stats, so a record it skips is counted.
+    Returns the skip stats and the number of records read; *location* names the
+    part of the source a conservation failure was found in.
+    """
+    stats = ShredSkipStats()
+    emitted_counts: dict[str, int] = {spec.label: 0 for spec in table_specs}
+    record_count = 0
+
+    def counted() -> Iterator[dict[str, Any]]:
+        nonlocal record_count
+        for record in records(stats):
+            record_count += 1
+            yield record
+
+    _shred.shred_to_buffers(
+        counted(),
+        v2_config,
+        stats=stats,
+        _table_specs=table_specs,
+        _row_sink=writer.emit,
+        _emitted_counts=emitted_counts,
+    )
+    _shred._assert_root_conservation(
+        table_specs,
+        {},
+        stats,
+        record_count,
+        location=location,
+        emitted_counts=emitted_counts,
+    )
+    writer.flush()
+    writer.close()
+    return stats, record_count
 
 
 def _raise_chunk_error(result: _ChunkResult) -> NoReturn:
@@ -175,7 +198,6 @@ class _BoundedParquetRowGroupWriter:
         self.paths: dict[str, Path] = {}
         self.writers: dict[str, Any] = {}
         self.row_counts: dict[str, int] = {spec.label: 0 for spec in table_specs}
-        self.schema_frames: dict[str, pl.DataFrame] = {}
         try:
             with self._disk_transaction():
                 for spec in table_specs:
@@ -184,7 +206,6 @@ class _BoundedParquetRowGroupWriter:
                     arrow_schema = frame.to_arrow().schema.with_metadata(
                         _shred._per_frame_metadata(spec.label, spec.leaf_specs)
                     )
-                    self.schema_frames[spec.label] = frame
                     self.paths[spec.label] = path
                     self.writers[spec.label] = pq.ParquetWriter(
                         path,
@@ -286,35 +307,14 @@ def _shred_data_file_to_direct_spill(
     cache_dir: Path,
 ) -> tuple[dict[str, pl.LazyFrame], ShredSkipStats]:
     """Shred one uncached source into a leased, bounded Parquet spill bundle."""
-    skip_stats = ShredSkipStats()
-    emitted_counts: dict[str, int] = {spec.label: 0 for spec in table_specs}
-    record_count = 0
     bundle = _DirectSpillBundle(cache_dir, table_specs)
     try:
-
-        def _counted_records() -> Iterator[dict[str, Any]]:
-            nonlocal record_count
-            for record in _shred.file_records(data_path, v2_config, stats=skip_stats):
-                record_count += 1
-                yield record
-
-        _shred.shred_to_buffers(
-            _counted_records(),
+        skip_stats, _record_count = _shred_records_into(
+            bundle,
+            lambda stats: _shred.file_records(data_path, v2_config, stats=stats),
             v2_config,
-            stats=skip_stats,
-            _table_specs=table_specs,
-            _row_sink=bundle.emit,
-            _emitted_counts=emitted_counts,
-        )
-        _shred._assert_root_conservation(
             table_specs,
-            {},
-            skip_stats,
-            record_count,
-            emitted_counts=emitted_counts,
         )
-        bundle.flush()
-        bundle.close()
         direct_bundle = bundle.lazy_bundle()
         execution_context = current_execution_context()
         if execution_context is not None:
@@ -348,35 +348,14 @@ def _write_tables_streaming(
     tmp_dir: Path,
 ) -> _ShredTables:
     """Stream one source into one bounded Parquet file per table in *tmp_dir*."""
-    skip_stats = ShredSkipStats()
-    emitted_counts: dict[str, int] = {spec.label: 0 for spec in table_specs}
-    record_count = 0
     writer = _BoundedParquetRowGroupWriter(tmp_dir, table_specs)
     try:
-
-        def _counted_records() -> Iterator[dict[str, Any]]:
-            nonlocal record_count
-            for record in _shred.file_records(data_path, v2_config, stats=skip_stats):
-                record_count += 1
-                yield record
-
-        _shred.shred_to_buffers(
-            _counted_records(),
+        skip_stats, _record_count = _shred_records_into(
+            writer,
+            lambda stats: _shred.file_records(data_path, v2_config, stats=stats),
             v2_config,
-            stats=skip_stats,
-            _table_specs=table_specs,
-            _row_sink=writer.emit,
-            _emitted_counts=emitted_counts,
-        )
-        _shred._assert_root_conservation(
             table_specs,
-            {},
-            skip_stats,
-            record_count,
-            emitted_counts=emitted_counts,
         )
-        writer.flush()
-        writer.close()
         return _ShredTables(
             skip_stats,
             {spec.label: (writer.paths[spec.label],) for spec in table_specs},

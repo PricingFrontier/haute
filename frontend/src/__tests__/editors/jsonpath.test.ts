@@ -83,33 +83,37 @@ describe("parsePath - §3 forbidden set rejected (mirror of backend probe)", () 
 
 describe("parseDataPath - INPUT mode", () => {
   it("bare root with allowRoot → zero segments (table root level)", () => {
-    const r = parseDataPath("$[:]", { allowRoot: true })
+    const r = parseDataPath("$[:]", { noun: "column path", allowRoot: true })
     expect(r.segments).toEqual([])
   })
 
   it("bare root WITHOUT allowRoot is rejected (a column path must name a leaf)", () => {
-    expect(() => parseDataPath("$[:]", { allowRoot: false })).toThrow(PathError)
+    expect(() => parseDataPath("$[:]", { noun: "column path", allowRoot: false })).toThrow(PathError)
   })
 
   it("rejects a bare-$ object root", () => {
-    expect(() => parseDataPath("$.a")).toThrow(/must start with '\$\[:\]'/)
+    expect(() => parseDataPath("$.a", { noun: "column path" })).toThrow(/must start with '\$\[:\]'/)
   })
 
-  it("accepts the $value reserved leaf as a trailing object hop", () => {
-    expect(parseDataPath("$[:].xs.$value", { reservedLeaf: RESERVED_LEAF }).segments).toEqual<Seg[]>([
-      { name: "xs", isArray: false },
+  it("accepts the $value reserved leaf as a trailing hop after an array", () => {
+    expect(parseDataPath("$[:].xs[:].$value", { noun: "column path", reservedLeaf: RESERVED_LEAF }).segments).toEqual<Seg[]>([
+      { name: "xs", isArray: true },
       { name: "$value", isArray: false },
     ])
   })
 
+  it.each(["$[:].xs.$value", "$[:].xs[:].a.$value"])("refuses $value after an object hop (%s)", (raw) => {
+    expect(() => parseDataPath(raw, { noun: "column path", reservedLeaf: RESERVED_LEAF })).toThrow(/must follow '\[:\]'/)
+  })
+
   it("accepts $value sitting directly on the root array", () => {
-    expect(parseDataPath("$[:].$value", { reservedLeaf: RESERVED_LEAF }).segments).toEqual<Seg[]>([
+    expect(parseDataPath("$[:].$value", { noun: "column path", reservedLeaf: RESERVED_LEAF }).segments).toEqual<Seg[]>([
       { name: "$value", isArray: false },
     ])
   })
 
   it("$value is NOT an identifier, so it is rejected without the reservedLeaf seam", () => {
-    expect(() => parseDataPath("$[:].$value")).toThrow(PathError)
+    expect(() => parseDataPath("$[:].$value", { noun: "column path" })).toThrow(PathError)
   })
 })
 
@@ -128,6 +132,15 @@ describe("validateInputTablePath - ends at an array or the root", () => {
   it.each(["$.drivers[:]", "$[*]", "$[:].a[0]"])("rejects invalid %s", (p) =>
     expect(validateInputTablePath(p)).not.toBeNull(),
   )
+
+  it.each([
+    ["$.drivers[:]", "table path must start with '$[:]'"],
+    ["$[:].a-b[:]", "malformed table path"],
+    ["$[:].5[:]", "unsupported table-path selector"],
+    ["$[:]['a'][:]", "malformed table path"],
+  ])("names %s's error as a table path's", (p, message) =>
+    expect(validateInputTablePath(p)).toContain(message),
+  )
 })
 
 describe("validateInputColumnPath - names a leaf", () => {
@@ -136,8 +149,12 @@ describe("validateInputColumnPath - names a leaf", () => {
     "$[:].quote_metadata.quote_id",
     "$[:].drivers[:].driver_id",
     "$[:].proposer.claims[:].amount",
-    "$[:].xs.$value",
+    "$[:].xs[:].$value",
   ])("accepts %s", (p) => expect(validateInputColumnPath(p)).toBeNull())
+
+  it("rejects $value after an object hop", () => {
+    expect(validateInputColumnPath("$[:].xs.$value")).toMatch(/must follow '\[:\]'/)
+  })
 
   it("rejects a column path that names no leaf (ends at [:])", () => {
     expect(validateInputColumnPath("$[:].drivers[:]")).toMatch(/names no leaf/)
@@ -146,4 +163,13 @@ describe("validateInputColumnPath - names a leaf", () => {
   it("rejects the bare root iterator (names no leaf)", () => {
     expect(validateInputColumnPath("$[:]")).not.toBeNull()
   })
+
+  it.each([
+    ["quote_id", "column path must start with '$[:]'"],
+    ["$[:].a b", "malformed column path"],
+    ["$[:].a.5", "unsupported column-path selector"],
+    ['$[:]["2024"]', "malformed column path"],
+  ])("names %s's error as a column path's", (p, message) =>
+    expect(validateInputColumnPath(p)).toContain(message),
+  )
 })
