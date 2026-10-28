@@ -1376,7 +1376,7 @@ export type ExportFormat = ExportWidget["target"]["format"]
  */
 export const HEADER_ROW_MAX = 100
 
-/** What a new Export names its file, as the server's form has it (`EXPORT_FILE_NAME`). */
+/** What a new Export names its file: the quote's reference and option. */
 export const EXPORT_FILE_NAME = "{quote_reference}-{quote_option}"
 
 /** Each format's settings as a new Import starts them, in the file's order: a CSV's delimiter found from the file, a workbook's first sheet under its first row, no connection or query. */

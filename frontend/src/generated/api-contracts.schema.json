@@ -1312,7 +1312,6 @@
       "description": "A CSV of the one table an Export exports, its fields split by its ``delimiter``.",
       "properties": {
         "delimiter": {
-          "default": "comma",
           "enum": [
             "comma",
             "semicolon",
@@ -1322,7 +1321,6 @@
           "type": "string"
         },
         "file_name": {
-          "default": "{quote_reference}-{quote_option}",
           "title": "File Name",
           "type": "string"
         },
@@ -1332,7 +1330,6 @@
           "type": "string"
         },
         "headers": {
-          "default": "names",
           "enum": [
             "names",
             "labels"
@@ -1341,7 +1338,6 @@
           "type": "string"
         },
         "values": {
-          "default": "raw",
           "enum": [
             "raw",
             "formatted"
@@ -1365,7 +1361,6 @@
       "description": "A CSV the underwriter picks as they press the Import, its fields split by its\n``delimiter``, found from the file while ``auto``.",
       "properties": {
         "delimiter": {
-          "default": "auto",
           "enum": [
             "auto",
             "comma",
@@ -2080,7 +2075,6 @@
       "description": "An Excel workbook of a sheet per table an Export exports, each named by its table.",
       "properties": {
         "file_name": {
-          "default": "{quote_reference}-{quote_option}",
           "title": "File Name",
           "type": "string"
         },
@@ -2090,7 +2084,6 @@
           "type": "string"
         },
         "headers": {
-          "default": "names",
           "enum": [
             "names",
             "labels"
@@ -2099,7 +2092,6 @@
           "type": "string"
         },
         "values": {
-          "default": "raw",
           "enum": [
             "raw",
             "formatted"
@@ -2127,14 +2119,12 @@
           "type": "string"
         },
         "header_row": {
-          "default": 1,
           "maximum": 100,
           "minimum": 1,
           "title": "Header Row",
           "type": "integer"
         },
         "sheet": {
-          "default": "",
           "title": "Sheet",
           "type": "string"
         }
@@ -5980,7 +5970,6 @@
           "type": "string"
         },
         "label": {
-          "default": "",
           "title": "Label",
           "type": "string"
         },
@@ -8077,12 +8066,10 @@
           "type": "string"
         },
         "label": {
-          "default": "",
           "title": "Label",
           "type": "string"
         },
         "mode": {
-          "default": "replace",
           "enum": [
             "replace",
             "append",
@@ -8117,7 +8104,6 @@
               "type": "null"
             }
           ],
-          "default": null,
           "title": "Table"
         },
         "type": {
@@ -14108,7 +14094,6 @@
       "description": "The tables an Export writes to a database on a named connection, each to the table\nof its own name or the name given it, the quote's rows there written again.",
       "properties": {
         "connection": {
-          "default": "",
           "title": "Connection",
           "type": "string"
         },
@@ -14138,7 +14123,6 @@
       "description": "A query run on a named connection, whose credentials the environment holds, never\nthe form, each of its parameters given the value of the column bound to it.",
       "properties": {
         "connection": {
-          "default": "",
           "title": "Connection",
           "type": "string"
         },
@@ -14155,7 +14139,6 @@
           "type": "array"
         },
         "query": {
-          "default": "",
           "title": "Query",
           "type": "string"
         }

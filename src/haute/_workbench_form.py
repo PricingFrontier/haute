@@ -128,9 +128,6 @@ ExportValues = Literal["raw", "formatted"]
 #: properties panel takes it (``frontend/src/utils/workbenchForm.ts``).
 HEADER_ROW_MAX = 100
 
-#: What a new Export names its file: the quote's reference and option.
-EXPORT_FILE_NAME = "{quote_reference}-{quote_option}"
-
 #: A query parameter's name, as ``:name`` in an Import's query: an identifier.
 PARAMETER_NAME = r"^[A-Za-z_][A-Za-z0-9_]*$"
 
@@ -527,7 +524,7 @@ class CsvImport(_Strict):
     ``delimiter``, found from the file while ``auto``."""
 
     format: Literal["csv"]
-    delimiter: Literal["auto", "comma", "semicolon", "tab"] = "auto"
+    delimiter: Literal["auto", "comma", "semicolon", "tab"]
 
 
 class ExcelImport(_Strict):
@@ -536,8 +533,8 @@ class ExcelImport(_Strict):
 
     format: Literal["excel"]
     #: The workbook's sheet by its name; empty for its first.
-    sheet: str = ""
-    header_row: int = Field(default=1, ge=1, le=HEADER_ROW_MAX)
+    sheet: str
+    header_row: int = Field(ge=1, le=HEADER_ROW_MAX)
 
 
 class QueryParameter(_Strict):
@@ -554,9 +551,9 @@ class SqlImport(_Strict):
 
     format: Literal["sql"]
     #: The connection by name; empty while none is chosen.
-    connection: str = ""
-    query: str = ""
-    parameters: list[QueryParameter] = Field(default_factory=list)
+    connection: str
+    query: str
+    parameters: list[QueryParameter]
 
 
 ImportSource = Annotated[CsvImport | ExcelImport | SqlImport, Field(discriminator="format")]
@@ -577,15 +574,15 @@ class ImportWidget(_Placed):
 
     type: Literal["import"]
     #: The text on the button.
-    label: str = ""
+    label: str
     show_when: ShowWhen = Field(default_factory=ShowWhen)
     source: ImportSource
     #: The input table it fills, by id; None while it fills none.
-    table: str | None = None
-    mode: ImportMode = "replace"
+    table: str | None
+    mode: ImportMode
     #: The columns of its table read from a column named otherwise, in no set order; a column
     #: without one is read from the column of its own name or label, whatever its case.
-    column_names: list[ColumnName] = Field(default_factory=list)
+    column_names: list[ColumnName]
 
     @model_validator(mode="after")
     def _names_each_once(self) -> ImportWidget:
@@ -602,16 +599,16 @@ class _FileExport(_Strict):
     value of that column of quote_details, its extension left out, how its columns are
     headed and how its values are written."""
 
-    file_name: str = EXPORT_FILE_NAME
-    headers: ExportHeaders = "names"
-    values: ExportValues = "raw"
+    file_name: str
+    headers: ExportHeaders
+    values: ExportValues
 
 
 class CsvExport(_FileExport):
     """A CSV of the one table an Export exports, its fields split by its ``delimiter``."""
 
     format: Literal["csv"]
-    delimiter: Literal["comma", "semicolon", "tab"] = "comma"
+    delimiter: Literal["comma", "semicolon", "tab"]
 
 
 class ExcelExport(_FileExport):
@@ -634,9 +631,9 @@ class SqlExport(_Strict):
 
     format: Literal["sql"]
     #: The connection by name; empty while none is chosen.
-    connection: str = ""
+    connection: str
     #: The tables written to a table named otherwise, in no set order.
-    table_names: list[TableName] = Field(default_factory=list)
+    table_names: list[TableName]
 
 
 ExportTarget = Annotated[CsvExport | ExcelExport | SqlExport, Field(discriminator="format")]
@@ -649,11 +646,11 @@ class ExportWidget(_Placed):
 
     type: Literal["export"]
     #: The text on the button.
-    label: str = ""
+    label: str
     show_when: ShowWhen = Field(default_factory=ShowWhen)
     target: ExportTarget
     #: The tables it exports, by id, in the order chosen.
-    tables: list[str] = Field(default_factory=list)
+    tables: list[str]
 
     @model_validator(mode="after")
     def _exports_each_table_once(self) -> ExportWidget:

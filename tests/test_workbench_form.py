@@ -17,7 +17,6 @@ from haute._workbench_form import (
     BLANK_SECTION_HEIGHT,
     BLANK_SHEET_WIDTH,
     COLLECTION_COLUMNS_MAX,
-    EXPORT_FILE_NAME,
     HEADER_ROW_MAX,
     QUOTE_DETAILS_COLUMNS,
     QUOTE_DETAILS_MANAGED,
@@ -396,7 +395,6 @@ def test_the_editor_mirrors_the_forms_limits_and_words() -> None:
         QUOTE_DETAILS_REFUSAL
     )
     assert int(constant("utils/workbenchForm.ts", "HEADER_ROW_MAX")) == HEADER_ROW_MAX
-    assert json.loads(constant("utils/workbenchForm.ts", "EXPORT_FILE_NAME")) == EXPORT_FILE_NAME
 
 
 def test_the_blank_form_is_one_empty_sheet_named_after_the_project() -> None:
@@ -1090,31 +1088,39 @@ def test_an_import_and_an_export_of_each_format_read_and_write_as_they_are(
     )
 
 
-def test_an_import_and_an_export_written_without_their_defaults_take_them() -> None:
-    form = _with_buttons(
-        {"type": "import", "source": {"format": "csv"}},
-        {"type": "export", "target": {"format": "csv"}},
-    )
+def _without(fields: dict[str, Any], key: str) -> dict[str, Any]:
+    return {name: value for name, value in fields.items() if name != key}
 
-    imported, exported = FormSpec.model_validate(form).model_dump(mode="json")["pages"][0][
-        "sections"
-    ][2]["widgets"]
 
-    assert {key: imported[key] for key in ("label", "source", "table", "mode", "column_names")} == {
-        "label": "",
-        "source": {"format": "csv", "delimiter": "auto"},
-        "table": None,
-        "mode": "replace",
-        "column_names": [],
-    }
-    assert exported["tables"] == []
-    assert exported["target"] == {
-        "file_name": "{quote_reference}-{quote_option}",
-        "headers": "names",
-        "values": "raw",
-        "format": "csv",
-        "delimiter": "comma",
-    }
+@pytest.mark.parametrize(
+    ("button", "missing"),
+    [
+        *[
+            (_without(_import(IMPORTS["csv"]), key), key)
+            for key in ("label", "table", "mode", "column_names")
+        ],
+        (_import(_without(IMPORTS["csv"], "delimiter")), "delimiter"),
+        (_import(_without(IMPORTS["excel"], "sheet")), "sheet"),
+        (_import(_without(IMPORTS["excel"], "header_row")), "header_row"),
+        (_import(_without(IMPORTS["sql"], "query")), "query"),
+        (_import(_without(IMPORTS["sql"], "parameters")), "parameters"),
+        *[(_without(_export(EXPORTS["csv"]), key), key) for key in ("label", "tables")],
+        *[
+            (_export(_without(EXPORTS["csv"], key)), key)
+            for key in ("file_name", "headers", "values", "delimiter")
+        ],
+        (_export(_without(EXPORTS["sql"], "connection")), "connection"),
+        (_export(_without(EXPORTS["sql"], "table_names")), "table_names"),
+    ],
+)
+def test_an_import_or_an_export_missing_a_setting_is_refused(
+    button: dict[str, Any], missing: str
+) -> None:
+    with pytest.raises(ValidationError) as caught:
+        FormSpec.model_validate(_with_buttons(button))
+    assert [(error["type"], error["loc"][-1]) for error in caught.value.errors()] == [
+        ("missing", missing)
+    ]
 
 
 @pytest.mark.parametrize(
