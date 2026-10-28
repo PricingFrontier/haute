@@ -289,6 +289,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/GitPushResponse"},
         },
     },
+    "/api/git/ci-secrets": {
+        "POST": {
+            "request_ref": "#/components/schemas/GitCiSecretsRequest",
+            "success_schema": {"$ref": "#/components/schemas/GitCiSecrets"},
+        },
+    },
     "/api/git/remotes": {
         "GET": {
             "request_ref": None,

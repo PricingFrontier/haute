@@ -73,8 +73,8 @@ def _invoke(runner, args: list[str], gh: _Gh, *, refuse: Exception | None = None
         return "ci-bot@example.com"
 
     with (
-        patch("haute.cli._ci.shutil.which", return_value="/usr/bin/gh"),
-        patch("haute.cli._ci.subprocess.run", side_effect=gh),
+        patch("haute._ci_secrets.shutil.which", return_value="/usr/bin/gh"),
+        patch("haute._ci_secrets.subprocess.run", side_effect=gh),
         patch("haute.deploy._databricks_serving.workspace_user", side_effect=user) as checked,
     ):
         result = runner.invoke(cli, ["ci", *args])
@@ -204,7 +204,7 @@ def test_check_passes_when_every_secret_is_set(runner, project: Path) -> None:
 
 
 def test_without_the_github_cli_says_how_to_get_it(runner, project: Path) -> None:
-    with patch("haute.cli._ci.shutil.which", return_value=None):
+    with patch("haute._ci_secrets.shutil.which", return_value=None):
         result = runner.invoke(cli, ["ci", "secrets"])
 
     assert result.exit_code == 1

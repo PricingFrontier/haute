@@ -145,6 +145,7 @@ def test_git_facade_is_declaration_only_and_public_imports_stay_stable() -> None
 
     facade = importlib.import_module("haute._git")
     expected = {
+        "GitBootstrapIncompleteError",
         "GitDomainError",
         "GitError",
         "GitGuardrailError",
@@ -178,7 +179,9 @@ def test_git_facade_is_declaration_only_and_public_imports_stay_stable() -> None
         "pair_divergence",
         "pending_ledger_saves",
         "push_working_pair",
-        "remote_has_content",
+        "remote_holds_other_history",
+        "remote_is_empty",
+        "remote_push_urls",
         "remote_url",
         "restore_version",
         "restore_working_pair",

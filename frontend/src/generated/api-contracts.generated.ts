@@ -1129,11 +1129,19 @@ export interface GitRemoteLeg {
 }
 export interface GitPushResponse {
   bootstrapped_default: boolean;
+  ci_secrets: GitCiSecrets | null;
   default_branch: string;
   ledger_branch: string;
   pushed_refs: string[];
   remote: string;
   working_branch: string;
+}
+export interface GitCiSecrets {
+  missing: string[];
+  newly_set: string[];
+  problem: string | null;
+  repository: string;
+  state: 'ready' | 'missing' | 'unknown';
 }
 export interface GitFastForwardResponse {
   fast_forwarded: string[];

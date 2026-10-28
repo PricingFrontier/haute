@@ -6112,6 +6112,58 @@
       "title": "GitBranchAwayResponse",
       "type": "object"
     },
+    "GitCiSecrets": {
+      "properties": {
+        "missing": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing",
+          "type": "array"
+        },
+        "newly_set": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Newly Set",
+          "type": "array"
+        },
+        "problem": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Problem"
+        },
+        "repository": {
+          "title": "Repository",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "ready",
+            "missing",
+            "unknown"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "state",
+        "missing",
+        "newly_set",
+        "problem"
+      ],
+      "title": "GitCiSecrets",
+      "type": "object"
+    },
     "GitCommitContext": {
       "properties": {
         "delta_from_base": {
@@ -6900,6 +6952,17 @@
           "title": "Bootstrapped Default",
           "type": "boolean"
         },
+        "ci_secrets": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GitCiSecrets"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "default_branch": {
           "title": "Default Branch",
           "type": "string"
@@ -6930,7 +6993,8 @@
         "ledger_branch",
         "default_branch",
         "bootstrapped_default",
-        "pushed_refs"
+        "pushed_refs",
+        "ci_secrets"
       ],
       "title": "GitPushResponse",
       "type": "object"
@@ -17312,6 +17376,9 @@
     "GitBranchAwayResponse": {
       "$ref": "#/$defs/GitBranchAwayResponse"
     },
+    "GitCiSecrets": {
+      "$ref": "#/$defs/GitCiSecrets"
+    },
     "GitCommitContext": {
       "$ref": "#/$defs/GitCommitContext"
     },
@@ -17637,6 +17704,7 @@
     "GitUndeleteResponse",
     "GitRemotesResponse",
     "GitPushResponse",
+    "GitCiSecrets",
     "GitFastForwardResponse",
     "GitBranchAwayResponse",
     "GitBindStorageResponse",
@@ -17747,6 +17815,7 @@
       "GitUndeleteResponse",
       "GitRemotesResponse",
       "GitPushResponse",
+      "GitCiSecrets",
       "GitFastForwardResponse",
       "GitBranchAwayResponse",
       "GitBindStorageResponse",

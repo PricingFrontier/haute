@@ -115,7 +115,12 @@ The production workflow runs `haute deploy` and then tags the release. Its abili
 
 Your CI/CD workflows need credentials stored securely in GitHub.
 
-**The quickest way: `haute ci secrets`.** Copy `.env.example` to `.env` and fill in the values, sign in to the [GitHub CLI](https://cli.github.com) once with `gh auth login`, then run `haute ci secrets` in your project. It reads the secrets your deploy target needs from `.env`, checks that Databricks accepts them, and stores them as encrypted repository secrets, never printing their values. `haute ci secrets --check` lists which the repository has.
+**The quickest way: let Haute set them.** Copy `.env.example` to `.env` and fill in the values, and sign in to the [GitHub CLI](https://cli.github.com) once with `gh auth login`. Then either:
+
+- **Push from the editor.** The Push that first publishes your project to a new, empty GitHub repository also stores the secrets your deploy target needs, before your `main` branch arrives, so the first deploy has them. If that Push couldn't set them, a message says why. Whenever a later Push finds the repository missing some, the Git panel shows how many beside a **Set from .env** button.
+- **Run `haute ci secrets` in your project.**
+
+Either way Haute reads the secrets from `.env`, checks that Databricks accepts them, and stores them as encrypted repository secrets, never printing their values. The editor only adds secrets the repository doesn't have yet; to replace one, for example after rotating a token, run `haute ci secrets`. `haute ci secrets --check` lists which the repository has.
 
 **Or add them by hand:**
 
@@ -285,6 +290,7 @@ If you're the only person on the team, the process is the same but simpler:
 - **On PR:** Make sure the PR targets the `main` branch (not another branch)
 - **On merge:** Make sure the `deploy-staging.yml` paths filter matches your changed files. If you only changed a markdown file, it won't trigger (by design)
 - **Check the Actions tab:** Go to your repo → **Actions** → look for the workflow run
+- **Nothing has ever run in a new repository:** if **Run workflow** works but no push or pull request has ever started a run, the repository's first push created more than one branch. GitHub never runs workflows from pushes or pull requests in such a repository, and later pushes do not change that. Haute 0.6.0 and earlier pushed like this the first time you pushed a project to an empty repository; later versions publish `main` on its own first. Create a new, empty repository and push the project to it. If you create a repository's first branch yourself, push `main` on its own first (`git push origin main`)
 
 ### "Credentials not found" or "Authentication failed"
 

@@ -195,6 +195,16 @@ branch-count toast remains. On a non-fast-forward rejection the control shows an
 recovery modal: fast-forward catch-up when the fork is behind-only, or "spin off a copy"
 (never a local merge) when it has genuinely diverged.
 
+A Push to a GitHub repository also reports the deploy's secrets there
+([cli](../cli/high-level.md)). When the Push set some, a success toast says `Set <n> deploy
+secret(s) on <repository> from .env`; when a first publication could not set them, or could
+not read the repository's secrets, a warning toast gives the reason. While the repository
+lacks any, the control shows `<n> deploy secret(s) missing on GitHub`, naming them in its
+tooltip, beside a **Set from .env** button that sets the missing ones and toasts the outcome.
+The line goes once they are set, or when a later Push for that remote reports none missing,
+and shows only while that remote is selected. A later Push that cannot read the secrets says
+nothing: the secrets may be managed by someone without the editor.
+
 **Invariants.**
 - A plain save never changes the panel's selection; a milestone commit does (selects the
   new milestone), but only when viewing the current branch's own history.

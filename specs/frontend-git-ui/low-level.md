@@ -21,7 +21,7 @@
 | `frontend/src/components/MilestoneCommitModal.tsx` | Commit modal: required message (500-character maximum with visible validation) + version label form, and the 409 fork-warning override flow. |
 | `frontend/src/components/RestoreConfirmModal.tsx` | The save/discard/confirm prompt before a restore: reads `useGitStore.restoreTarget` for the target label and `useProjectDirty` (the canvas's or the workbench's form's unsaved edits) to decide single-confirm vs. save-or-discard, and locks buttons plus Escape/backdrop close (`busy`) once clicked while the caller performs the actual restore. |
 | `frontend/src/components/WorkingBranchModal.tsx` | Startup / save-gate branch-selection modal, with an inline git-identity sub-form. Its default choice is the checked-out branch when eligible, else the first eligible branch, else "Create new branch…"; on a `detached` status it is always "Create new branch…", with a line saying that an existing branch opens its latest save. |
-| `frontend/src/components/RemotePushControl.tsx` | Remote dropdown, ahead/behind + ledger-divergence display, explicit push (including empty-remote default-bootstrap tooltip/toast and the pending-save integrity confirm), catch-up, the non-fast-forward `PushRejectedModal`, `AheadBehind`/`LedgerStatus`/`RejectedLeg` sub-components. |
+| `frontend/src/components/RemotePushControl.tsx` | Remote dropdown, ahead/behind + ledger-divergence display, explicit push (including empty-remote default-bootstrap tooltip/toast and the pending-save integrity confirm), the deploy's-secrets toasts and `CiSecretsMissing` line with its Set from .env button, catch-up, the non-fast-forward `PushRejectedModal`, `AheadBehind`/`LedgerStatus`/`RejectedLeg` sub-components. |
 | `frontend/src/components/DivergenceModal.tsx` | Recorded-branch-vs-HEAD divergence recovery modal (go home / stay here / open branch manager). |
 | `frontend/src/components/ModalForm.tsx` | The form blocks the working-branch, divergence and save-time identity modals share inside `ModalShell`: the heading with its line of context, the modal text input, the git identity fields (name, email, global-config checkbox) and the cancel/submit row. |
 | `frontend/src/utils/vcHistory.ts` | Records switch/archive/restore/delete as undoable entries on `useGraphStore`'s VC history stacks; each entry's undo/redo leg re-syncs git status + the panel's history nonce. |
@@ -42,9 +42,20 @@ fields with independent lifecycles.
 `default_branch: string` and `bootstrapped_default: boolean` members in addition to the
 remote, working/ledger names, and `pushed_refs`. The matching runtime guard requires and
 parses both members; `bootstrapped_default` is false by default on the server but is always
-present on the wire. `pushed_refs` names the explicit branch refspecs submitted by the
-atomic push (not implicit `--follow-tags` tags), and does not necessarily mean each tip
-changed.
+present on the wire. `pushed_refs` names the explicit branch refspecs the Push submitted
+(for a bootstrap, the default's own push and then the atomic pair push; never implicit
+`--follow-tags` tags), and does not necessarily mean each tip changed. `ci_secrets` is a
+`GitCiSecrets` for a GitHub remote's repository, else `null`.
+
+**`GitCiSecrets`** (`frontend/src/api/types.ts`) — `{ repository, state, missing, newly_set,
+problem }`, the deploy's secrets as a Push or Set from .env found them ([cli](../cli/low-level.md)):
+`state` is `"ready" | "missing" | "unknown"`, `missing` and `newly_set` are secret names, and
+`problem` is the reason they could not be read or set, else `null`. `gitPush` validates it
+inside `GitPushResponse`, and `gitSetCiSecrets(remote)` (`POST /api/git/ci-secrets`) returns
+one, both through the generated validators. Neither sets a browser deadline: the server
+bounds each of their steps (git's, `gh`'s and Databricks' own timeouts), and a first
+publication runs several, so a deadline would report a failure while the push or the
+secrets still land.
 
 **`GitRemote`** — `{ name, url, working, ledger }`. `working` and `ledger` are
 `GitRemoteLeg | null` and are the only divergence fields; the working leg is not duplicated
@@ -251,8 +262,19 @@ your merge target." Pending saves still interpose the existing confirmation befo
 
 On success, `doPush` branches only on the response metadata. When
 `bootstrapped_default=true`, it emits `Published <default_branch> and your branch history to
-<remote>`. When false, it retains the ordinary pushed-ref-count toast. It then reloads
-remote divergence in either case. The frontend neither infers emptiness nor hardcodes
+<remote>`. When false, it retains the ordinary pushed-ref-count toast. It then reads
+`ci_secrets`: a `newly_set` name toasts success `Set <n> deploy secret(s) on <repository> from
+.env`; a `problem` toasts a warning `Couldn't set the deploy's secrets on <repository>:
+<problem>` when the state is `missing`, or when it is `unknown` and the Push bootstrapped, and
+an `unknown` state after any other Push shows nothing. The control keeps `{ remote, report }`
+for the `CiSecretsMissing` line only when the state is `missing`, and clears it otherwise,
+`ci_secrets: null` included, then reloads remote divergence whichever the outcome. The line
+renders while that remote is selected: `<n> deploy secret(s) missing on GitHub`, the names
+in its tooltip, and **Set from .env**, which calls `gitSetCiSecrets(remote)` with the button
+disabled until it settles. Success clears the line and toasts `Set <n> deploy secret(s) on
+<repository> from .env`, or `<repository> already has the deploy's secrets` when `newly_set`
+is empty; a failure toasts the error `Couldn't set the deploy's secrets: <detail>` and keeps
+the line. The frontend neither infers emptiness nor hardcodes
 `main`; strict inspection, related-history validation, refspec choice, atomicity, and remote-
 host default-branch configuration are backend/out-of-scope concerns. Any refusal follows
 the existing push error path and never emits a success toast or retries automatically.
@@ -325,6 +347,9 @@ or a failed push.
 - **`RemotePushControl` never defaults to a push target** unless exactly one remote exists
   — with 0 remotes it shows an explicit "no remotes" message, with 2+ it requires a
   deliberate selection, so a push is never accidental.
+- **The deploy's-secrets line is response-driven.** It appears only from a Push response
+  saying `missing` for a remote; mounting, refreshing and listing remotes never ask for the
+  secrets, and only the Set from .env click sends them anywhere.
 - **Bootstrap is response-driven and first-Push-only.** The special toast appears only for
   `bootstrapped_default=true`; an idempotent second push receives false and uses the normal
   toast. The displayed branch comes from `default_branch`, so custom defaults work and UI
@@ -506,7 +531,12 @@ Library component/unit tests (no e2e for this surface).
   routing, and the rewrite-specific heading. Push-success coverage pins the exact tooltip,
   the special bootstrap toast using a custom `default_branch`, the ordinary toast when
   `bootstrapped_default=false` (including an idempotent later push), post-push reload, and
-  the guarantee that no push occurs merely from mount/startup/branch selection.
+  the guarantee that no push occurs merely from mount/startup/branch selection. Deploy's-
+  secrets coverage: the toast for secrets a Push set; the warning for a first publication's
+  problem, and silence for an `unknown` state after a later Push; the missing-secrets line
+  with its names, shown only for its remote; Set from .env sending the selected remote, then
+  clearing the line on success and keeping it with an error toast on failure; and a later
+  Push reporting none missing clearing it.
 - **`frontend/src/components/__tests__/RemotePushControl.gaps.test.tsx`** — error-message fidelity for
   catch-up and branch-away failures (`Error` vs. non-`Error` rejection), unparseable-409
   fallback to a plain toast (raw structured JSON is not rendered, while a human-readable
@@ -518,7 +548,11 @@ Library component/unit tests (no e2e for this surface).
   `frontend/src/types/__tests__/guards.contract.test.ts`** — the push
   client/guard contract requires `default_branch` and `bootstrapped_default`, preserves
   submitted `pushed_refs`, accepts both boolean values, and rejects missing or wrongly typed
-  bootstrap metadata rather than inventing a default. The guard suite also accepts exactly
+  bootstrap metadata rather than inventing a default. `gitSetCiSecrets` posts the remote to
+  `/api/git/ci-secrets` and rejects a `GitCiSecrets` whose state is not one of the three, and
+  both it and `gitPush` still answer after five minutes, where the default deadline would
+  have ended them.
+  The guard suite also accepts exactly
   the eight working-branch readiness states, preserves detached `head_sha`, and rejects an
   unknown state.
 - **`frontend/src/components/__tests__/DivergenceModal.test.tsx`** — recorded/current branch naming,

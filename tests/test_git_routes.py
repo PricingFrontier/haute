@@ -396,7 +396,8 @@ class TestGeneralExceptionHandling:
     _ENDPOINTS: list[tuple[str, str, str, dict | None]] = [
         ("archive_working_pair", "POST", "/api/git/archive", {"branch": "x"}),
         ("delete_working_pair", "DELETE", "/api/git/branches", {"branch": "x"}),
-        ("push_working_pair", "POST", "/api/git/push", {"remote": "origin"}),
+        ("push_with_ci_secrets", "POST", "/api/git/push", {"remote": "origin"}),
+        ("set_missing_ci_secrets", "POST", "/api/git/ci-secrets", {"remote": "origin"}),
         ("list_remotes", "GET", "/api/git/remotes", None),
     ]
 
@@ -690,13 +691,13 @@ class TestGitRemotesAndPush:
     def test_push_sanitizes_raw_git_error_detail(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import haute.routes.git as git_routes
+        from haute import _git
         from haute._git import GitError
         from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 
         raw_detail = "authentication failed for https://token-secret@example.test/repo.git"
         monkeypatch.setattr(
-            git_routes,
+            _git,
             "push_working_pair",
             lambda *args, **kwargs: (_ for _ in ()).throw(GitError(raw_detail)),
         )
