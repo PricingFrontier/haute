@@ -398,6 +398,14 @@ _EXPECTED_FRONTEND_DEBT_REASONS: dict[str, str] = {
         "it.fails flips to failing, which is the signal to redesign the "
         "provenance check."
     ),
+    "39442a180206c699": (
+        "Platform-only journey (the git restore PR): only on Windows does a file "
+        "another program holds open stop git replacing it, so the browser test "
+        "that switches branches over a held file (Excel's lock, and a "
+        "read-sharing one) has nothing to exercise on the Linux CI lane and "
+        "runs on Windows machines. The fence itself is unit-tested everywhere "
+        "in tests/test_git_engine.py::TestTreeFence."
+    ),
 }
 
 
