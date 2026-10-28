@@ -138,9 +138,10 @@ test.describe("switching branches", () => {
     const failure = page.getByTestId("pipeline-load-failure")
     await expect(failure).toBeVisible()
 
-    // Mistake: reloading, hoping it comes back. The page opens on the failure.
+    // Mistake: reloading, hoping it comes back. The page opens on the failure,
+    // once the first load's retries (6, backing off from 250 ms: about 16 s) run out.
     await page.reload()
-    await expect(failure).toBeVisible()
+    await expect(failure).toBeVisible({ timeout: 40_000 })
 
     await openGitPanel(page)
     await switchInManager(page, work)
