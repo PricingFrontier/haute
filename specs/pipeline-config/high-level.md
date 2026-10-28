@@ -202,8 +202,8 @@ chooses among them; the single-pipeline binding policy remains authoritative.
 `haute init` scaffolds a new project: `haute.toml`,
 `.env.example`, CI workflow YAML for one of several CI providers, a valid blank pipeline and
 starter parse test, deploy-target-specific credentials and TOML sections for one of several
-supported deploy targets, and with `--workbench` the `[workbench]` table and a blank
-`forms/form.json` ([workbench](../workbench/high-level.md)). The blank pipeline declares its `Pipeline` object but no nodes. Init
+supported deploy targets, and with `--workbench` the `[workbench]` table and a blank form
+folder, the pipeline folder's `workbench/` ([workbench](../workbench/high-level.md)). The blank pipeline declares its `Pipeline` object but no nodes. Init
 removes a root `main.py`, creates no `prompts/` directory, and creates no node sidecars.
 
 **Project layout.** The pipeline folder, the folder holding `[project].pipeline` (`rating/`
@@ -233,9 +233,9 @@ encodes the same fixed release flow: a validate job (lint, type check, test, pip
 and a production-deploy job gated behind a provider-specific approval mechanism. The
 deploy starts on a push to the default branch that changes a release input: the
 pipeline folder (`rating/`, its code, config and the versioned files under `files/`), the
-test quotes, `haute.toml`, the dependency
-files `pyproject.toml` and `uv.lock`, and in a project initialised with `--workbench` the
-form's directory, `forms/`. GitHub and Azure DevOps filter the push on those paths;
+test quotes, `haute.toml`, and the dependency
+files `pyproject.toml` and `uv.lock`; a workbench's form folder is in the pipeline folder, so
+a change to the form starts the deploy with them. GitHub and Azure DevOps filter the push on those paths;
 GitLab's pipeline runs on every default-branch commit and filters none. A
 build-and-push-only target's workflow has no smoke-test or impact-analysis job (its production
 job follows staging directly): nothing runs the pushed image until someone updates the service

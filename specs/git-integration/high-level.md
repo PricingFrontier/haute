@@ -66,7 +66,7 @@ Out of scope (owned by neighbouring components):
 
 **The branch-pair model.** Every working branch `<W>` the user creates is paired with a
 save ledger `<W>-save`. Ordinary "saves" are commits on the ledger — one commit per save,
-scoped to exactly the files that changed: the pipeline's files, the workbench's form, or a
+scoped to exactly the files that changed: the pipeline's files, the workbench's form folder's files, or a
 file added, replaced or deleted in the pipeline folder's `files/` through the Pipeline files
 panel ([server-api](../server-api/high-level.md)). A save whose capture is skipped for want
 of a git identity or of a chosen working branch, or fails, still lands on disk, and its
@@ -321,10 +321,12 @@ complete old or new document, never torn JSON.
 - **[pipeline-config](../pipeline-config/high-level.md)** defines what a "save" actually
   commits (the pipeline's config files) and is the reason `commit_save` is pathspec-scoped
   rather than committing the whole index.
-- **[workbench](../workbench/high-level.md)** saves its form through the same capture as
-  the pipeline save (`capture_save_in_ledger` in the save route module), one more
-  pathspec-scoped save on the ledger, and reports it in the editor through the same
-  save-capture report; a milestone's sweep takes the tracked form.
+- **[workbench](../workbench/high-level.md)** saves its form folder's files through the same
+  capture as the pipeline save (`capture_save_in_ledger` in the save route module), one
+  more pathspec-scoped save on the ledger whose message names the tables and sheets it
+  changed, and reports it in the editor through the same save-capture report; a
+  milestone's sweep takes the form's tracked files and, the folder being in the pipeline
+  folder, its new ones.
 - `haute._gitignore_guard.ensure_gitignore_guards` is shared with the CLI initializer and
   asserted again by `set_working_branch`'s unborn-repo seed path, as defence-in-depth
   against a foreign `git init` repo that lacks haute's guard entries.

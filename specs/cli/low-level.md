@@ -99,7 +99,11 @@ file has none: `mypy_path = "rating"` and `explicit_package_bases = true`, so th
 missing imports for `haute`, `catboost`, `xgboost`, `lightgbm` and `sklearn`), creates the
 `rating/` package tree (including `rating/utility/__init__.py` and
 `rating/utility/features.py`), an empty `rating/config/`, and the empty `rating/files/data/`, `rating/files/models/` and `rating/files/params/` folders where versioned data, model and parameter files go ([pipeline-config](../pipeline-config/high-level.md)), writes `haute.toml` via `haute._scaffold.haute_toml` (with the `[workbench]` table when
-`--workbench` is given, and then `forms/form.json` via `haute._scaffold.starter_form`),
+`--workbench` is given, and then the blank form folder's files in `rating/workbench/` via
+`haute._scaffold.starter_form`; `--workbench` in a project that has a `haute.toml` and no
+`--force` takes its own path, adding the `[workbench]` table to that `haute.toml` and the
+blank form folder to its pipeline folder, nothing else, and refusing with exit 1, naming
+what is there, when either already is),
 writes `.env.example`, writes starter tests, writes `.python-version` with the project's Python when it has none
 (`haute._project_python.project_python_version`), writes CI workflow files for the chosen
 provider on that Python

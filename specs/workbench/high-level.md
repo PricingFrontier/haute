@@ -7,8 +7,8 @@ of typed tables, the sheets, each a stack of sections holding Tables and Collect
 show those tables' columns, Charts that plot them, Headings that name them and Imports
 and Exports, the buttons laid out to fill them from a file or a database and to take them
 out, and the sample quote typed into them in Preview. It is part of Haute, switched on per
-project in `haute.toml`, and its form is a file in the project, `forms/form.json`, versioned
-beside the pipeline.
+project in `haute.toml`, and its form is a folder of files in the pipeline folder,
+`workbench/`, versioned with the pipeline.
 
 The workbench's schema is where the pipeline's quote tables come from. The pipeline reads
 them through a Workbench Input, a node type of its own beside the Quote Input, and keeps its
@@ -16,7 +16,7 @@ own copy of them, with the sample quote its previews run on. The schema's output
 what a priced quote fills in: the pipeline fills them through a Workbench Output, a node
 type of its own beside the Quote Response, whose input ports are those tables.
 
-This component owns the switch, the form file with its reading, its saving and its
+This component owns the switch, the form folder with its reading, its saving and its
 revision, the routes that serve the form and its tables to the editor, the
 `haute init --workbench` scaffold, the Workbench view in which the form is edited inside
 Haute (its host beside the pipeline editor, its toolbar and shortcuts, its schema editor,
@@ -30,9 +30,9 @@ frames fill the response.
 
 In scope:
 
-- The `[workbench]` table of `haute.toml`: whether the project's workbench is enabled and
-  where its form is.
-- The form file: its canonical shape, how it is read and written, and the blank form
+- The `[workbench]` table of `haute.toml`: whether the project's workbench is enabled.
+- The form: its canonical shape. The form folder: the files that spell the form in the
+  pipeline folder, how they are read and written, and the blank folder
   `haute init --workbench` scaffolds.
 - The workbench's tables as the pipeline holds them: the schema's input tables, each its
   name, its rows per quote and its typed columns, the sample quote as a request holds it,
@@ -40,8 +40,9 @@ In scope:
 - `GET /api/workbench`, the status the editor reads, `GET /api/workbench/tables`, the
   tables, sample and response tables as the saved form defines them now, and
   `POST /api/workbench/tables`, the same of a form the view holds, saved or not.
-- `GET /api/workbench/form`, the form with its file's revision, and
-  `PUT /api/workbench/form`, which writes the form unless the file changed since it was read.
+- `GET /api/workbench/form`, the form with its folder's revision, and
+  `PUT /api/workbench/form`, which writes the form's files unless one changed since they
+  were read.
 - `GET /api/workbench/params`, a params file's header and a column's distinct values,
   which a column's allowed values are read from (and Banding's categorical rules imported).
 - The Workbench view: how it is shown beside the pipeline editor and what the pipeline
@@ -87,29 +88,33 @@ Out of scope:
   ```toml
   [workbench]
   enabled = true
-  form = "forms/form.json"   # optional; this is the default
   ```
 
   Without the table the project has no workbench and the editor looks exactly as it does
-  without this component. With the table, `enabled` is required and `true` or `false`; `form`
-  is optional, a path relative to the project root that stays inside it, `forms/form.json`
-  when absent; any other key is refused by name. `haute deploy`'s whole-file check of
-  `haute.toml` accepts the table with those two keys, and while `enabled` is true deploy
-  holds each Workbench node's copy of the tables to the form, read strictly, naming each
-  table or column that differs ([deploy](../deploy/high-level.md)).
-  `haute init --workbench` writes the table and a blank form, and the deploy workflow it
-  generates for GitHub or Azure DevOps also starts when a file under `forms/` changes;
-  `haute init --force` rewrites `haute.toml`, so the table stays only when `--workbench`
-  is given again, while `forms/` is left as `data/` is. An existing project enables its
-  workbench by adding the table by hand. A nested `[workbench.app]` table says where the
+  without this component. With the table, `enabled` is required and `true` or `false`; any
+  other key is refused by name, and `form`, where an earlier Haute named the form's one
+  file, is refused saying that the form is the pipeline folder's `workbench/` now. The
+  form is the folder `workbench/` in the pipeline folder, the folder of the pipeline file
+  `[project]` names (`rating/workbench/` in a new project), never configured. `haute
+  deploy`'s whole-file check of `haute.toml` accepts the table, and while `enabled` is true
+  deploy holds each Workbench node's copy of the tables to the form, read strictly, naming
+  each table or column that differs ([deploy](../deploy/high-level.md)).
+  `haute init --workbench` writes the table and a blank form folder in a new project, and
+  in a project that already has a `haute.toml` it adds the two and nothing else, refusing
+  when either is there; nothing else makes the folder. The deploy workflow `haute init`
+  generates for GitHub or Azure DevOps starts when a file in the pipeline folder changes,
+  the form's files among them; `haute init --force` rewrites `haute.toml`, so the table
+  stays only when `--workbench` is given again, while the form folder is left as it is. A
+  nested `[workbench.app]` table says where the
   underwriter app runs: `host` is `azure-container-apps`, and `edit_role`, when given, is
   the role the host signs underwriters in with that may change quotes, every other
   underwriter reading them; any other key, host or role that is not a name is refused by
   name.
-- **The form file.** `forms/form.json` is one JSON document: `version` (1), `name`, `schema`
-  (its tables), `pages` (its sheets, at least one) and `sample` (the quote typed while
-  building, `{}` for none). Every field has one canonical spelling and an unknown field is
-  refused. A schema table has an id, a name, a `role` (`input`, sent to the pricing engine,
+- **The form.** The form is one document as the editor, the routes, a release and the
+  quote store hold it: `version` (1), `name`, `schema` (its tables), `pages` (its sheets,
+  at least one) and `sample` (the quote typed while building, `{}` for none). The form
+  folder spells it as files (below). Every field has one canonical spelling and an unknown
+  field is refused. A schema table has an id, a name, a `role` (`input`, sent to the pricing engine,
   or `output`, returned by it), `rows` (`one` per quote, such as policy details, or `many`,
   such as an equipment schedule) and its columns, each with an id, a name, a `type` of the
   Quote Input's column types (`str`, `int`, `float`, `bool`, `date`), a `label`, its
@@ -140,7 +145,7 @@ Out of scope:
   (`reference`, `quote_reference`), one Haute makes no more is dropped (`valid_until` and
   `currency`), those it holds keep what the project gave them, the missing ones are added,
   and all take today's order, the data it was read from left as it was. That holds wherever
-  a form is read, the project's file, the editor's save, a release's form and the forms the
+  a form is read, the project's folder, the editor's save, a release's form and the forms the
   quote store keeps for older revisions, so every revision still opens. A field, a column
   look or a chart category on a column dropped shows Missing column in the editor and is
   not drawn in Preview or the app, a condition on it is false, and sample values under its
@@ -164,7 +169,7 @@ Out of scope:
   shows (`show_when`) and its sections (`sections`, at least one): strips across the sheet's
   whole width, stacked in
   their order, each with an id, a `title`, its `height` in pixels, when it shows
-  (`show_when`) and its components (`widgets` in the file): a Table (`tableInput`, a grid of at
+  (`show_when`) and its components (`widgets` in the document): a Table (`tableInput`, a grid of at
   least `rows` rows showing columns of many-row tables, with its look, whether its rows
   are fixed and whether it is transposed: `row_numbers`, `density` (`compact` or
   `comfortable`), `gridlines` (`rows`, `all` or `none`), `striped`, `fixed_rows`,
@@ -246,14 +251,80 @@ Out of scope:
   (`count`); or the `sum`, `min`, `max` or `average` (`total`) of a number column's values
   in them (`column`, not the index), by such a test and a number typed as text (`value`).
   The sample holds, by table
-  id, rows keyed by column id, each value as typed: text or a tick. Haute reads the file whole whenever it needs it and never keeps it in memory, so an
-  edit made outside the view reaches the next request. A file that does not exist is the
-  blank form, never saved: one sheet 1280 wide holding one section 560 tall, no tables, no
-  sample. A
-  sheet holding `widgets` of its own, as sheets did before sections, is refused by name
-  (Failure model).
-- **Status.** `GET /api/workbench` answers `enabled` and, while enabled, `form`, the path as
-  `haute.toml` names it. The editor reads it once when it starts. While the workbench is not
+  id, rows keyed by column id, each value as typed: text or a tick. The blank form, which
+  `haute init --workbench` writes, is one sheet 1280 wide holding one section 560 tall,
+  Haute's `quote_details` table alone and no sample.
+- **The form folder.** The form is kept in the pipeline folder's `workbench/`, as files a
+  reviewer reads:
+  - `form.json`, the index: `version` (1, the folder's format, which fixes what each file
+    holds and each setting's default), `name`, `theme` holding the colours set (left out
+    while none is), `schema`, the tables' names in their order, `quote_details` first, and
+    `sheets`, the sheets' names in their tabs' order.
+  - `schema/<table>.json` for each table the index names, named by the table's name: its
+    `id`, `role`, `rows` and `columns`, each column its `id`, `name` and `type` and what else
+    is set on it. `schema/quote_details.json` holds only what the project sets on Haute's
+    table: each column given something, by `name`, with what it is given (a label, group,
+    help or placeholder on any of them; a rule, a default or a format on those the
+    underwriter types); the table's id, role and rows and its columns' ids, types and order
+    are Haute's and never written. The identity columns are written in no table. An output
+    column holds no rule (`required`, `min`, `max`, `options`, `options_source`), no
+    `row_per_value` and no `default_value`.
+  - `sheets/<sheet>.json` for each sheet the index names, named by its title made a name
+    (below): its `id`, `title`, `show_when` and `sections`, each section its `id`, `title`,
+    `show_when` and `components`, each component its `id`, its `type` (`table`, which the
+    document calls `tableInput`, `collection`, `chart`, `heading`, `import` or `export`) and
+    its settings, but not where it sits.
+  - `sheets/<sheet>.layout.json` beside it: the sheet's `width` and, by id, each section's
+    `height` and each component's place, `{"x": 8, "y": 312, "w": 832, "h": 192}` on one
+    line; an entry for every section and component of the sheet and for nothing else. A
+    pull request that only moves or resizes things changes only layout files.
+  - `sample/<table>.json` for each input table the sample has rows in: the rows, each value
+    by its column's name and as typed, text or a tick, in the table's column order. A table
+    with no rows has no file.
+
+  Only what is set is written. The keys that say what a thing is are always written: the
+  index's `version`, `name`, `schema` and `sheets`; a table's `id`, `role`, `rows` and
+  `columns`; a column's `id`, `name` and `type`; a sheet's and a section's `id` and
+  `title`, with their `sections` and `components`; a component's `id` and `type`; every
+  layout number. Any other setting is written only when it is not its default, and a
+  default written out by hand reads as that setting and is left out at the next save. The
+  defaults are the folder format's: a different default is a new `version`.
+
+  Files name things by name. A column is `table.column` (`br_rating.aop_deductible`) in a
+  field, a Chart's `category`, a condition on a one-row table, a column look and a query
+  parameter, and its bare name where its table is said: in the tests and the total's
+  column of a condition on a many-row table's rows, and in an Import's `column_names`. An
+  Import names the table it fills, and an Export the tables it writes, by name. A table or
+  column keeps the id written beside its name for life: a rename changes the name and
+  every reference to it and leaves the id, so saved quotes, which keep values by id, keep
+  the column's; a table or column made anew takes an id of its own, though it takes an old
+  name. A reference to a name the schema does not hold is kept as written: the editor shows
+  it where it is, as it shows a field on a column dropped, `haute app build` and `haute
+  deploy` refuse the form naming it, and nothing reads it as another column. A sheet, a
+  section and a component keep the id their file gives them, unique in the form; the
+  editor makes one from what it is (`sheet_`, `section_`, `table_`, `collection_`,
+  `chart_`, `heading_`, `import_`, `export_`) and four random letters or digits
+  (`collection_k3f9`), so a layout line says what it places.
+
+  A sheet's name is its title in lower case, each run of characters other than ASCII
+  letters and digits one `_`, none at either end, at most 64 characters: "BR Coverages" is
+  `br_coverages`. Save refuses a form the folder cannot hold, naming each problem: two
+  tables of one name whatever their case, two columns of one name in a table, a table or
+  column name that is not an identifier (letters, digits and underscores, not starting
+  with a digit), a table or sheet name Windows keeps (`con`, `prn`, `aux`, `nul`, `com1` to
+  `com9`, `lpt1` to `lpt9`, whatever their case), a sheet title that gives no name or
+  another sheet's, and a file whose full path would pass 240 characters. A rename that
+  changes only a name's case renames the file in place.
+
+  Each file is JSON: UTF-8 text with LF line ends and a final newline, indented two
+  spaces, its keys in one order, text as typed, a list of numbers on one line and a list of
+  text or of objects one item a line, so every column, field and allowed value is a line
+  of its own. Haute reads the folder whole whenever it needs the form and never keeps it,
+  so an edit made outside the view reaches the next request; a read takes the files the
+  index names and refuses any other file in the folder (Failure model). A folder that does
+  not exist is refused, pointing to version history, never taken for a blank form.
+- **Status.** `GET /api/workbench` answers `enabled` and, while enabled, `form`, the form
+  folder's path from the project root (`rating/workbench`). The editor reads it once when it starts. While the workbench is not
   enabled nothing in the editor changes on its account.
 - **The tables.** `GET /api/workbench/tables` answers the schema's input tables as `tables`,
   the sample quote as `sample` and the output tables as `response_tables`, as the form
@@ -272,33 +343,36 @@ Out of scope:
   blanks left out, in the order the file first gives them; a column name holding a
   character an earlier save lost (U+FFFD) is refused, naming it, rather than offered as it
   reads. It writes nothing.
-- **The form, served and saved.** `GET /api/workbench/form` answers the form as its file
-  holds it now and the file's `revision`, the content hash of its bytes: `null` while the
-  file does not exist, when the form is the blank one. `PUT /api/workbench/form` takes the
-  whole form and the `base_revision` it was read at, writes the file (every field, in its
-  canonical spelling) under the pipeline save's lock, as every write to the project is, so
-  two saves never pass the revision check together, and answers the form with its new
-  revision. The written file is one
+- **The form, served and saved.** `GET /api/workbench/form` answers the form as its folder
+  holds it now and the folder's `revision`, the content hash of every file in the folder,
+  its path and its bytes. `PUT /api/workbench/form` takes the whole form and the
+  `base_revision` it was read at and, under the pipeline save's lock, as every write to the
+  project is, so two saves never pass the revision check together, writes each of the
+  form's files whose bytes differ from the file's, making the folders it needs, and deletes
+  the form's own files it no longer has (a table's or a sheet's that went, a sheet's under
+  its old name, a sample whose table's rows went), never a file the index did not name;
+  every write and delete is staged, and when one fails every file is put back as it was. It
+  answers the form with its new revision. The files written and deleted are one
   save on the clone's save ledger, captured as the pipeline's save captures the files it
   wrote and through the same capture: no repository, no capture; no working branch
-  chosen leaves the file uncaptured with a warning; a missing git identity leaves the file
-  uncaptured and is reported for the editor to ask for; a capture that fails is a warning,
-  and leaves the file uncaptured too. The response says what the
+  chosen leaves the files uncaptured with a warning; a missing git identity leaves the
+  files uncaptured and is reported for the editor to ask for; a capture that fails is a
+  warning, and leaves the files uncaptured too. The response says what the
   capture gave (`git_sha`, `warnings`, `identity_required` and the files left
   `uncaptured`, as every write's response has them), the editor keeps an uncaptured file
-  until the one capture route takes it, and from its first
-  captured save on the file is tracked, so a milestone's sweep takes an edit made to it by
-  hand. A file whose revision is no longer `base_revision`, edited by hand or by a branch
-  switch, is left as it is and the save is refused with 409 and a `stale_document_revision`
-  detail, as the pipeline's save refuses a stale document; the view, when its last save
-  lost its answer and the file holds exactly what that save sent, takes the file's
-  revision and saves again, since that save is what changed it. A first save
-  (`base_revision` `null`) creates the file unless one has appeared. The check, the write
-  and the capture hold the repository's lock, as a branch switch does. A form that is not
-  one is refused 422 with the place and reason of each refusal, never the form sent back,
-  and a form giving one id to two sheets, sections, components, tables or columns of a
-  table is refused naming the id. Both routes answer 404 while the workbench is not
-  enabled.
+  until the one capture route takes it, and from its first captured save on each file is
+  tracked, so a milestone's sweep takes an edit made to it by hand. A folder whose revision
+  is no longer `base_revision`, edited by hand or by a branch switch, is left as it is and
+  the save is refused with 409 and a `stale_document_revision` detail, as the pipeline's
+  save refuses a stale document; the view, when its last save lost its answer and the
+  folder holds exactly what that save sent, takes the folder's revision and saves again,
+  since that save is what changed it. A save always names a revision: the folder is there
+  before the first one, made by `haute init --workbench`. The check, the writes and the
+  capture hold the repository's lock, as a branch switch does. A form that is not one, or
+  that the folder cannot hold (The form folder), is refused 422 with the place and reason
+  of each refusal, never the form sent back, and a form giving one id to two sheets,
+  sections, components, tables or columns of a table is refused naming the id. Both routes
+  answer 404 while the workbench is not enabled.
 - **The view.** While the workbench is enabled, a view switcher at the bottom of the left
   palette offers "Pricing", the pipeline editor, and "Workbench".
   - **Showing it.** The Workbench view covers the area below the toolbar: its own left
@@ -368,8 +442,8 @@ Out of scope:
     first's updates of the nodes, which a save counts as a failure. Save passes the pipeline
     editor's git readiness gate first, as it does there: with no working branch chosen, or
     a divergent one, the gate's modal opens and the save follows its confirmation. Each
-    file's save is reported as the pipeline's is: "Saved → forms/form.json" and the
-    pipeline's own toast, the ledger commit on the branch indicator, each warning in a
+    save is reported as the pipeline's is: "Saved → rating/workbench", the form folder as
+    the status names it, and the pipeline's own toast, the ledger commit on the branch indicator, each warning in a
     toast of its own, and the git-identity prompt when the capture waits on one, once per
     session. Which view shows never decides what a save records.
   - **Commit** runs the project's milestone flow, the same from either toolbar: the project
@@ -382,12 +456,12 @@ Out of scope:
     switch chosen over them reads the destination's form in their place once it has
     succeeded.
   - **Reading the form.** The view reads the form when it first shows and keeps it, with
-    its unsaved edits and history, across a trip to the pipeline editor, and reads the file
-    again whenever the pipeline editor adopts its document anew, as a branch switched by
-    hand or a change on disk brings: a file at the same revision changes nothing; a changed
-    one replaces the form, its history dropped, while the form is as saved, and otherwise
-    the view says the file changed on disk and offers Reload. A document adopted while the
-    file is still being read is read again after it, so the form never ends on the branch
+    its unsaved edits and history, across a trip to the pipeline editor, and reads the
+    folder again whenever the pipeline editor adopts its document anew, as a branch
+    switched by hand or a change on disk brings: a folder at the same revision changes
+    nothing; a changed one replaces the form, its history dropped, while the form is as
+    saved, and otherwise the view says the form changed on disk and offers Reload. A
+    document adopted while the folder is still being read is read again after it, so the form never ends on the branch
     the read began on. A move reloads the page, and the view reads the form anew when it
     next shows; a switch in place from the Git panel reads the destination's form through
     that adoption, or at once when the switch was chosen over the form's unsaved edits. A
@@ -1366,11 +1440,11 @@ Out of scope:
     table's columns but the index) is on no Table or Collection, or only on
     itself, on its own components or on components or fields that cannot show without it,
     as a tick box in the very section it shows is. None is refused: the form is saved as it is.
-- **Saved.** A successful save of the form adopts the file's new revision; the project
+- **Saved.** A successful save of the form adopts the folder's new revision; the project
   save then fetches the tables afresh, so the Workbench Input's and Workbench Output's
   copies follow the schema, as after any fetch, and saves the pipeline with them. A save refused
   as stale keeps the edits and says so, in a toast and in a banner in the view whose
-  Reload reads the file again, dropping the edits and the history.
+  Reload reads the folder again, dropping the edits and the history.
 - **The tables as the pipeline holds them.** The input tables are the Workbench Input's, in
   schema order: each table its name, `one` row per quote or `many`, and its columns, each its
   name and its type, the index column an Integer. The form's keys, labels, rules and allowed
@@ -1702,11 +1776,40 @@ Out of scope:
   project, left Haute hosting a second React and a second stylesheet in shadow roots to share
   one page, and kept two copies of the kit the two toolbars were built from. One built-in
   workbench with one switch replaces it.
-- **The form is a project file.** The pipeline's quote tables come from the form, so the form
-  belongs beside the pipeline, in the project and in its history, where a reviewer sees the
-  schema change that changed the pipeline's ports. Haute reads it from disk on every request
-  that needs it rather than caching it, so a hand edit and a branch switch each reach the
-  next fetch without a restart or a stale copy.
+- **The form is a folder in the pipeline folder.** The pipeline's quote tables come from the
+  form and the underwriter app ships it with the pipeline, so the form belongs with the
+  pipeline, in its history, where a reviewer sees the schema change that changed the
+  pipeline's ports. In the pipeline folder it is no special case: the seed, Commit's sweep
+  of new files, the release and the CI triggers already take that folder whole. Haute
+  reads it from disk on every request that needs it rather than caching it, so a hand edit
+  and a branch switch each reach the next fetch without a restart or a stale copy.
+- **Named files, as the pipeline's are.** The pipeline is a file of nodes and a settings
+  file per node, named by the node; the form is an index and a file per table and per
+  sheet, named by the table or the sheet, so a pull request's list of files says what
+  changed and a commit message can name it. Finer files, a section's or a component's,
+  would be named by ids, since sections carry the builder's titles ("Section 1") and many
+  components none; one file puts every analyst's edits in one place.
+- **Names in the files, ids beneath them.** A reviewer reads `br_rating.aop_deductible`
+  where the form holds `c_2237483f`, and a search finds every use of a column by its name.
+  Saved quotes keep values by id, so a table or column keeps a fixed id beside its name: a
+  rename, in the editor or by hand, leaves it, and a column made again under an old name
+  takes none of the old one's values. A reference to a name the schema does not hold is
+  kept, shown and refused before anything is priced, never matched to another column:
+  after a merge, the analyst says what it meant.
+- **Only what is set.** A column at its defaults is a name and a type; written out in full
+  it is twenty lines nobody chose, and a reviewer skimming defaults misses the one setting
+  that changed. What a file holds is what someone set.
+- **Layout apart.** Where components sit is what the editor changes most and a reviewer
+  reads least, so it has a file of its own beside each sheet's: a pull request that only
+  moves things lists only layout files, and a sheet file's history is a history of what
+  the sheet shows. How components look stays with them, read in context and changed on
+  purpose. Ids that start with their kind say what a layout line places, and their random
+  ends keep two branches that each add a component to one sheet from giving two
+  components one id.
+- **A missing folder is a loss, not a new form.** A form does not go missing in the
+  ordinary course of work; when it does, version history holds it, and a blank form in its
+  place would invite a save that commits the loss. A new workbench comes from
+  `haute init --workbench` alone.
 - **Read per request, fail where it can be fixed.** The status and tables routes read
   `haute.toml` and the form each time. A bad `[workbench]` table or an invalid form
   answers 409 with what to fix, which the editor shows as a toast, and the pipeline editor goes
@@ -1716,16 +1819,18 @@ Out of scope:
   Obverse's: the pipeline editor stays mounted, so nothing it holds is lost, and only its
   keyboard and React Flow's document-level keys are fenced. A second React or a shadow root
   bought nothing once the view was Haute's own, so the host returned natively with it.
-- **One revision rule.** The form's revision is the content hash of its file's bytes, as
-  the pipeline's manifest hashes its files, and a stale save answers the pipeline save's
-  code, so the editor matches one refusal. The bytes are hashed rather than the parsed
-  form, so a hand edit that changes only whitespace still counts as a change: the view
-  read other bytes, and a save over them must say so.
-- **One more file on the ledger.** The form is captured through the pipeline save's own
+- **One revision rule.** The form's revision is the content hash of its folder's files,
+  each path and its bytes, as the pipeline's manifest hashes its files, and a stale save
+  answers the pipeline save's code, so the editor matches one refusal. The bytes are hashed
+  rather than the parsed form, so a hand edit that changes only whitespace still counts as
+  a change, and so does a file added to the folder or taken out: the view read other files,
+  and a save over them must say so. The release and the quote store keep hashing the one
+  compiled document they hold, as before, since a release ships one document.
+- **The form's files on the ledger.** The form is captured through the pipeline save's own
   capture rather than a capture of its own, so one place decides what a save on the ledger
   means: no working branch, a missing identity, a failed capture. Commit's sweep takes
-  only tracked files, and the form is tracked from its first captured save, so a hand edit
-  reaches the milestone without the view's help.
+  tracked files and the pipeline folder's new ones, so a hand edit to the form reaches the
+  milestone without the view's help.
 - **One Save.** The form and the pipeline are one project on one ledger, so Save, Ctrl/Cmd+S
   and Commit save both, the same from either toolbar, and which view shows never decides
   what a save records. A form saved alone would leave the pipeline's copies behind it on
@@ -2030,19 +2135,23 @@ Out of scope:
   with its feature routers and owns the response and request models; the application's
   exception handlers answer a workbench problem as 409, and a stale save answers the
   pipeline save's `stale_document_revision` code.
-- [cli](../cli/high-level.md): `haute init --workbench` writes the table and the blank form.
+- [cli](../cli/high-level.md): `haute init --workbench` writes the table and the blank form
+  folder, in a new project or in one that has a `haute.toml` without them.
 - [pipeline-config](../pipeline-config/high-level.md): the `[workbench]` table in the shared
-  `haute.toml` schema, the starter form among the scaffold's templates, and the
+  `haute.toml` schema, the starter form folder among the scaffold's templates, and the
   `workbench_input` and `workbench_output` decorators and their config folders.
 - [deploy](../deploy/high-level.md): `DeployConfig.from_toml`'s whole-file check accepts the
   `[workbench]` table; save and deploy refuse a second request input or response node, deploy
   takes a Workbench Input's request schema and dry-run quote from its tables and reads a
   served request into them, and a deployed pipeline answers with a Workbench Output's
-  response as with a Quote Response's.
+  response as with a Quote Response's; deploy refuses a form that names a column its schema
+  does not hold.
 - [git-integration](../git-integration/high-level.md): an unborn repository's seed commit
-  takes `forms/` with the pipeline's files; a form save is one save on the clone's ledger
-  through the pipeline save's capture, reported in the editor through the shared
-  save-capture report, and a milestone's sweep takes the tracked form.
+  takes the pipeline folder's `workbench/` with the pipeline's files; a form save is one
+  save on the clone's ledger through the pipeline save's capture, its commit message naming
+  the tables and sheets it changed, reported in the editor through the shared save-capture
+  report, and a milestone's sweep takes the form's tracked files and the pipeline folder's
+  new ones.
 - [frontend-git-ui](../frontend-git-ui/high-level.md): the navigation guards (a move, a
   switch, an archive, a delete) ask about the form's unsaved edits through the workbench
   store's mirror of them, and the Git panel's save before a switch is the project's save.
@@ -2086,24 +2195,32 @@ Out of scope:
 > tracked in [WB-39](../roadmap/workbench.md#wb-39--enforce-the-local-apps-request-boundary).
 
 - A `[workbench]` table that is not a table, lacks `enabled`, gives `enabled` something other
-  than `true` or `false`, gives `form` something other than a non-empty relative path inside
-  the project, or holds any other key, and a `haute.toml` that cannot be read, is not UTF-8
-  text or cannot be parsed when a workbench route reads it, each fail that route with 409 and
-  a message naming the key or the file and what to set. The default form path is held to the
-  same rule: a `forms` folder that is a symlink or junction to somewhere outside the project
-  is refused like a configured path that escapes it. The editor shows the message as one error toast and goes on; the
+  than `true` or `false`, or holds any other key, and a `haute.toml` that cannot be read, is
+  not UTF-8 text or cannot be parsed when a workbench route reads it, each fail that route
+  with 409 and a message naming the key or the file and what to set; `form` is refused
+  with "[workbench].form was removed: the form is the pipeline folder's workbench/ folder;
+  delete the key". The form folder is held to the project as every path is: a `workbench`
+  folder, or a file in it, that is a symlink or junction to somewhere outside the project is
+  refused. The editor shows the message as one error toast and goes on; the
   table is read again on the next request. `haute deploy` refuses an unknown key under
   `[workbench]` as it refuses any unknown `haute.toml` key.
-- While the workbench is enabled, a form file that cannot be read, is not UTF-8 text, is
-  not JSON or does not fit the form's shape fails `GET /api/workbench/tables` and
-  `GET /api/workbench/form` with 409 naming the file and the first thing wrong with it; a
-  file that does not exist is the blank form. A sheet holding `widgets` of its own is not
-  a form: "<form> is not a workbench form: pages.N.widgets was removed; a sheet's
-  components now sit in its sections (pages.N.sections[].widgets)", N the sheet's place.
-  Nor is a section that a component reaches below (its `y` plus its `h` above the section's
-  `height`): the message names the section's place and the component; nor a sheet a
-  component reaches past (its `x` plus its `w` above the sheet's `width`), or one without a
-  `width`: the message names the sheet's place, and the component. A fetch of the tables that fails shows one
+- While the workbench is enabled, a form folder that cannot be read fails
+  `GET /api/workbench/tables` and `GET /api/workbench/form` with 409 naming the file and the
+  first thing wrong with it. The folder does not exist: "<folder> does not exist: restore it
+  from version history (a project starts its workbench with haute init --workbench)"; it has
+  no `form.json`; a table or sheet the index names has no file, a sheet's file has no
+  layout file or a layout file no sheet; a file is in the folder that the index does not
+  name; the index names a table or sheet twice, or two whose names differ only in case, or
+  a file on disk is spelled in another case than the index gives; a file cannot be read, is
+  not UTF-8 text, is not JSON, holds a key twice or does not fit its shape, the message
+  naming the place; an identity column is written, `schema/quote_details.json` sets
+  something Haute's, an output column holds a rule, a default or `row_per_value`, a sample
+  names a table that is not an input table, holds no rows or holds two rows of a one-row
+  table; a layout file places a section or component its sheet does not hold, or leaves one
+  out; `version` is not 1. Nor is a section that a component reaches below (its `y` plus its
+  `h` above the section's `height`) a form: the message names the section and the
+  component; nor a sheet a component reaches past (its `x` plus its `w` above the sheet's
+  `width`): the message names the sheet and the component. A fetch of the tables that fails shows one
   error toast and changes no Workbench Input or Workbench Output; a fetch made for an
   earlier document never changes the current one, and an update it started that is still
   waiting on identity resolution is dropped with the commit controller's usual message. A
@@ -2117,11 +2234,16 @@ Out of scope:
   values or holds more than 5,000. `haute app build` refuses a form with an input column
   whose file can no longer give its values, naming the form and the column, before the
   release directory is touched.
+- `haute app build` and `haute deploy` refuse a form whose sheets, conditions, Imports,
+  Exports or sample name a table or column its schema does not hold, naming each file,
+  place and name, before anything is built or deployed; the editor opens such a form and
+  shows each where it is, as it shows a field on a column dropped.
 - `PUT /api/workbench/form` answers 404 while the workbench is not enabled; 409
   "stale_document_revision: <form> changed on disk after the workbench read it. Reload the
-  workbench before saving." when the file's revision is not the `base_revision` quoted (a
-  file that appeared since a first save included), writing nothing; 409 "<form> could not
-  be written: <reason>" when the file or its folder cannot be written; and FastAPI's 422 for
+  workbench before saving." when the folder's revision is not the `base_revision` quoted
+  (the folder gone included), writing nothing; 409 "<form> could not be written: <reason>"
+  when a file cannot be written or deleted, every file put back as it was; 422 naming each
+  thing the folder cannot hold (The form folder), writing nothing; and FastAPI's 422 for
   a body that is not a form, as any typed body answers. A sample cell that is not text or a
   tick (a number, a null) is not a form.
   Saves take turns under the pipeline save's lock: of two quoting one revision, the second
@@ -2130,7 +2252,7 @@ Out of scope:
   any other failed save in one error toast naming the cause. A save that lands but whose
   capture failed or was skipped answers 200 with the warning, as the pipeline's save does;
   the view toasts it, and asks for a git identity once per session when the capture waits
-  on one. A file that could not be read again after the pipeline's document was adopted
+  on one. A folder that could not be read again after the pipeline's document was adopted
   leaves the form as it is, said in one error toast.
 - A sheet's components are deleted with it, after a confirmation; the last sheet cannot
   be removed, and the view never offers to. A section's components are deleted with it

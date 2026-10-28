@@ -381,8 +381,9 @@ any root `main.py` before writing `rating/main.py`.
 portfolio sample is committed, and a commented example names a Parquet sample under
 tests/impact/, outside the gitignored `data/` (BUG-23: the old
 default named `data/portfolio_sample.parquet`, which CI never sees);
-`starter_form(name)` renders the blank form `haute init --workbench` writes to
-`forms/form.json` ([workbench](../workbench/low-level.md)). `[server].host`, the optional
+`starter_form(name)` renders the blank form `haute init --workbench` writes as the form
+folder's files, path to text, under the pipeline folder's `workbench/`
+([workbench](../workbench/low-level.md)). `[server].host`, the optional
 closed `[assistant]` plus `[assistant.egress]` tables and the optional `[workbench]` table are
 part of the shared TOML schema consumed by `DeployConfig.from_toml`, even though none is a
 deploy setting. The assistant key sets are owned by `haute.assistant._config` and the
@@ -403,11 +404,10 @@ the step rather than tagging `deploy/vunknown`; Azure DevOps' production checkou
 minutes and any other 15 (`_deploy_timeout_minutes`), longer than a Databricks deploy's wait
 for its endpoint. The release inputs that start a deploy are listed once
 too (`_RELEASE_INPUT_DIRS`, the pipeline folder of `PIPELINE_FILE`, the file the
-scaffolded `haute.toml` names, and the test quotes' folder, `_RELEASE_INPUT_FILES`, and
-`DEFAULT_FORM_PATH`'s directory
-through `_release_input_dirs` when `workbench` is set) and rendered by
-`_github_trigger_paths` and `_azure_devops_trigger_paths`; `github_deploy_yml` and
-`azure_devops_yml` take `workbench`, which `handle_init` passes from `--workbench`.
+scaffolded `haute.toml` names, which holds the form folder too, and the test quotes'
+folder, and `_RELEASE_INPUT_FILES`, through `_release_input_dirs`) and rendered by
+`_github_trigger_paths` and `_azure_devops_trigger_paths`, the same with or without a
+workbench.
 Every CI generator also takes `python_version`
 (default `DEFAULT_CI_PYTHON`, `haute._project_python.DEFAULT_PYTHON`, 3.11):
 `_pin_ci_python` moves each job's Python pin (setup-uv's `python-version`, Azure's
