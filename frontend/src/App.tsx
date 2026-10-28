@@ -1032,6 +1032,18 @@ function FlowEditor() {
     enabled: !loading && loadError === null,
     onDocumentReload: (reloaded) => handleDocumentReloadRef.current?.(reloaded),
   })
+  // A first load that failed (the page opened on a branch the pipeline is not on)
+  // left no document for live sync to replace: once a git action from the Git panel
+  // beside the failure changes the version, start again from the files on disk.
+  const gitVersion = useGitStore((s) =>
+    s.status ? `${s.status.working_branch}|${s.status.current_branch}|${s.status.last_save_sha}` : null,
+  )
+  const failedLoadVersionRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (loadError === null || gitVersion === null) return
+    if (failedLoadVersionRef.current === null) failedLoadVersionRef.current = gitVersion
+    else if (gitVersion !== failedLoadVersionRef.current) window.location.reload()
+  }, [loadError, gitVersion])
   useEffect(() => { setPreviewDataRef.current = setPreviewData }, [setPreviewData])
 
   const {

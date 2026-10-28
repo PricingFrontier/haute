@@ -1693,6 +1693,34 @@ describe("App integration - server status", () => {
 })
 
 describe("App integration - error handling", () => {
+  it("reloads once a git action changes the version a failed first load was on", async () => {
+    const originalLocation = window.location
+    const reload = vi.fn()
+    Object.defineProperty(window, "location", {
+      value: { ...originalLocation, reload },
+      configurable: true,
+    })
+    try {
+      vi.mocked(api.loadPipeline).mockRejectedValueOnce(new Error("The pipeline isn't on disk"))
+      render(<App />)
+      await waitForAppReady()
+      await waitFor(() => expect(useGitStore.getState().status?.current_branch).toBe("dev-save"))
+      expect(await screen.findByTestId("pipeline-load-failure")).toBeInTheDocument()
+      expect(reload).not.toHaveBeenCalled()
+
+      // A switch back from the Git panel beside the failure view.
+      act(() => {
+        useGitStore.setState((state) => ({
+          status: state.status && { ...state.status, working_branch: "main-line", current_branch: "main-line-save" },
+        }))
+      })
+
+      await waitFor(() => expect(reload).toHaveBeenCalledTimes(1))
+    } finally {
+      Object.defineProperty(window, "location", { value: originalLocation, configurable: true })
+    }
+  })
+
   it("shows an error toast when loadPipeline rejects, without crashing", async () => {
     vi.mocked(api.loadPipeline).mockRejectedValueOnce(new Error("Backend offline"))
 

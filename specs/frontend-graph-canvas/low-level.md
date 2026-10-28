@@ -1301,7 +1301,10 @@ array-only payload or omitted-edge compatibility branch is supported.
   `PipelineLoadFailureView`; the next valid document transition clears the failure before
   publishing its graph. The Git panel still opens beside the failure view from the
   toolbar's branch name: a switch to a branch the open pipeline is not on ends here, and
-  switching back is the way out.
+  switching back is the way out. A page whose first load failed (opened, or reloaded, on
+  such a branch) has no document for live sync to replace, so once a git action changes
+  the version (the readiness's working branch, checked-out branch or latest save) it
+  reloads, starting again from the files on disk.
 - **An active-node glide is tracked by its end time, not by `setViewport`'s
   promise.** React Flow resolves that promise on the d3 transition's `end`
   event, which never fires when a user gesture interrupts the transition, so

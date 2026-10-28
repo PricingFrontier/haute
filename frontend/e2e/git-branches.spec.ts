@@ -96,15 +96,19 @@ test.describe("switching branches", () => {
     await expect(canvasNode(page, "priced_kept")).toBeVisible()
   })
 
-  test("a branch without the open pipeline says so, and switching back brings it back", async ({
-    page,
-  }) => {
-    // A branch made outside Haute in which the pipeline file was deleted.
+  // A branch made outside Haute in which the pipeline file was deleted.
+  function makeBranchWithoutThePipeline(): void {
     e2eGit(["switch", "--force", "-c", "no-pipeline-save"])
     e2eGit(["rm", "-q", "rating/main.py"])
     e2eGit(["commit", "-q", "-m", "Remove the pipeline"])
     e2eGit(["branch", "no-pipeline"])
     e2eGit(["switch", "--force", `${work}-save`])
+  }
+
+  test("a branch without the open pipeline says so, and switching back brings it back", async ({
+    page,
+  }) => {
+    makeBranchWithoutThePipeline()
 
     await page.goto("/")
     await expect(canvasNode(page, "priced")).toBeVisible()
@@ -122,6 +126,28 @@ test.describe("switching branches", () => {
     await expectOnBranch(page, work)
     await expect(failure).toHaveCount(0)
     await expect(canvasNode(page, "priced")).toBeVisible()
+  })
+
+  test("reloaded on a branch without the pipeline, switching back still brings it back", async ({
+    page,
+  }) => {
+    makeBranchWithoutThePipeline()
+    await page.goto("/")
+    await openGitPanel(page)
+    await switchInManager(page, "no-pipeline")
+    const failure = page.getByTestId("pipeline-load-failure")
+    await expect(failure).toBeVisible()
+
+    // Mistake: reloading, hoping it comes back. The page opens on the failure.
+    await page.reload()
+    await expect(failure).toBeVisible()
+
+    await openGitPanel(page)
+    await switchInManager(page, work)
+    await expectOnBranch(page, work)
+    await expect(failure).toHaveCount(0)
+    await expect(canvasNode(page, "priced")).toBeVisible()
+    await expect(page.getByTestId("toolbar-save")).toBeEnabled()
   })
 })
 
