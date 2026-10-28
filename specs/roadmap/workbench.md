@@ -707,8 +707,9 @@ it are in Scope above.
   per table, `sheets/<sheet>.json` and `sheets/<sheet>.layout.json` per sheet (the second
   holding geometry alone), and `sample/<table>.json` per input table with rows.
   `[workbench].form` goes.
-- Files are named by the table's name and by a name made from the sheet's title. Inside
-  them a column is `table.column`, or its bare name where its table is said. Tables and
+- Files are named by the table's name in lower case and by a name made from the sheet's
+  title, so a rename that changes only a name's case renames no file. Inside them a column
+  is `table.column`, or its bare name where its table is said. Tables and
   columns keep a fixed id written beside their name, so a rename keeps saved quotes'
   values and a column made again under an old name does not take them. Sheets, sections
   and components take ids that say their kind (`collection_k3f9`).
@@ -740,9 +741,16 @@ it are in Scope above.
   renaming a column changes its name, every reference to it and its sample's key, and
   keeps its id; renaming a table moves its schema file and its sample file.
 - A read refuses, naming the file and the place: a missing folder, a missing listed file,
-  an unlisted file, a file spelled in another case than its listing, a sheet without its
-  layout file or the reverse, an identity column written, a rule on an output column, an
-  unknown key and an unknown version.
+  an unlisted file, a file whose name is not in lower case, a sheet without its layout
+  file or the reverse, an identity column written, a rule on an output column, an unknown
+  key and an unknown version. A read never mixes two saves: it takes each file's bytes
+  once, under the repository's lock in the server, and reads again when the folder
+  changed meanwhile.
+- A sample keeps its rows' places, empty rows included, so index numbers and preset rows
+  are priced as before; a value under an unknown column is kept and priced nowhere.
+- Every path a save or `haute init --workbench` writes or deletes passes the project's
+  write rules first: a junction inside the folder, or one leading out of it, is refused
+  before anything is written.
 - Save refuses, writing nothing: two tables of one name whatever their case, two columns
   of one name in a table, a name that is not an identifier, a Windows-reserved table or
   sheet name, a sheet title that gives no name or another sheet's, and a path over 240

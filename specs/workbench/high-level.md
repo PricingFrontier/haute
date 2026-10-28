@@ -260,13 +260,14 @@ Out of scope:
     holds and each setting's default), `name`, `theme` holding the colours set (left out
     while none is), `schema`, the tables' names in their order, `quote_details` first, and
     `sheets`, the sheets' names in their tabs' order.
-  - `schema/<table>.json` for each table the index names, named by the table's name: its
-    `id`, `role`, `rows` and `columns`, each column its `id`, `name` and `type` and what else
-    is set on it. `schema/quote_details.json` holds only what the project sets on Haute's
-    table: each column given something, by `name`, with what it is given (a label, group,
-    help or placeholder on any of them; a rule, a default or a format on those the
-    underwriter types); the table's id, role and rows and its columns' ids, types and order
-    are Haute's and never written. The identity columns are written in no table. An output
+  - `schema/<table>.json` for each table the index names, named by the table's name in
+    lower case (no two tables' names differ only in case; the index keeps the name as
+    spelled): its `id`, `role`, `rows` and `columns`, each column its `id`, `name` and
+    `type` and what else is set on it. `schema/quote_details.json` holds only what the
+    project sets on Haute's table: each column given something, by `name`, with what it is
+    given (a label, group, help, placeholder or number format on any of them; a rule or a
+    default on those the underwriter types); the table's id, role and rows and its
+    columns' ids, types and order are Haute's and never written. The identity columns are written in no table. An output
     column holds no rule (`required`, `min`, `max`, `options`, `options_source`), no
     `row_per_value` and no `default_value`.
   - `sheets/<sheet>.json` for each sheet the index names, named by its title made a name
@@ -278,17 +279,21 @@ Out of scope:
     `height` and each component's place, `{"x": 8, "y": 312, "w": 832, "h": 192}` on one
     line; an entry for every section and component of the sheet and for nothing else. A
     pull request that only moves or resizes things changes only layout files.
-  - `sample/<table>.json` for each input table the sample has rows in: the rows, each value
-    by its column's name and as typed, text or a tick, in the table's column order. A table
-    with no rows has no file.
+  - `sample/<table>.json` for each input table the sample has rows in, named as its schema
+    file is: the rows as they stand, an empty row kept, since a row's place numbers it and
+    lines it up with the values a column gives its table; each row's values by their
+    columns' names and as typed, text or a tick, in the table's column order. A table with
+    no rows has no file. A value under a name its table does not hold is kept as written
+    and priced nowhere, as a value under a column dropped always was.
 
   Only what is set is written. The keys that say what a thing is are always written: the
   index's `version`, `name`, `schema` and `sheets`; a table's `id`, `role`, `rows` and
   `columns`; a column's `id`, `name` and `type`; a sheet's and a section's `id` and
   `title`, with their `sections` and `components`; a component's `id` and `type`; every
-  layout number. Any other setting is written only when it is not its default, and a
-  default written out by hand reads as that setting and is left out at the next save. The
-  defaults are the folder format's: a different default is a new `version`.
+  layout number. A setting with no default, such as an Import's source or an Export's
+  target, is always written. Any other setting is written only when it is not its default,
+  and a default written out by hand reads as that setting and is left out at the next
+  save. The defaults are the folder format's: a different default is a new `version`.
 
   Files name things by name. A column is `table.column` (`br_rating.aop_deductible`) in a
   field, a Chart's `category`, a condition on a one-row table, a column look and a query
@@ -313,16 +318,22 @@ Out of scope:
   column name that is not an identifier (letters, digits and underscores, not starting
   with a digit), a table or sheet name Windows keeps (`con`, `prn`, `aux`, `nul`, `com1` to
   `com9`, `lpt1` to `lpt9`, whatever their case), a sheet title that gives no name or
-  another sheet's, and a file whose full path would pass 240 characters. A rename that
-  changes only a name's case renames the file in place.
+  another sheet's, and a file whose full path would pass 240 characters. Every path a save
+  writes or deletes is held to the project's write rules first, as every file Haute writes
+  is: none through a link, a junction or a reserved name. Files are named in lower case, so
+  a rename that changes only a name's case changes no file's name.
 
   Each file is JSON: UTF-8 text with LF line ends and a final newline, indented two
   spaces, its keys in one order, text as typed, a list of numbers on one line and a list of
   text or of objects one item a line, so every column, field and allowed value is a line
   of its own. Haute reads the folder whole whenever it needs the form and never keeps it,
   so an edit made outside the view reaches the next request; a read takes the files the
-  index names and refuses any other file in the folder (Failure model). A folder that does
-  not exist is refused, pointing to version history, never taken for a blank form.
+  index names and refuses any other file in the folder (Failure model). A read takes each
+  file's bytes once and the revision is the hash of those bytes; the editor's server reads
+  under the repository's lock, which saves and branch switches hold, and every reader
+  reads again when the folder changed while it was being read, so no read mixes two
+  saves. A folder that does not exist is refused, pointing to version history, never taken
+  for a blank form.
 - **Status.** `GET /api/workbench` answers `enabled` and, while enabled, `form`, the form
   folder's path from the project root (`rating/workbench`). The editor reads it once when it starts. While the workbench is not
   enabled nothing in the editor changes on its account.
@@ -2211,13 +2222,15 @@ Out of scope:
   no `form.json`; a table or sheet the index names has no file, a sheet's file has no
   layout file or a layout file no sheet; a file is in the folder that the index does not
   name; the index names a table or sheet twice, or two whose names differ only in case, or
-  a file on disk is spelled in another case than the index gives; a file cannot be read, is
-  not UTF-8 text, is not JSON, holds a key twice or does not fit its shape, the message
-  naming the place; an identity column is written, `schema/quote_details.json` sets
-  something Haute's, an output column holds a rule, a default or `row_per_value`, a sample
-  names a table that is not an input table, holds no rows or holds two rows of a one-row
-  table; a layout file places a section or component its sheet does not hold, or leaves one
-  out; `version` is not 1. Nor is a section that a component reaches below (its `y` plus its
+  a file's name on disk is not its table's or sheet's name in lower case; a file cannot be
+  read, is not UTF-8 text, is not JSON, holds a key twice or does not fit its shape, the
+  message naming the place; an identity column is written, `schema/quote_details.json`
+  sets something Haute's, an output column holds a rule, a default or `row_per_value`; a
+  sample file is for a table the schema does not hold or for an output table ("rename it
+  after its table or remove it"), or holds no rows; a layout file places a section or
+  component its sheet does not hold, or leaves one out; `version` is not 1; the folder
+  changed each of three times it was read ("<folder> changed while it was being read: try
+  again"). Nor is a section that a component reaches below (its `y` plus its
   `h` above the section's `height`) a form: the message names the section and the
   component; nor a sheet a component reaches past (its `x` plus its `w` above the sheet's
   `width`): the message names the sheet and the component. A fetch of the tables that fails shows one
@@ -2234,15 +2247,18 @@ Out of scope:
   values or holds more than 5,000. `haute app build` refuses a form with an input column
   whose file can no longer give its values, naming the form and the column, before the
   release directory is touched.
-- `haute app build` and `haute deploy` refuse a form whose sheets, conditions, Imports,
-  Exports or sample name a table or column its schema does not hold, naming each file,
-  place and name, before anything is built or deployed; the editor opens such a form and
-  shows each where it is, as it shows a field on a column dropped.
+- `haute app build` and `haute deploy` refuse a form whose sheets, conditions, Imports or
+  Exports name a table or column its schema does not hold, naming each file, place and
+  name, before anything is built or deployed; the editor opens such a form and shows each
+  where it is, as it shows a field on a column dropped. A sample value under a name its
+  table does not hold stops neither: the sample prices it nowhere, and a release ships no
+  sample.
 - `PUT /api/workbench/form` answers 404 while the workbench is not enabled; 409
   "stale_document_revision: <form> changed on disk after the workbench read it. Reload the
   workbench before saving." when the folder's revision is not the `base_revision` quoted
   (the folder gone included), writing nothing; 409 "<form> could not be written: <reason>"
-  when a file cannot be written or deleted, every file put back as it was; 422 naming each
+  when a file cannot be written or deleted, every file put back as it was, the message
+  naming any file that could not be put back, to restore from version history; 422 naming each
   thing the folder cannot hold (The form folder), writing nothing; and FastAPI's 422 for
   a body that is not a form, as any typed body answers. A sample cell that is not text or a
   tick (a number, a null) is not a form.

@@ -261,34 +261,57 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   form folder resolves outside the project root (a `workbench` symlink or junction leading
   out of it).
 - **The form folder's files** (`_workbench_folder.py`, the folder module): strict pydantic
-  models of the files, separate from `FormSpec`, each `extra="forbid"` and refusing a key
-  given twice in its JSON: `IndexFile` (`version`, the literal 1; `name`; `theme`, the
-  colours set; `schema`, the table names in order; `sheets`, the sheet names in order),
-  `TableFile` (`id`, `role`, `rows`, `columns`) and `ColumnFile` (`id`, `name`, `type`
-  required; every other `SchemaColumn` setting optional, read as its `SchemaColumn` default
-  when absent; an output table's columns refusing `required`, `min`, `max`, `options`,
-  `options_source`, `row_per_value` and `default_value`), `QuoteDetailsFile` (`columns`,
-  each `name`, one of `QUOTE_DETAILS_COLUMNS`, with only the settings the project may give
-  that column: a label, group, help and placeholder on any, and the rules, default and
-  format on a column outside `QUOTE_DETAILS_MANAGED`), `SheetFile` (`id`, `title`,
-  `show_when`, `sections`), `SectionFile` (`id`, `title`, `show_when`, `components`), one
-  component file per kind (`id` and `type`, `table` for `tableInput`, required, the kind's
-  settings optional and read as the model's defaults, no `x`, `y`, `w` or `h`), `LayoutFile`
-  (`width`; `sections` by id, each its `height` and `components` by id, each an `x`, `y`,
-  `w`, `h` of whole numbers) and the sample (a list of rows, each column name to a `Cell`).
-  A reference in a sheet file is a name: `"table.column"` (a `FieldRef`, a one-row
-  `Condition`'s table and column, a `ColumnLook`'s, a Chart's category, a
-  `QueryParameter`'s), a table name with bare column names (a `RowsCondition`, `RowCount` or
-  `RowTotal` and their `RowTest`s, an `ImportWidget`'s `table` and `column_names`), or a
-  table name (an `ExportWidget`'s `tables` and `table_names`). Reading turns each name into
-  the id the schema gives it; a name the schema does not hold becomes the unresolved id
-  `?` followed by the name as written (`?br_rating.limt`, `?perils`), which no table or
-  column can have, so it never binds to one, and the writer turns it back into the name as
-  written. Writing turns each id into its table's or column's name, leaves out every
-  setting at its default (`model_dump(exclude_defaults=True)` on the file models), and
-  renders the text with `render_folder_file`: two-space indent, keys in the models' order,
-  `ensure_ascii=False`, a list of numbers or a layout entry on one line, other lists one
-  item a line, LF and a final newline.
+  models of the files, separate from `FormSpec`, each `extra="forbid"`, read from JSON that
+  refuses a key given twice (`object_pairs_hook`). A field with a default in `FormSpec`'s
+  model has the same default in its file model and is left out at it; a field with none
+  (an `ImportWidget`'s `label`, `source`, `table`, `mode` and `column_names`, an
+  `ExportWidget`'s `label`, `target` and `tables`, their sources' and targets' fields, a
+  group's `match` and `conditions`, a test's `op`) has none in the file either. The
+  models, each key in this order:
+  - `IndexFile`: `version` (the literal 1), `name`, `theme` (a `Theme`, left out while every
+    colour is None), `schema` (the tables' names as spelled, in order, `quote_details`
+    first) and `sheets` (the sheets' file names, in tab order).
+  - `TableFile`: `id`, `role`, `rows`, `columns` (each a `ColumnFile`); the table's name is
+    its index entry and its file is that name in lower case. `ColumnFile`: `id`, `name`,
+    `type`, then `SchemaColumn`'s other settings in its order; in an output table's file
+    `required`, `min`, `max`, `options`, `options_source`, `row_per_value` and
+    `default_value` are refused. `QuoteDetailsFile`: `columns`, each a `name` among
+    `QUOTE_DETAILS_COLUMNS` and, as `_check_quote_details` allows them, `label`, `group`,
+    `help`, `placeholder`, `number_format`, `decimal_places` and `use_grouping` on any
+    column and `required`, `min`, `max`, `options`, `options_source` and `default_value` on
+    a column outside `QUOTE_DETAILS_MANAGED`; a column named twice is refused, and the
+    file lists columns in Haute's order.
+  - `SheetFile`: `id`, `title`, `show_when`, `sections`; `SectionFile`: `id`, `title`,
+    `show_when`, `components`; a component file per kind, discriminated by `type` (`table`,
+    `collection`, `chart`, `heading`, `import`, `export`), holding the kind's `FormSpec`
+    fields but `x`, `y`, `w` and `h`, in the kind's order.
+  - `LayoutFile`: `width`, `sections` (by section id: `height`, `components`, by component
+    id an `x`, `y`, `w`, `h` of strict whole numbers).
+  - The sample: a list of rows, each row a mapping of column names to `Cell`s.
+
+  References, each field as the file spells it and the `FormSpec` field it fills: a field
+  in `fields` and a Chart's `category` are `"table.column"` strings (a `FieldRef`); a
+  one-row condition is `{"column": "table.column", "op", "values"}` (`Condition.table` and
+  `column`); a column look's `column` is `"table.column"` (`ColumnLook.table` and
+  `column`); a query parameter is `{"name", "column": "table.column"}`; a rows condition is
+  `{"table": "<table>", "rows", "where"}`, a count `{"table", "where", "op", "count"}` and a
+  total `{"table", "total", "column", "where", "op", "value"}`, the total's `column` and
+  each `where` test's `column` bare names of that table; an Import's `table` is a table
+  name or null and its `column_names` each `{"column": "<bare>", "name"}`; an Export's
+  `tables` are table names and a database target's `table_names` each `{"table", "name"}`.
+  `"table.column"` splits at its one dot (an identifier holds none). Reading turns each
+  name into the id the schema gives it, the table's first and then the column within it. A
+  name the schema does not hold becomes an unresolved id, `?` and the name as written: an
+  unknown table's reference fills the table with `?<table>` and the column with
+  `?<column>`, a known table's unknown column fills the table's id and `?<column>`, and a
+  sample value under an unknown name is kept under `?<column>`. `FormSpec` refuses a table
+  or column id that starts with `?`, so an unresolved id binds to nothing, and the writer
+  writes it back as the name after the `?`. Writing turns each id into its table's or
+  column's name, leaves out each setting at its default (`exclude_defaults=True` on the
+  file models) and renders the text with `render_folder_file`: two-space indent, keys in
+  the models' order, `ensure_ascii=False`, a list of numbers or a layout entry on one line,
+  other lists one item a line, LF and a final newline. A golden folder in the tests pins
+  the bytes of the test project's form and the `FormSpec` it reads as.
 - **`FormSpec`** (`src/haute/_workbench_form.py`): `version` (the literal 1), `name`,
   `theme` (a `Theme`, the sheets' colours: `sheet_color`, `background_color`,
   `border_color`, `font_color`, `input_cell_color` and `output_cell_color`, each
@@ -695,25 +718,35 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
     `sheets/sheet_1.layout.json`) to the pipeline folder's `workbench/`, reporting both in its
     summary. In a project that already has a `haute.toml`, `--workbench` without `--force`
     adds the table to that `haute.toml`, through the same TOML-aware edit as the dependency
-    insertion, and writes the folder, touching nothing else, and refuses when the table or
-    the folder is there. `_SEED_PATHSPECS` carries `workbench/` and `*/workbench/*`, so
+    insertion, and writes the folder, touching nothing else. It checks first: the table
+    absent, the folder absent, and every path it will write ordinary
+    (`ordinary_path_problem`), refusing with exit 1 and nothing written otherwise. It then
+    writes the folder's files, and last `haute.toml` atomically; a failure removes the files
+    and folders this run made, leaves `haute.toml`'s bytes as they were and exits 1 naming
+    the cause, so a second run starts from where the first did. `_SEED_PATHSPECS` carries `workbench/` and `*/workbench/*`, so
     `set_working_branch`'s unborn-repository seed stages the form with the pipeline's
     files, and `_release_input_dirs` names no folder for the form, the pipeline folder
     already holding it.
 16. **The form, read.** `GET /api/workbench/form` reads the config through `_enabled_config`
-    (404 while disabled) and `read_form_document` (the folder module) in the thread pool. It
-    lists the folder once (`os.scandir`, recursively, entries' names as the disk spells
-    them), refuses a missing folder, reads `form.json` and then each file the index names,
-    each file's bytes once, and refuses any file the listing holds that the index does not
-    name and any listed name the disk spells in another case. It checks each file against
+    (404 while disabled) and `read_form_document` (the folder module) in the thread pool,
+    under `repository_mutation`, the lock saves and branch switches hold, as do the tables
+    routes' reads. It lists the folder (`os.scandir`, recursively, entries' names as the
+    disk spells them), refuses a missing folder, reads `form.json` and then each file the
+    index names, each file's bytes once into memory, and lists the folder again: when the
+    second listing or any file's size and modification time differ from the first, it
+    reads again from the start, and refuses after three tries ("<folder> changed while it
+    was being read: try again"). Every reader does so, `haute app build` and deploy too,
+    which take no server lock. It refuses any file the listing holds that the index does
+    not name (a sample file for a table the schema does not hold or for an output table
+    included) and any file whose name on disk is not its name in lower case. It checks each file against
     its model, builds the `FormSpec` (the tables in the index's order, each sheet's
     components placed from its layout file, names turned into ids, quote_details and the
     identity columns added through `FormSpec`'s validators as before), grows a section or
     sheet too small for a component in it (`_grown_to_hold`, a merge or a hand edit can leave
     one so) and says each growth in `repairs`, and answers the form with the folder's
     revision (`folder_revision`: `content_hash_bytes` of the canonical JSON of each file's
-    path from the folder and the content hash of its bytes, sorted by path, every file in
-    the folder counted) as `WorkbenchFormResponse`. The form store reads a form
+    path from the folder and the content hash of the bytes the read took, sorted by path,
+    every file in the folder counted) as `WorkbenchFormResponse`. The form store reads a form
     with repairs as unsaved, without history, a warning toast naming the form and each
     growth ("<form> opened with its layout fixed, unsaved: …"), so the next Save writes
     it. The other readers (the saved tables, the deploy checks, `haute app build`) take the
@@ -741,14 +774,18 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
     included); else `write_form` (the folder module) renders every file of the form
     (`folder_files`: path from the folder to bytes; it raises `FormFolderNameError`, naming
     each problem, for names the folder cannot hold, before anything is written), compares
-    each with the file on disk, and stages, through the pipeline save's
+    each with the bytes the stale check's read took, and checks every path it will write,
+    delete or make a folder at with `ordinary_path_problem` (none through a link, a
+    junction, a hard link or a reserved name, inside the project or out of it), refusing
+    409 with nothing written when one fails. It then stages, through the pipeline save's
     `_stage_artifact_write_bytes` and `_stage_artifact_delete`, a write of each file whose
-    bytes differ (a case-only rename written to a temporary name in the same folder and
-    renamed, so the disk spells the new case) and a delete of each of the form's files on
-    disk that the new form does not have (a table's schema and sample files, a sheet's file
-    and layout file, a sample whose table's rows went), never a file the on-disk index did
-    not name; any failure rolls every staged file back (`_rollback_artifacts`) and answers
-    409 naming the file. `_generate_commit_message` names a form file by the folder's part
+    bytes differ and a delete of each of the form's files on disk that the new form does
+    not have (a table's schema and sample files, a sheet's file and layout file, a sample
+    whose table's rows went), never a file the on-disk index did not name; file names
+    being lower case, a write and a delete never name one file through two spellings. Any
+    failure rolls every staged file back (`_rollback_artifacts`) and answers 409 naming the
+    file; a file the rollback could not put back, or found changed by another writer, is
+    named in the same message, to restore from version history, and logged. `_generate_commit_message` names a form file by the folder's part
     and its name, `workbench/schema/perils`, `workbench/sheets/br_coverages`,
     `workbench/sheets/br_coverages layout`, `workbench/sample/perils`, `workbench/form`,
     three at most as for any save. `capture_save_in_ledger` (`haute.routes._save_pipeline`, the pipeline save's
@@ -1073,7 +1110,10 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   pipeline already has keeps its copy.
 - The form folder resolves inside the project root: a `workbench` folder, or a file in it,
   that is a symlink or junction to somewhere outside the project is refused, so the
-  workbench never reads or writes a file outside it.
+  workbench never reads or writes a file outside it; a save and `haute init --workbench`
+  also hold every path they write or delete to `ordinary_path_problem`, so a junction
+  inside the project, at `workbench/schema/` say, is refused too and neither its target nor
+  anything else is written.
 - A setting at its default is left out of its file: `"required": false` written by hand
   reads as not required and is gone after the next save, so a file has one spelling as
   Haute writes it. The defaults are the folder format's (`version` 1): a release of Haute
@@ -1093,13 +1133,22 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   characters each, so a merge that keeps both rarely meets two of one id; when it does,
   the read refuses the form naming the id, as a merge that copies a component by hand is
   refused.
-- A table's file name is its name, and the disk keeps the case the index gives it: a
-  rename that changes only the case writes the file under a temporary name and renames it,
-  and a read refuses a file whose name on disk is spelled in another case than the
-  index's, on every platform alike.
-- Sample rows are written in the table's column order whatever order they were typed in,
-  so two saves of the same values are the same bytes; a sample row with nothing in it is
-  left out, and a table whose rows all are has no sample file.
+- A table's files are named by its name in lower case, which no other table's name shares
+  (names are unique whatever their case), and the index keeps the name as spelled: a
+  rename that changes only the case changes the index entry and no file's name, and a
+  read refuses a file whose name on disk is not in lower case, on every platform alike.
+  Sheet names are lower case already.
+- A sample's rows keep their places: an empty row stays, since `sample_quote` numbers an
+  index column by place and `preset_rows` fills a column's preset values into the rows
+  holding nothing there in order, so taking a row out would renumber or move the rows
+  after it. Each row's values are written in the table's column order whatever order they
+  were typed in, so two saves of the same values are the same bytes; only a table whose
+  sample holds no rows at all has no file. A value under a column name its table does not
+  hold is kept under an unresolved id and written back as it was; the sample's readers
+  iterate the schema's columns, so nothing prices it, as a value under a column dropped
+  was never priced.
+- Table and column ids starting with `?` are refused by `FormSpec`, so the unresolved ids
+  a read makes (`?` and a name) can bind to nothing.
 - Only a Workbench Input takes the workbench's tables: a fetch never changes a Quote Input,
   whose connections still follow a rename by position as `migrateApiInputEdges` allows.
 - Each Workbench Input gets each fetch's tables at most once per generation: the fetch-driven
@@ -1352,16 +1401,19 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   its workbench with haute init --workbench)"), a folder without `form.json`, a file the
   index names that is missing, a file in the folder the index does not name ("<file> is
   not part of the form: list it in form.json or remove it"), a name the index gives twice
-  or two it gives that differ only in case, a file the disk spells in another case than
-  the index, a sheet's file without its layout file or the reverse; for a file that cannot
-  be read (chaining the `OSError`), is not UTF-8 text (chaining the `UnicodeDecodeError`),
-  is not JSON or holds a key twice (chaining the `JSONDecodeError`, or raised with the key),
-  or does not fit its file model (chaining pydantic's `ValidationError`, its first error in
-  the message with the file and the place); for an identity column written, a setting on
-  `quote_details` that is Haute's, a layout entry for a section or component the sheet does
-  not hold or a section or component without one, a sample file for a table that is not an
-  input table or holding no rows or two rows of a one-row table; and for a `FormSpec` the
-  files build that does not fit it (its first error, as before). A section a component
+  or two it gives that differ only in case, a table or column name that is not an
+  identifier, a file whose name on disk is not its name in lower case, a sheet's file
+  without its layout file or the reverse, a sample file for a table the schema does not
+  hold or for an output table ("<file> is the sample of no input table: rename it after
+  its table or remove it"); for a file that cannot be read (chaining the `OSError`), is not
+  UTF-8 text (chaining the `UnicodeDecodeError`), is not JSON or holds a key twice
+  (chaining the `JSONDecodeError`, or raised with the key), or does not fit its file model
+  (chaining pydantic's `ValidationError`, its first error in the message with the file and
+  the place); for an identity column written, a setting on `quote_details` that is
+  Haute's, a layout entry for a section or component the sheet does not hold or a section
+  or component without one, a sample file holding no rows; for a folder that changed each
+  of the three times it was read ("<folder> changed while it was being read: try again");
+  and for a `FormSpec` the files build that does not fit it (its first error, as before). A section a component
   reaches below, or a sheet one reaches past, is grown to hold it before `FormSpec` is
   checked (`_grown_to_hold`), when its height or width is a whole number above 0 and the
   component's place is whole numbers, and said; anything else wrong there is left to the
@@ -1623,10 +1675,12 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   a removed table and a table that is no longer an input, blank cells not counted, and a
   table now of one row keeping its first and naming the values of the rows after it.
 - `tests/test_workbench_config.py` covers the table absent (and `haute.toml` absent), enabled
-  and disabled, the default and a configured form path, and each refusal (not a table, an
-  unknown key, `enabled` missing or not a boolean, `form` empty, not a string, absolute or
-  escaping the project, the default path through a `forms` symlink to somewhere outside the
-  project, malformed TOML, a `haute.toml` that is not UTF-8, `app` not a table, a key beside
+  and disabled, the form folder taken from the pipeline file `[project].pipeline` names
+  (`rating/main.py` giving `rating/workbench`, a pipeline at the root giving `workbench`),
+  and each refusal (not a table, an unknown key, `form` refused with what replaced it,
+  `enabled` missing or not a boolean, an enabled workbench in a project with no pipeline
+  file, a `workbench` folder that is a junction or symlink, inside the project or out of it,
+  malformed TOML, a `haute.toml` that is not UTF-8, `app` not a table, a key beside
   `host` and `edit_role`, a host outside `APP_HOSTS` or not a string, an `edit_role` blank
   or not a string), `[workbench.app] host` and `edit_role` read, and that
   `DeployConfig.from_toml`'s whole-file check accepts the table, with `app`, and refuses an
@@ -1684,23 +1738,38 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   changed writing one file, a component moved writing one layout file, a column renamed
   changing its name, every reference to it and its sample key and keeping its id, a table
   renamed moving its schema and sample files, a sheet retitled moving its two files and
-  its index entry, a table deleted deleting its two files, a case-only table rename leaving
-  the disk spelling the new case; a column deleted and made again under its name taking a
-  new id; a default written by hand read and left out at the next save; a reference to a
-  name the schema does not hold read as an unresolved id and written back as it was, never
-  bound to a column whose old name it is; every refusal of the read (a missing folder with
+  its index entry, a table deleted deleting its two files, a case-only table rename
+  changing the index entry and no file's name; a column deleted and made again under its
+  name taking a new id; a default written by hand read and left out at the next save; a
+  sample round-tripping with its rows' places, an empty row first and a value after it
+  in an indexed table keeping its row number and in a preset table its preset value, as
+  `sample_quote` gives them before and after, and a sample value under an unknown column
+  kept through an unrelated save and priced nowhere; each reference kind encoded and
+  decoded as the folder module's models say (a field, a Chart's category, a one-row
+  condition, a column look, a query parameter, a rows condition, a count, a total, an
+  Import's table and column names, an Export's tables and table names), each with a known
+  name, an unknown column of a known table and an unknown table, the unresolved ids
+  `?`-prefixed in the `FormSpec` and written back as they were, never bound to a column
+  whose old name it is, and a `FormSpec` with a `?`-prefixed table or column id refused;
+  the golden folder's bytes and the `FormSpec` it reads as; managed quote_details columns
+  keeping a number format; every refusal of the read (a missing folder with
   its message, a missing `form.json`, a listed file missing, an unlisted file, a name
-  listed twice or twice by case, a disk spelling in another case, a sheet without its
-  layout or a layout without its sheet, a file not UTF-8, not JSON or holding a key twice,
-  an unknown key, an identity column written, a Haute setting on quote_details, a rule on
-  an output column, a layout entry too many or too few, a sample for an output table,
-  empty or of two rows in a one-row table, `version` 2), each naming the file and the
-  place; every name `write_form` refuses (two tables of one name by case, two columns of
+  listed twice or twice by case, a name not an identifier, a file name not in lower case,
+  a sheet without its layout or a layout without its sheet, a file not UTF-8, not JSON or
+  holding a key twice, an unknown key, an identity column written, a Haute setting on
+  quote_details, a rule on an output column, a layout entry too many or too few, a sample
+  file for an output table or a table the schema does not hold, an empty sample file,
+  `version` 2), each naming the file and the place; a read paused after its first listing
+  while a save, and then a branch switch, change the folder, reading again and answering
+  one side's files and revision whole, and a folder changing on each of three tries
+  refused; every name `write_form` refuses (two tables of one name by case, two columns of
   one name, a name not an identifier, `con` and `COM1` as a table and as a sheet's name, a
   title of no letters or digits, two titles of one name, a path past 240 characters),
-  nothing written; a write that fails half way leaving every file as it was;
-  commercial-pricing's form, converted by the one-off script, reading back to the same
-  compiled form but for its sheets', sections' and components' ids.
+  nothing written; a junction inside the project at `workbench/schema/` and one to a
+  folder outside it each refused before any write, neither destination changed; a write
+  that fails half way leaving every file as it was, and one whose rollback cannot put a
+  file back naming it; commercial-pricing's form, converted by the one-off script, reading
+  back to the same compiled form but for its sheets', sections' and components' ids.
 - `tests/test_workbench_form.py` covers the blank form's text, `render_form` and
   `form_revision` as a release and the quote store use them, every field written in the
   one document (a column without `index` or its display
@@ -1843,7 +1912,10 @@ its new tables lack, which `useGraphCommitController` reports; and `InputSource`
   form folder in the pipeline folder and reporting both, a plain `haute init` writing
   neither, `--force --workbench`, `--force` without `--workbench` leaving the folder, and
   `--workbench` in a project that has a `haute.toml` adding the table and the folder and
-  changing nothing else, refused when either is there; `tests/test_scaffold.py` covers
+  changing nothing else, refused when either is there, refused before writing when a path
+  it would write is a junction, and, with a failure injected between the folder's files
+  and `haute.toml`, leaving `haute.toml`'s bytes and no new file, a second run then
+  succeeding; `tests/test_scaffold.py` covers
   `haute_toml`'s table only when asked, parsed, with no `form` key, the blank folder's files
   reading as the blank form, and `_release_input_dirs` naming no folder for the form.
 - `tests/test_api_contracts.py` holds the three workbench paths, five routes, in the API's
