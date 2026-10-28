@@ -24,7 +24,7 @@ and return cycles and made and deleted two branches between 13:14 and 13:36.
 | GIT-R04 | Planned | P3 | Commit context and historical extraction pass their SHAs and paths through stdin, so a long branch or a large commit does not fail on Windows' command-line limit. |
 | GIT-R05 | Planned | P3 | The git modules carry no dead symbols, one free-name finder and one compensation helper. |
 | GIT-R06 | Decision | P3 | Automatic ledger saves either skip the project's git hooks or the specification says they run them. |
-| GIT-R07 | Planned | P2 | Every tree-changing action in the git UI passes the dirty-project guard and names what changes, a failed history read shows an error rather than an empty branch, a failed preference save is reported, and the dialogs and specification say what the server does. |
+| GIT-R07 | Planned | P2 | Every tree-changing action in the git UI passes the dirty-project guard and names what changes, a failed history read shows an error rather than an empty branch, a failed preference save is reported, and the dialogs say what the server does. |
 | GIT-R08 | Planned | P3 | The git panel has one context menu, one dirty-navigation wrapper and one relative-time rule. |
 | GIT-R16 | Planned | P3 | A working branch left without its ledger, or half archived, is reported at startup with a Repair that leaves a whole pair. |
 | GIT-R17 | Planned | P1 | A milestone or tree mutation cannot interleave with a pipeline save and capture or replace only part of its artifact set. |
@@ -191,26 +191,23 @@ without discarding the form's edits. After a history fetch fails the panel shows
 empty branch. "Don't ask again on this machine" swallows a failed preference
 save, so the prompt returns next time with no explanation. The delete dialog
 says "Permanently delete" for a trash-preserving delete the toolbar can undo; an
-`invalid` readiness state shows only its first error; the git UI specification
-and the guard test speak of six readiness states where the contract has seven.
+`invalid` readiness state shows only its first error.
 
 **Plan:** Route Catch up, Spin off and the undo legs through the dirty-navigation
 guard with a confirm naming what changes, then discard the form's edits on
 success; keep a load error in the history hook and render it with Retry; report
-the preference failure; word the delete as recoverable; list every error; add
-`git-unavailable` to the specification and the test.
+the preference failure; word the delete as recoverable; list every error.
 
 **Acceptance:** Catch up with unsaved canvas edits asks first; a history fetch
 failure shows an error with Retry, not the empty state; a failed preference save
-toasts; the guard test iterates seven states.
+toasts.
 
 **Dependencies:** None.
 
 **Evidence:** `frontend/src/components/RemotePushControl.tsx`;
 `frontend/src/utils/vcHistory.ts`; `frontend/src/panels/git/useGitHistory.ts`;
 `frontend/src/components/BranchManager.tsx`;
-`frontend/src/components/WorkingBranchModal.tsx`;
-`specs/frontend-git-ui/low-level.md`.
+`frontend/src/components/WorkingBranchModal.tsx`.
 
 ### GIT-R08 — One menu, one wrapper, one clock
 **Why:** The fixed-backdrop context menu is written five times across the git
