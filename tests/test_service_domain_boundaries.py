@@ -36,6 +36,7 @@ GIT_SERIALIZED_MUTATORS = {
         "commit_save",
         "create_working_branch",
         "merge_to_working",
+        "restore_version",
     },
     "haute._git_remote": {
         "branch_away",
@@ -48,7 +49,6 @@ GIT_SERIALIZED_MUTATORS = {
     "haute._git_archive": {
         "archive_working_pair",
         "delete_working_pair",
-        "move_to_commit",
         "restore_working_pair",
         "undelete_working_pair",
     },
@@ -145,6 +145,7 @@ def test_git_facade_is_declaration_only_and_public_imports_stay_stable() -> None
 
     facade = importlib.import_module("haute._git")
     expected = {
+        "GitBootstrapIncompleteError",
         "GitDomainError",
         "GitError",
         "GitGuardrailError",
@@ -175,12 +176,14 @@ def test_git_facade_is_declaration_only_and_public_imports_stay_stable() -> None
         "graph_topology",
         "list_remotes",
         "milestone_saves",
-        "move_to_commit",
         "pair_divergence",
         "pending_ledger_saves",
         "push_working_pair",
-        "remote_has_content",
+        "remote_holds_other_history",
+        "remote_is_empty",
+        "remote_push_urls",
         "remote_url",
+        "restore_version",
         "restore_working_pair",
         "_run_git",
         "set_identity",

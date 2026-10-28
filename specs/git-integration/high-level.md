@@ -26,14 +26,15 @@ through the facade, so the split does not create hidden state or circular import
 
 The component owns the full lifecycle of a "working branch": creating one, saving
 incremental progress to it, promoting saves to a named milestone, forking a parallel
-version line, moving to read a historical version, archiving/deleting/restoring branches,
+version line from any earlier version, restoring an earlier version as a new save,
+archiving/deleting/restoring branches,
 and the deliberate (never automatic) push/fetch surface that shares work with a remote.
 
 ## Scope
 
 In scope:
 - The working-branch / save-ledger branch-pair engine (create, save, commit milestone,
-  fork, move, archive, delete, undelete, restore).
+  restore a version, fork, archive, delete, undelete, restore).
 - Guardrails: protected-branch enforcement, ref-name injection prevention, unborn-repo
   seeding, git-op-in-progress detection, and the shared `.gitignore` deny-list asserted
   before a root commit can stage project files.
@@ -41,8 +42,8 @@ In scope:
   history, ledger save expansion, whole-forest graph topology, and commit "breadcrumb"
   context. There is no separate generic status endpoint without a UI contract.
 - Remote interaction: listing locally-known remotes, deliberate hardened fetch, deliberate
-  atomic publication of the resolved local default branch (only when bootstrapping an
-  advertised-empty remote) plus the working+ledger pair, fast-forward catch-up, and
+  publication of the resolved local default branch on its own (only when bootstrapping an
+  advertised-empty remote) followed by the atomic working+ledger pair, fast-forward catch-up, and
   "branch away" fork resolution — never an automatic push, fetch-and-merge, or force-push.
 - Per-clone local state: which working branch this clone serves, local UI preferences,
   the fork-point map, trash tombstones, and last-pushed SHAs (all untracked, all living
@@ -68,9 +69,10 @@ save ledger `<W>-save`. Ordinary "saves" are commits on the ledger — one commi
 scoped to exactly the files that changed: the pipeline's files, the workbench's form, or a
 file added, replaced or deleted in the pipeline folder's `files/` through the Pipeline files
 panel ([server-api](../server-api/high-level.md)). A save whose capture is skipped for want
-of a git identity, or fails, still lands on disk, and its answer names the files it left off
-the ledger: no later save's pathspec takes them, so the editor keeps them and one capture
-route takes them once an identity is set, and at each Save.
+of a git identity or of a chosen working branch, or fails, still lands on disk, and its
+answer names the files it left off the ledger with a warning: no later save's pathspec takes
+them, so the editor keeps them and one capture route takes them once an identity is set or a
+branch chosen, and at each Save. A project with no repository owes nothing.
 HEAD lives on the ledger during normal use, so
 the user is always looking at their latest saved state. "Commit" (a milestone) first
 sweeps into one final ledger save every modified file already tracked by Git and every new
@@ -101,18 +103,24 @@ init`, `haute serve`, or working-branch creation. Those stages may scaffold file
 the local default/working/ledger history, and perform existing prompt-proof remote status
 reads, but only the user's explicit Push action may publish refs. This keeps offline startup
 usable, avoids credential prompts during project setup, and makes the remote mutation
-boundary visible to the user.
+boundary visible to the user. The same boundary holds for the deploy's GitHub secrets: the
+Push that first publishes a project to a GitHub repository sets the ones it lacks, a later
+Push only reports them, and the push panel's Set from .env is the other explicit action that
+sets them ([cli](../cli/high-level.md)).
 
 Before that push, Haute strictly inspects the selected remote with terminal and SSH prompts
 disabled and a hard timeout. Only a successful advertisement containing zero object refs
 means "empty"; an unborn symbolic `HEAD` alone is still empty, while any branch or tag makes
 the remote non-empty. Timeout, authentication/network failure, or an unreadable
 advertisement is an inspection failure and refuses the push rather than being treated as an
-empty remote. An empty remote receives the resolved default branch, working branch, and the
-save ledger when it exists in one atomic push, creating the merge target at the same time
-the work is shared. A create-only lease on the default ref makes that bootstrap a
-compare-and-create: a default branch that appears after inspection is never advanced or
-replaced.
+empty remote. An empty remote first receives the resolved default branch on its own, then
+the working branch and the save ledger when it exists in one atomic push, so the merge
+target is created as the work is shared. The first push carries the default alone because
+GitHub never triggers workflows in a repository whose first push created several branches. A
+create-only lease on the default ref makes that bootstrap a compare-and-create: a default
+branch that appears after inspection is never advanced or replaced. If the pair push then
+fails, the remote holds only the default and Haute says so in its own words; the next Push
+publishes the pair.
 
 For a non-empty remote, the expected default branch must already exist. Haute fetches that
 ref and validates that it shares history with the local working line before publishing the
@@ -139,28 +147,92 @@ project. The view extracts only pipeline artifacts required for
 parsing, not unrelated datasets or build outputs. Extraction rejects unsafe member types and
 paths, more than 10,000 members, or more than 64 MiB of regular-file content; malformed,
 oversized, or unparseable historical pipelines fail explicitly instead of returning a
-successful empty graph. Actually
-moving the working directory to a historical commit (`move`) is a distinct, explicit
-operation: a detached-HEAD checkout that clears the clone's working-branch association, so
-the very next save re-triggers the working-branch chooser rather than silently resuming an
-old branch. A create-and-move operation preserves pending save topology; when external merge
-commits make replay unsafe, it refuses and directs the user to create a parallel line.
+successful empty graph. Haute never checks out a historical commit detached: going back is
+a Restore on the current branch, and trying an idea from an earlier version is a new branch
+started there. A create-and-move operation preserves pending save topology; when external
+merge commits make replay unsafe, it refuses and directs the user to create a parallel line.
 
-**Recoverability.** Deleting a working pair does not destroy it: both tips are pinned under
-a non-head ref namespace and a tombstone is recorded before the branch refs are removed, so
-`undelete` can rebuild one of the 20 most recently tombstoned pairs exactly. Older trash
-pins remain reachable but lose their API tombstone when the cap rolls over. Multi-step ref
-mutations (branch selection, archive/delete/restore, fork with move, branch-away,
+**Starting a branch from a version.** A new working branch can start at any milestone or
+save of the current branch: a milestone, a pending save, or a save folded inside a
+milestone. A save is first crystallised into an anchoring milestone. For a pending save it
+sits on the latest milestone; for a folded save it sits on the milestone before the one
+that folds it. So the new branch's milestones read in the order the work was done. The new
+branch can be left as a parallel line or opened at once, a switch that checks out its
+ledger and leaves the current branch's refs as they were. A branch created from the branch
+chooser on a project left on a save, by a checkout outside Haute, starts at the same
+anchoring milestone, so its Milestones list never shows the old ledger's saves as
+milestones.
+
+**Restoring a version.** Going back to an earlier version and carrying on is a Restore.
+Restoring a milestone or save of the current working branch writes that version's
+files back as one new save on its ledger: the analyst stays on the branch, no other ref
+moves, and the saves since stay in the history. A Restore is undone by restoring the save
+before it. Its target is any commit in the current branch's history: a milestone, a pending
+save, or a save folded inside a milestone. A commit of another branch, or one outside both
+lines, is refused. A Restore runs in this order:
+
+1. It records everything on disk first, with the milestone's sweep: modified tracked files
+   and new files in the pipeline folder become one save, "Updated project files". So nothing
+   the Restore then replaces is lost, and a file too large for version history refuses the
+   Restore before anything is recorded.
+2. It writes the restore save into history, built from the target's tree with plumbing as a
+   milestone is: one parent, the ledger tip, and a message the engine writes from the
+   target's short SHA and subject. The ledger then advances under a compare-and-swap.
+3. Only then does it write the files: changed files take the target's content, files deleted
+   since come back, and files added since are removed. Untracked and ignored files and
+   `.haute/` are left alone, and the caches are cleared afterwards.
+
+Restoring the current version with nothing on disk to record answers that it is already this
+version. A Restore needs a git identity, and refuses while a git operation is in progress. It
+also refuses when an untracked or ignored file sits where the target has a file, naming the
+file, rather than overwriting it. If writing the files fails, history already holds the
+restore; the analyst sees the failure.
+
+**Recoverability.** Deleting a working pair does not destroy it. Each deletion is its own
+trash entry, keyed by the branch name and the moment of deletion, so deleting a name, making
+it again and deleting it again keeps both.
+- **Before the refs go:** both tips are pinned under the entry in a non-head ref namespace,
+  and a tombstone is recorded.
+- **The refs themselves:** the working and ledger refs are removed in one ref transaction,
+  so no crash leaves half a pair. Archiving and un-archiving move the pair in one
+  transaction too.
+- **Restoring:** the branch manager lists the 20 most recent deletions and restores any of
+  them exactly, under another name when its own is taken.
+- **The cap:** when it rolls over, the oldest entry's pins go with its tombstone, since
+  nothing could reach them any more.
+
+Multi-step ref
+mutations (branch selection, archive/delete/restore, fork with move or switch, branch-away,
 fast-forward, and branch-pair creation after any unborn-repository seed has succeeded) keep
 an operation snapshot and compensate on failure. An incomplete compensation is an explicit
-transaction failure and is never reported as success. When the active pair is the
-only/default local pair, archive or delete detaches at a preserved commit rather than trying
-to check out the branch being removed. The seed phase itself is outside that rollback
+transaction failure and is never reported as success. Archiving or deleting the active pair
+detaches at the working branch's tip, its last milestone, rather than checking out another
+branch: the analyst stays on the work they had committed. Its later saves stay with the
+archived ledger or the trash entry, and the branch chooser opens at the next startup. The seed phase itself is outside that rollback
 boundary: it may
 rename an unborn branch to `main`, append protective `.gitignore` entries, clear/rebuild the
 index, and create a permanent root commit before pair creation begins. A failure during that
 phase can leave those safe preparatory changes behind, although it does not deliberately
 remove working-tree files.
+
+**Files another program holds open.** On Windows git cannot replace a file another program
+holds open, such as a CSV open in Excel, and it does not always say so. A checkout still
+exits 0: HEAD moves to the new branch while that file keeps the old version, which the next
+Commit's sweep would record as a change. A fast-forward exits 1 with the other files already
+written, and a restore stops part-way.
+
+So every git command that rewrites the working tree runs through one fence. It compares the
+tracked changes before and after, and a new one means the tree is out of step with HEAD. The
+fence then puts HEAD back where it was (forcing it when a file is held too tightly to be
+read, as Excel holds an open CSV, and nothing was changed before the command), writes the
+out-of-step files from it, and refuses
+with the files named: "<files> are open in another program, so Haute could not replace them.
+Close them and try again."
+
+When a file still cannot be written, the clone is recorded as interrupted. This happens when
+the put-back fails, or when a restore fails after its save was recorded. Readiness then
+answers `interrupted` with the files. Commit and Restore refuse until the analyst closes the
+files and chooses Retry, which writes HEAD's version of those files.
 
 **Crash-safe clone state.** Every `.haute/*.json` write is staged to a sibling temporary
 file and atomically replaced while holding the same per-repository mutation lock used by the
@@ -181,6 +253,13 @@ complete old or new document, never torn JSON.
   user — the tree is exactly the ledger's tree, unconditionally. When a version label is
   supplied, its annotated tag object is prepared first and the working ref plus tag ref are
   committed together.
+- **Restore as a save, history before files; no detached move.** A detached checkout
+  unlinks the branch, and the next Save's chooser offered the branch's latest save, which
+  undid the restore. A ledger
+  rewind would drop saves and collide with a published ledger. A save keeps every commit
+  reachable and leaves the analyst on the branch. Recording the restore before writing the
+  files means a file the operating system refuses to replace cannot leave a part-written
+  tree that the next milestone's sweep would record as if it were the restore.
 - **Never force, never auto-merge remotely.** The product's trust model is that a user's
   local work is never silently discarded or rewritten. Push refuses on divergence rather
   than forcing; fast-forward refuses on anything but a clean fast-forward; a remote rewrite
@@ -189,16 +268,25 @@ complete old or new document, never torn JSON.
   answer "was this rewritten".
 - **Bootstrap at explicit Push, not project setup.** The local root/default commit is an
   input to branch creation, but publishing it is a remote side effect. Folding an empty-
-  remote bootstrap into the already-deliberate atomic Push gives a new project a merge
+  remote bootstrap into the already-deliberate Push gives a new project a merge
   target without making `init`, `serve`, or branch selection depend on a remote, network,
   or credentials. Existing remote defaults are validation inputs, never implicit push
   targets, so this convenience cannot rewrite or advance an established shared branch.
 - **Create-only lease is not a force update.** Bootstrap attaches an empty expected value to
   the default ref. It can never authorize replacing or advancing an existing default. If a
   concurrent writer creates the exact commit Haute intended, Git may treat that default as
-  already up to date and safely publish the pair; a different commit loses the lease and the
-  atomic push fails. All branch sources are the validated commit snapshots, the working and
-  ledger destinations remain ordinary non-force updates, and the submitted set is atomic.
+  already up to date and safely publish the pair; a different commit loses the lease and
+  nothing is published. All branch sources are the validated commit snapshots, the working
+  and ledger destinations remain ordinary non-force updates, and the pair is atomic.
+- **The default goes first, alone.** A repository's first push decides whether GitHub ever
+  runs its workflows: one whose first push created several refs never triggers `push` or
+  `pull_request` workflows, atomic or not, while one initialised with a single branch behaves
+  normally (observed 27 October 2026). Publishing the default by itself before the pair keeps
+  every new repository in the working state on every host. The price is one partial state,
+  the default without the pair, which is an ordinary established remote: the next Push
+  completes it, and the failure is reported in hand-written words instead of being hidden.
+  Rolling the default back instead would need a remote deletion, which the never-force rule
+  forbids.
 - **Content-addressed caching.** Git's own objects are immutable once written, so any pure
   function of a full 40-hex commit SHA (merge-base, ancestry, first-parent spine, a
   commit's tree, its parents) is cached forever with no invalidation story — only ref-name
@@ -261,6 +349,9 @@ subclass of the project-wide `HauteError`):
 - **`GitHistoryReadError`** — a `GitDomainError` subtype for a malformed archive or a
   historical tree that cannot produce a pipeline graph. It is a failed read, never an empty
   successful graph.
+- **`GitFilesInUseError`** — a `GitDomainError` subtype carrying the files a tree-rewriting
+  command could not write because another program holds them open. HTTP 400 with its
+  message, which names at most five of them.
 
 Two operations carry structured, machine-readable failure payloads instead of a plain
 message, because the UI needs to *act* on the failure, not just display it:

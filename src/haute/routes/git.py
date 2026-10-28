@@ -16,12 +16,16 @@ handler, which answers through :func:`git_error_http_exception`.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 
 from haute import _project_storage
 from haute._artifact_paths import ordinary_path_problem
+from haute._ci_secrets import CiSecretsError, push_with_ci_secrets, set_missing_ci_secrets
+from haute._event_bus import default_bus
 from haute._git import (
     GitDomainError,
     GitError,
@@ -39,10 +43,10 @@ from haute._git import (
     graph_topology,
     list_remotes,
     milestone_saves,
-    move_to_commit,
     pending_ledger_saves,
-    push_working_pair,
+    restore_version,
     restore_working_pair,
+    retry_interrupted,
     set_identity,
     set_prefs,
     set_working_branch,
@@ -54,9 +58,15 @@ from haute._git import (
 from haute._git_lock import repository_mutation
 from haute._logging import get_logger
 from haute._project_layout import pipeline_folder
+from haute.errors import ConfigError
 from haute.graph_utils import PipelineGraph
 from haute.hosted import FORWARDED_USER_SCOPE_KEY
-from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, commit_pipeline_graph, pause_watcher
+from haute.routes._helpers import (
+    _INTERNAL_ERROR_DETAIL,
+    commit_pipeline_graph,
+    discover_pipelines,
+    pause_watcher,
+)
 from haute.routes._save_pipeline import capture_save_in_ledger
 from haute.schemas import (
     GitArchiveRequest,
@@ -66,6 +76,8 @@ from haute.schemas import (
     GitBranchAwayRequest,
     GitBranchAwayResponse,
     GitCaptureRequest,
+    GitCiSecrets,
+    GitCiSecretsRequest,
     GitCommitContext,
     GitCommitRequest,
     GitCommitResponse,
@@ -81,8 +93,6 @@ from haute.schemas import (
     GitLedgerSavesResponse,
     GitMilestoneFork,
     GitMilestonesResponse,
-    GitMoveRequest,
-    GitMoveResponse,
     GitPrefs,
     GitPushRejection,
     GitPushRequest,
@@ -90,6 +100,8 @@ from haute.schemas import (
     GitRemotesResponse,
     GitRestoreRequest,
     GitRestoreResponse,
+    GitRestoreVersionRequest,
+    GitRestoreVersionResponse,
     GitSetIdentityRequest,
     GitSetIdentityResponse,
     GitSetWorkingBranchRequest,
@@ -199,32 +211,78 @@ def git_get_working_branch() -> GitWorkingBranchResponse:
 
 
 # ---------------------------------------------------------------------------
+# POST /api/git/interrupted/retry — write the files an interrupted action left
+# ---------------------------------------------------------------------------
+
+
+@router.post("/interrupted/retry", response_model=GitWorkingBranchResponse)
+def git_retry_interrupted(background: BackgroundTasks) -> GitWorkingBranchResponse:
+    """Write HEAD's version of the files a git action left out of step (a file
+    another program held open), once the analyst has closed them, and answer the
+    readiness after. Files still held are 400, naming them."""
+    with _rewriting_tree(background):
+        retry_interrupted(Path.cwd())
+    return _with_storage_state(working_branch_status(Path.cwd()))
+
+
+# ---------------------------------------------------------------------------
 # POST /api/git/working-branch — adopt (optionally create) a working branch
 # ---------------------------------------------------------------------------
 
 
+@contextmanager
+def _rewriting_tree(background: BackgroundTasks) -> Iterator[None]:
+    """Run a git action that may rewrite the files, with the watcher paused through
+    it; once the response is sent, the server broadcasts what is on disk
+    (``_broadcast_tree_change``). The pipelines on disk before the action go with
+    the announcement, so one it took away is named even when no cache still holds
+    it (a save invalidates them). A refused action raises out of the block and
+    announces nothing."""
+    try:
+        before = [str(path.resolve()) for path in discover_pipelines()]
+    except (OSError, ConfigError) as exc:
+        # The configured pipeline missing or damaged is what a restore or a switch
+        # may be repairing: the action goes ahead, the server's caches alone naming
+        # what it takes away.
+        logger.warning("git_pipeline_inventory_failed", error=str(exc))
+        before = []
+    with pause_watcher():
+        yield
+    background.add_task(default_bus.publish, "git.tree.changed", {"pipelines_before": before})
+
+
 @router.post("/working-branch", response_model=GitSetWorkingBranchResponse)
-def git_set_working_branch(body: GitSetWorkingBranchRequest) -> GitSetWorkingBranchResponse:
+def git_set_working_branch(
+    body: GitSetWorkingBranchRequest, background: BackgroundTasks
+) -> GitSetWorkingBranchResponse:
     """Adopt a working branch for this clone, spawning its ledger and recording
     the association. Confirms both the startup modal and the save-gate."""
-    with pause_watcher():  # M4: adopting a branch checks out its ledger (tree swap)
-        return set_working_branch(body.branch, Path.cwd(), create=body.create)
+    with _rewriting_tree(background):  # M4: adopting a branch checks out its ledger
+        response = set_working_branch(body.branch, Path.cwd(), create=body.create)
+    return response
 
 
 # ---------------------------------------------------------------------------
-# POST /api/git/move — move to a historical commit (detached checkout, §3.4)
+# POST /api/git/restore-version — an earlier version back as a new save
 # ---------------------------------------------------------------------------
 
 
-@router.post("/move", response_model=GitMoveResponse)
-def git_move(body: GitMoveRequest) -> GitMoveResponse:
-    """Move the working directory to a historical commit (detached checkout).
+@router.post("/restore-version", response_model=GitRestoreVersionResponse)
+def git_restore_version(
+    body: GitRestoreVersionRequest, background: BackgroundTasks
+) -> GitRestoreVersionResponse:
+    """Restore a milestone or save of the current branch as one new save on it.
 
-    The watcher is paused for the wholesale tree replacement (S30); the move
-    enforces the §3.9 floors (refuse dirty tree / in-progress git op) and clears
-    the working branch, so the next save spawns a fresh one (S13)."""
-    with pause_watcher():
-        return move_to_commit(body.sha, Path.cwd())
+    The watcher is paused while the files are rewritten (S30). What is on disk is
+    recorded first, the restore save next, the files last; the branch is not left.
+    The new saves are published like any save's when the project is bound to
+    durable storage."""
+    with _rewriting_tree(background):
+        response = restore_version(
+            body.sha, Path.cwd(), pipeline_folder=pipeline_folder(Path.cwd())
+        )
+    _project_storage.enqueue_push()
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -346,10 +404,11 @@ def git_pending_saves(branch: str | None = Query(None)) -> GitLedgerSavesRespons
 
 
 @router.post("/archive", response_model=GitArchiveResponse)
-def git_archive(body: GitArchiveRequest) -> GitArchiveResponse:
+def git_archive(body: GitArchiveRequest, background: BackgroundTasks) -> GitArchiveResponse:
     """Archive a working branch and its ledger together (S32, pair-aware)."""
-    with pause_watcher():  # M4: archiving the active pair switches away (tree swap)
-        return archive_working_pair(body.branch, Path.cwd())
+    with _rewriting_tree(background):  # M4: archiving the active pair switches away
+        response = archive_working_pair(body.branch, Path.cwd())
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -358,11 +417,14 @@ def git_archive(body: GitArchiveRequest) -> GitArchiveResponse:
 
 
 @router.delete("/branches", response_model=GitDeleteBranchResponse)
-def git_delete_branch(body: GitDeleteBranchRequest) -> GitDeleteBranchResponse:
+def git_delete_branch(
+    body: GitDeleteBranchRequest, background: BackgroundTasks
+) -> GitDeleteBranchResponse:
     """Delete a working branch and its ledger together; refuses on unmerged
     ledger saves unless ``confirm`` (§8, pair-aware)."""
-    with pause_watcher():  # M4: deleting the active pair switches away (tree swap)
-        return delete_working_pair(body.branch, Path.cwd(), confirm=body.confirm)
+    with _rewriting_tree(background):  # M4: deleting the active pair switches away
+        response = delete_working_pair(body.branch, Path.cwd(), confirm=body.confirm)
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +437,7 @@ def git_undelete(body: GitUndeleteRequest) -> GitUndeleteResponse:
     """Restore a deleted working pair from its trash refs + tombstone (the
     inverse of DELETE /branches). Pure ref/state ops — no checkout, no HEAD
     movement — so no watcher pause is needed."""
-    return undelete_working_pair(body.branch, Path.cwd())
+    return undelete_working_pair(body.id, Path.cwd(), as_name=body.as_name)
 
 
 # ---------------------------------------------------------------------------
@@ -402,12 +464,16 @@ def git_restore(body: GitRestoreRequest) -> GitRestoreResponse:
 
 @router.post("/working-branches", response_model=GitCreateWorkingBranchResponse)
 def git_create_working_branch(
-    body: GitCreateWorkingBranchRequest,
+    body: GitCreateWorkingBranchRequest, background: BackgroundTasks
 ) -> GitCreateWorkingBranchResponse:
-    """Fork a new working branch off the current one. ``at``/``move`` select the
-    fork point and whether in-progress work is relocated onto it (S38)."""
-    with pause_watcher():  # M4: move-mode forks check out the new ledger (tree swap)
-        return create_working_branch(body.name, Path.cwd(), at=body.at, move=body.move)
+    """Fork a new working branch off the current one. ``at`` selects the fork
+    point, ``move`` whether in-progress work is relocated onto it, and ``switch``
+    whether the new branch is opened (S38)."""
+    with _rewriting_tree(background):  # M4: move and switch forks check out the new ledger
+        response = create_working_branch(
+            body.name, Path.cwd(), at=body.at, move=body.move, switch=body.switch
+        )
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -477,19 +543,42 @@ def git_commit_context(sha: str, base: str | None = Query(None)) -> GitCommitCon
 def git_push(body: GitPushRequest) -> GitPushResponse:
     """Deliberately publish managed history to a chosen existing remote.
 
-    An advertised-empty remote receives its resolved default branch and the
-    working/ledger pair atomically.  Established remotes receive only the pair,
-    after their default branch has been fetched and validated.  Existing refs
-    are never force-updated (S16/S33), and plain saves never invoke this route.
+    An advertised-empty remote first receives its resolved default branch on its
+    own, then the working/ledger pair atomically.  Established remotes receive only
+    the pair, after their default branch has been fetched and validated.  Existing
+    refs are never force-updated (S16/S33), and plain saves never invoke this route.
 
     A non-fast-forward rejection returns **409** with a structured
     :class:`GitPushRejection` body (per-leg divergence + a leg-naming message) so
-    the client can show the honest fork instead of a dead-end (M7)."""
+    the client can show the honest fork instead of a dead-end (M7).
+
+    On a GitHub remote the response's ``ci_secrets`` reports the deploy's secrets
+    there; a first publication sets the missing ones before the default branch is
+    created (:func:`haute._ci_secrets.push_with_ci_secrets`)."""
     try:
-        return push_working_pair(body.remote, Path.cwd())
+        return push_with_ci_secrets(body.remote, Path.cwd())
     except GitPushRejectedError as e:
         logger.warning("git_push_rejected", remote=body.remote, message=e.rejection.message)
         raise HTTPException(status_code=409, detail=e.rejection.model_dump())
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/ci-secrets — set the deploy's missing GitHub secrets from .env
+# ---------------------------------------------------------------------------
+
+
+@router.post("/ci-secrets", response_model=GitCiSecrets)
+def git_set_ci_secrets(body: GitCiSecretsRequest) -> GitCiSecrets:
+    """The push panel's Set from .env: store the deploy's secrets the remote's GitHub
+    repository lacks, from ``.env``, never overwriting one.
+
+    A remote they do not apply to, or a step that cannot be taken (a value unset or
+    a placeholder, a pair Databricks refuses, no ``gh``), is a 400 naming why."""
+    try:
+        return set_missing_ci_secrets(body.remote, Path.cwd())
+    except CiSecretsError as e:
+        logger.info("git_ci_secrets_not_set", remote=body.remote)
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -649,14 +738,15 @@ def git_check_upstream() -> GitUpstreamStatusResponse:
 
 
 @router.post("/storage/upstream/pull", response_model=GitFastForwardResponse)
-def git_pull_upstream() -> GitFastForwardResponse:
+def git_pull_upstream(background: BackgroundTasks) -> GitFastForwardResponse:
     """Catch this fork up to its parent by fast-forward only.
 
     One-directional by design (parent → fork). The watcher is paused for
     the wholesale tree replacement, exactly as the remote catch-up does."""
     try:
-        with pause_watcher():
-            return _project_storage.pull_upstream(Path.cwd())
+        with _rewriting_tree(background):
+            response = _project_storage.pull_upstream(Path.cwd())
+        return response
     except _project_storage.StorageConfigError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except _project_storage.StorageUnavailableError as e:
@@ -681,13 +771,16 @@ def git_retry_storage_sync() -> GitWorkingBranchResponse:
 
 
 @router.post("/fast-forward", response_model=GitFastForwardResponse)
-def git_fast_forward(body: GitFastForwardRequest) -> GitFastForwardResponse:
+def git_fast_forward(
+    body: GitFastForwardRequest, background: BackgroundTasks
+) -> GitFastForwardResponse:
     """Catch the working pair up to a remote's tips by fast-forward only (D1/D2) —
     a pure ref advance, never a merge. Refuses anything that isn't a clean
     fast-forward (the user spins off a copy instead). The watcher is paused for
     the wholesale tree replacement (S30/M4)."""
-    with pause_watcher():
-        return fast_forward_pair(body.remote, Path.cwd())
+    with _rewriting_tree(background):
+        response = fast_forward_pair(body.remote, Path.cwd())
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -696,10 +789,13 @@ def git_fast_forward(body: GitFastForwardRequest) -> GitFastForwardResponse:
 
 
 @router.post("/branch-away", response_model=GitBranchAwayResponse)
-def git_branch_away(body: GitBranchAwayRequest) -> GitBranchAwayResponse:
+def git_branch_away(
+    body: GitBranchAwayRequest, background: BackgroundTasks
+) -> GitBranchAwayResponse:
     """Resolve a remote fork by setting the local pair aside under a dated name and
     repointing the canonical name to the remote's tips (M3) — both lineages kept,
     nothing rewritten, never a merge. The watcher is paused for the tree
     replacement (S30/M4)."""
-    with pause_watcher():
-        return branch_away(body.remote, Path.cwd())
+    with _rewriting_tree(background):
+        response = branch_away(body.remote, Path.cwd())
+    return response

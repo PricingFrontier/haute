@@ -141,7 +141,7 @@ describe("GitPanel session cache + unchanged-payload short-circuit", () => {
     mockGetPendingSaves.mockImplementation(() => Promise.resolve({ saves: [] }))
     mockGetMilestoneSaves.mockResolvedValue({ saves: [] })
     mockCreateWorkingBranch.mockResolvedValue({ working_branch: "x", moved: false, switched: false, last_save_sha: null })
-    mockGetWorkingBranches.mockImplementation(() => Promise.resolve({ current: "pricing-dev", branches: [] }))
+    mockGetWorkingBranches.mockImplementation(() => Promise.resolve({ current: "pricing-dev", deleted: [], branches: [] }))
     mockGetGitGraph.mockImplementation(() => Promise.resolve(structuredClone(graphTwoBranch)))
   })
 

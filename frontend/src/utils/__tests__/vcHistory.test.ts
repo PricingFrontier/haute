@@ -47,7 +47,7 @@ beforeEach(() => {
   useGitStore.setState({ status: null, historyNonce: 0 })
   mockSetWorkingBranch.mockResolvedValue({})
   mockArchive.mockResolvedValue({ archived_as: "archive/x" })
-  mockDelete.mockResolvedValue({ status: "deleted", branch: "x" })
+  mockDelete.mockResolvedValue({ status: "deleted", branch: "x", trash_id: "x@20261027T131400Z" })
   mockRestore.mockResolvedValue({ restored_as: "x" })
   mockUndelete.mockResolvedValue({ status: "restored", branch: "x" })
   mockGetWorkingBranch.mockResolvedValue({ working_branch: "demo", state: "ready" })
@@ -102,16 +102,31 @@ describe("recordRestore", () => {
 
 describe("recordDelete", () => {
   it("undoes via undelete (trash restore) and redoes via a confirmed delete", async () => {
-    recordDelete("experiment")
+    recordDelete("experiment", "experiment@20261027T131400Z")
     const entry = lastEntry()
     expect(entry.label).toBe("delete experiment")
 
     await entry.undo()
-    expect(mockUndelete).toHaveBeenCalledWith("experiment")
+    expect(mockUndelete).toHaveBeenCalledWith("experiment@20261027T131400Z")
     expect(mockDelete).not.toHaveBeenCalled()
 
     await entry.redo()
     expect(mockDelete).toHaveBeenCalledWith("experiment", true)
+  })
+
+  it("a redo's delete is a new trash entry, which the next undo restores", async () => {
+    mockDelete.mockResolvedValue({ status: "deleted", branch: "experiment", trash_id: "experiment@20261027T140000Z" })
+    recordDelete("experiment", "experiment@20261027T131400Z")
+    const entry = lastEntry()
+
+    await entry.undo()
+    await entry.redo()
+    await entry.undo()
+
+    expect(mockUndelete.mock.calls.map((c) => c[0])).toEqual([
+      "experiment@20261027T131400Z",
+      "experiment@20261027T140000Z",
+    ])
   })
 })
 
@@ -128,14 +143,16 @@ describe("leg side effects", () => {
     expect(useGitStore.getState().historyNonce).toBe(1)
   })
 
-  it("a failing leg toasts the error, skips the resync and rethrows for the store", async () => {
+  it("a failing leg toasts the error, reads the status again, and rethrows for the store", async () => {
     mockUndelete.mockRejectedValue(new Error("tombstone missing"))
-    recordDelete("experiment")
+    recordDelete("experiment", "experiment@20261027T131400Z")
 
     await expect(lastEntry().undo()).rejects.toThrow("tombstone missing")
 
     expect(toastTexts()).toEqual([["error", "Undo/redo failed: tombstone missing"]])
-    expect(mockGetWorkingBranch).not.toHaveBeenCalled()
+    // A held file can leave the clone interrupted, which only the status shows…
+    expect(mockGetWorkingBranch).toHaveBeenCalledTimes(1)
+    // …but nothing changed for the Git panel to refetch.
     expect(useGitStore.getState().historyNonce).toBe(0)
   })
 

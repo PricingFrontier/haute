@@ -21,21 +21,22 @@ of branch operations.
 In scope:
 - The toolbar working-branch indicator (`BranchIndicator`) — the branch name, and the entry
   point into the panel.
-- The Git side panel (`GitPanel`): out-of-version (pending) save list, milestone list with
+- The Git side panel (`GitPanel`): pending save list, milestone list with
   expandable folded saves, the graph rail (lanes, spawn stubs, magnifiers), right-click
-  context menus for forking/viewing/moving/switching, and the fork-naming dialog.
+  context menus for forking/viewing/restoring/switching, and the fork-naming dialog.
 - The branch manager (`BranchManager`), embedded in the panel: list/create/switch/archive/
   delete/restore of working branches, with their confirmation dialogs.
 - The five git modals: `WorkingBranchModal` (branch selection at startup / save-gate),
   `MilestoneCommitModal` (commit a milestone, including the fork-warning override),
   `DivergenceModal` (recover when the recorded working branch and HEAD disagree),
-  `MoveConfirmModal` (the pre-move save/discard/confirm prompt — see Behaviour), and the
+  `RestoreConfirmModal` (the save/discard/confirm prompt before a restore — see
+  Behaviour), and the
   push surface `RemotePushControl` (remote selection, ahead/behind, explicit publication
   including empty-remote default-branch bootstrap, fast-forward catch-up, and the non-fast-
   forward rejection recovery flow).
 - `CommitBreadcrumb`, the small version-relative label used on comparison canvases.
 - Client-side state for this surface: `useGitStore` (readiness plus retryable load errors,
-  shared branch metadata, modal routing, peek/compare/move targets, refresh nonces) and the
+  shared branch metadata, modal routing, peek/compare/restore targets, refresh nonces) and the
   session-lived read caches in `gitPanelCache.ts`.
 - Pure layout of the graph rail from the graph-topology payload (`panels/gitgraph/`).
 
@@ -50,7 +51,7 @@ Out of scope (owned by neighbouring components):
 - Shared chrome this component builds on but does not own: `PanelShell`, `ModalShell`,
   `Tooltip`, toast notifications — see
   [frontend-shared](../frontend-shared/high-level.md).
-- The canvas-side comparison view that `openComparison`/`requestMove` drive (the dual-
+- The canvas-side comparison view that `openComparison` drives (the dual-
   canvas overlay itself, diffing, and the historic↔current delta rendering beyond
   `CommitBreadcrumb`'s `ComparisonDelta`) — owned by the graph-canvas surface, see
   [frontend-graph-canvas](../frontend-graph-canvas/high-level.md).
@@ -69,19 +70,35 @@ repository. When the compact toolbar truncates the detail, the complete diagnost
 available in a tooltip on hover over the error or keyboard focus on Retry, and describes
 the Retry button for assistive technology. Successful responses render distinct labels and
 remediation for no repository, unset working branch, invalid state, attached divergence,
-and detached HEAD (including its short SHA). A ready state shows the working branch name
+and a detached HEAD, which reads "Viewing an earlier version". An interrupted clone reads "Files in use", with
+the files in its tooltip and a Retry that asks the server to write them again. Every git
+action that can rewrite the files (restore, switch, branch creation, archive, delete, catch
+up, spin off, and the undo of a branch operation) reads the readiness again when it fails,
+so an interruption shows at once. After a git action succeeds, the readiness is read with a request issued after it (`loadStatus({ refresh: true })`), never by joining a read already under way, which may describe the project before the action. Startup opens no chooser for an interrupted clone, and neither do Save and Commit: each refuses with a toast to close the files and choose Retry in the toolbar first, since a save then would record the version the files were left at. A ready state shows the working branch name
 alone; clicking it opens the panel on the current branch. The indicator carries no save
 SHA — the commit code belongs to the history panel, which shows it in context.
 
 **Panel — save history.** The panel shows, top to bottom: the remote push control, the
-branch manager, an optional "peeking another branch" banner, out-of-version (pending)
-saves in a highlighted box, then the milestone list. Every milestone can be expanded to
+branch manager, an optional "peeking another branch" banner, the pending saves in a
+highlighted box headed "Saves since the last milestone (n)", then the milestone list. Every milestone can be expanded to
 reveal the individual saves folded into it. Milestones and saves each carry: a version
 label or "init" tag, message, short SHA with a tooltip, a relative time, a view (read-only
-compare) affordance, a move-to-this-version affordance, and — when a branch was spawned
-from that exact point — clickable branch chips ("fork links") back to the spawned branch.
-Right-clicking any row opens a context menu; on the user's own (non-peeked) branch it also
-offers "new branch from here" and, on the branch tip only, "new branch & move work here".
+compare) affordance, and — when a branch was spawned from that exact point — clickable
+branch chips ("fork links") back to the spawned branch.
+
+On the user's own (non-peeked) branch every row also carries "Start a branch from this
+version", and every row except the current version carries "Restore this version". The
+current version is the newest pending save, or with none pending the newest milestone and
+the newest save folded into it. Start a branch opens a naming step, creates the branch at
+that version and opens it.
+
+Right-clicking any row opens a context menu with "View side-by-side". On the user's own
+branch it also offers:
+- "Restore this version", except on the current version;
+- "Start a branch from this version";
+- "New branch from here, stay on this branch";
+- on the branch tip only, "Move the later saves to a new branch", which winds this branch
+  back to the chosen point.
 
 **Graph rail.** When the whole-forest graph topology loads successfully, each row in the
 history additionally draws a small rail: a coloured lane for the viewed branch and its
@@ -94,12 +111,16 @@ falls outside the loaded window. The rail is chrome: if the graph fetch fails, t
 still renders the row list without it, silently.
 
 **Branch manager.** Lists the current branch in its own box, other live branches, then
-archived branches, with a "Create" / "Create & Move" split control. Peeking (viewing
+archived branches, then the 20 most recent deletions, collapsed until opened. Each deletion
+carries a Restore, and a name box when its name is taken again, including by a ledger the
+list doesn't show (the server's refusal opens it). The manager has a "Create" / "Create & Move" split
+control. Peeking (viewing
 another branch's history) never switches the working branch; switching, archiving,
 deleting, and restoring do, each behind role-appropriate confirmation (switch has a
 persistable "don't ask again"; delete always confirms and names what it discards;
-archiving the current branch with uncommitted tracked project changes redirects to "commit
-a milestone first" instead of proceeding). A switch or Create & Move that would replace
+archiving the current branch with tracked project changes not yet saved redirects to
+"commit a milestone first" instead of proceeding). A row's badges read "not saved" (project
+files changed since the last save) and "saves to commit" (saves not yet in a milestone). A switch or Create & Move that would replace
 unsaved edits, in the canvas or the workbench's form, always requires Cancel, Discard, or
 Save first; the persisted
 preference to skip clean switch confirmation never bypasses this dirty-work guard.
@@ -108,25 +129,53 @@ use the same guard before their mutation/reload path, including when the branch 
 saved work awaiting a milestone. Save first must complete successfully before the Git
 mutation starts.
 
+An in-app switch reloads no page. The server publishes the new branch's documents and form
+once the switch has answered. When the analyst chose Discard, the switch drops the canvas's
+edits and asks for the document again only after it succeeds, so a failed switch keeps them.
+
+Known gap: the startup chooser adopting an existing branch from an unset project also
+checks out that branch's files, and a Save queued behind it meets them.
+
 **Modals.** `WorkingBranchModal` gates first use (and any save attempted with no working
 branch set): choose among eligible branches or create one, optionally set git identity
-inline. `MilestoneCommitModal` records a message (required, at most 500 characters with
+inline. Startup opens it when the project is unset, invalid or detached.
+
+On a detached project, left on an earlier version by a checkout outside Haute:
+- it starts on "Create new branch…";
+- it says "Choosing an existing branch opens its latest save; the version open now is kept
+  only by a new branch.";
+- the branch it creates starts at that version, as an anchoring milestone when the version
+  is a save. `MilestoneCommitModal` records a message (required, at most 500 characters with
 visible validation when exceeded) and version label (optional) against the accumulated
 ledger saves; a 409 from the server surfaces a "committing now
 would fork the remote" warning with an explicit "commit anyway" override rather than a
 dead-end error. `DivergenceModal` appears when the recorded working branch and the actual
 HEAD disagree (the repo was moved outside Haute) and offers three resolutions: return to
 the recorded branch, adopt the current one (only if attached and eligible), or defer to the
-branch manager. Detached HEAD is named as detached at its commit, never as a branch called
-`HEAD`. `MoveConfirmModal` gates every move-to-version action (`GitPanel`'s row/lane
-"move to this version" affordance): on a clean project it is a single confirm; when the
-canvas or the workbench's form has unsaved edits it forces an explicit choice between
-saving them onto the
-current branch first or discarding them, because a move is a real checkout that replaces
-the whole working canvas and in-memory-only edits — which never reached disk — would
-otherwise be lost silently. Once a move starts, its modal ignores Cancel, Escape, and
-backdrop dismissal until the asynchronous operation settles, preventing a second move from
-being opened over the first.
+branch manager. A detached HEAD reads "Viewing an earlier version", never a branch called
+`HEAD`; Haute leaves HEAD detached only after archiving or deleting the current branch, at
+its last milestone, so otherwise it comes from a checkout outside Haute.
+
+**Words.** The git UI's visible text uses the analyst's words: version, save, milestone,
+branch and project. It never shows "detached", "repo", "ledger", "fold" or "hexadecimal",
+and a save's short SHA is its "commit code". How versions work is explained in the
+guide `docs/building-models/versions.md`, not on screen.
+
+`RestoreConfirmModal` gates every restore (`GitPanel`'s row button and row menu item):
+- The title is "Restore <label>?" and the line below it reads "Your branch carries on from
+  this version. The saves since then stay in the history."
+- On a clean project it is a single confirm, "Restore this version".
+- When the canvas or the workbench's form has unsaved edits, it forces an explicit choice:
+  "Save & restore" saves them onto the current branch first, "Discard & restore" drops
+  them. A restore rewrites the files, and in-memory-only edits, which never reached disk,
+  would otherwise be lost silently.
+- Once a restore starts, the modal ignores Cancel, Escape and backdrop dismissal until the
+  asynchronous operation settles.
+
+After a restore succeeds the page reloads, and a toast then reads "Restored <label> as a
+new save." Until then a failed save or a failed restore toasts and closes the modal. The
+toolbar's undo records no restore, because the reload clears its stacks. Restoring the save
+before undoes it.
 
 **Remote push.** `RemotePushControl` requires a deliberate remote selection (no default
 push target unless exactly one remote exists), shows the working branch's and save-ledger's
@@ -146,11 +195,22 @@ branch-count toast remains. On a non-fast-forward rejection the control shows an
 recovery modal: fast-forward catch-up when the fork is behind-only, or "spin off a copy"
 (never a local merge) when it has genuinely diverged.
 
+A Push to a GitHub repository also reports the deploy's secrets there
+([cli](../cli/high-level.md)). When the Push set some, a success toast says `Set <n> deploy
+secret(s) on <repository> from .env`; when a first publication could not set them, or could
+not read the repository's secrets, a warning toast gives the reason. While the repository
+lacks any, the control shows `<n> deploy secret(s) missing on GitHub`, naming them in its
+tooltip, beside a **Set from .env** button that sets the missing ones and toasts the outcome.
+The line goes once they are set, or when a later Push for that remote reports none missing,
+and shows only while that remote is selected. A later Push that cannot read the secrets says
+nothing: the secrets may be managed by someone without the editor.
+
 **Invariants.**
 - A plain save never changes the panel's selection; a milestone commit does (selects the
   new milestone), but only when viewing the current branch's own history.
 - Peeking a branch never mutates working-tree state; only "switch" (branch manager /
-  lane context menu) and "move to version" perform a real checkout.
+  lane context menu), "Start a branch from this version" and Create & Move perform a real
+  checkout, and only "restore this version" rewrites the files on the current branch.
 - The rail's row list and the graph payload are fetched independently and may transiently
   disagree; the rail withholds rendering rather than mislabel rows during that window
   (see Failure model).
@@ -238,15 +298,15 @@ empty remote. The UI reads `default_branch`; it never hardcodes `main`.
 - Depends on `useGraphStore` (owned by
   [frontend-graph-canvas](../frontend-graph-canvas/high-level.md)) for `pushVcEntry` —
   recording branch switch/archive/restore/delete as undoable history entries
-  (`frontend/src/utils/vcHistory.ts`) — and for `MoveConfirmModal`'s read of the `dirty`
-  flag, which decides whether the pre-move prompt forces a save/discard choice or offers a
-  single plain confirm.
+  (`frontend/src/utils/vcHistory.ts`) — and for `RestoreConfirmModal`'s read of the `dirty`
+  flag, which decides whether the prompt forces a save/discard choice or offers a single
+  plain confirm.
 - Depends on `useUIStore` for the panel's open/closed chrome state (`gitOpen`).
 - `useGitStore.openComparison` is consumed by
   [frontend-graph-canvas](../frontend-graph-canvas/high-level.md) to drive the read-only
   comparison overlay; this component only sets the target, it does not render the
-  comparison itself. `useGitStore.requestMove`/`moveTarget`, by contrast, drives this
-  component's own `MoveConfirmModal` — rendered directly by `App.tsx` alongside the other
+  comparison itself. `useGitStore.requestRestore`/`restoreTarget`, by contrast, drives this
+  component's own `RestoreConfirmModal` — rendered directly by `App.tsx` alongside the other
   git modals, not by the graph canvas.
 - `CommitBreadcrumb` is rendered by the comparison canvas top bar, sourced from a
   git-integration commit-context endpoint.
@@ -277,7 +337,7 @@ are not the user's data, and **mutations**, which always surface an error.
   remotes so transient chrome failure cannot erase an active divergence-recovery modal.
 - **Milestone-save expansion** (`toggleExpand`) shows an error toast and rolls the row
   back to collapsed on failure, rather than leaving a permanent "loading" placeholder.
-- **Mutations** (create/switch/archive/delete/restore branch, commit milestone, move to
+- **Mutations** (create/switch/archive/delete/restore branch, commit milestone, restore a
   version, push, fast-forward, branch-away, fork) always surface a toast on failure, and several also
   persist the error inline (`BranchManager`'s `actionError` banner) since a modal or panel
   dismiss elsewhere in the app should not silently swallow it.

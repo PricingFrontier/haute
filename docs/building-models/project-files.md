@@ -29,8 +29,8 @@ training or optimisation, can read from `data/`: a deploy drops every node the q
 doesn't depend on ([Deployment](../deployment/index.md)).
 
 `data/` and `outputs/` stay on your machine. Moving to another version, catching up or
-branching away deletes `outputs/`, because what a run writes belongs to the version that
-wrote it. Keep anything you need in `data/` or the pipeline folder.
+branching away leaves both as they are, so `outputs/` can hold what another version's runs
+wrote.
 
 **Save model to file** and an optimiser result's **Save to file** put a filename without a
 folder in `rating/files/models/`.

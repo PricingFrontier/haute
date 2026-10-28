@@ -219,6 +219,22 @@ def _open_dedicated_workers() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _watcher_unpaused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start every test with the file watcher unpaused, as a fresh server is.
+
+    A git route pauses the process-wide watcher and, once released, keeps it paused
+    for a one-second settle window; without this, a test that drives the watcher
+    within that second of a git route test on the same worker sees its batch
+    dropped.
+    """
+    from haute.routes import _helpers
+
+    monkeypatch.setattr(_helpers, "_watcher_pause_depth", 0)
+    monkeypatch.setattr(_helpers, "_watcher_pause_deadline", 0.0)
+    monkeypatch.setattr(_helpers, "_watcher_pause_released_at", 0.0)
+
+
+@pytest.fixture(autouse=True)
 def _patient_preparation_join(monkeypatch: pytest.MonkeyPatch) -> None:
     """Wait longer for a preparation thread than a production shutdown does.
 

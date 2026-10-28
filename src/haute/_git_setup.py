@@ -15,13 +15,18 @@ from haute._git_core import (
     _assert_git_repo,
     _clear_content_caches,
     _get_current_branch,
+    _is_ancestor,
     _ledger_or_branch_sha,
+    _list_branches_with_tips,
     _rev_parse,
+    _rewrite_tree,
     _run_git,
     _run_git_ok,
     _serialized_mutation,
+    _tree_of,
     _validate_ref_name,
     branch_category,
+    is_eligible_working_branch,
     ledger_name,
 )
 from haute._gitignore_guard import ensure_gitignore_guards
@@ -62,6 +67,63 @@ _SEED_PATHSPECS: tuple[str, ...] = (
 _PREF_SKIP_SWITCH_CONFIRM = "skipSwitchConfirm"
 
 
+def _on_first_parent(working: str, commit: str, cwd: Path | None = None) -> bool:
+    """Whether *commit* sits on *working*'s first-parent (milestone) chain."""
+    ok, raw = _run_git_ok("rev-list", "--first-parent", working, cwd=cwd)
+    return ok and commit in raw.split()
+
+
+def _crystallize_milestone(anchor: str, save: str, name: str, cwd: Path | None = None) -> str:
+    """An anchoring milestone for a new branch forked at a *save*: a real merge
+    commit (parents = the milestone the save came after + the save) carrying the
+    save's tree, so the new branch opens at a clean milestone capturing that state."""
+    tree = _tree_of(save, cwd=cwd)
+    msg = f"Start {name} from save {save[:8]}"
+    return _run_git("commit-tree", tree, "-p", anchor, "-p", save, "-m", msg, cwd=cwd)
+
+
+def _folding_anchor(working_tip: str, save: str, cwd: Path | None = None) -> str:
+    """The milestone a *save* folded into a milestone came after: the first parent
+    of the oldest milestone on *working_tip*'s spine the save is an ancestor of.
+    Anchoring there keeps the new branch's milestones in the order the work was
+    done, never under milestones recorded after the save."""
+    spine = _run_git("rev-list", "--first-parent", working_tip, cwd=cwd).split()
+    folding: int | None = None
+    for index, milestone in enumerate(spine):
+        if not _is_ancestor(save, milestone, cwd=cwd):
+            break
+        folding = index
+    if folding is None or folding + 1 >= len(spine):
+        raise GitDomainError(f"Save {save[:8]} is not folded into a milestone of this branch.")
+    return spine[folding + 1]
+
+
+def _branch_start(branch: str, cwd: Path | None = None) -> str | None:
+    """Where an adopt-created *branch* starts when HEAD is a save: an anchoring
+    milestone for it, so the new branch's first-parent chain holds milestones
+    only. None (start at HEAD) when HEAD is a milestone of a working branch or a
+    commit no working branch's ledger holds."""
+    head = _rev_parse("HEAD", cwd=cwd)
+    if head is None:
+        return None
+    tips = _list_branches_with_tips(cwd)[1]
+    pairs = sorted(
+        (name, tip, tips[ledger_name(name)])
+        for name, tip in tips.items()
+        if is_eligible_working_branch(name) and ledger_name(name) in tips
+    )
+    if any(_on_first_parent(working, head, cwd=cwd) for working, _, _ in pairs):
+        return None
+    for _working, working_tip, ledger_tip in pairs:
+        if _is_ancestor(head, working_tip, cwd=cwd):
+            return _crystallize_milestone(
+                _folding_anchor(working_tip, head, cwd=cwd), head, branch, cwd=cwd
+            )
+        if _is_ancestor(head, ledger_tip, cwd=cwd):
+            return _crystallize_milestone(working_tip, head, branch, cwd=cwd)
+    return None
+
+
 @_serialized_mutation
 def resolve_ledger(working: str, cwd: Path | None = None) -> str:
     """Find-or-create the ledger for *working* and check it out (HEAD-on-ledger).
@@ -82,7 +144,7 @@ def resolve_ledger(working: str, cwd: Path | None = None) -> str:
         logger.info("ledger_spawned", working=working, ledger=ledger)
 
     if _get_current_branch(cwd) != ledger:
-        _run_git("checkout", ledger, cwd=cwd)
+        _rewrite_tree("checkout", ledger, cwd=cwd)
 
     return ledger
 
@@ -247,12 +309,15 @@ def set_working_branch(
             _rb_ref = sym.strip()
             _rb_detach = False
         else:
-            # Detached HEAD (e.g. after move_to_commit): capture SHA for restore.
+            # Detached HEAD (a checkout outside Haute): capture SHA for restore.
             _rb_ref = _run_git("rev-parse", "HEAD", cwd=cwd)
             _rb_detach = True
 
+        # A branch made from a save opens at an anchoring milestone (same tree, so
+        # the checkout changes no file and carries uncommitted edits across).
+        start = _branch_start(branch, cwd=cwd)
         try:
-            _run_git("checkout", "-b", branch, cwd=cwd)
+            _rewrite_tree("checkout", "-b", branch, *([start] if start else []), cwd=cwd)
             resolve_ledger(branch, cwd=cwd)
             write_working_branch(project_root, branch)
         except Exception as exc:

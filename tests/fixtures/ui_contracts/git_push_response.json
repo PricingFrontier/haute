@@ -4,5 +4,12 @@
   "ledger_branch": "dev-save",
   "default_branch": "release",
   "bootstrapped_default": true,
-  "pushed_refs": ["release", "dev", "dev-save"]
+  "pushed_refs": ["release", "dev", "dev-save"],
+  "ci_secrets": {
+    "repository": "acme/motor",
+    "state": "ready",
+    "missing": [],
+    "newly_set": ["DATABRICKS_RATING_HOST", "DATABRICKS_RATING_TOKEN"],
+    "problem": null
+  }
 }

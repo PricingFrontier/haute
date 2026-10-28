@@ -1,8 +1,16 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+const mockRetryInterrupted = vi.fn()
+vi.mock("../../api/client", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../api/client")>(),
+  retryInterruptedGit: (...args: unknown[]) => mockRetryInterrupted(...args),
+}))
+
 import BranchIndicator from "../BranchIndicator"
+import { ApiError } from "../../api/client"
 import useGitStore from "../../stores/useGitStore"
+import useToastStore from "../../stores/useToastStore"
 import useUIStore from "../../stores/useUIStore"
 import type { GitWorkingBranchResponse } from "../../api/types"
 import { makeGitWorkingBranch } from "../../test-utils/factories"
@@ -95,7 +103,7 @@ describe("BranchIndicator", () => {
 
   it("labels detached, invalid, and divergent Git states distinctly", () => {
     const cases = [
-      [status({ state: "detached", head_sha: "1234567890" }), "Detached at 1234567"],
+      [status({ state: "detached", head_sha: "1234567890" }), "Viewing an earlier version"],
       [status({ state: "invalid" }), "Git needs attention"],
       [status({ state: "divergent" }), "Branch changed externally"],
     ] as const
@@ -105,6 +113,56 @@ describe("BranchIndicator", () => {
       expect(screen.getByTestId("toolbar-branch-indicator")).toHaveTextContent(label)
       unmount()
     }
+  })
+
+  it("names an interrupted clone's files and retries writing them", async () => {
+    const loadStatus = vi.fn(async () => null)
+    useGitStore.setState({
+      status: status({
+        state: "interrupted",
+        errors: ["rates.csv is open in another program, so Haute could not replace it."],
+      }),
+      loadStatus,
+    })
+    mockRetryInterrupted.mockResolvedValueOnce(status({}))
+    render(<BranchIndicator />)
+
+    const indicator = screen.getByTestId("toolbar-branch-indicator")
+    expect(indicator).toHaveAttribute("data-branch-state", "interrupted")
+    expect(indicator).toHaveTextContent("Files in use")
+    fireEvent.focus(screen.getByTestId("branch-indicator-retry-interrupted"))
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("rates.csv is open in another program")
+
+    fireEvent.click(screen.getByTestId("branch-indicator-retry-interrupted"))
+    await waitFor(() => expect(loadStatus).toHaveBeenCalledWith({ refresh: true }))
+    expect(mockRetryInterrupted).toHaveBeenCalledOnce()
+  })
+
+  it("keeps an interrupted clone and says which files are still held when Retry is refused", async () => {
+    const loadStatus = vi.fn(async () => null)
+    useGitStore.setState({
+      status: status({ state: "interrupted", errors: ["rates.csv is open in another program."] }),
+      loadStatus,
+    })
+    mockRetryInterrupted.mockRejectedValueOnce(
+      new ApiError(
+        "Request failed",
+        400,
+        "rates.csv is open in another program, so Haute could not replace it.",
+      ),
+    )
+    const addToast = vi.spyOn(useToastStore.getState(), "addToast")
+    render(<BranchIndicator />)
+
+    fireEvent.click(screen.getByTestId("branch-indicator-retry-interrupted"))
+
+    await waitFor(() =>
+      expect(addToast).toHaveBeenCalledWith(
+        "error",
+        "rates.csv is open in another program, so Haute could not replace it.",
+      ),
+    )
+    expect(loadStatus).not.toHaveBeenCalled()
   })
 
   it("shows the branch name when ready, without the save SHA", () => {

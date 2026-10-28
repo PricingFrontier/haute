@@ -929,7 +929,7 @@ export interface GitWorkingBranchResponse {
   head_sha: string | null;
   identity_set: boolean;
   last_save_sha: string | null;
-  state: 'git-unavailable' | 'no-repository' | 'unset' | 'detached' | 'invalid' | 'divergent' | 'ready';
+  state: 'git-unavailable' | 'no-repository' | 'interrupted' | 'unset' | 'detached' | 'invalid' | 'divergent' | 'ready';
   storage: 'unsupported' | 'unbound' | 'bound';
   storage_bind: GitStorageBind | null;
   storage_forked_from: string | null;
@@ -978,12 +978,13 @@ export interface GitStorageSync {
 }
 export interface GitSetWorkingBranchResponse {
   last_save_sha: string | null;
-  state: 'git-unavailable' | 'no-repository' | 'unset' | 'detached' | 'invalid' | 'divergent' | 'ready';
+  state: 'git-unavailable' | 'no-repository' | 'interrupted' | 'unset' | 'detached' | 'invalid' | 'divergent' | 'ready';
   working_branch: string;
 }
 export interface GitWorkingBranchesResponse {
   branches: GitManagedBranch[];
   current: string | null;
+  deleted: GitDeletedBranch[];
 }
 export interface GitManagedBranch {
   has_uncommitted_changes: boolean;
@@ -991,6 +992,12 @@ export interface GitManagedBranch {
   is_archived: boolean;
   is_current: boolean;
   name: string;
+}
+export interface GitDeletedBranch {
+  branch: string;
+  deleted_at: string | null;
+  id: string;
+  was_archived: boolean;
 }
 export interface GitCreateWorkingBranchResponse {
   last_save_sha: string | null;
@@ -1006,11 +1013,11 @@ export interface GitSetIdentityResponse {
 export interface GitPrefs {
   skip_switch_confirm: boolean;
 }
-export interface GitMoveResponse {
-  is_detached: boolean;
-  prior_branch: string;
+export interface GitRestoreVersionResponse {
+  restored_from: string;
   sha: string;
   short_sha: string;
+  working_branch: string;
 }
 export interface GitCommitResponse {
   sha: string;
@@ -1099,6 +1106,7 @@ export interface GitArchiveResponse {
 export interface GitDeleteBranchResponse {
   branch: string;
   status: string;
+  trash_id: string;
 }
 export interface GitUndeleteResponse {
   branch: string;
@@ -1121,11 +1129,19 @@ export interface GitRemoteLeg {
 }
 export interface GitPushResponse {
   bootstrapped_default: boolean;
+  ci_secrets: GitCiSecrets | null;
   default_branch: string;
   ledger_branch: string;
   pushed_refs: string[];
   remote: string;
   working_branch: string;
+}
+export interface GitCiSecrets {
+  missing: string[];
+  newly_set: string[];
+  problem: string | null;
+  repository: string;
+  state: 'ready' | 'missing' | 'unknown';
 }
 export interface GitFastForwardResponse {
   fast_forwarded: string[];

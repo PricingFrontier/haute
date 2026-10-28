@@ -7,6 +7,7 @@ const mockGetGitRemotes = vi.fn()
 const mockGitPush = vi.fn()
 const mockFastForward = vi.fn()
 const mockBranchAway = vi.fn()
+const mockSetCiSecrets = vi.fn()
 const mockAddToast = vi.fn()
 
 // Spread the real module so `ApiError` (used for the 409 rejection path) stays
@@ -19,6 +20,7 @@ vi.mock("../../api/client", async () => {
     gitPush: (...a: unknown[]) => mockGitPush(...a),
     gitFastForward: (...a: unknown[]) => mockFastForward(...a),
     gitBranchAway: (...a: unknown[]) => mockBranchAway(...a),
+    gitSetCiSecrets: (...a: unknown[]) => mockSetCiSecrets(...a),
   }
 })
 
@@ -417,5 +419,189 @@ describe("RemotePushControl", () => {
     render(<RemotePushControl pendingSaveCount={0} />)
     await waitFor(() => expect(screen.getByTestId("git-push-aheadbehind")).toBeInTheDocument())
     expect(screen.queryByTestId("git-push-ledger-status")).not.toBeInTheDocument()
+  })
+
+  describe("the deploy's secrets", () => {
+    const pushed = (over: Record<string, unknown> = {}) => ({
+      remote: "origin",
+      working_branch: "dev",
+      ledger_branch: "dev-save",
+      pushed_refs: ["dev", "dev-save"],
+      default_branch: "main",
+      bootstrapped_default: false,
+      ci_secrets: null,
+      ...over,
+    })
+    const secrets = (over: Record<string, unknown> = {}) => ({
+      repository: "acme/motor",
+      state: "ready",
+      missing: [],
+      newly_set: [],
+      problem: null,
+      ...over,
+    })
+    const missingTwo = secrets({
+      state: "missing",
+      missing: ["DATABRICKS_RATING_HOST", "DATABRICKS_RATING_TOKEN"],
+    })
+
+    async function pushOnce() {
+      await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())
+      fireEvent.click(screen.getByTestId("git-push-button"))
+      await waitFor(() => expect(mockGitPush).toHaveBeenCalled())
+    }
+
+    beforeEach(() => {
+      mockGetGitRemotes.mockResolvedValue({ remotes: [remote()], working_branch: "dev" })
+    })
+
+    it("toasts the secrets a first publication set", async () => {
+      mockGitPush.mockResolvedValue(
+        pushed({
+          bootstrapped_default: true,
+          pushed_refs: ["main", "dev", "dev-save"],
+          ci_secrets: secrets({ newly_set: ["DATABRICKS_RATING_HOST", "DATABRICKS_RATING_TOKEN"] }),
+        }),
+      )
+      render(<RemotePushControl pendingSaveCount={0} />)
+      await pushOnce()
+
+      await waitFor(() =>
+        expect(mockAddToast).toHaveBeenCalledWith(
+          "success",
+          "Set 2 deploy secrets on acme/motor from .env",
+        ),
+      )
+      expect(screen.queryByTestId("git-ci-secrets-missing")).not.toBeInTheDocument()
+    })
+
+    it("warns with a first publication's problem and offers Set from .env", async () => {
+      mockGitPush.mockResolvedValue(
+        pushed({
+          bootstrapped_default: true,
+          ci_secrets: { ...missingTwo, problem: "Still .env.example's placeholder: X." },
+        }),
+      )
+      render(<RemotePushControl pendingSaveCount={0} />)
+      await pushOnce()
+
+      await waitFor(() =>
+        expect(mockAddToast).toHaveBeenCalledWith(
+          "warning",
+          "Couldn't set the deploy's secrets on acme/motor: Still .env.example's placeholder: X.",
+        ),
+      )
+      expect(screen.getByTestId("git-ci-secrets-missing")).toHaveTextContent(
+        "2 deploy secrets missing on GitHub",
+      )
+      expect(
+        screen.getByRole("tooltip", { name: "DATABRICKS_RATING_HOST, DATABRICKS_RATING_TOKEN" }),
+      ).toBeInTheDocument()
+    })
+
+    it("warns when a first publication could not read the secrets", async () => {
+      const problem = "The GitHub CLI (gh) is not installed."
+      mockGitPush.mockResolvedValue(
+        pushed({ bootstrapped_default: true, ci_secrets: secrets({ state: "unknown", problem }) }),
+      )
+      render(<RemotePushControl pendingSaveCount={0} />)
+      await pushOnce()
+
+      await waitFor(() =>
+        expect(mockAddToast).toHaveBeenCalledWith(
+          "warning",
+          `Couldn't set the deploy's secrets on acme/motor: ${problem}`,
+        ),
+      )
+      expect(screen.queryByTestId("git-ci-secrets-missing")).not.toBeInTheDocument()
+    })
+
+    it("says nothing when a later Push cannot read the secrets", async () => {
+      mockGitPush.mockResolvedValue(
+        pushed({ ci_secrets: secrets({ state: "unknown", problem: "HTTP 403: no admin rights" }) }),
+      )
+      render(<RemotePushControl pendingSaveCount={0} />)
+      await pushOnce()
+
+      await waitFor(() =>
+        expect(mockAddToast).toHaveBeenCalledWith("success", "Pushed 2 branches to origin"),
+      )
+      expect(mockAddToast).toHaveBeenCalledTimes(1)
+      expect(screen.queryByTestId("git-ci-secrets-missing")).not.toBeInTheDocument()
+    })
+
+    it("shows the missing secrets only while their remote is selected", async () => {
+      mockGetGitRemotes.mockResolvedValue({
+        remotes: [remote({ name: "origin" }), remote({ name: "backup" })],
+        working_branch: "dev",
+      })
+      mockGitPush.mockResolvedValue(pushed({ ci_secrets: missingTwo }))
+      render(<RemotePushControl pendingSaveCount={0} />)
+      await waitFor(() => expect(screen.getByRole("option", { name: /backup/ })).toBeInTheDocument())
+      fireEvent.change(screen.getByTestId("git-push-remote"), { target: { value: "origin" } })
+      await pushOnce()
+
+      await waitFor(() => expect(screen.getByTestId("git-ci-secrets-missing")).toBeInTheDocument())
+      fireEvent.change(screen.getByTestId("git-push-remote"), { target: { value: "backup" } })
+      expect(screen.queryByTestId("git-ci-secrets-missing")).not.toBeInTheDocument()
+      fireEvent.change(screen.getByTestId("git-push-remote"), { target: { value: "origin" } })
+      expect(screen.getByTestId("git-ci-secrets-missing")).toBeInTheDocument()
+    })
+
+    it("Set from .env sets the selected remote's secrets and clears the line", async () => {
+      mockGitPush.mockResolvedValue(pushed({ ci_secrets: missingTwo }))
+      mockSetCiSecrets.mockResolvedValue(
+        secrets({ newly_set: ["DATABRICKS_RATING_HOST", "DATABRICKS_RATING_TOKEN"] }),
+      )
+      render(<RemotePushControl pendingSaveCount={0} />)
+      await pushOnce()
+      await waitFor(() => expect(screen.getByTestId("git-ci-secrets-set")).toBeEnabled())
+
+      fireEvent.click(screen.getByTestId("git-ci-secrets-set"))
+
+      await waitFor(() =>
+        expect(mockAddToast).toHaveBeenCalledWith(
+          "success",
+          "Set 2 deploy secrets on acme/motor from .env",
+        ),
+      )
+      expect(mockSetCiSecrets).toHaveBeenCalledWith("origin")
+      expect(screen.queryByTestId("git-ci-secrets-missing")).not.toBeInTheDocument()
+    })
+
+    it("keeps the line and toasts the error when Set from .env fails", async () => {
+      mockGitPush.mockResolvedValue(pushed({ ci_secrets: missingTwo }))
+      mockSetCiSecrets.mockRejectedValue(new Error("Still .env.example's placeholder: X."))
+      render(<RemotePushControl pendingSaveCount={0} />)
+      await pushOnce()
+      await waitFor(() => expect(screen.getByTestId("git-ci-secrets-set")).toBeEnabled())
+
+      fireEvent.click(screen.getByTestId("git-ci-secrets-set"))
+
+      await waitFor(() =>
+        expect(mockAddToast).toHaveBeenCalledWith(
+          "error",
+          "Couldn't set the deploy's secrets: Still .env.example's placeholder: X.",
+        ),
+      )
+      expect(screen.getByTestId("git-ci-secrets-set")).toBeEnabled()
+      expect(screen.getByTestId("git-ci-secrets-missing")).toBeInTheDocument()
+    })
+
+    it("clears the line when a later Push reports none missing", async () => {
+      mockGitPush
+        .mockResolvedValueOnce(pushed({ ci_secrets: missingTwo }))
+        .mockResolvedValueOnce(pushed({ ci_secrets: secrets() }))
+      render(<RemotePushControl pendingSaveCount={0} />)
+      await pushOnce()
+      await waitFor(() => expect(screen.getByTestId("git-ci-secrets-missing")).toBeInTheDocument())
+
+      fireEvent.click(screen.getByTestId("git-push-button"))
+
+      await waitFor(() =>
+        expect(screen.queryByTestId("git-ci-secrets-missing")).not.toBeInTheDocument(),
+      )
+      expect(mockGitPush).toHaveBeenCalledTimes(2)
+    })
   })
 })

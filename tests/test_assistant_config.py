@@ -685,6 +685,13 @@ class TestMutationGate:
         assert enabled is False
         assert "Git is not available" in (reason or "")
 
+    def test_interrupted_directs_to_retry_in_the_git_panel(self, project_root: Path, patched_git):
+        patched_git(_git_state("interrupted", ["rates.csv is open in another program"]))
+        enabled, reason = _config.mutations_readiness()
+        assert enabled is False
+        assert "choose Retry" in (reason or "")
+        assert "Git panel" in (reason or "")
+
     def test_public_policy_denies_edits_whatever_the_git_state(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch, patched_git
     ):

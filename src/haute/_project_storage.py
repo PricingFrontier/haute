@@ -534,7 +534,7 @@ def _classify_push_failure(exc: Exception) -> tuple[FailureClass, str, bool]:
     Messages name the object and the action, never raw git stderr — which
     routinely carries the remote URL and any credential inside it.
     """
-    from haute._git import GitDomainError, GitPushRejectedError
+    from haute._git import GitBootstrapIncompleteError, GitDomainError, GitPushRejectedError
 
     if isinstance(exc, StorageSupersededError):
         # The uc:// analogue of a rejected push: someone else moved the
@@ -556,6 +556,10 @@ def _classify_push_failure(exc: Exception) -> tuple[FailureClass, str, bool]:
             "nothing is overwritten. Resolve the divergence, then retry.",
             True,
         )
+    if isinstance(exc, GitBootstrapIncompleteError):
+        # Hand-authored and resumable: the remote now holds only this project's
+        # default, so the next publish completes it as an established push.
+        return "transport", str(exc), False
     if isinstance(exc, GitDomainError):
         # Hand-authored, already user-facing (guardrail and validation text).
         return "config", str(exc), True
@@ -877,12 +881,13 @@ def precheck_bind(url: str) -> str:
 def bind_remote(url: str, project_root: Path, bound_by: str | None = None) -> BindOutcome:
     """Bind this project to *url* and make its history durable.
 
-    An empty remote adopts the current project immediately: the local
-    history is published and the session continues uninterrupted. A
-    populated remote records the binding and reports that a restart is
-    needed — lifting a different project over a running server's working
-    directory is not safe to do live, and the boot path already does it
-    cleanly.
+    A remote holding no other history — an empty one, or one left with only
+    this project's own default by an interrupted first publication — adopts
+    the current project immediately: the local history is published and the
+    session continues uninterrupted. A populated remote records the binding
+    and reports that a restart is needed — lifting a different project over a
+    running server's working directory is not safe to do live, and the boot
+    path already does it cleanly.
     """
     from haute import _git
     from haute._git_state import read_working_branch
@@ -899,7 +904,7 @@ def bind_remote(url: str, project_root: Path, bound_by: str | None = None) -> Bi
         populated = read_uc_head(remote_url) is not None
     else:
         _git.ensure_remote(REMOTE_NAME, remote_url, cwd=project_root)
-        populated = _git.remote_has_content(REMOTE_NAME, cwd=project_root)
+        populated = _git.remote_holds_other_history(REMOTE_NAME, project_root, cwd=project_root)
     binding = StorageBinding(
         remote_url=remote_url,
         branch=read_working_branch(project_root),

@@ -9,7 +9,7 @@ import { DEFAULT_STALE_PENDING_AFTER_MS, StalePendingRequestError } from "../sin
 import { getWorkingBranches } from "../../api/client"
 import type { GitManagedBranch } from "../../api/types"
 
-type BranchesPayload = { current: string; branches: GitManagedBranch[] }
+type BranchesPayload = { current: string; branches: GitManagedBranch[]; deleted: [] }
 
 function branch(name: string, overrides: Partial<GitManagedBranch> = {}): GitManagedBranch {
   return {
@@ -61,17 +61,17 @@ describe("gitBranchLoader single-flight", () => {
       duringWindow = loadGitBranches(set, true) // mutation refresh during B
     })
 
-    a.resolve({ current: "main", branches: [branch("a")] })
+    a.resolve({ current: "main", deleted: [], branches: [branch("a")] })
     await window
     await flush()
     expect(getWorkingBranches).toHaveBeenCalledTimes(2) // A, B - C only after B settles
 
-    b.resolve({ current: "main", branches: [branch("b")] })
+    b.resolve({ current: "main", deleted: [], branches: [branch("b")] })
     await flush()
     expect(getWorkingBranches).toHaveBeenCalledTimes(3) // C: the refresh survived
 
     const fresh = [branch("c", { is_current: true })]
-    c.resolve({ current: "c", branches: fresh })
+    c.resolve({ current: "c", deleted: [], branches: fresh })
     await expect(duringWindow!).resolves.toEqual(fresh)
     await expect(staleQueue).resolves.toEqual(fresh) // superseded queue joins the newer work
     expect(published.at(-1)).toMatchObject({ branches: fresh, branchesLoaded: true })
@@ -92,19 +92,19 @@ describe("gitBranchLoader single-flight", () => {
     const second = loadGitBranches(set)        // B
     const secondQueue = loadGitBranches(set, true) // fresh queue behind B
 
-    a.resolve({ current: "stale", branches: [branch("stale")] })
+    a.resolve({ current: "stale", deleted: [], branches: [branch("stale")] })
     await flush()
     // The detached queue must not have started a request of its own.
     expect(getWorkingBranches).toHaveBeenCalledTimes(2)
     expect(published.some((s) => Array.isArray(s.branches) && (s.branches as GitManagedBranch[]).some((x) => x.name === "stale"))).toBe(false)
 
-    b.resolve({ current: "b", branches: [branch("b")] })
+    b.resolve({ current: "b", deleted: [], branches: [branch("b")] })
     await second
     await flush()
     // The fresh queue still fires its follow-up: the reset did not eat it.
     expect(getWorkingBranches).toHaveBeenCalledTimes(3)
     const fresh = [branch("c", { is_current: true })]
-    c.resolve({ current: "c", branches: fresh })
+    c.resolve({ current: "c", deleted: [], branches: fresh })
     await expect(secondQueue).resolves.toEqual(fresh)
     expect(published.at(-1)).toMatchObject({ branches: fresh, branchesLoaded: true })
   })
@@ -114,7 +114,7 @@ describe("gitBranchLoader single-flight", () => {
     try {
       vi.mocked(getWorkingBranches)
         .mockReturnValueOnce(new Promise(() => {}))
-        .mockReturnValueOnce(Promise.resolve({ current: "b", branches: [branch("b")] }))
+        .mockReturnValueOnce(Promise.resolve({ current: "b", deleted: [], branches: [branch("b")] }))
 
       const stalled = loadGitBranches(set)
       const stallOutcome = expect(stalled).rejects.toBeInstanceOf(StalePendingRequestError)
@@ -140,7 +140,7 @@ describe("gitBranchLoader single-flight", () => {
     try {
       vi.mocked(getWorkingBranches)
         .mockReturnValueOnce(new Promise(() => {}))
-        .mockReturnValueOnce(Promise.resolve({ current: "b", branches: [branch("b")] }))
+        .mockReturnValueOnce(Promise.resolve({ current: "b", deleted: [], branches: [branch("b")] }))
       // Deliberately unhandled: if the reset failed to cancel the watchdog,
       // the late StalePendingRequestError rejection would surface as an
       // unhandled rejection and fail this test.
@@ -198,7 +198,7 @@ describe("gitBranchLoader single-flight", () => {
     expect(published.some((s) => typeof s.branchesError === "string")).toBe(false)
 
     const branches = [branch("b", { is_current: true })]
-    b.resolve({ current: "b", branches })
+    b.resolve({ current: "b", deleted: [], branches })
     await expect(fresh).resolves.toEqual(branches)
     expect(published.at(-1)).toMatchObject({ branches, branchesLoaded: true, branchesError: null })
   })

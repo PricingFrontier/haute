@@ -16,7 +16,7 @@ import {
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 
-import { moveToVersion } from "./api/client"
+import { restoreVersion } from "./api/client"
 import { nodeTypes } from "./utils/nodeTypeRegistry"
 import NodePalette from "./panels/NodePalette"
 import NodePanel from "./panels/NodePanel"
@@ -118,7 +118,7 @@ import { PaletteRevealStrip } from "./haute-ui"
 
 const DivergenceModal = lazy(() => import("./components/DivergenceModal"))
 const MilestoneCommitModal = lazy(() => import("./components/MilestoneCommitModal"))
-const MoveConfirmModal = lazy(() => import("./components/MoveConfirmModal"))
+const RestoreConfirmModal = lazy(() => import("./components/RestoreConfirmModal"))
 const WorkingBranchModal = lazy(() => import("./components/WorkingBranchModal"))
 const StorageBindModal = lazy(() => import("./components/StorageBindModal"))
 const UpstreamSyncModal = lazy(() => import("./components/UpstreamSyncModal"))
@@ -165,10 +165,13 @@ const NODE_SEARCH_FOCUS_ZOOM = 0.8
 
 const proOptions = { hideAttribution: true }
 
-// One-shot sessionStorage flag set just before the post-move reload, read once on
-// the next startup so it can confirm the move (toast) and skip the auto branch
-// prompt — the moved-to detached HEAD is intended, not a divergence (P6 §3.4).
-const JUST_MOVED_KEY = "haute:justMoved"
+// One-shot sessionStorage flag set just before the post-restore reload, read once
+// on the next startup so the reloaded page can say what was restored.
+const JUST_RESTORED_KEY = "haute:justRestored"
+
+// Save and Commit while a git action left files out of step (the toolbar's Files in use).
+const filesInUseRefusal = (doing: "saving" | "committing") =>
+  `Some files are still open in another program. Close them and choose Retry in the toolbar before ${doing}.`
 
 const edgeJoinSwapFailureMessages: Record<EdgeJoinSwapInputsFailureReason, string> = {
   "edge-join-node-not-found": "Edge join swap rejected: selected edge join is no longer available",
@@ -385,7 +388,7 @@ type FlowEditorOverlaysProps = {
   onCreateInstance: ComponentProps<typeof ContextMenu>["onCreateInstance"]
   onDissolveSubmodel: ComponentProps<typeof ContextMenu>["onDissolveSubmodel"]
   onGitModalConfirmed: () => void
-  onMoveConfirmed: (saveFirst: boolean) => Promise<void>
+  onRestoreConfirmed: (saveFirst: boolean) => Promise<void>
   onCreateSubmodel: (name: string, nodeIds: string[]) => Promise<SubmodelCreateResult>
   onRenameNode: (nodeId: string, label: string) => Promise<OnUpdateConfigResult>
   pipelineRepairTarget: PipelineRepairTarget | null
@@ -406,7 +409,7 @@ function FlowEditorOverlays({
   onCreateInstance,
   onDissolveSubmodel,
   onGitModalConfirmed,
-  onMoveConfirmed,
+  onRestoreConfirmed,
   onCreateSubmodel,
   onRenameNode,
   pipelineRepairTarget,
@@ -426,8 +429,8 @@ function FlowEditorOverlays({
   const setNodeSearchOpen = useUIStore((state) => state.setNodeSearchOpen)
   const gitModal = useGitStore((state) => state.modal)
   const closeGitModal = useGitStore((state) => state.closeModal)
-  const moveTarget = useGitStore((state) => state.moveTarget)
-  const closeMove = useGitStore((state) => state.closeMove)
+  const restoreTarget = useGitStore((state) => state.restoreTarget)
+  const closeRestore = useGitStore((state) => state.closeRestore)
 
   return (
     <>
@@ -473,9 +476,9 @@ function FlowEditorOverlays({
           <IdentityPromptModal onClose={closeGitModal} />
         </Suspense>
       )}
-      {moveTarget && (
+      {restoreTarget && (
         <Suspense fallback={null}>
-          <MoveConfirmModal onConfirm={onMoveConfirmed} onClose={closeMove} />
+          <RestoreConfirmModal onConfirm={onRestoreConfirmed} onClose={closeRestore} />
         </Suspense>
       )}
       {submodelDialog && (
@@ -1008,19 +1011,16 @@ function FlowEditor() {
 
   // Startup readiness check (S27): load status once, and surface the modal only
   // when something needs attention (unset/invalid → select, divergent → that
-  // modal). A healthy clone fires nothing. Exception: when we've just arrived via
-  // a move (one-shot flag), HEAD is detached / working branch unset BY DESIGN —
-  // skip the auto-prompt and confirm the move with a toast; the branch modal is
-  // meant to fire on the first SAVE here, not on arrival (P6 §3.4 / S13).
+  // modal). A healthy clone fires nothing. After a restore's reload, say what was
+  // restored.
   useEffect(() => {
-    const justMoved = sessionStorage.getItem(JUST_MOVED_KEY)
-    if (justMoved !== null) sessionStorage.removeItem(JUST_MOVED_KEY)
+    const justRestored = sessionStorage.getItem(JUST_RESTORED_KEY)
+    if (justRestored !== null) {
+      sessionStorage.removeItem(JUST_RESTORED_KEY)
+      addToast("success", `Restored ${justRestored} as a new save.`)
+    }
     void loadGitReadiness().then((st) => {
-      if (justMoved !== null) {
-        addToast("info", `Moved to ${justMoved} - save to start a new version line here.`)
-        return
-      }
-      if (!st || st.state === "ready" || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "detached") return
+      if (!st || st.state === "ready" || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "interrupted") return
       useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select")
     })
   }, [loadGitReadiness, addToast])
@@ -1032,6 +1032,18 @@ function FlowEditor() {
     enabled: !loading && loadError === null,
     onDocumentReload: (reloaded) => handleDocumentReloadRef.current?.(reloaded),
   })
+  // A first load that failed (the page opened on a branch the pipeline is not on)
+  // left no document for live sync to replace: once a git action from the Git panel
+  // beside the failure changes the version, start again from the files on disk.
+  const gitVersion = useGitStore((s) =>
+    s.status ? `${s.status.working_branch}|${s.status.current_branch}|${s.status.last_save_sha}` : null,
+  )
+  const failedLoadVersionRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (loadError === null || gitVersion === null) return
+    if (failedLoadVersionRef.current === null) failedLoadVersionRef.current = gitVersion
+    else if (gitVersion !== failedLoadVersionRef.current) window.location.reload()
+  }, [loadError, gitVersion])
   useEffect(() => { setPreviewDataRef.current = setPreviewData }, [setPreviewData])
 
   const {
@@ -1389,10 +1401,16 @@ function FlowEditor() {
       void saveProject()
       return
     }
+    // Files left out of step: a save would record the version they were left at,
+    // and no branch choice puts them back.
+    if (st.state === "interrupted") {
+      addToast("error", filesInUseRefusal("saving"))
+      return
+    }
     useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {
       pendingAction: "save",
     })
-  }, [saveProject])
+  }, [addToast, saveProject])
 
   // Commit uses the same readiness gate, but a ready repository first flushes
   // the fenced graph and only then opens the milestone modal.
@@ -1415,6 +1433,10 @@ function FlowEditor() {
       void flushSaveThenMilestone()
       return
     }
+    if (st.state === "interrupted") {
+      addToast("error", filesInUseRefusal("committing"))
+      return
+    }
     useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {
       pendingAction: "commit",
     })
@@ -1427,26 +1449,29 @@ function FlowEditor() {
     else if (pending === "commit") void flushSaveThenMilestone()
   }, [flushSaveThenMilestone, saveProject])
 
-  // Moving versions replaces the working tree. If requested, park the fenced
-  // graph on the current branch first; a failed save keeps the user in place.
-  const handleMoveConfirmed = useCallback(
+  // Restoring a version replaces the files. If requested, park the fenced graph on
+  // the current branch first; a failed save keeps the user in place. The page
+  // reloads on success, so the client starts again from the files on disk.
+  const handleRestoreConfirmed = useCallback(
     async (saveFirst: boolean) => {
-      const target = useGitStore.getState().moveTarget
+      const { restoreTarget: target, closeRestore } = useGitStore.getState()
       if (!target) return
       try {
         if (saveFirst && !await saveProject()) {
           addToast("error", "Save failed - staying on the current version.")
-          useGitStore.getState().closeMove()
+          closeRestore()
           return
         }
-        await moveToVersion(target.sha)
-        sessionStorage.setItem(JUST_MOVED_KEY, target.label)
+        await restoreVersion(target.sha)
+        sessionStorage.setItem(JUST_RESTORED_KEY, target.label)
         window.location.reload()
       } catch (err: unknown) {
         const { apiErrorMessage } = await import("./api/errors")
         const detail = apiErrorMessage(err, "unknown error")
-        addToast("error", `Could not move to this version: ${detail}`)
-        useGitStore.getState().closeMove()
+        addToast("error", `Could not restore this version: ${detail}`)
+        closeRestore()
+        // A restore stopped by a file held open leaves the clone interrupted.
+        void useGitStore.getState().loadStatus({ refresh: true })
       }
     },
     [addToast, saveProject],
@@ -1925,7 +1950,20 @@ function FlowEditor() {
         data-testid="pipeline-view"
       >
       {loadError || documentSystemFailure ? (
-        <PipelineLoadFailureView detail={loadError ?? documentSystemFailure ?? "Unknown failure"} />
+        // The Git panel still opens beside it: a switch to a branch the open pipeline
+        // is not on ends here, and switching back is the way out.
+        <div className="flex-1 flex min-h-0">
+          <PipelineLoadFailureView detail={loadError ?? documentSystemFailure ?? "Unknown failure"} />
+          {gitOpen && (
+            <aside aria-label="Version control">
+              <ErrorBoundary name="GitPanel">
+                <Suspense fallback={null}>
+                  <GitPanel onClose={() => setGitOpen(false)} onSave={saveProject} />
+                </Suspense>
+              </ErrorBoundary>
+            </aside>
+          )}
+        </div>
       ) : documentLoadStatus === "source_only" ? (
         <SourceRecoveryView />
       ) : comparison ? (
@@ -2184,7 +2222,7 @@ function FlowEditor() {
         onCreateInstance={handleCreateInstance}
         onDissolveSubmodel={handleDissolveSubmodel}
         onGitModalConfirmed={handleGitModalConfirmed}
-        onMoveConfirmed={handleMoveConfirmed}
+        onRestoreConfirmed={handleRestoreConfirmed}
         onCreateSubmodel={handleCreateSubmodel}
         onRenameNode={onRenameNode}
         pipelineRepairTarget={pipelineRepairTarget}

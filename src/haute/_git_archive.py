@@ -1,4 +1,4 @@
-"""Local branch-pair movement, archive lifecycle, and rollback operations."""
+"""Local branch-pair archive lifecycle and rollback operations."""
 
 from __future__ import annotations
 
@@ -16,15 +16,13 @@ from haute._git_core import (
     GitTransactionError,
     _assert_eligible_working,
     _assert_git_repo,
-    _assert_no_git_op_in_progress,
     _get_current_branch,
-    _get_default_branch,
     _rev_parse,
+    _rewrite_tree,
     _run_git,
     _run_git_ok,
     _serialized_mutation,
     _validate_ref_name,
-    _wipe_volatile_artefacts,
     ledger_name,
 )
 from haute._git_read_models import _has_unmerged_saves, _normalize_to_working
@@ -32,7 +30,6 @@ from haute._logging import get_logger
 from haute.schemas import (
     GitArchiveResponse,
     GitDeleteBranchResponse,
-    GitMoveResponse,
     GitRestoreResponse,
     GitUndeleteResponse,
 )
@@ -40,69 +37,11 @@ from haute.schemas import (
 logger = get_logger(component="git")
 
 __all__ = [
-    "move_to_commit",
     "archive_working_pair",
     "delete_working_pair",
     "undelete_working_pair",
     "restore_working_pair",
 ]
-
-
-@_serialized_mutation
-def move_to_commit(sha: str, project_root: Path, cwd: Path | None = None) -> GitMoveResponse:
-    """Move the working directory to *sha* — its tree becomes the repo state.
-
-    A detached-HEAD checkout (§3.4): creates nothing and moves no ref, so the
-    prior branch keeps pointing at its tip and stays fully reachable (unlike v0's
-    revert, which reset a ref and could orphan milestones). The working-branch
-    association is cleared, leaving the clone in the 'unset' state so the next
-    save spawns a fresh working+ledger pair here (S13).
-
-    Pre-move floors (§3.9): refuse if a git operation is in progress (row H) or
-    if the tree has uncommitted tracked changes (row A / S21) — resolution
-    happens via save-or-discard *before* the move, never silently here. Volatile
-    on-disk artefacts are wiped (S12).
-    """
-    from haute._git_state import clear_working_branch
-
-    _assert_git_repo(cwd)
-    _validate_ref_name(sha)
-
-    # Floor (row H): no haute git op while a merge/rebase/cherry-pick is unfinished.
-    _assert_no_git_op_in_progress(cwd)
-
-    # Floor (row A / S21): a dirty tracked tree means unsaved or external edits.
-    # Refuse — the caller saves or discards first. Untracked files (e.g.
-    # .haute/state.json) don't block a checkout, so they're ignored here.
-    ok_status, status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
-    if ok_status and status.strip():
-        raise GitDomainError(
-            "You have unsaved changes. Save or discard them before moving to another version."
-        )
-
-    target = _rev_parse(sha, cwd=cwd)
-    if target is None:
-        raise GitDomainError(f"No commit found for {sha!r}.")
-
-    prior_branch = _get_current_branch(cwd)
-
-    # Volatile artefacts (S12): wipe so a stale cache can't survive into the
-    # moved-to tree. Best-effort and before the checkout — reconstructable.
-    _wipe_volatile_artefacts(cwd or Path.cwd())
-
-    # Detached checkout: materialise the target's tree as the working directory.
-    _run_git("checkout", "--detach", target, cwd=cwd)
-
-    # The clone now serves no working branch — the next save spawns one (S13).
-    clear_working_branch(project_root)
-
-    logger.info("moved_to_commit", sha=target, prior_branch=prior_branch)
-    return GitMoveResponse(
-        sha=target,
-        short_sha=target[:8],
-        prior_branch=prior_branch,
-        is_detached=True,
-    )
 
 
 def _switch_away_if_active(
@@ -115,6 +54,10 @@ def _switch_away_if_active(
     """Before archiving/deleting a pair, move HEAD off it (a checked-out branch
     can't be renamed/deleted). Return whether clone state records this pair, so
     the caller can clear that state inside its wider transaction.
+
+    HEAD detaches at the working branch's tip, its last milestone, so the analyst
+    stays on the work they had committed rather than on another branch's files;
+    the ledger's later saves go with the archived ledger or the trash pins.
 
     When *discard* (a confirmed delete — the branch is going away anyway), a
     dirty tree is force-discarded with the checkout. Otherwise tracked
@@ -134,18 +77,10 @@ def _switch_away_if_active(
                     "You have unsaved changes on this branch. Save or discard "
                     "them before archiving it."
                 )
-        default = _get_default_branch(cwd)
-        if default not in (working, ledger) and _rev_parse(default, cwd=cwd) is not None:
-            checkout_args = (("-f",) if discard else ()) + (default,)
-        else:
-            # An adopted repository may have no branch outside its active pair.
-            # Detach at the pair's current commit so the refs can still be
-            # renamed/deleted without inventing a branch or failing checkout.
-            fallback = _rev_parse(ledger, cwd=cwd) or _rev_parse(working, cwd=cwd)
-            if fallback is None:
-                raise GitDomainError("No safe commit is available to leave the active branch.")
-            checkout_args = (("-f",) if discard else ()) + ("--detach", fallback)
-        _run_git("checkout", *checkout_args, cwd=cwd)
+        milestone = _rev_parse(working, cwd=cwd) or _rev_parse(ledger, cwd=cwd)
+        if milestone is None:
+            raise GitDomainError("No safe commit is available to leave the active branch.")
+        _rewrite_tree("checkout", *(("-f",) if discard else ()), "--detach", milestone, cwd=cwd)
         return recorded == working
     return False
 
@@ -180,13 +115,15 @@ def archive_working_pair(
     """Archive a working branch and its ledger together (S32): bidirectional
     (either name archives both), switches away first if it's the active pair,
     NO unmerged-saves refusal (the saves ride into the archived ledger), and
-    no remote side effects (S16)."""
+    no remote side effects (S16). The pair moves in one ref transaction, so no
+    failure leaves half of it archived."""
     _assert_git_repo(cwd)
     _validate_ref_name(branch)
     working = _normalize_to_working(branch)
     _assert_eligible_working(working)
 
-    if _rev_parse(working, cwd=cwd) is None:
+    working_tip = _rev_parse(working, cwd=cwd)
+    if working_tip is None:
         raise GitDomainError(f"Branch '{working}' does not exist.")
     if working.startswith(f"{_ARCHIVE_PREFIX}/"):
         raise GitDomainError(f"'{working}' is already archived.")
@@ -194,29 +131,18 @@ def archive_working_pair(
     from haute._git_state import clear_working_branch, read_working_branch, write_working_branch
 
     ledger = ledger_name(working)
+    ledger_tip = _rev_parse(ledger, cwd=cwd)
     previous_working = read_working_branch(project_root)
     archived = _unique_archive_name(working, cwd=cwd)
     head_attached, previous_head = _run_git_ok("symbolic-ref", "--short", "HEAD", cwd=cwd)
     if not head_attached:
         previous_head = _run_git("rev-parse", "HEAD", cwd=cwd)
 
-    renamed_working = renamed_ledger = False
     try:
         if _switch_away_if_active(working, ledger, project_root, cwd=cwd):
             clear_working_branch(project_root)
-        _run_git("branch", "-m", working, archived, cwd=cwd)
-        renamed_working = True
-        if _rev_parse(ledger, cwd=cwd) is not None:
-            _run_git("branch", "-m", ledger, ledger_name(archived), cwd=cwd)
-            renamed_ledger = True
+        _move_pair(working, archived, working_tip, ledger_tip, cwd=cwd)
     except (GitError, OSError) as exc:
-        restored = True
-        if renamed_ledger:
-            ok, _ = _run_git_ok("branch", "-m", ledger_name(archived), ledger, cwd=cwd)
-            restored &= ok
-        if renamed_working:
-            ok, _ = _run_git_ok("branch", "-m", archived, working, cwd=cwd)
-            restored &= ok
         try:
             if previous_working is None:
                 clear_working_branch(project_root)
@@ -229,8 +155,7 @@ def archive_working_pair(
             ok, _ = _run_git_ok("checkout", previous_head, cwd=cwd)
         else:
             ok, _ = _run_git_ok("checkout", "--detach", previous_head, cwd=cwd)
-        restored &= ok and state_restored
-        if not restored:
+        if not (ok and state_restored):
             raise GitTransactionError(
                 "Archiving the branch failed and automatic rollback was incomplete. "
                 "Inspect the repository before retrying."
@@ -241,12 +166,35 @@ def archive_working_pair(
     return GitArchiveResponse(archived_as=archived)
 
 
-def _trash_ref(branch: str) -> str:
-    """The ``refs/haute/trash/`` ref pinning a deleted branch's tip. A plain
-    ref outside ``refs/heads/`` — invisible to the branch surfaces, but it
-    keeps the commit chain reachable so gc can never collect a deleted pair
-    while its tombstone is alive."""
-    return f"refs/haute/trash/{branch}"
+def _move_pair(
+    source: str, target: str, working_tip: str, ledger_tip: str | None, cwd: Path | None
+) -> None:
+    """Rename a working pair *source* → *target* in one ref transaction: both new
+    refs created and both old ones deleted against their tips, or nothing."""
+    lines = [
+        f"create refs/heads/{target} {working_tip}",
+        f"delete refs/heads/{source} {working_tip}",
+    ]
+    if ledger_tip is not None:
+        lines += [
+            f"create refs/heads/{ledger_name(target)} {ledger_tip}",
+            f"delete refs/heads/{ledger_name(source)} {ledger_tip}",
+        ]
+    _run_git("update-ref", "--stdin", cwd=cwd, input_text="\n".join(lines) + "\n")
+
+
+def _new_trash_id(working: str, project_root: Path, cwd: Path | None) -> str:
+    """A trash entry id for deleting *working* now: ``<branch>@<UTC stamp>``, with a
+    counter when the same name is deleted twice within a second."""
+    from haute._git_state import read_trash
+
+    taken = read_trash(project_root)
+    base = f"{working}@{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
+    candidate, counter = base, 2
+    while candidate in taken or _rev_parse(f"refs/haute/trash/{candidate}/working", cwd=cwd):
+        candidate = f"{base}-{counter}"
+        counter += 1
+    return candidate
 
 
 @_serialized_mutation
@@ -260,12 +208,13 @@ def delete_working_pair(
     refuses when the ledger has unmerged saves unless *confirm* (loss is real),
     switches away first if active, no remote side effects (S16).
 
-    The delete is trash-preserving: before the branch refs go, both tips are
-    pinned under ``refs/haute/trash/`` (an instant ref write that also shields
-    the objects from gc) and a tombstone — tips, archived flag, delete time —
-    lands in ``.haute/trash.json``, so
-    ``undelete_working_pair`` can rebuild the pair exactly. The deleted
-    lineage therefore survives locally even though the branches vanish."""
+    The delete is trash-preserving. It is a new trash entry of its own: both tips
+    are pinned under ``refs/haute/trash/<entry>/`` (an instant ref write that also
+    shields the objects from gc) and a tombstone lands in ``.haute/trash.json``
+    before the pair's refs are removed in one transaction, so
+    ``undelete_working_pair`` can rebuild the pair exactly and a name deleted
+    twice keeps both. Once it has succeeded the oldest entries beyond the cap go,
+    pins with them."""
     _assert_git_repo(cwd)
     _validate_ref_name(branch)
     working = _normalize_to_working(branch)
@@ -289,6 +238,8 @@ def delete_working_pair(
         read_working_branch,
         record_trash,
         remove_trash,
+        trash_entry_pins,
+        trim_trash,
         write_working_branch,
     )
 
@@ -296,6 +247,9 @@ def delete_working_pair(
     head_attached, previous_head = _run_git_ok("symbolic-ref", "--short", "HEAD", cwd=cwd)
     if not head_attached:
         previous_head = _run_git("rev-parse", "HEAD", cwd=cwd)
+    entry_id = _new_trash_id(working, project_root, cwd)
+    working_pin = f"refs/haute/trash/{entry_id}/working"
+    ledger_pin = f"refs/haute/trash/{entry_id}/ledger"
 
     try:
         # A confirmed delete is destructive by intent — discard a dirty tree
@@ -304,141 +258,132 @@ def delete_working_pair(
             clear_working_branch(project_root)
         # Recovery net FIRST, refs second — a failure between the two remains
         # compensatable without making history unreachable.
-        _run_git("update-ref", _trash_ref(working), working_tip, cwd=cwd)
+        _run_git("update-ref", working_pin, working_tip, cwd=cwd)
         if ledger_tip is not None:
-            _run_git("update-ref", _trash_ref(ledger), ledger_tip, cwd=cwd)
-        else:
-            _run_git_ok("update-ref", "-d", _trash_ref(ledger), cwd=cwd)
+            _run_git("update-ref", ledger_pin, ledger_tip, cwd=cwd)
         record_trash(
             project_root,
-            working,
+            entry_id,
             {
+                "branch": working,
                 "branch_tip": working_tip,
                 "ledger_tip": ledger_tip,
+                "working_pin": working_pin,
+                "ledger_pin": ledger_pin,
                 "was_archived": working.startswith(f"{_ARCHIVE_PREFIX}/"),
                 "deleted_at": datetime.now(UTC).isoformat(),
             },
         )
-
-        _run_git("branch", "-D", working, cwd=cwd)
-        if ledger_tip is not None and _rev_parse(ledger, cwd=cwd) is not None:
-            _run_git("branch", "-D", ledger, cwd=cwd)
+        lines = [f"delete refs/heads/{working} {working_tip}"]
+        if ledger_tip is not None:
+            lines.append(f"delete refs/heads/{ledger} {ledger_tip}")
+        _run_git("update-ref", "--stdin", cwd=cwd, input_text="\n".join(lines) + "\n")
     except (GitError, OSError) as exc:
-        restored = True
-        if _rev_parse(working, cwd=cwd) is None:
-            ok, _ = _run_git_ok("update-ref", f"refs/heads/{working}", working_tip, cwd=cwd)
-            restored &= ok
-        if ledger_tip is not None and _rev_parse(ledger, cwd=cwd) is None:
-            ok, _ = _run_git_ok("update-ref", f"refs/heads/{ledger}", ledger_tip, cwd=cwd)
-            restored &= ok
+        # The refs' removal is one transaction, so either both are still there or
+        # it never ran; only this entry's own recovery net is undone.
         try:
             if previous_working is None:
                 clear_working_branch(project_root)
             else:
                 write_working_branch(project_root, previous_working)
-            remove_trash(project_root, working)
+            remove_trash(project_root, entry_id)
             state_restored = True
         except OSError:
             state_restored = False
-        ok_trash_w, _ = _run_git_ok("update-ref", "-d", _trash_ref(working), cwd=cwd)
-        ok_trash_l, _ = _run_git_ok("update-ref", "-d", _trash_ref(ledger), cwd=cwd)
+        ok_pin_w, _ = _run_git_ok("update-ref", "-d", working_pin, cwd=cwd)
+        ok_pin_l, _ = _run_git_ok("update-ref", "-d", ledger_pin, cwd=cwd)
         if head_attached:
             ok_head, _ = _run_git_ok("checkout", previous_head, cwd=cwd)
         else:
             ok_head, _ = _run_git_ok("checkout", "--detach", previous_head, cwd=cwd)
-        restored &= state_restored and ok_trash_w and ok_trash_l and ok_head
-        if not restored:
+        refs_kept = _rev_parse(working, cwd=cwd) == working_tip
+        if not (state_restored and ok_pin_w and ok_pin_l and ok_head and refs_kept):
             raise GitTransactionError(
                 "Deleting the branch failed and automatic rollback was incomplete. "
                 "Inspect the repository before retrying."
             ) from exc
         raise
 
-    logger.info("working_pair_deleted", working=working, confirmed=confirm)
-    return GitDeleteBranchResponse(status="deleted", branch=working)
+    for dropped_id, dropped in trim_trash(project_root):
+        for pin in trash_entry_pins(dropped_id, dropped):
+            _run_git_ok("update-ref", "-d", pin, cwd=cwd)
+    logger.info("working_pair_deleted", working=working, entry=entry_id, confirmed=confirm)
+    return GitDeleteBranchResponse(status="deleted", branch=working, trash_id=entry_id)
 
 
 @_serialized_mutation
 def undelete_working_pair(
-    branch: str, project_root: Path, cwd: Path | None = None
+    entry_id: str,
+    project_root: Path,
+    as_name: str | None = None,
+    cwd: Path | None = None,
 ) -> GitUndeleteResponse:
-    """Restore a deleted working pair from its trash pins + tombstone — the
-    inverse of delete_working_pair's recovery net.
+    """Restore a deleted working pair from its trash entry — the inverse of
+    delete_working_pair's recovery net — under its branch name or *as_name*.
 
-    Pure ref/state ops (no checkout, no HEAD movement): the working and
-    ledger refs are recreated at their recorded tips, and the trash refs +
-    tombstone are consumed. The archived flag needs no separate restore —
-    archived-ness IS the ``archive/`` name prefix, and the pair is recreated
-    under the exact name it was deleted as. The restored pair is NOT adopted
-    as the working branch; the user switches to it deliberately.
+    Pure ref/state ops (no checkout, no HEAD movement): the working and ledger
+    refs are created at their recorded tips and the entry's pins deleted in one
+    ref transaction, then the tombstone is consumed. The restored pair is NOT
+    adopted as the working branch; the user switches to it deliberately.
 
-    Domain errors (verbatim to the client): no tombstone for the name, either
-    restored name already occupied, or the recorded commit no longer exists
-    (tombstones can outlive their objects if the trash refs were hand-deleted
-    and gc ran)."""
-    from haute._git_state import read_trash, record_trash, remove_trash
+    Domain errors (verbatim to the client): no such entry, the name already
+    taken by either ref, or the recorded commit no longer exists (tombstones can
+    outlive their objects if the pins were hand-deleted and gc ran)."""
+    from haute._git_state import (
+        read_trash,
+        record_trash,
+        remove_trash,
+        trash_entry_branch,
+        trash_entry_pins,
+    )
 
     _assert_git_repo(cwd)
-    _validate_ref_name(branch)
-    working = _normalize_to_working(branch)
+    entry = read_trash(project_root).get(entry_id)
+    if entry is None:
+        raise GitDomainError("That deleted branch is no longer in the trash.")
+    name = as_name.strip() if as_name is not None else trash_entry_branch(entry_id, entry)
+    _validate_ref_name(name)
+    working = _normalize_to_working(name)
     _assert_eligible_working(working)
 
-    entry = read_trash(project_root).get(working)
-    if entry is None:
-        raise GitDomainError(f"No deleted branch named '{working}' to restore.")
-
     ledger = ledger_name(working)
-    if _rev_parse(working, cwd=cwd) is not None:
-        raise GitDomainError(f"Cannot restore: a branch named '{working}' already exists.")
-    if _rev_parse(ledger, cwd=cwd) is not None:
-        raise GitDomainError(f"Cannot restore: a branch named '{ledger}' already exists.")
+    for taken in (working, ledger):
+        if _rev_parse(taken, cwd=cwd) is not None:
+            raise GitDomainError(
+                f"A branch named '{taken}' already exists. Restore it under another name."
+            )
 
     branch_tip = entry.get("branch_tip")
     if not isinstance(branch_tip, str) or _rev_parse(branch_tip, cwd=cwd) is None:
         raise GitDomainError(
-            f"'{working}' can no longer be restored — its recorded commit is gone."
+            f"'{trash_entry_branch(entry_id, entry)}' can no longer be restored — "
+            "its recorded commit is gone."
         )
     ledger_tip = entry.get("ledger_tip")
     if not (isinstance(ledger_tip, str) and _rev_parse(ledger_tip, cwd=cwd) is not None):
         ledger_tip = None  # pair deleted before its ledger ever spawned
 
-    created_working = created_ledger = False
+    working_pin, ledger_pin = trash_entry_pins(entry_id, entry)
+    lines = [f"create refs/heads/{working} {branch_tip}", f"delete {working_pin}"]
+    if ledger_tip is not None:
+        lines.append(f"create refs/heads/{ledger} {ledger_tip}")
+    if _rev_parse(ledger_pin, cwd=cwd) is not None:
+        lines.append(f"delete {ledger_pin}")
+    # Tombstone first: a failure writing it changes nothing, and the ref
+    # transaction that follows is all or nothing, so only it needs undoing.
+    remove_trash(project_root, entry_id)
     try:
-        _run_git("update-ref", f"refs/heads/{working}", branch_tip, cwd=cwd)
-        created_working = True
-        if ledger_tip is not None:
-            _run_git("update-ref", f"refs/heads/{ledger}", ledger_tip, cwd=cwd)
-            created_ledger = True
-
-        _run_git("update-ref", "-d", _trash_ref(working), cwd=cwd)
-        _run_git("update-ref", "-d", _trash_ref(ledger), cwd=cwd)
-        remove_trash(project_root, working)
-    except (GitError, OSError) as exc:
-        restored = True
-        if created_ledger:
-            ok, _ = _run_git_ok("update-ref", "-d", f"refs/heads/{ledger}", cwd=cwd)
-            restored &= ok
-        if created_working:
-            ok, _ = _run_git_ok("update-ref", "-d", f"refs/heads/{working}", cwd=cwd)
-            restored &= ok
-        ok, _ = _run_git_ok("update-ref", _trash_ref(working), branch_tip, cwd=cwd)
-        restored &= ok
-        if ledger_tip is not None:
-            ok, _ = _run_git_ok("update-ref", _trash_ref(ledger), ledger_tip, cwd=cwd)
-            restored &= ok
+        _run_git("update-ref", "--stdin", cwd=cwd, input_text="\n".join(lines) + "\n")
+    except GitError as exc:
         try:
-            if working not in read_trash(project_root):
-                record_trash(project_root, working, entry)
-            state_restored = True
+            record_trash(project_root, entry_id, entry)
         except OSError:
-            state_restored = False
-        if not restored or not state_restored:
             raise GitTransactionError(
                 "Restoring the deleted branch failed and automatic rollback was incomplete. "
                 "Inspect the repository before retrying."
             ) from exc
         raise
-    logger.info("working_pair_undeleted", working=working)
+    logger.info("working_pair_undeleted", working=working, entry=entry_id)
     return GitUndeleteResponse(status="restored", branch=working)
 
 
@@ -446,17 +391,18 @@ def undelete_working_pair(
 def restore_working_pair(
     branch: str, project_root: Path, cwd: Path | None = None
 ) -> GitRestoreResponse:
-    """Un-archive a pair: rename ``archive/<X>`` → ``<X>`` and its ledger back
-    (the inverse of archive_working_pair). Bidirectional (accepts either archived
-    name); refuses if a live branch already occupies either restored name. Ref
-    changes compensate as one transaction on failure."""
+    """Un-archive a pair: move ``archive/<X>`` → ``<X>`` and its ledger back (the
+    inverse of archive_working_pair) in one ref transaction. Bidirectional
+    (accepts either archived name); refuses if a live branch already occupies
+    either restored name."""
     _assert_git_repo(cwd)
     _validate_ref_name(branch)
     archived_working = _normalize_to_working(branch)
     prefix = f"{_ARCHIVE_PREFIX}/"
     if not archived_working.startswith(prefix):
         raise GitDomainError(f"'{archived_working}' is not an archived branch.")
-    if _rev_parse(archived_working, cwd=cwd) is None:
+    working_tip = _rev_parse(archived_working, cwd=cwd)
+    if working_tip is None:
         raise GitDomainError(f"Branch '{archived_working}' does not exist.")
 
     restored = archived_working[len(prefix) :]
@@ -467,27 +413,7 @@ def restore_working_pair(
     if _rev_parse(restored_ledger, cwd=cwd) is not None:
         raise GitDomainError(f"Cannot restore: a branch named '{restored_ledger}' already exists.")
 
-    archived_ledger = ledger_name(archived_working)
-    renamed_working = renamed_ledger = False
-    try:
-        _run_git("branch", "-m", archived_working, restored, cwd=cwd)
-        renamed_working = True
-        if _rev_parse(archived_ledger, cwd=cwd) is not None:
-            _run_git("branch", "-m", archived_ledger, restored_ledger, cwd=cwd)
-            renamed_ledger = True
-    except (GitError, OSError) as exc:
-        restored_ok = True
-        if renamed_ledger:
-            ok, _ = _run_git_ok("branch", "-m", restored_ledger, archived_ledger, cwd=cwd)
-            restored_ok &= ok
-        if renamed_working:
-            ok, _ = _run_git_ok("branch", "-m", restored, archived_working, cwd=cwd)
-            restored_ok &= ok
-        if not restored_ok:
-            raise GitTransactionError(
-                "Restoring the archived branch failed and automatic rollback was incomplete. "
-                "Inspect the repository before retrying."
-            ) from exc
-        raise
+    ledger_tip = _rev_parse(ledger_name(archived_working), cwd=cwd)
+    _move_pair(archived_working, restored, working_tip, ledger_tip, cwd=cwd)
     logger.info("working_pair_restored", restored=restored)
     return GitRestoreResponse(restored_as=restored)

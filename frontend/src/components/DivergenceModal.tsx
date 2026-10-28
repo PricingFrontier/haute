@@ -48,12 +48,13 @@ export default function DivergenceModal({ onConfirmed, onClose }: DivergenceModa
     setBusy(true)
     try {
       await setWorkingBranch(target, false)
-      await loadStatus()
+      await loadStatus({ refresh: true }) // not a read begun before the action
       addToast("success", `Working branch set to ${target}`)
       onConfirmed()
     } catch (err: unknown) {
       const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Could not switch working branch: ${detail}`)
+      void loadStatus({ refresh: true }) // a held file can leave the clone interrupted
     } finally {
       setBusy(false)
     }
@@ -96,7 +97,7 @@ export default function DivergenceModal({ onConfirmed, onClose }: DivergenceModa
       testId="divergence-modal"
     >
       <ModalFormHeader title="You've moved off your working branch">
-        Your working branch is <span className="font-mono">{recorded}</span>, but the repo is
+        Your working branch is <span className="font-mono">{recorded}</span>, but the project is
         currently on <span className="font-mono">{current}</span>.
       </ModalFormHeader>
 
@@ -113,7 +114,7 @@ export default function DivergenceModal({ onConfirmed, onClose }: DivergenceModa
           `Make ${current} my working branch`,
           stayEligible
             ? "Adopt the branch you're currently on."
-            : "This branch can't be a working branch (it's protected or a save ledger).",
+            : "This branch can't be a working branch (it's protected, or it holds another branch's saves).",
           !stayEligible,
         )}
         {option("manager", "Open the branch manager", "Decide in the Git panel.")}

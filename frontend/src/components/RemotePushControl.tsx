@@ -6,6 +6,7 @@ import {
   ArrowUp,
   Check,
   GitFork,
+  KeyRound,
   Upload,
 } from "lucide-react"
 
@@ -15,9 +16,11 @@ import {
   gitBranchAway,
   gitFastForward,
   gitPush,
+  gitSetCiSecrets,
   parseGitPushRejection,
 } from "../api/client"
-import type { GitPushRejection, GitRemote, GitRemoteLeg } from "../api/types"
+import type { GitCiSecrets, GitPushRejection, GitRemote, GitRemoteLeg } from "../api/types"
+import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 import { apiErrorMessage } from "../api/errors"
 import ModalShell from "./ModalShell"
@@ -51,6 +54,20 @@ function legBehind(leg: GitRemoteLeg | null | undefined): boolean {
   return leg != null && leg.status === "behind"
 }
 
+function deploySecrets(n: number): string {
+  return `${n} deploy secret${n === 1 ? "" : "s"}`
+}
+
+/** The missing-secrets reports with *remote*'s left out. */
+function withoutRemote(
+  reports: Record<string, GitCiSecrets>,
+  remote: string,
+): Record<string, GitCiSecrets> {
+  const rest = { ...reports }
+  delete rest[remote]
+  return rest
+}
+
 export default function RemotePushControl({
   pendingSaveCount,
   refreshNonce = 0,
@@ -67,6 +84,10 @@ export default function RemotePushControl({
   // A non-FF rejection (409) parsed from the push — drives the honest fork modal
   // instead of a dead-end toast (P7 M7). Null when there's no pending rejection.
   const [rejection, setRejection] = useState<GitPushRejection | null>(null)
+  // The deploy's GitHub secrets a Push found missing, by remote: kept until Set from
+  // .env sets them or a later Push to that remote reports otherwise.
+  const [missingSecrets, setMissingSecrets] = useState<Record<string, GitCiSecrets>>({})
+  const [settingSecrets, setSettingSecrets] = useState(false)
   // Monotonic request id: a slower fetch must not clobber a newer one (e.g. a
   // post-push reload landing after the user has already changed selection).
   const reqId = useRef(0)
@@ -118,6 +139,26 @@ export default function RemotePushControl({
         const n = res.pushed_refs.length
         addToast("success", `Pushed ${n} branch${n === 1 ? "" : "es"} to ${res.remote}`)
       }
+      const secrets = res.ci_secrets
+      if (secrets && secrets.newly_set.length > 0) {
+        addToast(
+          "success",
+          `Set ${deploySecrets(secrets.newly_set.length)} on ${secrets.repository} from .env`,
+        )
+      }
+      // A later Push that cannot read the secrets says nothing: someone without the
+      // editor may manage them.
+      if (secrets?.problem && (secrets.state === "missing" || res.bootstrapped_default)) {
+        addToast(
+          "warning",
+          `Couldn't set the deploy's secrets on ${secrets.repository}: ${secrets.problem}`,
+        )
+      }
+      setMissingSecrets((reports) =>
+        secrets?.state === "missing"
+          ? { ...reports, [res.remote]: secrets }
+          : withoutRemote(reports, res.remote),
+      )
       await load() // ahead/behind now reflect the synced state
     } catch (err) {
       // A non-fast-forward rejection (409) carries the per-leg fork data — show
@@ -154,6 +195,28 @@ export default function RemotePushControl({
     }
   }, [selected, addToast, load])
 
+  // The push panel's Set from .env: only the secrets the repository lacks are set.
+  const doSetSecrets = useCallback(async () => {
+    if (!selected) return
+    const target = selected
+    setSettingSecrets(true)
+    try {
+      const report = await gitSetCiSecrets(target)
+      const n = report.newly_set.length
+      addToast(
+        "success",
+        n > 0
+          ? `Set ${deploySecrets(n)} on ${report.repository} from .env`
+          : `${report.repository} already has the deploy's secrets`,
+      )
+      setMissingSecrets((reports) => withoutRemote(reports, target))
+    } catch (err) {
+      addToast("error", `Couldn't set the deploy's secrets: ${apiErrorMessage(err, "unknown error")}`)
+    } finally {
+      setSettingSecrets(false)
+    }
+  }, [selected, addToast])
+
   const onPushClick = () => {
     if (!selected) return
     if (pendingSaveCount > 0) setConfirming(true)
@@ -174,6 +237,7 @@ export default function RemotePushControl({
     } catch (err) {
       const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Couldn't catch up: ${detail}`)
+      void useGitStore.getState().loadStatus({ refresh: true }) // a held file can interrupt the clone
     } finally {
       setCatchingUp(false)
     }
@@ -203,6 +267,7 @@ export default function RemotePushControl({
     } catch (err) {
       const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Couldn't spin off a copy: ${detail}`)
+      void useGitStore.getState().loadStatus({ refresh: true }) // a held file can interrupt the clone
     } finally {
       setBranchingAway(false)
     }
@@ -229,8 +294,9 @@ export default function RemotePushControl({
     )
   }
 
+  const missing = selected ? missingSecrets[selected] : undefined
   return (
-    <div data-testid="git-push-control" className="px-2 pt-2 flex items-center gap-2">
+    <div data-testid="git-push-control" className="px-2 pt-2 flex flex-wrap items-center gap-2">
       {loadError && (
         <span
           data-testid="git-push-load-error"
@@ -313,6 +379,50 @@ export default function RemotePushControl({
           onClose={() => setRejection(null)}
         />
       )}
+
+      {missing && (
+        <CiSecretsMissing
+          report={missing}
+          setting={settingSecrets}
+          onSet={() => void doSetSecrets()}
+        />
+      )}
+    </div>
+  )
+}
+
+/** The deploy's GitHub secrets the selected remote's repository lacks, and the explicit
+ *  action that sets them from `.env` (never overwriting one it has). */
+function CiSecretsMissing({
+  report,
+  setting,
+  onSet,
+}: {
+  report: GitCiSecrets
+  setting: boolean
+  onSet: () => void
+}) {
+  return (
+    <div
+      data-testid="git-ci-secrets-missing"
+      className="basis-full flex items-center gap-2 text-[11px]"
+      style={{ color: "var(--warning)" }}
+    >
+      <Tooltip label={report.missing.join(", ")} side="bottom">
+        <span className="inline-flex items-center gap-1 min-w-0">
+          <KeyRound size={11} className="shrink-0" />
+          <span className="truncate">{deploySecrets(report.missing.length)} missing on GitHub</span>
+        </span>
+      </Tooltip>
+      <button
+        data-testid="git-ci-secrets-set"
+        onClick={onSet}
+        disabled={setting}
+        className="shrink-0 ml-auto text-[11px] font-medium rounded-md px-2 py-0.5 transition-colors disabled:opacity-40"
+        style={{ border: "1px solid var(--border)", color: "var(--text-secondary)" }}
+      >
+        {setting ? "Setting…" : "Set from .env"}
+      </button>
     </div>
   )
 }
@@ -579,15 +689,15 @@ function PushConfirm({
   onConfirm: () => void
 }) {
   return (
-    <ModalShell ariaLabel="Confirm push with out-of-version saves" onClose={onCancel} testId="git-push-confirm">
+    <ModalShell ariaLabel="Confirm push with saves not in a milestone" onClose={onCancel} testId="git-push-confirm">
       <div className="p-4 flex flex-col gap-3">
         <span className="text-[13px] font-semibold" style={{ color: "var(--text-primary)" }}>
-          Push with out-of-version saves?
+          Push with saves not in a milestone?
         </span>
         <span className="text-[12px]" style={{ color: "var(--text-secondary)" }}>
-          {count} save{count === 1 ? "" : "s"} on the ledger {count === 1 ? "isn't" : "aren't"}{" "}
-          folded into a milestone yet. {count === 1 ? "It" : "They"}&rsquo;ll be pushed on the
-          ledger branch, but won&rsquo;t appear as a milestone on{" "}
+          {count} save{count === 1 ? "" : "s"} {count === 1 ? "isn't" : "aren't"} in a milestone
+          yet. {count === 1 ? "It" : "They"}&rsquo;ll be pushed with the branch&rsquo;s save
+          history, but won&rsquo;t appear as a milestone on{" "}
           <span className="font-mono">{remote}</span>.
         </span>
         <div className="flex justify-end gap-2 pt-1">

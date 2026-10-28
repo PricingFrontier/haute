@@ -46,6 +46,7 @@ import type {
   GitPrefs,
   GitRemotesResponse,
   GitPushResponse,
+  GitCiSecrets,
   GitFastForwardResponse,
   GitBranchAwayResponse,
   GitBindStorageResponse,
@@ -53,7 +54,7 @@ import type {
   GitUpstreamStatus,
   GitCommitContext,
   GitGraphResponse,
-  GitMoveResponse,
+  GitRestoreVersionResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
   GitWorkingBranchResponse,
@@ -2049,6 +2050,16 @@ export function getWorkingBranch(
   return request<unknown>("/api/git/working-branch", options).then(async (data) => expectGeneratedContract("GitWorkingBranchResponse", (await gitValidators()).validateGitWorkingBranchResponse, data))
 }
 
+/**
+ * Write HEAD's version of the files a git action left out of step (a file another
+ * program held open), once the analyst has closed them; answers the readiness after.
+ */
+export function retryInterruptedGit(
+  options?: { signal?: AbortSignal },
+): Promise<GitWorkingBranchResponse> {
+  return post<unknown>("/api/git/interrupted/retry", {}, options).then(async (data) => expectGeneratedContract("GitWorkingBranchResponse", (await gitValidators()).validateGitWorkingBranchResponse, data))
+}
+
 export function setWorkingBranch(
   branch: string,
   create: boolean,
@@ -2215,23 +2226,25 @@ export function restoreBranch(
   return post<unknown>("/api/git/restore", { branch }, options).then(async (data) => expectGeneratedContract("GitRestoreResponse", (await gitValidators()).validateGitRestoreResponse, data))
 }
 
-/** Restore a deleted pair from the trash tombstone (the inverse of delete —
- *  pure ref/state ops, so it's instant and safe to drive from Undo). */
+/** Restore a deleted pair from its trash entry (the inverse of delete —
+ *  pure ref/state ops, so it's instant and safe to drive from Undo), under
+ *  `asName` when its own name is taken again. */
 export function undeleteBranch(
-  branch: string,
+  id: string,
+  asName: string | null = null,
   options?: { signal?: AbortSignal },
 ): Promise<GitUndeleteResponse> {
-  return post<unknown>("/api/git/undelete", { branch }, options).then(async (data) => expectGeneratedContract("GitUndeleteResponse", (await gitValidators()).validateGitUndeleteResponse, data))
+  return post<unknown>("/api/git/undelete", { id, as_name: asName }, options).then(async (data) => expectGeneratedContract("GitUndeleteResponse", (await gitValidators()).validateGitUndeleteResponse, data))
 }
 
 export function createWorkingBranch(
   name: string,
-  opts: { at?: string | null; move?: boolean } = {},
+  opts: { at?: string | null; move?: boolean; switch?: boolean } = {},
   options?: { signal?: AbortSignal },
 ): Promise<GitCreateWorkingBranchResponse> {
   return post<unknown>(
     "/api/git/working-branches",
-    { name, at: opts.at ?? null, move: opts.move ?? false },
+    { name, at: opts.at ?? null, move: opts.move ?? false, switch: opts.switch ?? false },
     options,
   ).then(async (data) => expectGeneratedContract("GitCreateWorkingBranchResponse", (await gitValidators()).validateGitCreateWorkingBranchResponse, data))
 }
@@ -2268,12 +2281,26 @@ export async function parseGitMilestoneFork(detail: unknown): Promise<GitMilesto
   return expectGeneratedContract("GitMilestoneFork", (await gitValidators()).validateGitMilestoneFork, detail)
 }
 
+// The server bounds each step of a Push and of Set from .env (git's, gh's and Databricks'
+// own timeouts), and a first publication runs several: a browser deadline would report
+// a failure while the push or the secrets still land.
+const UNBOUNDED_BY_THE_BROWSER = { timeout: null }
+
 /** Deliberately publish branch history to a remote, bootstrapping its default branch when needed (S16/S33). */
 export function gitPush(
   remote: string,
   options?: { signal?: AbortSignal },
 ): Promise<GitPushResponse> {
-  return post<unknown>("/api/git/push", { remote }, options).then(async (data) => expectGeneratedContract("GitPushResponse", (await gitValidators()).validateGitPushResponse, data))
+  return post<unknown>("/api/git/push", { remote }, { ...UNBOUNDED_BY_THE_BROWSER, ...options }).then(async (data) => expectGeneratedContract("GitPushResponse", (await gitValidators()).validateGitPushResponse, data))
+}
+
+/** Set the deploy's GitHub secrets the remote's repository lacks, from `.env` (the push
+ *  panel's Set from .env); a secret the repository has is never overwritten. */
+export function gitSetCiSecrets(
+  remote: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitCiSecrets> {
+  return post<unknown>("/api/git/ci-secrets", { remote }, { ...UNBOUNDED_BY_THE_BROWSER, ...options }).then(async (data) => expectGeneratedContract("GitCiSecrets", (await gitValidators()).validateGitCiSecrets, data))
 }
 
 /** Catch the working pair up to a remote by fast-forward only (P7 D1/D2) — a
@@ -2325,14 +2352,13 @@ export function getCommitContext(
 }
 
 /**
- * Move the working directory to a historical commit (S11/S13 — §3.4): a real
- * detached checkout that materialises `sha`'s tree as the repo state. Unlike
- * the read-only `getCommitPipeline`, this changes HEAD and the working tree.
- * Creates nothing — the next save spawns a fresh working branch here (S13).
+ * Restore an earlier version of the current branch as one new save on it: what is
+ * on disk is recorded first, then the restore, then the files are rewritten. The
+ * branch is not left and the saves since stay in the history.
  */
-export function moveToVersion(
+export function restoreVersion(
   sha: string,
   options?: { signal?: AbortSignal },
-): Promise<GitMoveResponse> {
-  return post<unknown>("/api/git/move", { sha }, options).then(async (data) => expectGeneratedContract("GitMoveResponse", (await gitValidators()).validateGitMoveResponse, data))
+): Promise<GitRestoreVersionResponse> {
+  return post<unknown>("/api/git/restore-version", { sha }, options).then(async (data) => expectGeneratedContract("GitRestoreVersionResponse", (await gitValidators()).validateGitRestoreVersionResponse, data))
 }

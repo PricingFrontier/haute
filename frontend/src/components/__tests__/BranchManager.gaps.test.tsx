@@ -44,12 +44,13 @@ describe("BranchManager reload-on-state-change navigation", () => {
     useGraphStore.setState({ dirty: false })
     mockGetWorkingBranches.mockResolvedValue({
       current: "demo",
+      deleted: [],
       branches: [branch({ name: "demo", is_current: true })],
     })
     mockSetWorkingBranch.mockResolvedValue({})
     mockCreateWorkingBranch.mockResolvedValue({ working_branch: "x", moved: false, switched: false, last_save_sha: null })
     mockArchive.mockResolvedValue({ archived_as: "archive/x" })
-    mockDelete.mockResolvedValue({ status: "deleted", branch: "x" })
+    mockDelete.mockResolvedValue({ status: "deleted", branch: "x", trash_id: "x@20261027T131400Z" })
     mockRestore.mockResolvedValue({ restored_as: "old" })
     mockGetWorkingBranch.mockResolvedValue({ working_branch: "demo", state: "ready" })
     mockGetPrefs.mockResolvedValue({ skip_switch_confirm: false })

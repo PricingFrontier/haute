@@ -41,6 +41,23 @@ beforeEach(() => {
   })
 })
 
+describe("useGraphStore - a document load", () => {
+  it("drops graph snapshots but keeps version-control entries on both stacks", () => {
+    const snapshot = { nodes: [], edges: [], preamble: "before the load", submodels: {} }
+    useGraphStore.getState().pushVcEntry(makeEntry({}))
+    useGraphStore.setState((state) => ({
+      undoStack: [snapshot, ...state.undoStack, snapshot],
+      redoStack: [snapshot, { ...state.undoStack[0], label: "switch back" }],
+    }))
+
+    useGraphStore.getState().loadGraphSnapshot({ nodes: [makeNode("arrived")], edges: [], preamble: "", submodels: {} })
+
+    const { undoStack, redoStack } = useGraphStore.getState()
+    expect(undoStack).toEqual([expect.objectContaining({ kind: "vc", label: "switch to demo" })])
+    expect(redoStack).toEqual([expect.objectContaining({ kind: "vc", label: "switch back" })])
+  })
+})
+
 describe("useGraphStore - pushVcEntry", () => {
   it("appends a kind:'vc' entry and clears the redo stack", () => {
     useGraphStore.setState({

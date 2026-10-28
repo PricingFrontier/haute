@@ -47,7 +47,7 @@ export default function MilestoneCommitModal({ onConfirmed, onClose }: Milestone
     try {
       const label = versionLabel.trim() || null
       const result = await commitMilestone(trimmed, label, { allowFork })
-      await loadStatus()
+      await loadStatus({ refresh: true }) // not a read begun before the action
       notifyMilestoneCommitted() // refresh an open Git panel + select the new milestone (S38)
       addToast(
         "success",

@@ -9,6 +9,7 @@ Route handlers live in ``haute.routes.*`` — see:
 """
 
 import asyncio
+import concurrent.futures
 import hashlib
 import json
 import mimetypes
@@ -59,6 +60,7 @@ from haute._pipeline_settings import (
 )
 from haute._sandbox import _get_project_root
 from haute._workbench_config import WorkbenchConfigError, read_workbench_config
+from haute.errors import ConfigError
 from haute.hosted import FORWARDED_USER_SCOPE_KEY
 from haute.routes._error_handlers import install_exception_handlers
 from haute.routes._helpers import (
@@ -140,6 +142,8 @@ PIPELINE_DOCUMENT_SCHEMA_VERSION = 1
 PIPELINE_DOCUMENT_LOAD_ERROR = (
     "Pipeline document could not be loaded. Check the server logs for details."
 )
+# A git action took the pipeline away: the version now open does not have it.
+PIPELINE_NOT_IN_VERSION = "This pipeline isn't in the version now open. Switch back to see it."
 
 
 @dataclass(frozen=True)
@@ -167,36 +171,48 @@ def _ws_message_frame(wire_type: str, payload: dict[str, Any]) -> dict[str, Any]
     return {"type": wire_type, **payload}
 
 
+# The server's event loop for the app's lifetime (set by ``_lifespan``): a publisher
+# on a worker thread, such as a git route's background task, has no loop of its own.
+_server_loop: asyncio.AbstractEventLoop | None = None
+
+
 def _broadcast_event_as_ws_message(wire_type: str, payload: dict[str, Any]) -> None:
     """Schedule ``broadcast`` of a WebSocket frame derived from *payload*.
 
     ``broadcast`` is async because ``websocket.send_text`` is; but the
     event bus is synchronous so a subscriber cannot ``await`` directly.
-    We schedule the coroutine on the running event loop instead — the
-    file-watcher that publishes these events runs on the server's
-    loop, so :func:`asyncio.get_running_loop` is always available in
-    the production path.  A plain-sync call (e.g. from a unit test
-    with no loop) logs the missed broadcast and returns; the test can
+    We schedule the coroutine on the running event loop instead, as for
+    the file-watcher, which runs on the server's loop. A publisher on a
+    worker thread (a git route's ``git.tree.changed`` background task)
+    hands it to the server's loop. A plain-sync call with neither (e.g.
+    from a unit test) logs the missed broadcast and returns; the test can
     assert on the event-bus side directly in that case.
     """
+    frame = _ws_message_frame(wire_type, payload)
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
+        if _server_loop is not None and not _server_loop.is_closed():
+            future = asyncio.run_coroutine_threadsafe(broadcast(frame), _server_loop)
+            future.add_done_callback(_log_broadcast_task_result)
+            return
         logger.debug(
             "event_bus_broadcast_skipped",
             wire_type=wire_type,
             reason="no_running_loop",
         )
         return
-    task = loop.create_task(broadcast(_ws_message_frame(wire_type, payload)))
+    task = loop.create_task(broadcast(frame))
     task.add_done_callback(_log_broadcast_task_result)
 
 
-def _log_broadcast_task_result(task: asyncio.Task[None]) -> None:
+def _log_broadcast_task_result(
+    task: asyncio.Future[None] | concurrent.futures.Future[None],
+) -> None:
     """Log unexpected failures from fire-and-forget broadcast tasks."""
     try:
         exc = task.exception()
-    except asyncio.CancelledError:
+    except (asyncio.CancelledError, concurrent.futures.CancelledError):
         return
     if exc is None:
         return
@@ -219,7 +235,14 @@ def _discovered_pipeline_paths() -> dict[str, Path]:
 
 def _known_pipeline_paths() -> dict[str, Path]:
     """Return pipelines already known to the server before the latest edit."""
-    paths = {str(path.resolve()): path for path in _ensure_pipeline_index().values()}
+    try:
+        index = _ensure_pipeline_index()
+    except (OSError, ConfigError) as exc:
+        # An index rebuilt after the edit sees what the edit left: haute.toml naming
+        # a pipeline that is gone refuses it. The last broadcasts still know theirs.
+        logger.warning("pipeline_index_unavailable", error=str(exc))
+        index = {}
+    paths = {str(path.resolve()): path for path in index.values()}
     paths.update({key: Path(key) for key in _last_broadcast_fp})
     return paths
 
@@ -463,9 +486,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # callback that is allowed to (re)build this index — see
     # ``haute.routes._helpers`` for the full contract.
     _ensure_pipeline_index()
-    global _watcher_task, _artifact_reaper_task
+    global _watcher_task, _artifact_reaper_task, _server_loop
     _watcher_task = None
     _artifact_reaper_task = None
+    _server_loop = asyncio.get_running_loop()
     # The editor's streaming chunk size is process configuration: fix it from the
     # pipeline settings before any worker is spawned so every child inherits it,
     # and follow the settings file from here on.
@@ -499,6 +523,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                     shutdown_interactive_worker_pool()
                 finally:
                     stop_following_chunk_rows()
+                    _server_loop = None
 
 
 app = FastAPI(title="Haute", version=__version__, lifespan=_lifespan)
@@ -786,6 +811,100 @@ def _workbench_form_file(project_root: Path) -> tuple[str, str] | None:
     return (config.form, str(config.form_path.resolve())) if config.enabled else None
 
 
+def _publish_pipeline_document(path: Path, *, skip_unchanged: bool) -> None:
+    """Publish *path*'s editor document as live sync's frame, or its load failure.
+
+    With *skip_unchanged*, a file byte-identical to the one last broadcast is left
+    alone. Raw bytes are hashed so ANY edit counts: the parser normalises code
+    (strips whitespace, docstrings, return statements), which hides real edits
+    from a graph-only fingerprint, and checking before the parse skips the
+    expensive AST walk."""
+    fp_key = str(path.resolve())
+    try:
+        fp = hashlib.sha256(path.read_bytes()).hexdigest()
+        if skip_unchanged and _last_broadcast_fp.get(fp_key) == fp:
+            logger.info("graph_unchanged", file=path.name)
+            return
+        # The recovery document is the only live-sync payload.  It deliberately
+        # remains available in degraded and source-only states, so an authored
+        # error still reaches clients as an honest document rather than a parse
+        # error.
+        document = load_pipeline_editor_document(path, project_root=Path.cwd())
+        document_payload = document.model_dump(mode="json", by_alias=True)
+        document_fingerprint = pipeline_document_fingerprint(document_payload)
+        _last_broadcast_fp[fp_key] = fp
+        default_bus.publish(
+            "pipeline.document.update",
+            {
+                "document": document_payload,
+                "document_fingerprint": document_fingerprint,
+                "source_file": _wire_source_file(path),
+            },
+        )
+        with ws_clients_lock:
+            client_count = len(ws_clients)
+        logger.info(
+            "document_broadcast",
+            clients=client_count,
+            load_status=document.load_status,
+            nodes=len(document.nodes),
+        )
+    except Exception as e:  # noqa: BLE001 — one unreadable pipeline must not silence the rest
+        # Only a document-load or serialization defect lands here; authored
+        # errors were already representable above.  Send the established safe
+        # message, never the raw exception.
+        _last_broadcast_fp.pop(fp_key, None)
+        logger.error("parse_error", file=path.name, error=str(e), exc_info=True)
+        default_bus.publish(
+            "parse.error",
+            {
+                "error": PIPELINE_DOCUMENT_LOAD_ERROR,
+                "source_file": _wire_source_file(path),
+            },
+        )
+
+
+def _broadcast_tree_change(payload: dict[str, Any]) -> None:
+    """Announce what is on disk after a git action that rewrote the files.
+
+    The action ran with the watcher paused, so no watcher batch saw its changes:
+    the name→path index is invalidated, then every discovered pipeline's document
+    and the form's change are published, as the watcher does for an edit. A
+    client already showing a document drops its frame; a dirty one gets the
+    banner. A pipeline known before the action and gone after it is announced as
+    a load failure, so a client showing it stops treating it as on disk, where a
+    save would bring it back. The route sends the pipelines on disk before the
+    action (``pipelines_before``); the server's own index and broadcasts add any
+    it knew, since a save can have cleared those."""
+    known = _known_pipeline_paths()
+    before = payload.get("pipelines_before")
+    if isinstance(before, list):
+        known.update({key: Path(key) for key in before if isinstance(key, str)})
+    invalidate_pipeline_index()
+    try:
+        discovered = _discovered_pipeline_paths()
+    except (OSError, ConfigError) as exc:
+        # haute.toml names a pipeline this version lacks, or cannot be read: none of
+        # the known pipelines is on disk to open.
+        logger.warning("git_tree_change_discovery_failed", error=str(exc))
+        discovered = {}
+    for pipeline_path in discovered.values():
+        _publish_pipeline_document(pipeline_path, skip_unchanged=False)
+    for key, pipeline_path in known.items():
+        if key not in discovered:
+            _last_broadcast_fp.pop(key, None)
+            default_bus.publish(
+                "parse.error",
+                {"error": PIPELINE_NOT_IN_VERSION, "source_file": _wire_source_file(pipeline_path)},
+            )
+    form_file = _workbench_form_file(Path.cwd())
+    if form_file is not None:
+        default_bus.publish("workbench.form.changed", {"form": form_file[0]})
+
+
+_unsubscribe_git_tree_changed = default_bus.subscribe("git.tree.changed", _broadcast_tree_change)
+
+
 async def _file_watcher() -> None:
     """Watch pipeline directories for .py changes and broadcast to GUI.
 
@@ -957,56 +1076,7 @@ async def _file_watcher() -> None:
             # Deduplicate and parse
             for p, dependency_triggered in changed_files.values():
                 logger.info("file_changed", file=p.name)
-                try:
-                    # Hash raw bytes so ANY edit triggers a broadcast.  The parser
-                    # normalises code (strips whitespace, docstrings, return
-                    # statements) which hides real edits from a graph-only
-                    # fingerprint.  Checking before parse skips the expensive
-                    # AST walk when the file is byte-identical.
-                    fp = hashlib.sha256(p.read_bytes()).hexdigest()
-                    fp_key = str(p.resolve())
-                    file_changed = _last_broadcast_fp.get(fp_key) != fp
-                    if not file_changed and not dependency_triggered:
-                        logger.info("graph_unchanged", file=p.name)
-                        continue
-                    # The recovery document is the only live-sync payload.  It
-                    # deliberately remains available in degraded and
-                    # source-only states, so an authored error still reaches
-                    # clients as an honest document rather than a parse error.
-                    document = load_pipeline_editor_document(p, project_root=Path.cwd())
-                    document_payload = document.model_dump(mode="json", by_alias=True)
-                    document_fingerprint = pipeline_document_fingerprint(document_payload)
-                    _last_broadcast_fp[fp_key] = fp
-                    default_bus.publish(
-                        "pipeline.document.update",
-                        {
-                            "document": document_payload,
-                            "document_fingerprint": document_fingerprint,
-                            "source_file": _wire_source_file(p),
-                        },
-                    )
-                    with ws_clients_lock:
-                        client_count = len(ws_clients)
-                    logger.info(
-                        "document_broadcast",
-                        clients=client_count,
-                        load_status=document.load_status,
-                        nodes=len(document.nodes),
-                    )
-                except Exception as e:
-                    # Only a document-load or serialization defect lands here;
-                    # authored errors were already representable above.  Send
-                    # the established safe message, never the raw exception.
-                    fp_key = str(p.resolve())
-                    _last_broadcast_fp.pop(fp_key, None)
-                    logger.error("parse_error", file=p.name, error=str(e), exc_info=True)
-                    default_bus.publish(
-                        "parse.error",
-                        {
-                            "error": PIPELINE_DOCUMENT_LOAD_ERROR,
-                            "source_file": _wire_source_file(p),
-                        },
-                    )
+                _publish_pipeline_document(p, skip_unchanged=not dependency_triggered)
         except asyncio.CancelledError:
             if requeue_on_error:
                 pending_changes.update(to_process)

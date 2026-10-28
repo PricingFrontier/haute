@@ -417,7 +417,7 @@ class TestCredentialHostAllowlist:
             raise AssertionError("a git subprocess must not see an unapproved URL")
 
         monkeypatch.setattr(_git, "ensure_remote", fail)
-        monkeypatch.setattr(_git, "remote_has_content", fail)
+        monkeypatch.setattr(_git, "remote_holds_other_history", fail)
         with pytest.raises(StorageConfigError):
             _project_storage.bind_remote("https://attacker.example/x.git", project)
 
@@ -807,6 +807,28 @@ class TestContainerDeathSurvival:
         # local project is not the bound remote's project.
         assert _project_storage.read_binding() is not None
         assert _project_storage.active_binding() is None
+
+    def test_bind_retry_adopts_a_remote_left_by_an_interrupted_bootstrap(
+        self, project: Path, bare_remote: Path, files_api: _FakeFiles
+    ) -> None:
+        """A first publication stopped after the default is this project's own, not a lift."""
+        rule = bare_remote / "hooks" / "pre-receive"
+        rule.write_text(
+            '#!/bin/sh\nwhile read old new ref; do [ "$ref" = refs/heads/main ] || exit 1; done\n',
+            newline="\n",
+        )
+        rule.chmod(0o755)
+        with pytest.raises(_git.GitBootstrapIncompleteError):
+            _project_storage.bind_remote(f"file://{bare_remote}", project)
+        assert _project_storage.read_binding() is None
+        rule.unlink()
+
+        outcome = _project_storage.bind_remote(f"file://{bare_remote}", project)
+
+        assert outcome == "adopted"
+        binding = _project_storage.read_binding()
+        assert binding is not None and binding.branch == WORKING
+        assert WORKING in _run_git(bare_remote, "branch", "--list")
 
     def test_saved_work_survives_container_replacement(
         self,
@@ -1351,6 +1373,15 @@ class TestPublishDispatch:
         assert failure == "transport"
         assert terminal is False
         assert "bundle" in message
+
+    def test_interrupted_bootstrap_classifies_as_retryable_transport(self) -> None:
+        """The remote holds only this project's default; the next publish completes it."""
+        failure, message, terminal = _project_storage._classify_push_failure(
+            _git.GitBootstrapIncompleteError("'main' is now on 'origin' as your merge target")
+        )
+        assert failure == "transport"
+        assert terminal is False
+        assert message == "'main' is now on 'origin' as your merge target"
 
 
 class TestUcContainerDeathSurvival:

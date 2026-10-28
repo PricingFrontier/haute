@@ -417,19 +417,25 @@ def test_a_save_is_one_commit_on_the_ledger_which_commit_sweeps_from_then_on(
     assert git(project, "diff", "--name-only", first, WORKING).splitlines() == ["forms/form.json"]
 
 
-def test_a_save_without_a_working_branch_is_written_and_captured_nowhere(project: Path) -> None:
+def test_a_save_without_a_working_branch_is_written_and_names_what_it_left_off(
+    project: Path,
+) -> None:
     enable(project)
     git(project, "init", "-b", "main")
 
     saved = client().put("/api/workbench/form", json={"form": form(POLICY), "base_revision": None})
 
     assert saved.status_code == 200, saved.text
-    # Nothing is owed: without a working branch nothing will ever capture it.
+    # The repository has no working branch chosen yet: the form is owed to the ledger
+    # once one is, and the save says so.
     assert capture(saved.json()) == {
         "git_sha": None,
-        "warnings": [],
+        "warnings": [
+            "Changes saved, but no working branch is chosen, so version history doesn't "
+            "have them yet. Choose a working branch to keep them."
+        ],
         "identity_required": False,
-        "uncaptured": [],
+        "uncaptured": ["forms/form.json"],
     }
     assert (project / "forms" / "form.json").is_file()
     assert git(project, "status", "--porcelain", "--", "forms/form.json").startswith("??")

@@ -42,6 +42,10 @@
 | `frontend/e2e/pipeline-settings.spec.ts` | Chromium witness that the Pipeline settings pane scrolls down to its last cached-data row in a short window: the inventory is never squeezed and clipped beneath the settings above it. |
 | `frontend/e2e/git-graph.spec.ts` | Playwright coverage for the Git graph. |
 | `frontend/e2e/git-sidebar-regression.spec.ts` | Playwright regression coverage for the Git sidebar. |
+| `frontend/e2e/gitJourneys.ts` | Shared steps for the git journeys: renaming the e2e pipeline's `priced` node, saving until the save is on the branch's history, committing, creating and switching branches in the branch manager, and reading the pipeline file on disk and as a branch's latest save holds it. |
+| `frontend/e2e/git-restore.spec.ts` | Restoring a version and starting a branch from one, with the mistakes on the way: unsaved edits at the prompt (save first, discard, cancel), Cancel, Escape and a click outside, a double click, restoring the wrong version, no restore on the current version or another branch, a milestone after a restore, and branch names git cannot use, protected, taken or ending in `-save`, said in the name box. |
+| `frontend/e2e/git-branches.spec.ts` | Switching, deleting and restoring branches: the canvas following a clean switch and back, unsaved edits at a switch (cancel, discard and Undo, save first), a branch the open pipeline is not on (the failure view, Save disabled, the Git panel beside it to switch back, also after a reload there), Deleted and Restore, a deleted name reused (Restore as, the taken name refused), Undo of a delete, deleting the branch you are on, and archiving it with unsaved edits. |
+| `frontend/e2e/git-recovery.spec.ts` | Getting back on track after git use outside Haute: a project left on an earlier version (the chooser keeping it on a new branch, choosing the existing branch instead, closing the chooser, saving before choosing, an unusable name), a switch to another branch (Go back, Open the branch manager), files a git action left out of step (Files in use, Retry, Save and Commit refused), and, on Windows only, a switch over a file another process holds open, shared for reading or not at all. |
 | `frontend/e2e/save-conflict.spec.ts` | Two-page Playwright witness for the Save base-revision conflict: with live sync cut off, a stale save is rejected while the local edit survives, and a fresh save succeeds after an explicit reload. |
 | `frontend/e2e/rebuilt-frontend.spec.ts` | Chromium witness for a page served before a rebuild: with a lazily loaded panel's chunk request aborted after page load, the panel offers "Haute has been updated" and a Reload (no dead "Try again"), and the reload loads the panel. |
 | `frontend/e2e/job-progress-render.benchmark.spec.ts` | `@benchmark` Playwright coverage for job-progress rendering. |
@@ -184,8 +188,10 @@
   CI retries twice, recording traces on first retry and screenshots/video on
   failure.
 - **E2E project reset** (`frontend/e2e/projectIsolation.ts`) verifies the git toplevel,
-  restores `main`, deletes other branches and version tags, scrubs untracked files with
-  `git clean -fdx`, and reseeds the working branch. A test can finish while the backend
+  restores `main`, deletes other branches, version tags and the deleted branches' pins under
+  `refs/haute/`, scrubs untracked files with `git clean -fdx`, and reseeds the working
+  branch. `e2eGit` runs one git command in the e2e project after the same toplevel check,
+  for a spec that does what an analyst does in a terminal or reads back what the app did. A test can finish while the backend
   still completes work that test started — an input-snapshot build holds its store lock
   files open for its duration — and Windows cannot delete an open file, so the scrub is retried every
   250 ms until it succeeds, for at most 30 seconds; after that the reset fails with git's

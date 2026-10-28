@@ -113,6 +113,8 @@ haute ci secrets
 
 It checks that Databricks accepts both pairs, then stores the four values as encrypted repository secrets, printing their names and never their values. `haute ci secrets --check` lists which of the four the repository has.
 
+With the GitHub CLI signed in, the editor does this for you too. The Push that first publishes your project to an empty GitHub repository stores whichever of the four the repository doesn't have, before `main` arrives. A later Push that finds some missing offers **Set from .env** in the Git panel. The editor never replaces a secret the repository already has: run `haute ci secrets` to change one.
+
 ### By hand, or on another CI provider
 
 How to add them depends on your CI provider:

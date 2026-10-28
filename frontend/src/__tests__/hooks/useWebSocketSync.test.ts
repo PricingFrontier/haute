@@ -915,7 +915,9 @@ describe("useWebSocketSync", () => {
       // A later update without an origin clears the focus and fits the graph.
       await act(async () => {
         latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify(pipelineDocumentFrame({ ...document, source_revision: "r3" })),
+          data: JSON.stringify(
+            pipelineDocumentFrame({ ...document, source_revision: "r3" }, "document-fingerprint-r3"),
+          ),
         }))
         vi.advanceTimersByTime(100)
       })

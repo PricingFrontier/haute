@@ -9,19 +9,19 @@
 | `frontend/src/panels/gitPanelCache.ts` | Module-level session caches (`branchHistory`, `milestoneSaves`, whole-forest `graphCache`) with LRU eviction, feeding `useGitHistory`'s stale-while-revalidate hydration and unchanged-payload short-circuit. |
 | `frontend/src/panels/gitgraph/layout.ts` | Pure layout: `computeGitGraphLayout` turns a `GitGraphResponse` + the panel's row list into a `RailModel` (lanes, dots, curves, magnifiers, spawn stubs); `computeRailRuns` consolidates per-row cells into whole-length vertical line segments. No DOM, no fetch. |
 | `frontend/src/panels/gitgraph/GraphCell.tsx` | Rendering: `GraphRailCell` (per-row SVG cell), `GraphRailOverlay` (the measured whole-box overlay of consolidated runs), `GraphRailHeader` (top departing-branch chip strip), `Magnifier`. Pure presentation over `frontend/src/panels/gitgraph/layout.ts` types. |
-| `frontend/src/stores/useGitStore.ts` | Zustand store: working-branch readiness + retry error, shared branch-list state/action, modal routing (`GitModalMode`), peek/comparison/move targets, the refresh-triggering nonces (`historyNonce`, `commitNonce`, `branchesExpandNonce`), and `uncaptured`, the files writes reported left off the ledger, kept for a capture. |
+| `frontend/src/stores/useGitStore.ts` | Zustand store: working-branch readiness + retry error, shared branch-list state/action, modal routing (`GitModalMode`), peek/comparison/restore targets, the refresh-triggering nonces (`historyNonce`, `commitNonce`, `branchesExpandNonce`), and `uncaptured`, the files writes reported left off the ledger, kept for a capture. |
 | `frontend/src/stores/saveCapture.ts` | `reportSaveCapture`: what a write answered about its version capture, reported the same way for every write (the pipeline's save, the form's save, a Pipeline file written or deleted) — the ledger commit onto the status for the branch indicator through `setLastSaveSha` (left as it is when the answer has no commit field), `notifyHistoryChanged` so an open panel refetches, the answer's `uncaptured` files added, each once, to the git store's `uncaptured`, each warning in a toast of its own, and the identity modal opened on `identity_required` unless it was dismissed this session (`isIdentityPromptDismissed`) or is already open. `captureUncaptured`: nothing while nothing is kept; else the kept files taken off the store, sent to `POST /api/git/capture` (`captureFiles`) and the answer reported, so a file still uncaptured is kept again, while a request that fails keeps them all and toasts "Version capture failed: <reason>"; the identity prompt calls it once an identity is recorded and the project save at its start. |
 | `frontend/src/stores/gitBranchLoader.ts` | Lazily loaded branch-list request coordinator. It publishes results into `useGitStore` while delegating the in-flight/queued-refresh bookkeeping to `singleFlight.ts`, keeping branch-only client code out of the initial editor bundle. |
 | `frontend/src/stores/singleFlight.ts` | Shared resettable single-flight utility: request joining, the trailing-refresh queue (exactly one follow-up per active request, generation-anchored), and the stalled-request watchdog. Consumed by `useGitStore.ts` (working-branch status) and `gitBranchLoader.ts` (branch list). Test seam: both stores' `reset…ForTests` exports delegate to its `reset()`. |
-| `frontend/src/components/BranchIndicator.tsx` | Toolbar entry point: explicit repository/readiness/error labels with Retry, plus a ready branch-name button that opens the panel on the current branch. Truncated errors use the shared `Tooltip` to expose the full diagnostic on error hover or Retry focus; its function child places `aria-describedby` on Retry. |
-| `frontend/src/components/BranchManager.tsx` | Branch list/create/switch/archive/delete/restore, embedded in the Git panel; owns its own confirm dialogs and row context menu. |
-| `frontend/src/hooks/useProjectDirty.ts` | `useProjectDirty`: whether the project holds unsaved edits, the canvas's (`useGraphStore`) or the workbench's form's (`useWorkbenchStore`'s `formDirty`, mirrored by the form store, a lazy chunk); what every navigation guard asks about. `discardFormEdits`: after a switch chosen over the form's unsaved edits has succeeded, the form read again (the form store imported then), so the destination's form shows; nothing while the form is as saved. |
+| `frontend/src/components/BranchIndicator.tsx` | Toolbar entry point: explicit repository/readiness/error labels with Retry (an `interrupted` clone's Retry calls `retryInterruptedGit` and reloads readiness), plus a ready branch-name button that opens the panel on the current branch. Truncated errors use the shared `Tooltip` to expose the full diagnostic on error hover or Retry focus; its function child places `aria-describedby` on Retry. |
+| `frontend/src/components/BranchManager.tsx` | Branch list/create/switch/archive/delete/restore, embedded in the Git panel; owns its own confirm dialogs and row context menu. Its Deleted section lists `deleted` from the branch listing with Restore (`undeleteBranch(id)`), and a "Restore as" name box when a live branch has the name. |
+| `frontend/src/hooks/useProjectDirty.ts` | `useProjectDirty`: whether the project holds unsaved edits, the canvas's (`useGraphStore`) or the workbench's form's (`useWorkbenchStore`'s `formDirty`, mirrored by the form store, a lazy chunk); what every navigation guard asks about. `discardFormEdits`: after a switch chosen over the form's unsaved edits has succeeded, the form read again (the form store imported then), so the destination's form shows; nothing while the form is as saved. `discardCanvasEdits`: after a switch chosen over the canvas's unsaved edits has succeeded, the canvas's edits dropped (`markSaved`, the sync banner cleared, `setGraphSynchronized(false)` so the answer applies even when the destination's document is the one last accepted) and a resync requested (`requestResync`), so the destination's pipeline shows; nothing while the canvas is as saved. |
 | `frontend/src/components/GitNavigationConfirm.tsx` | Shared clean/dirty navigation confirmation used by branch-manager and graph-lane switches plus Create & Move; dirty mode offers Cancel, Discard, and Save first. |
 | `frontend/src/components/CommitBreadcrumb.tsx` | `CommitBreadcrumb` (version-relative label for a comparison canvas) and `ComparisonDelta` (historic↔current commit-count chip). |
 | `frontend/src/components/MilestoneCommitModal.tsx` | Commit modal: required message (500-character maximum with visible validation) + version label form, and the 409 fork-warning override flow. |
-| `frontend/src/components/MoveConfirmModal.tsx` | Pre-move save/discard/confirm prompt: reads `useGitStore.moveTarget` for the target label and `useProjectDirty` (the canvas's or the workbench's form's unsaved edits) to decide single-confirm vs. save-or-discard, and locks buttons plus Escape/backdrop close (`busy`) once clicked while the caller performs the actual move. |
-| `frontend/src/components/WorkingBranchModal.tsx` | Startup / save-gate branch-selection modal, with an inline git-identity sub-form. |
-| `frontend/src/components/RemotePushControl.tsx` | Remote dropdown, ahead/behind + ledger-divergence display, explicit push (including empty-remote default-bootstrap tooltip/toast and the pending-save integrity confirm), catch-up, the non-fast-forward `PushRejectedModal`, `AheadBehind`/`LedgerStatus`/`RejectedLeg` sub-components. |
+| `frontend/src/components/RestoreConfirmModal.tsx` | The save/discard/confirm prompt before a restore: reads `useGitStore.restoreTarget` for the target label and `useProjectDirty` (the canvas's or the workbench's form's unsaved edits) to decide single-confirm vs. save-or-discard, and locks buttons plus Escape/backdrop close (`busy`) once clicked while the caller performs the actual restore. |
+| `frontend/src/components/WorkingBranchModal.tsx` | Startup / save-gate branch-selection modal, with an inline git-identity sub-form. Its default choice is the checked-out branch when eligible, else the first eligible branch, else "Create new branch…"; on a `detached` status it is always "Create new branch…", with a line saying that an existing branch opens its latest save. |
+| `frontend/src/components/RemotePushControl.tsx` | Remote dropdown, ahead/behind + ledger-divergence display, explicit push (including empty-remote default-bootstrap tooltip/toast and the pending-save integrity confirm), the deploy's-secrets toasts and `CiSecretsMissing` line with its Set from .env button, catch-up, the non-fast-forward `PushRejectedModal`, `AheadBehind`/`LedgerStatus`/`RejectedLeg` sub-components. |
 | `frontend/src/components/DivergenceModal.tsx` | Recorded-branch-vs-HEAD divergence recovery modal (go home / stay here / open branch manager). |
 | `frontend/src/components/ModalForm.tsx` | The form blocks the working-branch, divergence and save-time identity modals share inside `ModalShell`: the heading with its line of context, the modal text input, the git identity fields (name, email, global-config checkbox) and the cancel/submit row. |
 | `frontend/src/utils/vcHistory.ts` | Records switch/archive/restore/delete as undoable entries on `useGraphStore`'s VC history stacks; each entry's undo/redo leg re-syncs git status + the panel's history nonce. |
@@ -31,8 +31,8 @@
 **`GitModalMode`** (`frontend/src/stores/useGitStore.ts`) — `"select" | "divergence" | "milestone" | "storage" | "upstream" | "identity"`; which gating modal is open (`null` means none). The first three drive `WorkingBranchModal`, `DivergenceModal`, and `MilestoneCommitModal`; `"storage"`, `"upstream"`, and `"identity"` are routed by the hosted-project-storage surface (`StorageBindModal`, `UpstreamSyncModal`, and `IdentityPromptModal`).
 
 **`GitComparison`** — `{ sha: string; label: string }`. Dual-purpose: `comparison` (the
-read-only side-by-side target) and `moveTarget` (the pending move, gated by
-`MoveConfirmModal` — see Module map) are both typed as this shape but are distinct store
+read-only side-by-side target) and `restoreTarget` (the pending restore, gated by
+`RestoreConfirmModal` — see Module map) are both typed as this shape but are distinct store
 fields with independent lifecycles.
 
 **`GitPendingAction`** — `"save" | "commit" | null`; an action queued behind a
@@ -42,9 +42,20 @@ fields with independent lifecycles.
 `default_branch: string` and `bootstrapped_default: boolean` members in addition to the
 remote, working/ledger names, and `pushed_refs`. The matching runtime guard requires and
 parses both members; `bootstrapped_default` is false by default on the server but is always
-present on the wire. `pushed_refs` names the explicit branch refspecs submitted by the
-atomic push (not implicit `--follow-tags` tags), and does not necessarily mean each tip
-changed.
+present on the wire. `pushed_refs` names the explicit branch refspecs the Push submitted
+(for a bootstrap, the default's own push and then the atomic pair push; never implicit
+`--follow-tags` tags), and does not necessarily mean each tip changed. `ci_secrets` is a
+`GitCiSecrets` for a GitHub remote's repository, else `null`.
+
+**`GitCiSecrets`** (`frontend/src/api/types.ts`) — `{ repository, state, missing, newly_set,
+problem }`, the deploy's secrets as a Push or Set from .env found them ([cli](../cli/low-level.md)):
+`state` is `"ready" | "missing" | "unknown"`, `missing` and `newly_set` are secret names, and
+`problem` is the reason they could not be read or set, else `null`. `gitPush` validates it
+inside `GitPushResponse`, and `gitSetCiSecrets(remote)` (`POST /api/git/ci-secrets`) returns
+one, both through the generated validators. Neither sets a browser deadline: the server
+bounds each of their steps (git's, `gh`'s and Databricks' own timeouts), and a first
+publication runs several, so a deadline would report a failure while the push or the
+secrets still land.
 
 **`GitRemote`** — `{ name, url, working, ledger }`. `working` and `ledger` are
 `GitRemoteLeg | null` and are the only divergence fields; the working leg is not duplicated
@@ -181,9 +192,20 @@ stringified geometry key short-circuits `setRowGeom` when nothing actually moved
 `railRuns = computeRailRuns(rail, rowGeom)` is then a pure `useMemo` over that geometry.
 
 **Branch mutation flows.** `GitPanel.submitFork` → `createWorkingBranch(name, {at: sha,
-move})`; on `res.switched` it does a full `window.location.reload()` (a move relocates the
-working tree, so the client can't safely reconcile in place) — a parallel (non-move)
-create instead just calls `refresh()`. Before any switch or move-mode create,
+move, switch})`, from the fork draft's mode: `"parallel"` (New branch from here),
+`"switch"` (Start a branch from this version, the row button or the menu item) or
+`"move"` (Move the later saves to a new branch). The naming step opens at the row
+button or the menu's point and is moved back inside the window, 8px from its edges, once
+its size is known: the row button sits at the panel's right edge, so a box opened there
+would otherwise put Create off screen. While the unsaved-edits question below is open
+the naming step is hidden, since its overlay would cover the question, and Cancel brings
+it back with the name typed. A refused create (a name git cannot use, a protected or
+taken name) is said inside the naming step (`git-panel-fork-error`), which stays open
+with the name until it is changed, rather than in a toast, which would sit over Create at
+the window's right edge. On `res.switched` it does a full
+`window.location.reload()`, since the checkout replaces the working tree and the client
+can't safely reconcile in place. A parallel create instead just calls `refresh()`. Before
+any switch, switch-mode or move-mode create,
 `GitNavigationConfirm` is shown on the project's dirty state, the canvas's or the
 workbench's form's (`useProjectDirty`): clean navigation gets the ordinary
 confirmation, while dirty navigation requires an explicit discard or a successful
@@ -210,19 +232,25 @@ wrapped by `leg()`, which toasts and resyncs (`loadStatus` + `notifyHistoryChang
 success and toasts + rethrows on failure so the store keeps the entry available for a
 retry rather than dropping it. Because the closures only touch stores (never component
 state), an entry keeps working after the panel that pushed it unmounts. Delete's inverse
-is `undeleteBranch` rather than a full re-create, since deletes are trash-preserving
-server-side.
+is `undeleteBranch` with the delete's `trash_id` rather than a full re-create, since deletes
+are trash-preserving server-side.
 
-**Move-to-version flow.** `GitPanel`'s row/lane move affordances call
-`useGitStore.requestMove({sha, label})`, which `App.tsx` surfaces as `MoveConfirmModal`. The
-modal itself performs no API call: clicking any of its buttons sets a local `busy` flag
-(blocking double-submission) and calls the caller-supplied `onConfirm(saveFirst)` —
-`saveFirst` is `true` only for the dirty-project "Save & move" button, `false` for a
-clean-canvas confirm or an explicit "Discard & move". `App.tsx`'s `handleMoveConfirmed` owns
-the actual sequencing: optionally flushing unsaved edits via `handleSave()`, then calling the
-`moveToVersion` API and reloading the page on success (a move replaces the whole working tree,
-so the client re-initialises from scratch rather than reconciling in place) — or closing the
-modal (`closeMove`) and toasting on either a failed save or a failed move.
+**Restore flow.** `GitPanel`'s restore affordances (the row button and the row menu's
+"Restore this version") call `useGitStore.requestRestore({sha, label})`.
+- **Where they show:** on the current branch's own history only (not while peeking), and
+  never on the current version. That is `pending[0]`, or with nothing pending
+  `milestones[0]` and the first (newest) save expanded under it.
+- **The modal:** `App.tsx` surfaces the target as `RestoreConfirmModal`. The modal makes no
+  API call: clicking any of its buttons sets a local `busy` flag (blocking
+  double-submission) and calls the caller-supplied `onConfirm(saveFirst)`. `saveFirst` is
+  `true` only for the dirty-project "Save & restore" button.
+- **The handler:** `App.tsx`'s `handleRestoreConfirmed` owns the sequencing. It optionally
+  saves first via `saveProject()`, then calls `restoreVersion` (`POST
+  /api/git/restore-version`).
+- **On success:** it records the label under `JUST_RESTORED_KEY` in `sessionStorage` and
+  reloads the page, which toasts "Restored <label> as a new save."
+- **On failure:** it toasts "Could not restore this version: <reason>" and closes the modal
+  through `closeRestore`.
 
 **Remote push flow.** `RemotePushControl` loads configured remotes and their locally-known
 divergence, and auto-selects only a sole remote. That GET never fetches. Project
@@ -234,8 +262,19 @@ your merge target." Pending saves still interpose the existing confirmation befo
 
 On success, `doPush` branches only on the response metadata. When
 `bootstrapped_default=true`, it emits `Published <default_branch> and your branch history to
-<remote>`. When false, it retains the ordinary pushed-ref-count toast. It then reloads
-remote divergence in either case. The frontend neither infers emptiness nor hardcodes
+<remote>`. When false, it retains the ordinary pushed-ref-count toast. It then reads
+`ci_secrets`: a `newly_set` name toasts success `Set <n> deploy secret(s) on <repository> from
+.env`; a `problem` toasts a warning `Couldn't set the deploy's secrets on <repository>:
+<problem>` when the state is `missing`, or when it is `unknown` and the Push bootstrapped, and
+an `unknown` state after any other Push shows nothing. The control keeps `{ remote, report }`
+for the `CiSecretsMissing` line only when the state is `missing`, and clears it otherwise,
+`ci_secrets: null` included, then reloads remote divergence whichever the outcome. The line
+renders while that remote is selected: `<n> deploy secret(s) missing on GitHub`, the names
+in its tooltip, and **Set from .env**, which calls `gitSetCiSecrets(remote)` with the button
+disabled until it settles. Success clears the line and toasts `Set <n> deploy secret(s) on
+<repository> from .env`, or `<repository> already has the deploy's secrets` when `newly_set`
+is empty; a failure toasts the error `Couldn't set the deploy's secrets: <detail>` and keeps
+the line. The frontend neither infers emptiness nor hardcodes
 `main`; strict inspection, related-history validation, refspec choice, atomicity, and remote-
 host default-branch configuration are backend/out-of-scope concerns. Any refusal follows
 the existing push error path and never emits a success toast or retries automatically.
@@ -285,14 +324,14 @@ or a failed push.
   branch's `fork_of` parent's colour; the palette itself (`paletteOrder`) is computed only
   over non-archived branches in payload order.
 - **Fork-menu availability while peeking.** The context menu always opens (never falls
-  through to the browser menu) on any row, but the "new branch from here" / "…& move work
-  here" items are omitted while peeking — those actions only make sense relative to the
-  user's own working branch.
-- **Create-and-move eligibility is narrower than historical move.** `canMove` gates only
-  "New branch & move work here": it is true for the newest milestone and pending saves, and
-  false for older milestones and saves already folded inside a milestone. The independent
-  "Move to this version" action is available on every historical row because it checks out
-  that version without rewinding the source ledger.
+  through to the browser menu) on any row, but while peeking it offers only "View
+  side-by-side". Restore, Start a branch, New branch from here and "Move the later saves" only
+  make sense relative to the user's own working branch, and the row buttons for Restore
+  and Start a branch are left out too.
+- **Create-and-move eligibility is narrower than starting a branch.** `canMove` gates only
+  "Move the later saves to a new branch": it is true for the newest milestone and pending saves, and
+  false for older milestones and saves already folded inside a milestone. Start a branch
+  and New branch from here are available on every row of the user's own history.
 - **`BranchManager`'s archive-vs-delete asymmetry.** Archive on the *current* branch with
   uncommitted tracked project changes redirects to a "commit a milestone first" prompt
   instead of proceeding. Before either current-branch archive or confirmed delete reaches
@@ -301,13 +340,16 @@ or a failed push.
   with Cancel/Discard/Save-first. Delete remains enabled because its own dialog names
   branch-history loss (`deleteLoss()`), but that confirmation never bypasses the canvas
   guard.
-- **`MoveConfirmModal` self-guards independently of its caller.** `App.tsx` only mounts it
-  once `moveTarget` is truthy, but the component also reads `moveTarget` itself and returns
-  `null` when unset. After an action sets `busy`, button, Escape, and backdrop close paths
-  are all inert until the parent settles the move.
+- **`RestoreConfirmModal` self-guards independently of its caller.** `App.tsx` only mounts
+  it once `restoreTarget` is truthy, but the component also reads `restoreTarget` itself and
+  returns `null` when unset. After an action sets `busy`, button, Escape, and backdrop close
+  paths are all inert until the parent settles the restore.
 - **`RemotePushControl` never defaults to a push target** unless exactly one remote exists
   — with 0 remotes it shows an explicit "no remotes" message, with 2+ it requires a
   deliberate selection, so a push is never accidental.
+- **The deploy's-secrets line is response-driven.** It appears only from a Push response
+  saying `missing` for a remote; mounting, refreshing and listing remotes never ask for the
+  secrets, and only the Set from .env click sends them anywhere.
 - **Bootstrap is response-driven and first-Push-only.** The special toast appears only for
   `bootstrapped_default=true`; an idempotent second push receives false and uses the normal
   toast. The displayed branch comes from `default_branch`, so custom defaults work and UI
@@ -361,10 +403,11 @@ or a failed push.
   failure retains the last good remotes and sets a visible load-error state; the rejection
   modal renders outside the empty/error body so refresh failure cannot dismiss an
   in-progress recovery flow.
-- `MoveConfirmModal` itself throws and catches nothing — it is a stateless (aside from
-  `busy`) confirm surface. The move's actual try/catch (a failed `handleSave()`, a failed
-  `moveToVersion` call) lives in `App.tsx`'s `handleMoveConfirmed`, which toasts and calls
-  `closeMove()` on either failure rather than leaving the modal open in a stuck busy state.
+- `RestoreConfirmModal` itself throws and catches nothing — it is a stateless (aside from
+  `busy`) confirm surface. The actual try/catch of a restore (a failed `saveProject()`, a
+  failed `restoreVersion` call) lives in `App.tsx`'s `handleRestoreConfirmed`, which toasts
+  and calls `closeRestore()` on either failure rather than leaving the modal open in a stuck
+  busy state.
 - `useGitStore.loadStatus()` catches failures into `statusError` using the shared Git
   formatter while retaining its last successful `status`. A successful retry clears the
   error. A first-load failure and a successful `state: "no-repository"` response therefore
@@ -385,11 +428,16 @@ Library component/unit tests (no e2e for this surface).
   a file a write reports while the capture is under way kept.
 - **`frontend/src/panels/__tests__/GitPanel.test.tsx`** — the primary behavioural suite: rendering, milestone
   expand/collapse, pending-save display, both refresh nonces, right-click menus
-  (fork/view/move) in every row context (milestone / pending save / expanded save),
+  (fork/view/restore/start a branch) in every row context (milestone / pending save /
+  expanded save), the Start a branch row button opening the naming step and creating a
+  switched branch at that row,
   peeking's effect on menu contents, the fork-creation dialog, the graph rail's dots/
   stubs/chips/magnifier, lane and dot context menus, in-app branch switching from the
   lane menu (including the dirty-canvas guard, and the workbench's form's edits dropped
-  once a lane switch chosen over them succeeds), and the peek in-flight mislabel guard.
+  once a lane switch chosen over them succeeds), the peek in-flight mislabel guard, and the
+  restore affordance: shown on older milestones, pending and folded saves, absent on the
+  current version and while peeking, the row button and menu item requesting a restore of
+  that row.
 - **`frontend/src/panels/__tests__/GitPanel.gaps.test.tsx`** — targeted gap-fill: fork-with-switch page reload, fork
   failure toast, fork-with-move submission, the view affordance opening a comparison,
   peeking's menu contents (a second angle on the same invariant as the main suite).
@@ -425,17 +473,19 @@ Library component/unit tests (no e2e for this surface).
   failure with retained actionable detail, concurrent readiness-request de-duplication,
   shared branch publication and request de-duplication, modal open/close and pending-
   action interaction (including the close-clears-pending-action regression), peek
-  set/clear, each nonce incrementing exactly once per action, comparison and move-target
-  toggling.
+  set/clear, each nonce incrementing exactly once per action, comparison and
+  restore-target toggling.
 - **`frontend/src/components/__tests__/BranchManager.test.tsx`** — listing (current/others/archived),
   peek-without-switch, create (with and without move, including the move confirm step),
   switch confirmation (including persisted "don't ask again") and its in-app (no-reload)
   behaviour plus the VC undo entry, dirty-navigation Cancel/Discard/Save-first behavior
   for switch and Create & Move (including the skipped-confirmation preference, the guard
   on the workbench's form's unsaved edits, and those edits dropped once a switch chosen
-  over them succeeds and kept when it fails), archive
+  over them succeeds and kept when it fails, and likewise the canvas's edits, a resync
+  requested once they are dropped), archive
   (direct and the dirty-current redirect), delete with confirm, restore, the
-  uncommitted/unsaved indicator display, the persistent error banner, and the full row
+  "not saved" / "saves to commit" indicator display, the Deleted section (restore, and
+  restore under another name when the name is taken), the persistent error banner, and the full row
   context-menu surface (open, per-state item visibility, each action's routing, backdrop
   dismiss).
 - **`frontend/src/components/__tests__/BranchManager.gaps.test.tsx`** — the `reloadOnDone` matrix:
@@ -443,29 +493,35 @@ Library component/unit tests (no e2e for this surface).
   the dirty-canvas guard on current-branch archive and delete before those reload paths.
 - **`frontend/src/components/__tests__/BranchIndicator.test.tsx`** — checking and retryable-error
   states, full error tooltip on hover and Retry focus with an accessible description,
-  no-repository/unset/detached/invalid/divergent/ready rendering, the branch-name
+  no-repository/unset/detached/invalid/divergent/ready rendering, an interrupted clone
+  naming its files with a Retry that reloads readiness on success and toasts the files
+  still held on refusal, the branch-name
   click's panel/store side effects, and that the ready state stays branch-only — carrying no
   save SHA, including while a comparison is open.
 - **`frontend/src/components/__tests__/CommitBreadcrumb.test.tsx`** — root/milestone collapse-to-anchor
   rendering, the non-milestone nearest-milestone→commit breadcrumb, and
   `ComparisonDelta`'s singular/plural count text.
-- **`frontend/src/components/__tests__/MoveConfirmModal.test.tsx`** — target-label rendering, clean-canvas
-  single-confirm calling `onConfirm(false)`, dirty-canvas save/discard button pair calling
-  `onConfirm(true)`/`onConfirm(false)` respectively with the warning message shown, the
-  same pair for unsaved edits in the workbench's form alone, Cancel
-  calling `onClose` without confirming, busy Escape/backdrop dismissal refusal, and
-  rendering nothing when `moveTarget` is `null`.
-- **`frontend/src/__tests__/App.integration.test.tsx`** — the parent-owned move transaction rejects a
-  failed `moveToVersion` request with an error toast and clears `moveTarget`, proving the
-  busy-locked `MoveConfirmModal` cannot remain stranded after its promise settles; and Save
-  captures the files earlier writes left uncaptured before it saves the pipeline.
+- **`frontend/src/components/__tests__/RestoreConfirmModal.test.tsx`** — the restore wording
+  with the target's label, clean-canvas single-confirm calling `onConfirm(false)`,
+  dirty-canvas save/discard button pair calling `onConfirm(true)`/`onConfirm(false)`
+  respectively with the warning message shown, the same pair for unsaved edits in the
+  workbench's form alone, Cancel calling `onClose` without confirming, busy
+  Escape/backdrop dismissal refusal, and rendering nothing when `restoreTarget` is `null`.
+- **`frontend/src/__tests__/App.integration.test.tsx`** — the parent-owned restore
+  transaction rejects a failed `restoreVersion` request with an error toast and clears
+  `restoreTarget`, proving the busy-locked `RestoreConfirmModal` cannot remain stranded
+  after its promise settles; a restore that succeeds reloads and the reloaded page toasts
+  the restore; a detached project opens the branch chooser at startup on "Create new
+  branch…"; and Save captures the files earlier writes left uncaptured before it saves the
+  pipeline.
 - **`frontend/src/components/__tests__/MilestoneCommitModal.test.tsx`** — submit gating on message
   presence, visible validation above the 500-character maximum, successful commit
   with/without a version label, the 409 fork-warning → commit-anyway override flow, and
   backing out of that warning.
 - **`frontend/src/components/__tests__/WorkingBranchModal.test.tsx`** — eligible-branch listing plus
-  create option, adopting an existing branch, creating a new one, submit gating, and the
-  inline identity sub-form.
+  create option, adopting an existing branch, creating a new one, submit gating, the
+  inline identity sub-form, and a detached project starting on "Create new branch…" with
+  its explanation (and no explanation otherwise).
 - **`frontend/src/components/__tests__/RemotePushControl.test.tsx`** — no-remotes messaging, sole-
   remote auto-selection, multi-remote deliberate-selection requirement, the pending-save
   push confirm (both proceeding and cancelling), ahead/behind display in all states
@@ -475,7 +531,12 @@ Library component/unit tests (no e2e for this surface).
   routing, and the rewrite-specific heading. Push-success coverage pins the exact tooltip,
   the special bootstrap toast using a custom `default_branch`, the ordinary toast when
   `bootstrapped_default=false` (including an idempotent later push), post-push reload, and
-  the guarantee that no push occurs merely from mount/startup/branch selection.
+  the guarantee that no push occurs merely from mount/startup/branch selection. Deploy's-
+  secrets coverage: the toast for secrets a Push set; the warning for a first publication's
+  problem, and silence for an `unknown` state after a later Push; the missing-secrets line
+  with its names, shown only for its remote; Set from .env sending the selected remote, then
+  clearing the line on success and keeping it with an error toast on failure; and a later
+  Push reporting none missing clearing it.
 - **`frontend/src/components/__tests__/RemotePushControl.gaps.test.tsx`** — error-message fidelity for
   catch-up and branch-away failures (`Error` vs. non-`Error` rejection), unparseable-409
   fallback to a plain toast (raw structured JSON is not rendered, while a human-readable
@@ -487,8 +548,12 @@ Library component/unit tests (no e2e for this surface).
   `frontend/src/types/__tests__/guards.contract.test.ts`** — the push
   client/guard contract requires `default_branch` and `bootstrapped_default`, preserves
   submitted `pushed_refs`, accepts both boolean values, and rejects missing or wrongly typed
-  bootstrap metadata rather than inventing a default. The guard suite also accepts exactly
-  the six working-branch readiness states, preserves detached `head_sha`, and rejects an
+  bootstrap metadata rather than inventing a default. `gitSetCiSecrets` posts the remote to
+  `/api/git/ci-secrets` and rejects a `GitCiSecrets` whose state is not one of the three, and
+  both it and `gitPush` still answer after five minutes, where the default deadline would
+  have ended them.
+  The guard suite also accepts exactly
+  the eight working-branch readiness states, preserves detached `head_sha`, and rejects an
   unknown state.
 - **`frontend/src/components/__tests__/DivergenceModal.test.tsx`** — recorded/current branch naming,
   each of the three resolution choices, and stay-here's disabled state when the current
