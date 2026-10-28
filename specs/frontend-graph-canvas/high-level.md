@@ -811,6 +811,24 @@ candidate, with the error toast.
 
 ## Failure model
 
+> NOTE: A blocked node after an unavailable source can currently throw during
+> healthy-editor input derivation before its recovery inspector renders.
+> [FGC-R09](../roadmap/frontend-graph-canvas.md#fgc-r09--recovery-inspection-does-not-require-executable-input-identities) owns the recovery boundary.
+
+> NOTE: Utility navigation can discard a draft typed during a pending read if its
+> later autosave fails, and late reads can steal a newer selection.
+> [FGC-R08](../roadmap/frontend-graph-canvas.md#fgc-r08--utility-navigation-preserves-drafts-across-pending-reads) owns draft and navigation identity.
+
+> NOTE: Distinct parsed or pasted connections can share an id; pending submodel drill-in
+> can replace a newer document; mixed node/edge Delete omits unrelated selected edges.
+> [NAME-10](../roadmap/name-collisions.md#name-10--every-distinct-connection-has-a-distinct-identity),
+> [FGC-R06](../roadmap/frontend-graph-canvas.md#fgc-r06--pending-submodel-navigation-belongs-to-its-document) and
+> [FGC-R07](../roadmap/frontend-graph-canvas.md#fgc-r07--delete-removes-the-complete-eligible-selection) own these gaps.
+
+> NOTE: Auto-layout replaces nodes with the snapshot it started from, so edits
+> made while ELK runs can be lost. Applying only current, authorised geometry is
+> tracked in [FGC-R05](../roadmap/frontend-graph-canvas.md#fgc-r05--auto-layout-cannot-overwrite-edits).
+
 - `useGraph()` called outside a `<GraphProvider>` throws a plain `Error`
   naming `GraphProvider` in its message. `App.tsx` wraps the node panel in
   an `ErrorBoundary` (`name="NodePanel"`), so this surfaces as a caught

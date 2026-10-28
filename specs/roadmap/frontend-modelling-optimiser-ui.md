@@ -17,6 +17,7 @@ These packages come from the
 | FMOU-R03 | Planned | P3 | The frontend modelling specification describes the editor that exists; the dead sidebar component, the duplicated GLM conflict derivations and view switches, the message-prefix matching and the family-blind tune copy are gone. |
 | FMOU-R04 | Planned | P2 | A save never retires an auto-range run, a percentage constraint is shown and edited as one instead of being rewritten as an absolute bound, and the frontier marker that looks selected is the selected point. |
 | FMOU-R05 | Planned | P3 | The optimiser workspace has one fenced point-request lifecycle, one formatter, no raw Float32 collar, a specification that matches its Summary, and no dead exports. |
+| FMOU-R06 | Planned | P2 | A late theta/power estimate cannot replace a parameter edited for a newer target, source or training configuration. |
 
 ## Planned improvements
 
@@ -132,3 +133,24 @@ collar sentence shows `0.8`; knip reports none of the exports.
 `frontend/src/panels/optimiser/SummaryTab.tsx`;
 `frontend/src/panels/optimiser/solveReadiness.ts`;
 `frontend/src/panels/optimiser/ratebookFactorTables.ts`.
+
+### FMOU-R06 — Dispersion estimates belong to the initiating training draft
+
+**Why:** `GLMTargetConfig` aborts its estimate only on unmount and commits the resolved value
+without checking the current draft. The real component witness starts a theta estimate for
+target A, changes to target B with manually chosen theta 7, then resolves A as 3; it writes
+theta 3 into the current draft.
+
+**Plan:** Capture the estimation inputs, document/node/source identity and relevant draft
+revision. Invalidate pending work when those change or the user changes the parameter, and
+recheck before committing the estimate. Preserve an unchanged, explicitly requested estimate
+workflow and its actionable errors.
+
+**Acceptance:** Delayed theta and power responses cannot overwrite a changed target,
+factor/weight/offset/family/source or manual parameter edit. An unchanged request fills its
+field; unmount still aborts. Test real component state with controlled response order,
+including the request graph/source construction in ModellingConfig.
+
+**Dependencies:** None. `FNED-R06` owns schema inference; this package owns model-derived parameter edits.
+
+**Evidence:** `frontend/src/panels/modelling/GLMTargetConfig.tsx::GLMTargetConfig` (unmount abort effect); `frontend/src/panels/modelling/GLMTargetConfig.tsx::GLMTargetConfig.handleEstimate`; `frontend/src/panels/ModellingConfig.tsx::ModellingConfig.onEstimateDispersion`.

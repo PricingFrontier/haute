@@ -16,10 +16,11 @@ come from the [23 September 2026 codebase review](codebase-review-2026-09-23.md)
 | API-R03 | Planned | P2 | Every browser type and response parser is generated from the Pydantic models. |
 | API-R05 | Planned | P3 | The server start does not delete bytecode caches under the installed package. |
 | API-R06 | Planned | P2 | A user-fixable error is answered as one: a graph the flattener refuses, a trace that fails in the user's node code, and the two 400s that carry the server-error text, with the trace's status chosen by type rather than by message prefix. |
-| API-R07 | Planned | P1 | Utility files are written like every other project file: atomically, under the project write lock, with a revision precondition and a ledger capture. |
+| API-R07 | Planned | P1 | Utility files are written like every other project file: atomically, under the project write lock, with a revision precondition and a ledger capture. Utility reads and writes also stay inside the project across symlinks and junctions. |
 | API-R08 | Planned | P2 | A save never round-trips through the file watcher, and its request is validated before any file is staged. |
 | API-R09 | Planned | P3 | The repair routes, the admit-run-translate pattern, the path-resolution preludes and the two point-analysis services exist once each, and a save loads the pipeline once. |
 | API-R10 | Planned | P3 | Every free string and list in a request is bounded; the dead response fields and helpers are gone; the repair message and the `file` field say what is true. |
+| API-R11 | Planned | P2 | Editing an imported submodel under a nested configured pipeline reloads its importing documents. |
 
 ## Planned improvements
 
@@ -201,6 +202,17 @@ or new bytes); the save ledger records the write.
 `src/haute/routes/project_files.py`; `src/haute/routes/_helpers.py::project_write`;
 `src/haute/_file_ops.py::atomic_write_text`.
 
+**28 October full-pass addition:** Utility containment uses `pipeline_dir()/utility` as the
+trusted root without first proving that directory lies inside the project. A real Windows
+junction from project/utility to an outside directory makes GET disclose its Python file and
+PUT return ok after changing the outside file from VALUE=1 to VALUE=999. Only project discovery
+was injected. **Plan/acceptance:** resolve and authenticate the utility root against the
+project root before listing or any read/create/update/delete; retain descendant containment
+too. Symlink/junction escape tests must leave outside bytes unchanged and refuse reads, while
+an ordinary in-project utility directory works. Evidence: `src/haute/routes/utility.py::_utility_dir` and
+its `contained_path` calls. This package is P1 because the wrong trusted anchor bypasses the
+write boundary; `SBX-R01`'s shared comparison helper alone cannot repair a wrongly chosen root.
+
 ### API-R08 — A save never round-trips the watcher
 **Why:** The `.haute.json` sidecar write (`save_sidecar` → `atomic_write_text`) and the
 post-commit stale-config unlink register no self-write marker, so every save round-trips
@@ -305,3 +317,26 @@ response; `file` is POSIX on Windows.
 `src/haute/routes/_helpers.py::raise_validation_error`;
 `src/haute/routes/_save_pipeline.py::_rollback_artifacts`;
 `src/haute/routes/pipeline.py`; `src/haute/routes/utility.py`.
+
+### API-R11 — Module watching follows the configured pipeline directory
+
+**Why:** The watcher anchors modules at cwd/modules, while the configured pipeline and its
+modules can be under rating/. With haute.toml naming rating/main.py, real discovery finds the
+importer, but a modified rating/modules/factors.py event is classified as non-pipeline Python
+and skipped. The measured module edit publishes zero documents; a parent-file event publishes
+one. Existing tests chdir into the pipeline directory and miss this layout.
+
+**Plan:** Resolve watched module locations through the same configured pipeline/module context
+used by parsing and dependency discovery. Route added, modified and deleted imported modules
+through dependency invalidation and publish only their importing documents, including nested
+pipeline layouts.
+
+**Acceptance:** From the project root, load a ready rating/main.py importing
+rating/modules/factors.py, change its premium, deliver a watcher event and assert the refreshed
+importer contains the change. Cover added/deleted modules and a root-level pipeline; unrelated
+Python files still do not broadcast. Preserve self-write suppression and the save-echo
+contract.
+
+**Dependencies:** `API-R08` owns self-save echoes; share event classification without restoring those echoes.
+
+**Evidence:** `src/haute/server.py::_file_watcher`; `src/haute/server.py::_file_watcher._flush_once`; `src/haute/server.py::_file_watcher._flush_once`; watcher tests in `tests/test_server.py`.

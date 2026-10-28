@@ -363,6 +363,15 @@ strict build and raises a specific, column-named error instead.
 
 ## Failure model
 
+> NOTE: Malformed elements in non-emitting ancestor arrays can currently escape strict
+> request accounting. [JSON-R07](../roadmap/json-shredding.md#json-r07--malformed-ancestors-cannot-hide-skipped-request-data)
+> tracks the shared walker and deployed-request correction.
+
+> NOTE: OUTPUT currently drops object hops before arrays and can overwrite a
+> scalar with a conflicting array mapped from another frame. Full destination
+> paths and cross-frame container validation are tracked in
+> [JSON-R06](../roadmap/json-shredding.md#json-r06--output-preserves-the-complete-destination-path).
+
 - A malformed v2 schema config (bad table/column shape; wrong-typed
   `tables[i].emit` / `tables[i].columns[j].selected`; or a column status other
   than `Confirmed|Inferred`) is rejected up front with the exact field path by

@@ -574,6 +574,14 @@ describes. Stale, changed or already-applied plans fail before
 
 ## Failure model
 
+> NOTE: The watcher currently misses imported modules below a nested configured
+> pipeline directory when launched from the project root.
+> [API-R11](../roadmap/server-api.md#api-r11--module-watching-follows-the-configured-pipeline-directory) owns correct module/dependency routing.
+
+> NOTE: The utility directory itself is not authenticated against the project root;
+> a junction/symlink can make utility routes access outside files.
+> [API-R07](../roadmap/server-api.md#api-r07--utility-files-written-like-project-files) includes the root containment check for reads and mutations.
+
 This codebase prefers loud failure over silent fallbacks, and the server layer's job is to
 turn that loudness into a well-typed HTTP response rather than a raw traceback.
 

@@ -96,6 +96,9 @@ is treated as an implicit shared data plane.
 
 ## Failure model
 
+> NOTE: The bundle script can select a stale wheel from shared dist after a fresh
+> build. [BUG-40](../roadmap/bugs.md#bug-40--the-hosted-app-boots-from-a-lock) includes exact current-build artifact selection.
+
 - Whitespace-only values count as absent, so an all-whitespace environment is
   the local posture; an environment contract that is partial after stripping
   fails at startup naming the missing variables without exposing their values.

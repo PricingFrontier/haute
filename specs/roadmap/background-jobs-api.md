@@ -18,6 +18,7 @@ specifications and their ordinary regression tests.
 | `ROAD-WORKER-06` | Planned | P2 | A graceful server exit cancels every running job and returns within a bound instead of joining every in-flight worker. |
 | `ROAD-WORKER-07` | Planned | P3 | The three parents classify a memory failure the same way, a supervisor's persistence failure reaches the status route, a worker's own `TimeoutError` is not reported as a response timeout, and teardown failures are recorded. |
 | `ROAD-WORKER-08` | Planned | P3 | The worker modules carry one error envelope, one cgroup resolver and no dead feature. |
+| `ROAD-WORKER-09` | Planned | P2 | SharedFlights and LatestWinsQueue propagate an operation's own TimeoutError immediately instead of spinning on a completed future. |
 
 ## Planned improvements
 
@@ -160,3 +161,27 @@ a fake `mountinfo`; the named symbols are gone or called from production.
 `src/haute/routes/_background_jobs.py::IsolatedJobSupervisor`;
 `src/haute/_process_memory.py::process_rss_sampling_supported`;
 `src/haute/routes/_job_store.py::JobCommonFields`.
+
+### ROAD-WORKER-09 — Completed operation timeouts are terminal failures
+
+**Why:** SharedFlights catches `concurrent.futures.TimeoutError` from
+`Future.result(timeout=...)` as a polling timeout even when it is the completed
+operation's own exception. On Python 3.11 these are the same exception type. Real
+SharedFlights and LatestWinsQueue probes show a completed failed future spinning until
+cancellation, then returning ExecutionCancelledError instead of its original TimeoutError.
+Optimiser outcome queries and frontier point work consume these abstractions.
+
+**Plan:** Distinguish incomplete wait expiry from completed-operation failure and propagate
+the original exception immediately. Preserve cancellation checks during an actual wait.
+
+**Acceptance:** In both SharedFlights and LatestWinsQueue, an operation-raised TimeoutError
+reaches all concurrent waiters as the original terminal failure without repeated polling
+or cancellation. A successful retry completes normally. A genuinely incomplete future
+still checks cancellation while waiting.
+
+**Dependencies:** None; the correctness fix is independent of ROAD-WORKER-07's broader
+failure-taxonomy work.
+
+**Evidence:** `src/haute/routes/_shared_flights.py::FlightSubscription.wait`;
+`src/haute/routes/_shared_flights.py::SharedFlights`;
+`src/haute/routes/_shared_flights.py::LatestWinsQueue`.

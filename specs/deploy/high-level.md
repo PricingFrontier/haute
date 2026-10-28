@@ -498,6 +498,10 @@ approving it.
 
 ## Failure model
 
+> NOTE: Generated NDJSON responses currently bypass OUTPUT document pruning used by
+> JSON, so the same request can have a different nested response shape.
+> [DEP-R17](../roadmap/deploy.md#dep-r17--json-and-ndjson-preserve-the-same-output-document) owns response-mode parity.
+
 This codebase prefers loud failure over silent fallback, and deploy is where that matters
 most: a silent wrong answer here mis-prices real policies.
 

@@ -321,6 +321,15 @@ by, a scripted result.
 
 ## Failure model
 
+> NOTE: The UC create-only qualification script can currently pass despite all
+> losers failing before contention, or without running a round.
+> [ENGQ-R12](../roadmap/engineering-quality.md#engq-r12--storage-qualification-proves-actual-contention) owns the gate correction.
+
+> NOTE: The core-only optional-dependency workflow invokes a resyncing `uv run`
+> after removing the dev group; the restored connector makes its entire smoke
+> module skip, including its environment assertion. A non-vacuous lane is tracked
+> in [ENGQ-R07](../roadmap/engineering-quality.md#engq-r07--every-gate-runs-on-every-run).
+
 - A failing CI command stops its job and makes the corresponding check red;
   package, test, lint, type, coverage, mutation-config, frontend, and E2E
   failures are surfaced rather than replaced with a passing fallback. GitHub

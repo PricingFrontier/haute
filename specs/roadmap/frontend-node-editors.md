@@ -15,10 +15,11 @@ These packages come from the
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | FNED-R01 | Planned | P2 | An editor writes only what the engine reads, shows values as the engine will match them, resolves a registered alias's version, flags only the conflicts the save refuses, and refuses a non-integer step count instead of coercing it. |
-| FNED-R02 | Planned | P2 | Every text control goes through the committed-input kit, so a value changed by undo, redo or a document broadcast is shown, no field commits per keystroke, and every request failure shows the server's detail. |
+| FNED-R02 | Planned | P2 | Every text control goes through the committed-input kit, so a value changed by undo, redo or a document broadcast is shown, no field commits per keystroke, and every request failure shows the server's detail. Returning to a cached directory clears the previous directory's error. |
 | FNED-R03 | Planned | P3 | The pickers, cards and grouping helpers written twice exist once, and the vestigial `errorLine` prop and the dead exports are gone. |
 | FNED-R04 | Planned | P2 | A banding rule the sidecar writer refuses is marked in the grid and refused by the save validator with a 400, a typed relativity that does not parse is refused rather than replaced, and the step builder's argument controls refuse what the renderer refuses with a visible message. |
 | FNED-R05 | Planned | P3 | The step builder's open card follows its step through undo, the pivot editor carries no unknown keys the backend refuses, the two banding grids, the two rating grids, the params pickers and the zone cards exist once, and the internal-only exports are un-exported. |
+| FNED-R06 | Planned | P1 | A schema inference reply cannot replace a newer input file, table configuration or document. |
 
 ## Planned improvements
 
@@ -105,6 +106,14 @@ undo entry; Infer Tables shows the server's detail; the lint fails on
 `frontend/src/panels/editors/_shared.tsx`;
 `frontend/src/panels/editors/_ioFormats.ts`; `frontend/src/api/errors.ts`;
 `frontend/eslint.config.js`.
+
+**28 October full-pass addition:** The shared FileBrowser cache-hit branch returns before
+clearing an earlier directory error. After a child returns Permission denied, Up restores
+cached parent items but continues rendering the error instead of files. **Plan/acceptance:**
+cached navigation resets request/error/loading state coherently; a real picker test visits a
+failed child then returns to a cached parent and can select its file. Evidence:
+`frontend/src/panels/editors/_shared.tsx::FileBrowser` (cache-hit effect) and its error-first render. The witness measured
+the lingering error; selection was blocked before its assertion.
 
 ### FNED-R03 — One copy of each picker, card and helper
 **Why:** The Workbench Output's table card re-implements `WorkbenchTableCard`,
@@ -226,3 +235,40 @@ about ten bands.
 `frontend/src/panels/editors/explorePivots/ZoneSection.tsx`;
 `frontend/src/panels/editors/banding/GenerateBandsDialog.tsx`;
 `frontend/src/utils/polarsDtypes.ts`.
+
+### FNED-R06 — Inference stays bound to its source and draft
+**Why:** The [28 October review](codebase-review-2026-10-28.md) started Infer
+Tables on `first.json` with no tables, changed the editor to `second.json` with
+a new table, and released the old response. `inferTables` used the old closure's
+empty-table test and `v2` config to write back `first.json` and its inferred
+table, erasing the new configuration. It has no request generation, source or
+document fence; its replace confirmation is also based on the earlier draft.
+
+**Plan:** Bind inference and any staged confirmation to the initiating document,
+node, source and relevant draft version. Invalidate/abort outdated work and
+discard stale replies. Recheck the current draft before automatic first-time
+application; never decide that there is nothing to overwrite from a captured
+empty config. Specify how a still-current inference can be deliberately merged
+after the draft changes, preserving the existing confirmation rules.
+
+**Acceptance:** A delayed response after a file change, same-file table edit,
+node/document change or loss of edit capability changes no newer config and
+leaves no usable stale confirmation. An unchanged empty draft still applies
+the inference, and an unchanged populated draft requires its existing explicit
+confirmation. Test with the actual editor and controlled request completion.
+
+**Dependencies:** None. `FSH-R10` owns a different race in ordinary config
+commit resolution; fixing that controller alone does not authenticate inference.
+
+**Evidence:** `frontend/src/panels/editors/ApiInputEditor.tsx`;
+`frontend/src/panels/editors/apiInputSchema.ts`.
+
+**28 October full-pass addition:** Completed Data Input schema is also source-bound:
+`useSchemaFetch` keeps A's schema while B loads, and `DataInputEditor` leaves Use detected
+schema enabled. The real editor commits `{a_only: Int64}` into B's arguments in the witness.
+**Plan/acceptance:** associate schema with path and reader settings, clear or render stale
+results explicitly, and disable application until that identity matches the current draft.
+Cover file changes, reader-option changes, retries and clearing a path. Existing source/draft
+fencing must cover already-completed schema as well as late inference replies. Evidence:
+`frontend/src/hooks/useSchemaFetch.ts::useSchemaFetch.fetchForPath`;
+`frontend/src/panels/editors/DataInputEditor.tsx::DataInputEditor` (Use detected schema button).

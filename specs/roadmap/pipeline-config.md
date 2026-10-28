@@ -25,6 +25,8 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 | PCFG-R17 | Planned | P1 | A closing `return df` that shares its line with a statement keeps that statement, instead of the parse loading the node empty and the next save writing a placeholder over the authored body. |
 | PCFG-R18 | Planned | P2 | A rendered step body is the fixed point of `ruff format` the specification promises (free-code trailing whitespace, exponent floats), so a reformat never discards a node's steps, and body extraction splits lines as Python does. |
 | PCFG-R19 | Planned | P3 | Recovery ids are minted once so a diagnostic's "go to" finds its element, the revision captures cover sidecars and configs, a preamble `match` binds names the naming rule sees, and three duplicated recovery mechanisms exist once. |
+| PCFG-R20 | Planned | P2 | Static parsing and live registration agree on connect arguments; no malformed authored call or handle disappears on Save. |
+| PCFG-R21 | Planned | P1 | A parse/save round trip preserves supported keyword-only bindings or refuses an unsupported signature before losing it. |
 
 `PCFG-R04` to `PCFG-R09` come from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md);
@@ -486,3 +488,47 @@ capture and the revision is caught by the revision; a node named after a
 `src/haute/_support_code_names.py::support_code_inventory`;
 `src/haute/_polars_steps.py::rename_step_inputs`;
 `src/haute/_polars_steps.py::step_input_references`.
+
+### PCFG-R20 — Malformed connect calls are parse errors
+
+**Why:** The strict parser takes the first two positional arguments, ignores unknown keywords,
+skips invalid endpoints and turns invalid ports into `None`. Real parse/codegen probes accepted
+`source_port=123`, `source_prt="table"`, `connect(123,"result")` and a missing endpoint, while
+the original Python refused them. Parameter-based edge inference can hide the lost explicit
+call. Existing helper tests assert some of these silent repairs.
+
+**Plan:** Validate the full call shape before extracting edges: known keywords, supported
+positional arity, duplicate argument binding, endpoint types and optional nonempty string
+handles, in agreement with the live API. Produce a located parse/recovery diagnostic instead of
+classifying a discarded call as conserved. Replace tests that require silent skipping.
+
+**Acceptance:** Each malformed shape fails before a healthy graph is published and before Save;
+diagnostics identify the call and argument. Valid positional/keyword endpoints and supported
+`None` handles round-trip without change. A parameter-inferred edge cannot hide an invalid
+explicit connect.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_ast_helpers.py::_connect_call_edge`; `src/haute/_parser_conservation.py`; `tests/test_parser_helpers.py`; `tests/test_parser_conservation.py`.
+
+### PCFG-R21 — Node signatures retain their configuration bindings
+
+**Why:** The parser retains keyword-only names temporarily but drops defaults and the canonical
+graph loses the signature. Codegen rebuilds parameters from edges. A valid node with
+`factor=1.2` and a same-named preamble value `factor=0.9` computes 120 before Save and 90 after
+real parse/codegen. Without the preamble binding it fails at execution. The specification calls
+these parameters configuration, yet existing tests check only that no implicit edge is added.
+
+**Plan:** Define supported configuration parameter bindings in the pipeline-config
+representation and preserve them through parser, recovery, codegen and standalone execution.
+Any signature the representation cannot faithfully preserve must receive a located refusal
+before healthy load/Save; never silently drop a default or redirect the name to the preamble.
+
+**Acceptance:** Execute the original and regenerated node with a shadowing preamble constant
+and assert equal results. Cover literal defaults, required keyword-only parameters and
+unsupported expressions according to the defined contract. Refused forms leave the Python bytes
+unchanged. An edge-count assertion alone is insufficient.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_graph_builders.py::_extract_decorated_node_skeletons`; `src/haute/_graph_builders.py::_resolve_node_skeleton`; `src/haute/codegen.py`; `tests/test_parser_conservation.py::TestParameterBucketConservation`.

@@ -313,6 +313,10 @@ empty remote. The UI reads `default_branch`; it never hardcodes `main`.
 
 ## Failure model
 
+> NOTE: Recovery callbacks currently take the mutable selected remote even when the
+> rejection dialog names another remote. [GIT-R18](../roadmap/git-integration.md#git-r18--recovery-acts-on-the-remote-named-by-its-dialog)
+> tracks binding Catch up and Spin off to the displayed rejection.
+
 This codebase prefers loud failure over silent fallbacks; within that, this component
 draws a hard line between **history/chrome reads**, which degrade silently because they
 are not the user's data, and **mutations**, which always surface an error.

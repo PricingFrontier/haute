@@ -57,8 +57,11 @@ something this page settles.
 | MOD-M01 | Decision | P3 | Exact chunked GLM fitting under a memory budget. |
 | MOD-M02 | Decision | P3 | A low-memory boosted-tree fitting mode under an explicit user choice. |
 | MOD-R03 | Planned | P2 | Training publication validates the evaluation plan outside the job-store lock, and the plan stores memberships compactly. |
-| MOD-R05 | Planned | P3 | Diagnostics are measured as the fit was: weighted loss importance, one-based GPU iterations, no GLM `best_iteration`, a dispersion search that stops on `MemoryError`, the offset dtype in the contract, params logged whole. |
+| MOD-R05 | Planned | P3 | Diagnostics are measured as the fit was: weighted loss importance, one-based GPU iterations, no GLM `best_iteration`, a dispersion search that stops on `MemoryError`, the offset dtype in the contract, params logged whole. Model-card names, family importance labels and PDP x-values also describe what was actually scored. |
 | MOD-R06 | Planned | P3 | The training memory log is opt-in, the dead compatibility fields are gone, and the four native wrappers share one base. |
+| MOD-R07 | Planned | P2 | Stratified test allocation reserves enough of every class for all requested validation and training partitions. |
+| MOD-R08 | Planned | P2 | Training polling and cancellation preserve tuning phase, trial, fold, fit-count and best-score progress. |
+| MOD-R09 | Planned | P2 | MLflow output signatures declare the dtype the pyfunc actually predicts, including floating regression predictions from an integer target. |
 
 ## Planned improvements
 
@@ -274,6 +277,16 @@ candidate logs no `best_iteration`; a dispersion `MemoryError` ends
 `src/haute/modelling/_candidate_run.py`;
 `src/haute/modelling/_mlflow_log.py::log_experiment`.
 
+**28 October full-pass addition:** Model-card metric iteration shadows the supplied model
+name, producing `rmse — Model Card`; importance descriptions name PredictionValuesChange
+even for other families; integer-feature PDP labels include 1.25/1.5/1.75 although the
+scored feature is cast to integer 1. **Plan/acceptance:** preserve model identity, label
+each importance method accurately, and align each PDP x value with the value actually
+scored. Test family-specific card text and integer-grid predictions. The output-signature
+defect has its own P2 owner, [MOD-R09](#mod-r09--output-signatures-describe-predictions).
+Evidence: `src/haute/modelling/_model_card.py` and
+`src/haute/modelling/_metrics.py::compute_pdp`.
+
 ### MOD-R06 — Hygiene: the memory log, dead fields, one wrapper base
 **Why:** Every fit writes a debug memory log unconditionally: each checkpoint
 opens, appends to and `fsync`s `.haute_cache/training_mem.log` resolved
@@ -306,3 +319,79 @@ gone; jscpd reports no clone among the four wrappers.
 `src/haute/modelling/_algorithm_base.py`; `src/haute/modelling/_xgboost.py`;
 `src/haute/modelling/_lightgbm.py`; `src/haute/modelling/_ebm.py`;
 `src/haute/modelling/_tboost.py`.
+
+### MOD-R07 — Stratified allocation reserves every later partition
+**Why:** The [28 October review](codebase-review-2026-10-28.md) reproduced two
+feasible random classification plans rejected after the test allocation. With
+97 negative and 3 positive rows, seed 42, test 50% and single validation 10%,
+the test takes 2 positives and validation then refuses the remaining one.
+With 94 negative and 6 positive rows, test 50% and five-fold validation,
+the test takes 3 positives and the folds refuse the remaining three. Both
+can keep one positive in the test and enough in development. The single
+validation branch reserves only one later row per class instead of two;
+`_stratified_sample` also applies its reserve only when topping up allocations,
+not to the initial proportional allocation.
+
+**Plan:** Derive the per-class reserve from the remaining train/validation
+requirements. Bound every initial and subsequent allocation by that reserve,
+and allocate the exact requested total deterministically among feasible classes.
+Refuse genuinely impossible sizes with original class counts and the required
+partition counts. Specify these allocation invariants in the modelling contracts.
+
+**Acceptance:** Both fixtures above produce the requested test size and every
+requested partition/fold contains both classes, without overlapping memberships.
+The 97/3 fixture has 50 test and 10 validation rows. An actually impossible
+request is refused before fitting with actionable counts. Preserve reproducibility
+under row permutation, using the existing canonical order. Extend the existing
+evaluation-plan tests rather than fitting models to test the allocator.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/modelling/_evaluation.py::_stratified_sample`;
+`src/haute/modelling/_evaluation.py::generate_evaluation_plan`;
+`src/haute/modelling/_evaluation.py::_stratified_parts`.
+
+### MOD-R08 — Training status carries the progress the worker records
+
+**Why:** The lifecycle stores tuning progress, but `train_status` and `cancel_train` manually
+rebuild `TrainStatusResponse` without its eight phase/trial/fold/fit-count/best-value fields. A
+real JobStore plus status-route probe returns all eight as None despite populated job data. The
+frontend's phase display and fit-based estimate cannot use information that never crosses the
+API.
+
+**Plan:** Use one typed job-to-status projection for polling and cancellation, explicitly
+including the declared progress fields and maintaining the existing terminal/error semantics.
+Keep phase semantics defined in the modelling contract rather than inferring them from text.
+
+**Acceptance:** Seed representative running tuning and terminal jobs through the real store;
+polling and cancellation return their recorded progress exactly, including zero values and
+absent/not-yet-known values. The real training progress component can render trial/fold
+progress from the response. Do not test only DTO construction.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/routes/modelling.py::train_status`; `src/haute/routes/modelling.py::cancel_training`;
+`src/haute/routes/_training_lifecycle.py`;
+`frontend/src/panels/modelling/TrainingProgress.tsx`.
+
+### MOD-R09 — Output signatures describe predictions
+
+**Why:** Regression signature construction copies the target dtype. An integer target
+therefore declares a long output although Haute's native-model pyfunc returns floating
+predictions. A real CatBoost fit produced 1.49/2.0328125 with a declared long output.
+The mismatch is measured locally; no remote registry enforcement failure is claimed.
+
+**Plan:** Derive the output signature from the pyfunc prediction contract, independently
+of the training target's storage dtype. Keep classification labels and probabilities
+distinct and preserve the existing shared native-model scoring contract.
+
+**Acceptance:** Fit and save a small regression model with an integer target, load its
+real pyfunc and compare its prediction dtype with the saved MLflow output signature.
+Floating target regression remains consistent, and classifier label/probability outputs
+keep their separately declared types. Test persisted metadata and real predictions,
+not just signature-object construction.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/modelling/_signature.py::build_signature`;
+`src/haute/modelling/_native_pyfunc.py::NativePyfuncModel.predict`.

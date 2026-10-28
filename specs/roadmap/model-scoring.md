@@ -45,6 +45,7 @@ file defaults to a family.
 | MSC-07 | Deferred | P3 | ONNX models score in Model Scoring. |
 | MSC-09 | Planned | P3 | Loader errors keep their meaning: a Haute refusal is not retried as corruption and a CatBoost metadata failure is not swallowed. |
 | MSC-10 | Planned | P3 | A model records whether its offset is an exposure or a base premium, so only an exposure scores as a full policy term when a quote leaves it out. |
+| MSC-11 | Planned | P2 | Model Score consumes a declared classifier output without flattening a two-column prediction table into twice as many rows. |
 
 ## Planned improvements
 
@@ -225,3 +226,30 @@ still prices one as a full policy term.
 
 **Evidence:** `src/haute/modelling/_algorithms.py::full_term_offset`;
 `src/haute/_model_scorer.py::_full_term_offset`.
+
+### MSC-11 — Pyfunc classification outputs have an explicit scoring shape
+
+**Why:** Haute's logged native classifier pyfunc returns `pred_label` and `pred_proba`. Loading
+that real saved CatBoost pyfunc and passing it through `_wrap_pyfunc` and the scorer flattens
+the 20-by-2 output into 40 values, causing a ShapeError against 20 input rows. An explicitly
+selected suffixless MLflow artifact uses this route; automatic native-artifact loading can
+avoid it, so this is not a claim that all classifier loads fail.
+
+**Plan:** Define and validate the pyfunc output contract, including the binary positive-class
+probability and label columns of Haute's own packages. Preserve the existing classifier
+contract: map `pred_label` to `<output_col>` and `pred_proba` to `<output_col>_proba`,
+retaining original label values and types. Do not flatten or substitute one output for the
+other; refuse unsupported/mismatched output shapes clearly. Share this contract across
+preview and deployed scoring.
+
+**Acceptance:** Save/load a real small classifier pyfunc with its feature contract and score
+a multirow frame through the Model Score adapter. Assert both output columns independently:
+`<output_col>` preserves native labels and their dtype, while `<output_col>_proba` equals
+native positive-class probabilities. Both retain input row count and order in eager and
+batch scoring; an empty input retains the same typed column contract. A one-column regressor
+remains valid; undeclared multicolumn outputs fail with a shape/contract error, never arbitrary
+flattening.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/modelling/_native_pyfunc.py`; `src/haute/_mlflow_io.py::_wrap_pyfunc`; `src/haute/_mlflow_io.py::load_mlflow_model`; `src/haute/_model_scorer.py`.

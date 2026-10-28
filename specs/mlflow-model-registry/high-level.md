@@ -412,6 +412,11 @@ Out of scope (owned elsewhere):
 
 ## Failure model
 
+> NOTE: Explicitly loading Haute's classifier pyfunc can reach a scorer that flattens
+> its label/probability columns, doubling the output length.
+> [MSC-11](../roadmap/model-scoring.md#msc-11--pyfunc-classification-outputs-have-an-explicit-scoring-shape)
+> tracks the declared output adapter; automatic native-artifact loading is a separate path.
+
 - `mlflow` not installed: `ImportError` from `resolve_mlflow_source`
   (the discovery routes convert this to `HTTPException(503)`).
 - Missing required source arguments (`run_id` for `"run"`,

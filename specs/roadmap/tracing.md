@@ -16,7 +16,7 @@ from the [25 October 2026 codebase review](codebase-review-2026-10-25.md).
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | TRACE-R01 | Planned | P2 | A formula's input sources name the node whose value the traced row carries, resolved through the value lineage, never the nearest step in declaration order. |
-| TRACE-R02 | Planned | P2 | A step's expression type, description, referenced columns and rename detail come from the located expression's syntax tree, never from regular expressions over the node's whole code. |
+| TRACE-R02 | Planned | P2 | A step's expression type, description, referenced columns and rename detail come from the located expression's syntax tree, never from regular expressions over the node's whole code. Explanations use statement-time scalar bindings and preserve unary grouping and quoted literals in backend and browser formatting. |
 | TRACE-R03 | Planned | P2 | A parent row proven by carried values is matched strictly or omitted, a banding coercion that fails is an error marker, an unnameable edge is reported, and a failed comparison names its real cause. |
 | TRACE-R04 | Planned | P3 | The unreachable partial-trace path, the test-only correlation branch, the dead helper, the stale comments and the three duplicated mechanisms are gone. |
 | TRACE-R05 | Planned | P2 | The trace panel shows an additive waterfall step with its own operator, the clicked column's conditional or opaque card shows its value, export failures say their cause, a power renders as a power, omission notes are chosen by code, and the panel's test-only helpers are gone. |
@@ -85,6 +85,26 @@ step a rename; a comment containing `premium ==` does not make a step relevant.
 `src/haute/_trace_enrichment.py::_detect_rename`;
 `src/haute/trace.py::_prune_to_column_relevance`;
 `src/haute/_trace_waterfall.py::_step_targets_column`.
+
+**28 October full-pass addition:** Expression binding and rendering also drift. A real full
+trace of `factor=2; df=src.with_columns(y=pl.col("x")*factor); factor=3` returns output 20 but
+calculation/derivation `10 * 3 = 30`, because the symbol table uses the final binding. Unary
+minus renders `-(x+z)` as `-x + z`, and regex substitution changes the string literal in
+`concat_str(x, "x")` into `concat_str("A", ""A"")`. **Plan/acceptance:** resolve scalar
+bindings at the defining expression's statement, preserve AST precedence, and substitute only
+column-expression tokens, never literal text. Execute the reassignment graph and assert
+explanation agrees with its actual output; cover nested unary/binary expressions and literals
+equal to column names. If a binding cannot be proved, report that limitation instead of a
+confident alternative result. Evidence: `src/haute/_expression_parser.py::_build_safe_symbol_table`, `src/haute/_expression_parser.py::_resolve_reassignment_chains`, `src/haute/_expression_parser.py::_ExprConverter._unaryop`, `src/haute/_expression_parser.py::_substitute_values`;
+`_trace_enrichment.py` currently trusts the wrong row-local evaluation.
+
+The browser also replaces every `*` and `/` in displayed expressions, including
+quoted literals: its real formatter turns `replace('a/b', 'a*b')` into
+`replace('a÷b', 'a×b')`. Include the shared formatter and CalculationHero's
+substituted-text rendering in the same syntax-preserving contract; test quoted
+operators unchanged while actual arithmetic operators receive display glyphs.
+Evidence: `frontend/src/trace/traceFormatting.ts::formatDisplayExpression` and
+`frontend/src/trace/CalculationHero.tsx::CalculationHero.renderBody` (other trace renderers repeat this rule).
 
 ### TRACE-R03 — Proven matches stay strict; failures carry their cause
 **Why:** A head-frame match on proven carried values still allows relaxed

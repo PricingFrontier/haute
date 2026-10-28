@@ -427,6 +427,19 @@ therefore fail at the caller, consistent with the application's fail-loud policy
 
 ## Failure model
 
+> NOTE: A failed optimiser retry can stamp its identity onto a retained successful result.
+> [FSH-R12](../roadmap/frontend-shared.md#fsh-r12--failed-solves-cannot-relabel-retained-successful-results)
+> separates attempt status from result provenance; the preview is currently affected.
+
+> NOTE: Independent request-input edits can supersede each other while identity
+> resolution is pending, losing an earlier change. Retaining the pending draft
+> is tracked in [FSH-R10](../roadmap/frontend-shared.md#fsh-r10--retain-edits-during-input-identity-resolution).
+
+> NOTE: Pivot cancellation can retire a newer job or label an old result with its
+> identity; training cancellation has the same missing response-ownership guard.
+> Job and document fencing is tracked in
+> [FSH-R11](../roadmap/frontend-shared.md#fsh-r11--cancellation-replies-belong-to-one-job).
+
 - A non-2xx HTTP response becomes an `ApiError` with `status`/`detail`;
   `loadPipeline` follows the same fail-loud rule as other endpoints and does
   not invent an empty graph for a 404.

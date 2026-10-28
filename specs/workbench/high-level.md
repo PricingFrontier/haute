@@ -2080,6 +2080,11 @@ Out of scope:
 
 ## Failure model
 
+> NOTE: The local-principal app currently accepts foreign Host headers before
+> assigning the analyst's identity; loopback binding alone does not enforce the
+> browser request boundary. Local Host and forwarded-request enforcement is
+> tracked in [WB-39](../roadmap/workbench.md#wb-39--enforce-the-local-apps-request-boundary).
+
 - A `[workbench]` table that is not a table, lacks `enabled`, gives `enabled` something other
   than `true` or `false`, gives `form` something other than a non-empty relative path inside
   the project, or holds any other key, and a `haute.toml` that cannot be read, is not UTF-8

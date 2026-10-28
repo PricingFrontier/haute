@@ -25,11 +25,12 @@ evidence to `ENGQ-R01` and `ENGQ-R05`.
 | ENGQ-R05 | Planned | P3 | Tests are organised by component and behaviour, not by coverage campaign. |
 | ENGQ-CI06 | Planned | P3 | Haute's own workflows pin every action by commit. |
 | ENGQ-R06 | Planned | P3 | The build hook fails with the install hint when Node is missing instead of guessing a machine path. |
-| ENGQ-R07 | Planned | P2 | Every gate runs on every run: a red coverage shard fails the coverage gate instead of skipping it, the documentation site builds strictly on every pull request, the warnings filter holds in the exploration lane and in ledger evidence, and the two safety-critical coverage lists agree with each other and the specification. |
+| ENGQ-R07 | Planned | P2 | Every gate runs on every run: a red coverage shard fails the coverage gate instead of skipping it, the documentation site builds strictly on every pull request, the warnings filter holds in the exploration lane and in ledger evidence, and the two safety-critical coverage lists agree with each other and the specification. Core-only dependency smoke stays free of optional extras and cannot pass with every test skipped. |
 | ENGQ-R08 | Planned | P2 | The suite exercises what production runs: a representative route slice under the process execution mode, the production preparation-join bound, a flaky browser test made visible, and fixture git commands that fail loudly. |
 | ENGQ-R09 | Planned | P3 | The write-sandbox ratchet moves: the observe census is recorded and may not grow, modules with an empty census become strict, the system temp directory is a stated gap or no longer allowed, and the lint allowlist is keyed by site. |
 | ENGQ-R10 | Planned | P3 | Repository-health hygiene: file-reading tests carry the `meta` marker, the specification's bundle and lint numbers are read from their files, `mypy` covers `scripts/`, the package smoke derives its version prefixes, the Windows preflight is held in step, the dependency alarm fires on schedule only, and the e2e server stops its Node child on Windows. |
 | ENGQ-R11 | Decision | P2 | Mutation witnesses cover the rating step and deploy scoring, the modules whose silent failure changes a price, or the specification says why the three JSON-boundary targets suffice. |
+| ENGQ-R12 | Planned | P2 | The UC create-only release gate requires competing creates and distinguishes conflict refusals from transport/auth failures. |
 
 ## Planned improvements
 
@@ -301,6 +302,16 @@ specification's "exactly this set" does not name, and no test keeps the two list
 (both checker tests build synthetic `pyproject.toml` files). From the [25 October 2026
 codebase review](codebase-review-2026-10-25.md) (ENG-1, ENG-2, ENG-4, ENG-8).
 
+The [28 October review](codebase-review-2026-10-28.md) found another vacuous gate:
+`optional-deps-smoke` syncs without `dev`, then invokes bare `uv run pytest`,
+which syncs the default dev group containing `haute[databricks]` back into the
+environment. The test module skips all three tests when the SQL connector is
+present, including its assertion that the connector must be absent. The exact
+test invocation in the local dev environment exits zero with three skips. Hosted
+[main run 40754355254, optional-deps-smoke](https://github.com/PricingFrontier/haute/actions/runs/40754355254/job/123049170185)
+confirms the workflow consequence: its `uv run` step uninstalled 5 packages,
+installed 42, then passed with `3 skipped in 0.18s`.
+
 **Plan:** Upload each shard's coverage and JUnit files `if: always()`, run the gate job
 `if: !cancelled()` and fail its first step explicitly when any shard did not succeed. Add
 a `docs-build` job to `ci.yml` running `mkdocs build --strict`, or run the docs build on
@@ -308,18 +319,32 @@ a `docs-build` job to `ci.yml` running `mkdocs build --strict`, or run the docs 
 warning, and have the ledger validator reject evidence commands that disable the plugin.
 Seed a floor for `_workbench_visibility.py` and name it in the specification, or drop it
 from the paths; add a `meta` test asserting the two lists and the specification agree.
+Prepare the optional-dependency lane with the core project and the test harness's
+explicit dependency closure, including Hypothesis, which `tests/conftest.py`
+imports unconditionally. Do not restore the full dev group to obtain those test
+dependencies. Then invoke pytest without resyncing project groups (for example
+`uv run --no-sync pytest ...`).
+Add a lane-level environment assertion that fails when core MLflow is absent or
+Databricks SQL is installed, outside the module's development-environment skip.
+Keep ordinary full-development test runs able to skip this lane-specific module.
 
 **Acceptance:** A workflow run with one failed shard shows the coverage gate failed, not
 skipped, with every shard's artifact present; a pull request with a broken docs nav entry
 is red; a `RuntimeWarning` fails the exploration lane; the list-parity test passes and
 fails when one list gains a path.
+In a fresh core-only environment the shared test setup imports successfully and
+all three optional-dependency tests execute and pass; intentionally installing
+the Databricks connector makes that lane fail,
+not pass with skips. Verify the actual workflow command sequence in an isolated
+environment rather than relying on a workflow-text assertion alone.
 
 **Dependencies:** None.
 
 **Evidence:** `.github/workflows/ci.yml`, `.github/workflows/mutation.yml`,
 `.github/workflows/docs.yml`, `.github/workflows/property-exploration.yml`,
 `tests/workflow_coverage.toml`, `pyproject.toml`, `tests/test_check_changed_coverage.py`,
-`tests/test_check_critical_coverage.py`, `specs/engineering-quality/high-level.md`.
+`tests/test_check_critical_coverage.py`, `tests/test_optional_dependency_matrix.py`,
+`tests/conftest.py`, `specs/engineering-quality/high-level.md`.
 
 ### ENGQ-R08 — The suite exercises what production runs
 **Why:** An autouse fixture runs every preview, trace and estimate in `thread` mode while
@@ -433,3 +458,26 @@ use, or state in the specification why the three targets suffice.
 
 **Evidence:** `mutation/targets.json`, `pyproject.toml`, `src/haute/_rating.py`,
 `src/haute/deploy/_scorer.py`, `specs/engineering-quality/high-level.md`.
+
+### ENGQ-R12 — Storage qualification proves actual contention
+
+**Why:** The qualification script accepts exactly one upload success regardless of how other
+writers failed, discards their detailed errors, and reports QUALIFIED. The real threaded script
+with an offline transport witness returns success for one stored object plus three
+PermissionErrors before upload. Zero rounds also qualifies. This gate therefore cannot
+establish the create-only guarantee required by hosted storage.
+
+**Plan:** Require at least two writers and one round; require every losing create to have the
+documented already-exists outcome. Treat permission, timeout and other transport failures as
+failed/inconclusive qualification with visible writer diagnostics. Keep winner-byte
+verification and make cleanup ownership explicit.
+
+**Acceptance:** A transport with one winner and conflict refusals qualifies after all
+configured rounds. One winner plus any permission/timeout failure does not qualify and returns
+nonzero with the error. Zero rounds, fewer than two writers, multiple winners and mismatched
+stored bytes cannot pass. These offline cases test gate logic; actual UC qualification still
+requires the separate live run.
+
+**Dependencies:** None.
+
+**Evidence:** `scripts/uc_create_only_qualification.py::run_round.worker`; `scripts/uc_create_only_qualification.py::run_round`; `scripts/uc_create_only_qualification.py::qualify`; `specs/hosted-project-storage/high-level.md` create-only qualification boundary.

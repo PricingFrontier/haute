@@ -157,6 +157,10 @@ shares the preview frame/tab controls with
 
 ## Failure model
 
+> NOTE: A dispersion estimate can overwrite a newer training draft or manual
+> parameter value. [FMOU-R06](../roadmap/frontend-modelling-optimiser-ui.md#fmou-r06--dispersion-estimates-belong-to-the-initiating-training-draft)
+> tracks estimate identity and draft fencing.
+
 Training, solve, MLflow, export, auto-range and materialisation failures are displayed in their
 local action/result area. Training cancellation posts the active job ID, records the returned
 terminal state immediately, and leaves a terminal race winner intact. Structured training status
