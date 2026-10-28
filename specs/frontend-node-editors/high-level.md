@@ -760,6 +760,15 @@ api-input frame-identity helpers owned by
 
 ## Failure model
 
+> NOTE: Completed Data Input schema can remain applicable after a file change while
+> the new schema loads, and a cached file-browser parent can retain its failed child
+> error. [FNED-R06](../roadmap/frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft)
+> and [FNED-R02](../roadmap/frontend-node-editors.md#fned-r02--drafts-in-step-with-the-document-errors-with-their-detail) track these transitions.
+
+> NOTE: A late API Input inference reply can restore its old source path and
+> overwrite newer tables. Source, draft and document fencing is tracked in
+> [FNED-R06](../roadmap/frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft).
+
 Client-side parse and shape checks show inline invalid state where implemented. Server failures
 such as format, file, Databricks, or MLflow lookup errors are rendered by the invoking editor.
 Malformed config that cannot be interpreted is surfaced as a visible diagnostic or an explicit

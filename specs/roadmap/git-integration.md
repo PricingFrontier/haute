@@ -13,6 +13,7 @@ the Databricks IO defects the same review found are `BUG-44` and `BUG-45` in
 back to an earlier version (one Codex and two Fable reviews, every finding checked at
 its source), after an analyst restoring a version on the test project took six Move
 and return cycles and made and deleted two branches between 13:14 and 13:36.
+`GIT-R17` comes from the [28 October functional review](codebase-review-2026-10-28.md).
 
 ## Priorities
 
@@ -26,6 +27,8 @@ and return cycles and made and deleted two branches between 13:14 and 13:36.
 | GIT-R07 | Planned | P2 | Every tree-changing action in the git UI passes the dirty-project guard and names what changes, a failed history read shows an error rather than an empty branch, a failed preference save is reported, and the dialogs and specification say what the server does. |
 | GIT-R08 | Planned | P3 | The git panel has one context menu, one dirty-navigation wrapper and one relative-time rule. |
 | GIT-R16 | Planned | P3 | A working branch left without its ledger, or half archived, is reported at startup with a Repair that leaves a whole pair. |
+| GIT-R17 | Planned | P1 | A milestone or tree mutation cannot interleave with a pipeline save and capture or replace only part of its artifact set. |
+| GIT-R18 | Planned | P2 | A rejected push's Catch up and Spin off actions stay bound to that rejection's remote. |
 
 ## Planned improvements
 
@@ -252,3 +255,78 @@ reported at startup, and Repair leaves each a whole pair.
 **Evidence:** `src/haute/_git_archive.py::archive_working_pair`;
 `src/haute/_git_transactions.py::check_invariants`;
 `src/haute/_git_read_models.py::working_branch_status`.
+
+### GIT-R17 — Pipeline saves share the Git transaction boundary
+**Why:** Normal pipeline saves and assistant Apply hold `save_lock`, while Git
+mutations hold `repository_mutation`. The save writes Python, configs and
+sidecars before acquiring the Git lock for ledger capture. A real temporary
+repository probe paused a save after writing a new banding node's Python and
+before its config, then committed a milestone concurrently. Both operations
+succeeded. The milestone contained `main.py` referencing
+`config/banding/Bands.json`, but not that config; the later save contained it.
+The milestone therefore cannot reproduce the saved pipeline. Tree-switch and
+restore interleavings share the missing fence, but were not separately measured.
+Scoped node saves and repair-apply routes also take only `save_lock`; they write
+through `_commit_repair_plan`, bypassing `SavePipelineService`. Their exposure
+is source-supported, not a separately executed race.
+
+**Plan:** Put the complete save operation, including authenticated reads,
+revision checks, artifact writes, rollback, stale cleanup and ledger capture,
+inside the same repository critical section as Git mutations. Keep the
+existing project-save lock and consistent lock ordering; reuse the arrangement
+in `project_write` rather than introducing another independent lock. Cover
+normal saves (including persisted submodels), assistant Apply/undo, scoped node
+saves and all repair-apply writers through `_commit_repair_plan`, without
+re-acquiring a non-reentrant project lock. Submodel create/dissolve themselves
+are in-memory transforms; explicit pipeline Save persists those changes. Keep
+their existing revision checks, without inventing a new write path for them.
+This repository fence does not
+replace the external-edit revision check in `ASSIST-61`.
+
+**Acceptance:** A deterministic regression pauses a real pipeline save between
+Python and config writes, starts a concurrent milestone and proves the
+milestone cannot complete from the partial state. After the save resumes, the
+milestone's complete artifact set loads successfully and matches the saved
+graph. A failed save rolls back before a waiting Git mutation proceeds; a
+tree-switch/restore cannot split the save across branches. Existing save and
+assistant operations complete without lock-order deadlocks.
+Exercise both writer families: the full save transaction and the scoped/repair
+transaction, including a scoped config change and a repair changing multiple
+artifacts. For each, verify a concurrent milestone observes no partial writes
+and an injected write failure rolls back before that milestone can proceed.
+
+**Dependencies:** None; coordinate the assistant save boundary with `ASSIST-61`.
+
+**Evidence:** `src/haute/routes/_save_pipeline.py::SavePipelineService.save`;
+`src/haute/routes/pipeline.py::save_pipeline`;
+`src/haute/routes/pipeline.py::scoped_node_save`;
+`src/haute/_pipeline_repair.py::_commit_repair_plan`;
+`src/haute/_pipeline_repair_actions.py::apply_scoped_node_save`;
+`src/haute/assistant/_application.py::PipelineApplicationService.apply`;
+`src/haute/routes/_helpers.py::project_write`;
+`src/haute/_git_core.py::_serialized_mutation`;
+`src/haute/_git_transactions.py::commit_milestone`.
+
+### GIT-R18 — Recovery acts on the remote named by its dialog
+
+**Why:** While Push to origin is pending, the remote select remains editable. Switching it to
+backup before origin returns 409 produces a dialog naming origin, but its recovery callbacks
+submit backup. Actual component tests reproduce both behind and diverged cases. The wrong
+endpoint submission is measured; the resulting Git tree mutation is supported by the route
+semantics, not executed by this UI probe.
+
+**Plan:** Pass the rejection's authenticated remote into modal recovery actions; standalone
+recovery uses its own captured target. Invalidate stale dialogs when their context is no longer
+actionable and keep busy/selection rules consistent. Do not take a destructive target from a
+mutable dropdown after confirmation.
+
+**Acceptance:** Delay origin's 409, select backup, then invoke each modal action: only origin
+is submitted or the stale dialog is explicitly refused. The dialog and action always name the
+same remote. Existing dirty-document and branch protections still apply.
+
+**Dependencies:** `GIT-R07` owns dirty-document guards; it does not authenticate this remote identity.
+
+**Evidence:** `frontend/src/components/RemotePushControl.tsx::RemotePushControl.doCatchUp`;
+`frontend/src/components/RemotePushControl.tsx::RemotePushControl.doBranchAway`;
+`frontend/src/components/RemotePushControl.tsx::RemotePushControl` (remote selector);
+`frontend/src/components/RemotePushControl.tsx::RemotePushControl` (`RejectPushDialog` callback props).

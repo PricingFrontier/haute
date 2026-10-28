@@ -331,6 +331,12 @@ complete old or new document, never torn JSON.
 
 ## Failure model
 
+> NOTE: Pipeline saves do not hold the repository lock across
+> their artifact writes. A concurrent milestone can therefore capture Python
+> without its configuration, despite both operations succeeding.
+> [GIT-R17](../roadmap/git-integration.md#git-r17--pipeline-saves-share-the-git-transaction-boundary)
+> owns closing this gap in the serialization contract.
+
 Every git-facing failure surfaces through a `GitError` subclass (`GitError` itself is a
 subclass of the project-wide `HauteError`):
 

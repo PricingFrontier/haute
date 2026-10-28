@@ -15,7 +15,7 @@ specified in [Explore / EDA](../explore-eda/high-level.md),
 | EDA-E18 | Deferred | P3 | Evaluate advanced Excel-parity pivot operations after representative use. |
 | EDA-E23 | Deferred | P3 | Add shared chart filter and hierarchy interactions after representative use. |
 | EDA-E24 | Deferred | P3 | Evaluate the remaining PivotChart parity surface from evidence. |
-| EDA-R01 | Planned | P2 | A pivot request is answered right: an invalid card is a 400, a filter on a time-zone-aware column matches, a formula failure names its cause, and a relationships question scans each feature once. |
+| EDA-R01 | Planned | P2 | A pivot request is answered right: an invalid card is a 400, a filter on a time-zone-aware column matches, a formula failure names its cause, and a relationships question scans each feature once. Internal relationship aliases cannot collide with user columns, and shared cached results name the requesting consumer. |
 | EDA-R02 | Planned | P3 | Card fields are required or documented as defaulted, the specification's stale statements are corrected, and the duplicate-count scratch never partitions down to single rows. |
 | EDA-R03 | Planned | P3 | An empty pivot result charts as empty rather than as a configuration error, the chart environment observer exists once, nulls use the glyph the specification names, a pivot start failure is recorded without a fabricated job id, and the Explore panels' dead exports are gone. |
 
@@ -23,100 +23,6 @@ specified in [Explore / EDA](../explore-eda/high-level.md),
 [25 October 2026 codebase review](codebase-review-2026-10-25.md).
 
 ## Planned improvements
-
-### EDA-R01 — Pivot requests answered right
-
-**Why:** An invalid pivot card posted to the run route is answered with the
-sanitized 500: `PivotService.start` validates it with `validate_explore_pivots`,
-which raises `ConfigError`, and neither the route nor the application handlers
-claim that type while the request model types the card as a plain dict. A
-filter member on a time-zone-aware `Datetime` column can never match: the
-members endpoint emits the value with its offset, `_member_literal` restores an
-aware `datetime`, `pl.lit` types it UTC, and the comparison against a
-`Europe/London` column raises `SchemaError` (probed), so the job ends `error`
-with Polars' message. Every formula failure (a syntax error, a sandbox refusal,
-a non-expression result) is reported as "Pivot formula is invalid." with the
-cause chained but never shown or logged. Each categorical feature of a
-relationships question collects the same grouped plan three times and each
-numeric feature twice, so one question of fifty features scans the data point
-about a hundred and fifty times.
-
-**Plan:** Catch `ConfigError` in `start()` and answer 400 with its message (or
-add it to the application handler `API-R06` plans); build the member literal in
-the column's dtype; put the chained cause's message in the failure; collect the
-three derived frames with one `collect_all` or fold them into one aggregation.
-
-**Acceptance:** An invalid card answers 400 naming the field; a tz-aware member
-filter returns its row (the probe's shape as a test); a formula failure names the
-refused construct; a relationships question performs one collect per feature.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/routes/_pivot_service.py::PivotService`;
-`src/haute/routes/_pivot_service.py::_member_literal`;
-`src/haute/routes/_pivot_service.py::_formula_expression`;
-`src/haute/routes/_explore_relationships.py::_categorical_levels`;
-`src/haute/routes/explore.py`.
-
-### EDA-R02 — Card fields, stale statements, the partition floor
-
-**Why:** Three absent card fields (`sort`, `sort_rows`, `color_scale`) are
-materialised with defaults while their siblings are required, so a card missing
-`color_scale_split_by` is rejected and one missing `color_scale` is silently
-completed, against the canonical-only policy and the specification's "rejected
-rather than migrated". Two statements of the Explore specification contradict
-the code: the "single aggregation guarantee" (the profile collects once per
-batch of eight columns plus the histogram and duplicate-count passes, which its
-own test counts) and the decorator's kwarg order, which omits `pivot_formulas`.
-The duplicate-count scratch floors its partition size at one row, so a small
-memory headroom turns a large frame into up to one partition per row.
-
-**Plan:** Require the three fields like their siblings (the writers already emit
-them) or document the exception; delete or restate the two specification
-sentences; floor the partition size at tens of thousands of rows and let the
-memory limit fail the job instead.
-
-**Acceptance:** A card missing `sort` is refused like one missing
-`decimal_places`; the specification matches the collect count and the kwarg
-order; the scratch writes a bounded number of partitions.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_explore_pivots.py`;
-`src/haute/_frame_profile.py::_count_unique_rows`;
-`src/haute/_codegen_builders.py`; `specs/explore-eda/low-level.md`.
-
-### EDA-R03 — The Explore panels' empty state, observer, glyph and sentinel
-
-**Why:** A pivot result with no row paths (a filter matching no rows with row
-grand totals off) makes the chart card show a danger alert saying the result
-lacks the coordinates a chart requires and the configuration should be reviewed,
-although nothing is misconfigured, while the Pivots pane shows a neutral "No rows
-match" for the same result. The theme and reduced-motion observer effect is
-duplicated line for line between Explore's combo chart and the workbench's chart.
-Null cells render a hyphen where the specification says an em dash and the
-Segments tab uses one. A pivot start failure is recorded by fabricating a job
-entry with a time-based id and then failing it. Five Explore exports are
-referenced only at their definitions and several more only inside their module.
-
-**Plan:** Return an empty dataset for an empty result and keep the error for a
-result with cells but no coordinates; one `useChartEnvironmentRevision` hook
-beside the shared chart theme; one glyph; a store action that records a start
-failure without a job id; delete and un-export the symbols.
-
-**Acceptance:** An empty filtered pivot shows the pane's empty wording on its
-chart; jscpd reports no observer pair; the glyph matches the specification;
-knip reports none of the exports.
-
-**Dependencies:** `FSH-R06` removes the store's other fabricated sentinel.
-
-**Evidence:** `frontend/src/panels/explore/chartData.ts::adaptPivotChartData`;
-`frontend/src/panels/explore/ExploreChartsPane.tsx`;
-`frontend/src/panels/explore/ComboChart.tsx`; `frontend/src/workbench/ChartBody.tsx`;
-`frontend/src/panels/explore/PivotTableGrid.tsx`;
-`frontend/src/panels/explore/useExplorePivotActions.ts`;
-`frontend/src/panels/explore/pivotConfig.ts`;
-`frontend/src/panels/explore/chartConfig.ts`.
 
 ### EDA-E18 — Advanced Excel pivot parity
 
@@ -188,3 +94,109 @@ and never reinterpret pivot categories as row-level observations.
 the candidate crosses shared interactions, and representative use evidence.
 
 **Evidence:** `src/haute/routes/_pivot_service.py`; `frontend/src/panels/explore/chartConfig.ts`; `frontend/src/panels/explore/ExploreChartsPane.tsx`; `tests/test_explore_charts.py`; chart configuration/render telemetry, export requests, support feedback, and measured browser/bundle performance.
+
+### EDA-R01 — Pivot requests answered right
+
+**Why:** An invalid pivot card posted to the run route is answered with the
+sanitized 500: `PivotService.start` validates it with `validate_explore_pivots`,
+which raises `ConfigError`, and neither the route nor the application handlers
+claim that type while the request model types the card as a plain dict. A
+filter member on a time-zone-aware `Datetime` column can never match: the
+members endpoint emits the value with its offset, `_member_literal` restores an
+aware `datetime`, `pl.lit` types it UTC, and the comparison against a
+`Europe/London` column raises `SchemaError` (probed), so the job ends `error`
+with Polars' message. Every formula failure (a syntax error, a sandbox refusal,
+a non-expression result) is reported as "Pivot formula is invalid." with the
+cause chained but never shown or logged. Each categorical feature of a
+relationships question collects the same grouped plan three times and each
+numeric feature twice, so one question of fifty features scans the data point
+about a hundred and fifty times.
+
+**Plan:** Catch `ConfigError` in `start()` and answer 400 with its message (or
+add it to the application handler `API-R06` plans); build the member literal in
+the column's dtype; put the chained cause's message in the failure; collect the
+three derived frames with one `collect_all` or fold them into one aggregation.
+
+**Acceptance:** An invalid card answers 400 naming the field; a tz-aware member
+filter returns its row (the probe's shape as a test); a formula failure names the
+refused construct; a relationships question performs one collect per feature.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/routes/_pivot_service.py::PivotService`;
+`src/haute/routes/_pivot_service.py::_member_literal`;
+`src/haute/routes/_pivot_service.py::_formula_expression`;
+`src/haute/routes/_explore_relationships.py::_categorical_levels`;
+`src/haute/routes/explore.py`.
+
+**28 October full-pass addition:** Relationships temporary names collide with valid user
+columns: target `__w=[10,20]` and feature `x=[a,b]` yields category means `[1,1]` and strength
+0 after the internal weight alias overwrites the target, instead of `[10,20]` and strength 1. A
+real Parquet/service probe reproduces it. Also a copied Explore node sharing the producer/card
+calculation hits the pivot cache and receives the original node's `result.node_id`; numbers
+remain correct and the browser stores them under the requested node, so this is response
+identity drift, not proven cross-node numerical corruption. **Plan/acceptance:** allocate
+noncolliding prefixed or generated internal aliases (including related temporary columns) and rebind consumer
+identity when sharing cached calculation data. Compare ordinary column names with `__w`/`__wy`;
+equivalent A/B pivot requests may share computation but each response names its own consumer.
+Evidence: `src/haute/routes/_explore_relationships.py::ExploreRelationshipsService._compute`, `src/haute/routes/_pivot_service.py::PivotService._calculation_spec` and `src/haute/_data_points.py::DataPointResolver.point_digest`.
+
+### EDA-R02 — Card fields, stale statements, the partition floor
+
+**Why:** Three absent card fields (`sort`, `sort_rows`, `color_scale`) are
+materialised with defaults while their siblings are required, so a card missing
+`color_scale_split_by` is rejected and one missing `color_scale` is silently
+completed, against the canonical-only policy and the specification's "rejected
+rather than migrated". Two statements of the Explore specification contradict
+the code: the "single aggregation guarantee" (the profile collects once per
+batch of eight columns plus the histogram and duplicate-count passes, which its
+own test counts) and the decorator's kwarg order, which omits `pivot_formulas`.
+The duplicate-count scratch floors its partition size at one row, so a small
+memory headroom turns a large frame into up to one partition per row.
+
+**Plan:** Require the three fields like their siblings (the writers already emit
+them) or document the exception; delete or restate the two specification
+sentences; floor the partition size at tens of thousands of rows and let the
+memory limit fail the job instead.
+
+**Acceptance:** A card missing `sort` is refused like one missing
+`decimal_places`; the specification matches the collect count and the kwarg
+order; the scratch writes a bounded number of partitions.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_explore_pivots.py`;
+`src/haute/_frame_profile.py::_count_unique_rows`;
+`src/haute/_codegen_builders.py`; `specs/explore-eda/low-level.md`.
+
+### EDA-R03 — The Explore panels' empty state, observer, glyph and sentinel
+
+**Why:** A pivot result with no row paths (a filter matching no rows with row
+grand totals off) makes the chart card show a danger alert saying the result
+lacks the coordinates a chart requires and the configuration should be reviewed,
+although nothing is misconfigured, while the Pivots pane shows a neutral "No rows
+match" for the same result. The theme and reduced-motion observer effect is
+duplicated line for line between Explore's combo chart and the workbench's chart.
+Null cells render a hyphen where the specification says an em dash and the
+Segments tab uses one. A pivot start failure is recorded by fabricating a job
+entry with a time-based id and then failing it. Five Explore exports are
+referenced only at their definitions and several more only inside their module.
+
+**Plan:** Return an empty dataset for an empty result and keep the error for a
+result with cells but no coordinates; one `useChartEnvironmentRevision` hook
+beside the shared chart theme; one glyph; a store action that records a start
+failure without a job id; delete and un-export the symbols.
+
+**Acceptance:** An empty filtered pivot shows the pane's empty wording on its
+chart; jscpd reports no observer pair; the glyph matches the specification;
+knip reports none of the exports.
+
+**Dependencies:** `FSH-R06` removes the store's other fabricated sentinel.
+
+**Evidence:** `frontend/src/panels/explore/chartData.ts::adaptPivotChartData`;
+`frontend/src/panels/explore/ExploreChartsPane.tsx`;
+`frontend/src/panels/explore/ComboChart.tsx`; `frontend/src/workbench/ChartBody.tsx`;
+`frontend/src/panels/explore/PivotTableGrid.tsx`;
+`frontend/src/panels/explore/useExplorePivotActions.ts`;
+`frontend/src/panels/explore/pivotConfig.ts`;
+`frontend/src/panels/explore/chartConfig.ts`.

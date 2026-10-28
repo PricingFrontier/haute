@@ -46,6 +46,7 @@ hygiene; `ASSIST-60` from its pass over the chat panel.
 | ASSIST-58 | Planned | P2 | What the model is told is true: a join's execution failure is kept unless the validation raised it, the brief's columns follow the data, Load File's summary names the three file types, and no rule is stated that the product does not enforce. |
 | ASSIST-59 | Planned | P3 | A re-validated plan keeps a full TTL, the assistant imports the one canonical JSON encoder and one freeze helper, and its limits are declared once. |
 | ASSIST-60 | Planned | P3 | The chat panel recognises the server's "still finishing" answer by a code, shows the server's detail for every other failure, never throws from a click, and keeps a draft the store refused to send. |
+| ASSIST-61 | Planned | P1 | Applying a verified plan never adopts a newer source revision as permission to overwrite an intervening external edit. |
 
 ## Planned improvements
 
@@ -359,3 +360,32 @@ shows the still-finishing notice; a refused send keeps the draft.
 **Evidence:** `frontend/src/stores/useAssistantStore.ts`;
 `src/haute/routes/assistant.py`; `frontend/src/panels/assistant/BuildChecklist.tsx`;
 `frontend/src/panels/assistant/Composer.tsx`.
+
+### ASSIST-61 — Keep the authenticated revision through commit
+**Why:** The [28 October review](codebase-review-2026-10-28.md) reproduced an
+external edit lost during assistant apply. `_prepare_apply` authenticates the
+saved snapshot and derives the result graph; `_commit` then rereads
+`_document_revision` and passes that newer revision to the save service. An IDE
+save between those operations is therefore treated as the authorised baseline
+for the older graph. In the probe, a rename succeeds and its post-commit
+verification passes while an intervening change to the pipeline description
+disappears. The process's `save_lock` cannot exclude an external editor.
+
+**Plan:** Bind the editor-protocol save revision to the exact source snapshot
+authenticated by preparation and carry it through commit. Establish and verify
+that binding around the reads that build the snapshot; merely moving the fresh
+revision read to another unguarded point is insufficient. Use the save service's
+existing conflict precondition and stale-plan failure. Update the assistant
+transaction contract before implementation.
+
+**Acceptance:** Insert an external source edit after freshness verification
+and before transactional save: apply refuses as stale/conflicted, preserves the
+external bytes, and reports no successful application. Also cover an edit during
+snapshot/revision acquisition so a mixed snapshot cannot be authorised. An
+unchanged plan applies once and a second apply is still refused. Use real
+temporary project files and the real save service with a deterministic barrier.
+
+**Dependencies:** None; reuse the save service's existing revision checks.
+
+**Evidence:** `src/haute/assistant/_application.py::PipelineApplicationService`;
+`src/haute/routes/_save_pipeline.py`; `tests/test_assistant_application.py`.

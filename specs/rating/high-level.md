@@ -256,6 +256,10 @@ Out of scope (owned by neighbouring components):
 
 ## Failure model
 
+> NOTE: A factor named `value` collides with the serialized rate field and can lose
+> its level in the editor before runtime fails.
+> [BUG-46](../roadmap/bugs.md#bug-46--a-rating-factor-cannot-collide-with-its-rate-field) owns the consistent representation/validation rule.
+
 - **Rating-table miss, no usable default, `onMissing: "error"` (default):**
   raises `RatingTableMissError` at frame materialisation (not at config-build
   time — it is wired into the lazy plan via `map_batches` so it fires exactly

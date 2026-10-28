@@ -740,6 +740,17 @@ browser without a server or JS bundle.
 
 ## Failure model
 
+> NOTE: Status routes currently drop recorded tuning progress fields; regression
+> signatures and several diagnostic labels also disagree with their outputs.
+> [MOD-R08](../roadmap/modelling.md#mod-r08--training-status-carries-the-progress-the-worker-records),
+> [MOD-R09](../roadmap/modelling.md#mod-r09--output-signatures-describe-predictions) and
+> [MOD-R05](../roadmap/modelling.md#mod-r05--diagnostics-measured-as-the-fit-was) track these corrections.
+
+> NOTE: Stratified test allocation can consume the class members needed for later
+> validation, rejecting an otherwise feasible evaluation plan. The reserve and
+> allocation corrections are tracked in
+> [MOD-R07](../roadmap/modelling.md#mod-r07--stratified-allocation-reserves-every-later-partition).
+
 - Configuration errors (no target, unknown algorithm, incomplete training objective,
   invalid GLM family/link combination) are rejected before any pipeline execution or
   job record is created, as HTTP 400 with a message naming the exact missing/invalid

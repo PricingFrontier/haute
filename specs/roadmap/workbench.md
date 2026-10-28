@@ -51,10 +51,11 @@ what the review found in the Workbench view and the underwriter app in the brows
 | WB-28 | Planned | P3 | A condition tests a field against another field, text within text, and a date against another date give or take a number of days. |
 | WB-29 | Planned | P3 | A component that takes nothing typed, or a section or a sheet holding only such components, shows by conditions on the price, applied after it so the price never decides what is priced. |
 | WB-33 | Planned | P2 | A pricing that outruns its timeout cannot hold the app's executor: pricings run in a bounded pool and the app answers 503 when it is full. |
-| WB-35 | Planned | P2 | Every quote action in the app says what it did: a quote made while the page stays is announced, a storeless page offers Reload when the release changed, "Open the newest" opens once, and the Quotes page's keys leave a focused select alone. |
+| WB-35 | Planned | P2 | Every quote action in the app says what it did: a quote made while the page stays is announced, a storeless page offers Reload when the release changed, "Open the newest" opens once, and the Quotes page's keys leave a focused select alone. Late archive/restore completion keeps the current query. |
 | WB-36 | Planned | P2 | A number list in a Show when condition never splits a thousands separator into two values, and the app reads quote_details ids from one typed map. |
 | WB-37 | Planned | P3 | The column key, the refusal predicate, the 409 detail reader, the empty visibility constants, the half-window width, the collapsible group and the pricing basis each exist once in the workbench and the app. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
+| WB-39 | Planned | P1 | The locally served underwriter app rejects foreign Host and forwarded requests before assigning the analyst's identity. |
 
 ## Planned improvements
 
@@ -537,6 +538,14 @@ newest" reads the quote once; `N` with a select focused opens no window.
 `frontend/src/app/UnderwriterApp.tsx::OneQuote`, `frontend/src/app/QuoteView.tsx`,
 `frontend/src/app/QuotesPage.tsx`, `frontend/src/hooks/keyboardTargets.ts::isFormControl`.
 
+**28 October full-pass addition:** Archive/restore completion calls `load(query)` using the
+query captured before its await. A real QuotesPage archive witness switches from Team to Mine
+while the request waits; completion starts a newer load for Team and replaces Mine.
+**Plan/acceptance:** reconcile the mutation against the current list generation/query, or
+reload the current query. A delayed archive or restore must not replace newer
+search/filter/sort/navigation state; test with the actual page/store and deferred API response.
+The archive case was executed; restore shares the same source pattern at `frontend/src/app/QuotesPage.tsx::QuotesPage.restore`.
+
 ### WB-36 — Number lists in Show when, and the quote_details ids from one map
 **Why:** "is one of" and "is not one of" on a number column without allowed values split
 the typed list on every comma, so a thousands-separated "1,000" becomes the values "1"
@@ -623,3 +632,37 @@ specification and the field stop calling the shape older.
 
 **Evidence:** `frontend/src/workbench/schema/AllowedField.tsx::TYPED_IN`,
 `src/haute/_workbench_form.py::FormSpec`, `frontend/src/utils/workbenchForm.ts`.
+
+### WB-39 — Enforce the local app's request boundary
+**Why:** The [28 October review](codebase-review-2026-10-28.md) measured a
+local-principal app accepting `Host: attacker.example:8001` for both a release
+read and a pricing POST with matching Origin and `Sec-Fetch-Site: same-origin`.
+Both returned 200 under the analyst's identity. `haute app serve` binds loopback,
+but `create_app` grants its local principal to every request and installs no
+trusted-host guard. `_cross_site` exempts reads and accepts a same-origin write.
+A hostile hostname resolving to loopback can therefore meet these checks;
+DNS-rebinding exposure is inferred from the measured request acceptance, not
+claimed as a browser exploit executed during the review. The quote routes use
+the same identity middleware, so this boundary also protects saved quotes.
+
+**Plan:** In local-principal mode, install the existing local trusted-host and
+forwarded-metadata boundary before authentication. Confirm the app's Origin
+and browser-request rules cover its local entry path without trusting arbitrary
+hostnames. Keep hosted identity handling separately specified; `WB-25` owns
+the Azure authentication-header policy. Document the local app threat boundary
+in the workbench and sandbox-security specifications before implementation.
+
+**Acceptance:** Local app requests with a foreign Host, with or without
+same-origin fetch metadata, are refused before release/form/quote reads or
+pricing and quote mutations. Forwarded metadata is refused in local mode.
+Normal supported loopback hosts still load, price and save quotes; read-only
+mode remains read-only. Include quote-store mutation assertions against a real
+temporary store. Hosted proxy operation remains covered by its existing tests.
+
+**Dependencies:** None; `WB-25` is a separate hosted trust decision.
+
+**Evidence:** `src/haute/_workbench_app.py::create_app`;
+`src/haute/_workbench_app.py::_cross_site`;
+`src/haute/cli/_app.py::handle_app_serve`;
+`src/haute/_local_security.py::LocalTrustedHostMiddleware`;
+`tests/test_workbench_app.py`.

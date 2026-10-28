@@ -226,6 +226,10 @@ submodel constructor that declares constants are `ParseError`s naming the line.
 
 ## Failure model
 
+> NOTE: The full review reproduced final scalar bindings used at earlier expressions,
+> lost unary parentheses and substitution inside string literals.
+> [TRACE-R02](../roadmap/tracing.md#trace-r02--expression-facts-from-the-located-expression) tracks statement-scoped bindings and syntax-preserving rendering.
+
 - Structural parsing converts a whole-file `SyntaxError` into contextual `ParseError`; no
   syntax-invalid source returns a canonical `PipelineGraph`.
 - Structural parsing also raises `ParseError` for authored content it cannot

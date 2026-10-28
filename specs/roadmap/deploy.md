@@ -22,6 +22,7 @@ MLflow target and the impact analysis. Current behaviour is specified in
 | DEP-R14 | Planned | P3 | Validation parses each test-quote file once and reports every row with missing columns. |
 | DEP-R15 | Planned | P3 | The served error envelopes carry a correlation id rather than the exception text. |
 | DEP-R16 | Decision | P3 | A quote whose production value is zero and whose staging value is not is reported, not a failure of the whole impact analysis. |
+| DEP-R17 | Planned | P2 | Changing Accept changes framing and row limits, not OUTPUT null/empty-field semantics. |
 
 ## Planned improvements
 
@@ -273,3 +274,25 @@ matches it.
 
 **Evidence:** `src/haute/deploy/_impact.py::_percent_change_series` and
 `::_total_percent_change`.
+
+### DEP-R17 — JSON and NDJSON preserve the same output document
+
+**Why:** Generated JSON responses call render_output_document, while NDJSON directly serializes
+the assembled frame. A real generated app with table-based Quote Input and OUTPUT returns
+`{quote_id:q1}` as JSON but `{quote_id:q1,pricing:null}` as NDJSON for the same request with
+null premium. The real scorer, shredder and assembler ran; no scorer was mocked. Batch
+materialization has the same direct-serialization pattern.
+
+**Plan:** Share the output document rendering contract in both response modes, preserving
+bounded batches, ordering, spool cleanup and existing response limits. Apply recursive
+null/empty-field pruning consistently without conflating null array elements with absent object
+properties.
+
+**Acceptance:** Real generated single and batch endpoints produce equivalent decoded rows for
+JSON and NDJSON within the JSON limit, including nested null fields, empty collections and
+meaningful array nulls. NDJSON still returns all rows in order and an error before response
+streaming preserves cleanup behavior.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/deploy/_container.py::_generate_app_source` (emitted `_quote_response_content`); `src/haute/deploy/_container.py::_generate_app_source` (emitted `_materialize_quote_ndjson`); `src/haute/deploy/_container.py::_generate_app_source` (emitted `_materialize_batch_ndjson`); `src/haute/_output_assembler.py::render_output_document`.

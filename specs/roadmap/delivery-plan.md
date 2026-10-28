@@ -75,6 +75,7 @@ date its entry records; raise an objection before its round starts.
 
 The component roadmaps remain the complete inventory. Packages outside the
 rounds above, including the [25 October audit](codebase-review-2026-10-25.md)
+and [28 October functional review](codebase-review-2026-10-28.md)
 packages, have not been assigned a round; that does not defer their stated
 priority. Decision packages need the choice in their entry before scheduling.
 

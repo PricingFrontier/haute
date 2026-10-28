@@ -663,6 +663,12 @@ handling.
 
 ## Failure model
 
+> NOTE: The full review found malformed connect calls silently repaired and keyword-only
+> configuration defaults dropped during round-trip, including a 120-to-90 result change.
+> [PCFG-R20](../roadmap/pipeline-config.md#pcfg-r20--malformed-connect-calls-are-parse-errors) and
+> [PCFG-R21](../roadmap/pipeline-config.md#pcfg-r21--node-signatures-retain-their-configuration-bindings)
+> track strict call validation and conservation of configuration bindings.
+
 Missing, unreadable, or invalid-JSON sidecar files raise a config error naming the path.
 Using a folder-backed node type without a `config=` sidecar raises, naming the concrete
 config folder and suggesting `haute init`. A JSON sidecar with a repeated key is rejected at

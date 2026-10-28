@@ -240,6 +240,10 @@ Depended on:
 
 ## Failure model
 
+> NOTE: An operation-raised TimeoutError in shared-flight work is currently mistaken
+> for an incomplete polling wait, spinning until cancellation.
+> [ROAD-WORKER-09](../roadmap/background-jobs-api.md#road-worker-09--completed-operation-timeouts-are-terminal-failures) owns this terminal-failure distinction.
+
 - **Unknown job ID.** `require_job` / `require_completed_job` raise HTTP 404;
   the running-job metrics publisher also lets this failure propagate instead of
   silently dropping evidence of inconsistent lifecycle state.

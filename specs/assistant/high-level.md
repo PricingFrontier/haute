@@ -2034,6 +2034,11 @@ see [the assistant evaluation](evaluation.md#tiers).
 
 ## Failure model
 
+> NOTE: Apply currently rereads the editor revision after authenticating its plan,
+> so an external edit in that interval can be overwritten despite successful
+> verification. Binding commit to the authenticated snapshot is tracked in
+> [ASSIST-61](../roadmap/assistant.md#assist-61--keep-the-authenticated-revision-through-commit).
+
 Loud, typed, and never averaged away:
 
 - **Unconfigured** — message send against a project with no usable `[assistant]` config

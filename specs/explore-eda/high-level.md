@@ -379,6 +379,10 @@ Out of scope (owned elsewhere):
 
 ## Failure model
 
+> NOTE: Relationship temporary aliases can overwrite user columns such as `__w`,
+> and shared pivot cache replies can retain another consumer's node id.
+> [EDA-R01](../roadmap/explore-eda.md#eda-r01--pivot-requests-answered-right) includes alias isolation and response identity.
+
 - An Explore node with zero or more than one upstream parent fails synchronously with HTTP 400
   before a job is created; no background work is attempted.
 - Posting a missing `node_id` returns HTTP 404; a node that resolves but is not Explore-typed

@@ -16,7 +16,7 @@ retired.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| EXEC-R09 | Planned | P1 | The chunk-local classifier refuses a `select` whose expressions read no input column, so an input-sliced write never multiplies rows by the number of parts. |
+| EXEC-R09 | Planned | P1 | The chunk-local classifier refuses a `select` whose expressions read no input column, so an input-sliced write never multiplies rows by the number of parts. Deployed request-order proof also refuses that select, preserving the per-quote output contract. |
 | EXEC-R10 | Planned | P2 | The RAM estimate reads column widths from the node's own lineage schema and from the parquet metadata of nested types, so a widened graph estimates wider than its source. |
 | EXEC-R11 | Planned | P2 | A display walk materialises a fan-out input only when more than one collected consumer reads it. |
 | EXEC-R12 | Planned | P2 | A warm pool worker survives an ordinary user error, a failed replacement is retried, and a wait for a slot ends at the request's deadline. |
@@ -55,6 +55,16 @@ each; the existing eligible shapes stay eligible.
 **Evidence:** `src/haute/chunking.py::classify_chunk_local_polars_code`;
 `src/haute/chunking.py::_CHUNK_LOCAL_CALL_SHAPE_VALIDATORS`;
 `src/haute/_chunked_writes.py`.
+
+**28 October full-pass addition:** The deployed request-row proof also reports
+`in_request_order` for `quotes.select(pl.lit(100).alias("premium"))`. A real three-quote score
+then fails RequestRowCountError with one output row, instead of being routed through the
+declared quote-by-quote path. **Plan/acceptance:** reuse a sound column/cardinality rule in
+both chunk admission and deploy row proof; assert the proof selects quote-by-quote for this
+supported per-quote constant expression, then score three quotes and get three premiums. Keep
+the final row-count guard as defense, not as the proof. Evidence:
+`src/haute/deploy/_request_rows.py`; executed `score_graph` and native whole/per-slice
+comparisons.
 
 ### EXEC-R10 — Column widths from the lineage, not the nearest source
 **Why:** `_resolve_target_columns_from_index` walks breadth-first to the nearest source

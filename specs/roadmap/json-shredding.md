@@ -17,6 +17,8 @@ packages come from the [25 October 2026 codebase review](codebase-review-2026-10
 | JSON-R03 | Planned | P2 | Declared types hold exactly: a `date` column parses ISO-8601 only, `coalesce` is validated, a null-only array does not widen its table to strings, and `$value` is accepted only as an element leaf. |
 | JSON-R04 | Planned | P3 | The path grammar's specification matches the parser, and an input path's error names a table or column path. |
 | JSON-R05 | Planned | P3 | The counted shred, the JSONL decode and the root-array loop exist once each, and the two write-only symbols are gone. |
+| JSON-R06 | Planned | P1 | OUTPUT preserves object hops before arrays, distinguishes arrays at different full paths, and refuses incompatible leaf/container mappings before collecting. |
+| JSON-R07 | Planned | P1 | Structured requests refuse malformed elements in non-emitting ancestor arrays as well as directly emitted tables. |
 
 ## Planned improvements
 
@@ -129,3 +131,60 @@ tests pass unchanged.
 `src/haute/_json_shred/_writer.py::_shred_data_file_to_direct_spill`;
 `src/haute/_json_shred/_records.py`;
 `src/haute/_api_input_schema.py::ApiInputV2Config`.
+
+### JSON-R06 — OUTPUT preserves the complete destination path
+**Why:** The [28 October review](codebase-review-2026-10-28.md) reproduced
+`$[:].cover.vehicles[:].id` assembling as `vehicles` at the root, losing `cover`.
+`_array_prefix` retains only array segment names and both assembly and schema
+construction attach each child using only its final name. Consequently
+`$[:].left.items[:].value` and `$[:].right.items[:].value` are falsely treated as
+the same array level. A second structural gap allows one frame's scalar
+`$[:].items` and another frame's `$[:].items[:].value`: assembly silently replaces
+the scalar with the array. Schema-only execution reproduces the same wrong shape,
+so comparing schema-only and collected schemas does not detect the defect.
+
+**Plan:** Identify an array level by its complete parsed path through its final
+array selector, preserving intervening object segments without creating extra
+relational tables. Use one structural path model for validation, nesting,
+row-limited assembly and schema derivation. Validate leaf/object/array conflicts
+over all active mappings, including across ports, before reading source data.
+Keep shared ancestor relation keys and one frame per actual array level.
+Update the JSON-shredding high- and low-level contracts before implementation.
+
+**Acceptance:** A mapping through `cover.vehicles[:]` emits exactly
+`{"cover":{"vehicles":[{"id":"v1"}]}}` inside its root record, with the
+matching nested schema. Arrays named `items` under `left` and `right` remain
+separate. Cover object hops between two array levels and row-limited assembly.
+Scalar-versus-array and scalar-versus-object conflicts across ports fail with
+both paths named before collection; repeated shared ancestor keys remain valid.
+Assert literal expected JSON, not just agreement between two implementations.
+
+**Dependencies:** None. `JSON-R04` owns grammar documentation; these paths are
+already accepted and do not require adding bracket-name syntax.
+
+**Evidence:** `src/haute/_output_assembler.py::_array_prefix`;
+`src/haute/_output_assembler.py::validate_v2_output_mapping`;
+`src/haute/_output_assembler.py::_assemble_document`;
+`src/haute/_output_assembler.py::output_document_schema`;
+`tests/test_output_assembler.py`; `tests/test_output_schema_only.py`.
+
+### JSON-R07 — Malformed ancestors cannot hide skipped request data
+
+**Why:** When only `drivers[:].claims[:]` emits, `_walk` silently ignores a scalar, null or
+nested list in `drivers`. The real request validator and deployed scorer accept all three
+shapes and return the valid sibling's total of 100. The skipped ancestor never reaches the
+descendant table's malformed-row accounting, so a successful price can omit supplied data.
+
+**Plan:** Validate each traversed array element against its declared object/array position,
+including intermediate tables that do not emit. Carry an attributed shape failure through the
+normal strict-request boundary. Preserve the documented treatment of genuinely absent and empty
+arrays; do not confuse them with a malformed present element.
+
+**Acceptance:** Real `QuoteRequest` and `score_graph` cases with valid siblings plus scalar,
+null and nested-list ancestors refuse with the offending path. Equivalent all-valid nested
+requests price correctly; omitted/empty optional arrays retain their specified behavior. Cover
+direct emitting and non-emitting ancestors with the same shared walker.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_json_shred/_shred.py::shred_to_buffers._emit_at`; `src/haute/deploy/_scorer.py`; the 28 October report's deployed ancestor-shape probe.

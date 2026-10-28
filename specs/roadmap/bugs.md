@@ -30,12 +30,14 @@ same review, are the Databricks browsing errors and the non-atomic first append.
 | BUG-28 | Planned | P2 | The offset tooltip names every loss that treats the offset as an exposure, and the losses that take no offset. |
 | BUG-29 | Planned | P2 | A tuned t-boost run's summary says its published model is the winning trial's fit, not a refit. |
 | BUG-30 | Planned | P3 | The modelling UI specification lists the t-boost starter parameters and readiness issues the editor has. |
-| BUG-40 | Planned | P2 | The hosted Databricks app installs the wheel and its pinned dependencies from a lock at boot, and its build script takes the app name as a parameter. |
+| BUG-40 | Planned | P2 | The hosted Databricks app installs the wheel and its pinned dependencies from a lock at boot, and its build script takes the app name as a parameter. The build selects its current wheel rather than a stale lexicographic match. |
 | BUG-41 | Planned | P3 | The UC volume transport builds one workspace client per process. |
 | BUG-42 | Decision | P3 | The storage binding record either rejects unknown keys or is named as the exception to the canonical-only policy. |
 | BUG-43 | Planned | P3 | Banding factors resolve the plan's schema once instead of once per factor. |
 | BUG-44 | Planned | P2 | A Databricks browsing failure (an expired token, a missing catalog, a missing permission) is answered with a message naming the cause instead of the sanitized 500. |
 | BUG-45 | Planned | P2 | A first `append` to a Databricks table that does not yet exist either creates and fills it in one statement or leaves nothing behind when the insert fails. |
+| BUG-46 | Planned | P2 | Rating a source column named value is either faithfully represented or refused before the editor overwrites its levels. |
+| BUG-47 | Planned | P2 | The initial storage binding and restart marker name the branch actually published under the Git transaction. |
 
 ## Planned improvements
 
@@ -58,7 +60,6 @@ line, and a save is refused with that location.
 
 **Evidence:** `src/haute/_pipeline_recovery.py::_unkept_statement_diagnostics`;
 `src/haute/_ast_helpers.py::unkept_module_statements`; `src/haute/codegen.py::_render_module`.
-
 
 ### BUG-21 — Container smoke and impact steps reach their endpoints
 **Why:** The generated smoke and impact steps run `haute smoke --endpoint-suffix
@@ -221,6 +222,15 @@ rules; share them without assuming the app and Model Serving need identical extr
 **Evidence:** `databricks_app/app.py::_refresh_vendored_wheel`;
 `databricks_app/requirements.txt`; `databricks_app/scripts/deploy.sh`.
 
+**28 October full-pass addition:** The unchanged bundle script also selects the
+lexicographically last wheel in shared `dist/`, not necessarily the wheel just built. A
+controlled real-shell run builds 0.10.0 beside 0.9.0 and bundles OLD RELEASE from 0.9.0.
+**Plan/acceptance:** build into a fresh owned directory or consume the exact build output,
+require one matching artifact, and derive the digest/requirements from it. Mixed stale versions
+and rebuilding a lower checked-out version must both bundle the current build. Evidence:
+`databricks_app/scripts/build_bundle.sh`, wheel selection statement `wheel="$(ls "$repo_root"/dist/haute-*.whl | sort | tail -n1)"` (builder output and missing local digest tool only
+were substituted; no deployment ran).
+
 ### BUG-41 — One workspace client per process
 **Why:** Every UC volume read, write, list and delete constructs a new `WorkspaceClient()`,
 resolving authentication each time, including the 30 s claim heartbeat.
@@ -305,3 +315,48 @@ the table unchanged.
 
 **Evidence:** `src/haute/_databricks_output.py::load_statements`;
 `src/haute/_databricks_io.py`.
+
+### BUG-46 — A rating factor cannot collide with its rate field
+
+**Why:** The editor offers `value` as a factor. Its Cartesian-entry builder spreads the factor
+values and then writes the rate into the same `value` key, losing the selected level. The
+canonical backend codec also accepts this shape, but the real rating join selects `["value",
+"value"]` and raises Polars `DuplicateError`. One flat key cannot carry both values.
+
+**Plan:** Specify one consistent representation/validation rule across rating config, grids,
+sidecars and runtime. Either separate factor-level storage from the rate field or explicitly
+refuse this reserved factor name with actionable rename guidance before mutation. Do not
+silently rename columns or coerce the lost level.
+
+**Acceptance:** A source string column named `value` and two distinct levels cannot produce an
+accepted ambiguous table. The chosen contract either rates both levels with distinct rates
+through editor/save/run or refuses selection and imported config before overwriting data.
+Ordinary factor names continue to round-trip.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/panels/editors/RatingStepEditor.tsx::RatingStepEditor`;
+`frontend/src/panels/editors/rating/ratingTableUtils.ts::buildCartesianEntries`;
+`src/haute/_rating_step_config.py::_validate_factors`; `src/haute/_rating.py::rating_table_lookup`.
+
+### BUG-47 — Initial storage binding records the published branch
+
+**Why:** Initial bind captures a working branch before acquiring the publisher's Git lock and
+ignores the branch snapshot returned by publication. A real local-Git probe switches from
+`first` to `second` before publication: the remote has `second` and `second-save`, while the
+binding records `first`, absent remotely. The first restart can therefore target unpublished
+state. Both Git and UC initial publisher call sites discard their returned snapshot; only Git
+was executed.
+
+**Plan:** Authenticate the initial branch snapshot under the publication transaction and build
+the binding from the transport's successful published snapshot, as later publication does. Keep
+claim, binding and restart-marker state coherent when a branch transition or publication fails.
+
+**Acceptance:** Barrier-controlled initial Git bind with a branch switch records a branch
+present remotely with its matching save ledger; restore opens it. Exercise the equivalent UC
+publication snapshot contract without a live workspace dependency, plus publication failure
+leaving no false successful binding.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_project_storage.py::bind_remote`; `src/haute/_project_storage.py::bind_remote`; `tests/test_project_storage.py`.
