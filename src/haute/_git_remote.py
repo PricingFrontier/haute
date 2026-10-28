@@ -61,7 +61,9 @@ logger = get_logger(component="git")
 __all__ = [
     "ensure_remote",
     "remote_url",
+    "remote_push_urls",
     "adopt_cloned_lineage",
+    "remote_is_empty",
     "remote_holds_other_history",
     "clone_project",
     "bundle_create",
@@ -102,6 +104,17 @@ def remote_url(name: str, cwd: Path | None = None) -> str | None:
     return url.strip() if ok and url.strip() else None
 
 
+def remote_push_urls(name: str, cwd: Path | None = None) -> list[str]:
+    """Where a push to remote *name* lands: its ``pushurl`` entries, else its URL.
+
+    ``git remote get-url --push --all``, with ``insteadOf`` and ``pushInsteadOf``
+    applied; empty when the remote is absent.
+    """
+    _validate_ref_name(name)
+    ok, urls = _run_git_ok("remote", "get-url", "--push", "--all", name, cwd=cwd)
+    return [url.strip() for url in urls.splitlines() if url.strip()] if ok else []
+
+
 def adopt_cloned_lineage(working: str, remote: str = "origin", cwd: Path | None = None) -> None:
     """Materialise a cloned project's managed lineage as local branches.
 
@@ -135,6 +148,17 @@ def adopt_cloned_lineage(working: str, remote: str = "origin", cwd: Path | None 
     else:
         _run_git("checkout", working, cwd=cwd)
     logger.info("cloned_lineage_adopted", working=working)
+
+
+def remote_is_empty(remote: str, cwd: Path | None = None) -> bool:
+    """Whether *remote* advertises no object ref, the state in which a Push bootstraps it.
+
+    The strict advertisement read :func:`push_working_pair` makes; an inspection failure
+    propagates as :class:`GitError`. The Push itself inspects again and owns the decision.
+    """
+    _validate_ref_name(remote)
+    _, _, has_object_refs = _inspect_remote(remote, cwd=cwd)
+    return not has_object_refs
 
 
 def remote_holds_other_history(remote: str, project_root: Path, cwd: Path | None = None) -> bool:

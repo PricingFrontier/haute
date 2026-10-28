@@ -101,7 +101,10 @@ init`, `haute serve`, or working-branch creation. Those stages may scaffold file
 the local default/working/ledger history, and perform existing prompt-proof remote status
 reads, but only the user's explicit Push action may publish refs. This keeps offline startup
 usable, avoids credential prompts during project setup, and makes the remote mutation
-boundary visible to the user.
+boundary visible to the user. The same boundary holds for the deploy's GitHub secrets: the
+Push that first publishes a project to a GitHub repository sets the ones it lacks, a later
+Push only reports them, and the push panel's Set from .env is the other explicit action that
+sets them ([cli](../cli/high-level.md)).
 
 Before that push, Haute strictly inspects the selected remote with terminal and SSH prompts
 disabled and a hard timeout. Only a successful advertisement containing zero object refs

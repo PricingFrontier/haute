@@ -15,7 +15,7 @@
 | `src/haute/_git_lock.py` | Reentrant per-repository mutation-lock registry shared by the engine and clone-state helpers. Uses a bounded marker-aware identity cache, a stable project-path key across `git init`, a common-Git-directory key for linked worktrees, and weak lock values so idle repositories are evicted. It never invokes Git. |
 | `src/haute/_git_state.py` | Per-clone, untracked JSON state under `<project_root>/.haute/`: working-branch association (`state.json`), UI preferences (`prefs.json`), last-pushed SHAs (`pushed.json`), delete tombstones (`trash.json`). Fail-soft parsing plus lock-scoped atomic replace; no git subprocess calls. |
 | `src/haute/_gitignore_guard.py` | Shared `.gitignore` deny-list owned by [sandbox-security](../sandbox-security/low-level.md) and append-only `ensure_gitignore_guards()` used both by project initialization and unborn-repository seeding; preserves tracked `*.haute.json` sidecars while excluding per-clone/cache/data/venv state. |
-| `src/haute/routes/git.py` | FastAPI router at `/api/git`. One `def` (sync) handler per Git endpoint, each a thin call into the Git domain; a `GitError` the route does not map itself reaches the application handler, which converts it with `git_error_http_exception`. The `/api/git/storage/*` endpoints hosted in this router are owned by [hosted-project-storage](../hosted-project-storage/low-level.md). |
+| `src/haute/routes/git.py` | FastAPI router at `/api/git`. One `def` (sync) handler per Git endpoint, each a thin call into the Git domain; a `GitError` the route does not map itself reaches the application handler, which converts it with `git_error_http_exception`. The `/api/git/storage/*` endpoints hosted in this router are owned by [hosted-project-storage](../hosted-project-storage/low-level.md). `POST /api/git/push` publishes through `haute._ci_secrets.push_with_ci_secrets`, and `POST /api/git/ci-secrets` is `set_missing_ci_secrets`; the deploy's-secrets step they add is owned by [cli](../cli/low-level.md). |
 
 ## Key types and data structures
 
@@ -145,7 +145,8 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 | `GET /api/git/remotes` | None | `GitRemotesResponse {remotes:[GitRemote {name,url,working,ledger}...],working_branch?}`; `working` and `ledger` are the sole per-leg divergence records and URL userinfo is redacted |
 | `GET /api/git/show/{sha}` | Commit SHA path; required query `source_file` (project-relative pipeline file) | Read-only `PipelineGraph` of that file at the commit |
 | `GET /api/git/commit-context/{sha}` | Commit SHA path; query `base=null` | `GitCommitContext`, with `delta_from_base` only when `base` is supplied |
-| `POST /api/git/push` | `GitPushRequest {remote}` | `GitPushResponse {remote,working_branch,ledger_branch,default_branch,bootstrapped_default=false,pushed_refs=[]}`; `default_branch` and `bootstrapped_default` are required response members, and working/ledger non-fast-forward is 409 |
+| `POST /api/git/push` | `GitPushRequest {remote}` | `GitPushResponse {remote,working_branch,ledger_branch,default_branch,bootstrapped_default=false,pushed_refs=[],ci_secrets=null}`; `default_branch` and `bootstrapped_default` are required response members, `ci_secrets` is the deploy's secrets on a GitHub remote's repository ([cli](../cli/low-level.md)), and working/ledger non-fast-forward is 409 |
+| `POST /api/git/ci-secrets` | `GitCiSecretsRequest {remote}` | `GitCiSecrets {repository,state,missing=[],newly_set=[],problem=null}` once the deploy's secrets the repository lacked are set from `.env`; 400 naming why when they do not apply or cannot be set ([cli](../cli/low-level.md)) |
 | `POST /api/git/fast-forward` | `GitFastForwardRequest {remote}` | `GitFastForwardResponse {remote,working_branch,fast_forwarded=[]}` |
 | `POST /api/git/branch-away` | `GitBranchAwayRequest {remote}` | `GitBranchAwayResponse {working_branch,set_aside_as}` |
 
@@ -426,6 +427,17 @@ spawned and is therefore absent from `pushed_refs`. Repeating a successful push 
 and reports `bootstrapped_default=false` once the remote advertises refs; so does the Push
 that completes an interrupted bootstrap, since it finds an established remote.
 
+**Empty remote (`remote_is_empty`).** `True` exactly when the strict advertisement read
+(`_inspect_remote`) finds no object ref, the state in which the next Push bootstraps; an
+inspection failure propagates. The editor's Push asks it before calling `push_working_pair`
+to know a first publication is coming ([cli](../cli/low-level.md)); `push_working_pair`
+inspects the remote again itself and owns the decision to bootstrap.
+
+**Push destination (`remote_push_urls`).** Where a push to a remote lands: `git remote
+get-url --push --all`, its `pushurl` entries when it has any, else its URL, with
+`insteadOf` and `pushInsteadOf` applied; empty for an absent remote. `remote_url` is the
+fetch URL. The editor's Push sets the deploy's secrets only when both name one repository.
+
 **Adoptable remote (`remote_holds_other_history`).** Hosted binding asks whether a remote
 holds history other than what this clone itself bootstraps there. The answer is `False` for
 a zero-object-ref remote, and for exactly the state an interrupted bootstrap leaves: the only
@@ -634,7 +646,9 @@ process failures, and precise ref-movement races deterministic.
   the working leg measured although the remote has no ledger;
   `remote_holds_other_history` answering `False` only for an empty remote or this clone's own
   default at its exact tip (a `HEAD`-only advertisement counts as content), and propagating
-  an inspection failure;
+  an inspection failure; `remote_is_empty` answering `True` only for a zero-object-ref
+  remote and propagating an inspection failure; `remote_push_urls` giving a remote's URL, its
+  `pushurl` entries once it has any, and nothing for an absent remote;
   required response metadata and explicit-branch-refspec reporting; absent-ledger behavior;
   idempotent re-push; selected-remote and custom-default resolution; preservation of an
   existing related default; both outcomes of an empty-snapshot/concurrent-default race;

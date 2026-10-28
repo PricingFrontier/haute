@@ -181,6 +181,8 @@ def test_git_facade_is_declaration_only_and_public_imports_stay_stable() -> None
         "pending_ledger_saves",
         "push_working_pair",
         "remote_holds_other_history",
+        "remote_is_empty",
+        "remote_push_urls",
         "remote_url",
         "restore_working_pair",
         "_run_git",

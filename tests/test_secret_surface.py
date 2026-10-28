@@ -47,7 +47,13 @@ def _name_looks_secret(name: str) -> bool:
 
 # (component schema name or inline path context, field name) — every entry
 # needs a justification for why the field is not a secret.
-_REVIEWED_RESPONSE_FIELDS: set[tuple[str, str]] = set()
+_REVIEWED_RESPONSE_FIELDS: set[tuple[str, str]] = {
+    # The deploy's GitHub secrets as a Push found them (GitCiSecrets): the repository,
+    # a state, secret NAMES and a problem from which run_gh redacts the value being set
+    # and verify_databricks the token (src/haute/_ci_secrets.py). Never a value; its
+    # own fields are still walked.
+    ("GitPushResponse", "ci_secrets"),
+}
 
 
 def _walk_schema(

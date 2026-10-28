@@ -46,6 +46,7 @@ import type {
   GitPrefs,
   GitRemotesResponse,
   GitPushResponse,
+  GitCiSecrets,
   GitFastForwardResponse,
   GitBranchAwayResponse,
   GitBindStorageResponse,
@@ -2268,12 +2269,26 @@ export async function parseGitMilestoneFork(detail: unknown): Promise<GitMilesto
   return expectGeneratedContract("GitMilestoneFork", (await gitValidators()).validateGitMilestoneFork, detail)
 }
 
+// The server bounds each step of a Push and of Set from .env (git's, gh's and Databricks'
+// own timeouts), and a first publication runs several: a browser deadline would report
+// a failure while the push or the secrets still land.
+const UNBOUNDED_BY_THE_BROWSER = { timeout: null }
+
 /** Deliberately publish branch history to a remote, bootstrapping its default branch when needed (S16/S33). */
 export function gitPush(
   remote: string,
   options?: { signal?: AbortSignal },
 ): Promise<GitPushResponse> {
-  return post<unknown>("/api/git/push", { remote }, options).then(async (data) => expectGeneratedContract("GitPushResponse", (await gitValidators()).validateGitPushResponse, data))
+  return post<unknown>("/api/git/push", { remote }, { ...UNBOUNDED_BY_THE_BROWSER, ...options }).then(async (data) => expectGeneratedContract("GitPushResponse", (await gitValidators()).validateGitPushResponse, data))
+}
+
+/** Set the deploy's GitHub secrets the remote's repository lacks, from `.env` (the push
+ *  panel's Set from .env); a secret the repository has is never overwritten. */
+export function gitSetCiSecrets(
+  remote: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitCiSecrets> {
+  return post<unknown>("/api/git/ci-secrets", { remote }, { ...UNBOUNDED_BY_THE_BROWSER, ...options }).then(async (data) => expectGeneratedContract("GitCiSecrets", (await gitValidators()).validateGitCiSecrets, data))
 }
 
 /** Catch the working pair up to a remote by fast-forward only (P7 D1/D2) — a

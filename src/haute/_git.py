@@ -90,6 +90,8 @@ from haute._git_remote import (
     pair_divergence,
     push_working_pair,
     remote_holds_other_history,
+    remote_is_empty,
+    remote_push_urls,
     remote_url,
 )
 from haute._git_setup import (
@@ -197,6 +199,8 @@ __all__ = [
     "pipeline_file_states",
     "push_working_pair",
     "remote_holds_other_history",
+    "remote_is_empty",
+    "remote_push_urls",
     "remote_url",
     "resolve_ledger",
     "restore_working_pair",

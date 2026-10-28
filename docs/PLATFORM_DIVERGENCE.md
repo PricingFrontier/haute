@@ -108,7 +108,7 @@ Haute shells out to git as a *product* feature, which makes git-on-Windows behav
 
 **Every external tool haute invokes gets exactly one module that owns its subprocess calls.** That module owns executable resolution, platform quirks (prompt suppression, timeouts, retry policy), error taxonomy — wrapping raw stderr, which may contain absolute paths and remote URLs, into typed errors — and auditability, so that one grep target answers "what do we run, and with what arguments".
 
-This is already the de facto structure for git, npm/node, docker, GPU queries, and the GitHub CLI (`gh`, which `haute ci secrets` drives from `src/haute/cli/_ci.py`). Route handlers contain no subprocess calls.
+This is already the de facto structure for git, npm/node, docker, GPU queries, and the GitHub CLI (`gh`, which `haute ci secrets` and the editor's Push drive from `src/haute/_ci_secrets.py`). Route handlers contain no subprocess calls.
 
 **Enforcement.** A source-scan test asserts that `subprocess` is imported only in the allowlisted chokepoint modules. Review line: **new external interface → its own chokepoint module, its own section in this catalogue, and non-Linux lane relevance assessed.**
 

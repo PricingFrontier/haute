@@ -47,6 +47,7 @@ import {
   getWorkingBranches,
   getGitRemotes,
   gitPush,
+  gitSetCiSecrets,
   gitFastForward,
   gitBranchAway,
   restoreBranch,
@@ -1114,6 +1115,37 @@ describe("git endpoints", () => {
     await expect(gitPush("origin")).rejects.toThrow(/default_branch/i)
   })
 
+  it("gitSetCiSecrets POSTs /api/git/ci-secrets with the remote", async () => {
+    const data = {
+      repository: "acme/motor",
+      state: "ready",
+      missing: [],
+      newly_set: ["DATABRICKS_RATING_TOKEN"],
+      problem: null,
+    }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await gitSetCiSecrets("origin")
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/ci-secrets")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({ remote: "origin" })
+    expect(result).toEqual(data)
+  })
+
+  it("gitSetCiSecrets rejects a state outside ready, missing and unknown", async () => {
+    mockFetch.mockReturnValue(
+      jsonResponse({
+        repository: "acme/motor",
+        state: "partial",
+        missing: [],
+        newly_set: [],
+        problem: null,
+      }),
+    )
+
+    await expect(gitSetCiSecrets("origin")).rejects.toThrow(/state/i)
+  })
+
   it("getWorkingBranches GETs /api/git/working-branches", async () => {
     const data = { current: "demo", branches: [] }
     mockFetch.mockReturnValue(jsonResponse(data))
@@ -1658,6 +1690,45 @@ describe("request() edge cases", () => {
       for (const call of calls) {
         await expect(call).rejects.toMatchObject({ name: "AbortError" })
       }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("lets a slow Push and Set from .env answer: the server bounds their every step", async () => {
+    vi.useFakeTimers()
+    try {
+      const pushBody = loadUiContractFixture("git_push_response")
+      const secretsBody = {
+        repository: "acme/motor",
+        state: "ready",
+        missing: [],
+        newly_set: [],
+        problem: null,
+      }
+      mockFetch.mockImplementation(
+        (url: string, options?: RequestInit) =>
+          new Promise((resolve, reject) => {
+            const signal = options?.signal as AbortSignal | undefined
+            signal?.addEventListener(
+              "abort",
+              () => reject(new DOMException("Aborted", "AbortError")),
+              { once: true },
+            )
+            // A first publication setting the secrets can take minutes.
+            setTimeout(
+              () => resolve(jsonResponse(url === "/api/git/push" ? pushBody : secretsBody)),
+              5 * 60 * 1000,
+            )
+          }),
+      )
+
+      const push = gitPush("origin")
+      const secrets = gitSetCiSecrets("origin")
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000)
+
+      await expect(push).resolves.toEqual(pushBody)
+      await expect(secrets).resolves.toEqual(secretsBody)
     } finally {
       vi.useRealTimers()
     }

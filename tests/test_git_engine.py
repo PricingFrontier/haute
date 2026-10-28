@@ -3606,6 +3606,40 @@ class TestRemotesAndPush:
         with pytest.raises(GitError):
             remote_holds_other_history("origin", repo, cwd=repo)
 
+    def test_remote_is_empty_only_until_it_advertises_a_ref(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """The editor's Push asks this to know a first publication is coming."""
+        from haute._git import remote_is_empty
+
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        assert remote_is_empty("origin", cwd=repo) is True
+
+        _git(repo, "tag", "outside")
+        _git(repo, "push", "origin", "refs/tags/outside")
+        assert remote_is_empty("origin", cwd=repo) is False
+
+        _git(repo, "remote", "set-url", "origin", str(bare.parent / "missing.git"))
+        with pytest.raises(GitError):
+            remote_is_empty("origin", cwd=repo)
+
+    def test_remote_push_urls_are_where_a_push_lands(self, repo: Path, tmp_path: Path) -> None:
+        """A pushurl, not the fetch URL, is where the editor's Push sends the secrets."""
+        from haute._git import remote_push_urls
+
+        bare = self._add_bare_remote(repo, tmp_path)
+        assert remote_push_urls("origin", cwd=repo) == [str(bare)]
+
+        other = "https://github.com/acme/other.git"
+        _git(repo, "remote", "set-url", "--add", "--push", "origin", other)
+        assert remote_push_urls("origin", cwd=repo) == [other]
+        _git(
+            repo, "remote", "set-url", "--add", "--push", "origin", "git@github.com:acme/third.git"
+        )
+        assert remote_push_urls("origin", cwd=repo) == [other, "git@github.com:acme/third.git"]
+        assert remote_push_urls("absent", cwd=repo) == []
+
     def test_tags_only_remote_is_not_mistaken_for_empty(self, repo: Path, tmp_path: Path) -> None:
         """A tag is an object ref, so it cannot authorize default bootstrap."""
         self._setup_pair(repo)

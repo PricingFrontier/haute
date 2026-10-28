@@ -1584,6 +1584,7 @@ export type {
   GitArchiveResponse,
   GitBindStorageResponse,
   GitBranchAwayResponse,
+  GitCiSecrets,
   GitCommitContext,
   GitCommitRef,
   GitCommitResponse,
