@@ -1,7 +1,7 @@
-import { ChartColumn, Heading, LayoutGrid, Rows3, Table2, type LucideIcon } from "lucide-react"
+import { ChartColumn, Database, FileInput, FileOutput, FileSpreadsheet, FileText, Heading, LayoutGrid, Rows3, Table2, type LucideIcon } from "lucide-react"
 import { NODE_GROUP_COLORS } from "../theme/colors"
 import type { Size } from "../utils/sheetGeometry"
-import type { PaletteType, WidgetType } from "../utils/workbenchForm"
+import type { ImportFormat, PaletteType, WidgetType } from "../utils/workbenchForm"
 
 /** A palette entry: its label, its icon, its colour in the palette and its panel, and its hint. */
 export interface PaletteKind {
@@ -28,6 +28,13 @@ export const SECTION_KIND: PaletteKind = {
 
 /** Haute's entry colour, quote data coming in, which the Table and the Collection share. */
 export const COMPONENT_COLOR = NODE_GROUP_COLORS.entry
+
+/** The data colour, the Data Input's and the Data Output's: an Import and an Export move data in and out, as they do. */
+export const BUTTON_COLOR = NODE_GROUP_COLORS.data
+
+/** A button's size: a line of text with its mark, on the grid. */
+const BUTTON_SIZE = { w: 160, h: 40 }
+const BUTTON_MIN = { w: 80, h: 32 }
 
 /** What each kind of component is: its palette entry and its sizes. */
 export const WIDGET_KINDS: Record<WidgetType, WidgetKind> = {
@@ -66,10 +73,29 @@ export const WIDGET_KINDS: Record<WidgetType, WidgetKind> = {
     size: { w: 480, h: 48 },
     min: { w: 80, h: 24 },
   },
+  import: {
+    label: "Import",
+    icon: FileInput,
+    color: BUTTON_COLOR,
+    hint: "A button an underwriter presses to fill a table from a CSV, an Excel workbook or a database",
+    size: BUTTON_SIZE,
+    min: BUTTON_MIN,
+  },
+  export: {
+    label: "Export",
+    icon: FileOutput,
+    color: BUTTON_COLOR,
+    hint: "A button an underwriter presses to take the quote's tables out to a CSV, an Excel workbook or a database",
+    size: BUTTON_SIZE,
+    min: BUTTON_MIN,
+  },
 }
 
+/** The mark of each format a button reads or writes: a CSV's, a workbook's or a database's. */
+export const FORMAT_MARKS: Record<ImportFormat, LucideIcon> = { csv: FileText, excel: FileSpreadsheet, sql: Database }
+
 /** What the palette offers, in order: a section, then the components. */
-export const PALETTE_KINDS: readonly PaletteType[] = ["section", "heading", "collection", "tableInput", "chart"]
+export const PALETTE_KINDS: readonly PaletteType[] = ["section", "heading", "collection", "tableInput", "chart", "import", "export"]
 
 /** A palette entry by what it adds. */
 export const paletteKind = (type: PaletteType): PaletteKind => (type === "section" ? SECTION_KIND : WIDGET_KINDS[type])

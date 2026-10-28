@@ -73,11 +73,11 @@ small mark beside the label on the sheets; for an Integer or a Decimal, its **fo
 the Explore pivot offers them; and, in an input table, its **default**, its
 **placeholder**, what an empty cell shows (any type but True/false and Date), and the
 rules an underwriter's value must meet: required, a range for a number, the allowed
-values. A number shows in its format wherever the sheets show it, a percentage as the
-value times 100, so you type 0.125 for 12.5%; while you type into a cell it shows as
-typed, and what is typed is what is saved and priced. Under each column's name, a line
-sums up what is set: required, its range and default, shown in its format, its allowed
-values, and a number's format and decimal places.
+values. A number shows in its format wherever the sheets show it, and in its default, a
+percentage as the value times 100, so you type 0.125 for 12.5%; while you type into a cell
+or the default it shows as typed, and what is typed is what is saved and priced. Under
+each column's name, a line sums up what is set: required, its range and default, shown in
+its format, its allowed values, and a number's format and decimal places.
 
 Every table but `quote_details` starts with two columns Haute keeps for the quote,
 **quote_reference** and **quote_option**, which say which quote a row belongs to once rows of many
@@ -222,7 +222,7 @@ It is a stack of **sections**: strips across its whole width, one under the next
 holding the components placed in it. A new sheet is one section; hide a section and, in
 Preview, the sections under it move up to close the gap (see
 [Showing sheets, sections, components and fields conditionally](#showing-sheets-sections-components-and-fields-conditionally)).
-The palette on the left offers four components and a section; drag a component onto the
+The palette on the left offers six components and a section; drag a component onto the
 sheet (a ghost shows where it lands) and it goes into the section under the top of the
 ghost. From the keyboard, Tab to an item and press Enter: a component goes into the
 selected section (or the selected component's, else the sheet's first) at the first free
@@ -241,6 +241,14 @@ one:
   optional description under it saying what the section is for, aligned left, centre or
   right. It holds no values; give it the conditions of the section it names and it hides
   with it.
+- An **Import** is a button that fills an input table from a CSV or an Excel workbook the
+  underwriter picks, or from a database.
+- An **Export** is a button that takes the quote's tables out to a CSV, an Excel workbook
+  or a database.
+
+For now you can lay Imports and Exports out and set what they will do, but nothing runs
+them yet: in Preview and the underwriter app they are greyed out and pressing one does
+nothing.
 
 While building, **Display** in the toolbar opens the sheets' colours: the **Sheet
 background**, the **Component background** of framed Tables, Collections and Charts, their
@@ -279,6 +287,30 @@ panes: **Config**, the fields it shows and their order, and **Display**, its tit
 shows, its layout and its look. A Heading's properties are its **Text** and
 **Description**, when it shows, its **Size** and its **Align**ment.
 
+An Import's and an Export's properties are in the same two panes: **Display** holds its
+**Label**, the text on the button, and when it shows; **Config** starts with its
+**Format**, CSV, Excel or SQL. Changing the format starts that format's settings afresh,
+though an Export keeps its file name, headers and values between CSV and Excel.
+
+- An Import from a **CSV** has a **Delimiter** (Auto finds it from the file); from
+  **Excel**, the **Sheet** to read (blank for the first) and the **Header row** that names
+  its columns; from **SQL**, the **Connection** (a name your environment supplies the
+  credentials for, never the credentials themselves), the **Query**, and a row under
+  **Parameters** for each `:name` in the query, where you choose the one-row input column
+  whose value it takes. **Into** is the input table it fills. For a many-row table,
+  **Rows** says whether the rows it brings **Replace** the table's rows, **Append** to
+  them, or **Update by key**, matching rows on the table's keys. **Columns** lists the
+  table's columns an underwriter types; a column is read from the column of the same name
+  or label, whatever its case, unless you type the name it has in the file or the query's
+  answer.
+- An Export tick-lists the **Tables** it writes, inputs and outputs alike. To a **CSV**
+  (one table) or **Excel** (a sheet per table) it has a file **Name**, where `{name}`
+  stands for that column of quote_details (`{quote_reference}-{quote_option}` to start),
+  **Headers** (the columns' names or labels) and **Values** (raw, or formatted as the
+  sheets show them), and a CSV a **Delimiter**. To **SQL** it has a **Connection**, and
+  beside each table you tick, the name of the database table it is written to (blank for
+  the table's own name).
+
 Drag a component to move it and any of its eight handles to resize it; everything snaps
 to the grid. A component stays inside its section: it stops at the section's edges, and
 moves into another section only once its top is over it. Resizing a component past its
@@ -295,7 +327,8 @@ it is left out of the copy. Ctrl+1 fits the sheet to the
 window, and the zoom runs from 25% to 200%. A component with a problem — no fields, a
 Heading with no text, a column no longer in the schema, a table of the other kind, a
 Chart's field that is not a number or is an index, tables whose rows do not line up, a pie
-of many rows with more than one field — gets a dashed frame that names the problem. Tab,
+of many rows with more than one field, an Import or an Export with no label or missing
+what its format needs — gets a dashed frame that names the problem. Tab,
 and a screen reader, go through the sheet section by section, each section's bar and then
 its components as they sit, row by row from the top and left to right along each row,
 whatever order you added them in.
@@ -466,7 +499,9 @@ show again once hidden, so the view names it as a problem.
 While building, a new quote decides, holding its defaults alone: a hidden sheet's tab, a
 hidden section, a hidden component and a hidden field are faded, their eye struck through
 (hover it to read the conditions), and you can still select and edit them; every section
-keeps its place, and every field its place in its component. In
+keeps its place, and every field its place in its component. A sheet's own conditions never
+fade what is on it, so a hidden sheet stays easy to work on: its faded tab shows that it is
+hidden, and its sections, components and fields fade for their own conditions. In
 Preview the sample decides as you type it, and in the underwriter app the quote: a hidden
 sheet has no tab; a hidden section is not drawn and the
 sections under it move up to close the gap; a hidden component is not drawn, its space
@@ -526,7 +561,8 @@ rows after the last one you typed into go, or more are added. A Table showing a 
 has a row for each value (see [Schema](#schema)) shows those rows whatever its own rows
 say. Each cell is the control its
 column calls for: a tick box, a dropdown of the allowed values, a date picker, or a text
-field. An empty cell is blank, or shows its column's placeholder. The sample is part of
+field. An empty cell is blank, or shows its column's placeholder, a number column's in
+its format when the placeholder is a number. The sample is part of
 what **Save** writes, and **Undo** and **Redo** take back what you type, in Preview as
 while building.
 
@@ -539,8 +575,9 @@ the answer keyed like each grid row, dimmed while a newer answer is on its way, 
 Chart plots the sample with what pricing it gave. A Table of output columns alone, such as
 a premium by peril, shows a row for each row of the answer, as a Chart of them does; until
 it is priced (or while its table has nothing connected) it shows its starting rows of
-dashes. There is no **Price** to press and no
-**Clear**: a sample with nothing typed is not priced, and its outputs show dashes. The
+dashes. There is no **Price** to press: a sample with nothing typed is not priced, and
+its outputs show dashes. **Reset** in the toolbar takes the sample back to a new quote,
+its columns' defaults and nothing else; **Undo** brings back what it cleared. The
 sample is priced whatever its cells hold. Once anything is typed, a cell that breaks its
 column's rules (a required cell left empty, a number that is not one, a whole number that
 is not whole, a date that is not one, a number outside its range, a value that is not one of the allowed ones) is

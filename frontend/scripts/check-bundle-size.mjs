@@ -176,7 +176,12 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // the naming step kept on screen with its refusal, and the Git panel beside a pipeline
 // the version lacks; GitPanel 18.0 -> 18.2 KiB, the editor's index 169.7 -> 169.9 KiB)
 // brings it to 1,707.1 KiB; 1,709 KiB restores about 2 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1709
+// The workbench's Import and Export buttons (their panels, the form's operations and
+// problems for them, and the form's validators for their settings, in the lazy workbench
+// chunks of the builder and the app; their format marks in the eager vendor-ui chunk, as
+// every lucide icon is) bring it to 1,712.7 KiB alone; with the git restore work beside
+// them, 1,716.2 KiB and the initial bundle 299.4 KiB; 1,718 KiB restores about 1.8 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1718
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

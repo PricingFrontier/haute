@@ -87,11 +87,12 @@ export function columnSummary(table: SchemaTable, column: SchemaColumn): string 
 
 export const components = (n: number) => `${n} ${n === 1 ? "component" : "components"}`
 
-/** What removing a column or a table takes with it: the components showing it and the conditions testing it. */
-export function usedBy(shown: number, tested: number): string {
+/** What removing a column or a table takes with it: the components showing it, the conditions testing it and the Imports and Exports using it. */
+export function usedBy(shown: number, tested: number, used: number): string {
   const parts = shown > 0 ? [`shown in ${components(shown)}`] : []
   if (tested > 0) parts.push(`tested by the conditions of ${tested} ${tested === 1 ? "sheet, section or component" : "sheets, sections or components"}`)
-  return parts.join(" and ")
+  if (used > 0) parts.push(`used by ${used} ${used === 1 ? "Import or Export" : "Imports and Exports"}`)
+  return parts.length > 2 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts.join(" and ")
 }
 
 /** The column's name or its label holds the search's text, whatever its case. */

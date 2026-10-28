@@ -13,7 +13,7 @@ import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { answerQuestion, asked } from "../../test-utils/question"
-import { BLANK_THEME, COLLECTION_OPTIONS, TABLE_OPTIONS, updateSchemaColumn } from "../../utils/workbenchForm"
+import { BLANK_THEME, COLLECTION_OPTIONS, createWidget, TABLE_OPTIONS, updateSchemaColumn } from "../../utils/workbenchForm"
 import SchemaEditor from "../SchemaEditor"
 import { detailsTable } from "./fixtures"
 
@@ -621,6 +621,36 @@ describe("SchemaEditor", () => {
     expect(current().pages[0].show_when.conditions).toEqual([])
   })
 
+  it("asks before removing a column or a table an Import or an Export uses, and takes it out of them", async () => {
+    const used = form(POLICY, LAYERS)
+    const condition = { table: "t_policy", column: "c_state", op: "filled" as const, values: [] }
+    used.pages[0].show_when = { match: "all", conditions: [condition] }
+    used.pages[0].sections[0].widgets = [
+      { ...createWidget("import", { x: 0, y: 0, w: 160, h: 40 }), id: "w_in", table: "t_policy", column_names: [{ column: "c_state", name: "State" }] },
+      { ...createWidget("export", { x: 176, y: 0, w: 160, h: 40 }), id: "w_out", tables: ["t_policy"] },
+    ]
+    load(used)
+    render(<SchemaEditor />)
+    const policyColumns = () => current().schema.tables.find((t) => t.id === "t_policy")!.columns.map((c) => c.id)
+
+    // The Import reads exposure by its own name and the Export writes it with its table.
+    fireEvent.click(screen.getByRole("button", { name: "Remove column exposure" }))
+    expect(asked()?.text).toBe("Used by 2 Imports and Exports; removing it takes it out of them too.")
+    await answerQuestion(null)
+    expect(policyColumns()).toContain("c_exposure")
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove column state" }))
+    expect(asked()?.text).toBe("Tested by the conditions of 1 sheet, section or component and used by 2 Imports and Exports; removing it takes it out of them too.")
+    await answerQuestion("confirm")
+    expect(policyColumns()).not.toContain("c_state")
+    expect(current().pages[0].sections[0].widgets[0]).toMatchObject({ table: "t_policy", column_names: [] })
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete table policy_details" }))
+    expect(asked()?.text).toBe("Its columns are used by 2 Imports and Exports; deleting it takes them out of them too.")
+    await answerQuestion("confirm")
+    expect(current().pages[0].sections[0].widgets).toMatchObject([{ table: null }, { tables: [] }])
+  })
+
   it("counts a section whose conditions test a column or a table in the confirmation, and takes those conditions out of it", async () => {
     const tested = form(POLICY, LAYERS)
     const state = { table: "t_policy", column: "c_state", op: "filled" as const, values: [] }
@@ -761,6 +791,25 @@ describe("SchemaEditor", () => {
     ).toBeInTheDocument()
     commit(screen.getByRole("textbox", { name: "Default of exposure" }), "250,000")
     expect(within(tableNamed("policy_details")).queryByText(/has a default its rules refuse/)).toBeNull()
+
+    // A number in its column's format, as a cell shows it, and as typed while it is typed in.
+    fireEvent.change(screen.getByRole("combobox", { name: "Format of exposure" }), { target: { value: "currency_usd" } })
+    const exposure = screen.getByRole("textbox", { name: "Default of exposure" })
+    expect(exposure).toHaveValue("US$250,000.00")
+    fireEvent.focus(exposure)
+    expect(exposure).toHaveValue("250,000")
+    commit(exposure, "0.175")
+    expect(current().schema.tables[0].columns[1].default_value).toBe("0.175")
+    fireEvent.change(screen.getByRole("combobox", { name: "Format of exposure" }), { target: { value: "percent" } })
+    expect(exposure).toHaveValue("17.5%")
+    // Its allowed values in its format too, each still the value as written.
+    act(() => useWorkbenchFormStore.getState().change((spec) => updateSchemaColumn(spec, "t_policy", "c_exposure", { options: ["0.1", "0.175"] })))
+    const allowed = screen.getByRole("combobox", { name: "Default of exposure" })
+    expect([...allowed.querySelectorAll("option")].map((option) => [option.getAttribute("value"), option.textContent])).toEqual([
+      ["", ""],
+      ["0.1", "10%"],
+      ["0.175", "17.5%"],
+    ])
 
     // One of the allowed values, or none.
     fireEvent.click(screen.getByRole("button", { name: "Label and rules of state" }))

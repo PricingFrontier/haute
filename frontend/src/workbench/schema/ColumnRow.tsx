@@ -8,7 +8,7 @@ import { altArrowMove, type RefocusAfterMove } from "../../hooks/useRefocusAfter
 import { confirmed } from "../../stores/useQuestionStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { isIdentityColumn } from "../../utils/quoteIdentity"
-import { changeSchemaColumnType, conditionUses, fieldUses, moveSchemaColumn, QUOTE_DETAILS_MANAGED, removeSchemaColumn, updateSchemaColumn } from "../../utils/workbenchForm"
+import { buttonUses, changeSchemaColumnType, conditionUses, fieldUses, moveSchemaColumn, QUOTE_DETAILS_MANAGED, removeSchemaColumn, updateSchemaColumn } from "../../utils/workbenchForm"
 import { COLUMN_TYPES, COLUMN_TYPE_OPTIONS } from "../columnTypes"
 import { ColumnDetails } from "./ColumnDetails"
 import { DragGrip } from "./DragGrip"
@@ -41,10 +41,11 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
   const row = useRef<HTMLDivElement>(null)
   const shown = fieldUses(form, table.id, column.id).length
   const tested = conditionUses(form, table.id, column.id).length
-  const uses = shown + tested
-  // A column a sheet shows or a condition tests is removed once the question is answered yes.
+  const used = buttonUses(form, table.id, column.id).length
+  const uses = shown + tested + used
+  // A column a sheet shows, a condition tests or an Import or an Export uses is removed once the question is answered yes.
   const remove = async () => {
-    const text = `${usedBy(shown, tested).replace(/^./, (first) => first.toUpperCase())}; removing it takes it out of ${uses === 1 ? "that" : "them"} too.`
+    const text = `${usedBy(shown, tested, used).replace(/^./, (first) => first.toUpperCase())}; removing it takes it out of ${uses === 1 ? "that" : "them"} too.`
     if (uses > 0 && !(await confirmed({ title: `Remove column ${column.name}?`, text, confirm: "Remove", danger: true }))) return
     change((f) => removeSchemaColumn(f, table.id, column.id))
   }

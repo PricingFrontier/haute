@@ -18,8 +18,8 @@ import { Section } from "./Section"
 import { TableFields } from "./TableFields"
 import { TableLook } from "./TableLook"
 
-/** A Table's and a Collection's panes: the data it shows and their order, and how it shows them. */
-const WIDGET_PANES = [
+/** A Table's, a Collection's and a button's panes: the data it shows, or what it does, and how it shows. */
+export const WIDGET_PANES = [
   { key: "config", label: "Config" },
   { key: "display", label: "Display" },
 ] as const satisfies readonly PreviewPanelTab<WidgetPane>[]

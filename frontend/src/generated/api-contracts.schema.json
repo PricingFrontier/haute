@@ -1189,6 +1189,28 @@
       "title": "ColumnLook",
       "type": "object"
     },
+    "ColumnName": {
+      "additionalProperties": false,
+      "description": "A column of the table an Import fills, by id, and the name of the column it is read\nfrom in the file or the query's answer.",
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "column",
+        "name"
+      ],
+      "title": "ColumnName",
+      "type": "object"
+    },
     "Condition": {
       "additionalProperties": false,
       "description": "A test of the value in a one-row table's column, the column by table and column id.\n\nThe shape is all the file holds a condition to. Whether its column, test and values\nfit one another is ``haute._workbench_visibility.condition_fits``'s question, asked\nwhere conditions are tested: retyping a column can unfit a condition the form holds.",
@@ -1283,6 +1305,82 @@
         "conditions"
       ],
       "title": "ConditionGroup",
+      "type": "object"
+    },
+    "CsvExport": {
+      "additionalProperties": false,
+      "description": "A CSV of the one table an Export exports, its fields split by its ``delimiter``.",
+      "properties": {
+        "delimiter": {
+          "enum": [
+            "comma",
+            "semicolon",
+            "tab"
+          ],
+          "title": "Delimiter",
+          "type": "string"
+        },
+        "file_name": {
+          "title": "File Name",
+          "type": "string"
+        },
+        "format": {
+          "const": "csv",
+          "title": "Format",
+          "type": "string"
+        },
+        "headers": {
+          "enum": [
+            "names",
+            "labels"
+          ],
+          "title": "Headers",
+          "type": "string"
+        },
+        "values": {
+          "enum": [
+            "raw",
+            "formatted"
+          ],
+          "title": "Values",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file_name",
+        "headers",
+        "values",
+        "format",
+        "delimiter"
+      ],
+      "title": "CsvExport",
+      "type": "object"
+    },
+    "CsvImport": {
+      "additionalProperties": false,
+      "description": "A CSV the underwriter picks as they press the Import, its fields split by its\n``delimiter``, found from the file while ``auto``.",
+      "properties": {
+        "delimiter": {
+          "enum": [
+            "auto",
+            "comma",
+            "semicolon",
+            "tab"
+          ],
+          "title": "Delimiter",
+          "type": "string"
+        },
+        "format": {
+          "const": "csv",
+          "title": "Format",
+          "type": "string"
+        }
+      },
+      "required": [
+        "format",
+        "delimiter"
+      ],
+      "title": "CsvImport",
       "type": "object"
     },
     "DispersionEstimateResponse": {
@@ -1970,6 +2068,73 @@
         "test_date_count"
       ],
       "title": "EvaluationSummaryPayload",
+      "type": "object"
+    },
+    "ExcelExport": {
+      "additionalProperties": false,
+      "description": "An Excel workbook of a sheet per table an Export exports, each named by its table.",
+      "properties": {
+        "file_name": {
+          "title": "File Name",
+          "type": "string"
+        },
+        "format": {
+          "const": "excel",
+          "title": "Format",
+          "type": "string"
+        },
+        "headers": {
+          "enum": [
+            "names",
+            "labels"
+          ],
+          "title": "Headers",
+          "type": "string"
+        },
+        "values": {
+          "enum": [
+            "raw",
+            "formatted"
+          ],
+          "title": "Values",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file_name",
+        "headers",
+        "values",
+        "format"
+      ],
+      "title": "ExcelExport",
+      "type": "object"
+    },
+    "ExcelImport": {
+      "additionalProperties": false,
+      "description": "A sheet of an Excel workbook the underwriter picks, its columns named by its\n``header_row``, counted from 1, and its rows those under it.",
+      "properties": {
+        "format": {
+          "const": "excel",
+          "title": "Format",
+          "type": "string"
+        },
+        "header_row": {
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Header Row",
+          "type": "integer"
+        },
+        "sheet": {
+          "title": "Sheet",
+          "type": "string"
+        }
+      },
+      "required": [
+        "format",
+        "sheet",
+        "header_row"
+      ],
+      "title": "ExcelImport",
       "type": "object"
     },
     "ExecutionAdmissionPayload": {
@@ -5791,6 +5956,83 @@
       "title": "ExplorePivotValueIdentity",
       "type": "object"
     },
+    "ExportWidget": {
+      "additionalProperties": false,
+      "description": "An Export: a button an underwriter presses to take the quote's tables out to a file\nor a database. It shows no schema columns and takes nothing typed; nothing runs it yet,\nso it is drawn disabled where the sheets are used.",
+      "properties": {
+        "h": {
+          "exclusiveMinimum": 0,
+          "title": "H",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "show_when": {
+          "$ref": "#/$defs/ShowWhen"
+        },
+        "tables": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tables",
+          "type": "array"
+        },
+        "target": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/CsvExport"
+            },
+            {
+              "$ref": "#/$defs/ExcelExport"
+            },
+            {
+              "$ref": "#/$defs/SqlExport"
+            }
+          ],
+          "title": "Target"
+        },
+        "type": {
+          "const": "export",
+          "title": "Type",
+          "type": "string"
+        },
+        "w": {
+          "exclusiveMinimum": 0,
+          "title": "W",
+          "type": "integer"
+        },
+        "x": {
+          "minimum": 0,
+          "title": "X",
+          "type": "integer"
+        },
+        "y": {
+          "minimum": 0,
+          "title": "Y",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "x",
+        "y",
+        "w",
+        "h",
+        "type",
+        "label",
+        "show_when",
+        "target",
+        "tables"
+      ],
+      "title": "ExportWidget",
+      "type": "object"
+    },
     "FieldRef": {
       "additionalProperties": false,
       "description": "A schema column a widget shows, by table and column id, so a rename keeps it.",
@@ -7801,6 +8043,105 @@
         "align"
       ],
       "title": "HeadingWidget",
+      "type": "object"
+    },
+    "ImportWidget": {
+      "additionalProperties": false,
+      "description": "An Import: a button an underwriter presses to fill an input table from a file or a\ndatabase. It shows no schema columns and takes nothing typed; nothing runs it yet, so\nit is drawn disabled where the sheets are used.",
+      "properties": {
+        "column_names": {
+          "items": {
+            "$ref": "#/$defs/ColumnName"
+          },
+          "title": "Column Names",
+          "type": "array"
+        },
+        "h": {
+          "exclusiveMinimum": 0,
+          "title": "H",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "replace",
+            "append",
+            "update"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "show_when": {
+          "$ref": "#/$defs/ShowWhen"
+        },
+        "source": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/CsvImport"
+            },
+            {
+              "$ref": "#/$defs/ExcelImport"
+            },
+            {
+              "$ref": "#/$defs/SqlImport"
+            }
+          ],
+          "title": "Source"
+        },
+        "table": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Table"
+        },
+        "type": {
+          "const": "import",
+          "title": "Type",
+          "type": "string"
+        },
+        "w": {
+          "exclusiveMinimum": 0,
+          "title": "W",
+          "type": "integer"
+        },
+        "x": {
+          "minimum": 0,
+          "title": "X",
+          "type": "integer"
+        },
+        "y": {
+          "minimum": 0,
+          "title": "Y",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "x",
+        "y",
+        "w",
+        "h",
+        "type",
+        "label",
+        "show_when",
+        "source",
+        "table",
+        "mode",
+        "column_names"
+      ],
+      "title": "ImportWidget",
       "type": "object"
     },
     "InputPreparationRecordPayload": {
@@ -12765,6 +13106,32 @@
       "title": "ProjectFolderResponse",
       "type": "object"
     },
+    "QueryParameter": {
+      "additionalProperties": false,
+      "description": "A ``:name`` in an Import's query, given the value of a column by table and column id.",
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "name": {
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "table",
+        "column"
+      ],
+      "title": "QueryParameter",
+      "type": "object"
+    },
     "RatingLevelColumn": {
       "description": "What one column offers as rating levels.\n\n`distinct_count` counts the levels that could be chosen — neither missing\nnor blank — so it is the number `values` would hold without the cap.",
       "properties": {
@@ -13400,6 +13767,12 @@
               },
               {
                 "$ref": "#/$defs/HeadingWidget"
+              },
+              {
+                "$ref": "#/$defs/ImportWidget"
+              },
+              {
+                "$ref": "#/$defs/ExportWidget"
               }
             ]
           },
@@ -13714,6 +14087,69 @@
         "conditions"
       ],
       "title": "ShowWhen",
+      "type": "object"
+    },
+    "SqlExport": {
+      "additionalProperties": false,
+      "description": "The tables an Export writes to a database on a named connection, each to the table\nof its own name or the name given it, the quote's rows there written again.",
+      "properties": {
+        "connection": {
+          "title": "Connection",
+          "type": "string"
+        },
+        "format": {
+          "const": "sql",
+          "title": "Format",
+          "type": "string"
+        },
+        "table_names": {
+          "items": {
+            "$ref": "#/$defs/TableName"
+          },
+          "title": "Table Names",
+          "type": "array"
+        }
+      },
+      "required": [
+        "format",
+        "connection",
+        "table_names"
+      ],
+      "title": "SqlExport",
+      "type": "object"
+    },
+    "SqlImport": {
+      "additionalProperties": false,
+      "description": "A query run on a named connection, whose credentials the environment holds, never\nthe form, each of its parameters given the value of the column bound to it.",
+      "properties": {
+        "connection": {
+          "title": "Connection",
+          "type": "string"
+        },
+        "format": {
+          "const": "sql",
+          "title": "Format",
+          "type": "string"
+        },
+        "parameters": {
+          "items": {
+            "$ref": "#/$defs/QueryParameter"
+          },
+          "title": "Parameters",
+          "type": "array"
+        },
+        "query": {
+          "title": "Query",
+          "type": "string"
+        }
+      },
+      "required": [
+        "format",
+        "connection",
+        "query",
+        "parameters"
+      ],
+      "title": "SqlImport",
       "type": "object"
     },
     "TableInputWidget": {
@@ -14068,6 +14504,28 @@
         "tables"
       ],
       "title": "TableListResponse",
+      "type": "object"
+    },
+    "TableName": {
+      "additionalProperties": false,
+      "description": "A table an Export writes to a database, by id, and the name of the table it is\nwritten to there.",
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Name",
+          "type": "string"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "name"
+      ],
+      "title": "TableName",
       "type": "object"
     },
     "Theme": {

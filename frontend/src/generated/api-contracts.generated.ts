@@ -2544,7 +2544,7 @@ export interface Section {
   id: string;
   show_when: ShowWhen;
   title: string;
-  widgets: (TableInputWidget | CollectionWidget | ChartWidget | HeadingWidget)[];
+  widgets: (TableInputWidget | CollectionWidget | ChartWidget | HeadingWidget | ImportWidget | ExportWidget)[];
 }
 /**
  * When a sheet, a section, a widget or a widget's field shows: always, without
@@ -2791,6 +2791,121 @@ export interface HeadingWidget {
   w: number;
   x: number;
   y: number;
+}
+/**
+ * An Import: a button an underwriter presses to fill an input table from a file or a
+ * database. It shows no schema columns and takes nothing typed; nothing runs it yet, so
+ * it is drawn disabled where the sheets are used.
+ */
+export interface ImportWidget {
+  column_names: ColumnName[];
+  h: number;
+  id: string;
+  label: string;
+  mode: 'replace' | 'append' | 'update';
+  show_when: ShowWhen;
+  source: CsvImport | ExcelImport | SqlImport;
+  table: string | null;
+  type: 'import';
+  w: number;
+  x: number;
+  y: number;
+}
+/**
+ * A column of the table an Import fills, by id, and the name of the column it is read
+ * from in the file or the query's answer.
+ */
+export interface ColumnName {
+  column: string;
+  name: string;
+}
+/**
+ * A CSV the underwriter picks as they press the Import, its fields split by its
+ * ``delimiter``, found from the file while ``auto``.
+ */
+export interface CsvImport {
+  delimiter: 'auto' | 'comma' | 'semicolon' | 'tab';
+  format: 'csv';
+}
+/**
+ * A sheet of an Excel workbook the underwriter picks, its columns named by its
+ * ``header_row``, counted from 1, and its rows those under it.
+ */
+export interface ExcelImport {
+  format: 'excel';
+  header_row: number;
+  sheet: string;
+}
+/**
+ * A query run on a named connection, whose credentials the environment holds, never
+ * the form, each of its parameters given the value of the column bound to it.
+ */
+export interface SqlImport {
+  connection: string;
+  format: 'sql';
+  parameters: QueryParameter[];
+  query: string;
+}
+/**
+ * A ``:name`` in an Import's query, given the value of a column by table and column id.
+ */
+export interface QueryParameter {
+  column: string;
+  name: string;
+  table: string;
+}
+/**
+ * An Export: a button an underwriter presses to take the quote's tables out to a file
+ * or a database. It shows no schema columns and takes nothing typed; nothing runs it yet,
+ * so it is drawn disabled where the sheets are used.
+ */
+export interface ExportWidget {
+  h: number;
+  id: string;
+  label: string;
+  show_when: ShowWhen;
+  tables: string[];
+  target: CsvExport | ExcelExport | SqlExport;
+  type: 'export';
+  w: number;
+  x: number;
+  y: number;
+}
+/**
+ * A CSV of the one table an Export exports, its fields split by its ``delimiter``.
+ */
+export interface CsvExport {
+  delimiter: 'comma' | 'semicolon' | 'tab';
+  file_name: string;
+  format: 'csv';
+  headers: 'names' | 'labels';
+  values: 'raw' | 'formatted';
+}
+/**
+ * An Excel workbook of a sheet per table an Export exports, each named by its table.
+ */
+export interface ExcelExport {
+  file_name: string;
+  format: 'excel';
+  headers: 'names' | 'labels';
+  values: 'raw' | 'formatted';
+}
+/**
+ * The tables an Export writes to a database on a named connection, each to the table
+ * of its own name or the name given it, the quote's rows there written again.
+ */
+export interface SqlExport {
+  connection: string;
+  format: 'sql';
+  table_names: TableName[];
+}
+/**
+ * A table an Export writes to a database, by id, and the name of the table it is
+ * written to there.
+ */
+export interface TableName {
+  name: string;
+  table: string;
 }
 /**
  * The data the sheets work with: tables of named, typed columns.

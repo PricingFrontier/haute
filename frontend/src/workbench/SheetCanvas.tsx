@@ -23,7 +23,8 @@ const NO_SECTIONS: readonly Section[] = []
  * quote while building; in Preview the sample, or the underwriter app's quote), with,
  * while building, a ghost where a component dragged out of the palette would land, or a
  * line where a section would start. While building every section and component is drawn,
- * those a new quote hides faded, each section under its bar (`SectionBar`), drawn first in
+ * those a new quote hides faded, the sheet's own conditions aside (`useNewQuoteValues`),
+ * each section under its bar (`SectionBar`), drawn first in
  * it, and while the sheet's own panel is open its handles (`SheetHandles`); in
  * Preview only the sections and components the values show, on
  * the first sheet that shows when the chosen one does not, the sections that show closing

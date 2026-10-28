@@ -12,11 +12,11 @@
  * sheet are not drawn again.
  */
 import { createContext, useContext, useMemo, useState } from "react"
-import type { FormSchema } from "../api/types"
+import type { FormSchema, FormSpec, Page } from "../api/types"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { previewBasis, usePricingContext, type SamplePrice } from "../stores/useWorkbenchPricingStore"
-import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
+import useWorkbenchViewStore, { activePage } from "../stores/useWorkbenchViewStore"
 import { newQuoteValues, quoteProblems, valuesBasis, withPresetRows, type RowsByTable } from "../utils/sheetValues"
 import { quoteEligible, quotedSchema, sheetVisibility, type SheetVisibility } from "../utils/sheetVisibility"
 import { withSampleCell, withSampleRows, type SampleRow, type SampleValue } from "../utils/workbenchForm"
@@ -87,17 +87,27 @@ function useSteadyVisibility(next: SheetVisibility): SheetVisibility {
 const useQuoted = (schema: FormSchema | null, visibility: SheetVisibility): FormSchema =>
   useMemo(() => (schema === null ? NO_SCHEMA : quotedSchema(schema, visibility.hidden)), [schema, visibility])
 
+/** `form` with its sheet `page` always shown: the sheet's conditions set aside, the rest as they are. */
+function withSheetShown(form: FormSpec, page: Page): FormSpec {
+  if (page.show_when.conditions.length === 0) return form
+  return { ...form, pages: form.pages.map((sheet) => (sheet === page ? { ...page, show_when: { ...page.show_when, conditions: [] } } : sheet)) }
+}
+
 /**
  * A new quote while building: the sheets as an underwriter's new quote opens them, holding
- * its columns' defaults and nothing priced. Its cells are drawn as a new quote's, not as a
- * read-only quote's, and take no typing: the sheet holds them inert while building.
+ * its columns' defaults and nothing priced, the sheet being built decided as if it showed,
+ * so its own conditions fade nothing on it: its tab marks it hidden. Its cells are drawn as
+ * a new quote's, not as a read-only quote's, and take no typing: the sheet holds them inert
+ * while building.
  */
 export function useNewQuoteValues(active = true): SheetValues {
   const form = useWorkbenchFormStore((s) => (active ? s.form : null))
+  const pageId = useWorkbenchViewStore((s) => s.pageId)
   const schema = form?.schema ?? null
   // A new quote holds the schema's defaults alone.
   const rows = useMemo(() => (schema === null ? NO_ROWS : withPresetRows(schema, newQuoteValues(schema))), [schema])
-  const shown = useMemo(() => (form === null ? NO_VISIBILITY : sheetVisibility(form, rows)), [form, rows])
+  const built = useMemo(() => (form === null ? null : withSheetShown(form, activePage(form, pageId))), [form, pageId])
+  const shown = useMemo(() => (built === null ? NO_VISIBILITY : sheetVisibility(built, rows)), [built, rows])
   const visibility = useSteadyVisibility(shown)
   const quoted = useQuoted(schema, visibility)
   return useMemo<SheetValues>(

@@ -12,10 +12,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { findSection, findWidget, updateWidget } from "../../utils/workbenchForm"
+import { createWidget, findSection, findWidget, updateWidget } from "../../utils/workbenchForm"
 import { answerQuestion, asked } from "../../test-utils/question"
 import PropertiesPanel from "../PropertiesPanel"
-import type { FieldRef, FormSpec, Section } from "../../api/types"
+import type { ExportWidget, FieldRef, FormSpec, ImportWidget, Section } from "../../api/types"
 import { COMPONENT_COLOR } from "../widgetKinds"
 import { addTo, chartWidget, column, coverForm, currentForm, fieldsWidget, headingWidget, loadForm, sectionedForm, sheetForm, table, widgetsOf } from "./fixtures"
 
@@ -1171,6 +1171,109 @@ describe("PropertiesPanel", () => {
     expect(sectionIds()).toEqual(["s_p1"])
     expect(widgetsOf(currentForm())).toHaveLength(2)
     expect(useWorkbenchViewStore.getState().sectionId).toBe("s_p1")
+  })
+
+  it("sets an Import's format and its settings, the table it fills and where its columns are read from, and its label in Display", () => {
+    const form = sheetForm()
+    addTo(form, { ...createWidget("import", { x: 16, y: 380, w: 160, h: 40 }), id: "w_in" })
+    loadForm(form)
+    select("w_in")
+    render(<PropertiesPanel />)
+    const imported = () => findWidget(currentForm(), "w_in")!.widget as ImportWidget
+    const commit = (name: string, value: string) => {
+      const field = screen.getByRole("textbox", { name })
+      fireEvent.change(field, { target: { value } })
+      fireEvent.blur(field)
+    }
+
+    expect(screen.getByText("Import")).toBeInTheDocument()
+    expect(screen.getByRole("radio", { name: "CSV" })).toHaveAttribute("aria-checked", "true")
+    fireEvent.change(screen.getByRole("combobox", { name: "Delimiter" }), { target: { value: "semicolon" } })
+    expect(imported().source).toEqual({ format: "csv", delimiter: "semicolon" })
+    // No table yet: no rows or columns to set.
+    expect(choices(screen.getByRole("combobox", { name: "Into" }))).toEqual([
+      ["", "None"],
+      ["policy", "policy"],
+      ["equipment", "equipment"],
+    ])
+    expect(screen.queryByRole("combobox", { name: "Rows" })).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Into" }), { target: { value: "equipment" } })
+    expect(choices(screen.getByRole("combobox", { name: "Rows" }))).toEqual([
+      ["replace", "Replace"],
+      ["append", "Append"],
+      ["update", "Update by key"],
+    ])
+    fireEvent.change(screen.getByRole("combobox", { name: "Rows" }), { target: { value: "update" } })
+    expect(screen.getByRole("textbox", { name: "Value is read from" })).toHaveAttribute("placeholder", "value")
+    commit("Value is read from", "Sum insured")
+    expect(imported()).toMatchObject({ table: "equipment", mode: "update", column_names: [{ column: "equipment.value", name: "Sum insured" }] })
+    commit("Value is read from", "")
+    expect(imported().column_names).toEqual([])
+    // A one-row table takes its first row: no Rows.
+    fireEvent.change(screen.getByRole("combobox", { name: "Into" }), { target: { value: "policy" } })
+    expect(screen.queryByRole("combobox", { name: "Rows" })).not.toBeInTheDocument()
+    expect(screen.getByRole("textbox", { name: "Year is read from" })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("radio", { name: "Excel" }))
+    commit("Sheet", "Schedule")
+    const header = screen.getByTestId("import-header-row")
+    fireEvent.change(header, { target: { value: "101" } })
+    fireEvent.blur(header)
+    expect(imported().source).toEqual({ format: "excel", sheet: "Schedule", header_row: 1 })
+    fireEvent.change(header, { target: { value: "2" } })
+    fireEvent.blur(header)
+    expect(imported().source).toEqual({ format: "excel", sheet: "Schedule", header_row: 2 })
+
+    fireEvent.click(screen.getByRole("radio", { name: "SQL" }))
+    commit("Connection", "policy_db")
+    commit("Query", "select value from items where state = :state")
+    fireEvent.change(screen.getByRole("combobox", { name: ":state column" }), { target: { value: "policy:policy.state" } })
+    expect(imported().source).toEqual({
+      format: "sql",
+      connection: "policy_db",
+      query: "select value from items where state = :state",
+      parameters: [{ name: "state", table: "policy", column: "policy.state" }],
+    })
+    // Only a one-row input table's columns are offered.
+    expect(choices(screen.getByRole("combobox", { name: ":state column" })).map(([value]) => value)).toEqual(["", "policy:policy.state", "policy:policy.year"])
+
+    showPane("Display")
+    commit("Label", "Look up the policy")
+    expect(imported().label).toBe("Look up the policy")
+    expect(screen.getByRole("region", { name: "Show when" })).toBeInTheDocument()
+  })
+
+  it("sets an Export's format, its file's settings or a database's, and the tables it exports", () => {
+    const form = sheetForm()
+    addTo(form, { ...createWidget("export", { x: 16, y: 380, w: 160, h: 40 }), id: "w_out" })
+    loadForm(form)
+    select("w_out")
+    render(<PropertiesPanel />)
+    const exported = () => findWidget(currentForm(), "w_out")!.widget as ExportWidget
+
+    const name = screen.getByRole("textbox", { name: "File name" })
+    expect(name).toHaveValue("{quote_reference}-{quote_option}")
+    fireEvent.change(screen.getByRole("combobox", { name: "Delimiter" }), { target: { value: "tab" } })
+    fireEvent.change(screen.getByRole("combobox", { name: "Headers" }), { target: { value: "labels" } })
+    fireEvent.change(screen.getByRole("combobox", { name: "Values" }), { target: { value: "formatted" } })
+    fireEvent.click(screen.getByRole("checkbox", { name: "premiums" }))
+    fireEvent.click(screen.getByRole("checkbox", { name: "policy" }))
+    expect(exported()).toMatchObject({ tables: ["premiums", "policy"], target: { format: "csv", delimiter: "tab", headers: "labels", values: "formatted" } })
+
+    fireEvent.click(screen.getByRole("radio", { name: "Excel" }))
+    expect(screen.queryByRole("combobox", { name: "Delimiter" })).not.toBeInTheDocument()
+    expect(exported().target).toEqual({ file_name: "{quote_reference}-{quote_option}", headers: "labels", values: "formatted", format: "excel" })
+
+    fireEvent.click(screen.getByRole("radio", { name: "SQL" }))
+    const written = screen.getByRole("textbox", { name: "premiums is written to" })
+    expect(written).toHaveAttribute("placeholder", "premiums")
+    fireEvent.change(written, { target: { value: "quote_premiums" } })
+    fireEvent.blur(written)
+    expect(screen.queryByRole("textbox", { name: "equipment is written to" })).not.toBeInTheDocument()
+    expect(exported().target).toEqual({ format: "sql", connection: "", table_names: [{ table: "premiums", name: "quote_premiums" }] })
+    fireEvent.click(screen.getByRole("checkbox", { name: "premiums" }))
+    expect(exported()).toMatchObject({ tables: ["policy"], target: { table_names: [] } })
   })
 
   it("shows another section's panel as it is selected, and closes as a component is", () => {

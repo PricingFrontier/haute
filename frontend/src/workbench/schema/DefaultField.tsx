@@ -1,13 +1,18 @@
 /** A one-row input column's default (specs/workbench). */
+import { useState } from "react"
 import type { SchemaColumn } from "../../api/types"
 import { COMPACT_FIELD_CLASS, CommittedTextField, ConfigCheckbox, INPUT_STYLE } from "../../components/form"
+import { formattedNumber } from "../../utils/sheetValues"
 
 /**
  * What a new quote starts a one-row input column with, as its cells take a value: ticked
  * or not, one of the allowed values while it has some (one no longer allowed kept in view,
- * for its problem to name), a date, or typed. Blank or unticked, it has none.
+ * for its problem to name), a date, or typed. Blank or unticked, it has none. A number
+ * column's format shows its values as a cell shows them, the text as typed while it is
+ * being typed in.
  */
 export function DefaultField({ column, set }: { column: SchemaColumn; set: (patch: Partial<SchemaColumn>) => void }) {
+  const [typing, setTyping] = useState(false)
   if (column.type === "bool") {
     return (
       <ConfigCheckbox
@@ -31,7 +36,7 @@ export function DefaultField({ column, set }: { column: SchemaColumn; set: (patc
         <option value="" />
         {[...column.options, ...(text === "" || column.options.includes(text) ? [] : [text])].map((option) => (
           <option key={option} value={option}>
-            {option}
+            {formattedNumber(column, option) ?? option}
           </option>
         ))}
       </select>
@@ -41,8 +46,10 @@ export function DefaultField({ column, set }: { column: SchemaColumn; set: (patc
     <CommittedTextField
       aria-label={label}
       type={column.type === "date" ? "date" : "text"}
-      value={text}
+      value={typing ? text : (formattedNumber(column, text) ?? text)}
       onCommit={(value) => set({ default_value: value.trim() })}
+      onFocus={() => setTyping(true)}
+      onBlur={() => setTyping(false)}
       className={`${COMPACT_FIELD_CLASS} w-full`}
       style={INPUT_STYLE}
     />

@@ -2,9 +2,10 @@
  * The toolbar while the workbench's view shows (specs/workbench), the same controls in
  * both modes, those a mode has no use for disabled: the brand, the pipeline toolbar's Source
  * over Pipeline, the form's Undo and Redo and the sheet's zoom where the pipeline toolbar has
- * its own, Build over Preview, Schema over Display, the project's controls,
+ * its own, Build over Preview, Schema over Display, Reset, the project's controls,
  * Save and Commit, both the host's as the pipeline toolbar's are, and in Preview why pricing
- * the sample failed, with no Price or Clear: the sample is priced as it is typed.
+ * the sample failed, with no Price or Clear: the sample is priced as it is typed, and Reset
+ * starts it again as a new quote.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
@@ -159,17 +160,33 @@ describe("WorkbenchToolbar", () => {
     expect(column).toContainElement(screen.getByRole("button", { name: "Display" }))
   })
 
-  it("has Schema off until the form is read", () => {
-    useWorkbenchFormStore.setState({ status: "loading" })
+  it("has Schema and Reset off until the form is read", () => {
+    useWorkbenchFormStore.setState({ form: { ...form, sample: { t1: [{ c1: "250000" }] } }, status: "loading" })
+    useWorkbenchViewStore.setState({ mode: "preview" })
     renderToolbar()
     expect(screen.getByRole("button", { name: "Schema" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Reset" })).toBeDisabled()
+  })
+
+  it("has Reset, disabled while building and on a new quote, starting the sample again in Preview at its defaults as one undo step", () => {
+    const [policy] = form.schema.tables
+    const defaulted: FormSpec = { ...form, schema: { tables: [{ ...policy, columns: [{ ...policy.columns[0], default_value: "100000" }] }] } }
+    const typed = { ...defaulted, sample: { t1: [{ c1: "250000" }] } }
+    useWorkbenchFormStore.setState({ form: typed })
+    renderToolbar()
+    expect(screen.getByRole("button", { name: "Reset" })).toBeDisabled()
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }))
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }))
+    expect(useWorkbenchFormStore.getState()).toMatchObject({ form: { sample: { t1: [{ c1: "100000" }] } }, undoStack: [typed] })
+    expect(screen.getByRole("button", { name: "Reset" })).toBeDisabled()
   })
 
   it("keeps the same controls in both modes, in the same places", () => {
     const controls = () => within(screen.getByTestId("workbench-toolbar-actions")).getAllByRole("button").map((button) => button.textContent)
     renderToolbar()
     const building = controls()
-    expect(building).toEqual(["Undo", "Redo", "Zoom In", "Zoom Out", "Build", "Preview", "Schema", "Display"])
+    expect(building).toEqual(["Undo", "Redo", "Zoom In", "Zoom Out", "Build", "Preview", "Schema", "Display", "Reset"])
 
     fireEvent.click(screen.getByRole("button", { name: "Preview" }))
     expect(controls()).toEqual(building)
