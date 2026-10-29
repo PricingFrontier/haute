@@ -18,7 +18,6 @@ and return cycles and made and deleted two branches between 13:14 and 13:36.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| GIT-R03 | Planned | P2 | Deleting the active pair without confirmation keeps a dirty tree, and the first commit never seeds a virtual environment. |
 | GIT-R04 | Planned | P3 | Commit context and historical extraction pass their SHAs and paths through stdin, so a long branch or a large commit does not fail on Windows' command-line limit. |
 | GIT-R05 | Planned | P3 | The git modules carry no dead symbols, one free-name finder and one compensation helper. |
 | GIT-R06 | Decision | P3 | Automatic ledger saves either skip the project's git hooks or the specification says they run them. |
@@ -28,31 +27,6 @@ and return cycles and made and deleted two branches between 13:14 and 13:36.
 | GIT-R18 | Planned | P2 | A rejected push's Catch up and Spin off actions stay bound to that rejection's remote. |
 
 ## Planned improvements
-
-### GIT-R03 — A dirty tree and a virtual environment
-**Why:** `delete_working_pair` passes `discard=True` to the switch-away whenever
-the active pair is deleted, including with `confirm=False`; `confirm` guards
-only unmerged ledger saves, so the API contract alone does not protect
-uncommitted edits (the UI always confirms after a dialog naming the loss). The
-unborn-repo seed stages every `*.py` under the root that `.gitignore` does not
-exclude, and the guard excludes only `.venv/`, so a project with `venv/`, `env/`
-or `node_modules/` commits that tree into the permanent root commit, which the
-specification places outside rollback; `haute init` does not run `git init`, so
-this seed is the normal first-branch path.
-
-**Plan:** Pass `discard=confirm` and refuse a dirty tree without confirmation
-with the archive's unsaved-changes error; exclude directories holding
-`pyvenv.cfg` (or add `venv/`, `env/`, `node_modules/` and `site-packages/` to
-the guard entries) and refuse an implausibly large seed naming the directory.
-
-**Acceptance:** `delete_working_pair(confirm=False)` on a dirty tree is refused
-with the tree intact; a project with `venv/` seeds without it.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_git_archive.py::delete_working_pair`;
-`src/haute/_git_setup.py::_SEED_PATHSPECS`;
-`src/haute/_gitignore_guard.py::GITIGNORE_GUARD_ENTRIES`.
 
 ### GIT-R04 — Long argument lists through stdin
 **Why:** `_milestone_fold_points` spreads every milestone SHA of the first-parent

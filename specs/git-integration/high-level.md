@@ -230,12 +230,17 @@ an operation snapshot and compensate on failure. An incomplete compensation is a
 transaction failure and is never reported as success. Archiving or deleting the active pair
 detaches at the working branch's tip, its last milestone, rather than checking out another
 branch: the analyst stays on the work they had committed. Its later saves stay with the
-archived ledger or the trash entry, and the branch chooser opens at the next startup. The seed phase itself is outside that rollback
+archived ledger or the trash entry, and the branch chooser opens at the next startup. Files
+changed since the last save refuse an archive, and a delete unless it is confirmed: only a
+confirmed delete discards them with the branch. The seed phase itself is outside that rollback
 boundary: it may
 rename an unborn branch to `main`, append protective `.gitignore` entries, clear/rebuild the
 index, and create a permanent root commit before pair creation begins. A failure during that
 phase can leave those safe preparatory changes behind, although it does not deliberately
-remove working-tree files.
+remove working-tree files. Because the root commit is permanent, it never takes a Python
+environment below the project's top level (a folder holding a venv's `pyvenv.cfg` or a conda
+environment's `conda-meta`, whatever the folder is called), and a first version of more than
+1,000 files is refused, naming the folder most of them are in, before anything is committed.
 
 **Files another program holds open.** On Windows git cannot replace a file another program
 holds open, such as a CSV open in Excel, and it does not always say so. A checkout still

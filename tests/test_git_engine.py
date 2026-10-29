@@ -1194,6 +1194,78 @@ class TestSeedGitignoreGuards:
         # The asserted guards are themselves captured, so clones inherit them.
         assert ".gitignore" in committed
 
+    @pytest.mark.parametrize(
+        ("environment", "marker"),
+        [
+            ("venv", "pyvenv.cfg"),
+            ("env", "pyvenv.cfg"),
+            ("tools/py311", "pyvenv.cfg"),
+            ("conda", "conda-meta/history"),
+        ],
+    )
+    def test_the_first_commit_never_seeds_a_python_environment(
+        self, unborn_repo: Path, environment: str, marker: str
+    ) -> None:
+        """Only .venv/ was ignored, so a venv/ or env/ beside the pipeline passed the seed's
+        *.py permit and its packages entered the permanent root commit."""
+        (unborn_repo / "main.py").write_text("x = 1\n")
+        root = unborn_repo / environment
+        (root / marker).parent.mkdir(parents=True)
+        (root / marker).write_text("home = /usr/bin\n")
+        package = root / "lib" / "python3.11" / "site-packages" / "polars"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("# an installed package\n")
+        (root / "bin").mkdir()
+        (root / "bin" / "activate_this.py").write_text("# an activation script\n")
+
+        set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        committed = _git(unborn_repo, "show", "--name-only", "--format=", "main").splitlines()
+        assert "main.py" in committed
+        assert not any(f.startswith(f"{environment}/") for f in committed), committed
+
+    def test_an_environment_whose_marker_is_ignored_is_still_left_out(
+        self, unborn_repo: Path
+    ) -> None:
+        """An ignore rule hiding pyvenv.cfg, but not the environment's Python files, must
+        not hide the environment from the seed."""
+        (unborn_repo / ".gitignore").write_text("pyvenv.cfg\n")
+        (unborn_repo / "main.py").write_text("x = 1\n")
+        (unborn_repo / "venv").mkdir()
+        (unborn_repo / "venv" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+        package = unborn_repo / "venv" / "lib" / "python3.11" / "site-packages" / "polars"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("# an installed package\n")
+
+        set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        committed = _git(unborn_repo, "show", "--name-only", "--format=", "main").splitlines()
+        assert "main.py" in committed
+        assert not any(f.startswith("venv/") for f in committed), committed
+
+    def test_an_implausibly_large_first_commit_is_refused_naming_its_folder(
+        self, unborn_repo: Path
+    ) -> None:
+        """A tree of Python files that is not the project (a copied package, an environment
+        without a marker) is named and refused, never silently made permanent."""
+        (unborn_repo / "main.py").write_text("x = 1\n")
+        vendored = unborn_repo / "vendor" / "lib"
+        vendored.mkdir(parents=True)
+        for index in range(git_setup._SEED_FILE_LIMIT):
+            (vendored / f"module_{index}.py").write_text("x = 1\n")
+
+        with pytest.raises(GitDomainError) as refused:
+            set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        limit = git_setup._SEED_FILE_LIMIT
+        assert str(refused.value) == (
+            f"The first version of this project would hold {limit + 2:,} files, {limit:,} of "
+            "them in 'vendor/'. That is more than a project holds: move that folder out of "
+            "the project or add it to .gitignore, then try again."
+        )
+        assert _git(unborn_repo, "rev-list", "--all") == ""
+        assert not (unborn_repo / ".haute" / "state.json").exists()
+
     def test_seed_appends_guards_to_partial_gitignore(self, unborn_repo: Path) -> None:
         """An existing .gitignore missing the guard entries gets them appended;
         the user's own entries keep working."""
@@ -2660,6 +2732,24 @@ class TestBranchManager:
     def test_delete_refuses_protected(self, repo: Path) -> None:
         with pytest.raises(GitGuardrailError):
             delete_working_pair("main", repo, cwd=repo)
+
+    def test_unconfirmed_delete_of_the_current_branch_keeps_a_dirty_tree(self, repo: Path) -> None:
+        """Only a confirmed delete may discard edits: confirm guarded the unmerged saves
+        alone, so a delete without it threw away what was on disk with the branch."""
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        commit_milestone("m", repo, cwd=repo)  # nothing unmerged: confirm guards nothing else
+        (repo / "rating.py").write_text("# uncommitted edit\n")
+
+        with pytest.raises(GitDomainError) as refused:
+            delete_working_pair(WORKING, repo, confirm=False, cwd=repo)
+
+        assert str(refused.value) == (
+            "You have unsaved changes on this branch. Save or discard them before deleting it."
+        )
+        assert (repo / "rating.py").read_text() == "# uncommitted edit\n"
+        assert self._branch_exists(repo, WORKING) and self._branch_exists(repo, LEDGER)
+        assert self._current_head(repo) == LEDGER
 
     def test_delete_current_force_discards_dirty_tree(self, repo: Path) -> None:
         # A confirmed delete of the current branch is destructive by intent — a

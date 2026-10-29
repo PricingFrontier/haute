@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 
 # The command core is the sole process boundary.  Its helpers are imported
@@ -67,6 +68,11 @@ _SEED_PATHSPECS: tuple[str, ...] = (
     ".gitlab-ci.yml",
     "azure-pipelines.yml",
 )
+# Files that mark a folder as a Python environment, whatever the folder is called.
+_ENVIRONMENT_MARKERS = ("pyvenv.cfg", "conda-meta/history")
+# More files than a project's first version plausibly holds: the seed is refused, naming
+# the folder most of them are in, rather than a copied package made permanent history.
+_SEED_FILE_LIMIT = 1_000
 _PREF_SKIP_SWITCH_CONFIRM = "skipSwitchConfirm"
 
 
@@ -281,7 +287,8 @@ def set_working_branch(
                 *_SEED_PATHSPECS,
                 cwd=cwd,
             )
-            seed_files = [f for f in listed.split("\0") if f]
+            seed_files = _outside_environments([f for f in listed.split("\0") if f], cwd)
+            _refuse_implausible_seed(seed_files)
             if seed_files:
                 # :(literal) so a filename containing glob characters cannot
                 # re-expand into a broader pathspec at add time.
@@ -400,6 +407,45 @@ def set_working_branch(
         working_branch=branch,
         state="ready",
         last_save_sha=_ledger_or_branch_sha(branch, cwd=cwd),
+    )
+
+
+def _outside_environments(paths: list[str], cwd: Path | None) -> list[str]:
+    """*paths* without those inside a Python environment below the project's top level: a
+    folder holding a venv's ``pyvenv.cfg`` or a conda environment's ``conda-meta``. A marker
+    counts whether or not an ignore rule hides it, since the environment's files may not be."""
+    listed = _run_git(
+        "ls-files",
+        "--others",
+        "-z",
+        "--",
+        *[f":(glob)**/{marker}" for marker in _ENVIRONMENT_MARKERS],
+        cwd=cwd,
+    )
+    environments: list[str] = []
+    for marker_path in filter(None, listed.split("\0")):
+        marker = next(m for m in _ENVIRONMENT_MARKERS if marker_path.endswith(m))
+        folder = marker_path[: -len(marker)]
+        # One at the top level is the project folder itself, for the size refusal to name.
+        if folder:
+            environments.append(folder)
+    return [path for path in paths if not path.startswith(tuple(environments))]
+
+
+def _refuse_implausible_seed(paths: list[str]) -> None:
+    if len(paths) <= _SEED_FILE_LIMIT:
+        return
+    folders = Counter(path.split("/", 1)[0] + "/" if "/" in path else "" for path in paths)
+    folder, held = folders.most_common(1)[0]
+    if folder:
+        where = f"in '{folder}'"
+        remedy = "move that folder out of the project or add it to .gitignore"
+    else:
+        where = "at the project's top level"
+        remedy = "move what is not the project's out of it or add it to .gitignore"
+    raise GitDomainError(
+        f"The first version of this project would hold {len(paths):,} files, {held:,} of "
+        f"them {where}. That is more than a project holds: {remedy}, then try again."
     )
 
 

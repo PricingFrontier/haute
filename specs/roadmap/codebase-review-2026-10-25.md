@@ -125,8 +125,8 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the nineteen packages delivered or settled since (thirteen by 28
-October 2026, six more on 29 October) have been removed from the sections below; the coverage table keeps the
+The findings of the twenty packages delivered or settled since (thirteen by 28
+October 2026, seven more on 29 October) have been removed from the sections below; the coverage table keeps the
 original counts.
 
 ## Validation — 25 October 2026
@@ -345,7 +345,6 @@ production:
 | Tracing | TRC-2, TRC-3, TRC-4 | `TRACE-R02` |
 | Tracing | TRC-8, TRC-9, TRC-10, TRC-14 | `TRACE-R03` |
 | Tracing | TRC-5, TRC-6, TRC-7, TRC-11, TRC-12, TRC-13 | `TRACE-R04` |
-| Git integration | GIT-6, GIT-7 | `GIT-R03` |
 | Git integration | GIT-2 | `GIT-R04` |
 | Git integration | GIT-12, GIT-13 | `GIT-R05` |
 | Git integration | GIT-14 | `GIT-R06` (Decision) |
@@ -441,10 +440,9 @@ fields the backend defaults (`EDA-R02`); the panel half of the GPU loss-history
 numbering and the GLM `best_iteration` (`MOD-R05`) and a second fabricated
 train-failure sentinel (`FSH-R06`); the browser's frontier
 generation fences that only ever see generation 0 (`OPT-R04`), the optimiser
-panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`) and
-`applyFrontierPointSummary`'s null handling (`FSH-R03`); the delete dialog's
-confirm flag (`GIT-R03`)
-and the trace route's 409 keyed on its code (`API-R06`); in the workbench UI and the app shell, the
+panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`),
+`applyFrontierPointSummary`'s null handling (`FSH-R03`) and the trace route's
+409 keyed on its code (`API-R06`); in the workbench UI and the app shell, the
 chart theme observer written twice (`EDA-R03`), the params-folder listing in the
 Allowed field (`FNED-R05`), knip's export-only symbols (`ENGQ-R01`), the fault on
 an output-table condition (`WB-29`), the browser's 90 s pricing timeout past the

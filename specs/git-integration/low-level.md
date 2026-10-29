@@ -419,9 +419,18 @@ alongside an unborn HEAD (only reachable via `checkout --orphan` outside haute).
 foreign `git init` repo). The index is cleared (`git rm -r -f -q --cached --ignore-unmatch
 -- .`) so pre-staged content can't bypass the seed gate, then `git ls-files --others
 --exclude-standard -- <_SEED_PATHSPECS>` lists what's both permitted (the pathspec allow-
-list) and not `.gitignore`d (the deny gate); matched files are added with `:(literal)`
-prefixes so a filename containing glob characters can't re-expand the pathspec. An empty
-result still commits (`--allow-empty`) to establish the root. A `git commit` failure whose
+list) and not `.gitignore`d (the deny gate). `_outside_environments` then drops every file
+under a folder below the top level that holds a Python environment's marker
+(`_ENVIRONMENT_MARKERS`: `pyvenv.cfg`, `conda-meta/history`, listed with `ls-files --others`
+and no ignore rules, since a rule hiding the marker need not hide the environment's files),
+whatever the folder is called; a marker at the top level is the project folder itself and
+drops nothing. More than `_SEED_FILE_LIMIT` (1,000)
+files left is refused with a `GitDomainError` before staging, naming the count and the
+top-level folder holding most of them: "The first version of this project would hold <n>
+files, <m> of them in '<folder>/'. That is more than a project holds: move that folder out of
+the project or add it to .gitignore, then try again." The matched files are added with
+`:(literal)` prefixes so a filename containing glob characters can't re-expand the pathspec.
+An empty result still commits (`--allow-empty`) to establish the root. A `git commit` failure whose
 stderr mentions missing author identity is translated to a `GitDomainError` steering the
 user to set identity first; anything else re-raises as a plain `GitError`. The whole
 *post-seed pair-creation* path (branch checkout, ledger spawn, state write) is wrapped so any
@@ -645,7 +654,10 @@ back, and restores HEAD) on any `GitError`/`OSError`; incomplete compensation ra
 `GitTransactionError`.
 
 **Archive/delete active pair.** HEAD detaches at the working branch's tip, its last
-milestone, through the tree fence. A confirmed delete forces it over a dirty tree. The
+milestone, through the tree fence. A confirmed delete forces it over a dirty tree; an archive
+or an unconfirmed delete refuses tracked changes first, with `_switch_away_if_active`'s
+"You have unsaved changes on this branch. Save or discard them before archiving it." (or
+"deleting it"), and the tree is left as it was. The
 ledger's later saves stay with the archived ledger or the trash pins. HEAD never moves to
 another branch, so the analyst is not left on a default branch's unrelated files. Archive
 moves the pair with one `update-ref --stdin` transaction: it creates `archive/<X>` and its
@@ -653,7 +665,8 @@ ledger at their tips and deletes `<X>` and its ledger with their tips as expecte
 Un-archive (`restore_working_pair`) is the same transaction the other way.
 
 **Delete / trash (`delete_working_pair` / `undelete_working_pair`).** Delete refuses on
-unmerged ledger saves unless `confirm=True`. It then:
+unmerged ledger saves, and on the active pair's tracked changes, unless `confirm=True`. It
+then:
 1. takes a fresh entry id;
 2. pins both tips under it, plain refs outside `refs/heads` that shield the objects from gc;
 3. writes the tombstone;
@@ -818,7 +831,9 @@ process failures, and precise ref-movement races deterministic.
   capture of a save made with no working branch chosen (warned and left uncaptured) and
   in a project with no repository (nothing owed), the unborn-repo seed path and its
   gitignore-guard
-  interaction (`TestSeedGitignoreGuards`, `TestSetWorkingBranchUnbornNonDefault`), version
+  interaction (`TestSeedGitignoreGuards`, `TestSetWorkingBranchUnbornNonDefault`; a venv,
+  an env and a conda environment left out of the root commit whatever their names, and a
+  seed over the limit refused naming its folder), version
   restore (`TestRestoreVersion`: a pending save, a milestone and a folded save restored as
   one save on the same branch with later saves kept, files changed, deleted and added since
   put back, untracked files, `.haute/` and `outputs/` untouched and caches wiped,
@@ -829,7 +844,8 @@ process failures, and precise ref-movement races deterministic.
   expansion, the branch manager (archive/delete/undelete/restore; a name deleted, made
   again and deleted again keeping both entries, undelete under another name, the cap
   dropping the oldest entry's pins, a legacy bare-name tombstone restored, the active pair
-  detached at its last milestone), request-path no-fetch
+  detached at its last milestone, an unconfirmed delete of it keeping a dirty tree),
+  request-path no-fetch
   guarantees,
   the tree fence (`TestTreeFence`: a checkout that exits 0 with a file left stale put back
   and refused by name, a failed fast-forward's written files put back, a put-back that

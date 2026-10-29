@@ -49,6 +49,7 @@ def _switch_away_if_active(
     working: str,
     ledger: str,
     project_root: Path,
+    action: str,
     cwd: Path | None = None,
     discard: bool = False,
 ) -> bool:
@@ -62,8 +63,9 @@ def _switch_away_if_active(
 
     When *discard* (a confirmed delete — the branch is going away anyway), a
     dirty tree is force-discarded with the checkout. Otherwise tracked
-    modifications refuse the move with actionable guidance, since a lossless
-    archive must not silently throw away volatile work (S12/S38)."""
+    modifications refuse the move with actionable guidance naming *action*
+    ("archiving", "deleting"), since an archive or an unconfirmed delete must not
+    silently throw away volatile work (S12/S38)."""
     from haute._git_state import read_working_branch
 
     recorded = read_working_branch(project_root)
@@ -76,7 +78,7 @@ def _switch_away_if_active(
             if ok and status.strip():
                 raise GitDomainError(
                     "You have unsaved changes on this branch. Save or discard "
-                    "them before archiving it."
+                    f"them before {action} it."
                 )
         milestone = _rev_parse(working, cwd=cwd) or _rev_parse(ledger, cwd=cwd)
         if milestone is None:
@@ -140,7 +142,7 @@ def archive_working_pair(
         previous_head = _run_git("rev-parse", "HEAD", cwd=cwd)
 
     try:
-        if _switch_away_if_active(working, ledger, project_root, cwd=cwd):
+        if _switch_away_if_active(working, ledger, project_root, "archiving", cwd=cwd):
             clear_working_branch(project_root)
         _move_pair(working, archived, working_tip, ledger_tip, cwd=cwd)
     except (GitError, OSError) as exc:
@@ -253,9 +255,11 @@ def delete_working_pair(
     ledger_pin = f"refs/haute/trash/{entry_id}/ledger"
 
     try:
-        # A confirmed delete is destructive by intent — discard a dirty tree
-        # along with the branch rather than refusing (S38).
-        if _switch_away_if_active(working, ledger, project_root, cwd=cwd, discard=True):
+        # A confirmed delete is destructive by intent — discard a dirty tree along
+        # with the branch (S38). Without confirmation a dirty tree refuses.
+        if _switch_away_if_active(
+            working, ledger, project_root, "deleting", cwd=cwd, discard=confirm
+        ):
             clear_working_branch(project_root)
         # Recovery net FIRST, refs second — a failure between the two remains
         # compensatable without making history unreachable.
