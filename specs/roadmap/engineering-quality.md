@@ -19,7 +19,6 @@ evidence to `ENGQ-R01` and `ENGQ-R05`.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | ENGQ-CI03 | Planned | P2 | The 21 model-training, export and scoring test modules take at most half their recorded coverage-lane time, with no assertion weakened and no training code newly uncovered. |
-| ENGQ-CI05 | Planned | P3 | The compatibility shards are balanced by durations measured without coverage. |
 | ENGQ-R01 | Planned | P3 | Production code that nothing calls, or only tests call, is removed. |
 | ENGQ-R05 | Planned | P3 | Tests are organised by component and behaviour, not by coverage campaign. |
 | ENGQ-CI06 | Planned | P3 | Haute's own workflows pin every action by commit. |
@@ -29,7 +28,7 @@ evidence to `ENGQ-R01` and `ENGQ-R05`.
 ## Planned improvements
 
 `ENGQ-CI03` is the largest further cut in CI time and is independent of the
-other packages. `ENGQ-CI05` is balance tuning for the compatibility shards.
+other packages.
 `ENGQ-R01` is an independent clean-up, cheapest after the larger refactors
 have deleted what they replace. `ENGQ-R05` reorganises the suite under the
 coverage rule the [engineering-quality specification](../engineering-quality/high-level.md)
@@ -99,36 +98,6 @@ other and keeps the cohort's measure comparable.
 `tests/test_mlflow_log_button_roundtrip.py`;
 `tests/test_training_contract_per_model.py`;
 `scripts/test_file_durations.json`; `mutation/targets.json`.
-
-### ENGQ-CI05 — Balance the compatibility shards on their own durations
-**Why:** One durations table, measured on the coverage lane, balances every
-sharded lane (`tests/_ci_shards.py`). Coverage tracing slows some modules far
-more than others. In the CI study, these modules ran longer under coverage:
-
-| Module | Slowdown under coverage |
-|---|---:|
-| `tests/test_chunk_whitelist_proofs.py` | 1.65× |
-| `tests/test_test_debt.py` | 2.2× |
-| `tests/test_repository_hygiene.py` | 2.6× |
-
-The compatibility shards run without coverage, so a shard holding those
-modules finishes early. On PR #280's second run, the 3.13 shards took 4.0, 6.1
-and 6.4 minutes, and the 3.11 shards 4.0, 6.0 and 5.7.
-
-**Plan:** Have the compatibility shards upload JUnit reports as the coverage
-shards do. Extend `scripts/test_file_durations.json` to one table per lane,
-let the shard option name the table, and refresh both tables with
-`scripts/refresh_test_durations.py`. The partition rule and its tests are
-unchanged.
-
-**Acceptance:** On two consecutive CI runs, each compatibility interpreter's
-slowest shard is within 15% of its fastest. `tests/test_ci_shards.py` covers
-table selection and a missing table.
-
-**Dependencies:** None.
-
-**Evidence:** `tests/_ci_shards.py`; `scripts/test_file_durations.json`;
-`scripts/refresh_test_durations.py`; `.github/workflows/ci.yml`.
 
 ### ENGQ-R01 — Remove unreferenced and test-only production code
 **Why:** Several production functions have no caller at all:

@@ -1,13 +1,14 @@
-"""File sharding for the CI full-suite lanes: ``pytest tests/ --shard=K/N``.
+"""File sharding for the CI full-suite lanes: ``pytest tests/ --shard=K/N --shard-lane=L``.
 
 A sharded lane partitions test *modules*. Each module belongs to exactly one
 shard, and every other shard ignores it before it is imported, so the shards of
 a lane together collect exactly what an unsharded run collects. The recorded
 per-module durations in ``scripts/test_file_durations.json`` only balance the
-shards: recorded modules that still exist go longest-first onto the
-least-loaded shard, and any other module goes to ``crc32(path) % N + 1``. A
-stale or incomplete durations file can unbalance the shards, but it can never
-drop or duplicate a test.
+shards, one table per lane (``--shard-lane`` names it), because coverage
+tracing slows some modules far more than others: recorded modules that still
+exist go longest-first onto the least-loaded shard, and any other module goes
+to ``crc32(path) % N + 1``. A stale or incomplete table can unbalance the
+shards, but it can never drop or duplicate a test.
 
 ``tests/conftest.py`` adds the options and registers :class:`ShardSelection`
 in every pytest process, including each xdist worker, since workers are the
@@ -28,7 +29,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-DURATIONS_VERSION = 1
+DURATIONS_VERSION = 2
 DEFAULT_DURATIONS_PATH = PurePosixPath("scripts/test_file_durations.json")
 
 _SHARD_PATTERN = re.compile(r"([1-9][0-9]*)/([1-9][0-9]*)")
@@ -49,24 +50,29 @@ class ShardSpec:
         return cls(int(match.group(1)), int(match.group(2)))
 
 
-def load_durations(path: Path) -> dict[str, float]:
-    """Read a version-1 durations file, rejecting anything malformed."""
+def load_durations(path: Path, lane: str) -> dict[str, float]:
+    """Read *lane*'s table from a version-2 durations file, rejecting anything malformed."""
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"Cannot read test durations from {path}: {exc}") from exc
     if (
         not isinstance(payload, dict)
-        or set(payload) != {"version", "files"}
+        or set(payload) != {"version", "lanes"}
         or payload["version"] != DURATIONS_VERSION
-        or not isinstance(payload["files"], dict)
+        or not isinstance(payload["lanes"], dict)
+        or not all(isinstance(table, dict) for table in payload["lanes"].values())
     ):
         raise ValueError(
             f"{path} must be a JSON object with exactly 'version' ({DURATIONS_VERSION}) "
-            "and 'files' (module path -> seconds)"
+            "and 'lanes' (lane -> module path -> seconds)"
+        )
+    if lane not in payload["lanes"]:
+        raise ValueError(
+            f"{path} has no durations for lane {lane!r}; it records {sorted(payload['lanes'])}"
         )
     durations: dict[str, float] = {}
-    for module, seconds in payload["files"].items():
+    for module, seconds in payload["lanes"][lane].items():
         if not _is_module_path(module):
             raise ValueError(
                 f"{path}: {module!r} is not a repository-relative POSIX path to a .py module"
@@ -159,6 +165,12 @@ def add_options(parser: pytest.Parser) -> None:
         help="Collect only the test modules assigned to shard K of N.",
     )
     group.addoption(
+        "--shard-lane",
+        default=None,
+        metavar="LANE",
+        help="The lane whose recorded durations balance the shards (coverage or compat).",
+    )
+    group.addoption(
         "--shard-durations",
         type=Path,
         default=None,
@@ -170,17 +182,21 @@ def add_options(parser: pytest.Parser) -> None:
 def register(config: pytest.Config) -> None:
     """Register the selection for ``--shard``; a no-op for unsharded runs."""
     spec: ShardSpec | None = config.getoption("shard")
+    lane: str | None = config.getoption("shard_lane")
     durations_option: Path | None = config.getoption("shard_durations")
     if spec is None:
-        if durations_option is not None:
-            raise pytest.UsageError("--shard-durations requires --shard")
+        for option, value in (("--shard-lane", lane), ("--shard-durations", durations_option)):
+            if value is not None:
+                raise pytest.UsageError(f"{option} requires --shard")
         return
+    if lane is None:
+        raise pytest.UsageError("--shard requires --shard-lane, the durations table to balance by")
     if durations_option is None:
         durations_path = config.rootpath / DEFAULT_DURATIONS_PATH
     else:
         durations_path = config.invocation_params.dir / durations_option
     try:
-        durations = load_durations(durations_path)
+        durations = load_durations(durations_path, lane)
     except ValueError as exc:
         raise pytest.UsageError(str(exc)) from exc
     selection = ShardSelection(spec, durations, config.rootpath, config.getini("python_files"))

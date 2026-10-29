@@ -221,7 +221,7 @@ jobs:
           COVERAGE_FILE: .coverage.shard${{ matrix.shard }}
         run: >
           uv run pytest tests/ -q -n 4 --timeout=60 --timeout-method=signal
-          --shard=${{ matrix.shard }}/4
+          --shard=${{ matrix.shard }}/4 --shard-lane=coverage
           --cov=src/haute --cov-branch --cov-report= --cov-fail-under=0
           --junitxml=.cache/junit/coverage-shard${{ matrix.shard }}.xml
           -o junit_family=xunit1
@@ -310,7 +310,10 @@ jobs:
 
   # Compatibility: the full suite (no coverage) on the supported version edges,
   # split by test module into 3 shards per interpreter exactly as the coverage
-  # shards are (tests/_ci_shards.py); the matrix must list every shard.
+  # shards are (tests/_ci_shards.py); the matrix must list every shard. The
+  # shards balance on the compatibility lane's own durations, since coverage
+  # tracing slows some modules far more than others, and upload JUnit reports
+  # to refresh that table with scripts/refresh_test_durations.py.
   backend-compat:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -343,7 +346,16 @@ jobs:
         run: >
           uv run pytest tests/ -q -n 4 --timeout=60 --timeout-method=signal
           -m "not perf and not meta"
-          --shard=${{ matrix.shard }}/3
+          --shard=${{ matrix.shard }}/3 --shard-lane=compat
+          --junitxml=.cache/junit/compat-${{ matrix.python-version }}-shard${{ matrix.shard }}.xml
+          -o junit_family=xunit1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-compat-junit-${{ matrix.python-version }}-${{ matrix.shard }}
+          path: .cache/junit/
+          retention-days: 14
 
   # Production runs previews, traces, free-code steps and the optimiser estimate
   # in warm worker processes; the rest of the suite runs them in threads so

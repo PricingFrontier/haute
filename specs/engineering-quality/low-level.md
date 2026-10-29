@@ -68,8 +68,8 @@
 | `security/accepted-risks.toml` | Versioned exact advisory acceptance registry. Entries require ecosystem/package/advisory identity, owner, exposure, compensating control, approval date, and non-expired review date; stale, duplicate, malformed, mismatched, or unused entries fail the audit. |
 | `scripts/core_test_files.txt` | Curated core test-subset manifest and its selection/refresh rationale for canary/dependency lanes. |
 | `scripts/property_test_files.txt` | Manifest of every Hypothesis test module for the property-exploration lane; `tests/test_workflow_coverage.py` keeps it equal to the modules that import `hypothesis`. |
-| `scripts/test_file_durations.json` | Recorded per-module backend test durations from the coverage lane, used only to balance the CI shards (`tests/_ci_shards.py`). |
-| `scripts/refresh_test_durations.py` | Rewrites `scripts/test_file_durations.json` from pytest JUnit reports (xunit1 family), summing each module's test-case times; refuses reports without test cases or with a test case lacking its `file` or a finite non-negative `time`. |
+| `scripts/test_file_durations.json` | Recorded per-module backend test durations, one table per sharded lane (`coverage`, `compat`), used only to balance the CI shards (`tests/_ci_shards.py`). |
+| `scripts/refresh_test_durations.py` | Rewrites one lane's table (`--lane`) in `scripts/test_file_durations.json` from pytest JUnit reports (xunit1 family), summing each module's test-case times and keeping the other lanes' tables; refuses reports without test cases or with a test case lacking its `file` or a finite non-negative `time`, and an existing file it cannot read as lane tables. |
 | `scripts/e2e_git_topologies.py` | Exercises Git topology scenarios used by repository-level verification. |
 | `scripts/e2e_scoring_models.py` | Trains small GLM, XGBoost and CatBoost-classifier model files into the e2e project, through the editor's training path, for `frontend/e2e/model-scoring.spec.ts`. |
 | `scripts/generate_api_contracts.py` | Deterministically composes the execution-strategy diagnostic and Explore chart root models (validation mode), the request models of each request group (`REQUEST_CONTRACT_GROUPS`, validation mode, as a route reads a body, listed under `x-haute-request-groups`) and the converted response models of each module group (`RESPONSE_CONTRACT_GROUPS`, serialization mode with every sent field required) into one Draft 2020-12 JSON Schema bundle (a serialization-mode definition that differs from a pilot's validation-mode one of the same name is emitted as `<Name>Output`, with its references rewritten; a response root is never renamed), fixes the recursive finite-JSON definition, drops OpenAPI's `discriminator` keyword from a tagged union (its `oneOf` branches carry the tag as a `const`; Ajv in strict mode refuses the keyword), and atomically writes or byte-checks the committed frontend source artifact. |
@@ -116,7 +116,7 @@
 | `specs/roadmap/<component>.md` | One self-contained, non-normative improvement queue per component. Each package defines its problem, plan, acceptance criteria, dependencies, and current code/test evidence. |
 | `tests/workflow_coverage.toml` | Versioned workflow coverage ledger: workflow families, node types, and scenario records with coverage state, owning package, test references, and execution evidence. |
 | `tests/test_workflow_coverage.py` | Ledger validator (`load_ledger`, `roadmap_package_ids`, `ledger_violations`) and its malformed-ledger cases; a meta-marked repository-health module. |
-| `tests/_ci_shards.py` | Pytest file sharding for the CI full-suite lanes, wired by `tests/conftest.py`: `--shard=K/N` keeps only the test modules assigned to shard K and ignores every other module before it is imported; `--shard-durations` names an alternative durations file. |
+| `tests/_ci_shards.py` | Pytest file sharding for the CI full-suite lanes, wired by `tests/conftest.py`: `--shard=K/N` keeps only the test modules assigned to shard K and ignores every other module before it is imported, balanced on the durations table `--shard-lane` names; `--shard-durations` names an alternative durations file. |
 | `tests/_test_debt_scanner.py` | Test-debt scanning primitives (backend AST visitor, frontend source scanner, frontend test-file predicate) shared by `tests/test_test_debt.py` and `tests/test_workflow_coverage.py`; a support module, not a test. |
 | `tests/_property_budget.py` | Shared Hypothesis settings for the generated families: `pr_budget` (small, derandomised, no example database, reproduction blob printed) and the `exploration_examples` override read from the `EXPLORATION_ENV` variable (HAUTE_PROPERTY_EXAMPLES); a support module, not a test. |
 | `scripts/benchmarks/` | Point-in-time benchmark, probe and reproduction programs with their raw results and metadata, linked from the dated reports under `specs/roadmap/`; not an automatically current product-behaviour contract. `specs/roadmap/` itself holds only Markdown reports and the provenance record its index links. |
@@ -234,15 +234,17 @@
   repository's files must be, are deselected from the Python compatibility
   lanes in `.github/workflows/ci.yml`).
 - **Test-file durations** in `scripts/test_file_durations.json` are
-  `{"version": 1, "files": {"tests/<module>.py": seconds}}`: repository-relative
-  POSIX module paths and finite non-negative seconds rounded to one decimal
-  place, measured on the 3.12 coverage lane. **Shard assignment** for
-  `--shard=K/N` sorts the recorded modules that still exist by descending
-  duration (ties by path) and places each on the least-loaded shard (ties to
-  the lower index); any other test module goes to shard
-  `crc32(path) mod N + 1`. The assignment depends only on N, the durations
-  file, and the files present, so every shard and every xdist worker computes
-  the same partition.
+  `{"version": 2, "lanes": {"<lane>": {"tests/<module>.py": seconds}}}`: one
+  table per sharded lane, because coverage tracing slows some modules far more
+  than others, of repository-relative POSIX module paths and finite non-negative
+  seconds rounded to one decimal place. `coverage` is measured on the 3.12
+  coverage lane and `compat` on the 3.13 compatibility shards. **Shard
+  assignment** for `--shard=K/N --shard-lane=L` sorts the modules lane L
+  records that still exist by descending duration (ties by path) and places
+  each on the least-loaded shard (ties to the lower index); any other test
+  module goes to shard `crc32(path) mod N + 1`. The assignment depends only on
+  N, the lane's table, and the files present, so every shard and every xdist
+  worker computes the same partition.
 - **Component improvement package** is a `### <package-id>` section in one
   flat `specs/roadmap/<component>.md` file. It has a stable ID, priority/order,
   problem, plan, acceptance criteria, dependencies, and current evidence. The
@@ -278,7 +280,7 @@
    CI runs Ruff, mypy over `src/haute/` and `scripts/` (the CI gates; the
    point-in-time `scripts/benchmarks/` excepted), and `HAUTE_BUILD_FRONTEND=1 uv build`.
 3. Backend coverage runs the full test corpus on 3.12 in four file shards
-   (`--shard=K/4`). Each shard uploads its coverage data file and a JUnit
+   (`--shard=K/4 --shard-lane=coverage`). Each shard uploads its coverage data file and a JUnit
    report, the input to `scripts/refresh_test_durations.py`, whether its tests
    passed or not. The gate runs whenever the shards ran (`!cancelled()`); when
    any shard did not pass, its first step fails explicitly and the later steps
@@ -298,7 +300,8 @@
    summary.
 4. Compatibility runs the same corpus without coverage, excluding `perf` and
    `meta` tests, in three file shards on each of 3.11 and 3.13
-   (`--shard=K/3`). Optional-dependency, platform, package, init, and mutation
+   (`--shard=K/3 --shard-lane=compat`), each uploading a JUnit report whatever
+   its result, the input to the `compat` table's refresh. Optional-dependency, platform, package, init, and mutation
    configuration smoke lanes run their named commands. The core-only
    optional-dependency lane installs the project with the `test-harness`
    dependency group alone (pytest, pytest-asyncio, httpx and Hypothesis, which
@@ -417,7 +420,8 @@
   Recorded durations only balance the shards. A stale, missing, or renamed
   entry can unbalance them but can neither drop nor duplicate a test, so
   refreshing the durations file is maintenance, not a correctness step. A
-  malformed `--shard` value (not `K/N` with 1 ≤ K ≤ N) or a missing, unreadable,
+  malformed `--shard` value (not `K/N` with 1 ≤ K ≤ N), `--shard` without
+  `--shard-lane`, a lane the file has no table for, or a missing, unreadable,
   wrongly versioned, or malformed durations file fails the run before
   collection. Each sharded CI job's matrix lists exactly `1..N` for its
   `--shard=${{ matrix.shard }}/N`, and the coverage gate combines exactly the
@@ -589,14 +593,16 @@
 - `tests/test_bug_regressions.py` — named deep-review bug regressions (streaming restoration, source/pipeline path handling, preview source files, and Polars/parser safety).
 - `tests/test_bugfixes.py` — regression contracts for streaming chunk restoration, source/pipeline path resolution, preview source files, and parser/config safety.
 - `tests/test_ci_shards.py` — `--shard` parsing and durations-file validation
-  failures, deterministic longest-first assignment with ties and CRC-32
-  placement of unrecorded modules, a pytester partition proof (each module
-  runs in exactly one shard, an unassigned module is never imported, and xdist
-  workers select the same modules), `scripts/refresh_test_durations.py`
-  aggregation and refusal cases, and the CI invariants that every sharded
-  matrix lists `1..N` for its `--shard=${{ matrix.shard }}/N`, the coverage
+  failures, each lane reading its own table and a lane without one refused,
+  deterministic longest-first assignment with ties and CRC-32 placement of
+  unrecorded modules, a pytester partition proof (each module runs in exactly
+  one shard, an unassigned module is never imported, and xdist workers select
+  the same modules), `scripts/refresh_test_durations.py` aggregation into one
+  lane with the others kept, and refusal cases, and the CI invariants that
+  every sharded matrix lists `1..N` for its `--shard=${{ matrix.shard }}/N`,
+  each sharded backend lane balances on a table the file records, the coverage
   gate combines exactly those shards' data files, and the refresh recipe
-  downloads the JUnit artifact the coverage shards upload.
+  downloads the JUnit artifacts the coverage and compatibility shards upload.
 - `tests/test_coverage_gaps.py` — targeted edge coverage for config/fingerprint/builders/artifacts/model helpers, schemas, and node discovery.
 - `tests/test_decoupling_contracts.py` — separation contracts for tracing, EventBus/file-watcher integration, and logging conventions.
 - `tests/test_dry_fixes.py` — DRY response/model inheritance and optimiser finalize contracts across online/ratebook/frontier paths.

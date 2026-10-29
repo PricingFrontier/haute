@@ -33,9 +33,9 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
 | `ci.yml` | `init-smoke` (×3: ubuntu, windows, macos) | push+PR | **Yes** | `uv run --no-project python scripts/init_smoke.py` — wheel build (frontend included) → fresh venv, fresh resolve → `haute init` in an empty dir → headless `haute serve` → session-cookie bootstrap → authed `/api/files` → clean shutdown |
 | `ci.yml` | `dependency-floors` | push+PR | **Yes** | `uv lock --resolution lowest-direct` (py3.11) → `uv sync --frozen --group dev` → core test subset run at the re-resolved floor lockfile — proves the published floor specifiers actually install and pass |
 | `ci.yml` | `backend-static` | push+PR | **Yes** | `uv sync --group dev --locked` (py3.12) → ruff lint + ruff format-check + mypy (`src/haute/` and `scripts/`) + `scripts/lint_pins.py` (dependency-pin doctrine: floor+cap for published deps, exact for tooling, no `npx` on executable surfaces) + `HAUTE_BUILD_FRONTEND=1 uv build` |
-| `ci.yml` | `backend-coverage-shard` (×4 shards) | push+PR | **Yes** | full suite (py3.12) split 4-way by test module (`--shard=K/4`, `tests/_ci_shards.py`, balanced by `scripts/test_file_durations.json`), coverage collected per shard (`--cov-fail-under=0`) and uploaded with a JUnit report (xunit1), both whether the shard's tests passed or not |
+| `ci.yml` | `backend-coverage-shard` (×4 shards) | push+PR | **Yes** | full suite (py3.12) split 4-way by test module (`--shard=K/4 --shard-lane=coverage`, `tests/_ci_shards.py`, balanced by `scripts/test_file_durations.json`), coverage collected per shard (`--cov-fail-under=0`) and uploaded with a JUnit report (xunit1), both whether the shard's tests passed or not |
 | `ci.yml` | `backend-coverage-gate` | push+PR | **Yes** | needs `backend-coverage-shard` and runs whatever its result (`!cancelled()`); a shard that did not pass fails the gate's first step, and the later steps still run → `coverage combine` the four shards → `coverage report --fail-under=90` → per-file critical floors → 100% changed statement/branch coverage for the safety-critical modules, with other changed files reported in the job summary |
-| `ci.yml` | `backend-compat` (×6: py3.11 and py3.13, 3 shards each) | push+PR | **Yes** | full suite split 3-way by test module (`--shard=K/3`), no coverage collected |
+| `ci.yml` | `backend-compat` (×6: py3.11 and py3.13, 3 shards each) | push+PR | **Yes** | full suite split 3-way by test module (`--shard=K/3 --shard-lane=compat`, balanced on the compatibility lane's own durations, each shard uploading a JUnit report), no coverage collected |
 | `ci.yml` | `backend-process-mode` | push+PR | **Yes** | the route slice (`test_interactive_route_isolation.py`, `test_server.py`, `test_trace_api.py`, `test_trace_multi_frame.py`, `test_adversarial_inputs.py`, `test_security_gaps.py`) with `HAUTE_TEST_INTERACTIVE_EXECUTION_MODE=process`, so previews, traces, free-code steps and the optimiser estimate run in worker processes as in production; an `in_process`-marked test stays in threads |
 | `ci.yml` | `backend-314-probe` | push+PR | **No** (`continue-on-error: true`; advisory only) | py3.14 forward-looking probe: `uv sync` (expected to fail until catboost ships cp314 wheels) → full suite if sync succeeds |
 | `ci.yml` | `perf` | push+PR | **Yes** | `uv run python scripts/run_perf_suite.py --output-dir .cache/perf` |
@@ -76,7 +76,7 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
    three shards each, plus a non-blocking `backend-314-probe`. The shards
    together run exactly the unsharded suite, so one local run covers all of
    them; to reproduce a single CI shard, pass its `--shard`, e.g.
-   `uv run pytest tests/ -q -n 4 --shard=2/4` (add
+   `uv run pytest tests/ -q -n 4 --shard=2/4 --shard-lane=coverage` (add
    `-m "not perf and not meta"` for a `backend-compat` shard, whose count is 3).
    Preflight itself still runs one interpreter (the `.venv`). See
    "Multi-Python matrix" below.
