@@ -1719,21 +1719,28 @@ class TestTheLocatedExpressionAlone:
         assert result.substituted_text == "1.26.round(1)"
         assert result.result_value == 1.3
 
-    def test_a_binding_captured_from_an_unknown_value_is_reported_not_guessed(self) -> None:
-        # ``expr`` captured ``factor`` while its value was unknown; rebinding
-        # ``factor`` afterwards does not make ``expr`` known.
-        code = (
-            "factor = 2\n"
-            "factor *= 3\n"
-            'expr = pl.col("x") * factor\n'
-            "factor = 4\n"
-            "df = df.with_columns(y=expr)"
-        )
+    @pytest.mark.parametrize(
+        ("call", "unknown"),
+        [
+            ("df = df.with_columns(y=expr)", "expr"),
+            ('exprs = [expr.alias("y")]\ndf = df.with_columns(exprs)', "exprs"),
+            ('named = expr.alias("y")\ndf = df.with_columns(named)', "named"),
+            ("again = expr\ndf = df.with_columns(y=again)", "again"),
+        ],
+        ids=["keyword", "list", "aliased", "rebound"],
+    )
+    def test_a_binding_captured_from_an_unknown_value_is_reported_not_guessed(
+        self, call: str, unknown: str
+    ) -> None:
+        # ``expr`` captured ``factor`` while its value was unknown (the code
+        # computes 60); rebinding ``factor`` afterwards, or binding ``expr``
+        # to another name, does not make it known.
+        code = 'factor = 2\nfactor *= 3\nexpr = pl.col("x") * factor\nfactor = 4\n' + call
 
         result = evaluate_expression(code, "y", {"x": 10}, preamble_ns={"factor": 5})
 
         assert result.result_value is None
-        assert result.not_computable_reason == "unresolved_name: expr"
+        assert result.not_computable_reason == f"unresolved_name: {unknown}"
 
     @pytest.mark.parametrize(
         "code",

@@ -1053,7 +1053,13 @@ def _bind_statement(stmt: ast.stmt, table: dict[str, ast.AST], unprovable: set[s
         return
     resolved = _substitute_names_in_ast(value, table)
     table[name] = resolved
-    if any(isinstance(sub, ast.Name) and sub.id in unprovable for sub in ast.walk(resolved)):
+    # The names as written count too: an unknown binding the value reads is
+    # replaced by its expression, which no longer names it.
+    if any(
+        isinstance(sub, ast.Name) and sub.id in unprovable
+        for tree in (value, resolved)
+        for sub in ast.walk(tree)
+    ):
         unprovable.add(name)
     else:
         unprovable.discard(name)
