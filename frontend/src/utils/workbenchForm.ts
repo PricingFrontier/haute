@@ -327,8 +327,9 @@ export const addSchemaTable = (spec: FormSpec, table: SchemaTable): FormSpec =>
   })
 
 /**
- * A table's settings changed; a table made an output loses the rules only what is typed
- * takes (`INPUT_ONLY_RULES`), which the form folder writes no output column with.
+ * A table's settings changed; a table made an output loses what only typing gives: the
+ * rules only what is typed takes (`INPUT_ONLY_RULES`) and its sample rows, which the form
+ * folder writes for no output table.
  */
 export const updateSchemaTable = (spec: FormSpec, id: string, patch: Partial<SchemaTable>): FormSpec =>
   edit(spec, (draft) => {
@@ -336,6 +337,7 @@ export const updateSchemaTable = (spec: FormSpec, id: string, patch: Partial<Sch
     Object.assign(table, patch)
     if (patch.role === "output") {
       table.columns = table.columns.map((column) => ({ ...column, ...INPUT_ONLY_RULES }))
+      delete draft.sample[id]
     }
   })
 

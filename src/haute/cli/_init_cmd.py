@@ -487,6 +487,19 @@ def write_generated_files(project_dir: Path, files: Mapping[str, str]) -> list[s
     return changed
 
 
+def _form_folder_problem(project_dir: Path, relative: str, files: Mapping[str, str]) -> str | None:
+    """Why the form folder at *relative* cannot be written with *files*: the first path that
+    is no ordinary one of the project's (a link or junction on the way, one leading out of
+    the project, a reserved name), said as the refusal; None when every path is."""
+    from haute._artifact_paths import PATH_PROBLEMS, ordinary_path_problem
+
+    for path in files:
+        _, problem = ordinary_path_problem(project_dir, f"{relative}/{path}")
+        if problem is not None:
+            return f"{relative}/{path} {PATH_PROBLEMS[problem]}."
+    return None
+
+
 def _write_form_folder(folder: Path, files: dict[str, str]) -> None:
     """The form folder's *files*, each its text by its path from *folder*, written as LF bytes,
     as the folder's own saves write them, so its first save rewrites none of them."""
@@ -505,7 +518,6 @@ def _add_workbench(project_dir: Path) -> None:
     import shutil
     import tomllib
 
-    from haute._artifact_paths import PATH_PROBLEMS, ordinary_path_problem
     from haute._file_ops import atomic_write_bytes
     from haute._project import resolve_pipeline_file
     from haute._scaffold import starter_form
@@ -541,10 +553,9 @@ def _add_workbench(project_dir: Path) -> None:
         else project_dir.name
     )
     files = starter_form(name, folder)
-    for path in files:
-        _, problem = ordinary_path_problem(project_dir, f"{relative}/{path}")
-        if problem is not None:
-            refuse(f"{relative}/{path} {PATH_PROBLEMS[problem]}.")
+    problem = _form_folder_problem(project_dir, relative, files)
+    if problem is not None:
+        refuse(problem)
     try:
         _write_form_folder(folder, files)
         atomic_write_bytes(toml_path, original.rstrip() + b"\n\n[workbench]\nenabled = true\n")
@@ -617,6 +628,18 @@ def handle_init(config: InitConfig) -> None:
         if "project" in pyproject and "name" in pyproject["project"]:
             name = pyproject["project"]["name"]
 
+    # -- rating/workbench/'s paths, checked before anything is written ---------
+    # A form folder already there, on a --force re-init, is the analyst's form: never a blank
+    # one in its place.
+    form_folder = project_dir / "rating" / FORM_FOLDER
+    form_files = (
+        starter_form(name, form_folder) if config.workbench and not form_folder.exists() else {}
+    )
+    problem = _form_folder_problem(project_dir, f"rating/{FORM_FOLDER}", form_files)
+    if problem is not None:
+        click.echo(f"Error: {problem}", err=True)
+        raise SystemExit(1)
+
     # -- pyproject.toml - ensure haute is a dependency -------------------------
     _ensure_haute_dependency(pyproject_path, name)
 
@@ -660,11 +683,8 @@ def handle_init(config: InitConfig) -> None:
     )
 
     # -- rating/workbench/ - the workbench's blank form folder ------------------
-    # A form folder already there, on a --force re-init, is the analyst's form: never a blank
-    # one in its place.
-    form_folder = rating_dir / FORM_FOLDER
-    if config.workbench and not form_folder.exists():
-        _write_form_folder(form_folder, starter_form(name, form_folder))
+    if form_files:
+        _write_form_folder(form_folder, form_files)
 
     # -- .env.example - target-specific credentials ----------------------------
     (project_dir / ".env.example").write_text(env_example(target), encoding="utf-8")

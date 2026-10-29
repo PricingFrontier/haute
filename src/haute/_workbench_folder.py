@@ -463,18 +463,32 @@ def _quote_details_file(table: SchemaTable) -> QuoteDetailsFile:
 def _sample_rows(
     table: SchemaTable, rows: list[dict[str, Any]], names: _Names
 ) -> list[dict[str, Any]]:
-    """*rows* by column name in the table's column order, unresolved names after them."""
+    """*rows* by column name in the table's column order, unresolved names after them.
+
+    A value kept under a name the schema did not hold, which a column has taken since, binds
+    to that column at the next read; a row holding the column's own value too would hold the
+    name twice, which a file cannot, so it is a problem rather than one value lost.
+    """
     order = [column.id for column in table.columns]
     written: list[dict[str, Any]] = []
-    for row in rows:
+    for place, row in enumerate(rows, start=1):
         record = {
             names.column(table.id, column_id): row[column_id]
             for column_id in order
             if column_id in row
         }
         for column_id, value in row.items():
-            if column_id not in order:
-                record[names.column(table.id, column_id)] = value
+            if column_id in order:
+                continue
+            name = names.column(table.id, column_id)
+            if name in record:
+                names.missing.append(
+                    f"row {place} of {_sample_file(table.name)} would hold {name} twice: the "
+                    "column's value and one kept from when the schema had no column of that "
+                    "name; give the column another name, or take that value out of the file"
+                )
+                continue
+            record[name] = value
         written.append(record)
     return written
 
@@ -843,15 +857,22 @@ def _check_inventory(config: WorkbenchConfig, files: Mapping[str, bytes], index:
         )
 
 
+def folder_index(config: WorkbenchConfig, files: Mapping[str, bytes]) -> IndexFile:
+    """The index of the folder *files* make, refusing a folder that is not exactly the files
+    the index names: every read takes it so, and a save before it deletes any of them."""
+    if INDEX_FILE not in files:
+        raise WorkbenchFormError(f"{config.form} has no {INDEX_FILE}: the folder is not a form")
+    index: IndexFile = _parse(config, files, INDEX_FILE, IndexFile)
+    _check_inventory(config, files, index)
+    return index
+
+
 def form_from_files(
     config: WorkbenchConfig, files: Mapping[str, bytes]
 ) -> tuple[FormSpec, tuple[str, ...]]:
     """The form *files* hold, with what reading it grew; a :class:`WorkbenchFormError`
     naming the file and the place for anything the folder does not hold as it should."""
-    if INDEX_FILE not in files:
-        raise WorkbenchFormError(f"{config.form} has no {INDEX_FILE}: the folder is not a form")
-    index: IndexFile = _parse(config, files, INDEX_FILE, IndexFile)
-    _check_inventory(config, files, index)
+    index = folder_index(config, files)
 
     details: QuoteDetailsFile = _parse(
         config, files, _table_file(QUOTE_DETAILS_ID), QuoteDetailsFile

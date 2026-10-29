@@ -1264,6 +1264,53 @@ def test_a_sample_value_under_an_unknown_column_is_kept_through_a_save_and_price
     assert changes(on_disk(folder), after) == (["schema/layers.json"], [])
 
 
+def _colour_kept(project: Path) -> FormSpec:
+    """The test project's form read with a value kept under ``colour``, a name the policy
+    table does not hold, as a merge can leave a sample."""
+    write_form(project, FORM)
+    replace_in(
+        form_folder(project) / "sample/policy.json",
+        '"renewal": true\n',
+        '"renewal": true,\n    "colour": "red"\n',
+    )
+    return read_form_document(config(project)).spec
+
+
+def test_a_column_made_under_a_kept_sample_name_takes_its_value_at_the_next_read(
+    project: Path,
+) -> None:
+    spec = _colour_kept(project)
+    added = spec.model_copy(deep=True)
+    policy = next(table for table in added.data_schema.tables if table.id == "t_policy")
+    policy.columns.append(SchemaColumn(id="c_colour", name="colour", type="str"))
+
+    put(form_folder(project), form_files(added, form_folder(project)))
+
+    # Bound by its name, as a reference written to a name a column takes later is.
+    assert read_form_document(config(project)).spec.sample["t_policy"] == [
+        {"c_state": "NY", "c_exposure": "250,000", "c_renewal": True, "c_colour": "red"}
+    ]
+
+
+def test_a_row_that_would_hold_a_name_twice_is_refused_rather_than_one_value_lost(
+    project: Path,
+) -> None:
+    # The column renamed to the kept name: its own value and the kept one, one name.
+    spec = _colour_kept(project)
+    renamed_state = spec.model_copy(deep=True)
+    policy = next(table for table in renamed_state.data_schema.tables if table.id == "t_policy")
+    next(column for column in policy.columns if column.id == "c_state").name = "colour"
+
+    with pytest.raises(FormFolderNameError) as caught:
+        form_files(renamed_state, form_folder(project))
+
+    assert caught.value.problems == [
+        "row 1 of sample/policy.json would hold colour twice: the column's value and one kept "
+        "from when the schema had no column of that name; give the column another name, or "
+        "take that value out of the file"
+    ]
+
+
 # -- References --------------------------------------------------------------------------
 
 
@@ -1814,6 +1861,19 @@ READ_REFUSALS = [
         ("quote_reference",),
         ValidationError,
         id="an identity column written",
+    ),
+    pytest.param(
+        # As a merge keeping two branches' columns can: the sheets would name one of them.
+        _edit(
+            "schema/layers.json",
+            '"columns": [\n',
+            '"columns": [\n    {\n      "id": "c_limit_2",\n'
+            '      "name": "limit",\n      "type": "float"\n    },\n',
+        ),
+        f"{FOLDER}/schema/layers.json: ",
+        ("two columns are named limit",),
+        ValidationError,
+        id="two columns of one name",
     ),
     pytest.param(
         _edit(

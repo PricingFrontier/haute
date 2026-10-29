@@ -101,7 +101,8 @@ Out of scope:
   each table or column that differs ([deploy](../deploy/high-level.md)).
   `haute init --workbench` writes the table and a blank form folder in a new project, and
   in a project that already has a `haute.toml` it adds the two and nothing else, refusing
-  when either is there; nothing else makes the folder. The deploy workflow `haute init`
+  when either is there; either way a path of the folder reached through a link or a
+  junction refuses it, nothing written. Nothing else makes the folder. The deploy workflow `haute init`
   generates for GitHub or Azure DevOps starts when a file in the pipeline folder changes,
   the form's files among them; `haute init --force` rewrites `haute.toml`, so the table
   stays only when `--workbench` is given again, while the form folder is left as it is. A
@@ -284,7 +285,9 @@ Out of scope:
     lines it up with the values a column gives its table; each row's values by their
     columns' names and as typed, text or a tick, in the table's column order. A table with
     no rows has no file. A value under a name its table does not hold is kept as written
-    and priced nowhere, as a value under a column dropped always was.
+    and priced nowhere, as a value under a column dropped always was. A column given
+    that name later takes the value at the next read; a row that holds the column's own
+    value as well is refused at save, naming the row, since a file holds a name once.
 
   Only what is set is written. The keys that say what a thing is are always written: the
   index's `version`, `name`, `schema` and `sheets`; a table's `id`, `role`, `rows` and
@@ -362,7 +365,8 @@ Out of scope:
   project is, so two saves never pass the revision check together, writes each of the
   form's files whose bytes differ from the file's, making the folders it needs, and deletes
   the form's own files it no longer has (a table's or a sheet's that went, a sheet's under
-  its old name, a sample whose table's rows went), never a file the index did not name;
+  its old name, a sample whose table's rows went), never a file the index did not name
+  (a folder holding one is refused 409, nothing written);
   every write and delete is staged, and when one fails every file is put back as it was. It
   answers the form with its new revision. The files written and deleted are one
   save on the clone's save ledger, captured as the pipeline's save captures the files it
@@ -380,8 +384,9 @@ Out of scope:
   folder holds exactly what that save sent, takes the folder's revision and saves again,
   since that save is what changed it. A save always names a revision: the folder is there
   before the first one, made by `haute init --workbench`. The check, the writes and the
-  capture hold the repository's lock, as a branch switch does. A form that is not one, or
-  that the folder cannot hold (The form folder), is refused 422 with the place and reason
+  capture hold the repository's lock, as a branch switch does. A form that is not one,
+  that the folder cannot hold (The form folder), or whose files would not read back as a
+  form, is refused 422 with the place and reason
   of each refusal, never the form sent back, and a form giving one id to two sheets,
   sections, components, tables or columns of a table is refused naming the id. Both routes
   answer 404 while the workbench is not enabled.
@@ -480,7 +485,8 @@ Out of scope:
     form that cannot be read is reported in the view, with what is wrong and a way to try
     again.
 - **The schema editor.** The form's tables, each with its name, its role (Input, sent to
-  the pricing engine, or Output, returned by it), its rows (One row per quote, or Many
+  the pricing engine, or Output, returned by it; a table made an Output loses its columns'
+  rules and its sample rows, which only what is typed takes), its rows (One row per quote, or Many
   rows) and its columns; each column with its type, drawn as the step editor's marker for
   the kind (a number, text, true/false, a date) in the data preview's colour and changed
   from it, its name and, in a many-row table, whether it is a key. A column's label, group
@@ -2225,7 +2231,8 @@ Out of scope:
   name; the index names a table or sheet twice, or two whose names differ only in case, or
   a file's name on disk is not its table's or sheet's name in lower case; a file cannot be
   read, is not UTF-8 text, is not JSON, holds a key twice or does not fit its shape, the
-  message naming the place; an identity column is written, `schema/quote_details.json`
+  message naming the place; an identity column is written, a table's file names two
+  columns alike, `schema/quote_details.json`
   sets something Haute's, an output column holds a rule, a default or `row_per_value`; a
   sample file is for a table the schema does not hold or for an output table ("rename it
   after its table or remove it"), or holds no rows; a layout file places a section or

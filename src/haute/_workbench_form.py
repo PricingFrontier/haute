@@ -159,7 +159,8 @@ COLLECTION_COLUMNS_MAX = 12
 
 
 class WorkbenchFormError(WorkbenchError):
-    """The form file cannot be read as a form: unreadable, not JSON or misshapen."""
+    """The form folder cannot be read as a form: a file unreadable, not JSON or misshapen,
+    or the folder not the files its index names."""
 
 
 class _Strict(BaseModel):

@@ -332,8 +332,8 @@ class LayoutFile(_File):
 
 
 class TableFile(_File):
-    """A table but its name, which is its index entry: an output's columns hold no rule,
-    and no table holds the quote's identity, which Haute gives every table."""
+    """A table but its name, which is its index entry: each column named once, an output's
+    columns holding no rule, and none the quote's identity, which Haute gives every table."""
 
     id: str
     role: Literal["input", "output"]
@@ -342,7 +342,16 @@ class TableFile(_File):
 
     @model_validator(mode="after")
     def _holds_its_own_columns(self) -> TableFile:
+        # A reference names a column by its name: two of one name, as a merge can leave
+        # them, would give the sheets one of them and silently not the other.
+        names: set[str] = set()
         for column in self.columns:
+            if column.name in names:
+                raise ValueError(
+                    f"two columns are named {column.name}: each column of a table needs a "
+                    "name of its own"
+                )
+            names.add(column.name)
             if column.id in IDENTITY_IDS:
                 raise ValueError(
                     f"{column.name} is the quote's identity, which Haute holds in every "

@@ -302,6 +302,19 @@ describe("problems", () => {
     expect(spec.sample).toEqual({ t: [{ a: "x" }] })
   })
 
+  it("drops a table's sample rows when it is made an output, which only typing fills", () => {
+    let spec = addSchemaTable(withTable(column("a", "value")), table("u", "u", { columns: [column("b", "other")] }))
+    spec = withSampleCell(spec, "t", 0, "a", "x")
+    spec = withSampleCell(spec, "u", 0, "b", "y")
+
+    const output = updateSchemaTable(spec, "t", { role: "output" })
+
+    // The form folder writes no sample for an output table, so a save would refuse them.
+    expect(output.sample).toEqual({ u: [{ b: "y" }] })
+    // An edit as any other: the form before it, which undo goes back to, keeps them.
+    expect(spec.sample).toEqual({ t: [{ a: "x" }], u: [{ b: "y" }] })
+  })
+
   it("changes a column's type, dropping the rules the new type cannot have", () => {
     let spec = withTable(
       column("a", "value", {

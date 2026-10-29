@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from haute import _git
 from haute._git_state import write_working_branch
 from haute._git_transactions import commit_milestone
+from haute._workbench_folder import folder_revision
 from haute._workbench_form import QUOTE_DETAILS_COLUMNS
 from haute.routes._error_handlers import install_exception_handlers
 from haute.routes.workbench import router
@@ -317,6 +318,26 @@ def test_a_save_with_no_folder_is_refused_as_stale(project: Path) -> None:
     assert not (project / FORM).exists()
 
 
+def test_a_save_over_a_folder_holding_a_file_not_the_forms_deletes_nothing(
+    project: Path,
+) -> None:
+    # No read serves such a folder's revision, so only a request made outside the editor
+    # names it: a save deletes the form's own files, never another's.
+    enable(project)
+    write_form(project, form(POLICY))
+    body = served()
+    (project / FORM / "notes.json").write_bytes(b"{}\n")
+    before = files_of(project)
+
+    refused = save(body["form"], folder_revision(before))
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == (
+        "rating/workbench/notes.json is not part of the form: list it in form.json or remove it"
+    )
+    assert files_of(project) == before
+
+
 def test_a_form_grown_to_open_says_what_grew_and_a_save_keeps_it(project: Path) -> None:
     """A section too short for a component in it, as a merge can leave it, is grown as the
     form is read and said; the files are as they were until a save writes the form as read."""
@@ -483,6 +504,50 @@ def test_a_form_the_folder_cannot_hold_is_refused_naming_each_reason(project: Pa
     detail = refused.json()["detail"]
     assert "the tables 'policy_details' and 'Policy_Details' share a name" in detail
     assert "the sheet '***' needs a title with a letter or a digit" in detail
+    assert files_of(project) == before
+
+
+def test_a_form_whose_files_would_not_read_back_is_refused_writing_nothing(
+    project: Path,
+) -> None:
+    # A look kept for a name the schema did not hold, and the column renamed to that name
+    # since: written, both looks would be that column's, which no read takes.
+    enable(project)
+    write_form(project, form(POLICY))
+    body = served()
+    before = files_of(project)
+    policy = {
+        **POLICY,
+        "columns": [{**POLICY["columns"][0], "name": "region"}, POLICY["columns"][1]],
+    }
+    kept = {"table": "t1", "column": "?region"}
+    state = {"table": "t1", "column": "c_state"}
+    looks = {
+        "id": "collection_c1c1",
+        "type": "collection",
+        "x": 0,
+        "y": 0,
+        "w": 720,
+        "h": 120,
+        "fields": [kept, state],
+        "column_looks": [{**kept, "bold": True}, {**state, "header_color": "#2563EB"}],
+    }
+    unsaved = {
+        **form(policy),
+        "pages": [
+            {"id": "p", "title": "Sheet 1", "width": 1280, "sections": [section("s", looks)]}
+        ],
+    }
+
+    refused = save(unsaved, body["revision"])
+
+    assert refused.status_code == 422
+    detail = refused.json()["detail"]
+    assert detail.startswith(
+        "its files would not read back as a form: rating/workbench is not a workbench form: "
+        "sheets/sheet_1.json: "
+    ), detail
+    assert "two looks for t1.c_state" in detail, detail
     assert files_of(project) == before
 
 

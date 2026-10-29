@@ -48,7 +48,9 @@ Out of scope, owned elsewhere:
   Refuses to run if `haute.toml` already exists unless `--force` is given, but for
   `--workbench` alone, which in a project that has a `haute.toml` adds the `[workbench]`
   table to it and writes the blank form folder in its pipeline folder, touching nothing
-  else, and refuses when the table or the folder is already there. A root `main.py` is
+  else, and refuses when the table or the folder is already there. Either way a path of
+  the form folder reached through a link or junction refuses the init before anything is
+  written. A root `main.py` is
   always deleted: `uv init` recreates that placeholder every time it runs, and a Haute project's
   real entry point is `rating/main.py`, so the root file is a tooling artifact — never user
   content — and removing it keeps the entry point unambiguous. No `prompts/` directory or

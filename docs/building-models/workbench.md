@@ -74,11 +74,11 @@ written beside its name for good, so renaming one keeps the values saved quotes 
 it. The quote's reference and option lead every table without being written in its file.
 
 The workbench opens only a folder whose files `form.json` lists: a file it doesn't list,
-a listed file that is missing, or a file named in capitals stops it opening, with a message
-naming the file. A missing folder is restored from version history; the workbench never
-starts it again blank. A column that a sheet names but the schema doesn't hold, as an edit
-by hand can leave, shows as a missing column on the sheet, and a deploy refuses the
-project until it is put right.
+a listed file that is missing, a file named in capitals, or a table's file naming two columns
+alike stops it opening, with a message naming the file. A missing folder is restored from
+version history; the workbench never starts it again blank. A column that a sheet names but
+the schema doesn't hold, as an edit by hand can leave, shows as a missing column on the
+sheet, and a deploy refuses the project until it is put right.
 
 ## Schema
 

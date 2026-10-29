@@ -29,12 +29,14 @@ from haute._workbench_config import WorkbenchConfig, read_workbench_config
 from haute._workbench_folder import (
     FormFolderNameError,
     folder_files,
+    folder_index,
     folder_revision,
     form_folder_lock,
+    form_from_files,
     read_folder_unlocked,
     read_form_document,
 )
-from haute._workbench_form import FormDocument, FormSpec, with_quote_details
+from haute._workbench_form import FormDocument, FormSpec, WorkbenchFormError, with_quote_details
 from haute._workbench_params import read_param_file
 from haute._workbench_tables import WorkbenchTablesError, workbench_tables
 from haute.routes._contract_errors import contract_error_http_exception
@@ -119,20 +121,34 @@ def _save_form(
     config: WorkbenchConfig, body: WorkbenchFormSaveRequest
 ) -> WorkbenchFormSaveResponse:
     """Write the form's files that changed and delete those it no longer has, unless the
-    folder changed since the view read it or a path on the way is no ordinary one of the
-    project's (a link, a junction, a reserved name), and capture the writes: one
-    `project_write`."""
+    folder changed since the view read it, holds a file that is not the form's, or a path on
+    the way is no ordinary one of the project's (a link, a junction, a reserved name), and
+    capture the writes: one `project_write`."""
     form = with_quote_details(body.form)
     try:
         files = folder_files(form, config.form_folder)
     except FormFolderNameError as exc:
         raise HTTPException(status_code=422, detail=exc.message) from None
+    try:
+        # What a save writes reads back: a reference kept under a name the schema did not
+        # hold, which another column of the component's has taken since, would otherwise
+        # leave a folder no read takes (a second look for one column, say).
+        form_from_files(config, files)
+    except WorkbenchFormError as exc:
+        raise HTTPException(
+            status_code=422, detail=f"its files would not read back as a form: {exc.message}"
+        ) from None
     with form_folder_lock(config.project_root):
         if not config.form_folder.is_dir():
             _stale(config, body, None)
         snapshot = read_folder_unlocked(config)
         if snapshot.revision != body.base_revision:
             _stale(config, body, snapshot.revision)
+        try:
+            # The save deletes only the form's own files: the folder must hold no other.
+            folder_index(config, snapshot.files)
+        except WorkbenchFormError as exc:
+            raise HTTPException(status_code=409, detail=exc.message) from None
         writes = {path: data for path, data in files.items() if snapshot.files.get(path) != data}
         deletes = sorted(path for path in snapshot.files if path not in files)
         for path in [*writes, *deletes]:

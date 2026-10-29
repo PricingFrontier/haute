@@ -964,6 +964,33 @@ class TestInitWorkbench:
         assert (project_dir / "haute.toml").read_bytes() == toml_before
         assert not (outside / "workbench").exists()
 
+    def test_workbench_in_a_new_project_refuses_a_pipeline_folder_outside_it_writing_nothing(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import os
+
+        project_dir = tmp_path / "p"
+        project_dir.mkdir()
+        # The pipeline folder a junction to somewhere outside the project holding no form
+        # folder: the blank form would be written there.
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        if os.name == "nt":
+            import _winapi
+
+            _winapi.CreateJunction(str(outside), str(project_dir / "rating"))
+        else:
+            os.symlink(outside, project_dir / "rating", target_is_directory=True)
+        monkeypatch.chdir(project_dir)
+
+        refused = runner.invoke(cli, ["init", "--workbench"])
+
+        assert refused.exit_code == 1
+        assert "rating/workbench/form.json is reached through a link or junction" in refused.output
+        # Refused before anything is written: no pyproject.toml, no haute.toml, no form.
+        assert [path.name for path in project_dir.iterdir()] == ["rating"]
+        assert list(outside.iterdir()) == []
+
     def test_workbench_in_an_existing_project_undoes_what_it_made_when_it_fails(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
