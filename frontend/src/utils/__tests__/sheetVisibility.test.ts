@@ -9,7 +9,7 @@ import fixture from "./fixtures/sheetVisibility.json"
 import typedQuotes from "./fixtures/typedQuotes.json"
 import type { Condition, FormSpec, Page, RowCount, RowsCondition, RowTest, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen } from "../../api/types"
 import type { RowsByTable } from "../sheetValues"
-import { BLANK_THEME, COLLECTION_OPTIONS, PLAIN_COLUMN_LOOK } from "../workbenchForm"
+import { BLANK_THEME, COLLECTION_OPTIONS, createWidget, PLAIN_COLUMN_LOOK } from "../workbenchForm"
 import {
   CONDITION_TESTS,
   columnKey,
@@ -21,10 +21,12 @@ import {
   quoteEligible,
   quotedSchema,
   sheetVisibility,
+  takesNothingTyped,
   testLabel,
   testsFor,
   totalColumns,
   valueFits,
+  withPrice,
   withConditionColumn,
   withConditionRowsOf,
   withConditionTest,
@@ -175,6 +177,105 @@ const formOf = (pages: Page[], tables: SchemaTable[] = [policy, items, premium])
   sample: {},
 })
 
+describe("withPrice", () => {
+  const counts: SchemaTable = {
+    id: "t_premium",
+    name: "premium",
+    role: "output",
+    rows: "one",
+    columns: [column("c_count", "referral_count", { type: "int" }), column("c_adequacy", "rate_adequacy", { type: "float" })],
+  }
+  const reasons: SchemaTable = { id: "t_reasons", name: "reasons", role: "output", rows: "many", columns: [column("c_reason", "reason")] }
+  const on = (condition: Partial<Condition>): ShowWhen => ({
+    match: "all",
+    conditions: [{ table: "t_premium", column: "c_count", op: "above", values: ["0"], field: null, days: 0, ...condition }],
+  })
+  const referred = on({})
+  const rect = { x: 0, y: 0, w: 400, h: 120 }
+  const grid = (id: string, showWhen: ShowWhen = ALWAYS): Widget => ({ ...createWidget("tableInput", rect), id, fields: [{ table: "t_reasons", column: "c_reason" }], show_when: showWhen })
+  const anyReason: ShowWhen = { match: "all", conditions: [{ table: "t_reasons", rows: "any", where: [{ column: "c_reason", op: "filled", values: [], field: null, days: 0 }] }] }
+  const heading = (id: string, showWhen: ShowWhen): Widget => ({ ...createWidget("heading", { ...rect, h: 40 }), id, text: "Check the rate", show_when: showWhen })
+  const summary: Widget = {
+    ...(collection("w_summary", [["t_premium", "c_count"], ["t_premium", "c_adequacy"]]) as Extract<Widget, { type: "collection" }>),
+    column_looks: [{ table: "t_premium", column: "c_adequacy", ...PLAIN_COLUMN_LOOK, show_when: referred }],
+  }
+  const inputBox: Widget = {
+    ...(collection("w_inputs", [["t_policy", "c_bi"]], referred) as Extract<Widget, { type: "collection" }>),
+    column_looks: [{ table: "t_policy", column: "c_bi", ...PLAIN_COLUMN_LOOK, show_when: referred }],
+  }
+  const form = formOf(
+    [
+      sectioned("p", [
+        section("s_policy", [collection("w_policy", [["t_policy", "c_class"]])]),
+        section("s_referrals", [grid("w_reasons")], referred),
+        section("s_notes", [heading("w_note", on({ column: "c_adequacy", op: "below", values: ["1"] }))]),
+        section("s_listed", [grid("w_listed", anyReason)]),
+        section("s_summary", [summary]),
+      ]),
+      // A sheet, a section, a Collection and a field taking values typed: a condition on the price there is a problem, never applied.
+      sectioned("p_inputs", [section("s_inputs", [inputBox], referred)], referred),
+    ],
+    [policy, counts, reasons],
+  )
+  const rounds = sheetVisibility(form, {})
+  const priced = (count: number | null, adequacy: number | null, reason: string[]) => ({
+    tables: { premium: [{ referral_count: count, rate_adequacy: adequacy }], reasons: reason.map((each) => ({ reason: each })) },
+  })
+  const hiddenBy = (price: Parameters<typeof withPrice>[3]) => {
+    const shown = withPrice(form, {}, rounds, price)
+    return {
+      sections: ["s_referrals", "s_notes", "s_listed", "p_inputs:s_inputs"].filter((id) => !shown.sections.has(id.split(":").at(-1) as string)),
+      widgets: ["w_reasons", "w_note", "w_listed", "w_inputs"].filter((id) => !shown.widgets.has(id)),
+      adequacy: !shown.fields.has(fieldKey("w_summary", "t_premium", "c_adequacy")),
+      pages: ["p", "p_inputs"].filter((id) => !shown.pages.has(id)),
+      hidden: shown.hidden,
+    }
+  }
+
+  it("decides what shows from the inputs first, a condition on the price holding", () => {
+    expect([...rounds.pages]).toEqual(["p", "p_inputs"])
+    expect(rounds.widgets.has("w_reasons") && rounds.widgets.has("w_inputs")).toBe(true)
+  })
+
+  it("hides what takes nothing typed by the price: none before the first, then as each price says", () => {
+    // Before the first price every output is empty.
+    expect(hiddenBy(null)).toEqual({ sections: ["s_referrals"], widgets: ["w_reasons", "w_note", "w_listed"], adequacy: true, pages: [], hidden: rounds.hidden })
+    expect(hiddenBy(priced(2, 0.95, ["High value"]))).toEqual({ sections: [], widgets: [], adequacy: false, pages: [], hidden: rounds.hidden })
+    // A price with no referrals, an adequate rate and no reasons hides them again.
+    expect(hiddenBy(priced(0, 1.2, []))).toEqual({ sections: ["s_referrals"], widgets: ["w_reasons", "w_note", "w_listed"], adequacy: true, pages: [], hidden: rounds.hidden })
+    // A value the price leaves empty reads as empty.
+    expect(hiddenBy(priced(null, null, [])).widgets).toEqual(["w_reasons", "w_note", "w_listed"])
+  })
+
+  it("never hides by the price a sheet, section, component or field taking values typed", () => {
+    for (const price of [null, priced(0, 2, [])]) {
+      const shown = withPrice(form, {}, rounds, price)
+      expect([shown.pages.has("p_inputs"), shown.sections.has("s_inputs"), shown.widgets.has("w_inputs")]).toEqual([true, true, true])
+      expect(shown.fields.has(fieldKey("w_inputs", "t_policy", "c_bi"))).toBe(true)
+      expect(shown.hidden).toBe(rounds.hidden)
+    }
+  })
+
+  it("is the visibility itself while no condition is on the price", () => {
+    const plain = formOf([page("p", [collection("w_policy", [["t_policy", "c_class"]])])], [policy, counts])
+    const visibility = sheetVisibility(plain, {})
+    expect(withPrice(plain, {}, visibility, null)).toBe(visibility)
+  })
+
+  it("says what takes nothing typed: a Heading, a Chart, outputs alone, and what holds only those", () => {
+    const [main, inputs] = form.pages
+    expect(takesNothingTyped(form, main.sections[1])).toBe(true)
+    expect(takesNothingTyped(form, main.sections[2].widgets[0])).toBe(true)
+    expect(takesNothingTyped(form, { table: "t_premium", column: "c_count" })).toBe(true)
+    expect(takesNothingTyped(form, { table: "t_policy", column: "c_bi" })).toBe(false)
+    expect(takesNothingTyped(form, main)).toBe(false)
+    expect(takesNothingTyped(form, inputs)).toBe(false)
+    expect(takesNothingTyped(form, inputs.sections[0])).toBe(false)
+    expect(takesNothingTyped(form, { ...createWidget("chart", rect), fields: [{ table: "t_policy", column: "c_si" }] })).toBe(true)
+    expect(takesNothingTyped(form, { ...createWidget("export", rect) })).toBe(false)
+  })
+})
+
 describe("quoteEligible", () => {
   // The fixture spells each column with what it sets, the rest as a new column's.
   const form: FormSpec = {
@@ -316,7 +417,11 @@ describe("conditionFault", () => {
   it("names the first fault: the column, the test, the number of values, then each value", () => {
     expect(fault({ column: "c_gone" })).toBe("tests a column that is no longer in the schema")
     expect(fault({ table: "t_gone" })).toBe("tests a column that is no longer in the schema")
-    expect(fault({ table: "t_out", column: "c_premium" })).toBe("tests premium, which is in an output table")
+    // An output's column is tested on the price, against values typed alone.
+    expect(fault({ table: "t_out", column: "c_premium", values: ["100"] })).toBeNull()
+    expect(fault({ table: "t_out", column: "c_premium", values: [], field: { table: "t_policy", column: "c_si" } })).toBe(
+      "tests premium, a part of the price, against another field: the price is tested against values typed alone",
+    )
     expect(fault({ table: "t_items", column: "c_item" })).toBe("tests item, which is in a table with many rows")
     expect(fault({ column: "c_bi", op: "above", values: ["1"], field: null, days: 0 })).toBe('tests bi with "is greater than", which a True/false column cannot take')
     expect(fault({ op: "above" })).toBe('tests class with "is greater than", which a Text column cannot take')
@@ -360,7 +465,7 @@ describe("conditionFault", () => {
     const every: RowsCondition = { table: "t_items", rows: "every", where: [filledItem] }
     expect(conditionFault(form, every)).toBeNull()
     expect(conditionFault(form, { ...every, table: "t_policy" })).toBe("tests the rows of policy, which has one row")
-    expect(conditionFault(form, { ...every, table: "t_out" })).toBe("tests the rows of premium, which is an output table")
+    expect(conditionFault(form, { ...every, table: "t_out" })).toBe("tests the rows of premium, which has one row")
     expect(conditionFault(form, { ...every, table: "t_gone" })).toBe("tests the rows of a table that is no longer in the schema")
     // Its second test is checked as its first.
     const second = (test: Partial<RowTest>) => conditionFault(form, { ...every, where: [filledItem, { ...filledItem, ...test }] })
@@ -375,14 +480,14 @@ describe("conditionFault", () => {
     const count: RowCount = { table: "t_items", where: [], op: "at_least", count: 2 }
     expect(conditionFault(form, count)).toBeNull()
     expect(conditionFault(form, { ...count, table: "t_policy" })).toBe("counts the rows of policy, which has one row")
-    expect(conditionFault(form, { ...count, table: "t_out" })).toBe("counts the rows of premium, which is an output table")
+    expect(conditionFault(form, { ...count, table: "t_out" })).toBe("counts the rows of premium, which has one row")
     expect(conditionFault(form, { ...count, table: "t_gone" })).toBe("counts the rows of a table that is no longer in the schema")
     expect(conditionFault(form, { ...count, where: [{ column: "c_item", op: "equals", values: [], field: null, days: 0 }] })).toBe("needs a value for its test of item")
 
     const priced = formOf([page("p", [])], [policy, valued, premium])
     const sum: RowTotal = { table: "t_items", total: "sum", column: "c_value", where: [], op: "above", value: "£1,000" }
     expect(conditionFault(priced, sum)).toBeNull()
-    expect(conditionFault(priced, { ...sum, table: "t_out" })).toBe("totals the rows of premium, which is an output table")
+    expect(conditionFault(priced, { ...sum, table: "t_out" })).toBe("totals the rows of premium, which has one row")
     expect(conditionFault(priced, { ...sum, column: "c_item" })).toBe("totals item, which is not a number column")
     expect(conditionFault(priced, { ...sum, column: "c_row" })).toBe("totals row, the index, which nothing is typed into")
     expect(conditionFault(priced, { ...sum, column: "c_gone" })).toBe("totals a column that is no longer in the schema")

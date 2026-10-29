@@ -8,11 +8,12 @@
  * step.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import { takesNothingTyped } from "../../utils/sheetVisibility"
 import { updateWidget } from "../../utils/workbenchForm"
 import { ShowWhenEditor } from "../ShowWhenEditor"
-import { column, coverForm, currentForm, loadForm, table, widgetsOf } from "./fixtures"
+import { addTo, column, coverForm, currentForm, headingWidget, loadForm, table, widgetsOf } from "./fixtures"
 
 /** The Collection on the first sheet, whose Show when the editor edits through the store. */
 function Editor() {
@@ -23,6 +24,22 @@ function Editor() {
     <ShowWhenEditor
       form={form}
       showWhen={widget.show_when}
+      priced={takesNothingTyped(form, widget)}
+      onChange={(next) => useWorkbenchFormStore.getState().change((spec) => updateWidget(spec, widget.id, { show_when: next }))}
+    />
+  )
+}
+
+/** The Show when of the first sheet's component at `at`, as its panel edits it. */
+function EditorOf({ at }: { at: number }) {
+  const form = useWorkbenchFormStore((s) => s.form)
+  if (form === null) throw new Error("no form")
+  const widget = widgetsOf(form)[at]
+  return (
+    <ShowWhenEditor
+      form={form}
+      showWhen={widget.show_when}
+      priced={takesNothingTyped(form, widget)}
       onChange={(next) => useWorkbenchFormStore.getState().change((spec) => updateWidget(spec, widget.id, { show_when: next }))}
     />
   )
@@ -228,6 +245,32 @@ describe("ShowWhenEditor", () => {
     // Moved to a column of another type, its test is no longer against the limit.
     fireEvent.change(screen.getByRole("combobox", { name: "Condition 1 where 1 column" }), { target: { value: "equipment.item" } })
     expect(showWhen().conditions[0]).toEqual({ table: "equipment", rows: "any", where: [{ column: "equipment.item", op: "equals", values: [], field: null, days: 0 }] })
+  })
+
+  it("offers the price only on what takes nothing typed, against values typed alone, and names one elsewhere", () => {
+    const form = coverForm()
+    addTo(form, headingWidget("w_note", "Refer"))
+    loadForm(form)
+    const at = widgetsOf(form).length - 1
+    const view = render(<EditorOf at={at} />)
+    fireEvent.click(screen.getByRole("button", { name: "Add condition" }))
+    const columns = screen.getByRole("combobox", { name: "Condition 1 column" })
+    expect(within(columns).getByRole("option", { name: "Rows of premiums" })).toBeInTheDocument()
+
+    fireEvent.change(columns, { target: { value: "premiums#rows" } })
+    const item = { column: "premiums.item", op: "equals", values: [], field: null, days: 0 }
+    expect(widgetsOf(currentForm())[at].show_when.conditions[0]).toEqual({ table: "premiums", rows: "any", where: [item] })
+    // Tested on the price, it takes a value typed, never another field.
+    expect(screen.queryByRole("combobox", { name: "Condition 1 where 1 against" })).not.toBeInTheDocument()
+    view.unmount()
+
+    // The policy's boxes take values typed: the price is not offered there, and one there is named.
+    render(<Editor />)
+    fireEvent.click(screen.getByRole("button", { name: "Add condition" }))
+    expect(within(screen.getByRole("combobox", { name: "Condition 1 column" })).queryByRole("option", { name: "Rows of premiums" })).not.toBeInTheDocument()
+    const crane = { ...item, op: "equals" as const, values: ["Crane"] }
+    act(() => useWorkbenchFormStore.getState().change((spec) => updateWidget(spec, "w_boxes", { show_when: { match: "all", conditions: [{ table: "premiums", rows: "any", where: [crane] }] } })))
+    expect(within(condition(1)).getByText("Tests the rows of premiums, a part of the price, which hides only what takes nothing typed: here it is never applied")).toBeInTheDocument()
   })
 
   it("removes a condition, and with two or more asks whether all or any must hold", () => {

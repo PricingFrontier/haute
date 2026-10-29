@@ -4,7 +4,7 @@ import { type ReactNode, useState } from "react"
 import type { CollectionWidget, FieldRef, FormSpec, TableInputWidget } from "../../api/types"
 import { ConfigCheckbox, EditorLabel, FIELD_CLASS, INPUT_STYLE, LabelledRow, QuietAction, SelectRow, ValidatedTextField, wholeNumber } from "../../components/form"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
-import { columnKey } from "../../utils/sheetVisibility"
+import { columnKey, takesNothingTyped } from "../../utils/sheetVisibility"
 import {
   COLUMN_WIDTH_MAX,
   COLUMN_WIDTH_MIN,
@@ -226,7 +226,7 @@ function ColumnLookFields({
         </QuietAction>
       )}
       <EditorLabel as="div">Show when</EditorLabel>
-      <ShowWhenEditor form={form} showWhen={look.show_when} onChange={(show_when) => set({ show_when })} />
+      <ShowWhenEditor form={form} showWhen={look.show_when} priced={takesNothingTyped(form, field)} onChange={(show_when) => set({ show_when })} />
     </div>
   )
 }

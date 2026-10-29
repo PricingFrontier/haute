@@ -426,8 +426,7 @@ list (`PCFG-R08`), the results store's optimiser logic (`FSH-R03`) and the dead
 (`ENGQ-R01`), Banding's `_prevRules` stash (`PCFG-R08`) and the API Input label
 rule (`NAME-09`); the dead
 `submodelGraphFromMetadata` and two dead duplicate exports in the hooks and
-utilities (`ENGQ-R01`), and the sheet-visibility fault on an output condition
-(`WB-29`); Banding's `_id` and the step error string inside the config
+utilities (`ENGQ-R01`); Banding's `_id` and the step error string inside the config
 (`PCFG-R08`), the editors' barrels (`ENGQ-R01`), the pivot editor writing the
 fields the backend defaults (`EDA-R02`); the panel half of the GPU loss-history
 numbering and the GLM `best_iteration` (`MOD-R05`) and a second fabricated
@@ -438,8 +437,7 @@ panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`) and
 unvalidated in the UI (`GIT-R02`), the delete dialog's confirm flag (`GIT-R03`)
 and the trace route's 409 keyed on its code (`API-R06`); in the workbench UI and the app shell, the
 chart theme observer written twice (`EDA-R03`), the params-folder listing in the
-Allowed field (`FNED-R05`), knip's export-only symbols (`ENGQ-R01`), the fault on
-an output-table condition (`WB-29`), browser-locale dates (`FSH-R08`), the bootstrap without
+Allowed field (`FNED-R05`), knip's export-only symbols (`ENGQ-R01`), browser-locale dates (`FSH-R08`), the bootstrap without
 a deadline (`FSH-R05`), Ctrl+S inside a code box (`FSH-R07`), editor state inside
 node data (`PCFG-R08`), the recovery banner's re-minted id (`PCFG-R19`) and the
 modelling pane badges (`FMOU-R03`); in the tests, scripts and CI, the floating

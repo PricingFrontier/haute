@@ -6,7 +6,7 @@
  * columns a quote leaves out. The server applies the same rules in src/haute/_workbench_visibility.py, and both
  * are held to the cases in __tests__/fixtures/sheetVisibility.json.
  */
-import type { Condition, ConditionGroup, FieldRef, FormSchema, FormSpec, RowCount, RowsCondition, RowTest, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen } from "../api/types"
+import type { Condition, ConditionGroup, FieldRef, FormSchema, FormSpec, Page, RowCount, RowsCondition, RowTest, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen } from "../api/types"
 import { QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, sheetColumns } from "./quoteIdentity"
 import { filled, isDay, parseTypedNumber, parseTypedWhole, presetRows, quoteTyped, rowFilled, valuesBasis, withPresetRows, type RowsByTable } from "./sheetValues"
 
@@ -208,10 +208,10 @@ export function conditionFault(spec: FormSpec, condition: SingleCondition): stri
   if (isListCondition(condition)) return listFault(table, condition)
   const column = table?.columns.find((candidate) => candidate.id === condition.column)
   if (table === undefined || column === undefined) return "tests a column that is no longer in the schema"
-  if (table.role === "output") return `tests ${column.name}, which is in an output table`
   if (table.rows === "many") return `tests ${column.name}, which is in a table with many rows`
   const { field } = condition
   if (field === null) return testFault(column, condition, null)
+  if (table.role === "output") return `tests ${column.name}, a part of the price, against another field: the price is tested against values typed alone`
   const other = otherFault(column, tableOf(spec.schema, field.table), field.column)
   return typeof other === "string" ? other : testFault(column, condition, other)
 }
@@ -264,12 +264,12 @@ function testFault(column: SchemaColumn, test: ColumnTest, other: SchemaColumn |
 function listFault(table: SchemaTable | undefined, condition: ListCondition): string | null {
   const verb = isRowCount(condition) ? "counts" : isRowTotal(condition) ? "totals" : "tests"
   if (table === undefined) return `${verb} the rows of a table that is no longer in the schema`
-  if (table.role === "output") return `${verb} the rows of ${table.name}, which is an output table`
   if (table.rows === "one") return `${verb} the rows of ${table.name}, which has one row`
   for (const test of condition.where) {
     const column = table.columns.find((candidate) => candidate.id === test.column)
     if (column === undefined) return "tests a column that is no longer in the schema"
     if (column.index) return `tests ${column.name}, the index, which nothing is typed into`
+    if (table.role === "output" && test.field !== null) return `tests ${column.name}, a part of the price, against another column: the price is tested against values typed alone`
     const other = test.field === null ? null : table.columns.find((candidate) => candidate.id === test.field)
     if (other === undefined) return `tests ${column.name} against a column that is no longer in the schema`
     if (other?.index) return `tests ${column.name} against ${other.name}, the index, which nothing is typed into`
@@ -496,7 +496,13 @@ function totalOf(table: SchemaTable, condition: RowTotal, rows: readonly Row[]):
 /** The keys of a counted table's columns other than the index, any of which on a component that shows lets a count without tests hold. */
 const countedKeys = (table: SchemaTable): string[] => table.columns.filter((column) => !column.index).map((column) => columnKey(table.id, column.id))
 
-function decide(spec: FormSpec, rows: RowsByTable): SheetVisibility {
+/**
+ * Tests conditions on `rows`, each fitting once and each many-row table's typed rows read once:
+ * a condition holds when it fits, each column it tests is among `shown` (for a count without
+ * tests, one of its table's but the index), as is the field it is tested against, and the
+ * values pass; with `shown` null, as the price is tested, wherever its columns are.
+ */
+function conditionTester(spec: FormSpec, rows: RowsByTable) {
   // Whether each condition fits: a condition that does not fit never holds.
   const fitted = new Map<SingleCondition, boolean>()
   const fits = (condition: SingleCondition): boolean => {
@@ -518,14 +524,10 @@ function decide(spec: FormSpec, rows: RowsByTable): SheetVisibility {
     return held
   }
 
-  /**
-   * Whether a fitting condition on a list's rows holds: each column it tests on a component
-   * that shows (for a count without tests, one of its table's but the index), and its rows
-   * passing as it says.
-   */
-  const listHolds = (table: SchemaTable, condition: ListCondition, shown: ReadonlySet<string>): boolean => {
+  /** Whether a fitting condition on a list's rows holds: each column it tests among `shown`, and its rows passing as it says. */
+  const listHolds = (table: SchemaTable, condition: ListCondition, shown: ReadonlySet<string> | null): boolean => {
     const tested = listColumns(condition)
-    const showing = tested.length > 0 ? tested.every((id) => shown.has(columnKey(table.id, id))) : countedKeys(table).some((key) => shown.has(key))
+    const showing = shown === null || (tested.length > 0 ? tested.every((id) => shown.has(columnKey(table.id, id))) : countedKeys(table).some((key) => shown.has(key)))
     if (!showing) return false
     const typed = typedOf(table)
     const passing = passingRows(table, condition.where, typed)
@@ -535,6 +537,34 @@ function decide(spec: FormSpec, rows: RowsByTable): SheetVisibility {
     // A total that fits compares with a number.
     return found !== null && COUNTS[condition.op](found, parseTypedNumber(condition.value.trim()) as number)
   }
+
+  const holds = (condition: SingleCondition, shown: ReadonlySet<string> | null): boolean => {
+    if (!fits(condition)) return false
+    // A condition that fits names a table, and the columns of it it tests, the schema has.
+    const table = tableOf(spec.schema, condition.table) as SchemaTable
+    if (isListCondition(condition)) return listHolds(table, condition, shown)
+    const { field } = condition
+    if (shown !== null && !shown.has(columnKey(condition.table, condition.column))) return false
+    if (shown !== null && field !== null && !shown.has(columnKey(field.table, field.column))) return false
+    const column = columnOf(spec.schema, condition.table, condition.column) as SchemaColumn
+    const other = field === null ? undefined : rows[field.table]?.[0]?.[field.column]
+    return passes(column.type, condition, rows[condition.table]?.[0]?.[condition.column], other)
+  }
+  return { fits, holds }
+}
+
+/** Whether a condition tests an output table's column or rows: the price, which the rounds hold and `withPrice` tests. */
+export const onPrice = (spec: Pick<FormSpec, "schema">, condition: SingleCondition): boolean => tableOf(spec.schema, condition.table)?.role === "output"
+
+/** A condition on the price on what takes values typed, as its problem says it: one never applied, since it would hide values still priced. */
+export function priceProblem(spec: Pick<FormSpec, "schema">, condition: SingleCondition): string {
+  const table = tableOf(spec.schema, condition.table)
+  const tested = isListCondition(condition) ? `the rows of ${table?.name ?? "a missing table"}` : (table?.columns.find((column) => column.id === condition.column)?.name ?? "a missing column")
+  return `tests ${tested}, a part of the price, which hides only what takes nothing typed: here it is never applied`
+}
+
+function decide(spec: FormSpec, rows: RowsByTable): SheetVisibility {
+  const tester = conditionTester(spec, rows)
 
   const placed = spec.pages.flatMap((page) => page.sections.flatMap((section) => section.widgets.map((widget) => ({ section, widget }))))
   const entered = placed.flatMap(({ widget }) => enteredFields(widget).map((field) => ({ widgetId: widget.id, ...field })))
@@ -550,18 +580,8 @@ function decide(spec: FormSpec, rows: RowsByTable): SheetVisibility {
   let hiding = true
   while (hiding) {
     const shown = shownColumns()
-    const holds = (condition: SingleCondition): boolean => {
-      if (!fits(condition)) return false
-      // A condition that fits names a table, and the columns of it it tests, the schema has.
-      const table = tableOf(spec.schema, condition.table) as SchemaTable
-      if (isListCondition(condition)) return listHolds(table, condition, shown)
-      if (!shown.has(columnKey(condition.table, condition.column))) return false
-      const { field } = condition
-      if (field !== null && !shown.has(columnKey(field.table, field.column))) return false
-      const column = columnOf(spec.schema, condition.table, condition.column) as SchemaColumn
-      const other = field === null ? undefined : rows[field.table]?.[0]?.[field.column]
-      return passes(column.type, condition, rows[condition.table]?.[0]?.[condition.column], other)
-    }
+    // The price never decides what is priced: a condition on it holds here, while it fits.
+    const holds = (condition: SingleCondition): boolean => (onPrice(spec, condition) ? tester.fits(condition) : tester.holds(condition, shown))
     const nextPages = new Set(spec.pages.filter((page) => pages.has(page.id) && showWhenPasses(page.show_when, holds)).map((page) => page.id))
     const nextSections = new Set(
       spec.pages.flatMap((page) =>
@@ -630,6 +650,105 @@ export function sheetVisibility(spec: FormSpec, rows: RowsByTable): SheetVisibil
 export const basisOf = (spec: FormSpec, rows: RowsByTable, hidden: ReadonlySet<string> = sheetVisibility(spec, rows).hidden): string =>
   valuesBasis(spec.schema, hidden, rows)
 
+/** A sheet, a section, a component or a field (by its column) whose `show_when` is a condition's holder. */
+type Holder = Page | Section | Widget | FieldRef
+
+/**
+ * Whether a sheet, a section, a component or a field takes nothing typed: a Heading, a Chart,
+ * a Collection or a Table of output columns alone, a field of an output column, and a section
+ * or a sheet holding only those. A condition on the price hides only these, so the price
+ * never hides a value it was priced on.
+ */
+export function takesNothingTyped(spec: Pick<FormSpec, "schema">, holder: Holder): boolean {
+  if ("sections" in holder) return holder.sections.every((section) => takesNothingTyped(spec, section))
+  if ("widgets" in holder) return holder.widgets.every((widget) => takesNothingTyped(spec, widget))
+  if ("type" in holder) {
+    if (holder.type === "heading" || holder.type === "chart") return true
+    return (holder.type === "tableInput" || holder.type === "collection") && holder.fields.every((field) => takesNothingTyped(spec, field))
+  }
+  return tableOf(spec.schema, holder.table)?.role !== "input"
+}
+
+/** A pricing's tables, by name, each row's values by column name, as a price gives them. */
+export interface PricedTables {
+  tables: Readonly<Record<string, readonly Readonly<Record<string, unknown>>[]>>
+}
+
+/**
+ * The price as conditions test it: each output table's rows by its id, each value by its
+ * column's id as typed text (a number as it is written, a tick as a tick), anything else,
+ * null among it, empty; and every output empty while there is no price.
+ */
+function priceRows(spec: FormSpec, price: PricedTables | null): RowsByTable {
+  const read: Record<string, Row[]> = {}
+  for (const table of spec.schema.tables) {
+    if (table.role !== "output") continue
+    read[table.id] = (price?.tables[table.name] ?? []).map((answered) => {
+      const row: Record<string, Cell> = {}
+      for (const column of table.columns) {
+        const value = answered[column.name]
+        if (typeof value === "boolean") row[column.id] = value
+        else if (typeof value === "number" || typeof value === "string") row[column.id] = String(value)
+      }
+      return row
+    })
+  }
+  return read
+}
+
+/**
+ * What shows once the price the sheets show is read: what `visibility` shows, less each
+ * sheet, section, component and field that takes nothing typed whose conditions fail with
+ * those on the price tested on `price` (every output empty while it is null) and the others
+ * as the rounds left them; a section going with its sheet, a component with its section and a
+ * field with its component. A condition on the price on anything else is a problem the view
+ * names, never applied: it held in the rounds, so what takes values shows as they decided.
+ * `hidden`, what the quote leaves out, is the rounds'; and `visibility` itself while the form
+ * holds no condition on the price.
+ */
+export function withPrice(spec: FormSpec, rows: RowsByTable, visibility: SheetVisibility, price: PricedTables | null): SheetVisibility {
+  const priced = (showWhen: ShowWhen): boolean => leafConditions(showWhen).some((condition) => onPrice(spec, condition))
+  const looks = (widget: Widget): ShowWhen[] => (widget.type === "tableInput" || widget.type === "collection" ? widget.column_looks.map((look) => look.show_when) : [])
+  const anyPriced = spec.pages.some(
+    (page) => priced(page.show_when) || page.sections.some((section) => priced(section.show_when) || section.widgets.some((widget) => priced(widget.show_when) || looks(widget).some(priced))),
+  )
+  if (!anyPriced) return visibility
+  const inputs = conditionTester(spec, rows)
+  const outputs = conditionTester(spec, priceRows(spec, price))
+  const shown = new Set(
+    spec.pages.flatMap((page) =>
+      page.sections.flatMap((section) => section.widgets.flatMap((widget) => enteredFields(widget).filter(({ key }) => visibility.fields.has(key)).map(({ column }) => column))),
+    ),
+  )
+  // The price is read wherever its columns are; the inputs as the rounds read them.
+  const holds = (condition: SingleCondition): boolean => (onPrice(spec, condition) ? outputs.holds(condition, null) : inputs.holds(condition, shown))
+  const stays = (holder: Holder, showWhen: ShowWhen): boolean => !priced(showWhen) || !takesNothingTyped(spec, holder) || showWhenPasses(showWhen, holds)
+
+  const pages = new Set<string>()
+  const sections = new Set<string>()
+  const widgets = new Set<string>()
+  const fields = new Set<string>()
+  for (const page of spec.pages) {
+    if (!visibility.pages.has(page.id) || !stays(page, page.show_when)) continue
+    pages.add(page.id)
+    for (const section of page.sections) {
+      if (!visibility.sections.has(section.id) || !stays(section, section.show_when)) continue
+      sections.add(section.id)
+      for (const widget of section.widgets) {
+        if (!visibility.widgets.has(widget.id) || !stays(widget, widget.show_when)) continue
+        widgets.add(widget.id)
+        if (widget.type !== "tableInput" && widget.type !== "collection") continue
+        for (const field of widget.fields) {
+          const key = fieldKey(widget.id, field.table, field.column)
+          if (visibility.fields.has(key) && stays(field, fieldShowWhen(widget, field))) fields.add(key)
+        }
+      }
+    }
+  }
+  const same = pages.size === visibility.pages.size && sections.size === visibility.sections.size && widgets.size === visibility.widgets.size && fields.size === visibility.fields.size
+  return same ? visibility : { pages, sections, widgets, fields, hidden: visibility.hidden }
+}
+
 /** The schema without `columns` (by `columnKey`). */
 function withoutColumns(schema: FormSchema, columns: ReadonlySet<string>): FormSchema {
   if (columns.size === 0) return schema
@@ -687,6 +806,8 @@ export function neverShown(spec: FormSpec): ReadonlyMap<string, SingleCondition>
   // A condition needs as a field that can show again each column it tests, or for a count without tests any of its table's but the index.
   const reachable = (condition: SingleCondition, holder: string, own: ReadonlySet<string>): boolean => {
     if (!fits(condition)) return false
+    // The rounds hold a condition on the price, which no hiding decides.
+    if (onPrice(spec, condition)) return true
     // A field can show again only while its component can, so it stands for both.
     const onShown = (key: string): boolean =>
       widgets.some((widget) => widget.id !== holder && !own.has(widget.id) && fieldKeys(widget).includes(key) && canShow.has(keyOfField(widget.id, key)))
@@ -764,11 +885,11 @@ export function neverShown(spec: FormSpec): ReadonlyMap<string, SingleCondition>
 }
 
 /**
- * The columns of an input table a condition can test: a many-row table's but its index, which
- * nothing is typed into, and never the quote's identity, which the sheets do not show.
+ * The columns of a table a condition can test: an input table's, a many-row table's but its
+ * index, which nothing is typed into, and an output table's, tested on the price; never the
+ * quote's identity, which the sheets do not show.
  */
-export const testableColumns = (table: SchemaTable): SchemaColumn[] =>
-  table.role === "input" ? sheetColumns(table).filter((column) => !(table.rows === "many" && column.index)) : []
+export const testableColumns = (table: SchemaTable): SchemaColumn[] => sheetColumns(table).filter((column) => !(table.rows === "many" && column.index))
 
 /** The columns of a many-row table a total takes: its number columns but the index. */
 export const totalColumns = (table: SchemaTable): SchemaColumn[] =>
@@ -793,7 +914,9 @@ export interface TestField {
  */
 export function testFields(schema: FormSchema, tableId: string, column: SchemaColumn): TestField[] {
   const own = tableOf(schema, tableId)
-  const tables = own?.rows === "many" ? [own] : schema.tables.filter((table) => table.rows === "one")
+  // An output, tested on the price, is tested against values typed alone.
+  if (own?.role !== "input") return []
+  const tables = own.rows === "many" ? [own] : schema.tables.filter((table) => table.rows === "one" && table.role === "input")
   return tables.flatMap((table) =>
     testableColumns(table)
       .filter((other) => other.type === column.type && !(table.id === tableId && other.id === column.id))
@@ -808,13 +931,13 @@ export function testFields(schema: FormSchema, tableId: string, column: SchemaCo
  * neither.
  */
 export function newCondition(spec: FormSpec): SingleCondition | null {
-  const one = spec.schema.tables.find((table) => table.rows === "one" && testableColumns(table).length > 0)
+  const one = spec.schema.tables.find((table) => table.role === "input" && table.rows === "one" && testableColumns(table).length > 0)
   if (one !== undefined) {
     const column = testableColumns(one)[0]
     return { table: one.id, column: column.id, op: testsFor(column.type)[0], values: [], field: null, days: 0 }
   }
   for (const table of spec.schema.tables) {
-    const test = table.rows === "many" ? newRowTest(table) : null
+    const test = table.role === "input" && table.rows === "many" ? newRowTest(table) : null
     if (test !== null) return { table: table.id, rows: "any", where: [test] }
   }
   return null

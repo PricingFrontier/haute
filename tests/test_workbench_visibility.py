@@ -147,6 +147,21 @@ def test_a_condition_against_another_field_fits_while_that_field_can_give_its_va
     assert condition_fits(every_type_form(), single) is fits
 
 
+@pytest.mark.parametrize(
+    ("condition", "fits"),
+    [
+        # The price's columns are tested as typed values are, against values typed alone.
+        ({"table": "t_out", "column": "c_o", "op": "above", "values": ["1"]}, True),
+        ({"table": "t_out", "column": "c_o", "op": "ticked"}, False),
+        ({"table": "t_out", "column": "c_o", "op": "above", "field": against("c_num")}, False),
+    ],
+)
+def test_a_condition_on_the_price_fits_as_a_typed_value_s_does_against_values_typed_alone(
+    condition: dict[str, Any], fits: bool
+) -> None:
+    assert condition_fits(every_type_form(), Condition.model_validate(condition)) is fits
+
+
 FILLED_V = {"column": "c_v", "op": "filled"}
 
 

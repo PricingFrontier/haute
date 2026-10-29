@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
+import useWorkbenchPricingStore from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import {
   CHART_OPTIONS,
@@ -1391,6 +1392,32 @@ describe("SheetCanvas", () => {
     fireEvent.click(within(frame("w_boxes")).getByRole("checkbox", { name: "Cover" }))
     expect(frame("w_year")).toBeInTheDocument()
     expect(screen.queryByTestId("sheet-widget-w_boxes")).not.toBeInTheDocument()
+  })
+
+  it("draws a Heading on the price only while the price shown says so, in Preview and in the app, none before the first", () => {
+    const form = sheetForm()
+    const large = { table: "premiums", rows: "any" as const, where: [{ column: "premiums.premium", op: "above" as const, values: ["1000"], field: null, days: 0 }] }
+    addTo(form, headingWidget("w_refer", "Refer to underwriting", { show_when: { match: "all", conditions: [large] } }))
+    loadForm(form)
+    const priced = (premium: number) => ({ basis: "", sample: {}, tables: { premiums: [{ item: "Crane", premium }] } })
+
+    useWorkbenchViewStore.setState({ mode: "preview", underwriterApp: false })
+    useWorkbenchPricingStore.setState({ price: null })
+    const view = render(<SheetCanvas />)
+    expect(screen.queryByTestId("sheet-widget-w_refer")).not.toBeInTheDocument()
+    act(() => useWorkbenchPricingStore.setState({ price: priced(1234.5) }))
+    expect(frame("w_refer")).toBeInTheDocument()
+    act(() => useWorkbenchPricingStore.setState({ price: priced(10) }))
+    expect(screen.queryByTestId("sheet-widget-w_refer")).not.toBeInTheDocument()
+    view.unmount()
+
+    // The app's quote reads the price the preview store holds.
+    act(() => useWorkbenchViewStore.setState({ underwriterApp: true }))
+    render(<SheetCanvas />)
+    expect(screen.queryByTestId("sheet-widget-w_refer")).not.toBeInTheDocument()
+    act(() => useWorkbenchPreviewStore.setState({ price: priced(2000) }))
+    expect(frame("w_refer")).toBeInTheDocument()
+    act(() => useWorkbenchViewStore.setState({ underwriterApp: false }))
   })
 
   it("in Preview draws no section the sample hides, the sections under it moved up into its place, and down again once it shows", () => {

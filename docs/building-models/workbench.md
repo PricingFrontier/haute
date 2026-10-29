@@ -487,6 +487,14 @@ component's **Display** pane. **Add condition** tests a column of an input table
   value, and a date **is after**, **is on or after**, **is before** or **is on or before**
   one.
 
+What shows nothing to type can also show by the price: a Heading, a Chart, a Table or
+Collection of output columns alone, an output's own column or field, or a section or sheet
+holding only those can test an output column, such as a referral reasons Table shown while
+**referral_count is greater than 0**. What shows is decided from what is typed first, so
+the price never decides what is priced; these then show and hide with the price on screen,
+the last one while a new price is on its way, and stay hidden until there is one. A condition
+on the price on anything you type into is flagged and does nothing.
+
 A test of one value can compare with another field of the same type instead of a value
 you type: pick it beside the test, in place of **Value**. A policy limit **is greater
 than** the MGA limit; a completion date **is after** the start date **+ 365** days, a

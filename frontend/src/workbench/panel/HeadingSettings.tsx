@@ -50,6 +50,7 @@ export function HeadingSettings({ form, widget }: { form: FormSpec; widget: Head
         <ShowWhenEditor
           form={form}
           showWhen={widget.show_when}
+          priced
           onChange={(next) => change((spec) => updateWidget(spec, widget.id, { show_when: next }))}
         />
       </Section>

@@ -18,7 +18,10 @@ one (there being one), how many, or a total of a number column over them. Everyt
 shown and anything whose conditions fail is hidden, round after round, until a round hides
 nothing: hiding never shows anything, so the answer does not depend on the order of the
 sheets, sections, components, fields or conditions. A condition that does not fit never
-holds; it is a problem the view reports, never an error here.
+holds; it is a problem the view reports, never an error here. A condition on an output
+table's column or rows, the price, holds here whenever it fits: the view tests it once what
+shows is decided, on what takes nothing typed alone, so the price never decides what is
+priced.
 
 The view applies the same rules in ``frontend/src/utils/sheetVisibility.ts``; both are
 held to the cases in ``frontend/src/utils/__tests__/fixtures/sheetVisibility.json``.
@@ -215,16 +218,30 @@ def _entered(widget: Widget) -> list[tuple[FieldRef, ShowWhen]]:
 
 def condition_fits(spec: FormSpec, condition: SingleCondition) -> bool:
     """Whether *condition* can hold as written: a one-row table's condition's column in a
-    one-row input table, a test the column's type takes, as many values as the test takes,
-    and each value one the column could hold; a condition on a list's rows on a many-row
-    input table, each of its tests of a row on a column of the table other than its index
-    and fitting so, and a total's column a number column of the table other than its index,
-    its value a number."""
+    one-row table, input or output, a test the column's type takes, as many values as the
+    test takes, and each value one the column could hold; a condition on a list's rows on a
+    many-row table, input or output, each of its tests of a row on a column of the table
+    other than its index and fitting so, and a total's column a number column of the table
+    other than its index, its value a number. An output's is tested against values typed
+    alone, never another field."""
     if isinstance(condition, Condition):
-        column = _tested_column(spec, condition.table, condition.column)
-        return column is not None and _fits(column.type, condition, _other_column(spec, condition))
+        found = _one_row_column(spec, condition.table, condition.column)
+        if found is None:
+            return False
+        own, column = found
+        if own.role == "output" and condition.field is not None:
+            return False
+        return _fits(column.type, condition, _other_column(spec, condition))
     table = _list_table(spec, condition)
     return table is not None and _list_fits(table, condition)
+
+
+def _on_price(spec: FormSpec, condition: SingleCondition) -> bool:
+    """Whether *condition* tests an output table's column or rows: the price, which the view
+    tests once what shows is decided, so here it holds while it fits."""
+    return any(
+        table.id == condition.table and table.role == "output" for table in spec.data_schema.tables
+    )
 
 
 def _shows(spec: FormSpec, show_when: ShowWhen, rows: Rows, shown: set[tuple[str, str]]) -> bool:
@@ -259,6 +276,10 @@ def _matches(match: Match, holding: Iterable[bool]) -> bool:
 def _holds(
     spec: FormSpec, condition: SingleCondition, rows: Rows, shown: set[tuple[str, str]]
 ) -> bool:
+    if _on_price(spec, condition):
+        # The price never decides what is priced: what shows is decided from the inputs, a
+        # condition on the price holding, and only the view tests it, after.
+        return condition_fits(spec, condition)
     if not isinstance(condition, Condition):
         return _list_holds(spec, condition, rows, shown)
     column = _tested_column(spec, condition.table, condition.column)
@@ -405,6 +426,22 @@ def _tested_column(spec: FormSpec, table_id: str, column_id: str) -> SchemaColum
     )
 
 
+def _one_row_column(
+    spec: FormSpec, table_id: str, column_id: str
+) -> tuple[SchemaTable, SchemaColumn] | None:
+    """A one-row table's column with its table, input or output: a condition's own."""
+    return next(
+        (
+            (table, column)
+            for table in spec.data_schema.tables
+            if table.id == table_id and table.rows == "one"
+            for column in table.columns
+            if column.id == column_id
+        ),
+        None,
+    )
+
+
 def _other_column(spec: FormSpec, condition: Condition) -> SchemaColumn | None:
     """The field a one-row table's condition tests against, while it names one in a one-row
     input table."""
@@ -413,12 +450,12 @@ def _other_column(spec: FormSpec, condition: Condition) -> SchemaColumn | None:
 
 
 def _list_table(spec: FormSpec, condition: ListCondition) -> SchemaTable | None:
-    """A condition on a list's rows' table, while it is a many-row input table."""
+    """A condition on a list's rows' table, while it is a many-row table, input or output."""
     return next(
         (
             table
             for table in spec.data_schema.tables
-            if table.id == condition.table and table.role == "input" and table.rows == "many"
+            if table.id == condition.table and table.rows == "many"
         ),
         None,
     )
@@ -428,8 +465,10 @@ def _list_fits(table: SchemaTable, condition: ListCondition) -> bool:
     """Whether a condition on *table*'s rows can hold as written: each test of a row on a
     column of the table other than its index, fitting as a one-row table's condition fits,
     and a total's column a number column of the table other than its index, its value a
-    number."""
+    number. An output table's tests are against values typed alone."""
     for test in condition.where:
+        if table.role == "output" and test.field is not None:
+            return False
         column = _row_column(table, test.column)
         other = None if test.field is None else _row_column(table, test.field)
         if column is None or not _fits(column.type, test, other):

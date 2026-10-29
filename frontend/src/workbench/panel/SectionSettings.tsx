@@ -3,6 +3,7 @@ import { Trash2 } from "lucide-react"
 import type { FormSpec, Page, Section as SheetSection } from "../../api/types"
 import { CommittedTextField, FIELD_CLASS, INPUT_STYLE, LabelledRow, QuietAction, ValidatedTextField, wholeNumber } from "../../components/form"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import { takesNothingTyped } from "../../utils/sheetVisibility"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { leastSectionHeight } from "../../utils/sheetGeometry"
 import { addSection, createSection, fitSection, formPartIds, renameSection, setSectionHeight, setSectionShowWhen } from "../../utils/workbenchForm"
@@ -45,6 +46,7 @@ export function SectionSettings({ form, page, section, index }: { form: FormSpec
         <ShowWhenEditor
           form={form}
           showWhen={section.show_when}
+          priced={takesNothingTyped(form, section)}
           onChange={(next) => change((spec) => setSectionShowWhen(spec, section.id, next))}
         />
       </Section>

@@ -4995,16 +4995,16 @@
       "hidden_columns": [["t_target", "c_x"]]
     },
     {
-      "name": "an output table's column never holds",
+      "name": "an output table's column holds while what shows is decided, whatever the price would say",
       "form": "tests",
       "show_when": {
         "p_target": {"match": "all", "conditions": [{"table": "t_out", "column": "c_o", "op": "empty", "values": [], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{}]},
-      "hidden_pages": ["p_target"],
-      "hidden_sections": ["s_target"],
-      "hidden_widgets": ["w_target"],
-      "hidden_columns": [["t_target", "c_x"]]
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
     },
     {
       "name": "a comparison on a tick box never holds",
@@ -6067,14 +6067,14 @@
       "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
     },
     {
-      "name": "a count of an output table never holds",
+      "name": "a count of an output table's rows holds while what shows is decided",
       "form": "lists",
       "show_when": {"p_target": {"match": "all", "conditions": [{"table": "t_quotes", "where": [], "op": "at_least", "count": 0}]}},
       "values": {},
-      "hidden_pages": ["p_target"],
-      "hidden_sections": ["s_extra", "s_target"],
-      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
-      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
     },
     {
       "name": "a count of a table gone never holds",
@@ -7998,6 +7998,96 @@
       "hidden_sections": ["s_target"],
       "hidden_widgets": ["w_target"],
       "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a condition on the price holds while what shows is decided, so it leaves nothing out of the quote",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_out", "column": "c_o", "op": "above", "values": ["1000000"], "field": null, "days": 0}]
+        }
+      },
+      "values": {"t_in": [{}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a condition on the price on an input Collection leaves its values in the quote",
+      "form": "tests",
+      "show_when": {
+        "w_in": {
+          "match": "all",
+          "conditions": [{"table": "t_out", "column": "c_o", "op": "below", "values": ["0"], "field": null, "days": 0}]
+        }
+      },
+      "values": {"t_in": [{"c_text": "Motor"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a condition on the price that does not fit never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_out", "column": "c_o", "op": "ticked", "values": [], "field": null, "days": 0}]
+        }
+      },
+      "values": {"t_in": [{}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a condition on the price tested against another field never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_out",
+              "column": "c_o",
+              "op": "above",
+              "values": [],
+              "field": {"table": "t_in", "column": "c_num"},
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_in": [{"c_num": "1"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a test of an output table's rows against another column never holds",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_quotes",
+              "rows": "any",
+              "where": [{"column": "c_price", "op": "above", "values": [], "field": "c_price", "days": 0}]
+            }
+          ]
+        }
+      },
+      "values": {},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
     }
   ]
 }

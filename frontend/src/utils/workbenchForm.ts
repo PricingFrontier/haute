@@ -60,6 +60,9 @@ import {
   leafConditions,
   listColumns,
   neverShown,
+  onPrice,
+  priceProblem,
+  takesNothingTyped,
   testLabel,
   TOTALS,
   type ColumnTest,
@@ -1871,12 +1874,12 @@ export function widgetProblems(spec: FormSpec): WidgetProblem[] {
         if (grains.size > 1 || given.size > 1) problem("shows tables whose rows do not line up")
       }
     }
-    for (const message of conditionProblems(spec, widget, never)) problem(message)
+    for (const message of conditionProblems(spec, widget, never, takesNothingTyped(spec, widget))) problem(message)
     if (widget.type !== "tableInput" && widget.type !== "collection") continue
     for (const field of widget.fields) {
       const holder = { id: fieldKey(widget.id, field.table, field.column), show_when: fieldShowWhen(widget, field) }
       const label = columnLabel(fieldColumn(spec, field)?.column)
-      for (const message of conditionProblems(spec, holder, never, "fields")) {
+      for (const message of conditionProblems(spec, holder, never, takesNothingTyped(spec, field), "fields")) {
         problems.push({ widgetId: widget.id, message: `${name}'s field "${label}" ${message}` })
       }
     }
@@ -1986,7 +1989,7 @@ export const pageName = (page: Page): string => `Sheet "${page.title}"`
 export function pageProblems(spec: FormSpec): PageProblem[] {
   const never = neverShown(spec)
   return spec.pages.flatMap((page) =>
-    conditionProblems(spec, page, never).map((message) => ({ pageId: page.id, message: `${pageName(page)} ${message}` })),
+    conditionProblems(spec, page, never, takesNothingTyped(spec, page)).map((message) => ({ pageId: page.id, message: `${pageName(page)} ${message}` })),
   )
 }
 
@@ -2003,7 +2006,7 @@ export const sectionName = (section: Section): string => `Section "${section.tit
 export function sectionProblems(spec: FormSpec): SectionProblem[] {
   const never = neverShown(spec)
   return allSections(spec).flatMap((section) =>
-    conditionProblems(spec, section, never).map((message) => ({ sectionId: section.id, message: `${sectionName(section)} ${message}` })),
+    conditionProblems(spec, section, never, takesNothingTyped(spec, section)).map((message) => ({ sectionId: section.id, message: `${sectionName(section)} ${message}` })),
   )
 }
 
@@ -2031,6 +2034,8 @@ function conditionProblems(
   spec: FormSpec,
   holder: { id: string; show_when: ShowWhen },
   never: ReadonlyMap<string, SingleCondition>,
+  // What it is on takes nothing typed, so a condition on the price applies to it.
+  priced: boolean,
   hidingWith: "components" | "fields" = "components",
 ): string[] {
   const problems: string[] = []
@@ -2045,7 +2050,7 @@ function conditionProblems(
     }
   }
   for (const condition of leafConditions(holder.show_when)) {
-    const fault = conditionFault(spec, condition)
+    const fault = conditionFault(spec, condition) ?? (!priced && onPrice(spec, condition) ? priceProblem(spec, condition) : null)
     if (fault !== null) {
       problems.push(fault)
       continue

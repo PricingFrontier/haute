@@ -16,19 +16,6 @@ that fill the sheets from databases and APIs.
 
 `WB-25` is the app's sign-in, which waits on the Azure work.
 
-`WB-29` gives the Show when of a sheet, a section, a component and a field more to
-test: the price, as other fields, text within text and dates apart now are. A Table's column
-and a Collection's field have a Show when of their own ([workbench](../workbench/high-level.md)),
-the whole column hiding; a Table's cell does not hide row by row. The package keeps the
-rule that decides what shows now:
-everything starts shown and rounds only hide, so a condition fails once what it tests
-hides, and there is no "none of", "at most", "exactly" or "not" over a group, any of which
-could come to hold as hiding went on. Decisions taken 2026-10-20: the rounds stay, reading
-a hidden value as empty in dependency order, which would allow those four, not planned;
-and rules named once and used by many sheets were offered and not taken. Fields and
-columns with conditions of their own, not taken that day, were asked for on 2026-10-22;
-cells shown row by row through "this row" tests were offered again and not taken.
-
 `WB-38` comes from the [25 October 2026 codebase
 review](codebase-review-2026-10-25.md): what the review found in the Workbench view's
 Allowed field.
@@ -49,7 +36,6 @@ Workbench nodes stop keeping copies of the tables in a pull request after the fo
 | WB-12 | Decision | P3 | Analysts keep test quotes and price them again as the pipeline changes, built again after the first version was taken out. |
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
-| WB-29 | Planned | P3 | A component that takes nothing typed, or a section or a sheet holding only such components, shows by conditions on the price, applied after it so the price never decides what is priced. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
 | WB-41 | Planned | P2 | The Workbench Input and Workbench Output read their tables from the form folder instead of keeping copies, so a schema change shows once in a pull request and no copy can fall out of step. |
 
@@ -431,36 +417,6 @@ misconfiguration either way.
 
 **Evidence:** `src/haute/_workbench_app.py::create_app` (the principal read from the
 headers when the release names its host).
-
-### WB-29 — Conditions on the price
-**Why:** Conditions test input tables alone; one naming an output column is a problem
-("which is in an output table"). In the commercial-pricing project the referral reasons
-(`product_premium.referral_reasons`) matter only while `premium.referral_count` is above 0,
-and a warning on rate adequacy only while `rate_adequacy` is below 1.
-
-**Plan:** A condition may test an output column, but only in the Show when of what takes
-nothing typed: a Heading, a Chart, a Collection or a Table of output columns alone, a
-field of an output column, or a section or a sheet holding only those. Hiding it never changes the quote, so the price never
-decides what is priced: the rounds decide what shows from the inputs, these conditions
-holding, and these conditions are then applied to the price the sheets show, the last one
-while a new one is on its way, and before the first every output read as empty. The
-server's `visibility` leaves them out, as they never change `hidden`. An input component
-placed later in a section with such a condition, or such a condition on what takes
-values, is named as a problem, not refused. An output table with many rows is
-tested as a list is.
-
-**Acceptance:** A Table of referral reasons, and a section holding it, each shown while
-`referral_count` is above 0, hidden before the first price and after a price with none, in
-the sheets, Preview and the app; an output condition on a section holding an input
-Collection, or on an input Collection, named as a problem; the quote the same whatever the output conditions say, held by cases on both
-sides.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/utils/sheetVisibility.ts::conditionFault` (a column of an output
-table named as a fault); `src/haute/_workbench_visibility.py::_tested_column` (input tables
-alone); `src/haute/_workbench_tables.py::sample_quote` (the hidden columns the quote leaves
-out).
 
 ### WB-38 — Allowed values typed into an older form
 **Why:** The Allowed field carries a branch for "values typed in, as an older form holds

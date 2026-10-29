@@ -856,7 +856,8 @@ Out of scope:
   all, in a frame of its own with its own Add condition and a cross that removes it, as
   removing its last condition does. Each condition is a row of its
   column (a select of the one-row input tables' columns, by table, each by its label, and of
-  each many-row input table's rows, "Rows of" the table), its
+  each many-row input table's rows, "Rows of" the table, and, in the Show when of what takes
+  nothing typed, below, the output tables' columns and rows, tested on the price), its
   test (for True/false "is ticked" and "is not ticked"; for Text "equals", "does not
   equal", "contains", "does not contain", "starts with", "ends with", "is one of", "is not
   one of", "is filled" and "is empty"; for a number those but the four on text within text and
@@ -1401,11 +1402,12 @@ Out of scope:
     row, or, in a test of a row, the same row's. A value there that is not one of its
     type, blank among them, gives nothing to test against, which `not_equals` and
     `not_contains` alone pass. A Date against another Date compares the day with that
-    day and its days added. A condition that cannot hold as written
-    never holds: one naming a column that is not in a one-row input table (gone, an output
-    table's or a many-row table's), a condition on rows naming a table that is not a
-    many-row input table, a test of a row naming a column that is not its table's or is its
-    index, a total of a column that is not a number column of its table other than its
+    day and its days added. A condition on an output column holds here whatever the price
+    (On the price, below). A condition that cannot hold as written
+    never holds: one naming a column that is not in a one-row table (gone, or a many-row
+    table's), a condition on rows naming a table that is not a many-row table, a test of a
+    row naming a column that is not its table's or is its index, a condition on an output
+    tested against another field, a total of a column that is not a number column of its table other than its
     index or against a value that is not a number, a test its column's type does not take, a number of
     values its test does not take (none for the ticks, `filled` and `empty`, at least one
     for `one_of` and `not_one_of`, else one), or a value its column could not hold (blank,
@@ -1435,6 +1437,23 @@ Out of scope:
     section that shows while the cover is Comprehensive and either a driver is under 25 or
     the claims count is at least 2 needs all of the cover's condition and a group needing
     any of the other two.
+  - **On the price.** A condition on an output column, or on an output table's rows, tests
+    the price the sheets show, in the Show when of what takes nothing typed: a Heading, a
+    Chart, a Collection or a Table of output columns alone, a field of an output column,
+    or a section or a sheet holding only those. What shows is decided from the inputs
+    first, such conditions holding, so the price never decides what is priced; they are
+    then applied to the price the sheets show, the last one while a new one is on its way,
+    and, before the first and after a pricing that fails, every output read as empty,
+    hiding what holds them as any condition hides. An output's value is tested as a typed
+    one is (a number as a number, a tick as a tick), a many-row output table's rows as a
+    list's, against values typed alone, never another field, whether or not a component
+    that shows has the output. A Table of referral reasons shown while `referral_count` is
+    above 0 is hidden until a price gives a count above 0, and again once one gives none.
+    The server, which decides what a quote leaves out, holds them all, as they change
+    nothing there. One on what takes values typed, or on a section or a sheet holding such
+    a component, a Collection of input fields or a section holding one placed there later,
+    is a problem the view names, and is never applied: hiding by the price there would hide
+    values still priced.
   - **Fields.** A Table's column or a Collection's field with a Show when of its own hides
     by it as a component does, within its component: a Collection's fields after it close
     up, flowing on through its columns, a spacer going with the fields after it, up to the
@@ -1978,6 +1997,11 @@ Out of scope:
   the sample priced in Preview, the Workbench Input's copy and the app's quote all come
   from, and the view, which hides and shows as each value is typed, applies the same
   rules, the two held to one set of cases both test against.
+- **The price decides what shows, never what is priced.** A section of referral reasons
+  matters only once the price gives some, but the price is made of what the sheets show:
+  letting it hide what takes values would make what is priced depend on its own price. So
+  what takes values is decided from the inputs alone, and the price only hides what takes
+  nothing typed, after, where hiding changes nothing priced.
 - **Decided at once, by hiding.** Conditions test the values as typed, except that a
   condition on a column no component that shows has, or tested against such a field,
   never holds, so hiding only ever hides more: starting from everything shown and hiding until nothing changes gives one answer
@@ -1990,6 +2014,11 @@ Out of scope:
   nothing more and be harder to read and to lay out in the panel. Neither takes "none of
   these": a condition fails once its column hides, so "none" could come to hold as hiding
   went on and show something again, and hiding has to only ever hide more.
+- **Hiding, never reading a hidden value as empty.** Reading a hidden value as empty in
+  the form's dependency order would allow "none of", "at most", "exactly" and "not" over a
+  group, but let that order decide what shows; the rounds stay (decided 2026-10-20). Rules
+  named once and used by many sheets were offered then and not taken, nor were a Table's
+  cells shown row by row through "this row" tests, offered again on 2026-10-22.
 - **At least, never at most.** "At least 2 of these" says two or three of three boxes
   without writing out every pair as a group of its own. Neither takes "at most" or
   "exactly", for the reason neither takes "none": hiding a column makes fewer conditions
@@ -2358,7 +2387,8 @@ Out of scope:
 - A condition that cannot hold as written is refused nowhere: the form reads, saves and
   serves its tables with it, the condition never holds, so what it is on stays hidden and
   the values only hidden components or fields show are left out of the quote, and the view
-  names the problem on the sheet or component while building. A `show_when`, a condition or a
+  names the problem on the sheet or component while building. A condition on the price on
+  what takes values typed is named so too, and never applied. A `show_when`, a condition or a
   test the form's shape does not have (an unknown `op`, a `values` entry that is not text,
   a group with no conditions or with a group among them, a condition in any or every row
   with no test, a total that is not a sum, least, greatest or average, a count that is not a

@@ -1903,6 +1903,22 @@ describe("when sheets and components show", () => {
     expect(widgetProblems(headed).map((p) => p.message)).toEqual(['Heading "Business interruption" tests a column that is no longer in the schema'])
   })
 
+  it("names a condition on the price on what takes values typed, and never on what takes nothing typed", () => {
+    const base = covered()
+    const premium = table("premium", "premium", { role: "output", columns: [column("premium.count", "referral_count", { type: "int" })] })
+    const spec = { ...base, schema: { tables: [...base.schema.tables, premium] } }
+    const referred: Condition = { table: "premium", column: "premium.count", op: "above", values: ["0"], field: null, days: 0 }
+    const never = "tests referral_count, a part of the price, which hides only what takes nothing typed: here it is never applied"
+    // The section holds the policy's Collection, which takes values typed, and so do both.
+    expect(sectionProblems(setSectionShowWhen(spec, "s_main", { match: "all", conditions: [referred] }))).toEqual([{ sectionId: "s_main", message: `Section "Policy" ${never}` }])
+    expect(widgetProblems(updateWidget(spec, "w_policy", { show_when: { match: "all", conditions: [referred] } })).map((p) => p.message)).toEqual([`Collection "Policy" ${never}`])
+
+    // A Heading takes nothing typed: there it is no problem.
+    const note = { ...createWidget("heading", { x: 0, y: 0, w: 200, h: 40 }), id: "w_note", text: "Refer", show_when: { match: "all" as const, conditions: [referred] } }
+    const noted = addWidget(spec, "s_bi", note)
+    expect(widgetProblems(noted).filter((p) => p.widgetId === "w_note")).toEqual([])
+  })
+
   it("says what stops a section's conditions doing what they say, naming the section by its title", () => {
     const spec = covered()
     const showing = (id: string, condition: Condition) => sectionProblems(setSectionShowWhen(spec, id, { match: "all", conditions: [condition] }))

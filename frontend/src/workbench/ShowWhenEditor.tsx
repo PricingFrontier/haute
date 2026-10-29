@@ -24,6 +24,8 @@ import {
   isRowsCondition,
   isRowTotal,
   newCondition,
+  onPrice,
+  priceProblem,
   newRowTest,
   testableColumns,
   testFields,
@@ -91,7 +93,9 @@ const listedNumbersValid = (text: string): string | null => {
 const splitValues = (text: string): string[] => text.split(",").map((value) => value.trim()).filter((value) => value !== "")
 
 /** The tables a condition can test: the input tables with a column to test. */
-const testable = (form: FormSpec): SchemaTable[] => form.schema.tables.filter((table) => testableColumns(table).length > 0)
+/** The tables a condition can test: the input tables with a column to test, and, on what takes nothing typed, the output tables too, tested on the price. */
+const testable = (form: FormSpec, priced: boolean): SchemaTable[] =>
+  form.schema.tables.filter((table) => (priced || table.role === "input") && testableColumns(table).length > 0)
 
 /** Whether a Show when's or a group's match sentence shows: with two or more conditions, or one while its match is a number. */
 const sentenceShown = (match: Match, count: number) => count > 1 || (count === 1 && typeof match === "number")
@@ -157,10 +161,13 @@ function MatchSentence({
 export function ShowWhenEditor({
   form,
   showWhen,
+  priced,
   onChange,
 }: {
   form: FormSpec
   showWhen: ShowWhen
+  /** What it is on takes nothing typed (`takesNothingTyped`), so its conditions may test the price. */
+  priced: boolean
   onChange: (next: ShowWhen) => void
 }) {
   const { conditions: entries, match } = showWhen
@@ -181,6 +188,7 @@ export function ShowWhenEditor({
           <GroupFrame
             key={index}
             form={form}
+            priced={priced}
             group={entry}
             name={`Group ${index + 1}`}
             onChange={(next) => replace(index, next)}
@@ -190,6 +198,7 @@ export function ShowWhenEditor({
           <ConditionRow
             key={index}
             form={form}
+            priced={priced}
             condition={entry}
             name={`Condition ${index + 1}`}
             onChange={(next) => replace(index, next)}
@@ -230,12 +239,14 @@ export function ShowWhenEditor({
 /** A group's conditions in a frame of their own, with its match, its own Add condition and a cross; removing its last condition removes it. */
 function GroupFrame({
   form,
+  priced,
   group,
   name,
   onChange,
   onRemove,
 }: {
   form: FormSpec
+  priced: boolean
   group: ConditionGroup
   name: string
   onChange: (next: ConditionGroup) => void
@@ -272,6 +283,7 @@ function GroupFrame({
         <ConditionRow
           key={index}
           form={form}
+          priced={priced}
           condition={condition}
           name={`${name} condition ${index + 1}`}
           onChange={(next) => setConditions(group.conditions.map((current, at) => (at === index ? next : current)))}
@@ -294,18 +306,20 @@ function GroupFrame({
 
 function ConditionRow({
   form,
+  priced,
   condition,
   name,
   onChange,
   onRemove,
 }: {
   form: FormSpec
+  priced: boolean
   condition: SingleCondition
   name: string
   onChange: (next: SingleCondition) => void
   onRemove: () => void
 }) {
-  const tables = testable(form)
+  const tables = testable(form, priced)
   const list = isListCondition(condition)
   const table = form.schema.tables.find((candidate) => candidate.id === condition.table)
   const found = list ? null : fieldColumn(form, condition)
@@ -322,7 +336,7 @@ function ConditionRow({
     }
   }
   const offered = choices.has(key)
-  const fault = conditionFault(form, condition)
+  const fault = conditionFault(form, condition) ?? (!priced && onPrice(form, condition) ? priceProblem(form, condition) : null)
   const marker = list ? ROWS_MARKER : found === null ? null : COLUMN_TYPES[found.column.type]
   const missing = list ? (table === undefined ? "Missing table" : `Rows of ${table.name}`) : found === null ? "Missing column" : label(found.column)
 
