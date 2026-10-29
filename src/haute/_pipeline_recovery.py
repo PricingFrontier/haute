@@ -42,7 +42,7 @@ from haute._graph_builders import (
 from haute._graph_shape import definition_boundary_topology
 from haute._graph_utils import REQUEST_INPUT_KINDS, edge_input_name, executable_input_name
 from haute._hashing import content_hash_bytes
-from haute._io import read_user_bytes_and_text, read_user_text
+from haute._io import decode_user_source, read_user_source
 from haute._logging import get_logger
 from haute._parser_submodels import (
     SubmodelRegistration,
@@ -98,32 +98,37 @@ _MAX_DIAGNOSTICS = 200
 
 
 class _SourceCaptures:
-    """First-read byte/text capture for every source artifact in one load.
+    """First-read byte capture for every source artifact in one load.
 
     The recovery revision must authenticate the exact bytes this document was
     built from, so each parent/child source is read once and every later
     consumer — including the revision manifest — reuses that capture instead
-    of re-reading a file a concurrent edit may have changed.
+    of re-reading a file a concurrent edit may have changed. A source's text is
+    decoded from its captured bytes by ``decode_user_source``, so a file that is
+    not UTF-8 raises its located ``ParseError`` wherever its text is read.
     """
 
-    def __init__(self) -> None:
-        self._by_key: dict[str, tuple[Path, bytes, str]] = {}
+    def __init__(self, project_root: Path) -> None:
+        self._root = project_root
+        self._by_key: dict[str, tuple[Path, bytes]] = {}
 
     @staticmethod
     def _key(path: Path) -> str:
         return str(path.resolve()).casefold()
 
-    def read(self, path: Path) -> tuple[bytes, str]:
+    def read_bytes(self, path: Path) -> bytes:
         key = self._key(path)
         captured = self._by_key.get(key)
         if captured is None:
-            raw, text = read_user_bytes_and_text(path)
-            captured = (path, raw, text)
+            captured = (path, path.read_bytes())
             self._by_key[key] = captured
-        return captured[1], captured[2]
+        return captured[1]
+
+    def read_source(self, path: Path) -> str:
+        return decode_user_source(self.read_bytes(path), source_file=_wire_path(path, self._root))
 
     def known_bytes(self) -> dict[Path, bytes]:
-        return {path: raw for path, raw, _text in self._by_key.values()}
+        return dict(self._by_key.values())
 
 
 @dataclass(slots=True)
@@ -1390,9 +1395,9 @@ def _recover_submodel_snapshot(
     """
     child_source_file = _wire_path(child_path, project_root)
     try:
-        _raw, source = captures.read(child_path)
+        source = captures.read_source(child_path)
         tree = ast.parse(source)
-    except (OSError, SyntaxError):
+    except (OSError, ParseError, SyntaxError):
         return RecoveryGraphSnapshot(), [], []
 
     sidecar = read_sidecar_state(child_path)
@@ -1623,13 +1628,13 @@ def _recover_registered_submodels(
             continue
 
         try:
-            _child_raw, child_source = captures.read(child_path)
+            child_source = captures.read_source(child_path)
             child_graph = parse_submodel_source(
                 child_source,
                 source_file=str(child_path),
                 _base_dir=config_base,
             )
-        except (HauteError, OSError, UnicodeError) as exc:
+        except (HauteError, OSError) as exc:
             def_id = registration.path
             path_to_def_id[registration.path] = def_id
             source_definitions[source_key] = def_id
@@ -1876,10 +1881,10 @@ def _recovery_artifacts(
         if source is None:
             try:
                 if captures is not None:
-                    _raw, source = captures.read(source_path)
+                    source = captures.read_source(source_path)
                 else:
-                    source = read_user_text(source_path)
-            except OSError:
+                    _raw, source = read_user_source(source_path)
+            except (OSError, ParseError):
                 return
         config_refs, registrations = _source_references(source, child=child)
         for reference in config_refs:
@@ -2103,7 +2108,7 @@ def _recover_global_constants(
         return [], None
     return load_declared_global_constants(
         path.parent,
-        read_bytes=lambda constants_path: captures.read(constants_path)[0],
+        read_bytes=captures.read_bytes,
     )
 
 
@@ -2142,7 +2147,7 @@ def _load_readable_pipeline_editor_document(
     submodel_sources: dict[str, str] = {}
 
     def read_submodel_source(child_path: Path) -> str:
-        child_source = captures.read(child_path)[1]
+        child_source = captures.read_source(child_path)
         submodel_sources[_wire_path(child_path, root)] = child_source
         return child_source
 
@@ -2156,9 +2161,9 @@ def _load_readable_pipeline_editor_document(
             _base_dir=path.parent,
             _submodel_base_dir=_infer_parse_base_dir(path),
             _read_submodel_source=read_submodel_source,
-            _read_global_constants_bytes=lambda constants_path: captures.read(constants_path)[0],
+            _read_global_constants_bytes=captures.read_bytes,
         )
-    except (HauteError, OSError, UnicodeError) as exc:
+    except (HauteError, OSError) as exc:
         strict_failure = exc
     else:
         assert strict_graph is not None
@@ -2417,6 +2422,53 @@ def pipeline_document_fingerprint(document_payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical_json(document_payload).encode("utf-8")).hexdigest()
 
 
+def _undecodable_pipeline_editor_document(
+    path: Path,
+    root: Path,
+    raw_source: bytes,
+    failure: ParseError,
+) -> PipelineEditorDocument:
+    """The source-only document of a pipeline file that is not UTF-8.
+
+    Python refuses to compile such a file, so like a syntax error it has no
+    canvas. The text shown replaces the bytes it cannot decode and is only read:
+    a source-only document can be neither saved nor repaired.
+    """
+    source_file = _wire_path(path, root)
+    line, column = failure.context["line"], failure.context["column"]
+    text = raw_source.removeprefix(b"\xef\xbb\xbf").decode("utf-8", errors="replace")
+    return PipelineEditorDocument(
+        load_status="source_only",
+        pipeline_name=path.stem,
+        pipeline_description="",
+        source_file=source_file,
+        source_revision=pipeline_recovery_revision(
+            project_root=root,
+            artifacts=[
+                ("parent_source", path),
+                ("parent_sidecar", path.with_suffix(".haute.json")),
+            ],
+            known_bytes={path: raw_source},
+        ),
+        source_text=text.replace("\r\n", "\n").replace("\r", "\n"),
+        sources=[],
+        active_source=None,
+        source_selection_trusted=False,
+        has_authored_content=bool(text.strip()),
+        diagnostics=[
+            _diagnostic(
+                code="source_encoding_invalid",
+                scope="pipeline",
+                message=failure.message,
+                source_file=source_file,
+                source_span=_span(line, column - 1, line, column),
+                remediation="Save the file as UTF-8 in your editor, then reload it.",
+            )
+        ],
+        capabilities=_capabilities("source_only", source_selection_trusted=False),
+    )
+
+
 def load_pipeline_editor_document(
     pipeline_path: str | Path,
     *,
@@ -2433,8 +2485,12 @@ def load_pipeline_editor_document(
     root = (project_root or path.parent).resolve()
     if not path.is_relative_to(root):
         raise ValueError("Pipeline recovery path escapes the project root.")
-    captures = _SourceCaptures()
-    raw_source, source = captures.read(path)
+    captures = _SourceCaptures(root)
+    raw_source = captures.read_bytes(path)
+    try:
+        source = captures.read_source(path)
+    except ParseError as exc:
+        return _undecodable_pipeline_editor_document(path, root, raw_source, exc)
     try:
         return _load_readable_pipeline_editor_document(path, root, source, captures)
     except Exception:  # noqa: BLE001 - named editor recovery isolation boundary

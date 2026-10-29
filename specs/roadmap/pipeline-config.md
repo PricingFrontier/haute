@@ -15,7 +15,6 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 | PCFG-R07 | Planned | P2 | Every node type has a typed config model that is the single validation boundary. |
 | PCFG-R08 | Planned | P3 | Editor-only state travels beside the node config, not inside it. |
 | PCFG-R09 | Planned | P3 | A node type is declared in one place. |
-| PCFG-R10 | Planned | P1 | A sidecar or pipeline file that is not UTF-8 is refused, never loaded with replacement characters that the next save writes over the author's bytes. |
 | PCFG-R11 | Planned | P2 | An inline keyword on a sidecar-backed node fails the parse by name instead of being dropped, and Recover reports it rather than writing it over the sidecar. |
 | PCFG-R12 | Planned | P2 | A save keeps every authored comment, or reports the ones it would drop before it proceeds. |
 | PCFG-R13 | Planned | P2 | Recover validates with the engine's own validators and resets a submodel node without renaming names in the user's code. |
@@ -30,7 +29,7 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 
 `PCFG-R04` to `PCFG-R09` come from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md);
-`PCFG-R10` to `PCFG-R19` from the
+`PCFG-R11` to `PCFG-R19` from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md).
 `PCFG-R08` should precede `PCFG-R07` so the models do not have to carry
 editor state.
@@ -192,35 +191,6 @@ specific node type for a concern the specification owns.
 `src/haute/_registry.py::NODE_REGISTRY`; `src/haute/_builders.py`;
 `src/haute/_codegen_builders.py`; `src/haute/projection.py`;
 `src/haute/_trace_correlation.py`; `src/haute/assistant/_catalog.py`.
-
-### PCFG-R10 — Sidecars and sources decode strictly
-**Why:** `_load_json_object` reads a node sidecar with `errors="replace"` under a
-comment that says config JSON remains strict UTF-8, and `read_user_text` tolerates
-non-UTF-8 bytes by design, so a sidecar or pipeline file holding a cp1252 `ä` loads
-as U+FFFD and the next whole-document save writes `EF BF BD` over the author's
-bytes with no error (probed on both sides: `{"name": "Prämie"}` on disk in cp1252
-comes back as `"Pr�mie"` in the rewritten sidecar). The global-constants reader and
-the repair writer refuse the same bytes (`repair_encoding_unsupported`), and the
-editor loader catches a `UnicodeError` its readers can never raise. Haute never
-writes such a file itself; a hand-edited or exported one is enough.
-
-**Plan:** Decode sidecars strictly and raise `ConfigError` naming the path and the
-byte; decode the pipeline source strictly in the parser, or have the document
-loader degrade a source whose decode needed replacement, so a save can never write
-U+FFFD over authored bytes; make the `UnicodeError` handlers reachable or delete
-them.
-
-**Acceptance:** A cp1252 sidecar fails the parse with a message naming the file and
-the byte; a cp1252 pipeline file loads degraded (or fails) and a save is refused; no
-save writes a replacement character that was not in the request.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_config_io.py::_load_json_object`;
-`src/haute/_io.py::read_user_text`;
-`src/haute/_pipeline_repair.py::_decode_utf8_artifact`;
-`src/haute/_config_io.py::parse_global_constants`;
-`src/haute/_pipeline_recovery.py`.
 
 ### PCFG-R11 — Inline keywords on a sidecar-backed node are refused
 **Why:** `_resolve_node_config` pops `contract` and `config` and, on the sidecar

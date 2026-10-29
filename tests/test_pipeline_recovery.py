@@ -150,6 +150,174 @@ def test_syntax_invalid_source_is_source_only_with_the_located_parse_error(
     assert document.capabilities.can_preview is False
 
 
+def test_a_source_that_is_not_utf8_is_source_only_and_its_save_is_refused(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Python refuses a file that is not UTF-8, so the editor shows no canvas for one: the
+    document names the byte where decoding stops, and nothing a save could write over the
+    author's bytes was ever decoded with replacement characters."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write_bytes(
+        tmp_path / "main.py",
+        b"import haute\n"
+        b'pipeline = haute.Pipeline("encoding")\n\n'
+        b"@pipeline.polars\n"
+        b"def premium():\n"
+        b'    return "Pr\xe4mie"\n',
+    )
+    before = pipeline_file.read_bytes()
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "source_only"
+    assert document.nodes == []
+    [diagnostic] = document.diagnostics
+    assert diagnostic.code == "source_encoding_invalid"
+    assert "byte 0xE4 at line 6, column 15" in diagnostic.message
+    assert diagnostic.source_span is not None
+    assert (diagnostic.source_span.start_line, diagnostic.source_span.start_column) == (6, 14)
+    assert diagnostic.remediation == "Save the file as UTF-8 in your editor, then reload it."
+    assert document.capabilities.can_save is False
+    assert document.capabilities.can_repair is False
+    assert document.source_revision
+
+    monkeypatch.chdir(tmp_path)
+    response = client.post(
+        "/api/pipeline/save",
+        json={
+            "name": "encoding",
+            "source_file": "main.py",
+            "base_revision": document.source_revision,
+            "graph": {"nodes": [], "edges": []},
+        },
+    )
+    assert response.status_code == 409
+    assert pipeline_file.read_bytes() == before
+
+
+def test_a_submodel_file_that_is_not_utf8_makes_only_its_definition_unavailable(
+    tmp_path: Path,
+) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    (tmp_path / "modules").mkdir()
+    _write_bytes(
+        tmp_path / "modules" / "pricing.py",
+        b"import haute\n\n"
+        b'submodel = haute.Submodel("pricing", definition_id="pricing", input_ports=[], '
+        b'output_ports=[], pipeline_dir="..")\n'
+        b"# \x96\n",
+    )
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+
+        from modules import pricing
+
+        pipeline = haute.Pipeline("encoding")
+
+        @pipeline.polars
+        def healthy():
+            return None
+
+        pipeline.submodel(pricing.submodel, "pricing")
+        """,
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "degraded"
+    by_id = {node.authored_id: node for node in document.nodes}
+    assert by_id["healthy"].availability == "ready"
+    assert by_id["pricing"].availability == "unavailable"
+    assert document.submodels is not None
+    assert document.submodels["modules/pricing.py"].availability == "unavailable"
+    assert any(
+        diagnostic.code == "submodel_definition_invalid"
+        and "byte 0x96 at line 4, column 3" in diagnostic.message
+        for diagnostic in document.diagnostics
+    )
+
+
+def test_a_node_config_that_is_not_utf8_makes_its_node_unavailable(tmp_path: Path) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    (tmp_path / "config" / "constant").mkdir(parents=True)
+    config = _write_bytes(
+        tmp_path / "config" / "constant" / "rates.json",
+        b'{"values": [{"name": "Pr\xe4mie", "value": "1.0"}]}',
+    )
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+
+        pipeline = haute.Pipeline("encoding")
+
+        @pipeline.constant(config="config/constant/rates.json")
+        def rates():
+            ...
+
+        @pipeline.polars
+        def healthy():
+            return None
+        """,
+    )
+    before = config.read_bytes()
+
+    with pytest.raises(ConfigError, match=r"rates\.json is not valid UTF-8: byte 0xE4"):
+        parse_pipeline_file(pipeline_file)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "degraded"
+    by_id = {node.authored_id: node for node in document.nodes}
+    assert by_id["healthy"].availability == "ready"
+    assert by_id["rates"].availability == "unavailable"
+    [diagnostic] = [
+        item for item in document.diagnostics if item.diagnostic_id in by_id["rates"].diagnostic_ids
+    ]
+    assert "rates.json is not valid UTF-8: byte 0xE4 at line 1, column 25" in diagnostic.message
+    assert config.read_bytes() == before
+
+
+def test_an_editor_sidecar_that_is_not_utf8_is_corrupt(tmp_path: Path) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write(tmp_path / "main.py", _healthy_source())
+    sidecar = _write_bytes(
+        tmp_path / "main.haute.json",
+        b'{"sources": ["live", "Pr\xe4mie"], "active_source": "live"}',
+    )
+    before = sidecar.read_bytes()
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "degraded"
+    assert document.source_selection_trusted is False
+    assert document.sources == []
+    assert [diagnostic.code for diagnostic in document.diagnostics] == ["sidecar_corrupt"]
+    assert sidecar.read_bytes() == before
+
+
+def test_an_editor_sidecar_with_a_byte_order_mark_still_reads(tmp_path: Path) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write(tmp_path / "main.py", _healthy_source())
+    _write_bytes(
+        tmp_path / "main.haute.json",
+        b'\xef\xbb\xbf{"sources": ["live", "Pr\xc3\xa4mie"], "active_source": "live"}',
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "ready"
+    assert document.sources == ["live", "Prämie"]
+
+
 def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

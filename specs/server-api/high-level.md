@@ -669,6 +669,12 @@ reset and recover actions repair it. A file that is not valid Python has no canv
 document is `source_only`, carrying the Python syntax error's location with the remediation to open
 the source there in an editor and correct it; the editor shows that parse error and the current
 source, never a recovered or earlier canvas. There is no textual recovery of syntax-invalid source.
+A file that is not UTF-8 is not valid Python either, since Python refuses to compile it: its
+document is `source_only` with a `source_encoding_invalid` diagnostic at the first byte that
+cannot be decoded, naming the byte, with the remediation to save the file as UTF-8. A registered
+submodel file that is not UTF-8 makes its definition unavailable with the same message, and an
+editor sidecar that is not UTF-8 is corrupt. No load decodes with replacement characters, so no
+save can write them over the author's bytes.
 The same `source_only` document contains an unexpected recovery defect, with an incident id.
 
 Editor loads are conservation-oriented. Every top-level authored node decorator is discovered before

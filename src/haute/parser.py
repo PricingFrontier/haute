@@ -39,7 +39,7 @@ from haute._graph_builders import (
     _extract_decorated_nodes,
 )
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
-from haute._io import read_user_text
+from haute._io import read_user_source
 from haute._logging import get_logger
 from haute._parser_bindings import assert_polars_parameters_bound, assert_request_frames_named
 from haute._parser_conservation import (
@@ -168,7 +168,7 @@ def parse_pipeline_file(filepath: str | Path, *, flatten: bool = False) -> Pipel
     exposed separately by :mod:`haute._pipeline_recovery`.
     """
     filepath = Path(filepath)
-    source = read_user_text(filepath)
+    _raw, source = read_user_source(filepath)
     submodel_base_dir = _infer_parse_base_dir(filepath)
     return parse_pipeline_source(
         source,
@@ -192,7 +192,7 @@ def parse_submodel_file(
     Defaults to ``filepath.parent`` if not provided.
     """
     filepath = Path(filepath)
-    source = read_user_text(filepath)
+    _raw, source = read_user_source(filepath)
     return _parse_submodel_source(
         source,
         source_file=str(filepath),
@@ -258,7 +258,7 @@ def parse_pipeline_source_with_name_violations(
         _read_submodel_source: Override for reading a registered submodel
             file. Editor recovery injects its first-read byte capture here so
             one load never pairs parsed child content with different bytes
-            than its revision authenticates. Defaults to ``read_user_text``.
+            than its revision authenticates. Defaults to ``read_user_source``.
         _read_global_constants_bytes: The same override for the global
             constants file the constructor names. Defaults to reading it.
     """
@@ -403,7 +403,7 @@ def parse_pipeline_source_with_name_violations(
             child_source = (
                 _read_submodel_source(sm_filepath)
                 if _read_submodel_source is not None
-                else read_user_text(sm_filepath)
+                else read_user_source(sm_filepath)[1]
             )
             child_graph = _parse_submodel_source(
                 child_source,

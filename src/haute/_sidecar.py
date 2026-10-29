@@ -16,7 +16,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from haute._io import read_user_text
 from haute._logging import get_logger
 
 logger = get_logger(component="sidecar")
@@ -85,12 +84,14 @@ def _read_sidecar_json(sidecar: Path) -> tuple[SidecarReadState, dict[str, Any] 
     if not sidecar.exists():
         return "absent", None, None
     try:
-        raw = read_user_text(sidecar)
+        raw = sidecar.read_bytes()
     except OSError as exc:
         logger.warning("unreadable_sidecar", file=sidecar.name, error=str(exc))
         return "unreadable", None, type(exc).__name__
     try:
-        payload = _json.loads(raw)
+        # Strict UTF-8, so a sidecar that is not is corrupt rather than decoded
+        # with replacement characters a save would write back.
+        payload = _json.loads(raw.decode("utf-8-sig"))
         if not isinstance(payload, dict):
             raise ValueError("Sidecar JSON must contain an object.")
     except (_json.JSONDecodeError, TypeError, ValueError) as exc:

@@ -216,9 +216,6 @@ these are the Majors still open.
 - **Utility files are written non-atomically, unlocked and without a revision**
   (Major, `API-R07`): a second editor's PUT silently wins and a concurrent
   preview can import a truncated file.
-- **A non-UTF-8 sidecar or pipeline file is loaded with replacement characters
-  that the next save writes over the author's bytes** (Major, `PCFG-R10`;
-  reproduced). The package is P1 because the corruption is silent.
 - **Inline decorator keywords on a sidecar-backed node are dropped by the parse
   and merged over the sidecar by Recover** (Major, `PCFG-R11`).
 - **Every save drops authored comments outside the kept regions** (Major,
@@ -311,7 +308,6 @@ production:
 | Server API | SRV-1, SRV-5 | `API-R08` |
 | Server API | SRV-6, SRV-7, SRV-8, SRV-13, SRV-15 | `API-R09` |
 | Server API | SRV-10, SRV-12, SRV-14, SRV-16, SRV-17 | `API-R10` |
-| Pipeline config | PCF-1 | `PCFG-R10` |
 | Pipeline config | PCF-2, PCF-5 | `PCFG-R11` |
 | Pipeline config | PCF-3 | `PCFG-R12` |
 | Pipeline config | PCF-6, PCF-7 | `PCFG-R13` |

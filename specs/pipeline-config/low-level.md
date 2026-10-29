@@ -7,7 +7,7 @@
 | `src/haute/pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). A configured node's `Node` classifies its function as a declaration or a hook at registration (`function_kind`) and runs its configured work through `run_configured_node`; `_runs_node` is what a configured node's decorator returns. `Pipeline` takes a keyword-only `global_constants` argument (only `config/global_constants.json`), and every registry's `global_constants` property returns the standalone sentinel; `Pipeline.run(source=...)` and `score()` call each node function as a copy that binds the run's constants (`Node._invoke`, `Pipeline._run_constants`). |
 | `src/haute/_standalone_nodes.py` | What each configured node type does in a standalone run or score: `run_configured_node(node_type, kind, name, config, fn, frames, pipeline_dir)` performs the node's work through the same shared helpers canvas execution uses (`resolve_api_input_from_config`, `resolve_data_input_from_config`, `constant_frame`, `select_live_switch_input`, `execute_edge_join`, `apply_banding_from_config`, `apply_rating_step_from_config`, `expand_scenarios_from_config`, `score_from_config`, `apply_optimiser_apply_from_config`, `assemble_output_from_config`, `resolve_optimiser_data_input`, `load_external_object_from_config`); `function_kind` classifies a function as a declaration or hook; `has_empty_body` recognises a body that does nothing from its bytecode; `pipeline_directory` finds the directory a function's `config=` paths resolve against (the defining file's directory joined with its registry's `pipeline_dir`); `seeded_workbench_input_ports` gives the ports of a Workbench Input a score seeds with frames, its sidecar read and given the project form's tables. |
 | `src/haute/_config_builder.py` | Per-node-type config dict construction from decorator kwargs + function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). For Live Switch nodes, `config["inputs"]` records only positional edge parameters (frame labels for apiInput edges, sanitised source labels otherwise), the same strings referenced by the input-to-scenario mapping; keyword-only configuration parameters are excluded. It consumes the per-type user-code extractors from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
-| `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs, and the Windows-reserved-filename guard. It also owns the global constants file: `parse_global_constants` validates its strict UTF-8 bytes, `load_global_constants` reads it, and `global_constants_json` writes it canonically. |
+| `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers (a node's JSON config is read as strict UTF-8 by `_load_json_object`, and a byte that is not UTF-8 is a `ConfigError` naming the file and the byte), `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs, and the Windows-reserved-filename guard. It also owns the global constants file: `parse_global_constants` validates its strict UTF-8 bytes, `load_global_constants` reads it, and `global_constants_json` writes it canonically. |
 | `src/haute/_global_constants.py` | Global constants analysis and the standalone sentinel: `code_constant_reads`, `step_constant_reads`, `node_code_sources` and `node_constant_reads` (what a node reads, from its steps' Constant operands and the AST of its code, or `EVERY_CONSTANT`), `code_binds_global_constants`, `preamble_binds_global_constants`, `module_binding_lines` and `is_generated_binding` (what would shadow the reserved name), `STANDALONE_GLOBAL_CONSTANTS`, the sentinel every registry's global-constants property returns, `reference_problem` and `node_step_constant_problems` (whether a step's Constant operand can read its constant: defined, of a type its slot takes, and at least zero for every source where required), and the run-time table: `GlobalConstantsNamespace` (one source's values and its per-code views), `node_code_globals`, `bind_code_view`, `function_constant_reads` and `bind_function_view`. |
 | `src/haute/_config_validation.py` | `VALID_KEYS` registry derived from each node type's TypedDict definition, `unrecognized_config_keys`, and `reject_unrecognized_config_keys`. |
 | `src/haute/_polars_steps.py` | Low-code Polars step schema: `validate_polars_steps`, `render_polars_steps` (a `spelling` of `current` or, only to recognise bodies it saved before, `earlier`; one statement per structured step, laid out over several lines by `src/haute/_polars_steps_layout.py` when its single-line form does not fit in 88 columns at the function body's indentation, optional input-name validation, a required `start` mode of `input` or `frame`, `PolarsStepError` with the step index), `STEPPED_NODE_TYPES` (each stepped node type's `SteppedSurface`: start mode plus input eligibility `edges`/`none`), `STEPPED_SURFACE_LABELS` (the name each stepped node type goes by in messages about its steps), `stepped_surface_for`, `step_input_names`, `is_stepped_config`, `stepped_surface_allows_input_references` (the gate for rewriting step references on a rename), `referenced_step_inputs`, `rename_step_inputs` for boundary renames, `OPERAND_KINDS` (a column, a literal, a nested expression, a step variable or a global constant; a Constant operand renders as the bare `global_constants.<name>` in value position and `pl.lit(global_constants.<name>)` in expression position, checks only the name rule, and is reported in `RenderedSteps.constant_references` as a `ConstantReference` with its step, the `CONSTANT_TYPES` its slot takes, a string operator's value taking `text` and a typed function argument following its expected type, and whether every value must be at least zero), and `resolve_free_code_columns` (the schema of `df` after each free-code step, for the free-code columns endpoint, which runs it in the interactive preview worker: the rendered prefix run through `_exec_user_code` over empty frames of the columns the editor supplied and only its schema read, or a one-line reason when it cannot be resolved). Consumed by the node data model, the parser, the executor builder, codegen, the save service, the assistant's authoring checks, the deploy interceptors, submodel flattening, and the render endpoint. |
@@ -187,7 +187,14 @@ It delegates node and edge construction to the same `_build_rf_nodes`/`_build_ed
 parsing, so explicit connections and positional parameter-name inference are represented
 consistently; keyword-only parameters remain configuration rather than edges.
 
-**2. Strict static source graph (`_graph_builders.py` + `_config_builder.py`).** Given an
+**2. Strict static source graph (`_graph_builders.py` + `_config_builder.py`).**
+`parse_pipeline_file` and `parse_submodel_file`, and the parse of every submodel file a
+pipeline registers, read their source through `src/haute/_io.py::read_user_source`: strict
+UTF-8, with a leading byte order mark dropped as Python drops it. A byte that is not UTF-8 is a
+`ParseError` naming the file and the byte with its line and column, as Python itself refuses to
+compile such a file; a source is never decoded with replacement characters, which the next save
+would write over the author's bytes. A node's JSON config is read the same way, with no byte
+order mark, and a byte that is not UTF-8 is a `ConfigError` naming the file and the byte. Given an
 already-parsed AST module and pre-extracted function bodies, skeleton discovery records each
 decorated function's identity, decorator token/kwargs, parameters, body, and source span
 without loading external config. A body (`haute._ast_helpers._function_body_source`) starts at
@@ -766,7 +773,8 @@ it on the reading node instead of aborting the walk, and every other run propaga
 
 ## Error handling
 
-- **`ConfigError`** (`haute.errors`) — missing/unreadable/invalid-JSON sidecar; sidecar
+- **`ConfigError`** (`haute.errors`) — missing/unreadable/invalid-JSON sidecar; a sidecar
+  that is not UTF-8, naming the file and the first byte that is not; sidecar
   content failing schema validation; a config key the node type does not declare
   (`reject_unrecognized_config_keys`, at parse and at the sidecar write boundary); a
   folder-backed node type used without `config=`;
@@ -775,7 +783,8 @@ it on the reading node instead of aborting the walk, and every other run propaga
   `run_id`/`registered_model`/`model_path` for the declared source); project
   root not found, or found without a surrounding git repository.
 - **`ParseError`** (`haute.errors`) — `async def` node body; duplicate node function name;
-  Explore-node topology violations (`_graph_shape.py`).
+  Explore-node topology violations (`_graph_shape.py`); a pipeline or submodel source that is
+  not UTF-8, naming the file and the byte with its line and column.
 - **`NodeConfigError`** (`haute.errors`, setting `values`) — a Constant node with two
   entries of one non-empty name, raised by `_node_apply.constant_frame` (canvas builder and
   standalone run alike) before any frame is built.
@@ -891,6 +900,10 @@ API and real JSON round-trips rather than mocks:
   transform's decorator returns the function itself; and a submodel definition's
   `pipeline_dir` resolves its sidecars from the owning pipeline's directory, with an invalid
   value rejected at construction.
+- **`test_read_user_text.py`** — a pipeline file and a submodel file that are not UTF-8
+  refused by the parser naming the file, the line and the byte, a byte order mark dropped, and
+  a node's JSON config that is not UTF-8 refused naming the file and the byte, at the parse and
+  where the node runs; `tests/test_pipeline_recovery.py` the editor's side of the same files.
 - **`test_config_io.py`** + **`test_config_io_gaps.py`** — sidecar save/load
   round-trips, path conventions (`TestConfigPathForNode`), Windows-reserved-filename rejection
   (`TestIsWindowsReservedFilename`), `collect_node_configs` (including load-error protection
