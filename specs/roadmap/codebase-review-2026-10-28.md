@@ -276,7 +276,6 @@ adds a finding group or changes the 42-group count.
 | non-SQLite form insertion | Duplicate **WB-10** for non-SQLite form insertion (the scratch spelling WB-R10 is not another package). The note gives no additional concrete database defect. |
 | sandbox project globals | Duplicate **PCFG-R04**. |
 | match/type-alias support binding | Duplicate **PCFG-R19**. This does not settle the separate Polars module-alias shape candidate. |
-| Workbench pricing work surviving its timeout | Duplicate **WB-33**. The separate raw-error concern remains unverified above. |
 | Assistant bounds, blocking tools, factual context, tool hygiene and provider handling | Duplicates **ASSIST-55**, **ASSIST-57**, **ASSIST-58**, **ASSIST-59**, **ASSIST-54** respectively. The recipe-consolidation note names no additional behavior. |
 | CLI/init/deploy existing gaps | Duplicates **DEP-R11** for impact alignment, **DEP-R12A** for build ownership, **DEP-R09** for dependency closure, and **CLI-R01**, **CLI-R04**, **CLI-R06** for init overwrite, TOML mutation and hook behavior. The scratch shorthand DEP-R12 predates its split; generic CLI errors/eager reads name no additional concrete case. |
 | inactive source-switch branch | Duplicate **EXEC-R14**. |

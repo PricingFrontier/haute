@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -439,6 +440,42 @@ def test_a_pricing_that_runs_too_long_answers_that_it_timed_out(
 
     assert answered.status_code == 504
     assert answered.json()["detail"] == "Pricing the quote took too long; try again."
+
+
+def test_pricings_holding_every_place_refuse_another_at_once_until_one_ends(
+    release: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(workbench_app.PRICING_WORKERS_ENV, "2")
+    end = threading.Event()
+    reached: list[int] = []
+    score = workbench_app.score_graph
+
+    def stuck(**options: Any) -> Any:
+        reached.append(1)
+        end.wait(10)
+        return score(**options)
+
+    monkeypatch.setattr(workbench_app, "score_graph", stuck)
+    client = _client(release())
+
+    # Two pricings outrun the timeout; neither can be stopped, so each keeps its place.
+    monkeypatch.setattr(workbench_app, "PRICE_TIMEOUT_SECONDS", 0.05)
+    assert [_price(client).status_code for _ in range(2)] == [504, 504]
+    monkeypatch.setattr(workbench_app, "PRICE_TIMEOUT_SECONDS", 60.0)
+    began = time.monotonic()
+    busy = _price(client)
+
+    assert busy.status_code == 503, busy.text
+    assert time.monotonic() - began < 5
+    assert busy.headers["retry-after"] == str(workbench_app.BUSY_RETRY_SECONDS)
+    assert "busy pricing other quotes" in busy.json()["detail"]
+    assert len(reached) == 2
+
+    end.set()
+    deadline = time.monotonic() + 10
+    while (served := _price(client)).status_code == 503 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert served.status_code == 200, served.text
 
 
 def test_a_pipeline_failing_on_the_quote_answers_why(

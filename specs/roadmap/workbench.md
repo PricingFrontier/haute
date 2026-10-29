@@ -29,9 +29,9 @@ and rules named once and used by many sheets were offered and not taken. Fields 
 columns with conditions of their own, not taken that day, were asked for on 2026-10-22;
 cells shown row by row through "this row" tests were offered again and not taken.
 
-`WB-33` to `WB-38` come from the [25 October 2026 codebase
-review](codebase-review-2026-10-25.md): the server's pricing executor and first saves, and
-what the review found in the Workbench view and the underwriter app in the browser.
+`WB-35` to `WB-38` come from the [25 October 2026 codebase
+review](codebase-review-2026-10-25.md): what the review found in the Workbench view and
+the underwriter app in the browser.
 
 `WB-41` finishes moving the form into the pipeline folder, the folder of named files the
 workbench specification describes. The owner chose on 28 October 2026 that the
@@ -51,7 +51,6 @@ Workbench nodes stop keeping copies of the tables in a pull request after the fo
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-28 | Planned | P3 | A condition tests a field against another field, text within text, and a date against another date give or take a number of days. |
 | WB-29 | Planned | P3 | A component that takes nothing typed, or a section or a sheet holding only such components, shows by conditions on the price, applied after it so the price never decides what is priced. |
-| WB-33 | Planned | P2 | A pricing that outruns its timeout cannot hold the app's executor: pricings run in a bounded pool and the app answers 503 when it is full. |
 | WB-35 | Planned | P2 | Every quote action in the app says what it did: a quote made while the page stays is announced, a storeless page offers Reload when the release changed, "Open the newest" opens once, and the Quotes page's keys leave a focused select alone. Late archive/restore completion keeps the current query. |
 | WB-36 | Planned | P2 | A number list in a Show when condition never splits a thousands separator into two values, and the app reads quote_details ids from one typed map. |
 | WB-37 | Planned | P3 | The column key, the refusal predicate, the 409 detail reader, the empty visibility constants, the half-window width, the collapsible group and the pricing basis each exist once in the workbench and the app. |
@@ -494,25 +493,6 @@ sides.
 table named as a fault); `src/haute/_workbench_visibility.py::_tested_column` (input tables
 alone); `src/haute/_workbench_tables.py::sample_quote` (the hidden columns the quote leaves
 out).
-
-### WB-33 — Pricings that outrun the timeout
-**Why:** The underwriter app prices a quote in the default executor under
-`asyncio.wait_for(..., PRICE_TIMEOUT_SECONDS)`; a pricing that outruns the 60 s is left
-running with no cancellation, so a pipeline slow on some quotes accumulates threads, and
-once the executor's workers (`min(32, cpus + 4)`) are all held every later pricing queues
-behind them and times out too, with no recovery until the stuck ones finish. This
-package comes from the [25 October 2026 codebase review](codebase-review-2026-10-25.md).
-
-**Plan:** Price in a bounded executor sized for the app (or in the batch worker with a
-cancellable timeout), count the pricings in flight and answer 503 with a retry hint when
-the bound is reached.
-
-**Acceptance:** With the bound held by sleeping pricings, a further price request is
-answered 503 at once rather than timing out; when one finishes, the next is served.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_workbench_app.py::PRICE_TIMEOUT_SECONDS`.
 
 ### WB-35 — Every quote action says what it did
 **Why:** Duplicate and Renew from a quote with unsaved values create the new quote on the

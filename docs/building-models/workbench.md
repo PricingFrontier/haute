@@ -663,6 +663,10 @@ builder on screen. With a quote store it is where they manage their quotes too.
   that add **is_renewal** and **quote_option** and that take out **valid_until** and
   **currency**, an earlier release no longer starts on the
   database, so rolling back means restoring that backup.
+- The app prices four quotes at once; set `HAUTE_APP_PRICING_WORKERS` to change that. A
+  pricing that runs past 60 seconds is answered as timed out but keeps its place until it
+  ends, and while every place is taken a quote is refused as busy, to be priced again in a
+  few seconds, rather than waiting.
 
 A page opened before a new release is refused when it prices or saves, and reloading it
 picks up the release; its unsaved values stay in the browser.

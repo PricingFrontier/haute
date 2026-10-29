@@ -1179,7 +1179,11 @@ Out of scope:
   model alone included. The request is built as Preview's pricing builds it and priced through the deployed
   pipeline's engine, one quote per request, off the server's event loop, under the deploy's
   admission limit and a timeout, and answered whole: each output table's rows, with the
-  request priced. `GET /api/app/release` and `GET /api/app/form` serve the release and the
+  request priced. The app prices at most a bounded number of quotes at once, four unless
+  `HAUTE_APP_PRICING_WORKERS` says otherwise, a save's pricing among them: a pricing past
+  its timeout is answered 504 but cannot be stopped, so it holds its place until it ends,
+  and a pricing asked for while every place is held is refused at once (503, `Retry-After`
+  saying when to try again) rather than queued behind them to time out too. `GET /api/app/release` and `GET /api/app/form` serve the release and the
   form; `GET /health` answers without sign-in, for the host's probes. Every other route
   needs the principal the host signed in. The identity follows `[workbench.app] host`:
   `azure-container-apps` reads the principal Azure's built-in authentication sets on each

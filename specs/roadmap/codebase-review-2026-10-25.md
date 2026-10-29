@@ -125,8 +125,8 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the nineteen packages delivered or settled since (thirteen by 28
-October 2026, six more on 29 October) have been removed from the sections below; the coverage table keeps the
+The findings of the twenty packages delivered or settled since (thirteen by 28
+October 2026, seven more on 29 October) have been removed from the sections below; the coverage table keeps the
 original counts.
 
 ## Validation — 25 October 2026
@@ -381,7 +381,6 @@ production:
 | Git UI | FTG-9, FTG-12 | `GIT-R08` |
 | Assistant UI | FTG-5, FTG-18, FTG-20 | `ASSIST-60` |
 | Sandbox security | PM-42 | `SBX-R04` |
-| Workbench | PM-44 | `WB-33` |
 | Workbench | PM-45 | `WB-10` (selected server engine's atomic form insertion) |
 | Engineering quality | PM-50 | `ENGQ-R01` (evidence added) |
 | Engineering quality | the campaign-named test modules recounted | `ENGQ-R05` (evidence added) |
@@ -443,8 +442,7 @@ unvalidated in the UI (`GIT-R02`), the delete dialog's confirm flag (`GIT-R03`)
 and the trace route's 409 keyed on its code (`API-R06`); in the workbench UI and the app shell, the
 chart theme observer written twice (`EDA-R03`), the params-folder listing in the
 Allowed field (`FNED-R05`), knip's export-only symbols (`ENGQ-R01`), the fault on
-an output-table condition (`WB-29`), the browser's 90 s pricing timeout past the
-server's 60 s (`WB-33`), browser-locale dates (`FSH-R08`), the bootstrap without
+an output-table condition (`WB-29`), browser-locale dates (`FSH-R08`), the bootstrap without
 a deadline (`FSH-R05`), Ctrl+S inside a code box (`FSH-R07`), editor state inside
 node data (`PCFG-R08`), the recovery banner's re-minted id (`PCFG-R19`) and the
 modelling pane badges (`FMOU-R03`); in the tests, scripts and CI, the floating

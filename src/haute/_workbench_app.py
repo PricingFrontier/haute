@@ -22,8 +22,10 @@ import contextvars
 import copy
 import json
 import os
+import threading
 import uuid
 from collections.abc import AsyncIterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -35,6 +37,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 from starlette.middleware.base import RequestResponseEndpoint
 
+from haute._env import int_env
 from haute._execution_admission import ExecutionAdmissionError
 from haute._execution_context import ExecutionMemoryLimitExceededError
 from haute._hashing import content_hash, content_hash_bytes
@@ -80,6 +83,12 @@ MANIFEST_FILE = "deploy_manifest.json"
 APP_PAGE = "app.html"
 #: How long one pricing may take before the app answers that it timed out.
 PRICE_TIMEOUT_SECONDS = 60.0
+#: How many quotes the app prices at once, unless :data:`PRICING_WORKERS_ENV` names another
+#: number: a pricing asked for past them is refused as busy rather than queued behind them.
+PRICING_WORKERS = 4
+PRICING_WORKERS_ENV = "HAUTE_APP_PRICING_WORKERS"
+#: The seconds a pricing refused as busy is told to wait before it is asked for again.
+BUSY_RETRY_SECONDS = 5
 #: The principal Azure's built-in authentication sets on every request it lets through, and
 #: strips from what a client sends.
 EASY_AUTH_NAME = "x-ms-client-principal-name"
@@ -631,11 +640,18 @@ def create_app(
 
         book = open_book(store_url, haute_version=release.haute_version)
 
+    # A pricing past its timeout cannot be stopped, so it keeps its place until it ends: the
+    # places are given back by the pricings, never by the requests that stopped waiting.
+    workers = int_env(PRICING_WORKERS_ENV, PRICING_WORKERS)
+    pricing_pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="workbench-price")
+    places = threading.BoundedSemaphore(workers)
+
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         try:
             yield
         finally:
+            pricing_pool.shutdown(wait=False, cancel_futures=True)
             if book is not None:
                 book.close()
 
@@ -738,13 +754,18 @@ def create_app(
             finally:
                 context.release_admission(preserve_primary_error=failed)
 
-        # An executor's future gives up waiting at the timeout; the pricing left running ends
-        # on its own and releases its admission then.
-        running = asyncio.get_running_loop().run_in_executor(
-            None, contextvars.copy_context().run, score
-        )
+        if not places.acquire(blocking=False):
+            raise HTTPException(
+                503,
+                "The app is busy pricing other quotes: try again in a few seconds.",
+                headers={"Retry-After": str(BUSY_RETRY_SECONDS)},
+            )
+        # The request gives up waiting at the timeout; the pricing left running ends on its
+        # own and gives back its admission and its place then.
+        running = pricing_pool.submit(contextvars.copy_context().run, score)
+        running.add_done_callback(lambda _: places.release())
         try:
-            tables = await asyncio.wait_for(running, PRICE_TIMEOUT_SECONDS)
+            tables = await asyncio.wait_for(asyncio.wrap_future(running), PRICE_TIMEOUT_SECONDS)
         except TimeoutError:
             raise HTTPException(504, "Pricing the quote took too long; try again.") from None
         except ExecutionAdmissionError as exc:
