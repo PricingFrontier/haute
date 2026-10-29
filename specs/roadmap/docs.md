@@ -12,8 +12,7 @@ init`. The building-models and Workbench pages were not part of that check.
 
 A defect in the behaviour a page describes belongs to the component that owns the behaviour,
 and a package here names it as a dependency rather than copying it:
-[BUG-24](bugs.md#bug-24--container-deploys-log-in-to-their-registry) (registry login before
-a push) and [DEP-R08](deploy.md#dep-r08--the-mlflow-targets-version-credential-and-default)
+[DEP-R08](deploy.md#dep-r08--the-mlflow-targets-version-credential-and-default)
 (an expired token named as one).
 
 The site describes `main`, decided on 25 October 2026: the next release, due soon, ships
@@ -99,20 +98,15 @@ named with the suffix, and the wait before it returns), `::_check_databricks_con
   the deploy waits for its endpoint (`_deploy_timeout_minutes`).
 - **`haute ci update`.** The GitHub page says it "leaves everything else alone" (:317). It
   also deletes another provider's generated files and overwrites hand edits to its own,
-  among them the registry-login lines the container pages tell readers to add, and a git
-  install's frontend build. The GitLab and Azure DevOps pages never mention the command,
+  and a git install's frontend build. The GitLab and Azure DevOps pages never mention the command,
   though it serves every provider, and none says it now takes up a changed
   `[ci.staging] endpoint_suffix` or `[ci.production] environment`.
 - **`.env.example`.** All three pages and `docs/deployment/index.md:173` say it "lists
   exactly which secrets are needed". For Databricks it also holds the local data-access
   pair, `DATABRICKS_HOST` and `DATABRICKS_TOKEN`, which no CI step reads; `haute init` prints
   the CI secrets, and `haute ci secrets --check` checks them.
-- **Secrets by target.** The GitHub page says the AWS ECS deploy steps fetch a fresh ECR
-  password each run instead of reading `DOCKER_USERNAME` and `DOCKER_PASSWORD` (:152). The
-  generated steps only run `haute deploy`, which logs in to no registry (BUG-24), and
-  `haute ci secrets` requires both `DOCKER_*` values for `aws-ecs`, failing `--check`
-  without them; the page's table leaves them out. No page lists GCP Cloud Run's secrets
-  (`DOCKER_USERNAME`, `DOCKER_PASSWORD`, `GCP_PROJECT_ID`, `GCP_SERVICE_ACCOUNT_KEY`),
+- **Secrets by target.** No page lists GCP Cloud Run's secrets (`GCP_PROJECT_ID`,
+  `GCP_SERVICE_ACCOUNT_KEY`, the key the deploy jobs log in to Artifact Registry with),
   though each names GCP as a target.
 - **Generated details.** The Azure DevOps page tells readers to give the production
   checkout `persistCredentials: true` (:194), which the generated pipeline already sets, as
@@ -127,15 +121,14 @@ a team on a free plan leaves the setting unset. The time limits, image and secre
 generator writes, with GCP's table added. The `haute ci update` section moves to the
 deployment overview, which all three pages link: what it rewrites, what it deletes, and that
 hand edits to generated files are overwritten. Each page points to the CI secrets
-`haute init` prints. The AWS line gives BUG-24's manual login step, as the bugs register
-asks, until BUG-24 lands. The Azure checkout clause goes.
+`haute init` prints. The Azure checkout clause goes.
 
 **Acceptance:** Parity tests derive each CI page's secret tables from `ci_secret_names`, its
 deploy-job time limits from `_deploy_timeout_minutes`, and the GitLab image from the
 `python_version` pin. No page asks for a setting the generated files already have, or one
 that cannot gate the job it names.
 
-**Dependencies:** BUG-24 for the registry login.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_scaffold.py::ci_files`, `::github_deploy_prod_yml`,
 `::gitlab_ci_yml`, `::azure_devops_yml`, `::_deploy_timeout_minutes`, `::_pin_ci_python`,

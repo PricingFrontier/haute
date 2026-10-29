@@ -82,15 +82,8 @@ CI needs AWS credentials to push images to ECR. Credentials for a manual ECS ser
 | `AWS_ACCESS_KEY_ID` | Your AWS access key |
 | `AWS_SECRET_ACCESS_KEY` | Your AWS secret key |
 | `AWS_DEFAULT_REGION` | e.g. `eu-west-1` |
-| `DOCKER_USERNAME`, `DOCKER_PASSWORD` | Not needed for ECR: its passwords last 12 hours, so the deploy fetches a fresh one each run (below) |
 
-Haute pushes with a plain `docker push` and does not log in to ECR, and the generated workflows do not either. Until they do, add a login line before `haute deploy` in both the staging and the production deploy step of your workflow file, for example on GitHub Actions:
-
-```yaml
-        run: |
-          aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin 123456789012.dkr.ecr.eu-west-1.amazonaws.com
-          uv run haute deploy --endpoint-suffix "-staging"
-```
+ECR passwords last 12 hours, so there is no registry password to store: before each staging and production deploy, the generated workflow fetches a fresh one with these keys and logs in to the host of the `registry` in `haute.toml`.
 
 How to add them depends on your CI provider - see [GitHub Actions](../ci/github-actions.md#step-1-add-your-credentials-as-github-secrets), [GitLab](../ci/gitlab.md#step-1-add-your-credentials-as-cicd-variables), or [Azure DevOps](../ci/azure-devops.md#step-1-create-a-variable-group-for-credentials).
 

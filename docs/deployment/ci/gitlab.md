@@ -139,15 +139,13 @@ Your pipeline needs credentials to deploy. In GitLab, these are stored as **CI/C
 
 | Variable | Value | Options |
 |---|---|---|
-| `DOCKER_USERNAME` | Your ACR name | Mask variable ✓ |
-| `DOCKER_PASSWORD` | Your ACR password | Mask variable ✓ |
 | `AZURE_SUBSCRIPTION_ID` | Your subscription ID | Mask variable ✓ |
 | `AZURE_TENANT_ID` | Your tenant ID | Mask variable ✓ |
 | `AZURE_CLIENT_ID` | Your service principal app ID | Mask variable ✓ |
 | `AZURE_CLIENT_SECRET` | Your service principal secret | Mask variable ✓ |
 
-!!! warning "Container targets need Docker and a registry login"
-    The generated jobs run in the `python:3.11` image, which has no Docker, so for a container target `haute deploy` stops with "Docker is not available". Give the `deploy-staging` and `deploy-production` jobs a Docker-capable setup (for example a `docker:dind` service with a Docker CLI in the job image), and add a registry login line before `haute deploy` (see [Docker](../targets/docker.md#log-in-to-the-registry-before-the-deploy)). For ECR, which needs no `DOCKER_*` variables, the login line in [AWS ECS](../targets/aws.md#step-2-add-credentials-to-ci) also needs the AWS CLI, which `python:3.11` lacks: install it in those jobs or use an image that has Python, the Docker CLI and the AWS CLI.
+!!! warning "Container targets need a privileged runner"
+    The jobs run in a `python` image, which has no Docker. For a container target, the `deploy-staging` and `deploy-production` jobs extend a hidden `.docker` job: a Docker-in-Docker service builds and pushes the image, and the job installs the matching Docker CLI before logging in to the `registry` in `haute.toml`. Docker-in-Docker needs a privileged runner that shares `/certs/client` with the service. GitLab.com's instance runners are set up that way; a self-managed runner needs `privileged = true` and `volumes = ["/certs/client", "/cache"]` in its `config.toml`.
 
 !!! tip "Mask variable"
     Always tick **Mask variable** for secrets - this prevents them from appearing in pipeline logs.
