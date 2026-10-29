@@ -183,24 +183,29 @@ no alias or migration shim; direct test callers use the same current contract.
   something the table can follow (aliases, containers holding containers, copies, `match`
   captures, function locals). So when a statement changes a value in place, every name the code
   bound whose value could change becomes unknown from there on, the changed one with it; only a
-  number, string or other immutable literal (subscripts of literals read, so `rate = d["A"]`
-  with `d["A"]` a number) and a Polars expression that read only such values (Polars copies
-  what an expression reads when it is built; one holding a `lambda` or reading a name still can
-  change) keep their values. After such a change, evaluation also treats a preamble value read
+  number, string, `None` or other immutable literal (subscripts of literals read, so
+  `rate = d["A"]` with `d["A"]` a number) and a Polars expression that read only such values
+  keep their values. A Polars expression is one built by a `pl` expression builder (`pl.col`,
+  `pl.lit`, `pl.when` and the like, not `pl.Series` or `pl.DataFrame`) through methods other
+  than `.meta`, arithmetic or a single comparison, never `and`/`or`, which return an operand as
+  it is; Polars copies what an expression reads when it is built, but one holding a `lambda` or
+  reading a name can still change. After such a change, evaluation also treats a preamble value read
   by a later formula as unknown when it could have been changed: anything but a number, string,
   date or time, a tuple of those, a Polars expression, a module, a class or a function. Code
   with no change in place is untouched by this; code with one used to be traced with stale
   values, so a refusal there is the conservative answer.
 - **What counts as a change in place**: a store or delete through a subscript or attribute
-  (`d["k"] = v`, `d["k"] += v`, `del d["k"]`, `obj.a = v`); an augmented assignment unless it is
-  arithmetic on a number or a string (`factor += 0.1` binds a new value, `items += [x]` and
-  `items *= 2` change the list); a `pop`, `popitem` or `setdefault` call anywhere; a method
-  called on its own line that changes one of Python's containers (`update`, `append`,
-  `extend`, `insert`, `remove`, `clear`, `sort`, `reverse`, `add`, `discard`, the set updates),
-  on any name, or any method called on its own line on a value the code bound; and a call
-  passing a value to a function the code defines that changes its parameter, directly or
-  through another such function. A hit on a value that cannot change (`expr.alias("z")` alone
-  on a closed Polars expression) is no change. The scan reaches every depth of a statement
+  (`d["k"] = v`, `d["k"] += v`, `del d["k"]`, `obj.a = v`), even through a value no name
+  reaches as written (`d.get("A")["k"] = v`); an augmented assignment (`items += [x]`,
+  `items += (x,)`); a `pop`, `popitem` or `setdefault` call anywhere; a method called on its
+  own line that changes one of Python's containers (`update`, `append`, `extend`, `insert`,
+  `remove`, `clear`, `sort`, `reverse`, `add`, `discard`, the set updates), on any value, or
+  any method called on its own line on a value the code bound; and a call passing a value to a
+  function the code defines that changes its arguments: one that changes a parameter or a name
+  that may hold one, or passes one to another such function. A hit on a name the code bound
+  only ever to values that cannot change, counting every binding a block may make, is no change
+  (`factor += 0.1` on a number, `expr.alias("z")` alone on a closed Polars expression). The
+  scan reaches every depth of a statement
   (a loop body, a function body); a name a function, lambda, class or comprehension binds for
   itself counts only when a binding of it there reads a value from outside, so a helper
   changing its own list or parameter changes nothing until it is called, while decorators,

@@ -1929,6 +1929,37 @@ class TestValuesChangedInPlace:
                 'df = df.with_columns(y=pl.col("x") * factor)',
                 "factor",
             ),
+            (
+                "factors = [1.0]\nalias = factors\nfactors += (2.0,)\n"
+                'df = df.with_columns(y=pl.col("x") * alias[-1])',
+                "alias",
+            ),
+            (
+                "factors = [1.0]\nitems = ()\nif True:\n    items = factors\n"
+                "    items.append(2.0)\n"
+                'df = df.with_columns(y=pl.col("x") * factors[-1])',
+                "factors",
+            ),
+            (
+                'factors = [1.0] or pl.col("x")\nfactors[0] = 2.0\n'
+                'df = df.with_columns(y=pl.col("x") * factors[0])',
+                "factors",
+            ),
+            (
+                'factors = {"A": {"rate": 1.0}}\nfactors.get("A")["rate"] = 2.0\n'
+                'df = df.with_columns(y=pl.col("x") * factors["A"]["rate"])',
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\ndef bump(items):\n    items[0]["A"] = 2.0\n'
+                "bump([factors])\n" + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\ndef bump(d):\n    alias = d\n    alias["A"] = 2.0\n'
+                "bump(factors)\n" + _TIMES_A.format("factors"),
+                "factors",
+            ),
         ],
         ids=[
             "subscript",
@@ -1963,6 +1994,12 @@ class TestValuesChangedInPlace:
             "passed-to-a-function-that-changes-it",
             "a-lambda-in-a-polars-expression",
             "rebound-by-a-match-capture",
+            "a-list-extended-by-a-tuple",
+            "rebound-in-a-block-before-the-change",
+            "an-or-returning-a-list",
+            "a-store-through-a-call",
+            "passed-inside-a-list-to-a-function-that-changes-it",
+            "a-parameter-changed-through-a-local-alias",
         ],
     )
     def test_the_value_is_reported_not_guessed(self, code: str, unknown: str) -> None:
@@ -2013,6 +2050,11 @@ class TestValuesChangedInPlace:
                 'expr = pl.col("x") * 2.0\nexpr.alias("z")\ndf = df.with_columns(y=expr)',
                 20.0,
             ),
+            (
+                'default = None\nfactors = {}\nfactors["A"] = 2.0\n'
+                'df = df.with_columns(y=pl.coalesce(pl.lit(default), pl.col("x")))',
+                10.0,
+            ),
         ],
         ids=[
             "read-before-the-change",
@@ -2023,6 +2065,7 @@ class TestValuesChangedInPlace:
             "a-polars-expression-built-before-the-change",
             "arithmetic-on-a-number",
             "a-method-alone-on-a-polars-expression",
+            "a-null-default",
         ],
     )
     def test_a_value_the_code_did_not_change_keeps_it(self, code: str, value: float) -> None:
