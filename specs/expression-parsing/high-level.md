@@ -195,9 +195,9 @@ submodel constructor that declares constants are `ParseError`s naming the line.
 - The structural parser uses Python's `ast` module because pipeline files are executable Python
   and this path only needs structural reads. Codegen is a separate generation path: its builders
   describe each node and one printer lays the module out, a contract with the rest of its
-  decorator, so no generated source is edited afterwards. Edits to authored source (the repair
-  actions and the node-scoped save) go through the LibCST-based structured-syntax boundary in
-  `haute._python_syntax`, never through this parser's AST.
+  decorator, so no generated source is edited afterwards. A rewrite of authored source (Recover,
+  Reset, the node-scoped save) goes through the LibCST-based structured-syntax boundary in
+  `haute._python_syntax`; nothing unparses this parser's AST over authored source.
 - Editor recovery exists so that one node's configuration or contract failure need not blank the
   editor while strict runtime consumers still fail loudly. It reads the node and connection
   skeletons of a file that parses and resolves each node, under a named isolation boundary, into

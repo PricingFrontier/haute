@@ -22,7 +22,7 @@
 | `src/haute/_sidecar.py` | Core read-side `.haute.json` contract: `SidecarModel`, the typed absent/valid/corrupt/unreadable read state (a sidecar that is not UTF-8 is corrupt; a leading byte order mark is dropped), and the sidecar source/position normalisers. Lives outside the web layer so editor recovery never imports routes. |
 | `src/haute/routes/__init__.py` | Package docstring only — no code. |
 | `src/haute/routes/_helpers.py` | Re-exports the core sidecar read contract and `load_pipeline_editor_document` for route consumers; path/index/watcher/WebSocket helpers; strict `parse_pipeline_to_graph`; the sidecar write path (`save_sidecar`); historical-commit parsing; the shared `save_lock`; and `project_write(project_root, work)`, the one way into the project for the editor's writes (the form's save, a Files panel's upload or delete): in turn with every other save (`save_lock`), in the thread pool, under the repository's lock a branch switch holds too (`repository_mutation`), so a write's checks, the write and its capture on the save ledger are never split. |
-| `src/haute/routes/pipeline.py` | `/api/pipelines`, `/api/pipeline`, `/api/pipeline/{name}`, `/api/pipeline/editor-identities`, `/api/pipeline/polars-steps/render`, `/api/pipeline/polars-steps/free-code-columns`, `/api/pipeline/save`, `/api/pipeline/repair/remove/dry-run`, `/api/pipeline/repair/remove/apply`, `/api/pipeline/read-json`, `/api/pipeline/trace`, `/api/pipeline/preview`, `/api/pipeline/preview/inputs`, `/api/pipeline/recovery-preview`, `/api/pipeline/write-output`, `/api/pipeline/output-destination` — plus the supersession-key builders, shared output-request preparation, `_prepare_runtime_graph` request containment, runtime-input/output path validators, and memory-limit-to-HTTP-exception translators shared across graph-executing route families. |
+| `src/haute/routes/pipeline.py` | `/api/pipelines`, `/api/pipeline`, `/api/pipeline/{name}`, `/api/pipeline/editor-identities`, `/api/pipeline/polars-steps/render`, `/api/pipeline/polars-steps/free-code-columns`, `/api/pipeline/save`, `/api/pipeline/repair/remove/apply`, `/api/pipeline/repair/connection/remove/apply`, `/api/pipeline/repair/recover/apply`, `/api/pipeline/node/save`, `/api/pipeline/read-json`, `/api/pipeline/trace`, `/api/pipeline/preview`, `/api/pipeline/preview/inputs`, `/api/pipeline/recovery-preview`, `/api/pipeline/write-output`, `/api/pipeline/output-destination` — plus the supersession-key builders, shared output-request preparation, `_prepare_runtime_graph` request containment, runtime-input/output path validators, and memory-limit-to-HTTP-exception translators shared across graph-executing route families. |
 | `src/haute/routes/files.py` | `/api/files` (directory browse), `/api/schema` (flat-file plus XML structured-record schema/preview) and `/api/model-file` (model-file inspection for the Model Scoring editor). |
 | `src/haute/routes/project_files.py` | `/api/project-files`: list, write (raw streamed body), download and delete the files of the two places, the pipeline folder's versioned `files/` and the root's local `data/` and `outputs/`, with the save-ledger capture of a pipeline-place write or delete. |
 | `src/haute/routes/io_capabilities.py` | `/api/io-capabilities`, the versioned provider/format/cache capability contract consumed by the input and output editors. |
@@ -1377,7 +1377,11 @@ bounded; the server writes the complete untruncated edits. The post-apply
 document is authoritative.
 
 Each apply route acquires `save_lock`, reloads the document and computes the
-complete plan under the lock; a stale revision is HTTP 409 before staging. `_commit_repair_plan`
+complete plan under the lock; a stale revision is HTTP 409 before staging. The four routes
+(remove, connection remove, recover and `POST /api/pipeline/node/save`) answer it with one
+`detail` shape, `{code: "repair_revision_conflict", message, current_revision}`, built by
+`_pipeline_repair._document_at_revision`; `current_revision` is the revision on disk, and
+the commit's own revision re-check refuses in the same shape. `_commit_repair_plan`
 then holds the repository's `repository_mutation` lock from its revision and artifact
 re-checks through staging, verification and rollback, so a Git action never sees part of a
 repair or a node-scoped save. Staged writes/deletes and

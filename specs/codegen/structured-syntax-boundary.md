@@ -30,8 +30,8 @@ Haute adopts a structured valid-Python boundary with two deliberately different 
    an AST back over authored source.
 3. Invalid Python is never repaired or normalized through the valid-source boundary. The
    editor recovery path keeps its conservative AST skeleton model, source captures,
-   diagnostics, and recovery spans, and presents a syntax-invalid file as source only. Strict execution and save paths continue to reject invalid
-   syntax.
+   diagnostics, and recovery spans, and presents a syntax-invalid file as source only.
+   Strict execution and save paths continue to reject invalid syntax.
 4. String templates remain the readable initial source generator. Any post-generation edit
    must use the LibCST boundary rather than a token splice, regex replacement, or substring
    mutation. Text search remains acceptable only for non-semantic display/search features.
