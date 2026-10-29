@@ -10,7 +10,7 @@ from collections import Counter, deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from haute._ast_helpers import (
@@ -1945,22 +1945,30 @@ def name_violations_payload(violations: Sequence[NameViolation]) -> list[Pipelin
 
 
 def _unkept_statement_diagnostics(
-    source: str, *, source_file: str
+    source: str,
+    *,
+    source_file: str,
+    receiver: Literal["pipeline", "submodel"] = "pipeline",
 ) -> list[PipelineRecoveryDiagnostic]:
     """One diagnostic per module statement that a save would drop.
 
-    Each degrades the document, so nothing regenerates the file without the
+    *source* is the pipeline file's, or a registered submodel file's with
+    *receiver* ``"submodel"``: a save regenerates both the same way. Each
+    degrades the document, so nothing regenerates the file without the
     statement until it moves into the preamble or a preserved block.
     """
+    constructor = "Pipeline" if receiver == "pipeline" else "Submodel"
     lines = source.splitlines()
     diagnostics = []
-    for start_line, end_line in unkept_module_statements(source):
+    for start_line, end_line in unkept_module_statements(
+        source, receiver=receiver, constructor_name=constructor
+    ):
         first = lines[start_line - 1].strip()
         excerpt = first if len(first) <= 60 else f"{first[:57]}..."
         diagnostics.append(
             _diagnostic(
                 code="unkept_module_statement",
-                scope="pipeline",
+                scope=receiver,
                 message=(
                     f"`{excerpt}` is outside the preamble and preserved blocks, where a save "
                     "would drop it."
@@ -1973,9 +1981,10 @@ def _unkept_statement_diagnostics(
                     end_column=len(lines[end_line - 1]),
                 ),
                 remediation=(
-                    "Move it between the `import haute` line and `pipeline = haute.Pipeline(...)`, "
-                    "where it becomes part of the preamble, or wrap it in "
-                    "`# haute:preserve-start` and `# haute:preserve-end` lines."
+                    f"Move it between the `import haute` line and "
+                    f"`{receiver} = haute.{constructor}(...)`, where it becomes part of the "
+                    "preamble, or wrap it in `# haute:preserve-start` and "
+                    "`# haute:preserve-end` lines."
                 ),
             )
         )
@@ -2144,6 +2153,15 @@ def _load_readable_pipeline_editor_document(
     strict_failure: BaseException | None = None
     strict_graph: PipelineGraph | None = None
     name_violations: list[NameViolation] = []
+    # Each registered submodel file the strict parse reads, by wire path: a save
+    # regenerates it too, so its unkept statements are checked like the pipeline's.
+    submodel_sources: dict[str, str] = {}
+
+    def read_submodel_source(child_path: Path) -> str:
+        child_source = captures.read(child_path)[1]
+        submodel_sources[_wire_path(child_path, root)] = child_source
+        return child_source
+
     try:
         # Parse the exact bytes this document presents. Re-reading the file
         # here could straddle a concurrent external edit and silently disagree
@@ -2153,7 +2171,7 @@ def _load_readable_pipeline_editor_document(
             source_file=str(path),
             _base_dir=path.parent,
             _submodel_base_dir=_infer_parse_base_dir(path),
-            _read_submodel_source=lambda child_path: captures.read(child_path)[1],
+            _read_submodel_source=read_submodel_source,
             _read_global_constants_bytes=lambda constants_path: captures.read(constants_path)[0],
         )
     except (HauteError, OSError, UnicodeError) as exc:
@@ -2177,6 +2195,12 @@ def _load_readable_pipeline_editor_document(
         unresolved = snapshot.unresolved_connections
         submodels = snapshot.submodels
         diagnostics.extend(_unkept_statement_diagnostics(source, source_file=source_file))
+        for child_file, child_source in submodel_sources.items():
+            diagnostics.extend(
+                _unkept_statement_diagnostics(
+                    child_source, source_file=child_file, receiver="submodel"
+                )
+            )
 
     if strict_graph is None:
         if sidecar_issue is not None:

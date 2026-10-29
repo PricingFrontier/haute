@@ -375,6 +375,8 @@ def _apply_banding(
     rules: list[dict[str, Any]] | dict[str, Any],
     default: Any = None,
     right_closed: bool = True,
+    *,
+    schema: dict[str, Any] | None = None,
 ) -> _Frame:
     """Apply banding rules to a column, producing a new output column.
 
@@ -385,6 +387,11 @@ def _apply_banding(
     Categorical rules map exact values to groups::
 
         {"value": "Semi-detached House", "assignment": "House"}
+
+    *schema* is the frame's schema when the caller already holds it: breakpoints
+    read their column's dtype from it, and the band written is recorded in it as
+    text, so a caller applying many factors resolves its growing plan once.
+    Without it, breakpoints resolve the frame's schema themselves.
     """
     require_banding_type(banding_type, subject=f"Banding output {output_column!r}")
     rules = normalise_banding_rules(banding_type, rules)
@@ -406,6 +413,8 @@ def _apply_banding(
                 )
             return lf
         cat_expr = col.cast(pl.Utf8).replace_strict(remap, default=default_lit).alias(output_column)
+        if schema is not None:
+            schema[output_column] = pl.String
         return lf.with_columns(cat_expr)
 
     # Breakpoints become interval rules, evaluated as a when/then chain.
@@ -414,10 +423,8 @@ def _apply_banding(
 
     # The column as breakpoints of this kind compare it; for numbers, NaN/Inf
     # are made missing so they fall cleanly to the default.
-    if hasattr(lf, "collect_schema"):
-        schema = lf.collect_schema()
-    else:
-        schema = dict(zip(lf.columns, lf.dtypes))  # type: ignore[assignment]
+    if schema is None:
+        schema = dict(_frame_schema(lf))
     col = banding_comparison_expr(col, schema.get(column), kind, output_column)
 
     chain: Any = None
@@ -438,6 +445,7 @@ def _apply_banding(
             )
         return lf
     final_expr = chain.otherwise(default_lit).alias(output_column)
+    schema[output_column] = pl.String
     return lf.with_columns(final_expr)
 
 
@@ -634,23 +642,31 @@ def apply_banding_factors(lf: _Frame, factors: Iterable[dict[str, Any]]) -> _Fra
     documented no-op) — but only once their type is checked: a draft names
     one of the banding types too. Two active factors writing one output
     column are refused before the frame is touched.
+
+    The frame's schema is resolved once, when the first breakpoints factor needs
+    its column's dtype, and kept in step with every band written after it, as
+    :func:`_apply_rating_step_outputs` threads its own: resolving the growing
+    lazy plan per factor made a node of many factors quadratic.
     """
     factors = list(factors)
     require_distinct_banding_outputs(factors)
+    schema: dict[str, Any] | None = None
     for index, factor in enumerate(factors):
-        require_banding_type(
-            str(factor.get("banding", "") or ""), subject=f"Banding factor {index}"
-        )
+        banding_type = str(factor.get("banding", "") or "")
+        require_banding_type(banding_type, subject=f"Banding factor {index}")
         if not banding_factor_is_active(factor):
             continue
+        if schema is None and banding_type == "breakpoints":
+            schema = dict(_frame_schema(lf))
         lf = _apply_banding(
             lf,
             factor["column"],
             factor["outputColumn"],
-            factor.get("banding", ""),
+            banding_type,
             factor["rules"],
             factor.get("default"),
             right_closed=factor.get("rightClosed", True),
+            schema=schema,
         )
     return lf
 

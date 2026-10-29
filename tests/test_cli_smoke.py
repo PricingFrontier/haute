@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import shlex
 import sys
+import tomllib
 import types
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 from haute.cli import cli
 
@@ -264,6 +267,37 @@ class TestSmokeHttp:
         result = runner.invoke(cli, ["smoke"])
         assert result.exit_code == 1
         assert "staging" in result.output.lower()
+
+    def test_a_scaffolded_container_projects_smoke_step_calls_its_address(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """BUG-21: the generated step ran ``haute smoke --endpoint-suffix "-staging"``,
+        which the command refuses for a container target, on every run."""
+        monkeypatch.chdir(tmp_path)
+        assert (
+            runner.invoke(cli, ["init", "--target", "container", "--ci", "github"]).exit_code == 0
+        )
+        workflow = tmp_path / ".github" / "workflows" / "deploy-staging.yml"
+        steps = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]["smoke-test"]["steps"]
+        (command,) = [step["run"] for step in steps if "haute smoke" in step.get("run", "")]
+        arguments = shlex.split(command)[3:]  # past "uv run haute"
+
+        unset = runner.invoke(cli, arguments)
+        assert unset.exit_code == 1
+        assert "No staging endpoint URL configured" in unset.output
+
+        toml = tmp_path / "haute.toml"
+        text = toml.read_text(encoding="utf-8")
+        toml.write_text(text.replace("# endpoint_url = ", "endpoint_url = ", 1), encoding="utf-8")
+        address = tomllib.loads(toml.read_text(encoding="utf-8"))["ci"]["staging"]["endpoint_url"]
+        with patch("haute.cli._smoke._smoke_http", return_value=True) as smoke_http:
+            result = runner.invoke(cli, arguments)
+
+        assert result.exit_code == 0, result.output
+        assert smoke_http.call_args.args[0] == address
 
 
 class TestSmokeDatabricksEdgeCases:

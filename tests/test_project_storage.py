@@ -94,6 +94,7 @@ def _isolated_storage_state(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("DATABRICKS_APP_NAME", raising=False)
     monkeypatch.setattr(_project_storage, "_session", _project_storage._SessionState())
     monkeypatch.setattr(_uc_transport, "_writer", _uc_transport._WriterState())
+    monkeypatch.setattr(_uc_transport, "_workspace", _uc_transport._ProcessWorkspace())
     yield
     _project_storage.push_queue().stop()
     _uc_transport._writer.heartbeat.stop()
@@ -134,6 +135,19 @@ def _replace_container(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setattr(_project_storage, "_session", _project_storage._SessionState())
     monkeypatch.setattr(_uc_transport, "_writer", _uc_transport._WriterState())
+
+
+def _two_saved_branches(project: Path) -> str:
+    """A save on WORKING, then ALT created with a save of its own; the clone is left on
+    WORKING. Returns ALT's save."""
+    (project / "rating.py").write_text("# working priced\n", encoding="utf-8")
+    assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
+    _git.set_working_branch(ALT, project, cwd=project, create=True)
+    (project / "rating.py").write_text("# alt priced\n", encoding="utf-8")
+    sha = _git.commit_save(["rating.py"], ALT, cwd=project)
+    assert sha is not None
+    _git.set_working_branch(WORKING, project, cwd=project)
+    return sha
 
 
 def _bind_and_publish(project: Path, *, content: str = "# priced\n") -> str:
@@ -787,6 +801,52 @@ class TestContainerDeathSurvival:
         assert binding.branch == WORKING
         assert binding.bound_by == "someone@example.com"
 
+    def test_a_branch_switched_before_the_first_push_is_the_one_bound(
+        self,
+        project: Path,
+        bare_remote: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """BUG-47: the bind read the working branch before the push took the Git lock, so a
+        switch in between published the new pair while the binding named the old branch,
+        which the remote lacked, and the first restart looked for unpublished state."""
+        sha = _two_saved_branches(project)
+        real_push = _git.push_working_pair
+
+        def switch_then_push(remote: str, project_root: Path, cwd: Path | None = None):
+            # Between the bind's first look and the push's lock.
+            _git.set_working_branch(ALT, project_root, cwd=project_root)
+            return real_push(remote, project_root, cwd=cwd)
+
+        monkeypatch.setattr(_git, "push_working_pair", switch_then_push)
+
+        assert _project_storage.bind_remote(f"file://{bare_remote}", project) == "adopted"
+
+        binding = _project_storage.read_binding()
+        assert binding is not None and binding.branch == ALT
+        published = _run_git(bare_remote, "branch", "--format=%(refname:short)").splitlines()
+        assert {ALT, f"{ALT}-save"} <= set(published)
+        assert WORKING not in published
+        _replace_container(monkeypatch)
+        restored = tmp_path / "restored"
+        assert _project_storage.restore_if_bound(restored) == "restored"
+        _assert_resumed_on(restored, ALT, "# alt priced\n", sha)
+
+    def test_a_failed_first_push_records_no_binding(
+        self, project: Path, bare_remote: Path, files_api: _FakeFiles
+    ) -> None:
+        rule = bare_remote / "hooks" / "pre-receive"
+        rule.write_text("#!/bin/sh\nexit 1\n", newline="\n")
+        rule.chmod(0o755)
+
+        with pytest.raises(_git.GitError):
+            _project_storage.bind_remote(f"file://{bare_remote}", project)
+
+        assert _project_storage.read_binding() is None
+        assert _project_storage.active_binding() is None
+
     def test_populated_remote_defers_to_a_restart(
         self, project: Path, bare_remote: Path, files_api: _FakeFiles, tmp_path: Path
     ) -> None:
@@ -1405,6 +1465,51 @@ class TestUcContainerDeathSurvival:
         assert binding is not None
         assert binding.remote_url == UC_URL
         assert binding.branch == WORKING
+
+    def test_a_branch_switched_before_the_first_publication_is_the_one_bound(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """BUG-47, on a volume: the bind named the branch it read before the bundle was
+        captured under the Git lock, not the one the publication carried."""
+        # One app: the restore takes over the replaced container's claim, as a redeploy's does.
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        sha = _two_saved_branches(project)
+        real_publish = _project_storage.publish_to_uc
+
+        def switch_then_publish(url: str, project_root: Path) -> str | None:
+            # Between the bind's first look and the bundle's capture.
+            _git.set_working_branch(ALT, project_root, cwd=project_root)
+            return real_publish(url, project_root)
+
+        monkeypatch.setattr(_project_storage, "publish_to_uc", switch_then_publish)
+
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+
+        binding = _project_storage.read_binding()
+        assert binding is not None and binding.branch == ALT
+        _replace_container(monkeypatch)
+        restored = tmp_path / "restored"
+        assert _project_storage.restore_if_bound(restored) == "restored"
+        _assert_resumed_on(restored, ALT, "# alt priced\n", sha)
+
+    def test_a_failed_first_publication_records_no_binding(
+        self, project: Path, files_api: _FakeFiles
+    ) -> None:
+        def refuse_bundles(path: str) -> None:
+            if "/bundles/" in path:
+                raise RuntimeError("upload refused")
+
+        files_api.before_upload = refuse_bundles
+
+        with pytest.raises(StorageUnavailableError):
+            _project_storage.bind_remote(UC_URL, project)
+
+        assert _project_storage.read_binding() is None
+        assert _project_storage.active_binding() is None
 
     def test_publish_emits_one_phase_separated_measurement(
         self, project: Path, files_api: _FakeFiles
@@ -2733,6 +2838,94 @@ class TestUcClaim:
         assert heartbeat._thread is not first_thread
         assert not heartbeat._stop.is_set()
         assert heartbeat._thread is not None and heartbeat._thread.is_alive()
+
+
+class _CountedWorkspace:
+    """The SDK's ``WorkspaceClient`` stood in, counting each one built.
+
+    Every client serves one in-memory volume, as every real client of one
+    workspace reaches the same volume.
+    """
+
+    def __init__(self) -> None:
+        self.volume = _FakeFiles()
+        self.built = 0
+
+    def client(self) -> object:
+        self.built += 1
+        return type("_Client", (), {"files": self.volume})()
+
+
+class TestWorkspaceClient:
+    """BUG-41: every volume call built a ``WorkspaceClient``, resolving authentication
+    each time, the claim heartbeat's every 30 s among them."""
+
+    @pytest.fixture()
+    def workspace(self, monkeypatch: pytest.MonkeyPatch) -> _CountedWorkspace:
+        import databricks.sdk
+
+        counted = _CountedWorkspace()
+        monkeypatch.setattr(databricks.sdk, "WorkspaceClient", counted.client)
+        _plant_claim(counted.volume, "local")
+        return counted
+
+    def test_a_heartbeat_and_a_read_share_one_client(self, workspace: _CountedWorkspace) -> None:
+        claim = _uc_transport.read_uc_claim(UC_URL)
+        assert claim is not None
+        _uc_transport._writer.claim = claim
+        _uc_transport._writer.claim_url = UC_URL
+
+        assert _uc_transport._writer.heartbeat._beat() is True
+        assert _uc_transport.read_uc_claim(UC_URL) is not None
+        assert workspace.built == 1
+
+    def test_refused_credentials_build_a_fresh_client(self, workspace: _CountedWorkspace) -> None:
+        from databricks.sdk.errors import Unauthenticated
+
+        workspace.volume.fail_with = Unauthenticated("Invalid access token.")
+        with pytest.raises(StorageUnavailableError):
+            _uc_transport.read_uc_claim(UC_URL)
+        workspace.volume.fail_with = None
+
+        assert _uc_transport.read_uc_claim(UC_URL) is not None
+        assert workspace.built == 2
+
+    def test_a_refused_service_principal_is_forgotten_and_a_corrected_one_reads(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The real SDK's OAuth exchange refuses a service principal with a plain
+        ``ValueError("invalid_client: ...")``, not ``Unauthenticated``; the client
+        holding the refused secret must not be kept."""
+        from tests._databricks_workspace_stub import workspace_stub
+
+        with workspace_stub(accepted_secret="current-secret") as stub:
+            monkeypatch.setenv("DATABRICKS_HOST", stub.host)
+            monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+            monkeypatch.setenv("DATABRICKS_CLIENT_ID", "app-id")
+            monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "revoked-secret")
+            monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(tmp_path / "no-profiles.cfg"))
+
+            with pytest.raises(StorageUnavailableError):
+                _uc_transport.read_uc_claim(UC_URL)
+            monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "current-secret")
+            generations = _uc_transport._list_pointer_generations(UC_URL)
+
+        assert generations == []
+        assert stub.discoveries == 2
+        # The SDK may ask for a token more than once before it gives up on a secret.
+        assert stub.token_requests[0] == "revoked-secret"
+        assert stub.token_requests[-1] == "current-secret"
+
+    def test_other_failures_keep_the_client(self, workspace: _CountedWorkspace) -> None:
+        from databricks.sdk.errors import PermissionDenied
+
+        workspace.volume.fail_with = PermissionDenied("Missing READ VOLUME on the volume.")
+        with pytest.raises(StorageUnavailableError):
+            _uc_transport.read_uc_claim(UC_URL)
+        workspace.volume.fail_with = None
+
+        assert _uc_transport.read_uc_claim(UC_URL) is not None
+        assert workspace.built == 1
 
 
 # ---------------------------------------------------------------------------

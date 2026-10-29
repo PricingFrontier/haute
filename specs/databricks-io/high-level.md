@@ -77,6 +77,11 @@ between batches. Connector failures retain their original exception as the cause
 logged with exception type and a credential-scrubbed message; public build state remains a
 stable `build_failed` response.
 
+A browsing failure the SDK raises is answered with its cause: refused credentials 401,
+naming the `.env` variables of the form in use; a missing grant 403, naming what was
+listed; a catalog or schema that does not exist 404, naming it; any other failure 502.
+The SDK's own text is logged, credentials scrubbed, never returned.
+
 A retry whose consumed-row position disagrees with locally received rows raises
 `FetchIntegrityError`. Zero rows with no schema also raise `FetchIntegrityError`. No failure
 publishes or replaces the previous source-cache generation.
@@ -85,4 +90,8 @@ A table write refuses an invalid table name or write mode before connecting
 (`DatabricksConfigError`). A warehouse or storage failure raises `DatabricksWriteError`
 carrying the warehouse's message with credentials redacted (a failed upload's error can
 hold a signed storage URL); a failed staging cleanup is logged, redacted, and never masks
-the write's outcome. A failed `overwrite` load leaves the previous table in place.
+the write's outcome. Every load is one statement, a single Delta transaction, so a
+failed load leaves the table as it was: a failed `overwrite` leaves the previous table
+in place, a failed first `append` leaves no table, and a failed later `append` adds no
+rows. An `append` to a table another writer creates after the existence check fails
+rather than replacing that table.

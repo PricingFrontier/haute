@@ -21,6 +21,7 @@ import type {
 } from "../../api/types"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { MODEL_COLORS } from "../../theme/colors"
+import { tuningFamilyCapability } from "./algorithmCapabilities"
 import { diagnosticsSetLabel, validationMetricsLead } from "./diagnosticsSet"
 import { formatMetricValue } from "./metricOptions"
 import DiagnosticsIssues from "../DiagnosticsIssues"
@@ -185,6 +186,23 @@ function validationLabel(method: "none" | "single" | "cross_validation", count: 
   if (method === "none") return "No validation"
   if (method === "single") return "Holdout validation"
   return `${count}-fold cross-validation`
+}
+
+/**
+ * What the published model is, by the tuned family's refit policy: a round-refitting
+ * family's refit tree count, a fixed-budget family (EBM) refit with the winning budget,
+ * or a validation-fit family's (t-boost) winning trial fit, which is never refit.
+ */
+function finalFitNote(tuning: TuningReport): string {
+  const family = tuningFamilyCapability(tuning.final_params)
+  if (family === null) {
+    throw new Error("The tuning report's final parameters carry no single tunable family's round key.")
+  }
+  if (family.refit_policy === "validation_fit") return "published the winning trial's fit"
+  if (tuning.final_tree_count !== null) {
+    return `final tree count ${tuning.final_tree_count.toLocaleString()}`
+  }
+  return "refit with the winning round budget"
 }
 
 function sortedTopTrials(tuning: TuningReport) {
@@ -504,9 +522,7 @@ export function SummaryTab({ result, onUseBestParameters, elapsedSeconds }: Summ
                     {completedElapsedSeconds !== null && (
                       <> · {completedElapsedSeconds.toFixed(1)}s elapsed</>
                     )}{" "}
-                    {tuning.final_tree_count !== null
-                      ? `· final tree count ${tuning.final_tree_count.toLocaleString()}`
-                      : "· refit with the winning round budget"}
+                    · {finalFitNote(tuning)}
                   </p>
                 </div>
                 {onUseBestParameters && (

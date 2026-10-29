@@ -84,6 +84,29 @@ def resolve_databricks_credentials(
     )
 
 
+#: The OAuth token endpoint's error codes (RFC 6749, section 5.2) that refuse the
+#: client or its grant: the credentials themselves are wrong.
+_REFUSED_CREDENTIAL_CODES = frozenset({"invalid_client", "invalid_grant", "unauthorized_client"})
+
+
+def credentials_rejected(exc: BaseException) -> bool:
+    """Whether *exc* is the workspace refusing the credentials themselves.
+
+    A refused personal access token is the SDK's ``Unauthenticated``. A refused
+    service principal never reaches the API: the SDK's OAuth token exchange raises
+    a plain ``ValueError("<code>: <description>")`` from the token endpoint's
+    answer, which counts when its code refuses the client or its grant. Any other
+    ``ValueError`` is not a credential failure.
+    """
+    try:
+        from databricks.sdk.errors import Unauthenticated
+    except ImportError:  # pragma: no cover - the SDK raised exc, so it is installed
+        return False
+    if isinstance(exc, Unauthenticated):
+        return True
+    return isinstance(exc, ValueError) and str(exc).partition(":")[0] in _REFUSED_CREDENTIAL_CODES
+
+
 def databricks_workspace_client(credentials: DatabricksCredentials) -> Any:
     """A ``databricks.sdk.WorkspaceClient`` authenticated as *credentials* select.
 

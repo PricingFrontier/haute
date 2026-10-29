@@ -63,7 +63,7 @@ The `DeployStaging` stage runs `haute deploy --endpoint-suffix "-staging"`. On D
 
 ### 5. Smoke test (automatic)
 
-If deploy succeeds, the `SmokeTest` stage scores configured test quotes against an existing live staging endpoint. On Databricks the endpoint is already serving when it starts, since the deploy waited for it. On the generic container target it needs [the service addresses, without the suffix option](../targets/docker.md#step-3-give-smoke-and-impact-their-endpoints).
+If deploy succeeds, the `SmokeTest` stage scores configured test quotes against an existing live staging endpoint. On Databricks the endpoint is already serving when it starts, since the deploy waited for it. On the generic container target it calls [the staging address in `haute.toml`](../targets/docker.md#step-3-give-smoke-and-impact-their-endpoints).
 
 ### 6. Impact analysis (automatic)
 

@@ -222,9 +222,21 @@ def _pin_ci_python(text: str, python_version: str) -> str:
 # shell, where these characters are inert.
 _STAGING_SUFFIX_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
 
-# How the templates' staging deploy, smoke and impact steps name the staging suffix;
-# ``_pin_staging_suffix`` swaps in the project's.
+# How the templates' staging deploy steps, and a Databricks project's smoke and impact
+# steps, name the staging suffix; ``_pin_staging_suffix`` swaps in the project's.
 _STAGING_SUFFIX_FLAG = '--endpoint-suffix "{}"'
+
+
+def _verification_suffix_option(target: str) -> str:
+    """The staging suffix option a smoke or impact step passes, with its leading space.
+
+    Databricks names its staging endpoint by the suffix. A container-based target's
+    ``haute smoke`` and ``haute impact`` refuse the option and call the addresses in
+    ``[ci.staging]`` and ``[ci.production]`` ``endpoint_url`` instead.
+    """
+    if target in _CONTAINER_BASED_TARGETS:
+        return ""
+    return " " + _STAGING_SUFFIX_FLAG.format(DEFAULT_STAGING_ENDPOINT_SUFFIX)
 
 
 def staging_suffix_problem(suffix: object) -> str | None:
@@ -427,7 +439,7 @@ provider = "{ci}"
 
 [ci.staging]
 endpoint_suffix = "{DEFAULT_STAGING_ENDPOINT_SUFFIX}"
-""",
+{_service_addresses(name, target)}""",
     ]
     if workbench:
         sections.append(
@@ -437,6 +449,26 @@ enabled = true
 """
         )
     return "\n".join(sections)
+
+
+def _service_addresses(name: str, target: str) -> str:
+    """A container-based target's staging and production addresses, commented out.
+
+    Its ``haute smoke`` and ``haute impact`` call the running services at ``[ci.staging]``
+    and ``[ci.production]`` ``endpoint_url``, which only IT can supply; until they are
+    uncommented both commands stop naming the missing address. Databricks reaches its
+    endpoints by name and has none.
+    """
+    if target not in _CONTAINER_BASED_TARGETS:
+        return ""
+    return f"""\
+# The services the smoke test and impact analysis call: uncomment both addresses
+# once IT runs them.
+# endpoint_url = "https://{name}-staging.example.com"
+
+[ci.production]
+# endpoint_url = "https://{name}.example.com"
+"""
 
 
 def _target_section(name: str, target: str) -> str:
@@ -655,6 +687,7 @@ def _github_deploy_yml(target: str) -> str:
     no updated service to smoke-test or compare.
     """
     secrets_env = _github_secrets_env(target)
+    verify_suffix = _verification_suffix_option(target)
     verification_jobs = (
         ""
         if target in BUILD_AND_PUSH_ONLY_TARGETS
@@ -674,7 +707,7 @@ def _github_deploy_yml(target: str) -> str:
       - name: Score test quotes against staging endpoint
         env:
 {secrets_env}
-        run: uv run haute smoke --endpoint-suffix "-staging"
+        run: uv run haute smoke{verify_suffix}
 
   impact-analysis:
     name: Impact Analysis
@@ -691,7 +724,7 @@ def _github_deploy_yml(target: str) -> str:
       - name: Compare staging vs production predictions
         env:
 {secrets_env}
-        run: uv run haute impact --endpoint-suffix "-staging"
+        run: uv run haute impact{verify_suffix}
       - name: Upload impact report
         if: always()
         uses: actions/upload-artifact@v4
@@ -851,6 +884,10 @@ jobs:
 
 # ── GitLab CI ────────────────────────────────────────────────────────
 
+# The folder, under the project, that the GitLab pipeline keeps between runs and where
+# it tells uv to put its package cache. GitLab caches only paths inside the project.
+_GITLAB_UV_CACHE = ".cache/uv"
+
 
 def gitlab_ci_yml(
     target: str,
@@ -880,6 +917,7 @@ def _gitlab_ci_yml(target: str, environment: str) -> str:
     release_tag = _release_tag_script(target, " " * 6)
     environment_line = f'  environment: "{environment}"\n' if environment else ""
     verify = target not in BUILD_AND_PUSH_ONLY_TARGETS
+    verify_suffix = _verification_suffix_option(target)
     verification_stages = "  - smoke-test\n  - impact-analysis\n" if verify else ""
     verification_jobs = (
         f"""\
@@ -891,7 +929,7 @@ smoke-test:
   variables:
 {secrets_env}
   script:
-    - uv run haute smoke --endpoint-suffix "-staging"
+    - uv run haute smoke{verify_suffix}
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
@@ -903,7 +941,7 @@ impact-analysis:
   variables:
 {secrets_env}
   script:
-    - uv run haute impact --endpoint-suffix "-staging"
+    - uv run haute impact{verify_suffix}
   artifacts:
     paths:
       - impact_report.md
@@ -923,12 +961,17 @@ stages:
   - deploy-staging
 {verification_stages}  - deploy-production
 
+variables:
+  # uv keeps its package cache in ~/.cache/uv unless told otherwise; this points it
+  # at the folder the cache below keeps between runs.
+  UV_CACHE_DIR: "$CI_PROJECT_DIR/{_GITLAB_UV_CACHE}"
+
 default:
   image: python:3.11
   cache:
     key: uv-$CI_COMMIT_REF_SLUG
     paths:
-      - .cache/uv
+      - {_GITLAB_UV_CACHE}
   before_script:
     - pip install "uv>=0.5,<1" && uv sync --frozen
 
@@ -1016,6 +1059,7 @@ def _azure_devops_yml(target: str, *, environment: str) -> str:
         else f"                  env:\n{secrets_env_production}\n"
     )
     verify = target not in BUILD_AND_PUSH_ONLY_TARGETS
+    verify_suffix = _verification_suffix_option(target)
     production_depends_on = "ImpactAnalysis" if verify else "DeployStaging"
     verification_stages = (
         f"""\
@@ -1038,7 +1082,7 @@ def _azure_devops_yml(target: str, *, environment: str) -> str:
               versionSpec: "3.11"
           - script: pip install "uv>=0.5,<1" && uv sync --frozen
             displayName: Install dependencies
-          - script: uv run haute smoke --endpoint-suffix "-staging"
+          - script: uv run haute smoke{verify_suffix}
             displayName: Smoke test
             env:
 {secrets_env}
@@ -1062,7 +1106,7 @@ def _azure_devops_yml(target: str, *, environment: str) -> str:
               versionSpec: "3.11"
           - script: pip install "uv>=0.5,<1" && uv sync --frozen
             displayName: Install dependencies
-          - script: uv run haute impact --endpoint-suffix "-staging"
+          - script: uv run haute impact{verify_suffix}
             displayName: Impact analysis
             env:
 {secrets_env}
@@ -1236,9 +1280,9 @@ def ci_files(
 
     Paths are relative to the project root, in the order they are reported; ``"none"``
     has no files. Every job runs *python_version*, the project's Python; the staging
-    deploy, smoke and impact steps pass *staging_suffix*, its ``[ci.staging]
-    endpoint_suffix``; and the production job runs under *production_environment*, its
-    ``[ci.production] environment``, when it names one.
+    deploy steps pass *staging_suffix*, its ``[ci.staging] endpoint_suffix``, as a
+    Databricks project's smoke and impact steps do; and the production job runs under
+    *production_environment*, its ``[ci.production] environment``, when it names one.
     """
     if ci == "github":
         return {

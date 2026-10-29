@@ -39,7 +39,10 @@ bundled engine), and the rest of haute's closure resolves at Model Serving's bui
 haute's ranges, from a host whose platform may not be the target's.
 
 **Plan:** Use one resolver for container, pyfunc and hosted-app dependency locks, with
-explicit root requirements for each target. Preserve the
+explicit root requirements for each target. The hosted app already locks this way:
+`databricks_app/scripts/build_bundle.sh` runs `uv pip compile` for its Python and
+platform with hashes and keeps its index provenance free of credentials; bring the
+container and the pyfunc onto the same resolution, extracting what they share. Preserve the
 [minimal scoring container policy](../deploy/high-level.md#scoring-runtime): its roots
 are the scoring runtime plus graph/artefact requirements, and Haute is a separate
 `--no-deps` install. Do not feed Haute's full dependency metadata into the container's

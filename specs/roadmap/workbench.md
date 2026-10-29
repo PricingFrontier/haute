@@ -266,7 +266,7 @@ other.
 `frontend/src/workbench/panel/ImportSettings.tsx` (where they are chosen);
 `frontend/src/utils/workbenchForm.ts::importProblems` (what the view flags on it);
 `src/haute/routes/workbench.py` (the workbench router);
-`src/haute/_databricks_io.py::_validate_select_clause`, `::_connection_settings` and
+`src/haute/_databricks_io.py::_validate_select_clause`, `::_resolve_connection` and
 `::_service_principal_credentials` (the Databricks SQL reach); `pyproject.toml` (the
 Databricks extra); `docs/deployment/targets/databricks.md` (credentials as CI secrets
 and the editor's data-access pair).

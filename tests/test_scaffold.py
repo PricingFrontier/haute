@@ -1,6 +1,6 @@
 """Tests for haute._scaffold - template generation for ``haute init``."""
 
-import os
+import re
 import subprocess
 import tomllib
 from pathlib import Path
@@ -29,20 +29,7 @@ from haute._scaffold import (
     starter_test,
     starter_test_quote,
 )
-
-
-def _posix_shell() -> str:
-    """The bash a CI runner would use: Git for Windows' own on Windows.
-
-    A bare ``bash`` on Windows may be WSL's, which sees neither the Windows
-    paths nor the Windows git.
-    """
-    if os.name != "nt":
-        return "bash"
-    exec_path = subprocess.run(
-        ["git", "--exec-path"], check=True, capture_output=True, text=True
-    ).stdout.strip()
-    return str(Path(exec_path).parents[2] / "bin" / "bash.exe")
+from tests._posix_shell import posix_shell
 
 
 class TestHauteToml:
@@ -85,6 +72,20 @@ class TestHauteToml:
         result = haute_toml("motor", "databricks", "github")
         assert "[ci.staging]" in result
         assert 'endpoint_suffix = "-staging"' in result
+        assert "endpoint_url" not in result
+
+    @pytest.mark.parametrize("target", ["container", "azure-container-apps", "aws-ecs", "gcp-run"])
+    def test_a_container_target_writes_its_service_addresses_commented(self, target: str) -> None:
+        """BUG-21: smoke and impact call [ci.staging] and [ci.production] endpoint_url,
+        which only IT can fill in; until then they stop naming the missing address."""
+        result = haute_toml("motor", target, "github")
+
+        assert tomllib.loads(result)["ci"]["production"] == {}
+        assert "endpoint_url" not in tomllib.loads(result)["ci"]["staging"]
+        uncommented = result.replace("# endpoint_url = ", "endpoint_url = ")
+        ci = tomllib.loads(uncommented)["ci"]
+        assert ci["staging"]["endpoint_url"] == "https://motor-staging.example.com"
+        assert ci["production"]["endpoint_url"] == "https://motor.example.com"
 
     def test_azure_container_apps_contains_both_sections(self) -> None:
         result = haute_toml("motor", "azure-container-apps", "github")
@@ -373,11 +374,12 @@ class TestGitlabCiYml:
         assert "timeout:" in result
 
     def test_caching(self) -> None:
+        """BUG-26: uv writes ``~/.cache/uv`` unless ``UV_CACHE_DIR`` names the kept path."""
         from haute._scaffold import gitlab_ci_yml
 
-        result = gitlab_ci_yml("databricks")
-        assert "cache:" in result
-        assert ".cache/uv" in result
+        document = yaml.safe_load(gitlab_ci_yml("databricks"))
+        (kept,) = document["default"]["cache"]["paths"]
+        assert document["variables"]["UV_CACHE_DIR"] == f"$CI_PROJECT_DIR/{kept}"
 
     def test_uv_version_pinned(self) -> None:
         from haute._scaffold import gitlab_ci_yml
@@ -1204,7 +1206,7 @@ class TestOfferedTargets:
             heads.append(git("rev-parse", "--short", "HEAD").strip())
             for _ in range(2):  # the second run is a redeploy of the same commit
                 subprocess.run(
-                    [_posix_shell(), "-c", "set -euo pipefail\n" + script],
+                    [posix_shell(), "-c", "set -euo pipefail\n" + script],
                     cwd=tmp_path / "work",
                     check=True,
                     capture_output=True,
@@ -1279,7 +1281,7 @@ class TestDatabricksReleaseAndDeployJobs:
         # ``uv`` is a shell function standing in for ``uv run haute status --version-only``.
         script = _release_tag_script("databricks", "")
         return subprocess.run(
-            [_posix_shell(), "-c", f"set -euo pipefail\nuv() {{ {fake_uv}; }}\n{script}"],
+            [posix_shell(), "-c", f"set -euo pipefail\nuv() {{ {fake_uv}; }}\n{script}"],
             cwd=work,
             capture_output=True,
             text=True,
@@ -1374,6 +1376,18 @@ class TestCiFiles:
         # The staging deploy, its smoke test and the impact analysis, all on the one suffix.
         assert text.count('--endpoint-suffix "-stg"') == 3
         assert "--endpoint-suffix" not in text.replace('--endpoint-suffix "-stg"', "")
+
+    @pytest.mark.parametrize("ci", ["github", "gitlab", "azure-devops"])
+    def test_container_smoke_and_impact_call_their_addresses_not_a_suffix(self, ci: str) -> None:
+        """BUG-21: both commands refuse --endpoint-suffix for a container target; they
+        read [ci.staging] and [ci.production] endpoint_url instead."""
+        text = "".join(ci_files("container", ci, staging_suffix="-stg").values())
+
+        steps = re.findall(r"uv run haute (smoke|impact)(.*)", text)
+        assert sorted(command for command, _ in steps) == ["impact", "smoke"]
+        assert [arguments for _, arguments in steps] == ["", ""]
+        # The staging deploy alone keeps the project's suffix.
+        assert text.count('--endpoint-suffix "-stg"') == 1
 
     @pytest.mark.parametrize("suffix", ["", "-st ag", '-stg" && curl evil', "-stäg"])
     def test_a_staging_suffix_that_cannot_name_an_endpoint_is_refused(self, suffix: str) -> None:

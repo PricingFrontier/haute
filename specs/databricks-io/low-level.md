@@ -4,7 +4,7 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/_databricks_credentials.py` | Single environment-to-credentials boundary: redaction-safe `DatabricksCredentials`, `DatabricksConfigError`, host normalisation, completeness validation, and PAT-over-service-principal precedence. |
+| `src/haute/_databricks_credentials.py` | Single environment-to-credentials boundary: redaction-safe `DatabricksCredentials`, `DatabricksConfigError`, host normalisation, completeness validation, PAT-over-service-principal precedence, and `credentials_rejected`, which tells a refusal of the credentials (the SDK's Unauthenticated error, or the ValueError its OAuth exchange raises for a refused service principal) from any other failure. |
 | `src/haute/_databricks_io.py` | SQL-connector adaptation, table/projection validation, canonical table identity, bounded Arrow batch iteration, retries, and integrity checks. It raises `DatabricksConfigError` from `src/haute/_databricks_credentials.py`. |
 | `src/haute/_databricks_output.py` | Data Output writes to a Unity Catalog table: Spark-compatible dtype casts, the staged Parquet upload, the overwrite/append load SQL, staged-file cleanup, and `DatabricksWriteError`. |
 | `src/haute/routes/databricks.py` | `/api/databricks` Unity Catalog browsing endpoints. |
@@ -55,8 +55,9 @@ format lookup.
 
 1. Registry validation requires `http_path` and `table`, allows an optional
    `write_mode` of `overwrite` (the default) or `append`, and refuses arguments.
-2. The writer re-checks `_TABLE_NAME_RE`, builds the load SQL, and resolves
-   credentials with `_resolve_connection(http_path, node_label="Data Output")`;
+2. The writer re-checks `_TABLE_NAME_RE` and the write mode (`_require_write_mode`),
+   and resolves credentials with
+   `_resolve_connection(http_path, node_label="Data Output")`;
    one `DatabricksCredentials` authenticates both the SQL connection
    (`_sql_auth_kwargs`) and the Files API client
    (`_databricks_credentials.databricks_workspace_client`, which the browsing
@@ -68,13 +69,20 @@ format lookup.
    cast (`recipe.then(_spark_compatible)`), so it still describes the frame
    written and passes `check_recipe_equivalence`.
 4. One SQL connection runs `CREATE VOLUME IF NOT EXISTS` for `haute_staging` in
-   the target schema. The file is uploaded under a fresh UUID name with the
+   the target schema, the volume quoted part by part as a table name is
+   (`_quoted_table_name`). The file is uploaded under a fresh UUID name with the
    Files API's `upload_from`, in parts of `UPLOAD_PART_BYTES` (16 MiB) on at
    most `UPLOAD_PARALLELISM` (4) threads, which bounds the upload's memory; the
    connector's `PUT` reads the whole file into memory and is not used. The load
-   follows: `CREATE OR REPLACE TABLE ... AS SELECT` for overwrite, or `CREATE
-   TABLE IF NOT EXISTS ... LIMIT 0` followed by `INSERT INTO ... BY NAME` for
-   append.
+   follows in one statement (`load_statement`), a single Delta transaction:
+   `CREATE OR REPLACE TABLE ... AS SELECT` for overwrite; for append, the Tables
+   API's exact-name `tables.exists` (`_table_exists`) chooses `CREATE TABLE ... AS
+   SELECT` for a table that does not exist yet and `INSERT INTO ... BY NAME` for
+   one that does. A failed load therefore leaves the table as it was: no table
+   after a failed first append, no added rows after a failed later one. An
+   existence answer that is not a plain yes reads as no, since the `CREATE TABLE`
+   that follows refuses a table that exists, as it does one another writer
+   created after the check: the append fails and replaces nothing.
 5. The upload and the load share one `finally` that deletes the staged file
    (`_remove_staged`), so an upload whose response failed after the bytes landed
    is cleaned up too. `NotFound` (the upload never created the file) is
@@ -109,11 +117,12 @@ MLflow never uses these variables: its Databricks credentials are the dedicated
 ([modelling](../modelling/low-level.md)), so a data token and an MLflow token
 can carry different scopes.
 
-`_connection_settings(http_path)` (`_resolve_connection` then
-`_sql_auth_kwargs`) passes the mandatory node `http_path` as such an additional
-requirement; there is no `DATABRICKS_HTTP_PATH` fallback. It adapts the resolved
-credentials into either `access_token` or the SDK OAuth M2M callback built by
-`_service_principal_credentials()`. The browsing route calls the same resolver
+`_resolve_connection(http_path, node_label=...)` passes the mandatory node
+`http_path` as such an additional requirement; there is no `DATABRICKS_HTTP_PATH`
+fallback. `_sql_auth_kwargs` adapts the resolved credentials into either
+`access_token` or the SDK OAuth M2M callback built by
+`_service_principal_credentials()`; the Data Input's batch reader and the Data
+Output's writer both connect through the two. The browsing route calls the same resolver
 and adapts the selected form into `WorkspaceClient` through
 `databricks_workspace_client`. Returned
 secrets and providers stay in connector-call scope.
@@ -122,7 +131,9 @@ secrets and providers stay in connector-call scope.
 
 `src/haute/routes/databricks.py` creates a Databricks `WorkspaceClient` and maps SDK objects into the
 shared warehouse/catalog/schema/table response models. Browsing does not fetch table data
-or publish snapshots.
+or publish snapshots. Each of the four routes lists inside `_browsing(subject, within=...)`,
+which yields `_get_databricks_client()`'s client and turns a `DatabricksError` raised while
+the listing is consumed (the SDK's listings are lazy) into `_browsing_failure`'s answer.
 
 ## Edge cases and invariants
 
@@ -149,26 +160,44 @@ write-output route maps it to 502 and `DatabricksConfigError` to 400.
 
 The input-cache worker logs `error_type` and a shared credential-scrubbed `error` for
 provider failures; raw error text is not copied to public responses. Browsing endpoints
-preserve deliberate `HTTPException` responses and log unexpected SDK messages before
-returning a generic 500.
+preserve deliberate `HTTPException` responses (the 503s for a missing SDK or missing
+credentials) and answer an SDK failure with a message written for it, by its class:
+refused credentials 401, naming `DATABRICKS_TOKEN`, or `DATABRICKS_CLIENT_ID` and
+`DATABRICKS_CLIENT_SECRET`, by the credential form `resolve_databricks_credentials`
+selects. `credentials_rejected` (`_databricks_credentials.py`, shared with the UC
+transport) recognises them: a refused token is the SDK's `Unauthenticated`, while a
+refused service principal never reaches the API, because the SDK's OAuth token
+exchange raises a plain `ValueError("<code>: <description>")` from the token
+endpoint's answer, which counts only for the codes that refuse the client or its grant
+(`invalid_client`, `invalid_grant`, `unauthorized_client`); then `PermissionDenied` 403, naming what was listed; `NotFound` from a listing inside
+a catalog or schema 404, naming that catalog or schema; any other `DatabricksError` 502.
+Each is logged as `databricks_browsing_failed` with the error type and the SDK's text,
+the token and client secret scrubbed (`redact_sensitive_text`).
 
 ## Testing
 
 - `tests/test_databricks_credentials.py` covers the shared resolver's host
   projections, PAT precedence, incomplete-pair failures, aggregated named
-  requirements, and representation/error redaction.
+  requirements, representation/error redaction, and which failures count as a refusal
+  of the credentials (no other `ValueError` does).
 - `tests/test_databricks_io.py` covers SQL credential adaptation, table/projection validation,
   cancellation before execute, batch streaming, retries, empty-schema behaviour, row-loss
   detection, identity-independent batch sizing, and builder-through-store publication.
 - `tests/test_databricks_output.py` covers output config validation, the load SQL,
-  dtype casts, the staged write over a fake connector and Files API (the bounded
+  the append's one statement over a fake warehouse that keeps its tables (no table after a
+  failed first append, the table unchanged after a failed later one, a table created after
+  the existence check refused, not replaced), dtype casts, the staged write over a fake connector and Files API (the bounded
   part size and parallelism, cleanup after a failed load and after an upload that
   failed once its bytes may have landed, a missing staged file not logged as a
   cleanup failure), redaction of a signed-URL query and the token in errors and in
   the cleanup log, a chunk-write recipe carrying the casts, a pipeline write,
   destination identity, and worker error kinds.
 - `tests/test_databricks_endpoints.py` covers optional dependency/credential failures,
-  SDK mapping, and generic error responses for browsing.
+  SDK mapping, and the browsing error answers: a missing catalog and a missing schema
+  404 naming them, a refused token 401 naming its variable, a service principal that a
+  stub token endpoint refuses through the real SDK 401 naming its pair, and listing
+  again once the secret is corrected, a missing grant 403, and any other SDK failure 502 with its text logged,
+  the token scrubbed.
 - `tests/test_databricks_routes_auth.py` proves the browsing adapter consumes
   the shared resolution result for both auth modes and preserves normalised
   workspace hosts.

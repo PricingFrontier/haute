@@ -91,3 +91,27 @@ def test_credential_representation_redacts_all_auth_values(
 
 def test_sql_io_reexports_the_shared_error_class() -> None:
     assert LegacyDatabricksConfigError is DatabricksConfigError
+
+
+def _rejections() -> list[tuple[BaseException, bool]]:
+    from databricks.sdk.errors import PermissionDenied, Unauthenticated
+
+    return [
+        (Unauthenticated("Invalid access token."), True),
+        # The SDK's OAuth token exchange, refusing a service principal.
+        (ValueError("invalid_client: Client authentication failed"), True),
+        (ValueError("unauthorized_client: Client is not allowed this grant"), True),
+        (ValueError("invalid_grant: The grant has expired"), True),
+        (ValueError("invalid_request: Missing grant_type"), False),
+        (ValueError("invalid literal for int() with base 10: 'x'"), False),
+        (PermissionDenied("Missing USE CATALOG."), False),
+        (RuntimeError("invalid_client: not from the token endpoint's exchange"), False),
+    ]
+
+
+def test_only_a_refusal_of_the_credentials_counts_as_one() -> None:
+    from haute._databricks_credentials import credentials_rejected
+
+    assert [credentials_rejected(exc) for exc, _ in _rejections()] == [
+        expected for _, expected in _rejections()
+    ]

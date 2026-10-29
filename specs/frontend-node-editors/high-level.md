@@ -150,7 +150,9 @@ backend API modules own validation and persistence.
   rather than a position for the same reason. A table whose factors would make more cells than
   the editor can edit is not drawn or rebuilt; it says how many cells it would take instead, and
   a factor that would take a table past that size is not added at all, because entries the editor
-  cannot build would leave the table without a value for its own factor. Dropping a factor stays
+  cannot build would leave the table without a value for its own factor. Nor is a column named
+  `value`, the key each row keeps its rate under: the notice that says why asks for the column
+  to be renamed upstream. Dropping a factor stays
   possible whatever the size, so a table the data has made oversized can still be shrunk.
 - IO editors obtain supported formats and their arguments from the server. API/data input,
   output, external-file, transform, explore, live-switch, scenario, submodel,

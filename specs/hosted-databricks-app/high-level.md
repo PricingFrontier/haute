@@ -56,6 +56,14 @@ collaboration and running pipelines as Databricks jobs are out of scope.
   `DATABRICKS_TOKEN` or the complete
   `DATABRICKS_CLIENT_ID`/`DATABRICKS_CLIENT_SECRET` pair. The token takes
   precedence. Secret values never enter API responses or logs.
+- The container boots from a locked runtime. The bundle's build resolves haute's
+  dependencies with the `databricks` extra for the app's Python and platform
+  into a lock that pins every distribution by version and hash, and records
+  the digest of the wheel it built. The boot installs exactly that lock, then
+  the wheel without its dependencies once its digest matches, so two boots of
+  one deployment run the same versions and nothing is resolved from haute's
+  ranges at boot. The lock, the digest and the wheel are build outputs, never
+  committed, and the deploy script names the app it deploys to.
 - The container bootstrap restores a bound durable project when configured or
   seeds a volatile project, configures Git, changes to the selected project,
   and only then imports/serves the hosted application. Interpreter resolution
@@ -96,9 +104,10 @@ is treated as an implicit shared data plane.
 
 ## Failure model
 
-> NOTE: The bundle script can select a stale wheel from shared dist after a fresh
-> build. [BUG-40](../roadmap/bugs.md#bug-40--the-hosted-app-boots-from-a-lock) includes exact current-build artifact selection.
-
+- A bundle without exactly one wheel, or whose wheel does not match the digest
+  its build recorded, stops the boot before anything is installed, naming the
+  rebuild; a build that makes other than one wheel fails before the bundle is
+  written.
 - Whitespace-only values count as absent, so an all-whitespace environment is
   the local posture; an environment contract that is partial after stripping
   fails at startup naming the missing variables without exposing their values.

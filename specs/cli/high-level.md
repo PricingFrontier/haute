@@ -40,6 +40,8 @@ Out of scope, owned elsewhere:
   interpreter but block generated console-launcher executables. It maintains no separate command
   registry or parser: Click receives the arguments and preserves the command and exit-code
   contracts, while identifying the chosen invocation form in usage text.
+- `haute --help` opens with the package's own description, `pyproject.toml`'s `description`,
+  and so names no deploy target: Databricks is one of several.
 - `haute init [--target ...] [--ci ...] [--workbench] [--force]` scaffolds a new project in the
   current directory: `haute.toml`, a blank `rating/` pipeline package, `.env.example`, test-quote
   fixtures, CI/CD workflow files for the chosen provider, a git pre-commit hook, and `.gitignore`

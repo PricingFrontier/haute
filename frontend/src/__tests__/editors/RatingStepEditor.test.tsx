@@ -1130,6 +1130,30 @@ describe("RatingStepEditor", () => {
     ]))
   })
 
+  it("refuses a column named value as a factor, saying why, and writes nothing (BUG-46)", () => {
+    // Each row keeps its rate under "value", so the factor's levels would be overwritten.
+    const onUpdate = vi.fn()
+    render(
+      <RatingStepEditor
+        config={{}}
+        onUpdate={onUpdate}
+        inputSources={[]}
+        accentColor="#14b8a6"
+        previewRows={[{ value: "high" }, { value: "low" }]}
+        upstreamColumns={[{ name: "value", dtype: "String" }]}
+      />,
+      { allNodes: BANDING_NODES }
+    )
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Add factor" }), { target: { value: "value" } })
+
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(screen.getByTestId("rating-factor-limit")).toHaveTextContent(
+      "A column named value cannot be a factor: every rating row keeps its rate under value. " +
+        "Rename the column upstream, in a Transform node for example.",
+    )
+  })
+
   it("uses preview-derived raw string factor levels without showing an explanatory warning", () => {
     render(
       <RatingStepEditor

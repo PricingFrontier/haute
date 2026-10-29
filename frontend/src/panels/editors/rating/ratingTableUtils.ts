@@ -199,6 +199,21 @@ export function tableStats(entries: Record<string, string | number>[]): { min: n
   return { min, max, avg, count: vals.length }
 }
 
+/**
+ * The key every rating row keeps its rate under, beside its factors' levels, so no
+ * factor may share it: the server's config codec refuses such a factor too.
+ */
+export const RATING_RATE_KEY = "value"
+
+/** Why *column* cannot be a rating factor, or null when it can. */
+export function ratingFactorProblem(column: string): string | null {
+  if (column !== RATING_RATE_KEY) return null
+  return (
+    `A column named ${RATING_RATE_KEY} cannot be a factor: every rating row keeps its rate ` +
+    `under ${RATING_RATE_KEY}. Rename the column upstream, in a Transform node for example.`
+  )
+}
+
 export function buildCartesianEntries(
   factors: string[],
   bandingLevels: Record<string, string[]>,
