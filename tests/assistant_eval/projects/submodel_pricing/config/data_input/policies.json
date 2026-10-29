@@ -1,8 +1,8 @@
 {
-  "inputType": "file",
+  "arguments": {},
   "format": "parquet",
+  "inputType": "file",
   "mode": "scan",
   "path": "data/policies.parquet",
-  "arguments": {},
   "steps": []
 }

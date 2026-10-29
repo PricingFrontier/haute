@@ -717,10 +717,11 @@ class TestConfigRoundtrip:
     )
     @settings(max_examples=80)
     def test_config_roundtrip_preserves_data(self, config, tmp_path_factory):
-        """load(save(config)) == config for every declared config key.
+        """load(save(config)) == config for every declared config key a sidecar holds.
 
         A key outside `VALID_KEYS[node_type]` never reaches the round
-        trip: the write refuses it rather than dropping it.
+        trip: the write refuses it rather than dropping it. The `contract`
+        annotation lives on the decorator, so the sidecar never holds it.
         """
         from haute._config_io import (
             _prepare_config_for_sidecar,
@@ -745,7 +746,10 @@ class TestConfigRoundtrip:
             encoding="utf-8",
         )
         loaded = load_node_config(rel, base_dir=base_dir)
+        assert "contract" not in loaded
         for k, v in config.items():
+            if k == "contract":
+                continue
             assert k in loaded, f"Key {k!r} missing after roundtrip"
             assert loaded[k] == v, f"Value mismatch for {k}: {v!r} vs {loaded[k]!r}"
 

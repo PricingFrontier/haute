@@ -1,4 +1,18 @@
 {
+  "combinedOutputs": [
+    {
+      "outputColumn": "premium",
+      "operation": "multiply",
+      "baseValue": 320.0
+    }
+  ],
+  "steps": [
+    {
+      "id": "logic",
+      "kind": "free_code",
+      "code": "# Round the premium to pence\ndf = df.with_columns(pl.col('premium').round(2))"
+    }
+  ],
   "tables": [
     {
       "factors": [
@@ -75,20 +89,6 @@
         }
       ],
       "defaultValue": 1.0
-    }
-  ],
-  "combinedOutputs": [
-    {
-      "outputColumn": "premium",
-      "operation": "multiply",
-      "baseValue": 320.0
-    }
-  ],
-  "steps": [
-    {
-      "id": "logic",
-      "kind": "free_code",
-      "code": "# Round the premium to pence\ndf = df.with_columns(pl.col('premium').round(2))"
     }
   ]
 }
