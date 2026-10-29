@@ -312,7 +312,9 @@ produce
 the final `list[GraphNode]`/`list[GraphEdge]` — the graph the frontend, codegen, and the real
 executor operate on.
 
-`parse_pipeline_source()` converts `SyntaxError` into a contextual `ParseError`.
+`parse_pipeline_source()` converts `SyntaxError` into a contextual `ParseError`. Given no
+`source_file`, it records none (the graph's `source_file` stays empty) rather than naming a
+file that does not exist.
 `parse_pipeline_file()` inherits that strict behaviour. The separate editor recovery service
 consumes the same AST skeletons when syntax is valid (a syntax-invalid file yields a
 `source_only` document), catches expected authored failures per named node, and
@@ -327,11 +329,17 @@ clobbering it), preserves exact incoming-edge names in Optimiser and Optimiser A
 without node-id remapping. Before allowlist filtering, known removed identity fields are rejected:
 Edge Join's `baseInput`/`joinInput` and Optimiser's `scored_input`/`factors_input` never become a
 silent write-time migration. Each accepted config is then filtered through
-`_prepare_config_for_sidecar` (strips `code` and `_`-prefixed properties of the top-level
+`_prepare_config_for_sidecar` (strips `code`, the `contract` annotation, which lives on the
+decorator so a sidecar copy could only go stale, and `_`-prefixed properties of the top-level
 config record, refuses any other key outside `VALID_KEYS` with `ConfigError` through
 `reject_unrecognized_config_keys` — a backstop, because save validation has already refused
 such a graph — then per-type canonicalisation for `BANDING`/`RATING_STEP`), and serialises the result
-to `{relative_path: json_string}`. Rating-step canonicalisation always emits ordered entry rows.
+to `{relative_path: json_string}` through `node_config_json`: the config record's own keys
+sorted, two-space indentation, non-ASCII text unescaped and a closing newline. Recover, Reset
+and the node-scoped save write their sidecar through the same function, so both save paths
+write byte-identical sidecars for one configuration whatever order its keys arrived in; the
+next save of an older sidecar rewrites it in that form once. Nested user mappings keep their
+order, since they are data. Rating-step canonicalisation always emits ordered entry rows.
 Banding canonicalisation removes transient properties from factor records and expanded rule
 records, including `_prevRules` and `_id`. Compact category maps are data and retain those
 same keys. All other nested dictionaries and payloads retain user keys verbatim, including
@@ -365,8 +373,8 @@ project through this helper immediately before binding a pipeline. The plural GU
 shares the configured-path checks but additionally lists valid sibling pipelines.
 
 **Project layout (`_project_layout.py`).** `pipeline_folder(project_root)` reads
-`[project].pipeline` through `_toml_configured_pipeline` (so malformed TOML raises
-`ConfigError`) and returns the parent folder, relative to the root in POSIX form, when that
+`[project].pipeline` through `_toml_configured_pipeline` (so malformed TOML, or a pipeline
+named outside the root, raises `ConfigError`) and returns the parent folder, relative to the root in POSIX form, when that
 folder lies strictly below the root. It returns `None` when nothing is configured or the
 pipeline sits at the root, because then there is no folder to version as a whole.
 `pipeline_files_folder(project_root)` is that folder's `files/` (`PIPELINE_FILES_FOLDER`), or
@@ -751,9 +759,11 @@ it on the reading node instead of aborting the walk, and every other run propaga
   stripped — and rejected on every OS, not gated behind a platform check, so a project saved
   on Linux/macOS stays loadable on a Windows checkout.
 - `_toml_configured_pipeline` raises `ConfigError` for malformed/unreadable TOML, a
-  `[project]` that is not a table, or a `pipeline` value that is not a string (an empty
-  string counts as absent), so `resolve_pipeline_file` cannot silently discard the
-  configured tier and bind another file.
+  `[project]` that is not a table, a `pipeline` value that is not a string (an empty
+  string counts as absent), or one naming a path outside the project root, absolute or
+  through `..` or a link (checked by `src/haute/_sandbox.py::contained_path`), so
+  `resolve_pipeline_file` cannot silently discard the configured tier, bind another file,
+  or bind a file outside the project.
 - Ambiguous auto-discovery (2+ root `.py` files matching, no `main.py`, no configured TOML
   pipeline) raises rather than picking one alphabetically — deliberate, per the module
   docstring's "never silently picks a random file" contract.
@@ -917,6 +927,9 @@ API and real JSON round-trips rather than mocks:
   refused by the parser naming the file, the line and the byte, a byte order mark dropped, and
   a node's JSON config that is not UTF-8 refused naming the file and the byte, at the parse and
   where the node runs; `tests/test_pipeline_recovery.py` the editor's side of the same files.
+- **`test_pipeline_repair_actions.py`** — the whole-document save (`collect_node_configs`)
+  and Recover writing byte-identical sidecars, without `contract`, for one configuration
+  whatever its key order.
 - **`test_config_io.py`** + **`test_config_io_gaps.py`** — sidecar save/load
   round-trips, path conventions (`TestConfigPathForNode`), Windows-reserved-filename rejection
   (`TestIsWindowsReservedFilename`), `collect_node_configs` (including load-error protection

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import json
 from collections.abc import Sequence
 from copy import deepcopy
 from pathlib import Path
@@ -11,8 +10,8 @@ from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any, Literal
 
 from haute._config_io import (
-    _prepare_config_for_sidecar,
     config_path_for_node,
+    node_config_json,
     node_emits_sidecar,
     palette_default_config,
 )
@@ -356,16 +355,7 @@ def _reset_node(
             generated.encode("utf-8"),
             [(literal, quote_string(reference)) for literal in literals],
         ).decode("utf-8")
-        # The annotation lives on the decorator; a sidecar copy is what goes stale.
-        sidecar_config = {key: value for key, value in config.items() if key != "contract"}
-        after = (
-            json.dumps(
-                _prepare_config_for_sidecar(node_type, sidecar_config, node_label=target.label),
-                indent=2,
-                ensure_ascii=False,
-            )
-            + "\n"
-        ).encode("utf-8")
+        after = node_config_json(node_type, config, node_label=target.label).encode("utf-8")
         edits.append(
             _edit(
                 config_path,

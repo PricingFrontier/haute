@@ -303,7 +303,6 @@ production:
 | Server API | SRV-6, SRV-7, SRV-8, SRV-13, SRV-15 | `API-R09` |
 | Server API | SRV-10, SRV-12, SRV-14, SRV-16, SRV-17 | `API-R10` |
 | Pipeline config | PCF-3 | `PCFG-R12` |
-| Pipeline config | PCF-8, PCF-11, PCF-14, PCF-15 | `PCFG-R14` |
 | Pipeline config | PCF-4, PCF-9, PCF-10, PCF-12 | `PCFG-R15` |
 | Pipeline config | PCF-13 | `PCFG-R16` (Decision) |
 | Pipeline config | PCR-5, PCR-6, PCR-7, PCR-8 | `PCFG-R19` |

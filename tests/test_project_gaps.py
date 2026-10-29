@@ -71,6 +71,17 @@ class TestTomlConfiguredPipeline:
         result = _toml_configured_pipeline(tmp_path)
         assert result == tmp_path / "rating/main.py"
 
+    @pytest.mark.parametrize("pipeline", ["../outside/main.py", "OUTSIDE"])
+    def test_a_pipeline_outside_the_project_is_refused(self, tmp_path: Path, pipeline: str) -> None:
+        """An absolute or escaping ``[project].pipeline`` would bind a file outside it."""
+        root = tmp_path / "project"
+        root.mkdir()
+        outside = tmp_path / "outside" / "main.py"
+        value = outside.as_posix() if pipeline == "OUTSIDE" else pipeline
+        _make_haute_toml(root, f'[project]\npipeline = "{value}"\n')
+        with pytest.raises(ConfigError, match="inside the project"):
+            _toml_configured_pipeline(root)
+
     def test_malformed_toml_raises_config_error(self, tmp_path: Path) -> None:
         """Malformed tier-one config must not silently fall through to discovery."""
         _make_haute_toml(tmp_path, "this is = = not valid toml [[[\n")

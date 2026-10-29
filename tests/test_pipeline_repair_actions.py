@@ -554,6 +554,45 @@ def test_recover_reports_a_source_type_keyword_rather_than_converting_it(tmp_pat
     assert plan.response.previous_config["sourceType"] == "run"
 
 
+def test_both_save_paths_write_one_sidecar_for_one_configuration(tmp_path):
+    """The whole-document save and Recover write the same bytes, without the contract the
+    decorator carries, whatever order the configuration's keys came in."""
+    from haute._config_io import collect_node_configs
+    from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
+
+    config = {
+        "values": [{"name": "base", "value": "1"}, {"name": "Prämie", "value": "2"}],
+        "contract": "opaque",
+    }
+    reordered = dict(reversed(list(config.items())))
+
+    def whole_document(values: dict) -> str:
+        node = GraphNode(
+            id="rates",
+            data=NodeData(label="rates", nodeType=NodeType.CONSTANT, config=values),
+        )
+        [content] = collect_node_configs(PipelineGraph(nodes=[node], edges=[])).values()
+        return content
+
+    assert whole_document(config) == whole_document(reordered)
+    assert "contract" not in json.loads(whole_document(config))
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    sidecar = tmp_path / "config" / "constant" / "rates.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(json.dumps({**reordered, "retired": True}), encoding="utf-8")
+    (tmp_path / "main.py").write_text(
+        'import haute\npipeline = haute.Pipeline("demo")\n\n\n'
+        '@pipeline.constant(config="config/constant/rates.json")\n'
+        "def rates(): ...\n",
+        encoding="utf-8",
+    )
+    result = _apply(tmp_path, _request(tmp_path, "rates", "recover"))
+
+    assert result.document.load_status == "ready"
+    assert sidecar.read_text(encoding="utf-8") == whole_document(config)
+
+
 def test_recover_regenerates_a_stale_contract_annotation(tmp_path):
     """A factor edited back to a draft leaves the saved annotation promising a
     column the node no longer creates, so the node cannot load. Recover rebuilds

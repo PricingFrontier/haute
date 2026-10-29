@@ -16,7 +16,6 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 | PCFG-R08 | Planned | P3 | Editor-only state travels beside the node config, not inside it. |
 | PCFG-R09 | Planned | P3 | A node type is declared in one place. |
 | PCFG-R12 | Planned | P2 | A save keeps every authored comment, or reports the ones it would drop before it proceeds. |
-| PCFG-R14 | Planned | P3 | Both save paths write the same canonical sidecar bytes, the configured pipeline path stays inside the project, and no placeholder file name reaches an error. |
 | PCFG-R15 | Planned | P3 | The unreachable config branches, the empty `_load_error` mechanism, the other dead symbols, the five duplicated mechanisms and the stale comments are gone. |
 | PCFG-R16 | Decision | P3 | The `earlier` step spelling is either dropped or named as the one allowed recogniser of old generated code. |
 | PCFG-R19 | Planned | P3 | Recovery ids are minted once so a diagnostic's "go to" finds its element, the revision captures cover sidecars and configs, a preamble `match` binds names the naming rule sees, and three duplicated recovery mechanisms exist once. |
@@ -213,35 +212,6 @@ pipeline file, so a comment check built beside it covers both.
 **Evidence:** `src/haute/codegen.py::_render_module`;
 `src/haute/_ast_helpers.py::_function_body_source`;
 `src/haute/_ast_helpers.py::unkept_module_statements`.
-
-### PCFG-R14 — Canonical, complete sidecar bytes and contained paths
-**Why:** The whole-document save writes a `contract` copy into every sidecar whose
-config carries one, while Recover, Reset and the node-scoped save omit it on purpose
-("a sidecar copy is what goes stale"), so the two save paths write different sidecar
-shapes and the on-disk copy lags the decorator. Node sidecar JSON is written in the
-config dict's insertion order, so the same configuration serialises to different
-bytes depending on how the sender ordered its keys; only the global constants file
-is canonicalised. An absolute `[project].pipeline` in `haute.toml` binds a file
-outside the project with no containment check. `parse_pipeline_source` with a base
-directory but no `source_file` invents `<base_dir>/__source__.py`, which then
-appears in errors and logs as a path that does not exist.
-
-**Plan:** Strip `contract` in `_prepare_config_for_sidecar`; sort the keys (or apply
-a per-type key order) at the sidecar write boundary, re-canonicalising existing
-sidecars once; require the configured pipeline path to resolve inside the project
-root; leave `source_file` empty when none is known.
-
-**Acceptance:** Both save paths write byte-identical sidecars for one configuration
-whatever key order was sent; a `haute.toml` naming a pipeline outside the project
-fails with `ConfigError`; no log or error names `__source__.py`.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_config_io.py::collect_node_configs`;
-`src/haute/_config_io.py::_prepare_config_for_sidecar`;
-`src/haute/_pipeline_repair_actions.py::_reset_node`;
-`src/haute/_project.py::_toml_configured_pipeline`;
-`src/haute/parser.py::parse_pipeline_source`.
 
 ### PCFG-R15 — Dead branches, dead paths, clones and stale comments
 **Why:** Every folder-backed branch of `_build_node_config` is unreachable from

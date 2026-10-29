@@ -157,10 +157,11 @@ def _prepare_config_for_sidecar(
     # Only the config record's own underscore properties are editor state.
     # Nested mappings may contain arbitrary column names or user records.
     # Type-specific serializers own cleanup of their nested editor records.
+    # The contract annotation lives on the decorator; a sidecar copy goes stale.
     filtered = {
         k: deepcopy(v)
         for k, v in config.items()
-        if k not in CODE_CONFIG_KEYS and not k.startswith("_")
+        if k not in CODE_CONFIG_KEYS and k != "contract" and not k.startswith("_")
     }
 
     if node_type == NodeType.BANDING:
@@ -168,6 +169,18 @@ def _prepare_config_for_sidecar(
     if node_type == NodeType.RATING_STEP:
         return normalise_rating_step_config(filtered)
     return filtered
+
+
+def node_config_json(node_type: NodeType, config: dict[str, Any], *, node_label: str) -> str:
+    """The canonical sidecar text of one node's config: what every save path writes.
+
+    The record's own keys are sorted, so one configuration has one form whatever
+    order its keys arrived in; nested user mappings keep their order, since they
+    are data.
+    """
+    prepared = _prepare_config_for_sidecar(node_type, config, node_label=node_label)
+    canonical = {key: prepared[key] for key in sorted(prepared)}
+    return json.dumps(canonical, indent=2, ensure_ascii=False) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -386,8 +399,7 @@ def collect_node_configs(graph: PipelineGraph) -> dict[str, str]:
             continue
         func_name = _sanitize_func_name(node.data.label)
         rel_path = config_path_for_node(nt, func_name).as_posix()
-        filtered = _prepare_config_for_sidecar(nt, node.data.config, node_label=node.data.label)
-        configs[rel_path] = json.dumps(filtered, indent=2, ensure_ascii=False) + "\n"
+        configs[rel_path] = node_config_json(nt, node.data.config, node_label=node.data.label)
     return configs
 
 

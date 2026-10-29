@@ -263,9 +263,6 @@ def parse_pipeline_source_with_name_violations(
         _read_global_constants_bytes: The same override for the global
             constants file the constructor names. Defaults to reading it.
     """
-    if not source_file and _base_dir is not None:
-        source_file = str((_base_dir / "__source__.py").resolve())
-
     # Canonical consumers must never receive a regex-recovered graph.
     try:
         tree = ast.parse(source)
