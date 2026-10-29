@@ -61,10 +61,9 @@
 contextual `ParseError` naming the source and syntax location → otherwise extract pipeline meta /
 decorated nodes / connect edges / preamble (without the file's imports from `modules`,
 which codegen writes) / preserved blocks using the AST
-primitives from `src/haute/_ast_helpers.py` → collect labels from any node whose
-config carries `_load_error` into a graph-level `warning` (nothing in `src/haute`
-produces that key; the config path raises `ConfigError` instead, so the step is reached
-only by tests that plant the marker) → extract the submodel registrations through the file's
+primitives from `src/haute/_ast_helpers.py` (a node config that fails to load raises
+`ConfigError`, so the graph's only `warning` is a global constants file that failed to load)
+→ extract the submodel registrations through the file's
 submodel imports (`_parser_submodels.extract_submodel_registrations`, which refuses a
 non-canonical import or registration and an unused import) → if any
 were found, require `_base_dir` or `_submodel_base_dir` (otherwise
@@ -367,7 +366,7 @@ no alias or migration shim; direct test callers use the same current contract.
 
 - **`ConfigError`** propagates from `src/haute/_config_builder.py` when a healthy parse cannot
   load/validate a referenced sidecar or a folder-backed node omits `config=`. These failures are
-  not converted to `_load_error` nodes or graph warnings. Missing required Data Input/Output
+  not converted to failed nodes or graph warnings. Missing required Data Input/Output
   locator values are a completeness concern, not a `ConfigError`: the builder validates those
   configs with `require_complete=False`, so an empty or absent path/locator parses cleanly and
   is reported as field-level completeness by the editor document loader instead.

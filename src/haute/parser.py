@@ -83,18 +83,6 @@ def _infer_parse_base_dir(filepath: Path) -> Path:
         return filepath.parent
 
 
-def _format_load_error_warning(labels: list[str]) -> str | None:
-    """Build a user-facing warning when config files failed to load."""
-    if not labels:
-        return None
-    names = ", ".join(labels[:3])
-    suffix = f" and {len(labels) - 3} more" if len(labels) > 3 else ""
-    return (
-        f"Config files could not be loaded for: {names}{suffix}. "
-        "These configs will not be overwritten on save."
-    )
-
-
 def load_declared_global_constants(
     base_dir: Path | None,
     *,
@@ -135,21 +123,14 @@ def load_declared_global_constants(
         return [], str(exc)
 
 
-def _graph_warning(load_error_labels: list[str], global_constants_error: str | None) -> str | None:
-    parts = [
-        part
-        for part in (
-            _format_load_error_warning(load_error_labels),
-            (
-                f"Global constants could not be loaded: {global_constants_error} "
-                "The file will not be overwritten on save."
-                if global_constants_error
-                else None
-            ),
-        )
-        if part
-    ]
-    return " ".join(parts) or None
+def _graph_warning(global_constants_error: str | None) -> str | None:
+    """The graph's warning: a declared global constants file that failed to load."""
+    if not global_constants_error:
+        return None
+    return (
+        f"Global constants could not be loaded: {global_constants_error} "
+        "The file will not be overwritten on save."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +293,6 @@ def parse_pipeline_source_with_name_violations(
             )
 
     # Surface config load errors as a graph-level warning for the GUI.
-    load_error_labels = [n.data.label for n in rf_nodes if n.data.config.get("_load_error")]
 
     graph = PipelineGraph(
         nodes=rf_nodes,
@@ -324,7 +304,7 @@ def parse_pipeline_source_with_name_violations(
         global_constants=global_constants,
         global_constants_error=global_constants_error,
         source_file=source_file,
-        warning=_graph_warning(load_error_labels, global_constants_error),
+        warning=_graph_warning(global_constants_error),
     )
     graph._parser_global_constants_declared = declares_global_constants
     graph._parser_parameter_names = {

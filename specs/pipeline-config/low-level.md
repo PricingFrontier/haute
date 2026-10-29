@@ -323,9 +323,7 @@ execution, lint, deploy, or strict post-save verification.
 
 **Sidecar write path.** `_config_io.collect_node_configs(graph)` walks a `PipelineGraph`,
 skips nodes that emit no sidecar (`node_emits_sidecar`: no config folder, or a `polars`
-node without a `steps` list), instance nodes (`config["instanceOf"]` set), and
-nodes flagged `config["_load_error"]` (protects the on-disk file from a bad in-memory state
-clobbering it), preserves exact incoming-edge names in Optimiser and Optimiser Apply config
+node without a `steps` list) and instance nodes (`config["instanceOf"]` set), preserves exact incoming-edge names in Optimiser and Optimiser Apply config
 without node-id remapping. Before allowlist filtering, known removed identity fields are rejected:
 Edge Join's `baseInput`/`joinInput` and Optimiser's `scored_input`/`factors_input` never become a
 silent write-time migration. Each accepted config is then filtered through
@@ -933,8 +931,8 @@ API and real JSON round-trips rather than mocks:
   whatever its key order.
 - **`test_config_io.py`** + **`test_config_io_gaps.py`** — sidecar save/load
   round-trips, path conventions (`TestConfigPathForNode`), Windows-reserved-filename rejection
-  (`TestIsWindowsReservedFilename`), `collect_node_configs` (including load-error protection
-  and filename sanitisation of the node label without node-id remapping), banding compaction, rating canonical-row validation/emission,
+  (`TestIsWindowsReservedFilename`), `collect_node_configs` (including filename
+  sanitisation of the node label without node-id remapping), banding compaction, rating canonical-row validation/emission,
   and preservation of the prior sidecar when validation fails.
 - **`test_config_validation.py`** — `VALID_KEYS` registry completeness
   (`TestValidKeysRegistry`), `unrecognized_config_keys` / `reject_unrecognized_config_keys`

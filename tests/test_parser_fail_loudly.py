@@ -199,14 +199,10 @@ class TestItem18ConfigPathFailsLoudly:
             f"Error should include remediation guidance. Got: {rendered!r}"
         )
 
-    def test_no_silent_load_error_marker_written(self, tmp_path: Path) -> None:
-        """After the fix, a missing config must NOT silently return a dict
-        containing ``_load_error`` — it must raise instead."""
-        # The old behaviour returned ``(node_type, {"_load_error": ...})``.
-        # The new behaviour is to raise.  Either way the internal
-        # marker must never surface.
-        try:
-            _, cfg = _resolve_node_config(
+    def test_a_missing_config_raises(self, tmp_path: Path) -> None:
+        """A missing config is never an empty config with a marker: it raises."""
+        with pytest.raises(ConfigError):
+            _resolve_node_config(
                 {"config": "config/data_input/missing.json"},
                 body="",
                 param_names=[],
@@ -214,14 +210,6 @@ class TestItem18ConfigPathFailsLoudly:
                 base_dir=tmp_path,
                 explicit_node_type=NodeType.DATA_INPUT,
             )
-        except ConfigError:
-            return  # raising is acceptable
-        # If it does NOT raise, then at minimum it must not have
-        # inserted a silent _load_error marker.
-        assert "_load_error" not in cfg, (
-            "Silent _load_error marker is a fallback that hides the real "
-            "path problem. Fail loudly instead."
-        )
 
     def test_windows_path_recovery_is_not_silent(self, tmp_path: Path) -> None:
         """Even when a recovery-by-func-name scan would succeed, it must not

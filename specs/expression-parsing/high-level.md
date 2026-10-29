@@ -63,8 +63,8 @@ Out of scope (owned by neighbouring components, cross-linked below):
   with no canvas.
 - Missing, unreadable, invalid, or schema-invalid config sidecars raise `ConfigError` through the
   strict parser. The editor recovery service resolves recovered node fragments independently and
-  represents an attributable failure as an unavailable recovery node plus a diagnostic; it never
-  inserts `_load_error` into a canonical graph.
+  represents an attributable failure as an unavailable recovery node plus a diagnostic; a
+  canonical graph never carries a failed node.
 - A referenced submodel file is parsed atomically. If its module AST is invalid, parsing raises
   `ParseError` naming the child file and syntax location rather than merging an empty warning
   graph that has lost every child node and edge.

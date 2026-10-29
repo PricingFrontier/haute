@@ -323,8 +323,7 @@ low-code steps instead of hand-written code. The steps live in the node's option
 `config/polars/<name>.json` sidecar, which the generated decorator references with
 `config=`; a `@pipeline.polars` function without `config=` is a code-only transform
 and has no sidecar. The `polars` folder is the one optional sidecar folder: the sidecar
-walks (collection, load-error protection, and the save-time collision and
-reserved-filename guard) treat a `polars` node as a sidecar owner only while its config
+walks (collection and the save-time collision and reserved-filename guard) treat a `polars` node as a sidecar owner only while its config
 carries a `steps` list, and the stale-file sweep removes the file when a node stops
 carrying one. One renderer (`src/haute/_polars_steps.py`) validates the closed step
 schema and renders the steps into the function body, recording each step's inclusive

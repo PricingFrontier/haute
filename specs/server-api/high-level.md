@@ -501,7 +501,7 @@ ledger capture.
 `SavePipelineService.validate_graph(...)` is the public, no-write validation
 entry point used by both `save(...)` and assistant dry-run. It performs the
 same singleton, data-I/O, declared-config-key, Edge Join role/key/topology,
-sanitized-name, load-error, API-input and path validation that can be decided without staging
+sanitized-name, API-input and path validation that can be decided without staging
 files. A Quote Input table labelled like another node is refused there, naming the table, the
 Quote Input and the node, because a parameter of that name would read both and the saved
 file would not reload. It rejects any edge out of a node type that has no output

@@ -15,7 +15,6 @@ from haute._config_io import (
     NODE_TYPE_TO_FOLDER,
     _prepare_config_for_sidecar,
     collect_node_configs,
-    config_load_errors,
     config_path_for_node,
     find_config_by_func_name,
     has_config_folder,
@@ -695,187 +694,17 @@ class TestCollectNodeConfigs:
 
 
 # ---------------------------------------------------------------------------
-# _load_error protection — prevents config loss on save
+# Editor state stays out of the sidecar
 # ---------------------------------------------------------------------------
 
 
-class TestLoadErrorProtection:
-    """Verify that nodes with _load_error are excluded from save output,
-    preserving the original config file on disk."""
-
-    def test_load_error_node_skipped_in_collect(self):
-        """A node with _load_error should not appear in collect_node_configs."""
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "ok",
-                        "data": {
-                            "label": "ok",
-                            "nodeType": "dataInput",
-                            "config": {"path": "d.parquet"},
-                        },
-                    },
-                    {
-                        "id": "bad",
-                        "data": {
-                            "label": "bad",
-                            "nodeType": "dataInput",
-                            "config": {"_load_error": "file not found"},
-                        },
-                    },
-                ],
-                "edges": [],
-            }
-        )
-        configs = collect_node_configs(graph)
-        assert "config/data_input/ok.json" in configs
-        assert "config/data_input/bad.json" not in configs
-
-    def test_load_error_node_appears_in_config_load_errors(self):
-        """config_load_errors should return paths for nodes with _load_error."""
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "ok",
-                        "data": {
-                            "label": "ok",
-                            "nodeType": "dataInput",
-                            "config": {"path": "d.parquet"},
-                        },
-                    },
-                    {
-                        "id": "bad",
-                        "data": {
-                            "label": "bad",
-                            "nodeType": "dataInput",
-                            "config": {"_load_error": "missing"},
-                        },
-                    },
-                ],
-                "edges": [],
-            }
-        )
-        errors = config_load_errors(graph)
-        assert "config/data_input/bad.json" in errors
-        assert "config/data_input/ok.json" not in errors
-
-    def test_load_error_not_written_to_json(self, tmp_path):
-        """_load_error is filtered before config data is written to a sidecar."""
-
-        config = {"path": "d.parquet", "_load_error": "test error"}
-        rel_path = _write_node_config_sidecar(NodeType.DATA_INPUT, "test", config, tmp_path)
-        content = json.loads((tmp_path / rel_path).read_text())
-        assert "_load_error" not in content
-        assert content["path"] == "d.parquet"
-
-    def test_healthy_node_has_no_load_error(self):
-        """A successfully loaded config should not have _load_error."""
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "ok",
-                        "data": {
-                            "label": "ok",
-                            "nodeType": "dataInput",
-                            "config": {"path": "d.parquet"},
-                        },
-                    },
-                ],
-                "edges": [],
-            }
-        )
-        errors = config_load_errors(graph)
-        assert len(errors) == 0
-
-    def test_user_edit_clears_load_error(self):
-        """When user edits a config (frontend sends clean dict), _load_error is gone
-        and the node is no longer skipped by collect_node_configs."""
-        # Simulate: node initially had _load_error
-        graph_before = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "n",
-                        "data": {
-                            "label": "src",
-                            "nodeType": "dataInput",
-                            "config": {"_load_error": "missing"},
-                        },
-                    },
-                ],
-                "edges": [],
-            }
-        )
-        assert "config/data_input/src.json" not in collect_node_configs(graph_before)
-
-        # Simulate: user edits the node (frontend sends clean config without _load_error)
-        graph_after = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "n",
-                        "data": {
-                            "label": "src",
-                            "nodeType": "dataInput",
-                            "config": {"path": "new.parquet"},
-                        },
-                    },
-                ],
-                "edges": [],
-            }
-        )
-        configs = collect_node_configs(graph_after)
-        assert "config/data_input/src.json" in configs
-        content = json.loads(configs["config/data_input/src.json"])
-        assert content["path"] == "new.parquet"
-
-    def test_save_preserves_original_file(self, tmp_path):
-        """End-to-end: saving a graph with _load_error should not overwrite
-        the original config file on disk."""
-
-        # Write the original config to disk
-        _write_node_config_sidecar(
-            NodeType.DATA_INPUT,
-            "src",
-            {
-                "inputType": "file",
-                "format": "parquet",
-                "mode": "scan",
-                "path": "data/real.parquet",
-                "arguments": {},
-            },
-            tmp_path,
-        )
-        original_path = tmp_path / "config" / "data_input" / "src.json"
-        assert original_path.exists()
-        original_content = original_path.read_text()
-
-        # Build a graph where that node has _load_error
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "s",
-                        "data": {
-                            "label": "src",
-                            "nodeType": "dataInput",
-                            "config": {"_load_error": "test"},
-                        },
-                    },
-                ],
-                "edges": [],
-            }
-        )
-
-        # collect_node_configs skips the error node
-        configs = collect_node_configs(graph)
-        assert "config/data_input/src.json" not in configs
-
-        # The original file is still on disk, untouched
-        assert original_path.read_text() == original_content
+def test_an_editor_key_is_not_written_to_the_sidecar(tmp_path):
+    """The config record's own underscore keys are editor state, filtered before writing."""
+    config = {"path": "d.parquet", "_steps_error": "Step 1: Pick a column."}
+    rel_path = _write_node_config_sidecar(NodeType.DATA_INPUT, "test", config, tmp_path)
+    content = json.loads((tmp_path / rel_path).read_text())
+    assert "_steps_error" not in content
+    assert content["path"] == "d.parquet"
 
 
 # ---------------------------------------------------------------------------
@@ -1239,90 +1068,6 @@ class TestCollectNodeConfigsEdgeCases:
         configs = collect_node_configs(graph)
         for path in configs:
             assert "\\" not in path
-
-
-# ---------------------------------------------------------------------------
-# config_load_errors edge cases
-# ---------------------------------------------------------------------------
-
-
-class TestConfigLoadErrorsEdgeCases:
-    def test_error_node_returned(self):
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "bad",
-                        "data": {
-                            "label": "broken",
-                            "nodeType": "dataInput",
-                            "config": {"_load_error": "file corrupt"},
-                        },
-                    },
-                ],
-                "edges": [],
-            }
-        )
-        errors = config_load_errors(graph)
-        assert "config/data_input/broken.json" in errors
-        assert errors["config/data_input/broken.json"] == "file corrupt"
-
-    def test_healthy_node_excluded(self):
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "ok",
-                        "data": {
-                            "label": "good",
-                            "nodeType": "dataInput",
-                            "config": {"path": "d.parquet"},
-                        },
-                    },
-                ],
-                "edges": [],
-            }
-        )
-        assert config_load_errors(graph) == {}
-
-    def test_multiple_error_nodes(self):
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "b1",
-                        "data": {
-                            "label": "bad1",
-                            "nodeType": "dataInput",
-                            "config": {"_load_error": "err1"},
-                        },
-                    },
-                    {
-                        "id": "b2",
-                        "data": {
-                            "label": "bad2",
-                            "nodeType": "banding",
-                            "config": {"_load_error": "err2"},
-                        },
-                    },
-                    {
-                        "id": "ok",
-                        "data": {
-                            "label": "healthy",
-                            "nodeType": "output",
-                            "config": make_output_config([]),
-                        },
-                    },
-                ],
-                "edges": [],
-            }
-        )
-        errors = config_load_errors(graph)
-        assert len(errors) == 2
-        assert "config/data_input/bad1.json" in errors
-        assert "config/banding/bad2.json" in errors
-        assert errors["config/data_input/bad1.json"] == "err1"
-        assert errors["config/banding/bad2.json"] == "err2"
 
 
 # ---------------------------------------------------------------------------

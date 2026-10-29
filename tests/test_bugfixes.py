@@ -679,18 +679,3 @@ class TestParserConfigLoadWarning:
 
         with pytest.raises(ConfigError, match=r"bands\.json is not valid UTF-8: byte 0x96"):
             parse_pipeline_file(pipeline_dir / "main.py")
-
-    def test_format_load_error_warning_empty(self):
-        """No labels should produce None."""
-        from haute.parser import _format_load_error_warning
-
-        assert _format_load_error_warning([]) is None
-
-    def test_format_load_error_warning_truncates(self):
-        """More than 3 labels should be truncated."""
-        from haute.parser import _format_load_error_warning
-
-        result = _format_load_error_warning(["a", "b", "c", "d", "e"])
-        assert result is not None
-        assert "a, b, c" in result
-        assert "and 2 more" in result
