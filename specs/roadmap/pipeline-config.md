@@ -15,7 +15,6 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 | PCFG-R07 | Planned | P2 | Every node type has a typed config model that is the single validation boundary. |
 | PCFG-R08 | Planned | P3 | Editor-only state travels beside the node config, not inside it. |
 | PCFG-R09 | Planned | P3 | A node type is declared in one place. |
-| PCFG-R11 | Planned | P2 | An inline keyword on a sidecar-backed node fails the parse by name instead of being dropped, and Recover reports it rather than writing it over the sidecar. |
 | PCFG-R12 | Planned | P2 | A save keeps every authored comment, or reports the ones it would drop before it proceeds. |
 | PCFG-R13 | Planned | P2 | Recover validates with the engine's own validators and resets a submodel node without renaming names in the user's code. |
 | PCFG-R14 | Planned | P3 | Both save paths write the same canonical sidecar bytes, the configured pipeline path stays inside the project, and no placeholder file name reaches an error. |
@@ -28,7 +27,7 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 
 `PCFG-R04` to `PCFG-R09` come from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md);
-`PCFG-R11` to `PCFG-R19` from the
+`PCFG-R12` to `PCFG-R19` from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md).
 `PCFG-R08` should precede `PCFG-R07` so the models do not have to carry
 editor state.
@@ -190,34 +189,6 @@ specific node type for a concern the specification owns.
 `src/haute/_registry.py::NODE_REGISTRY`; `src/haute/_builders.py`;
 `src/haute/_codegen_builders.py`; `src/haute/projection.py`;
 `src/haute/_trace_correlation.py`; `src/haute/assistant/_catalog.py`.
-
-### PCFG-R11 — Inline keywords on a sidecar-backed node are refused
-**Why:** `_resolve_node_config` pops `contract` and `config` and, on the sidecar
-branch, never reads the remaining decorator keywords, so
-`@pipeline.constant(config="...", values=[...], colour="red")` parses to the
-sidecar's values with no warning and the regenerated decorator drops the keywords
-(probed); the error text for a missing `config=` even says inline keyword arguments
-are ignored. Recover settings reads the same keywords as settings that override the
-sidecar (the decorator's keys merged over the sidecar's), so a Recover would write
-the decorator's values into the sidecar: a silent drop and a parser/recovery
-disagreement over what the file means. Recover also converts a `source_type`
-keyword into `sourceType` and reports it retained, a conversion of a non-canonical
-form.
-
-**Plan:** After popping `contract` and `config`, refuse any remaining keyword on a
-sidecar-backed node with a `ConfigError` naming the node and the keys (the node then
-opens for Recover); make `read_raw_node_settings` report such keywords as removed
-field changes instead of merging them; delete the `source_type` conversion.
-
-**Acceptance:** The probe decorator fails the parse naming `values` and `colour`;
-Recover settings on it reports both as removed and leaves the sidecar unchanged;
-`source_type` is reported, not converted.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_config_builder.py::_resolve_node_config`;
-`src/haute/_config_builder.py::_sidecar_required_error`;
-`src/haute/_recovery_sources.py::read_raw_node_settings`.
 
 ### PCFG-R12 — Comments survive a save
 **Why:** `_render_module` assembles the file from the preamble, the constructor, the

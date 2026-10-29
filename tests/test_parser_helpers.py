@@ -1145,9 +1145,57 @@ class TestResolveNodeConfig:
         # Concrete folder resolved from NODE_TYPE_TO_FOLDER, not a placeholder.
         assert "config/data_input/" in message
         assert "<type>" not in message
-        # Names that inline kwargs are ignored + points at a generator.
-        assert "ignored" in message
+        # Says where its settings go + points at a generator.
+        assert "not in decorator keywords" in message
         assert "haute init" in message
+
+    def test_a_sidecar_backed_node_refuses_its_other_decorator_keywords(self, tmp_path):
+        """Every setting of a sidecar-backed node is in its sidecar: a keyword beside
+        ``config=`` fails the parse by name rather than being dropped."""
+        from haute.errors import ConfigError
+
+        cfg_dir = tmp_path / "config" / "constant"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "rates.json").write_text('{"values": [{"name": "base", "value": "1"}]}')
+
+        with pytest.raises(ConfigError) as excinfo:
+            _resolve_node_config(
+                {
+                    "config": "config/constant/rates.json",
+                    "values": [{"name": "base", "value": "2"}],
+                    "colour": "red",
+                },
+                "...",
+                [],
+                0,
+                tmp_path,
+                func_name="rates",
+                explicit_node_type=NodeType.CONSTANT,
+            )
+        assert excinfo.value.message == (
+            "Node 'rates' takes its settings from config/constant/rates.json, so its "
+            "decorator keywords 'colour', 'values' would be ignored: move them into that "
+            "file, or remove them."
+        )
+        assert excinfo.value.context["keywords"] == ["colour", "values"]
+
+    def test_a_sidecar_backed_node_keeps_its_contract_keyword(self, tmp_path):
+        cfg_dir = tmp_path / "config" / "constant"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "rates.json").write_text('{"values": [{"name": "base", "value": "1"}]}')
+
+        node_type, config = _resolve_node_config(
+            {"config": "config/constant/rates.json", "contract": "opaque"},
+            "...",
+            [],
+            0,
+            tmp_path,
+            func_name="rates",
+            explicit_node_type=NodeType.CONSTANT,
+        )
+        assert node_type == NodeType.CONSTANT
+        assert config["contract"] == "opaque"
+        assert config["values"] == [{"name": "base", "value": "1"}]
 
     def test_invalid_content_error_leads_with_underlying_cause(self, tmp_path):
         """Valid JSON whose *content* is invalid must surface the real reason.
@@ -1331,11 +1379,11 @@ class TestResolveNodeConfig:
 
     def test_does_not_mutate_decorator_kwargs(self):
         """_resolve_node_config must not modify the caller's dict (B21)."""
-        kwargs: dict[str, Any] = {"config": "config/data_input/x.json", "extra": True}
+        kwargs: dict[str, Any] = {"config": "config/data_input/x.json", "contract": "opaque"}
         original = dict(kwargs)
         with patch("haute._config_builder.load_node_config", return_value={}):
             _resolve_node_config(kwargs, "", [], 0, None)
-        # The original dict must be untouched — "config" key stays.
+        # The original dict must be untouched — "config" and "contract" keys stay.
         assert kwargs == original
 
     def test_no_mutation_polars_path(self):
@@ -1352,14 +1400,20 @@ class TestResolveNodeConfig:
         assert kwargs == original
 
     def test_no_mutation_with_multiple_keys(self):
-        """Input dict with many keys must not lose or gain any entries (B21)."""
+        """Input dict with many keys must not lose or gain any entries (B21), even when
+        the keywords beside ``config=`` are refused."""
+        from haute.errors import ConfigError
+
         kwargs: dict[str, Any] = {
             "config": "config/banding/x.json",
             "sink": "out.parquet",
             "format": "parquet",
         }
         original = dict(kwargs)
-        with patch("haute._config_builder.load_node_config", return_value={}):
+        with (
+            patch("haute._config_builder.load_node_config", return_value={}),
+            pytest.raises(ConfigError, match="'format', 'sink' would be ignored"),
+        ):
             _resolve_node_config(kwargs, "", [], 0, None)
         assert kwargs == original
 

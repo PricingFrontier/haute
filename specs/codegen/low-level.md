@@ -311,7 +311,9 @@ A stepped transform (`config["steps"]` is a list) has its body rendered by
 `_polars_steps.render_polars_steps` against the logical parameter names, one
 statement per step (over several lines when it does not fit in 88 columns at the body's indentation) with a
 leading `df = <input>`, and its decorator carries
-`config="config/polars/<func>.json"` so the parser reloads the steps. A render
+`config="config/polars/<func>.json"` so the parser reloads the steps, and no other
+setting: its shared column settings are written to that sidecar, which the parser reads
+them from, never as decorator keywords beside it. A render
 failure emits the incomplete placeholder body (the save warns which step is
 incomplete); `steps` together with `inputMapping` on an original is a `ConfigError`.
 A stepped frame surface (`config["steps"]` is a list on a Data Input, External File,

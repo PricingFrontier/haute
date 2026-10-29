@@ -623,14 +623,17 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> NodeSource:
             node_id=node.id,
             node_label=node.data.label,
         )
-    keywords = _build_extra_kwargs(config, COLUMN_CONFIG_KEYS)
+    keywords: list[tuple[str, object]]
+    if isinstance(steps, list):
+        # The sidecar holds every setting of a stepped transform, its column
+        # settings included, so the decorator names only it.
+        keywords = [("config", config_path_for_node(NodeType.POLARS, _func_name(node)).as_posix())]
+    else:
+        keywords = _build_extra_kwargs(config, COLUMN_CONFIG_KEYS)
     if input_mapping is not None:
         # ``resolve_input_mapping_names`` validated the persisted value before
         # it reaches source interpolation.
         keywords.append(("inputMapping", input_mapping))
-    if isinstance(steps, list):
-        sidecar = config_path_for_node(NodeType.POLARS, _func_name(node)).as_posix()
-        keywords.append(("config", sidecar))
     # Not written yet: a polars node's output is whatever its code assigns to
     # ``df``, so with no code there is nothing to return — there is no implicit
     # passthrough, whatever the input count. A half-built graph is a normal

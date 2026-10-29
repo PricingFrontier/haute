@@ -76,6 +76,21 @@ def read_raw_node_settings(
     if reference is not None and not isinstance(reference, str):
         raise conflict("A node config reference must be a literal relative path.")
     if reference:
+        # A sidecar-backed node takes its settings from the sidecar alone, as
+        # the parser does: any other decorator keyword is removed, never
+        # written over the sidecar.
+        for key in sorted(raw.keys() - {"contract"}):
+            changes.append(
+                RecoveryFieldChange(
+                    path=f"/{key}",
+                    outcome="removed",
+                    reason=(
+                        f"The decorator keyword {key!r} has no effect beside config=; "
+                        f"the node takes its settings from {reference}."
+                    ),
+                )
+            )
+            del raw[key]
         relative = (Path(document.source_file).parent / reference).as_posix()
         content = read_artifact(root, relative)
         if content is None:
@@ -145,15 +160,6 @@ def read_raw_node_settings(
         if "steps" not in reconciled:
             changes.append(RecoveryFieldChange(path="/steps", outcome="removed", reason=reason))
         raw = reconciled
-    if "source_type" in raw and "sourceType" not in raw:
-        raw["sourceType"] = raw.pop("source_type")
-        changes.append(
-            RecoveryFieldChange(
-                path="/sourceType",
-                outcome="retained",
-                reason="Known decorator spelling: source_type maps to sourceType.",
-            )
-        )
     return node_type, raw, changes
 
 

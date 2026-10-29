@@ -3837,6 +3837,29 @@ def test_codegen_parse_round_trip_reproduces_rendered_code(tmp_path: Path) -> No
     assert "_steps_discarded" not in node.data.config
 
 
+def test_a_stepped_transform_keeps_its_column_settings_in_its_sidecar(tmp_path: Path) -> None:
+    """The sidecar is where the parser reads a stepped transform's settings, so the
+    decorator names only it: a column keyword beside config= would fail the parse."""
+    quotes, rates = _frames(tmp_path)
+    stepped = _stepped("t", GOLDEN_STEPS, selected_columns=["premium"], column_renames={"a": "b"})
+    graph = PipelineGraph(
+        nodes=[quotes, rates, stepped],
+        edges=[make_edge("quotes", "t"), make_edge("rates", "t")],
+    )
+    code = graph_to_code(graph, pipeline_name="main")
+    assert '@pipeline.polars(config="config/polars/t.json")\n' in code
+    _write_sidecars(tmp_path, graph)
+    sidecar = json.loads((tmp_path / "config" / "polars" / "t.json").read_text(encoding="utf-8"))
+    assert sidecar["selected_columns"] == ["premium"]
+    assert sidecar["column_renames"] == {"a": "b"}
+
+    parsed = parse_pipeline_source(code, _base_dir=tmp_path)
+    node = next(n for n in parsed.nodes if n.id == "t")
+    assert node.data.config["selected_columns"] == ["premium"]
+    assert node.data.config["column_renames"] == {"a": "b"}
+    assert node.data.config["steps"] == GOLDEN_STEPS
+
+
 def test_free_code_executes_between_low_code_steps_and_round_trips(tmp_path: Path) -> None:
     quotes, _rates = _frames(tmp_path)
     snippet = 'df = df.with_columns(\n    (pl.col("premium") * factor).alias("adjusted")\n)\n'

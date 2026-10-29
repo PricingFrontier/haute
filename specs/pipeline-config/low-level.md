@@ -231,7 +231,11 @@ and must not take `df` (for an External File, `obj`); any other body is a hook a
 it, on a type that accepts code; each violation is a `ParseError` naming the node and the
 shape expected. `_resolve_node_config` also pops a `contract=` kwarg before
 delegating (so per-type builders don't flag it as unrecognised), cross-checks it via
-`_validate_user_contract`, and re-attaches it to the config afterwards. For Data Input/Output
+`_validate_user_contract`, and re-attaches it to the config afterwards. A node with a
+`config=` sidecar takes every other setting from the sidecar, so once `config=` and
+`contract=` are popped, any decorator keyword left is a `ConfigError` naming the node and
+the keywords: the node opens unavailable for Recover rather than the keyword being dropped
+by the parse and by the next save. For Data Input/Output
 nodes it then validates the resolved config through the io-layer contract in
 completeness-tolerant mode (`require_complete=False`): structural and branch violations still
 raise `ConfigError`, while missing required locator values (the empty string treated as
@@ -253,7 +257,11 @@ fails on.
 **What a recover cannot fix.** The editor's Recover settings action
 (`src/haute/_pipeline_repair_actions.py::_recover_node`, over
 `src/haute/_node_config_recovery.py::reconcile_config`) never reports an unresolved problem as
-fixed. For a candidate that still loads, every error-level engine issue that survives the
+fixed. It reads a sidecar-backed node's settings as the parser does
+(`src/haute/_recovery_sources.py::read_raw_node_settings`): from the sidecar alone, with each
+other decorator keyword reported as a removed field and never written over the sidecar
+(`contract=` stays on the decorator). It converts no spelling: a `source_type` key is an
+unknown key like any other. For a candidate that still loads, every error-level engine issue that survives the
 reconciliation (a required value the engine will not invent, an invalid range) is reported, for
 every node type, as a completeness entry on the target: the issue's field path (`/` for a
 whole-config issue), its code and the engine's own message, beside the Data Input/Output
@@ -774,8 +782,9 @@ it on the reading node instead of aborting the walk, and every other run propaga
 ## Error handling
 
 - **`ConfigError`** (`haute.errors`) — missing/unreadable/invalid-JSON sidecar; a sidecar
-  that is not UTF-8, naming the file and the first byte that is not; sidecar
-  content failing schema validation; a config key the node type does not declare
+  that is not UTF-8, naming the file and the first byte that is not; a decorator keyword
+  beside `config=` and `contract=` on a sidecar-backed node, naming the node and the
+  keywords; sidecar content failing schema validation; a config key the node type does not declare
   (`reject_unrecognized_config_keys`, at parse and at the sidecar write boundary); a
   folder-backed node type used without `config=`;
   `optimiserApply` misconfiguration (`artifact_path` set without `sourceType`); `modelScore`
@@ -918,7 +927,8 @@ API and real JSON round-trips rather than mocks:
   function-body extraction keeping the comments above the first statement and none from a
   multi-line signature (`TestFunctionBodySource`), decorator kwarg parsing, `_build_node_config` per node type
   (`TestBuildNodeConfigExtended`), `_resolve_node_config` sidecar and contract paths
-  (`TestResolveNodeConfig`), and edge/GraphNode building (`TestBuildEdges`,
+  (`TestResolveNodeConfig`, including a sidecar-backed node's other decorator keywords
+  refused by name), and edge/GraphNode building (`TestBuildEdges`,
   `TestBuildRfNodes`), including deferred cross-boundary endpoints and fail-loud rejection of
   genuinely dangling connects.
 - **`test_graph_shape_contracts.py`** — Explore in/out-degree contracts

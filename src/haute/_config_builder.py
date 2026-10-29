@@ -377,16 +377,16 @@ def _sidecar_required_error(node_type: NodeType, func_name: str) -> ConfigError:
     """Build the error for a folder-backed node used without a ``config=`` sidecar.
 
     Names the concrete config folder resolved from ``NODE_TYPE_TO_FOLDER`` (not a
-    ``<type>`` placeholder), states that any inline keyword arguments were
-    ignored, and points at ``haute init`` as a starter-sidecar generator. Raised
-    from the parse path (:func:`_resolve_node_config`), which editor recovery
-    shares, so both surface the same guidance.
+    ``<type>`` placeholder), says the settings belong in that file rather than
+    in decorator keywords, and points at ``haute init`` as a starter-sidecar
+    generator. Raised from the parse path (:func:`_resolve_node_config`), which
+    editor recovery shares, so both surface the same guidance.
     """
     folder = NODE_TYPE_TO_FOLDER[node_type]
     return ConfigError(
         f"Node type {node_type.value!r} stores its config in a JSON sidecar; "
-        f'reference it with config="config/{folder}/<name>.json" '
-        f"(inline keyword arguments are ignored for this node type). "
+        f'reference it with config="config/{folder}/<name>.json" and put its '
+        f"settings in that file, not in decorator keywords. "
         f"Run `haute init` to scaffold a starter project with example "
         f"sidecars, or create config/{folder}/<name>.json by hand.",
         func_name=func_name,
@@ -665,6 +665,18 @@ def _resolve_node_config(
             node_type=node_type.value,
         )
     if config_ref:
+        if decorator_kwargs:
+            # The sidecar holds every setting; a keyword beside it would be
+            # dropped here and by the next save, so it fails the parse by name.
+            keywords = sorted(decorator_kwargs)
+            raise ConfigError(
+                f"Node {func_name!r} takes its settings from {config_ref}, so its decorator "
+                f"keywords {', '.join(repr(key) for key in keywords)} would be ignored: move "
+                "them into that file, or remove them.",
+                func_name=func_name,
+                node_type=node_type.value,
+                keywords=keywords,
+            )
         normalised_ref = config_ref.replace("\\", "/")
         base = base_dir or Path.cwd()
         try:

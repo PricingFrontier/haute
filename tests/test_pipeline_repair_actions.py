@@ -487,6 +487,73 @@ def test_recover_retains_valid_settings_and_reports_outcomes(tmp_path):
     assert "code" not in written
 
 
+def test_recover_reports_a_sidecar_backed_nodes_decorator_keywords_as_removed(tmp_path):
+    """The parse refuses the keywords beside config=, and Recover takes the settings
+    from the sidecar alone: each keyword is reported removed and none reaches the file."""
+    from haute._pipeline_repair import build_recover_unavailable_node_plan
+    from haute.errors import ConfigError
+    from haute.parser import parse_pipeline_file
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    sidecar = tmp_path / "config" / "constant" / "rates.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text('{"values": [{"name": "base", "value": "1"}]}\n', encoding="utf-8")
+    (tmp_path / "main.py").write_text(
+        'import haute\npipeline = haute.Pipeline("demo")\n\n\n'
+        '@pipeline.constant(config="config/constant/rates.json", '
+        'values=[{"name": "base", "value": "2"}], colour="red")\n'
+        "def rates(): ...\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="'colour', 'values' would be ignored"):
+        parse_pipeline_file(tmp_path / "main.py")
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    assert next(node for node in document.nodes if node.authored_id == "rates").availability == (
+        "unavailable"
+    )
+
+    request = _request(tmp_path, "rates", "recover")
+    plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
+    outcomes = {(change.path, change.outcome) for change in plan.response.field_changes}
+    assert ("/values", "removed") in outcomes
+    assert ("/colour", "removed") in outcomes
+    result = _apply(tmp_path, request)
+    assert result.document.load_status == "ready"
+    assert json.loads(sidecar.read_text(encoding="utf-8")) == {
+        "values": [{"name": "base", "value": "1"}]
+    }
+    source = (tmp_path / "main.py").read_text(encoding="utf-8")
+    assert '@pipeline.constant(config="config/constant/rates.json")' in source
+    assert "colour" not in source
+
+
+def test_recover_reports_a_source_type_keyword_rather_than_converting_it(tmp_path):
+    from haute._pipeline_repair import build_recover_unavailable_node_plan
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    sidecar = tmp_path / "config" / "model_scoring" / "score.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text('{"sourceType": "run", "run_id": "abc"}\n', encoding="utf-8")
+    (tmp_path / "main.py").write_text(
+        'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n\n\n'
+        "@pipeline.polars\ndef quotes() -> pl.LazyFrame:\n"
+        '    df = pl.LazyFrame({"x": [1]})\n    return df\n\n\n'
+        '@pipeline.model_score(config="config/model_scoring/score.json", '
+        'source_type="registered")\n'
+        "def score(quotes): ...\n",
+        encoding="utf-8",
+    )
+
+    plan = build_recover_unavailable_node_plan(
+        project_root=tmp_path, request=_request(tmp_path, "score", "recover")
+    )
+    changes = {change.path: change.outcome for change in plan.response.field_changes}
+    assert changes["/source_type"] == "removed"
+    assert plan.response.previous_config is not None
+    assert plan.response.previous_config["sourceType"] == "run"
+
+
 def test_recover_regenerates_a_stale_contract_annotation(tmp_path):
     """A factor edited back to a draft leaves the saved annotation promising a
     column the node no longer creates, so the node cannot load. Recover rebuilds

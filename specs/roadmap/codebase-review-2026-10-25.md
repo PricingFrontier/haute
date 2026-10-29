@@ -216,8 +216,6 @@ these are the Majors still open.
 - **Utility files are written non-atomically, unlocked and without a revision**
   (Major, `API-R07`): a second editor's PUT silently wins and a concurrent
   preview can import a truncated file.
-- **Inline decorator keywords on a sidecar-backed node are dropped by the parse
-  and merged over the sidecar by Recover** (Major, `PCFG-R11`).
 - **Every save drops authored comments outside the kept regions** (Major,
   `PCFG-R12`; five kinds reproduced) with no diagnostic.
 - **The optimiser's MLflow log writes the complete result artifact without the
@@ -305,7 +303,6 @@ production:
 | Server API | SRV-1, SRV-5 | `API-R08` |
 | Server API | SRV-6, SRV-7, SRV-8, SRV-13, SRV-15 | `API-R09` |
 | Server API | SRV-10, SRV-12, SRV-14, SRV-16, SRV-17 | `API-R10` |
-| Pipeline config | PCF-2, PCF-5 | `PCFG-R11` |
 | Pipeline config | PCF-3 | `PCFG-R12` |
 | Pipeline config | PCF-6, PCF-7 | `PCFG-R13` |
 | Pipeline config | PCF-8, PCF-11, PCF-14, PCF-15 | `PCFG-R14` |
@@ -446,12 +443,9 @@ All probes live outside the repository and wrote nothing into it.
 | worker `TimeoutError` | A worker raising `TimeoutError` under a 5 s response timeout surfaces as `BlockingWorkTimeoutError` with `outcome=response_timeout`. |
 | sidecar self-write | After `save_sidecar(...)` the self-write registry is empty and `is_self_write(sidecar)` is false; `ParseError` is not a `ValueError`. |
 | save request order | `save_sidecar` with an `active_source` not in `sources` raises pydantic's `ValidationError` after the other files were staged; two nodes labelled `Rates` and `rates` make `flatten_executable_graph` raise `ParseError`. |
-| lenient decode | A cp1252 sidecar `{"name": "Prämie"}` loads as `Pr�mie` and is rewritten as `EF BF BD`; the constants reader refuses the same bytes. |
 | dropped comments | Five comment kinds (a section, decorator-to-`def`, trailing, between functions, on `connect`) are absent after parse → `graph_to_code`; `unkept_module_statements` reports none. |
-| inline keywords | `@pipeline.constant(config=..., values=[...], colour="red")` parses to the sidecar's values with no warning; the regenerated decorator keeps only `config=`. |
 | corrupt parquet scan | `pl.scan_parquet` on a corrupt file returns a lazy frame; `collect_schema()` raises `ComputeError` (Polars 2.0.0). |
 | evaluation plan size | 2,000,000 rows, five folds: a 71 MB plan; the parent's reload takes 13.3 s with a 0.65 GB peak. |
-| same-line return | `extract_user_code("df = quotes.head(1); return df")` returns `''` for the Polars and hook kinds; `"a = 1\ndf = quotes.head(a); return df"` returns `'a = 1'`. |
 | reformat discards steps | A free-code step whose comment carries trailing spaces survives two saves; `ruff format` of the file then logs `polars_steps_discarded`. |
 | `match` bindings | `support_code_inventory` on a preamble `match` lists only `os`; the equivalent `if`/`else` lists `helper` twice. |
 | trace input sources | A left join of A `(policy, x=10)` with B `(policy, x=1000)` and `y = x * 2`: `calc.x` is 10.0 while `input_sources["x"]` names B with 1000.0; declaring B first names A with 10.0; `derivations[].reads` names A both ways. |
