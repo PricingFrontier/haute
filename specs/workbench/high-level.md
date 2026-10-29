@@ -858,7 +858,8 @@ Out of scope:
   column (a select of the one-row input tables' columns, by table, each by its label, and of
   each many-row input table's rows, "Rows of" the table), its
   test (for True/false "is ticked" and "is not ticked"; for Text "equals", "does not
-  equal", "is one of", "is not one of", "is filled" and "is empty"; for a number those and
+  equal", "contains", "does not contain", "starts with", "ends with", "is one of", "is not
+  one of", "is filled" and "is empty"; for a number those but the four on text within text and
   "is greater than", "is at least", "is less than" and "is at most"; for a Date "is on",
   "is not on", "is after", "is on or after", "is before", "is on or before", "is filled"
   and "is empty"), its value, the control the column's cell is (a dropdown of the allowed
@@ -866,7 +867,15 @@ Out of scope:
   of" and "is not one of" a tick box per allowed value, or the values typed comma-separated
   when the column allows any, a number's written without a thousands separator, which the
   comma would split: "1,000" in a number column's list is refused, saying to write 1000,
-  and never read as 1 and 0; and a cross that removes it. A condition on a table's rows
+  and never read as 1 and 0; and a cross that removes it. A test of one value may take
+  another field of its column's type in place of a value typed: beside the test, while
+  there is such a field, a select of "Value" and those fields, a one-row input table's
+  columns by table, or, in a test of a row, the other columns of its table but the index;
+  a Date tested against another Date then takes a whole number of days added to that
+  date, a negative number taking them away, up to 36,500 either way, `completion_date`
+  "is after" `start_date` + 365 days. There is no test against today: a saved quote would
+  show other sheets, and be priced otherwise, on another day, so a date field on the
+  form stands in for it. A condition on a table's rows
   says which rows, Any row, Every row, Number of rows, or the Sum, Smallest, Largest or
   Average of a number column of the table other than its index, chosen beside it, then its
   tests of a row, all passing in the same row, each a column of the table other than its
@@ -875,11 +884,15 @@ Out of scope:
   test, a number's ("equals" to "is at most"), and a whole number of rows, 0 or more, or a
   number, typed into a field that refuses anything else.
   Choosing another column, for a condition or a test of a row, keeps
-  the test while the column's type takes it, else the type's first, and the values while
-  they fit the test. Choosing a table's rows starts Any row with a test of its first column
+  the test while the column's type takes it, else the type's first, the values while
+  they fit the test, and the field it is tested against while that is of the column's
+  type and not the column itself; a test that takes no value or several leaves the field
+  and its days. Choosing a table's rows starts Any row with a test of its first column
   but the index, or, for a condition on a column of the table, a test of that column as
-  the condition has it; choosing a one-row table's column for a condition on rows keeps its
-  test of that column, if it has one. Choosing Number of rows starts it at "is at least"
+  the condition has it, against the same field while that is another column of the table;
+  choosing a one-row table's column for a condition on rows keeps its test of that column,
+  if it has one, against the same column of the table, which a test of a row names alone.
+  Choosing Number of rows starts it at "is at least"
   1, a total at "is greater than" with no value, and Any row or Every row adds a test of the
   first column while there is none, each keeping the tests there are. While a condition's
   table has switched between one row and many since, its column select holds it, not
@@ -1376,10 +1389,19 @@ Out of scope:
     text without the spaces around it, compared exactly; a tick box ticked or not, one
     never touched unticked; a number read as the sample's numbers are (a currency sign,
     separators and spaces allowed) and compared as a number; a date as the day it names;
-    and a cell blank or untouched as empty. Of the tests other than the ticks, an empty
-    value passes `empty`, `not_equals` and `not_one_of` alone, and a value not of its
-    column's type (text in a number column, or a tick left in a column since retyped)
-    `filled`, `not_equals` and `not_one_of` alone. A condition that cannot hold as written
+    and a cell blank or untouched as empty. Text within text compares as equals does:
+    `contains`, `starts_with` and `ends_with` pass a value holding the text tested for,
+    at its start or at its end, exactly, without the spaces around either. Of the tests
+    other than the ticks, an empty value passes `empty`, `not_equals`, `not_contains`
+    and `not_one_of` alone, and a value not of its column's type (text in a number
+    column, or a tick left in a column since retyped) `filled`, `not_equals`,
+    `not_contains` and `not_one_of` alone. A test against another field holds only while
+    that field shows too, as its own column must, so hiding still only hides more, and
+    reads the other field's value as it reads its own: one in a one-row table's first
+    row, or, in a test of a row, the same row's. A value there that is not one of its
+    type, blank among them, gives nothing to test against, which `not_equals` and
+    `not_contains` alone pass. A Date against another Date compares the day with that
+    day and its days added. A condition that cannot hold as written
     never holds: one naming a column that is not in a one-row input table (gone, an output
     table's or a many-row table's), a condition on rows naming a table that is not a
     many-row input table, a test of a row naming a column that is not its table's or is its
@@ -1387,7 +1409,10 @@ Out of scope:
     index or against a value that is not a number, a test its column's type does not take, a number of
     values its test does not take (none for the ticks, `filled` and `empty`, at least one
     for `one_of` and `not_one_of`, else one), or a value its column could not hold (blank,
-    not a number, a fraction for an Integer, not a `YYYY-MM-DD` day).
+    not a number, a fraction for an Integer, not a `YYYY-MM-DD` day); a test against
+    another field that takes no value or several, that has values typed too, whose field
+    is not a column of a one-row input table (in a test of a row, of its table other than
+    its index) or not of its column's type; and days added but to another Date field.
   - **On a list.** A condition on a many-row input table's rows holds while each column it
     tests, and a total's column, is on a Table that shows it (for a count without tests,
     one of its table's columns other than the index), and its rows pass: any of the table's rows
@@ -1954,8 +1979,8 @@ Out of scope:
   from, and the view, which hides and shows as each value is typed, applies the same
   rules, the two held to one set of cases both test against.
 - **Decided at once, by hiding.** Conditions test the values as typed, except that a
-  condition on a column no component that shows has never holds, so hiding only ever hides
-  more: starting from everything shown and hiding until nothing changes gives one answer
+  condition on a column no component that shows has, or tested against such a field,
+  never holds, so hiding only ever hides more: starting from everything shown and hiding until nothing changes gives one answer
   whatever the order of the sheets and components, a chain of conditions (a sheet shown by
   a box on a sheet shown by another box) is followed without being written twice, and no
   value the underwriter cannot see decides what they see.
@@ -2337,7 +2362,7 @@ Out of scope:
   test the form's shape does not have (an unknown `op`, a `values` entry that is not text,
   a group with no conditions or with a group among them, a condition in any or every row
   with no test, a total that is not a sum, least, greatest or average, a count that is not a
-  whole number of 0 or more)
+  whole number of 0 or more, days that are not a whole number from -36,500 to 36,500)
   is a form that does not fit, refused as any other.
 - `GET /api/workbench/tables` answers 404 while the workbench is not enabled; the editor
   never asks then. Tables or response tables the pipeline cannot take, such as a table named

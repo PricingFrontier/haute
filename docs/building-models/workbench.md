@@ -479,11 +479,21 @@ component's **Display** pane. **Add condition** tests a column of an input table
 - a tick box **is ticked** or **is not ticked**;
 - any other column **is filled** or **is empty**, and **equals** or **does not equal** a
   value;
+- a text column **contains**, **does not contain**, **starts with** or **ends with** some
+  text, its letters cased as typed: an insured containing "Holdings";
 - a text or number column **is one of** or **is not one of** some values, ticked from its
-  allowed values or typed comma-separated;
+  allowed values or typed comma-separated, each number without its thousands separator;
 - a number **is greater than**, **is at least**, **is less than** or **is at most** a
   value, and a date **is after**, **is on or after**, **is before** or **is on or before**
   one.
+
+A test of one value can compare with another field of the same type instead of a value
+you type: pick it beside the test, in place of **Value**. A policy limit **is greater
+than** the MGA limit; a completion date **is after** the start date **+ 365** days, a
+negative number of days taking them away. In a test of a row, the other field is a column
+of the same row. The test holds only while both fields show. There is no test against
+today, since a saved quote would then show other sheets on another day: add a date field
+for it.
 
 With two or more conditions, choose whether **all** or **any** of them must hold, or **at
 least** a number of them: a section shown while two or three of three cover boxes are

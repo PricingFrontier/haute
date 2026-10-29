@@ -17,6 +17,7 @@ import {
   CONDITION_TESTS,
   COUNT_TESTS,
   conditionFault,
+  DAYS_MAX,
   isGroup,
   isListCondition,
   isRowCount,
@@ -25,6 +26,7 @@ import {
   newCondition,
   newRowTest,
   testableColumns,
+  testFields,
   testLabel,
   testsFor,
   TOTALS,
@@ -34,12 +36,14 @@ import {
   withConditionTest,
   withListKind,
   withTestColumn,
+  withTestField,
   type ColumnTest,
   type ConditionTest,
   type CountTest,
   type ListCondition,
   type ShowWhenEntry,
   type SingleCondition,
+  type TestField,
   type TotalKind,
 } from "../utils/sheetVisibility"
 import { fieldColumn, readableName } from "../utils/workbenchForm"
@@ -69,6 +73,11 @@ const KINDS: ReadonlyArray<{ value: ListKind; label: string }> = [
 const rowsKey = (tableId: string) => `${tableId}#rows`
 const label = (column: SchemaColumn) => column.label || readableName(column.name)
 const countValid = wholeNumber({ min: 0, unit: "rows" })
+/** Days added to another Date: a whole number, a minus sign taking them away, up to `DAYS_MAX` either way. */
+const daysValid = (text: string): string | null => {
+  const days = text.trim()
+  return /^[+-]?\d+$/.test(days) && Math.abs(Number(days)) <= DAYS_MAX ? null : `Enter a whole number of days from -${DAYS_MAX} to ${DAYS_MAX}.`
+}
 /** A total's number: blank, which its fault names, or a number as the sample's are typed. */
 const numberValid = (text: string): string | null => (text.trim() === "" || parseTypedNumber(text.trim()) !== null ? null : "Enter a number.")
 /** A number written with a thousands separator, `1,000` or `1,000,000.5`. */
@@ -367,7 +376,9 @@ function ConditionRow({
         {list ? (
           <ListFields form={form} table={table} condition={condition} name={name} onChange={onChange} />
         ) : (
-          <ColumnFields column={found?.column ?? null} test={condition} name={name} onChange={(next: Condition) => onChange(next)} />
+          <div className="flex min-w-0 flex-1 flex-wrap items-start gap-1.5">
+            <ColumnFields form={form} tableId={condition.table} column={found?.column ?? null} test={condition} name={name} onChange={(next: Condition) => onChange(next)} />
+          </div>
         )}
       </div>
       {fault !== null && (
@@ -567,20 +578,28 @@ function RowTestFields({
           </button>
         )}
       </div>
-      <div className="flex items-start gap-1.5">
-        <ColumnFields column={column} test={test} name={name} onChange={onChange} />
+      <div className="flex flex-wrap items-start gap-1.5">
+        <ColumnFields form={form} tableId={table?.id ?? null} column={column} test={test} name={name} onChange={onChange} />
       </div>
     </div>
   )
 }
 
-/** A test of a column's value: its test and its value. */
+/**
+ * A test of a column's value: its test, what a test of one value is tested against while
+ * another field could be (`Against`), and its value, or, against a Date, the days added.
+ */
 function ColumnFields<T extends ColumnTest>({
+  form,
+  tableId,
   column,
   test,
   name,
   onChange,
 }: {
+  form: FormSpec
+  /** The tested column's table; null while it is gone. */
+  tableId: string | null
   column: SchemaColumn | null
   test: T
   name: string
@@ -588,6 +607,8 @@ function ColumnFields<T extends ColumnTest>({
 }) {
   const type = column?.type ?? "str"
   const tests = column === null ? [test.op] : testsFor(type)
+  const fields = column === null || tableId === null ? [] : testFields(form.schema, tableId, column)
+  const against = CONDITION_TESTS[test.op].values === "one" && (fields.length > 0 || test.field !== null)
   return (
     <>
       <select
@@ -603,8 +624,93 @@ function ColumnFields<T extends ColumnTest>({
           </option>
         ))}
       </select>
-      <ConditionValue condition={test} column={column} name={name} onChange={(values) => onChange({ ...test, values })} />
+      {against && <Against form={form} tableId={tableId} fields={fields} test={test} name={name} onChange={(field) => onChange(withTestField(test, field, type === "date"))} />}
+      {test.field === null ? (
+        <ConditionValue condition={test} column={column} name={name} onChange={(values) => onChange({ ...test, values })} />
+      ) : (
+        type === "date" && (
+          <span className="flex min-w-0 flex-1 items-start gap-1">
+            <ValidatedTextField
+              dataTestId={`${name}-days`}
+              ariaLabel={`${name} days`}
+              value={String(test.days)}
+              validate={daysValid}
+              onCommit={(text) => onChange({ ...test, days: Number(text.trim()) })}
+              containerClassName="w-20 shrink-0"
+              className={`${FIELD_CLASS} w-full tabular-nums`}
+              style={INPUT_STYLE}
+            />
+            <span className="pt-1 text-[11px]" style={{ color: "var(--text-secondary)" }}>
+              days
+            </span>
+          </span>
+        )
+      )}
     </>
+  )
+}
+
+/** Where the select of what a test is tested against keeps "Value": a `:`, which no id holds, so no column's key or id. */
+const VALUE = ":value"
+
+/**
+ * What a test of one value is tested against: Value, typed, or one of `fields`, by table;
+ * a field the test names that is no longer one of them kept in its place, not offered.
+ */
+function Against<T extends ColumnTest>({
+  form,
+  tableId,
+  fields,
+  test,
+  name,
+  onChange,
+}: {
+  form: FormSpec
+  tableId: string | null
+  fields: readonly TestField[]
+  test: T
+  name: string
+  onChange: (field: T["field"]) => void
+}) {
+  const { field } = test
+  // A one-row table's condition names its field by table and column, a test of a row by its column in the same row.
+  const rowTest = !("table" in test)
+  const keyOf = (choice: TestField): string => (rowTest ? choice.column.id : columnKey(choice.table.id, choice.column.id))
+  const current = field === null ? VALUE : typeof field === "string" ? field : columnKey(field.table, field.column)
+  const ref = field === null ? null : typeof field === "string" ? (tableId === null ? null : { table: tableId, column: field }) : field
+  const named = ref === null ? null : fieldColumn(form, ref)
+  const tables = [...new Map(fields.map((choice) => [choice.table.id, choice.table])).values()]
+  return (
+    <select
+      aria-label={`${name} against`}
+      value={current}
+      onChange={(event) => {
+        if (event.target.value === VALUE) return onChange(null as T["field"])
+        const chosen = fields.find((choice) => keyOf(choice) === event.target.value)
+        if (chosen === undefined) throw new Error(`"${event.target.value}" is not a field this test can be tested against`)
+        onChange((rowTest ? chosen.column.id : { table: chosen.table.id, column: chosen.column.id }) as T["field"])
+      }}
+      className={`${FIELD_CLASS} w-32 shrink-0`}
+      style={INPUT_STYLE}
+    >
+      <option value={VALUE}>Value</option>
+      {field !== null && !fields.some((choice) => keyOf(choice) === current) && (
+        <option value={current} disabled>
+          {named === null ? "Missing field" : label(named.column)}
+        </option>
+      )}
+      {tables.map((table) => (
+        <optgroup key={table.id} label={table.name}>
+          {fields
+            .filter((choice) => choice.table.id === table.id)
+            .map((choice) => (
+              <option key={choice.column.id} value={keyOf(choice)}>
+                {label(choice.column)}
+              </option>
+            ))}
+        </optgroup>
+      ))}
+    </select>
   )
 }
 

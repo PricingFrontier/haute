@@ -124,8 +124,9 @@ HEADER_ROW_MAX = 100
 PARAMETER_NAME = r"^[A-Za-z_][A-Za-z0-9_]*$"
 
 #: What a condition tests its column's value for: a tick box ticked or not; any other
-#: column filled or empty, or equal to a value or not; a Text or number column one of some
-#: values or none of them; a number or a Date above, at least, below or at most a value.
+#: column filled or empty, or equal to a value or not; a Text column holding a value, at its
+#: start or its end, or not; a Text or number column one of some values or none of them; a
+#: number or a Date above, at least, below or at most a value.
 ConditionTest = Literal[
     "ticked",
     "not_ticked",
@@ -133,6 +134,10 @@ ConditionTest = Literal[
     "empty",
     "equals",
     "not_equals",
+    "contains",
+    "not_contains",
+    "starts_with",
+    "ends_with",
     "one_of",
     "not_one_of",
     "above",
@@ -140,6 +145,13 @@ ConditionTest = Literal[
     "below",
     "at_most",
 ]
+
+#: The most days a Date's test against another Date adds to its day or takes away: a hundred
+#: years, so every day both sides count stays a whole number they hold exactly.
+DAYS_MAX = 36_500
+
+#: The days added to another Date field's day before a Date is compared with it.
+Days = Annotated[int, Strict(), Field(ge=-DAYS_MAX, le=DAYS_MAX)]
 
 
 #: A sample cell as typed: text, or a tick. Strict, so a number or a null is refused.
@@ -196,17 +208,25 @@ class Condition(_Strict):
     column: str
     op: ConditionTest
     #: As typed: none for the ticks, ``filled`` and ``empty``, one or more for ``one_of``
-    #: and ``not_one_of``, else one.
+    #: and ``not_one_of``, else one, or none while ``field`` gives it.
     values: list[Annotated[str, Strict()]] = Field(default_factory=list)
+    #: Another one-row input table's column of the same type, whose value a test of one
+    #: value tests against in place of one typed.
+    field: FieldRef | None = None
+    #: Added to that field's day when the column is a Date.
+    days: Days = 0
 
 
 class RowTest(_Strict):
     """A test a row of a many-row table must pass: a ``Condition``'s column, test and values,
-    its table the condition's that holds it."""
+    its table the condition's that holds it, and another column of the same row, by id, to
+    test against."""
 
     column: str
     op: ConditionTest
     values: list[Annotated[str, Strict()]] = Field(default_factory=list)
+    field: str | None = None
+    days: Days = 0
 
 
 class RowsCondition(_Strict):

@@ -117,7 +117,7 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
 })
 
 const ALWAYS: ShowWhen = { match: "all", conditions: [] }
-const ticked = (table: string, columnId: string): Condition => ({ table, column: columnId, op: "ticked", values: [] })
+const ticked = (table: string, columnId: string): Condition => ({ table, column: columnId, op: "ticked", values: [], field: null, days: 0 })
 const when = (...conditions: ShowWhen["conditions"]): ShowWhen => ({ match: "all", conditions })
 
 const policy: SchemaTable = {
@@ -236,12 +236,12 @@ describe("quotedSchema", () => {
 describe("the tests each type takes", () => {
   it("offers each type its tests in the editor's order, with each test's values", () => {
     expect(testsFor("bool")).toEqual(["ticked", "not_ticked"])
-    expect(testsFor("str")).toEqual(["equals", "not_equals", "one_of", "not_one_of", "filled", "empty"])
+    expect(testsFor("str")).toEqual(["equals", "not_equals", "contains", "not_contains", "starts_with", "ends_with", "one_of", "not_one_of", "filled", "empty"])
     const numbers = ["equals", "not_equals", "above", "at_least", "below", "at_most", "one_of", "not_one_of", "filled", "empty"]
     expect(testsFor("int")).toEqual(numbers)
     expect(testsFor("float")).toEqual(numbers)
     expect(testsFor("date")).toEqual(["equals", "not_equals", "above", "at_least", "below", "at_most", "filled", "empty"])
-    expect([CONDITION_TESTS.ticked.values, CONDITION_TESTS.equals.values, CONDITION_TESTS.one_of.values]).toEqual(["none", "one", "some"])
+    expect([CONDITION_TESTS.ticked.values, CONDITION_TESTS.equals.values, CONDITION_TESTS.contains.values, CONDITION_TESTS.one_of.values]).toEqual(["none", "one", "one", "some"])
   })
 
   it("words each test for its type, a Date's comparisons as days", () => {
@@ -269,7 +269,18 @@ describe("the tests each type takes", () => {
       "is empty",
     ])
     expect(testsFor("bool").map((test) => testLabel(test, "bool"))).toEqual(["is ticked", "is not ticked"])
-    expect(testsFor("str").map((test) => testLabel(test, "str"))).toEqual(["equals", "does not equal", "is one of", "is not one of", "is filled", "is empty"])
+    expect(testsFor("str").map((test) => testLabel(test, "str"))).toEqual([
+      "equals",
+      "does not equal",
+      "contains",
+      "does not contain",
+      "starts with",
+      "ends with",
+      "is one of",
+      "is not one of",
+      "is filled",
+      "is empty",
+    ])
     expect(testsFor("float").map((test) => testLabel(test, "float"))).toEqual(tests.map((test) => testLabel(test, "int")))
   })
 })
@@ -294,12 +305,12 @@ describe("valueFits", () => {
 describe("conditionFault", () => {
   const form = formOf([page("p", [])])
   const fault = (condition: Partial<Condition>): string | null =>
-    conditionFault(form, { table: "t_policy", column: "c_class", op: "equals", values: ["Motor"], ...condition })
+    conditionFault(form, { table: "t_policy", column: "c_class", op: "equals", values: ["Motor"], field: null, days: 0, ...condition })
 
   it("is null for a condition that fits", () => {
     expect(fault({})).toBeNull()
-    expect(fault({ column: "c_bi", op: "ticked", values: [] })).toBeNull()
-    expect(fault({ column: "c_start", op: "at_least", values: ["2026-01-01"] })).toBeNull()
+    expect(fault({ column: "c_bi", op: "ticked", values: [], field: null, days: 0 })).toBeNull()
+    expect(fault({ column: "c_start", op: "at_least", values: ["2026-01-01"], field: null, days: 0 })).toBeNull()
   })
 
   it("names the first fault: the column, the test, the number of values, then each value", () => {
@@ -307,23 +318,45 @@ describe("conditionFault", () => {
     expect(fault({ table: "t_gone" })).toBe("tests a column that is no longer in the schema")
     expect(fault({ table: "t_out", column: "c_premium" })).toBe("tests premium, which is in an output table")
     expect(fault({ table: "t_items", column: "c_item" })).toBe("tests item, which is in a table with many rows")
-    expect(fault({ column: "c_bi", op: "above", values: ["1"] })).toBe('tests bi with "is greater than", which a True/false column cannot take')
+    expect(fault({ column: "c_bi", op: "above", values: ["1"], field: null, days: 0 })).toBe('tests bi with "is greater than", which a True/false column cannot take')
     expect(fault({ op: "above" })).toBe('tests class with "is greater than", which a Text column cannot take')
     expect(fault({ column: "c_years", op: "ticked" })).toBe('tests years with "is ticked", which an Integer column cannot take')
     expect(fault({ column: "c_si", op: "ticked" })).toBe('tests sum_insured with "is ticked", which a Decimal column cannot take')
     expect(fault({ column: "c_start", op: "one_of" })).toBe('tests start with "is one of", which a Date column cannot take')
     expect(fault({ values: [] })).toBe("needs a value for its test of class")
-    expect(fault({ op: "one_of", values: [] })).toBe("needs a value for its test of class")
+    expect(fault({ op: "one_of", values: [], field: null, days: 0 })).toBe("needs a value for its test of class")
     expect(fault({ op: "filled" })).toBe('tests class with "is filled", which takes no value')
     expect(fault({ values: ["Motor", "Fleet"] })).toBe('tests class with "equals", which takes one value')
-    expect(fault({ op: "one_of", values: ["Motor", " "] })).toBe("has a blank value for class")
+    expect(fault({ op: "one_of", values: ["Motor", " "], field: null, days: 0 })).toBe("has a blank value for class")
     expect(fault({ column: "c_years", values: ["2.5"] })).toBe('tests years against "2.5", which isn\'t a whole number')
     expect(fault({ column: "c_si", values: ["lots"] })).toBe('tests sum_insured against "lots", which isn\'t a number')
-    expect(fault({ column: "c_start", op: "below", values: ["01/05/2026"] })).toBe('tests start against "01/05/2026", which isn\'t a day written YYYY-MM-DD')
+    expect(fault({ column: "c_start", op: "below", values: ["01/05/2026"], field: null, days: 0 })).toBe('tests start against "01/05/2026", which isn\'t a day written YYYY-MM-DD')
+  })
+
+  it("faults a test against another field by the field, then the test, then its values and days", () => {
+    const against = (column: string, table = "t_policy") => ({ field: { table, column }, values: [] })
+    expect(fault({ ...against("c_class"), column: "c_class" })).toBeNull()
+    expect(fault({ ...against("c_start"), column: "c_start", op: "above", days: -30 })).toBeNull()
+    expect(fault(against("c_gone"))).toBe("tests class against a field that is no longer in the schema")
+    expect(fault(against("c_premium", "t_out"))).toBe("tests class against premium, which is in an output table")
+    expect(fault(against("c_item", "t_items"))).toBe("tests class against item, which is in a table with many rows")
+    expect(fault({ ...against("c_class"), op: "filled" })).toBe('tests class with "is filled" against class, where it takes no value')
+    expect(fault({ ...against("c_class"), op: "one_of" })).toBe('tests class with "is one of" against class, where it takes values typed')
+    expect(fault({ ...against("c_class"), values: ["Motor"] })).toBe("tests class against both a value typed and class")
+    expect(fault(against("c_years"))).toBe("tests class against years, which isn't a Text column")
+    expect(fault({ ...against("c_class"), days: 3 })).toBe("adds days to class, which isn't a Date column")
+    expect(fault({ column: "c_start", op: "above", values: ["2026-01-01"], days: 3 })).toBe("adds days to its test of start without another Date to add them to")
+
+    const every: RowsCondition = { table: "t_items", rows: "any", where: [{ column: "c_value", op: "above", values: [], field: "c_value", days: 0 }] }
+    const numbered = formOf([page("p", [])], [policy, valued, premium])
+    expect(conditionFault(numbered, every)).toBeNull()
+    expect(conditionFault(numbered, { ...every, where: [{ ...every.where[0], field: "c_gone" }] })).toBe("tests value against a column that is no longer in the schema")
+    expect(conditionFault(numbered, { ...every, where: [{ ...every.where[0], field: "c_row" }] })).toBe("tests value against row, the index, which nothing is typed into")
+    expect(conditionFault(numbered, { ...every, where: [{ ...every.where[0], field: "c_item" }] })).toBe("tests value against item, which isn't a Decimal column")
   })
 
   it("faults a condition on a table's rows by its table, then each test of a row as a one-row table's condition", () => {
-    const filledItem: RowTest = { column: "c_item", op: "filled", values: [] }
+    const filledItem: RowTest = { column: "c_item", op: "filled", values: [], field: null, days: 0 }
     const every: RowsCondition = { table: "t_items", rows: "every", where: [filledItem] }
     expect(conditionFault(form, every)).toBeNull()
     expect(conditionFault(form, { ...every, table: "t_policy" })).toBe("tests the rows of policy, which has one row")
@@ -335,7 +368,7 @@ describe("conditionFault", () => {
     expect(second({ op: "equals" })).toBe("needs a value for its test of item")
     expect(second({ column: "c_gone" })).toBe("tests a column that is no longer in the schema")
     const numbered = formOf([page("p", [])], [policy, valued, premium])
-    expect(conditionFault(numbered, { ...every, where: [{ column: "c_row", op: "filled", values: [] }] })).toBe("tests row, the index, which nothing is typed into")
+    expect(conditionFault(numbered, { ...every, where: [{ column: "c_row", op: "filled", values: [], field: null, days: 0 }] })).toBe("tests row, the index, which nothing is typed into")
   })
 
   it("faults a count by its table and its tests, and a total by its column and its number too", () => {
@@ -344,7 +377,7 @@ describe("conditionFault", () => {
     expect(conditionFault(form, { ...count, table: "t_policy" })).toBe("counts the rows of policy, which has one row")
     expect(conditionFault(form, { ...count, table: "t_out" })).toBe("counts the rows of premium, which is an output table")
     expect(conditionFault(form, { ...count, table: "t_gone" })).toBe("counts the rows of a table that is no longer in the schema")
-    expect(conditionFault(form, { ...count, where: [{ column: "c_item", op: "equals", values: [] }] })).toBe("needs a value for its test of item")
+    expect(conditionFault(form, { ...count, where: [{ column: "c_item", op: "equals", values: [], field: null, days: 0 }] })).toBe("needs a value for its test of item")
 
     const priced = formOf([page("p", [])], [policy, valued, premium])
     const sum: RowTotal = { table: "t_items", total: "sum", column: "c_value", where: [], op: "above", value: "£1,000" }
@@ -504,8 +537,8 @@ describe("neverShown", () => {
       table: "t_items",
       rows: "any",
       where: [
-        { column: "c_item", op: "filled", values: [] },
-        { column: "c_value", op: "filled", values: [] },
+        { column: "c_item", op: "filled", values: [], field: null, days: 0 },
+        { column: "c_value", op: "filled", values: [], field: null, days: 0 },
       ],
     }
     const onMain = (fields: [string, string][]) =>
@@ -515,7 +548,7 @@ describe("neverShown", () => {
   })
 
   it("leaves out a sheet whose condition does not fit, as that is reported already", () => {
-    const form = formOf([page("p_main", [motorBox]), page("p_bad", [], when({ table: "t_policy", column: "c_gone", op: "ticked", values: [] }))])
+    const form = formOf([page("p_main", [motorBox]), page("p_bad", [], when({ table: "t_policy", column: "c_gone", op: "ticked", values: [], field: null, days: 0 }))])
     expect(neverShown(form).size).toBe(0)
   })
 })
@@ -524,11 +557,11 @@ describe("the editor's steps", () => {
   const form = formOf([page("p", [])])
 
   it("starts a condition on the first one-row input table's first column, else in any row of a many-row one's, or none without one", () => {
-    expect(newCondition(form)).toEqual({ table: "t_policy", column: "c_bi", op: "ticked", values: [] })
+    expect(newCondition(form)).toEqual({ table: "t_policy", column: "c_bi", op: "ticked", values: [], field: null, days: 0 })
     expect(newCondition(formOf([page("p", [])], [items, premium, { ...policy, columns: [] }]))).toEqual({
       table: "t_items",
       rows: "any",
-      where: [{ column: "c_item", op: "equals", values: [] }],
+      where: [{ column: "c_item", op: "equals", values: [], field: null, days: 0 }],
     })
     // A many-row table's index takes no typing, so it is never tested.
     const numbered = { ...items, columns: [column("c_row", "row", { type: "int", index: true })] }
@@ -536,46 +569,67 @@ describe("the editor's steps", () => {
   })
 
   it("moves a condition to another column, its test and values kept while they fit", () => {
-    const years: Condition = { table: "t_policy", column: "c_years", op: "above", values: ["3"] }
-    expect(withConditionColumn(form, years, "t_policy", "c_si")).toEqual({ table: "t_policy", column: "c_si", op: "above", values: ["3"] })
+    const years: Condition = { table: "t_policy", column: "c_years", op: "above", values: ["3"], field: null, days: 0 }
+    expect(withConditionColumn(form, years, "t_policy", "c_si")).toEqual({ table: "t_policy", column: "c_si", op: "above", values: ["3"], field: null, days: 0 })
     // A Text column does not take "above": the test becomes its first, and the value, which fits it, is kept.
-    expect(withConditionColumn(form, years, "t_policy", "c_class")).toEqual({ table: "t_policy", column: "c_class", op: "equals", values: ["3"] })
-    expect(withConditionColumn(form, years, "t_policy", "c_bi")).toEqual({ table: "t_policy", column: "c_bi", op: "ticked", values: [] })
-    const fraction: Condition = { table: "t_policy", column: "c_si", op: "equals", values: ["2.5"] }
-    expect(withConditionColumn(form, fraction, "t_policy", "c_years")).toEqual({ table: "t_policy", column: "c_years", op: "equals", values: [] })
+    expect(withConditionColumn(form, years, "t_policy", "c_class")).toEqual({ table: "t_policy", column: "c_class", op: "equals", values: ["3"], field: null, days: 0 })
+    expect(withConditionColumn(form, years, "t_policy", "c_bi")).toEqual({ table: "t_policy", column: "c_bi", op: "ticked", values: [], field: null, days: 0 })
+    const fraction: Condition = { table: "t_policy", column: "c_si", op: "equals", values: ["2.5"], field: null, days: 0 }
+    expect(withConditionColumn(form, fraction, "t_policy", "c_years")).toEqual({ table: "t_policy", column: "c_years", op: "equals", values: [], field: null, days: 0 })
     expect(() => withConditionColumn(form, years, "t_policy", "c_gone")).toThrow(/c_gone/)
-    expect(years).toEqual({ table: "t_policy", column: "c_years", op: "above", values: ["3"] })
+    expect(years).toEqual({ table: "t_policy", column: "c_years", op: "above", values: ["3"], field: null, days: 0 })
   })
 
   it("moves a condition to a table's rows and back, keeping its test of a column of that table", () => {
-    const years: Condition = { table: "t_policy", column: "c_years", op: "equals", values: ["3"] }
+    const years: Condition = { table: "t_policy", column: "c_years", op: "equals", values: ["3"], field: null, days: 0 }
     // Another table's rows start in any row with a test of their first column.
-    expect(withConditionRowsOf(form, years, "t_items")).toEqual({ table: "t_items", rows: "any", where: [{ column: "c_item", op: "equals", values: [] }] })
+    expect(withConditionRowsOf(form, years, "t_items")).toEqual({ table: "t_items", rows: "any", where: [{ column: "c_item", op: "equals", values: [], field: null, days: 0 }] })
     // A one-row table's condition on a table switched to many rows becomes a test of a row as it is.
-    const switched: Condition = { table: "t_items", column: "c_item", op: "filled", values: [] }
-    expect(withConditionRowsOf(form, switched, "t_items")).toEqual({ table: "t_items", rows: "any", where: [{ column: "c_item", op: "filled", values: [] }] })
-    const every: RowsCondition = { table: "t_items", rows: "every", where: [{ column: "c_item", op: "filled", values: [] }] }
+    const switched: Condition = { table: "t_items", column: "c_item", op: "filled", values: [], field: null, days: 0 }
+    expect(withConditionRowsOf(form, switched, "t_items")).toEqual({ table: "t_items", rows: "any", where: [{ column: "c_item", op: "filled", values: [], field: null, days: 0 }] })
+    const every: RowsCondition = { table: "t_items", rows: "every", where: [{ column: "c_item", op: "filled", values: [], field: null, days: 0 }] }
     expect(withConditionRowsOf(form, every, "t_items")).toBe(every)
     expect(() => withConditionRowsOf(formOf([page("p", [])], [policy, { ...items, columns: [] }]), years, "t_items")).toThrow(/t_items/)
 
     // Back to a one-row table's column, its test of that column kept, else its first test of a row's.
-    expect(withConditionColumn(form, every, "t_policy", "c_class")).toEqual({ table: "t_policy", column: "c_class", op: "filled", values: [] })
+    expect(withConditionColumn(form, every, "t_policy", "c_class")).toEqual({ table: "t_policy", column: "c_class", op: "filled", values: [], field: null, days: 0 })
     const onPolicy: RowsCondition = {
       table: "t_policy",
       rows: "any",
       where: [
-        { column: "c_si", op: "above", values: ["9"] },
-        { column: "c_class", op: "equals", values: ["Motor"] },
+        { column: "c_si", op: "above", values: ["9"], field: null, days: 0 },
+        { column: "c_class", op: "equals", values: ["Motor"], field: null, days: 0 },
       ],
     }
-    expect(withConditionColumn(form, onPolicy, "t_policy", "c_class")).toEqual({ table: "t_policy", column: "c_class", op: "equals", values: ["Motor"] })
+    expect(withConditionColumn(form, onPolicy, "t_policy", "c_class")).toEqual({ table: "t_policy", column: "c_class", op: "equals", values: ["Motor"], field: null, days: 0 })
     const count: RowCount = { table: "t_items", where: [], op: "at_least", count: 1 }
-    expect(withConditionColumn(form, count, "t_policy", "c_years")).toEqual({ table: "t_policy", column: "c_years", op: "equals", values: [] })
+    expect(withConditionColumn(form, count, "t_policy", "c_years")).toEqual({ table: "t_policy", column: "c_years", op: "equals", values: [], field: null, days: 0 })
+  })
+
+  it("moves a test against another field to its table's rows and back, keeping the field while it is a column of the table", () => {
+    const cover: SchemaTable = { id: "t_cover", name: "cover", role: "input", rows: "one", columns: [column("c_from", "from", { type: "date" })] }
+    const dated: SchemaTable = { ...policy, columns: [...policy.columns, column("c_end", "end", { type: "date" })] }
+    const one = formOf([page("p", [])], [dated, cover, premium])
+    // The table switched to many rows since the condition was made.
+    const many = formOf([page("p", [])], [{ ...dated, rows: "many" }, cover, premium])
+    const later: Condition = { table: "t_policy", column: "c_end", op: "above", values: [], field: { table: "t_policy", column: "c_start" }, days: 365 }
+    const anyLater: RowsCondition = { table: "t_policy", rows: "any", where: [{ column: "c_end", op: "above", values: [], field: "c_start", days: 365 }] }
+    expect(withConditionRowsOf(many, later, "t_policy")).toEqual(anyLater)
+    // A field of another table is no column of these rows.
+    expect(withConditionRowsOf(many, { ...later, field: { table: "t_cover", column: "c_from" } }, "t_policy")).toEqual({
+      ...anyLater,
+      where: [{ column: "c_end", op: "above", values: [], field: null, days: 0 }],
+    })
+    // Switched back to one row, the column of the row is that column of the table.
+    expect(withConditionColumn(one, anyLater, "t_policy", "c_end")).toEqual(later)
+    // A column is never tested against itself, nor a one-row table's against a column of many rows.
+    expect(withConditionColumn(one, anyLater, "t_policy", "c_start")).toEqual({ table: "t_policy", column: "c_start", op: "above", values: [], field: null, days: 0 })
+    expect(withConditionColumn(many, anyLater, "t_cover", "c_from")).toEqual({ table: "t_cover", column: "c_from", op: "above", values: [], field: null, days: 0 })
   })
 
   it("gives a condition on rows which rows, keeping its tests", () => {
     const priced = formOf([page("p", [])], [policy, valued, premium])
-    const filledItem: RowTest = { column: "c_item", op: "filled", values: [] }
+    const filledItem: RowTest = { column: "c_item", op: "filled", values: [], field: null, days: 0 }
     const any: RowsCondition = { table: "t_items", rows: "any", where: [filledItem] }
     expect(withListKind(priced, any, "every")).toEqual({ ...any, rows: "every" })
     const count = withListKind(priced, any, "count")
@@ -588,33 +642,33 @@ describe("the editor's steps", () => {
     expect(withListKind(priced, { table: "t_items", where: [], op: "equals", count: 0 }, "every")).toEqual({
       table: "t_items",
       rows: "every",
-      where: [{ column: "c_item", op: "equals", values: [] }],
+      where: [{ column: "c_item", op: "equals", values: [], field: null, days: 0 }],
     })
     // Without a column to test, or a number column to total, there is none to start.
     expect(() => withListKind(form, any, "sum")).toThrow(/number column/)
     const bare = formOf([page("p", [])], [policy, { ...items, columns: [] }])
     expect(() => withListKind(bare, { table: "t_items", where: [], op: "equals", count: 0 }, "any")).toThrow(/t_items/)
     expect(totalColumns(valued).map((column) => column.id)).toEqual(["c_value"])
-    expect(newRowTest(valued)).toEqual({ column: "c_item", op: "equals", values: [] })
+    expect(newRowTest(valued)).toEqual({ column: "c_item", op: "equals", values: [], field: null, days: 0 })
     expect(newRowTest({ ...valued, columns: [valued.columns[0]] })).toBeNull()
   })
 
   it("moves a test of a row to another column of its table, its test and values kept while they fit", () => {
     const priced = formOf([page("p", [])], [policy, valued, premium])
-    expect(withTestColumn(priced, "t_items", { column: "c_item", op: "equals", values: ["3"] }, "c_value")).toEqual({ column: "c_value", op: "equals", values: ["3"] })
-    expect(withTestColumn(priced, "t_items", { column: "c_item", op: "equals", values: ["Pump"] }, "c_value")).toEqual({ column: "c_value", op: "equals", values: [] })
-    expect(() => withTestColumn(priced, "t_items", { column: "c_item", op: "filled", values: [] }, "c_gone")).toThrow(/c_gone/)
+    expect(withTestColumn(priced, "t_items", { column: "c_item", op: "equals", values: ["3"], field: null, days: 0 }, "c_value")).toEqual({ column: "c_value", op: "equals", values: ["3"], field: null, days: 0 })
+    expect(withTestColumn(priced, "t_items", { column: "c_item", op: "equals", values: ["Pump"], field: null, days: 0 }, "c_value")).toEqual({ column: "c_value", op: "equals", values: [], field: null, days: 0 })
+    expect(() => withTestColumn(priced, "t_items", { column: "c_item", op: "filled", values: [], field: null, days: 0 }, "c_gone")).toThrow(/c_gone/)
   })
 
   it("gives a condition another test, its values kept while their number and the column take them", () => {
-    const oneOf: Condition = { table: "t_policy", column: "c_years", op: "one_of", values: ["2.5", "3", "4"] }
+    const oneOf: Condition = { table: "t_policy", column: "c_years", op: "one_of", values: ["2.5", "3", "4"], field: null, days: 0 }
     const years = policy.columns.find((candidate) => candidate.id === "c_years")
     expect(withConditionTest(years, oneOf, "filled").values).toEqual([])
     expect(withConditionTest(years, oneOf, "equals").values).toEqual([])
-    expect(withConditionTest(years, { ...oneOf, values: ["3", "4"] }, "equals")).toEqual({ ...oneOf, op: "equals", values: ["3"] })
+    expect(withConditionTest(years, { ...oneOf, values: ["3", "4"] }, "equals")).toEqual({ ...oneOf, op: "equals", values: ["3"], field: null, days: 0 })
     expect(withConditionTest(years, oneOf, "not_one_of").values).toEqual(["3", "4"])
     // A test whose column is gone keeps its values by number alone.
-    const gone: Condition = { table: "t_policy", column: "c_gone", op: "one_of", values: ["a", "b"] }
+    const gone: Condition = { table: "t_policy", column: "c_gone", op: "one_of", values: ["a", "b"], field: null, days: 0 }
     expect(withConditionTest(undefined, gone, "equals").values).toEqual(["a"])
     expect(withConditionTest(undefined, gone, "not_one_of").values).toEqual(["a", "b"])
     expect(withConditionTest(undefined, gone, "empty").values).toEqual([])

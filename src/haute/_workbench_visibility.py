@@ -9,9 +9,11 @@ component that does not show. A
 condition holds while it fits (``condition_fits``), its column is a field that shows of a
 Table or a Collection (a Chart takes nothing typed, so its columns never count, and a
 Heading has none), and the value typed into the column passes its test, read as the
-sample's values are typed. A condition on a list's rows holds while each column it tests
-is a field that shows of a Table (for a count without tests, one of its table's columns)
-and the table's typed rows passing all of its tests in the same row do: any of them, every
+sample's values are typed; a test against another field holds only while that field shows
+too, and tests against the value typed into it. A condition on a list's rows holds while
+each column it tests is a field that shows of a Table (for a count without tests, one of
+its table's columns) and the table's typed rows passing all of its tests in the same row
+do: any of them, every
 one (there being one), how many, or a total of a number column over them. Everything starts
 shown and anything whose conditions fail is hidden, round after round, until a round hides
 nothing: hiding never shows anything, so the answer does not depend on the order of the
@@ -60,9 +62,12 @@ from haute._workbench_tables import _filled, _typed, preset_rows
 #: column id, as the sample holds them.
 Rows = Mapping[str, Sequence[Mapping[str, str | bool]]]
 
-#: The tests any column but a True/false one takes, a Text or number column's choices, and
-#: a number or a Date column's comparisons.
+#: The tests any column but a True/false one takes, a Text column's of text within text, a
+#: Text or number column's choices, and a number or a Date column's comparisons.
 _ANY: frozenset[ConditionTest] = frozenset({"filled", "empty", "equals", "not_equals"})
+_TEXT: frozenset[ConditionTest] = frozenset(
+    {"contains", "not_contains", "starts_with", "ends_with"}
+)
 _CHOICES: frozenset[ConditionTest] = frozenset({"one_of", "not_one_of"})
 _COMPARISONS: dict[ConditionTest, Callable[[Any, Any], bool]] = {
     "above": operator.gt,
@@ -85,14 +90,18 @@ _COUNTS: dict[CountTest, Callable[[float, float], bool]] = {
 #: The tests each column type takes.
 _TESTS: dict[ColumnType, frozenset[ConditionTest]] = {
     "bool": frozenset({"ticked", "not_ticked"}),
-    "str": _ANY | _CHOICES,
+    "str": _ANY | _TEXT | _CHOICES,
     "int": _ANY | _CHOICES | _ORDERS,
     "float": _ANY | _CHOICES | _ORDERS,
     "date": _ANY | _ORDERS,
 }
 
-#: The tests that take no value; the choices take one or more, and the rest one.
+#: The tests that take no value; the choices take one or more, and the rest one, which
+#: another field may give in place of one typed.
 _NO_VALUES: frozenset[ConditionTest] = frozenset({"ticked", "not_ticked", "filled", "empty"})
+_ONE_VALUE: frozenset[ConditionTest] = frozenset(_ORDERS | _TEXT | {"equals", "not_equals"})
+#: The tests of one value a cell passes when there is nothing to test it against.
+_NEGATED: frozenset[ConditionTest] = frozenset({"not_equals", "not_contains"})
 
 # ``[0-9]``, not ``\d``, which matches digits outside ASCII too.
 _DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
@@ -212,8 +221,8 @@ def condition_fits(spec: FormSpec, condition: SingleCondition) -> bool:
     and fitting so, and a total's column a number column of the table other than its index,
     its value a number."""
     if isinstance(condition, Condition):
-        column = _tested_column(spec, condition)
-        return column is not None and _fits(column.type, condition)
+        column = _tested_column(spec, condition.table, condition.column)
+        return column is not None and _fits(column.type, condition, _other_column(spec, condition))
     table = _list_table(spec, condition)
     return table is not None and _list_fits(table, condition)
 
@@ -252,14 +261,25 @@ def _holds(
 ) -> bool:
     if not isinstance(condition, Condition):
         return _list_holds(spec, condition, rows, shown)
-    column = _tested_column(spec, condition)
-    if column is None or not _fits(column.type, condition):
+    column = _tested_column(spec, condition.table, condition.column)
+    if column is None or not _fits(column.type, condition, _other_column(spec, condition)):
         return False
     if (condition.table, condition.column) not in shown:
         return False
-    first = next(iter(rows.get(condition.table, ())), None)
-    cell = None if first is None else first.get(condition.column)
-    return _passes(column.type, condition, cell)
+    other = None
+    if condition.field is not None:
+        if (condition.field.table, condition.field.column) not in shown:
+            return False
+        other = _first_cell(rows, condition.field.table, condition.field.column)
+    return _passes(
+        column.type, condition, _first_cell(rows, condition.table, condition.column), other
+    )
+
+
+def _first_cell(rows: Rows, table_id: str, column_id: str) -> str | bool | None:
+    """The value typed into a one-row table's column: its first row's."""
+    first = next(iter(rows.get(table_id, ())), None)
+    return None if first is None else first.get(column_id)
 
 
 def _list_holds(
@@ -289,9 +309,13 @@ def _list_holds(
 
 
 def _list_columns(condition: ListCondition) -> list[str]:
-    """The ids of the columns a condition on a list's rows tests: its tests of a row's, and a
-    total's."""
-    tested = [test.column for test in condition.where]
+    """The ids of the columns a condition on a list's rows tests: its tests of a row's, those
+    they test against included, and a total's."""
+    tested = [
+        column
+        for test in condition.where
+        for column in (test.column, *(() if test.field is None else (test.field,)))
+    ]
     return [*tested, condition.column] if isinstance(condition, RowTotal) else tested
 
 
@@ -303,7 +327,15 @@ def _passing_rows(
     return [
         row
         for row in rows
-        if all(_passes(types[test.column], test, row.get(test.column)) for test in where)
+        if all(
+            _passes(
+                types[test.column],
+                test,
+                row.get(test.column),
+                None if test.field is None else row.get(test.field),
+            )
+            for test in where
+        )
     ]
 
 
@@ -358,18 +390,26 @@ def _typed_rows(
     ]
 
 
-def _tested_column(spec: FormSpec, condition: Condition) -> SchemaColumn | None:
-    """A one-row table's condition's column, while it is in a one-row input table."""
+def _tested_column(spec: FormSpec, table_id: str, column_id: str) -> SchemaColumn | None:
+    """A one-row table's column, while it is in a one-row input table: a condition's, or the
+    field one tests against."""
     return next(
         (
             column
             for table in spec.data_schema.tables
-            if table.id == condition.table and table.role == "input" and table.rows == "one"
+            if table.id == table_id and table.role == "input" and table.rows == "one"
             for column in table.columns
-            if column.id == condition.column
+            if column.id == column_id
         ),
         None,
     )
+
+
+def _other_column(spec: FormSpec, condition: Condition) -> SchemaColumn | None:
+    """The field a one-row table's condition tests against, while it names one in a one-row
+    input table."""
+    field = condition.field
+    return None if field is None else _tested_column(spec, field.table, field.column)
 
 
 def _list_table(spec: FormSpec, condition: ListCondition) -> SchemaTable | None:
@@ -391,7 +431,8 @@ def _list_fits(table: SchemaTable, condition: ListCondition) -> bool:
     number."""
     for test in condition.where:
         column = _row_column(table, test.column)
-        if column is None or not _fits(column.type, test):
+        other = None if test.field is None else _row_column(table, test.field)
+        if column is None or not _fits(column.type, test, other):
             return False
     if not isinstance(condition, RowTotal):
         return True
@@ -411,8 +452,24 @@ def _row_column(table: SchemaTable, column_id: str) -> SchemaColumn | None:
     )
 
 
-def _fits(column_type: ColumnType, condition: Condition | RowTest) -> bool:
+def _fits(
+    column_type: ColumnType, condition: Condition | RowTest, other: SchemaColumn | None
+) -> bool:
+    """Whether a test of a column of *column_type* can hold as written: a test the type
+    takes with the values it takes, each one the column could hold; or, against another field,
+    *other* (None while it names none, or one that is not there), a test of one value with
+    none typed and a field of the column's type, days added only to a Date's."""
     if condition.op not in _TESTS[column_type]:
+        return False
+    if condition.field is not None:
+        return (
+            condition.op in _ONE_VALUE
+            and not condition.values
+            and other is not None
+            and other.type == column_type
+            and (condition.days == 0 or column_type == "date")
+        )
+    if condition.days != 0:
         return False
     count = len(condition.values)
     if condition.op in _NO_VALUES:
@@ -448,8 +505,13 @@ def _is_day(text: str) -> bool:
 
 
 def _passes(
-    column_type: ColumnType, condition: Condition | RowTest, cell: str | bool | None
+    column_type: ColumnType,
+    condition: Condition | RowTest,
+    cell: str | bool | None,
+    other: str | bool | None = None,
 ) -> bool:
+    """Whether a fitting test passes *cell*, against the values typed or, for a test against
+    another field, *other*, the value typed into that field."""
     op = condition.op
     if op == "ticked":
         return cell is True
@@ -459,18 +521,68 @@ def _passes(
         return _filled(cell)
     if op == "empty":
         return not _filled(cell)
-    if op in ("equals", "one_of"):
+    if op == "one_of":
         return _equals_any(column_type, cell, condition.values)
-    if op in ("not_equals", "not_one_of"):
+    if op == "not_one_of":
         return not _equals_any(column_type, cell, condition.values)
+    if condition.field is None:
+        value = condition.values[0]
+    elif isinstance(other, str) and _of_type(column_type, other):
+        value = other
+        if column_type == "date":
+            return _day_passes(op, cell, value, condition.days)
+    else:
+        # The other field holds no value of the type: nothing equals, holds or orders
+        # against nothing.
+        return op in _NEGATED
+    if op == "equals":
+        return _equals_any(column_type, cell, (value,))
+    if op == "not_equals":
+        return not _equals_any(column_type, cell, (value,))
+    if op in _TEXT:
+        return _text_passes(op, cell, value)
     # A comparison: only a value of the column's type compares. A tick is checked apart,
     # since Python counts True as the number 1.
     if not isinstance(cell, str) or not _of_type(column_type, cell):
         return False
     compare = _COMPARISONS[op]
-    return compare(
-        _typed(column_type, cell.strip()), _typed(column_type, condition.values[0].strip())
-    )
+    return compare(_typed(column_type, cell.strip()), _typed(column_type, value.strip()))
+
+
+def _text_passes(op: ConditionTest, cell: str | bool | None, value: str) -> bool:
+    """Whether *cell* holds *value*, at its start or its end, or does not, as *op* asks, both
+    without the spaces around them and compared exactly, as ``equals`` compares text: an
+    empty cell, or a tick, holds nothing."""
+    if not isinstance(cell, str) or not _filled(cell):
+        return op == "not_contains"
+    text, part = cell.strip(), value.strip()
+    if op == "contains":
+        return part in text
+    if op == "not_contains":
+        return part not in text
+    if op == "starts_with":
+        return text.startswith(part)
+    return text.endswith(part)
+
+
+def _day_passes(op: ConditionTest, cell: str | bool | None, day: str, days: int) -> bool:
+    """Whether a Date's *cell* passes *op* against the real *day* with *days* added, each
+    compared as its day number, so no day past the calendar's ends is ever made; a cell that
+    is not a real day passes ``not_equals`` alone."""
+    if not isinstance(cell, str) or not _is_day(cell.strip()):
+        return op == "not_equals"
+    found, wanted = _day_number(cell.strip()), _day_number(day.strip()) + days
+    if op == "equals":
+        return found == wanted
+    if op == "not_equals":
+        return found != wanted
+    return _COMPARISONS[op](found, wanted)
+
+
+def _day_number(day: str) -> int:
+    """A real ``YYYY-MM-DD`` day's number, as ``date.toordinal`` counts it (``dayNumber`` in
+    the view counts from another day, which no comparison sees)."""
+    return date(int(day[:4]), int(day[5:7]), int(day[8:])).toordinal()
 
 
 def _equals_any(column_type: ColumnType, cell: str | bool | None, values: Sequence[str]) -> bool:

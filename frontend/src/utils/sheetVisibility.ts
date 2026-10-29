@@ -53,9 +53,9 @@ export const isRowTotal = (condition: ShowWhenEntry): condition is RowTotal => "
 /** Whether a condition holds in any of a many-row table's rows passing its tests, or in every one. */
 export const isRowsCondition = (condition: ShowWhenEntry): condition is RowsCondition => "rows" in condition
 
-/** The ids of the columns a condition on a list's rows tests: its tests of a row's, and a total's. */
+/** The ids of the columns a condition on a list's rows tests: its tests of a row's, those they test against included, and a total's. */
 export const listColumns = (condition: ListCondition): string[] => {
-  const tested = condition.where.map((test) => test.column)
+  const tested = condition.where.flatMap((test) => (test.field === null ? [test.column] : [test.column, test.field]))
   return isRowTotal(condition) ? [...tested, condition.column] : tested
 }
 
@@ -71,6 +71,10 @@ export const CONDITION_TESTS: Readonly<Record<ConditionTest, { values: "none" | 
   empty: { values: "none" },
   equals: { values: "one" },
   not_equals: { values: "one" },
+  contains: { values: "one" },
+  not_contains: { values: "one" },
+  starts_with: { values: "one" },
+  ends_with: { values: "one" },
   one_of: { values: "some" },
   not_one_of: { values: "some" },
   above: { values: "one" },
@@ -81,7 +85,7 @@ export const CONDITION_TESTS: Readonly<Record<ConditionTest, { values: "none" | 
 
 const TESTS: Readonly<Record<ColumnType, readonly ConditionTest[]>> = {
   bool: ["ticked", "not_ticked"],
-  str: ["equals", "not_equals", "one_of", "not_one_of", "filled", "empty"],
+  str: ["equals", "not_equals", "contains", "not_contains", "starts_with", "ends_with", "one_of", "not_one_of", "filled", "empty"],
   int: ["equals", "not_equals", "above", "at_least", "below", "at_most", "one_of", "not_one_of", "filled", "empty"],
   float: ["equals", "not_equals", "above", "at_least", "below", "at_most", "one_of", "not_one_of", "filled", "empty"],
   date: ["equals", "not_equals", "above", "at_least", "below", "at_most", "filled", "empty"],
@@ -89,6 +93,9 @@ const TESTS: Readonly<Record<ColumnType, readonly ConditionTest[]>> = {
 
 /** The tests a column's type takes, in the order the editor offers them. */
 export const testsFor = (type: ColumnType): readonly ConditionTest[] => TESTS[type]
+
+/** The most days a Date's test against another Date adds to its day or takes away (`DAYS_MAX`). */
+export const DAYS_MAX = 36_500
 
 /** The tests a count of rows or a total takes, in the order the editor offers them: a number's. */
 export const COUNT_TESTS: readonly CountTest[] = ["equals", "not_equals", "above", "at_least", "below", "at_most"]
@@ -117,6 +124,10 @@ const LABELS: Readonly<Record<ConditionTest, string>> = {
   empty: "is empty",
   equals: "equals",
   not_equals: "does not equal",
+  contains: "contains",
+  not_contains: "does not contain",
+  starts_with: "starts with",
+  ends_with: "ends with",
   one_of: "is one of",
   not_one_of: "is not one of",
   above: "is greater than",
@@ -187,9 +198,10 @@ const countFits = (test: ConditionTest, count: number): boolean => {
 /**
  * What stops a condition holding as written, or null when it fits: a clause completing a
  * sentence that starts with its sheet's or component's name. A one-row table's condition
- * is checked by its column, then its table's rows, then as a test (`testFault`); one on a
- * list's rows by its table, then each test of a row, then a total's column and value
- * (`listFault`); the first fault is reported.
+ * is checked by its column, then its table's rows, then the field it is tested against
+ * (`otherFault`), then as a test (`testFault`); one on a list's rows by its table, then
+ * each test of a row, then a total's column and value (`listFault`); the first fault is
+ * reported.
  */
 export function conditionFault(spec: FormSpec, condition: SingleCondition): string | null {
   const table = tableOf(spec.schema, condition.table)
@@ -198,17 +210,45 @@ export function conditionFault(spec: FormSpec, condition: SingleCondition): stri
   if (table === undefined || column === undefined) return "tests a column that is no longer in the schema"
   if (table.role === "output") return `tests ${column.name}, which is in an output table`
   if (table.rows === "many") return `tests ${column.name}, which is in a table with many rows`
-  return testFault(column, condition)
+  const { field } = condition
+  if (field === null) return testFault(column, condition, null)
+  const other = otherFault(column, tableOf(spec.schema, field.table), field.column)
+  return typeof other === "string" ? other : testFault(column, condition, other)
 }
 
-/** What stops a test of a column's value holding as written: a test its type does not take, the wrong number of values, or a value it could not hold. */
-function testFault(column: SchemaColumn, test: ColumnTest): string | null {
+/**
+ * The field a one-row table's condition is tested against, or what stops it being one: gone,
+ * or not in a one-row input table, which a condition's own column must be too.
+ */
+function otherFault(column: SchemaColumn, table: SchemaTable | undefined, columnId: string): SchemaColumn | string {
+  const other = table?.columns.find((candidate) => candidate.id === columnId)
+  if (table === undefined || other === undefined) return `tests ${column.name} against a field that is no longer in the schema`
+  if (table.role === "output") return `tests ${column.name} against ${other.name}, which is in an output table`
+  if (table.rows === "many") return `tests ${column.name} against ${other.name}, which is in a table with many rows`
+  return other
+}
+
+/**
+ * What stops a test of a column's value holding as written: a test its type does not take,
+ * the wrong number of values, or a value it could not hold; or, tested against `other`, a
+ * test that takes no value or several, values typed too, a field of another type, or days
+ * added but to a Date.
+ */
+function testFault(column: SchemaColumn, test: ColumnTest, other: SchemaColumn | null): string | null {
   const name = column.name
   const label = testLabel(test.op, column.type)
   if (!testsFor(column.type).includes(test.op)) {
     return `tests ${name} with "${label}", which ${TYPE_WORDS[column.type]} column cannot take`
   }
   const takes = CONDITION_TESTS[test.op].values
+  if (other !== null) {
+    if (takes !== "one") return `tests ${name} with "${label}" against ${other.name}, where it takes ${takes === "none" ? "no value" : "values typed"}`
+    if (test.values.length > 0) return `tests ${name} against both a value typed and ${other.name}`
+    if (other.type !== column.type) return `tests ${name} against ${other.name}, which isn't ${TYPE_WORDS[column.type]} column`
+    if (test.days !== 0 && column.type !== "date") return `adds days to ${other.name}, which isn't a Date column`
+    return null
+  }
+  if (test.days !== 0) return `adds days to its test of ${name} without another Date to add them to`
   const count = test.values.length
   if (takes !== "none" && count === 0) return `needs a value for its test of ${name}`
   if (takes === "none" && count > 0) return `tests ${name} with "${label}", which takes no value`
@@ -230,7 +270,10 @@ function listFault(table: SchemaTable | undefined, condition: ListCondition): st
     const column = table.columns.find((candidate) => candidate.id === test.column)
     if (column === undefined) return "tests a column that is no longer in the schema"
     if (column.index) return `tests ${column.name}, the index, which nothing is typed into`
-    const fault = testFault(column, test)
+    const other = test.field === null ? null : table.columns.find((candidate) => candidate.id === test.field)
+    if (other === undefined) return `tests ${column.name} against a column that is no longer in the schema`
+    if (other?.index) return `tests ${column.name} against ${other.name}, the index, which nothing is typed into`
+    const fault = testFault(column, test, other)
     if (fault !== null) return fault
   }
   if (!isRowTotal(condition)) return null
@@ -278,9 +321,48 @@ function order(type: ColumnType, cell: Cell | undefined, value: string): number 
   return Math.sign((parseTypedNumber(text) ?? NaN) - (parseTypedNumber(value) ?? NaN))
 }
 
-/** Whether a fitting condition's test passes the cell typed into its column. */
-function passes(type: ColumnType, condition: ColumnTest, cell: Cell | undefined): boolean {
-  const [first] = condition.values
+/**
+ * A real `YYYY-MM-DD` day's number, counted from 1970-01-01 in whole arithmetic (days from
+ * civil), which a Date tested against another Date compares with that day's plus its days,
+ * so no day past the calendar's ends is ever made. The server counts as `date.toordinal`
+ * does, from another day, which no comparison sees.
+ */
+export function dayNumber(day: string): number {
+  const [year, month, date] = [Number(day.slice(0, 4)), Number(day.slice(5, 7)), Number(day.slice(8, 10))]
+  const shifted = month <= 2 ? year - 1 : year
+  const era = Math.floor(shifted / 400)
+  const yearOfEra = shifted - era * 400
+  const dayOfYear = Math.floor((153 * (month > 2 ? month - 3 : month + 9) + 2) / 5) + date - 1
+  const dayOfEra = yearOfEra * 365 + Math.floor(yearOfEra / 4) - Math.floor(yearOfEra / 100) + dayOfYear
+  return era * 146097 + dayOfEra - 719468
+}
+
+/** Whether a cell holds a value of the type: text other than blank that the type reads (`_of_type` on the server). */
+const holdsValue = (type: ColumnType, cell: Cell | undefined): cell is string => typeof cell === "string" && cell.trim() !== "" && ofType(type, cell.trim())
+
+/** Whether a cell holds `part`, at its start or its end, or does not, as `test` asks: both stripped and compared exactly, as `equals` compares text; an empty cell or a tick holds nothing. */
+function textPasses(test: ConditionTest, cell: Cell | undefined, part: string): boolean {
+  if (typeof cell !== "string" || !filled(cell)) return test === "not_contains"
+  const [text, wanted] = [cell.trim(), part.trim()]
+  if (test === "contains") return text.includes(wanted)
+  if (test === "not_contains") return !text.includes(wanted)
+  return test === "starts_with" ? text.startsWith(wanted) : text.endsWith(wanted)
+}
+
+/** Whether a Date's cell passes `test` against a real day with `days` added, as day numbers; a cell not a real day passes `not_equals` alone. */
+function dayPasses(test: ConditionTest, cell: Cell | undefined, day: string, days: number): boolean {
+  if (typeof cell !== "string" || !isDay(cell.trim())) return test === "not_equals"
+  const [found, wanted] = [dayNumber(cell.trim()), dayNumber(day.trim()) + days]
+  return test === "equals" ? found === wanted : test === "not_equals" ? found !== wanted : COUNTS[test as CountTest](found, wanted)
+}
+
+/**
+ * Whether a fitting condition's test passes the cell typed into its column, against the
+ * values typed or, tested against another field, `other`, the value typed into that field,
+ * which, unless one of the column's type, leaves nothing to test against: `not_equals` and
+ * `not_contains` alone pass then.
+ */
+function passes(type: ColumnType, condition: ColumnTest, cell: Cell | undefined, other?: Cell): boolean {
   switch (condition.op) {
     case "ticked":
       return cell === true
@@ -290,22 +372,35 @@ function passes(type: ColumnType, condition: ColumnTest, cell: Cell | undefined)
       return filled(cell)
     case "empty":
       return !filled(cell)
-    case "equals":
-      return equals(type, cell, first)
-    case "not_equals":
-      return !equals(type, cell, first)
     case "one_of":
       return condition.values.some((value) => equals(type, cell, value))
     case "not_one_of":
       return !condition.values.some((value) => equals(type, cell, value))
+  }
+  let value: string
+  if (condition.field === null) value = condition.values[0]
+  else if (holdsValue(type, other)) {
+    value = other
+    if (type === "date") return dayPasses(condition.op, cell, value, condition.days)
+  } else return condition.op === "not_equals" || condition.op === "not_contains"
+  switch (condition.op) {
+    case "equals":
+      return equals(type, cell, value)
+    case "not_equals":
+      return !equals(type, cell, value)
+    case "contains":
+    case "not_contains":
+    case "starts_with":
+    case "ends_with":
+      return textPasses(condition.op, cell, value)
     case "above":
-      return order(type, cell, first) > 0
+      return order(type, cell, value) > 0
     case "at_least":
-      return order(type, cell, first) >= 0
+      return order(type, cell, value) >= 0
     case "below":
-      return order(type, cell, first) < 0
+      return order(type, cell, value) < 0
     case "at_most":
-      return order(type, cell, first) <= 0
+      return order(type, cell, value) <= 0
   }
 }
 
@@ -364,8 +459,8 @@ const typedRows = (table: SchemaTable, rows: readonly Row[]): readonly Row[] => 
 /** The rows passing every test of a condition on a list's rows, in the same row, its columns fitting (`_passing_rows` on the server). */
 function passingRows(table: SchemaTable, where: readonly RowTest[], rows: readonly Row[]): readonly Row[] {
   const types = new Map(table.columns.map((column) => [column.id, column.type]))
-  // A condition that fits tests columns its table has.
-  return rows.filter((row) => where.every((test) => passes(types.get(test.column) as ColumnType, test, row[test.column])))
+  // A condition that fits tests columns its table has, and against them.
+  return rows.filter((row) => where.every((test) => passes(types.get(test.column) as ColumnType, test, row[test.column], test.field === null ? undefined : row[test.field])))
 }
 
 /**
@@ -461,8 +556,11 @@ function decide(spec: FormSpec, rows: RowsByTable): SheetVisibility {
       const table = tableOf(spec.schema, condition.table) as SchemaTable
       if (isListCondition(condition)) return listHolds(table, condition, shown)
       if (!shown.has(columnKey(condition.table, condition.column))) return false
+      const { field } = condition
+      if (field !== null && !shown.has(columnKey(field.table, field.column))) return false
       const column = columnOf(spec.schema, condition.table, condition.column) as SchemaColumn
-      return passes(column.type, condition, rows[condition.table]?.[0]?.[condition.column])
+      const other = field === null ? undefined : rows[field.table]?.[0]?.[field.column]
+      return passes(column.type, condition, rows[condition.table]?.[0]?.[condition.column], other)
     }
     const nextPages = new Set(spec.pages.filter((page) => pages.has(page.id) && showWhenPasses(page.show_when, holds)).map((page) => page.id))
     const nextSections = new Set(
@@ -592,7 +690,10 @@ export function neverShown(spec: FormSpec): ReadonlyMap<string, SingleCondition>
     // A field can show again only while its component can, so it stands for both.
     const onShown = (key: string): boolean =>
       widgets.some((widget) => widget.id !== holder && !own.has(widget.id) && fieldKeys(widget).includes(key) && canShow.has(keyOfField(widget.id, key)))
-    if (!isListCondition(condition)) return onShown(columnKey(condition.table, condition.column))
+    if (!isListCondition(condition)) {
+      const { field } = condition
+      return onShown(columnKey(condition.table, condition.column)) && (field === null || onShown(columnKey(field.table, field.column)))
+    }
     const tested = listColumns(condition)
     if (tested.length > 0) return tested.every((id) => onShown(columnKey(condition.table, id)))
     // A count that fits counts a table the schema has.
@@ -676,7 +777,28 @@ export const totalColumns = (table: SchemaTable): SchemaColumn[] =>
 /** A new test of a row for the editor: the table's first column but the index, its type's first test and no value; null without one. */
 export function newRowTest(table: SchemaTable): RowTest | null {
   const column = testableColumns(table)[0]
-  return column === undefined ? null : { column: column.id, op: testsFor(column.type)[0], values: [] }
+  return column === undefined ? null : { column: column.id, op: testsFor(column.type)[0], values: [], field: null, days: 0 }
+}
+
+/** A field a test of one value may be tested against, with its table. */
+export interface TestField {
+  table: SchemaTable
+  column: SchemaColumn
+}
+
+/**
+ * The fields a test of `column` in table `tableId` may be tested against, of its type and
+ * never itself: for a one-row table's condition, the one-row input tables' columns; for a
+ * test of a row, the other columns of its table but the index.
+ */
+export function testFields(schema: FormSchema, tableId: string, column: SchemaColumn): TestField[] {
+  const own = tableOf(schema, tableId)
+  const tables = own?.rows === "many" ? [own] : schema.tables.filter((table) => table.rows === "one")
+  return tables.flatMap((table) =>
+    testableColumns(table)
+      .filter((other) => other.type === column.type && !(table.id === tableId && other.id === column.id))
+      .map((other) => ({ table, column: other })),
+  )
 }
 
 /**
@@ -689,7 +811,7 @@ export function newCondition(spec: FormSpec): SingleCondition | null {
   const one = spec.schema.tables.find((table) => table.rows === "one" && testableColumns(table).length > 0)
   if (one !== undefined) {
     const column = testableColumns(one)[0]
-    return { table: one.id, column: column.id, op: testsFor(column.type)[0], values: [] }
+    return { table: one.id, column: column.id, op: testsFor(column.type)[0], values: [], field: null, days: 0 }
   }
   for (const table of spec.schema.tables) {
     const test = table.rows === "many" ? newRowTest(table) : null
@@ -711,6 +833,15 @@ function keptFor(column: SchemaColumn, kept: { op: ConditionTest; values: string
 }
 
 /**
+ * A list's test of a row on `columnId`, else its first, as a one-row table's condition on
+ * its table: tested against the column of the same row as that column of the table.
+ */
+function asColumnCondition(condition: ListCondition, columnId: string): Condition | undefined {
+  const test = condition.where.find((each) => each.column === columnId) ?? condition.where[0]
+  return test === undefined ? undefined : { ...test, table: condition.table, field: test.field === null ? null : { table: condition.table, column: test.field } }
+}
+
+/**
  * A condition moved to a one-row table's column, keeping its test as `keptFor` keeps one:
  * a one-row table's condition its own, one on a list's rows its test of a row on that
  * column (its table switched to one row since), else its first.
@@ -718,19 +849,32 @@ function keptFor(column: SchemaColumn, kept: { op: ConditionTest; values: string
 export function withConditionColumn(spec: FormSpec, condition: SingleCondition, tableId: string, columnId: string): Condition {
   const column = columnOf(spec.schema, tableId, columnId)
   if (column === undefined) throw new Error(`Column "${columnId}" of table "${tableId}" is not in the schema`)
-  const kept = isListCondition(condition) ? (condition.where.find((test) => test.column === columnId) ?? condition.where[0]) : condition
-  return { table: tableId, column: columnId, ...keptFor(column, kept) }
+  const kept = isListCondition(condition) ? asColumnCondition(condition, columnId) : condition
+  const { op, values } = keptFor(column, kept)
+  // The field it is tested against stays while this column may be tested against it.
+  const field = kept?.field ?? null
+  const against =
+    field !== null && CONDITION_TESTS[op].values === "one" && testFields(spec.schema, tableId, column).some((each) => each.table.id === field.table && each.column.id === field.column)
+  return against ? { table: tableId, column: columnId, op, values: [], field, days: column.type === "date" ? (kept?.days ?? 0) : 0 } : { table: tableId, column: columnId, op, values, field: null, days: 0 }
 }
 
 /**
  * A condition moved to a many-row table's rows: one on them kept; a one-row table's
  * condition on a column of the table (its table switched to many rows since) a test of a
- * row in any row, as it has it; else any row with the table's first test of a row.
+ * row in any row, as it has it, against the same field while that is another column of the
+ * row `testFields` gives; else any row with the table's first test of a row.
  */
 export function withConditionRowsOf(spec: FormSpec, condition: SingleCondition, tableId: string): ListCondition {
   if (condition.table === tableId) {
     if (isListCondition(condition)) return condition
-    return { table: tableId, rows: "any", where: [{ column: condition.column, op: condition.op, values: condition.values }] }
+    const { field } = condition
+    const column = columnOf(spec.schema, tableId, condition.column)
+    // A test of a row names the field it is tested against by its column alone, so a field of another table goes.
+    const against = field !== null && field.table === tableId && column !== undefined && testFields(spec.schema, tableId, column).some((each) => each.column.id === field.column)
+    const test: RowTest = against
+      ? { column: condition.column, op: condition.op, values: [], field: field.column, days: column.type === "date" ? condition.days : 0 }
+      : { column: condition.column, op: condition.op, values: field === null ? condition.values : [], field: null, days: 0 }
+    return { table: tableId, rows: "any", where: [test] }
   }
   const table = tableOf(spec.schema, tableId)
   const test = table === undefined ? null : newRowTest(table)
@@ -763,7 +907,18 @@ export function withListKind(spec: FormSpec, condition: ListCondition, kind: Row
 export function withTestColumn(spec: FormSpec, tableId: string, test: RowTest, columnId: string): RowTest {
   const column = columnOf(spec.schema, tableId, columnId)
   if (column === undefined) throw new Error(`Column "${columnId}" of table "${tableId}" is not in the schema`)
-  return { column: columnId, ...keptFor(column, test) }
+  const { op, values } = keptFor(column, test)
+  const against = test.field !== null && CONDITION_TESTS[op].values === "one" && testFields(spec.schema, tableId, column).some((each) => each.column.id === test.field)
+  return against ? { column: columnId, op, values: [], field: test.field, days: column.type === "date" ? test.days : 0 } : { column: columnId, op, values, field: null, days: 0 }
+}
+
+/**
+ * A test of one value tested against another field in place of values typed (a one-row
+ * table's condition's a `FieldRef`, a test of a row's a column id), its days kept only for a
+ * Date; or, given null, back to values typed, its field and days dropped.
+ */
+export function withTestField<C extends ColumnTest>(condition: C, field: C["field"], date: boolean): C {
+  return field === null ? { ...condition, values: [], field: null, days: 0 } : { ...condition, values: [], field, days: date ? condition.days : 0 }
 }
 
 /**
@@ -777,5 +932,6 @@ export function withConditionTest<C extends ColumnTest>(column: SchemaColumn | u
   const [first] = condition.values
   const values =
     takes === "none" ? [] : takes === "one" ? (first !== undefined && fits(first) ? [first] : []) : condition.values.filter(fits)
-  return { ...condition, op: test, values }
+  // Another field gives a test of one value alone.
+  return takes === "one" ? { ...condition, op: test, values } : { ...condition, op: test, values, field: null, days: 0 }
 }

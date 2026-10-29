@@ -16,10 +16,10 @@ that fill the sheets from databases and APIs.
 
 `WB-25` is the app's sign-in, which waits on the Azure work.
 
-`WB-28` and `WB-29` give the Show when of a sheet, a section, a component and a field
-more to test: other fields, text within text, dates apart and the price. A Table's column
+`WB-29` gives the Show when of a sheet, a section, a component and a field more to
+test: the price, as other fields, text within text and dates apart now are. A Table's column
 and a Collection's field have a Show when of their own ([workbench](../workbench/high-level.md)),
-the whole column hiding; a Table's cell does not hide row by row. The packages keep the
+the whole column hiding; a Table's cell does not hide row by row. The package keeps the
 rule that decides what shows now:
 everything starts shown and rounds only hide, so a condition fails once what it tests
 hides, and there is no "none of", "at most", "exactly" or "not" over a group, any of which
@@ -49,7 +49,6 @@ Workbench nodes stop keeping copies of the tables in a pull request after the fo
 | WB-12 | Decision | P3 | Analysts keep test quotes and price them again as the pipeline changes, built again after the first version was taken out. |
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
-| WB-28 | Planned | P3 | A condition tests a field against another field, text within text, and a date against another date give or take a number of days. |
 | WB-29 | Planned | P3 | A component that takes nothing typed, or a section or a sheet holding only such components, shows by conditions on the price, applied after it so the price never decides what is priced. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
 | WB-41 | Planned | P2 | The Workbench Input and Workbench Output read their tables from the form folder instead of keeping copies, so a schema change shows once in a pull request and no copy can fall out of step. |
@@ -432,34 +431,6 @@ misconfiguration either way.
 
 **Evidence:** `src/haute/_workbench_app.py::create_app` (the principal read from the
 headers when the release names its host).
-
-### WB-28 — Other values to test against
-**Why:** A condition tests a column against values typed into the condition. It cannot
-test one field against another (in the commercial-pricing project, `policy_limit` above
-`mga_limit`), text within text (an insured whose name contains "Holdings"), or one date
-against another (a project completing more than 365 days after it starts,
-`project_completion_date` against `project_start_date`).
-
-**Plan:** A condition's value may be another field of the same type instead of values
-typed: a one-row table's column, or, in a test of a list's rows, a column of the same
-row. A date compared with another date may add or take away a whole number of days.
-Text gains contains, does not contain, starts with and ends with, compared as equals
-compares text. A test against another field holds only while both are fields that show,
-so hiding still only hides more, and reads the other field's value as
-it reads its own. A date against today is left out: a saved quote would then show other
-sheets, and so be priced otherwise, on another day; a date field on the form stands in for
-it.
-
-**Acceptance:** A section shown while `policy_limit` is above `mga_limit`, one while the
-insured contains "Holdings", and one while the completion date is more than 365 days after
-the start date, each failing while either field hides; the server and the view are held to
-new cases in the shared visibility fixture.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_workbench_visibility.py::_passes` (each test against the
-condition's own values); `src/haute/_workbench_form.py::Condition` (`values`, typed text
-alone).
 
 ### WB-29 — Conditions on the price
 **Why:** Conditions test input tables alone; one naming an output column is a problem
