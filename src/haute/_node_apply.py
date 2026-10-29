@@ -238,6 +238,20 @@ def resolve_workbench_input_from_config(
     return dict(workbench_table_frames(config, port_columns=port_columns))
 
 
+def workbench_input_ports_from_config(
+    config_or_path: Mapping[str, Any] | str | PathLike[str],
+    *,
+    base_dir: str | Path | None = None,
+) -> tuple[str, ...]:
+    """A Workbench Input's ports, its tables given as a run gives them
+    (:func:`_workbench_node_config`), its sample left unread."""
+    from haute._workbench_input import workbench_table_labels
+
+    return workbench_table_labels(
+        _workbench_node_config(NodeType.WORKBENCH_INPUT, config_or_path, base_dir)
+    )
+
+
 def load_external_object_from_config(
     config_or_path: Mapping[str, Any] | str | PathLike[str],
     *,

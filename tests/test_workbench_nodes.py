@@ -278,3 +278,45 @@ def test_haute_run_says_why_the_form_cannot_be_read(
     assert "Error reading the workbench's form: workbench/form.json is not JSON" in (
         capsys.readouterr().err
     )
+
+
+def test_score_holds_a_seeded_workbench_input_to_its_form(project: Path) -> None:
+    """Seeded with frames, a Workbench Input reads neither its sample nor a data file, but
+    score() holds it to its form as a run does: its sidecar read and its connections' tables
+    the form's."""
+    import importlib.util
+    import sys
+
+    import polars as pl
+
+    from haute.errors import ConfigError, ExecutionError
+
+    def score() -> object:
+        spec = importlib.util.spec_from_file_location("scored_main", project / "main.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["scored_main"] = module
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.modules.pop("scored_main", None)
+        return module.pipeline.score(
+            {
+                "policy": pl.DataFrame({"state": ["TX"], "limit": [500]}),
+                "items": pl.DataFrame({"item_id": ["Z"], "value": [7.0]}),
+            }
+        )
+
+    score()
+
+    # The form drops a table a connection takes.
+    workbench_project(project, [table for table in FORM_TABLES if table["name"] != "items"])
+    with pytest.raises(ExecutionError, match="is connected on 'items', which the workbench's"):
+        score()
+
+    # A sidecar an earlier Haute wrote, its copies in it, is refused as a run refuses it.
+    workbench_project(project, FORM_TABLES, FORM_SAMPLE)
+    sidecar = project / "config" / "workbench_input" / "request.json"
+    sidecar.write_text(json.dumps({"tables": [], "sample": {}}), encoding="utf-8")
+    with pytest.raises(ConfigError, match="removed tables and sample fields"):
+        score()

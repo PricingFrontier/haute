@@ -4,8 +4,8 @@ import type { Edge, Node } from "@xyflow/react"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useGraphStore from "../stores/useGraphStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
+import { NODE_TYPES } from "../utils/nodeTypes"
 import { workbenchDisconnections } from "../utils/workbenchTables"
-import { disconnectionWarning } from "./useGraphCommitController"
 
 export type UseWorkbenchConnectionsOptions = {
   /** The graph the editor shows: the pipeline's top level, or the open submodel's. */
@@ -22,8 +22,8 @@ export type UseWorkbenchConnectionsOptions = {
  * whenever a document is adopted (`executionGeneration`), and holds each Workbench Input's
  * and Workbench Output's connections to the tables the newest fetch gave, whose names are
  * their ports: in the graph the editor shows, while the document can change, a connection
- * to a table whose name has gone is removed and reported as a request input's edit reports
- * one, committed without an undo step, since the tables are the form's and not the graph's
+ * to a table whose name has gone is removed and reported in a warning toast, committed
+ * without an undo step, since the tables are the form's and not the graph's
  * history. The connections are held again whenever the edges change, so one that an undo,
  * a redo or a paste brings back is removed again at once. A document is held only to tables
  * fetched since it was adopted, an earlier document's form having had tables of its own; a
@@ -32,6 +32,17 @@ export type UseWorkbenchConnectionsOptions = {
  * answers whether it could: false while no fetch made since the document was adopted has
  * landed.
  */
+/**
+ * The warning that *count* connections of the workbench node *label* were removed because
+ * the workbench no longer has the tables they used: one a Workbench Input's connection read,
+ * or a Workbench Output's filled.
+ */
+function tablesGoneWarning(label: string, nodeType: unknown, count: number): string {
+  const one = count === 1
+  const used = nodeType === NODE_TYPES.WORKBENCH_OUTPUT ? "filled" : "read"
+  return `Disconnected ${count} edge${one ? "" : "s"} from ${label}: the workbench no longer has the table${one ? " it" : "s they"} ${used}.`
+}
+
 export default function useWorkbenchConnections({
   graphRef,
   commitEdges,
@@ -69,7 +80,7 @@ export default function useWorkbenchConnections({
     graphRef.current = { ...graphRef.current, edges: held.edges }
     commitEdges(held.edges)
     for (const { node, edges: removed } of held.removed) {
-      addToast("warning", disconnectionWarning(String(node.data.label ?? node.id), node.data.nodeType, removed.length))
+      addToast("warning", tablesGoneWarning(String(node.data.label ?? node.id), node.data.nodeType, removed.length))
     }
     return true
   }, [addToast, commitEdges, graphRef])

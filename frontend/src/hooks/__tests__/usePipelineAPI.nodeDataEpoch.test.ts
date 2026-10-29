@@ -360,6 +360,42 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     await settle(result)
   })
 
+  it("asks for none of the columns it recorded before a fetch that changes the workbench's tables, which may have taken one away", async () => {
+    // A form saved without a column changes what a node below a Workbench Input holds,
+    // though nothing in the graph changes: the columns recorded before are no projection.
+    const policy = (...names: string[]): WorkbenchTable => ({
+      name: "policy",
+      rows: "one",
+      columns: names.map((name) => ({ name, type: "float" as const })),
+    })
+    await fetchTables({ tables: [policy("exposure", "limit")], sample: {}, response_tables: [] })
+    mockPreview.mockResolvedValue(envelope("priced", [], "exposure"))
+    const { result } = await renderLoaded([makeNode("priced")])
+    const recordedAt = useGraphStore.getState().structuralVersion
+    const priced = makeNode("priced", "polars", {
+      data: {
+        label: "priced",
+        nodeType: "polars",
+        config: {},
+        _columns: [{ name: "limit", dtype: "f64" }, { name: "exposure", dtype: "f64" }],
+        _columnsSource: "live",
+        _columnsStructuralVersion: recordedAt,
+      },
+    })
+
+    act(() => result.current.refreshPreview(priced))
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1), { timeout: STEP_TIMEOUT_MS })
+    expect(mockPreview.mock.calls[0][0].requestedPreviewColumns).toEqual(["limit", "exposure"])
+    await settle(result)
+
+    await fetchTables({ tables: [policy("exposure")], sample: {}, response_tables: [] })
+    expect(useGraphStore.getState().structuralVersion).toBe(recordedAt + 1)
+    act(() => result.current.refreshPreview(priced))
+    await waitFor(() => expect(mockPreview.mock.calls.length).toBeGreaterThanOrEqual(2), { timeout: STEP_TIMEOUT_MS })
+    expect(mockPreview.mock.calls.at(-1)?.[0].requestedPreviewColumns).toBeUndefined()
+    await settle(result)
+  })
+
   it("fetches the displayed preview again after a fetch that changes the workbench's tables or sample, never after one that brings the same", async () => {
     // What a Workbench Input is given changes what everything below it previews, though
     // nothing in the graph changes with it.

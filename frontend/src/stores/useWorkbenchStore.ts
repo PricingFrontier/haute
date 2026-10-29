@@ -12,6 +12,7 @@ import { apiErrorMessage } from "../api/errors"
 import { fetchWorkbenchStatus, fetchWorkbenchTables } from "../api/workbench"
 import { canonicalJson } from "../utils/canonicalJson"
 import type { WorkbenchTables } from "../utils/workbenchTables"
+import useGraphStore from "./useGraphStore"
 import useNodeDataStore from "./useNodeDataStore"
 import useToastStore from "./useToastStore"
 import { latest } from "../utils/latest"
@@ -52,9 +53,10 @@ interface WorkbenchState {
    * error toast that leaves `tables` as it was. An older fetch that settles later is
    * dropped, toast and all. A workbench node is given its tables and sample wherever it
    * runs, so they are its config, though nothing in the graph holds them: a fetch whose
-   * tables, sample or response tables differ from the last one's raises the node-data
-   * epoch, and every preview and every reader of node data asks again, as a config change
-   * makes them; a fetch that brings the same leaves them be.
+   * tables, sample or response tables differ from the last one's advances the graph's
+   * structural version and raises the node-data epoch, so every preview, recorded column and
+   * reader of node data is as stale as a config change makes it; a fetch that brings the
+   * same leaves them be.
    */
   refreshTables: () => number | null
   /**
@@ -108,7 +110,12 @@ const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
           fetch,
         }
         set({ tables })
-        if (previous !== null && given(previous) !== given(tables)) useNodeDataStore.getState().bumpEpoch()
+        if (previous !== null && given(previous) !== given(tables)) {
+          // The graph's structure as every reader keys it: a preview, a recorded column, a
+          // job's staleness.
+          useGraphStore.getState().noteStructureOutsideGraph()
+          useNodeDataStore.getState().bumpEpoch()
+        }
         return true
       },
       (error: unknown): boolean | Promise<boolean> => {

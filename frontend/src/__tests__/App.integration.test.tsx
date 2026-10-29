@@ -3217,7 +3217,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     expect(api.savePipeline).toHaveBeenCalledTimes(1)
     expect(savedPipeline()).toEqual({ edges: [], inputConfig: {} })
     expect(useGraphStore.getState().edges).toEqual([])
-    expect(screen.getByText("Disconnected 1 edge from Workbench Input: the source frame no longer exists after your edit.")).toBeInTheDocument()
+    expect(screen.getByText("Disconnected 1 edge from Workbench Input: the workbench no longer has the table it read.")).toBeInTheDocument()
     expect(useWorkbenchFormStore.getState().dirty).toBe(false)
   })
 

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import useWorkbenchStore from "../useWorkbenchStore"
+import useGraphStore from "../useGraphStore"
 import useNodeDataStore from "../useNodeDataStore"
 import useToastStore from "../useToastStore"
 
@@ -178,6 +179,7 @@ describe("refreshTables", () => {
     const held = heldResponses()
     const store = useWorkbenchStore.getState
     const epoch = () => useNodeDataStore.getState().epoch
+    const structure = () => useGraphStore.getState().structuralVersion
     const fetchedAs = async (index: number, body: unknown) => {
       const fetch = store().refreshTables()
       held.answer(index, body)
@@ -186,10 +188,12 @@ describe("refreshTables", () => {
     const columns = [{ name: "state", type: "str" }, { name: "exposure", type: "float" }]
     await fetchedAs(0, { tables: [{ name: "policy", rows: "one", columns }], sample: {}, response_tables: [] })
     const first = epoch()
+    const structural = structure()
 
     // The same, its keys written in another order.
     await fetchedAs(1, { response_tables: [], sample: {}, tables: [{ columns, rows: "one", name: "policy" }] })
     expect(epoch()).toBe(first)
+    expect(structure()).toBe(structural)
 
     await fetchedAs(2, { tables: [{ name: "policy", rows: "one", columns }], sample: { policy: { state: "NY" } }, response_tables: [] })
     expect(epoch()).toBe(first + 1)
@@ -197,6 +201,8 @@ describe("refreshTables", () => {
     expect(epoch()).toBe(first + 2)
     await fetchedAs(4, { tables: [{ name: "policy", rows: "many", columns }], sample: { policy: { state: "NY" } }, response_tables: tables("premiums") })
     expect(epoch()).toBe(first + 3)
+    // Each change is the graph's structure as every preview, recorded column and job reads it.
+    expect(structure()).toBe(structural + 3)
   })
 
   it("keeps the tables it has when the newest fetch fails, and says so once", async () => {

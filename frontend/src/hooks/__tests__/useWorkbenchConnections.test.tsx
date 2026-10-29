@@ -92,8 +92,8 @@ describe("useWorkbenchConnections", () => {
     expect(useGraphStore.getState().redoStack).toBe(redoStack)
     expect(useGraphStore.getState().dirty).toBe(true)
     expect(addToast.mock.calls).toEqual([
-      ["warning", "Disconnected 1 edge from wb_in: the source frame no longer exists after your edit."],
-      ["warning", "Disconnected 1 edge from wb_out: the table it filled no longer exists after your edit."],
+      ["warning", "Disconnected 1 edge from wb_in: the workbench no longer has the table it read."],
+      ["warning", "Disconnected 1 edge from wb_out: the workbench no longer has the table it filled."],
     ])
   })
 
@@ -111,7 +111,7 @@ describe("useWorkbenchConnections", () => {
     expect(edgeIds()).toEqual(["e_account", "e_filled"])
     expect(addToast).toHaveBeenCalledWith(
       "warning",
-      "Disconnected 1 edge from wb_in: the source frame no longer exists after your edit.",
+      "Disconnected 1 edge from wb_in: the workbench no longer has the table it read.",
     )
     expect(useGraphStore.getState().nodes.map((node) => node.id)).not.toContain("later")
   })

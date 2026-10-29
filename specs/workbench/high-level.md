@@ -1626,7 +1626,9 @@ Out of scope:
     in the editor's previews, runs and traces, each request reading the folder anew, so an
     edit made outside the view reaches the next one (Preview's pricing gives the form the
     view holds instead, above); in the pipeline file's own `run()` and `score()`, from the
-    project the file is in; and in `haute deploy` and `haute app build`, which read the
+    project the file is in, `score()`, which gives the Workbench Input the frames it is
+    given, still reading its config file and the form and refusing a connection to a table
+    the form does not have; and in `haute deploy` and `haute app build`, which read the
     folder once and carry the tables in the bundle, the sample left out (No data file;
     the sample, below), so a deployed pipeline and a release run on the tables they were built
     with and never read a folder. A Workbench Input inside a submodel reads the same form.
@@ -2449,7 +2451,9 @@ Out of scope:
   since the request is read from its records.
 - Two request inputs of either type, at the top level or in a submodel, fail save and deploy
   with "Only one Quote Input or Workbench Input node is allowed per pipeline (found 2)." and
-  `Pipeline.score` as two Quote Inputs do. A config key a Workbench Input does not declare,
+  `Pipeline.score` as two Quote Inputs do. `Pipeline.score` refuses a Workbench Input
+  connected on a table its form does not have with "Workbench Input '<node>' is connected
+  on '<table>', which the workbench's form does not have.". A config key a Workbench Input does not declare,
   `path` among them, is refused as it is for any node type.
 - Running a Workbench Output, in a preview, `run()`, `score()` or a deployed pipeline, fails
   with a message naming its table:

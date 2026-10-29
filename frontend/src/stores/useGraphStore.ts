@@ -148,6 +148,13 @@ export interface GraphStore {
   setNodesRaw: (nodes: Node[] | ((nds: Node[]) => Node[])) => void
   setEdgesRaw: (edges: PipelineEdge[] | ((eds: PipelineEdge[]) => PipelineEdge[])) => void
   setSubmodelsRaw: (submodels: Record<string, unknown>) => void
+  /**
+   * Advance `structuralVersion` for a change the graph does not hold but every structural
+   * reader must see: the tables the workbench nodes are given from the form, which are their
+   * ports and their frames (specs/workbench). The graph, its history and its dirty state are
+   * left as they are.
+   */
+  noteStructureOutsideGraph: () => void
   setPreambleRaw: (value: string) => void
   /** Replace the global constants without an undo entry. */
   setGlobalConstantsRaw: (constants: GlobalConstantDraft[]) => void
@@ -825,6 +832,10 @@ const useGraphStore = create<GraphStore>()((set, get) => {
               }),
         }
       })
+    },
+
+    noteStructureOutsideGraph: () => {
+      set((state) => ({ structuralVersion: state.structuralVersion + 1 }))
     },
 
     setSubmodelsRaw: (submodels) => {

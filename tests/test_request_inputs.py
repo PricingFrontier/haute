@@ -598,6 +598,9 @@ def test_a_workbench_input_reads_a_request_as_a_quote_input_does(
     graph = _pricing(project, node_type)
     folder = FOLDERS[node_type]
     reads_a_file = node_type is not NodeType.WORKBENCH_INPUT
+    if not reads_a_file:
+        # Scored on its own, a Workbench Input is held to its project's form.
+        workbench_project(project, FORM_TABLES)
 
     pipeline_file = _write(graph, project)
     code = pipeline_file.read_text(encoding="utf-8")
@@ -1146,6 +1149,8 @@ def test_a_misfit_sample_answers_the_preview_route_with_422(
 )
 def test_a_request_never_reads_the_sample(project: Path, sample: dict[str, Any]) -> None:
     graph = _sampled(project, copy.deepcopy(sample))
+    # Scored on its own, a Workbench Input reads its project's form, never its sample.
+    workbench_project(project, FORM_TABLES, {"t_policy": [{"c_state": "NY", "c_limit": "lots"}]})
     request = {
         "policy": pl.DataFrame({"state": ["TX"], "limit": [5]}),
         "items": pl.DataFrame({"item_id": ["Z"], "value": [7.0]}),

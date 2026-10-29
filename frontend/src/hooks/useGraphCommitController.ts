@@ -58,19 +58,6 @@ export type GraphCommitController = {
 }
 
 /**
- * The warning that *count* edges were disconnected from the node *label* because what they
- * connected to went: a source's frames, or the tables a Workbench Output's connections
- * filled.
- */
-export function disconnectionWarning(label: string, nodeType: unknown, count: number): string {
-  const one = count === 1
-  const gone = nodeType === NODE_TYPES.WORKBENCH_OUTPUT
-    ? (one ? "the table it filled no longer exists" : "the tables they filled no longer exist")
-    : (one ? "the source frame no longer exists" : "the source frames no longer exist")
-  return `Disconnected ${count} edge${one ? "" : "s"} from ${label}: ${gone} after your edit.`
-}
-
-/**
  * Owns request generations and the one selected-node graph commit boundary.
  * The pure planner computes candidates; this hook alone decides whether an
  * asynchronous candidate still owns the graph/document fence and may commit.
@@ -184,9 +171,11 @@ export default function useGraphCommitController({
         : previous
     ))
     if (prepared.removed.length === 0) return
+    const label = String(prepared.data.label ?? prepared.nodeId)
+    const one = prepared.removed.length === 1
     addToast(
       "warning",
-      disconnectionWarning(String(prepared.data.label ?? prepared.nodeId), prepared.data.nodeType, prepared.removed.length),
+      `Disconnected ${prepared.removed.length} edge${one ? "" : "s"} from ${label}: the source frame${one ? " no longer exists" : "s no longer exist"} after your edit.`,
     )
   }, [addToast, commitGraph, graphRef, setSelectedNode, submodelsRef])
 
