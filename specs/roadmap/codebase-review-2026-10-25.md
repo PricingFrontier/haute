@@ -210,9 +210,6 @@ these are the Majors still open.
 - **Every save round-trips through the file watcher** (Major, `API-R08`): the
   sidecar write and the stale-config unlink carry no self-write marker, so the
   saved document is reloaded and broadcast as an external edit.
-- **A graph the flattener refuses, and a trace that fails in the user's node
-  code, are answered with the sanitized 500** (two Majors, `API-R06`); two tests
-  pin the 500.
 - **A non-UTF-8 sidecar or pipeline file is loaded with replacement characters
   that the next save writes over the author's bytes** (Major, `PCFG-R10`;
   reproduced). The package is P1 because the corruption is silent.
@@ -302,7 +299,6 @@ production:
 | Background jobs | WRK-2 | `ROAD-WORKER-06` |
 | Background jobs | WRK-5, WRK-6, WRK-11, WRK-14 | `ROAD-WORKER-07` |
 | Background jobs | WRK-8, WRK-9, WRK-10 | `ROAD-WORKER-08` |
-| Server API | SRV-2, SRV-3, SRV-9, SRV-11 | `API-R06` |
 | Server API | SRV-1, SRV-5 | `API-R08` |
 | Server API | SRV-6, SRV-7, SRV-8, SRV-13, SRV-15 | `API-R09` |
 | Server API | SRV-10, SRV-12, SRV-14, SRV-16, SRV-17 | `API-R10` |
@@ -379,8 +375,7 @@ points without convergence traces (`OPT-PC04`); the optimiser's job registries
 not cancelled at shutdown (`ROAD-WORKER-06`); the test-only
 `_compute_schema_hash` and the training facade (`ENGQ-R01`); fits that exceed
 their budget
-(`MOD-M01`, `MOD-M02`); the trace route's status by message prefix and its
-sanitized 500 for a node failure (`API-R06`); two trace inconsistencies that
+(`MOD-M01`, `MOD-M02`); two trace inconsistencies that
 vanish with node-level instances (`SUB-R01`); the git routes' and the
 assistant's current-directory project root (`PCFG-R04`); the Databricks client
 factory's and the save service's `HTTPException`s (`API-R02`); the assistant's
@@ -389,8 +384,7 @@ key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
 (`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the API
 Input's supervised build (`IO-R08`), the Edge Join as a boundary (`EXEC-R15`)
 and Recover's `how="asof"` (`PCFG-R13`); node-level instances and their
-rewriters (`SUB-R01`), the Explore routes' `ParseError` and the submodel route's
-400 (`API-R06`), the pivot registry at shutdown (`ROAD-WORKER-06`); the
+rewriters (`SUB-R01`), the pivot registry at shutdown (`ROAD-WORKER-06`); the
 browser's hand-written contract mirrors (`API-R03`), `hashConfig`'s exclusion
 list (`PCFG-R08`), the results store's optimiser logic (`FSH-R03`) and the dead
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
@@ -404,9 +398,9 @@ fields the backend defaults (`EDA-R02`); the panel half of the GPU loss-history
 numbering and the GLM `best_iteration` (`MOD-R05`) and a second fabricated
 train-failure sentinel (`FSH-R06`); the browser's frontier
 generation fences that only ever see generation 0 (`OPT-R04`), the optimiser
-panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`),
-`applyFrontierPointSummary`'s null handling (`FSH-R03`) and the trace route's
-409 keyed on its code (`API-R06`); in the workbench UI and the app shell, the
+panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`) and
+`applyFrontierPointSummary`'s null handling (`FSH-R03`); in the workbench UI and
+the app shell, the
 chart theme observer written twice (`EDA-R03`), the params-folder listing in the
 Allowed field (`FNED-R05`), knip's export-only symbols (`ENGQ-R01`), browser-locale dates (`FSH-R08`), the bootstrap without
 a deadline (`FSH-R05`), Ctrl+S inside a code box (`FSH-R07`), editor state inside

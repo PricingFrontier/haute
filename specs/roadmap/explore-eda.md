@@ -113,7 +113,7 @@ numeric feature twice, so one question of fifty features scans the data point
 about a hundred and fifty times.
 
 **Plan:** Catch `ConfigError` in `start()` and answer 400 with its message (or
-add it to the application handler `API-R06` plans); build the member literal in
+give it an application handler beside `ParseError`'s); build the member literal in
 the column's dtype; put the chained cause's message in the failure; collect the
 three derived frames with one `collect_all` or fold them into one aggregation.
 

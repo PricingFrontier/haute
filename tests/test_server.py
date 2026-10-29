@@ -470,10 +470,10 @@ class TestPreviewNode:
                 json={"graph": graph, "node_id": "nb_batch"},
             )
 
-        assert response.status_code == 200
-        payload = response.json()
-        assert payload["status"] == "error"
-        assert "missing or malformed public-port handle" in payload["error"]
+        # The flattener refuses the draft before anything runs: the request is answered
+        # 400 with what to fix, as every route taking a graph answers it.
+        assert response.status_code == 400
+        assert "missing or malformed public-port handle" in response.json()["detail"]
         execute_graph.assert_not_called()
 
     def test_preview_returns_relevant_ancestor_node_schema_maps(

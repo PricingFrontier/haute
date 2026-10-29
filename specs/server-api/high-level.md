@@ -600,19 +600,29 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
   `HauteError`, optional structured `**context`) that the relevant route treats as safe to
   surface: save-time `ConfigError` → 400; output dry-run `ConfigError` /
   `ContractMismatchError` → 422; trace `ContractMismatchError` → 422; and preview
-  `ContractMismatchError` / `SchemaMismatchError` failures are embedded in
-  `NodeResult.error` so the canvas can show either mismatch in-situ rather than
-  as a banner. JSON schema inference's `ApiInputSchemaError` uses a direct 422 body
+  `ContractMismatchError` / `SchemaMismatchError` failures, and a graph-shape `ParseError`
+  raised while a preview runs, are embedded in `NodeResult.error` so the canvas can show
+  them in-situ rather than as a banner.
+- **A graph the user can fix is answered as one.** A graph the browser sent that the
+  flattener or the save refuses (`ParseError`: a name collision, an undeclared handle) is
+  answered 400 with the refusal's message by every route that takes a graph, through one
+  application handler. A trace that fails in a node's own code (a syntax error, a missing
+  column) is answered 422 naming the node with the failure's message, as a preview shows it
+  on the node. A trace the data or the graph cannot answer as asked is refused by the
+  refusal's type: 409 when the clicked row has changed since its preview, 400 for a row or
+  target the trace cannot take, 404 for a target the graph lacks; the wording is free to
+  change, in a thread or out of a worker alike. JSON schema inference's `ApiInputSchemaError` uses a direct 422 body
   with a `type` discriminator, while preview/write execution uses the stable public-contract
   payload under `detail`; `OutputMappingSchemaError` uses FastAPI's
   `{"detail": <message>}` 422 envelope.
 - **Error families are translated once, at the application edge.** Application exception
   handlers (`routes/_error_handlers.py`, installed on the app by `server.py`) answer the
   same way for every route: a public contract error with its stable payload, a memory
-  refusal or overrun with 507, and a `GitError` through the git mapping. A route keeps an
-  `except` clause only where it maps an error differently from its family's handler (the
-  explicit mappings above, a trace row mismatch → 409), and route code never catches
-  `Exception` merely to log it and answer 500.
+  refusal or overrun with 507, a `ParseError` with 400, and a `GitError` through the git
+  mapping. A route keeps an `except` clause only where it maps an error differently from its
+  family's handler (the explicit mappings above, the trace's refusals), and route code never
+  catches `Exception` merely to log it and answer 500. No route answers 400 with the
+  internal-error text: a failure the request did not cause reaches the backstop below.
 - **Everything else** — any exception no handler claims — reaches `_RequestIdMiddleware`,
   which logs it with its error class and traceback and returns `{"detail": "Operation
   failed. Check the server logs for details."}` with the request ID. No response exposes a

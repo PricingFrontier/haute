@@ -7,7 +7,8 @@ import dataclasses
 import json
 import time
 import tomllib
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import partial
@@ -37,6 +38,7 @@ from haute._execution_admission import (
 )
 from haute._execution_context import (
     ExecutionCancellationToken,
+    ExecutionCancelledError,
     ExecutionContext,
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
@@ -139,6 +141,15 @@ from haute.errors import (
     ParseError,
     SchemaMismatchError,
     SeedPlanExpiredError,
+    TraceNodeFailedError,
+    TraceRequestError,
+    TraceRowAmbiguousError,
+    TraceRowMismatchError,
+    TraceRowOutOfRangeError,
+    TraceTargetNotFoundError,
+    TraceTargetUnsupportedError,
+    failing_node,
+    is_public_contract_error,
 )
 from haute.execution import _runtime_input_path_fields, prune_source_switch_edges
 from haute.executor import (
@@ -261,7 +272,20 @@ _TRACE_CONTRACT_REMOTE_IDENTITIES = frozenset(
         (SchemaMismatchError.__module__, SchemaMismatchError.__name__),
     }
 )
-_VALUE_ERROR_REMOTE_IDENTITY = (ValueError.__module__, ValueError.__name__)
+# What each of the trace's refusals answers: 409 when the clicked row has changed since
+# its preview (the browser refreshes the preview), 400 for a row or target the trace
+# cannot take, 404 for a target the graph lacks. By type in a thread; out of a worker,
+# by the exact remote type and the code its payload carries.
+_TRACE_REFUSAL_STATUS: dict[type[TraceRequestError], int] = {
+    TraceRowMismatchError: 409,
+    TraceRowAmbiguousError: 409,
+    TraceRowOutOfRangeError: 400,
+    TraceTargetUnsupportedError: 400,
+    TraceTargetNotFoundError: 404,
+}
+_TRACE_REFUSAL_REMOTE = {
+    (refusal.__module__, refusal.__name__): refusal for refusal in _TRACE_REFUSAL_STATUS
+}
 
 router = APIRouter(prefix="/api", tags=["pipeline"])
 
@@ -809,18 +833,15 @@ def _raise_interactive_remote_http_error(
     if operation == "pipeline_trace":
         if identity in _TRACE_CONTRACT_REMOTE_IDENTITIES:
             raise HTTPException(status_code=422, detail=exc.remote_message) from None
-        if identity == _VALUE_ERROR_REMOTE_IDENTITY:
-            detail = exc.remote_message
-            if detail.startswith(("Trace data does not match", "Trace row match is ambiguous")):
-                raise HTTPException(status_code=409, detail=detail) from None
-            if detail.startswith("row_index ") and "out of range" in detail:
-                raise HTTPException(status_code=400, detail=detail) from None
-            if detail.startswith("Target node") and "multiple frames" in detail:
-                raise HTTPException(status_code=400, detail=detail) from None
-            if detail.startswith("Target node ") and "is a Workbench Output" in detail:
-                raise HTTPException(status_code=400, detail=detail) from None
-            if detail.startswith("Target node ") and "not found in graph" in detail:
-                raise HTTPException(status_code=404, detail=detail) from None
+        refusal = _TRACE_REFUSAL_REMOTE.get(identity)
+        if (
+            refusal is not None
+            and payload is not None
+            and payload.get("error_code") == refusal.error_code
+        ):
+            raise HTTPException(
+                status_code=_TRACE_REFUSAL_STATUS[refusal], detail=str(payload["message"])
+            ) from None
     # The client gets a generic 500; the server log keeps what the worker raised.
     logger.error(
         "interactive_worker_remote_failure",
@@ -1188,14 +1209,6 @@ async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
     except ConfigError as exc:
         logger.warning("save_pipeline_config_invalid", error=str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from None
-    except ParseError as exc:
-        # Structural rejections raised by the save-time flatten and codegen
-        # (undeclared handles, an unrouted public input bound by a parent edge,
-        # …) describe a client graph the user can repair. Without this the
-        # actionable context only reaches the server log and the client shows
-        # an opaque 500.
-        logger.warning("save_pipeline_graph_invalid", error=str(exc))
-        raise HTTPException(status_code=400, detail=str(exc)) from None
 
 
 @router.post("/pipeline/read-json", response_model=ReadJsonResponse)
@@ -1424,6 +1437,45 @@ def _listed_seeds(body: TraceRequest) -> list[ListedSeed]:
     ]
 
 
+def _own_node_failure(exc: BaseException) -> str | None:
+    """The node whose own code raised *exc*, or ``None`` for a failure of the run.
+
+    The graph walk marks what it raises with the node it was building or running.
+    Contract and schema mismatches, public contract errors, the trace's own refusals
+    and execution control (cancellation, the memory budget) end the run wherever they
+    are raised, so they are never a node's.
+    """
+    node_id = failing_node(exc)
+    if node_id is None or is_public_contract_error(exc):
+        return None
+    run_level = (
+        ContractMismatchError,
+        SchemaMismatchError,
+        TraceRequestError,
+        ExecutionCancelledError,
+        ExecutionAdmissionError,
+        ExecutionMemoryLimitExceededError,
+        MemoryError,
+        TimeoutError,
+    )
+    return None if isinstance(exc, run_level) else node_id
+
+
+@contextmanager
+def _trace_node_failures(graph: PipelineGraph) -> Iterator[None]:
+    """Raise a node's own failure during a trace as the error naming it (422), the
+    message a preview shows on the node; anything else passes unchanged."""
+    try:
+        yield
+    except Exception as exc:
+        node_id = _own_node_failure(exc)
+        if node_id is None:
+            raise
+        node = graph.node_map.get(node_id)
+        label = node.data.label if node is not None else node_id
+        raise TraceNodeFailedError(f"Node {label!r} failed: {exc}", node_id=node_id) from exc
+
+
 def _execute_trace_worker(
     graph: PipelineGraph,
     body: TraceRequest,
@@ -1431,19 +1483,20 @@ def _execute_trace_worker(
 ) -> dict[str, Any]:
     context = create_isolated_execution_context(budget)
     try:
-        result = execute_trace(
-            graph,
-            row_index=body.row_index,
-            target_node_id=body.target_node_id,
-            column=body.column,
-            row_limit=body.row_limit,
-            source=body.source,
-            row_values=body.row_values,
-            fingerprint_memo=GraphFingerprintMemo(),
-            execution_context=context,
-            seed_plan=_listed_seeds(body),
-            port_label=body.port_label,
-        )
+        with _trace_node_failures(graph):
+            result = execute_trace(
+                graph,
+                row_index=body.row_index,
+                target_node_id=body.target_node_id,
+                column=body.column,
+                row_limit=body.row_limit,
+                source=body.source,
+                row_values=body.row_values,
+                fingerprint_memo=GraphFingerprintMemo(),
+                execution_context=context,
+                seed_plan=_listed_seeds(body),
+                port_label=body.port_label,
+            )
         trace_payload = trace_result_to_dict(result)
         TraceResponse.model_validate({"status": "ok", "trace": trace_payload})
         return trace_payload
@@ -1514,19 +1567,20 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
                 )
 
             def _execute_trace_in_thread() -> dict[str, Any]:
-                result = execute_trace(
-                    graph,
-                    row_index=body.row_index,
-                    target_node_id=body.target_node_id,
-                    column=body.column,
-                    row_limit=body.row_limit,
-                    source=body.source,
-                    row_values=body.row_values,
-                    fingerprint_memo=fingerprint_memo,
-                    execution_context=trace_context,
-                    seed_plan=_listed_seeds(body),
-                    port_label=body.port_label,
-                )
+                with _trace_node_failures(graph):
+                    result = execute_trace(
+                        graph,
+                        row_index=body.row_index,
+                        target_node_id=body.target_node_id,
+                        column=body.column,
+                        row_limit=body.row_limit,
+                        source=body.source,
+                        row_values=body.row_values,
+                        fingerprint_memo=fingerprint_memo,
+                        execution_context=trace_context,
+                        seed_plan=_listed_seeds(body),
+                        port_label=body.port_label,
+                    )
                 # Serialise to a JSON-safe dict here, still in the
                 # worker thread, so the event loop never walks the
                 # full trace payload.
@@ -1600,27 +1654,9 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
         # that the user can fix the bad contract in one edit.
         logger.warning("trace_contract_mismatch", error=str(e))
         raise HTTPException(status_code=422, detail=str(e))
-    except ValueError as e:
-        detail = str(e)
-        if detail.startswith("Trace data does not match"):
-            logger.warning("trace_row_mismatch", error=detail)
-            raise HTTPException(status_code=409, detail=detail)
-        if detail.startswith("Trace row match is ambiguous"):
-            logger.warning("trace_row_match_ambiguous", error=detail)
-            raise HTTPException(status_code=409, detail=detail)
-        if detail.startswith("row_index ") and "out of range" in detail:
-            logger.warning("trace_row_out_of_range", error=detail)
-            raise HTTPException(status_code=400, detail=detail)
-        if detail.startswith("Target node") and "multiple frames" in detail:
-            logger.warning("trace_target_multi_frame", error=detail)
-            raise HTTPException(status_code=400, detail=detail)
-        if detail.startswith("Target node ") and "is a Workbench Output" in detail:
-            logger.warning("trace_target_workbench_output", error=detail)
-            raise HTTPException(status_code=400, detail=detail)
-        if detail.startswith("Target node ") and "not found in graph" in detail:
-            logger.warning("trace_target_not_found", error=detail)
-            raise HTTPException(status_code=404, detail=detail)
-        raise
+    except TraceRequestError as e:
+        logger.warning("trace_refused", error_code=e.error_code, error=e.message)
+        raise HTTPException(status_code=_TRACE_REFUSAL_STATUS[type(e)], detail=e.message) from None
     finally:
         if trace_context is not None:
             trace_context.release_admission(preserve_primary_error=True)
@@ -1636,6 +1672,9 @@ async def _preview_canonical_graph(
     that disconnects (the browser's Stop) cancels the preview's own token, so
     the worker or thread stops; a request still queued never executes.
     """
+    # A graph the flattener refuses is the request's fault, answered 400 by the
+    # application handler; a graph-shape issue the run meets is shown on the node.
+    graph = flatten_executable_graph(body.graph)
     preview_token = ExecutionCancellationToken()
     preview_context: ExecutionContext | None = None
     request_id = body.request_id
@@ -1647,7 +1686,6 @@ async def _preview_canonical_graph(
             preview_progress.report(request_id, progress)
 
     try:
-        graph = flatten_executable_graph(body.graph)
         _ensure_source_file(graph)
         if not graph.nodes:
             raise HTTPException(status_code=400, detail="Empty graph")

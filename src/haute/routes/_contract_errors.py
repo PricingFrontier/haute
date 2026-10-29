@@ -29,6 +29,7 @@ from haute.errors import (
     SnapshotCorruptError,
     SnapshotPlanInputsChangedError,
     TraceCorrelationUnsupportedError,
+    TraceNodeFailedError,
     is_public_contract_error,
 )
 from haute.routes._memory_messages import memory_limit_user_message
@@ -53,6 +54,7 @@ PUBLIC_CONTRACT_ERROR_TYPES: tuple[type[HauteError], ...] = (
     ContractResolutionError,
     GroupByExecutionUnsupportedError,
     TraceCorrelationUnsupportedError,
+    TraceNodeFailedError,
     RatingExtremaUndefinedError,
     RatingFactorMissingError,
     RatingFactorDtypeContractError,

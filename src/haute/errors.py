@@ -442,6 +442,61 @@ class TraceCorrelationUnsupportedError(ExecutionError):
         )
 
 
+class TraceRequestError(ExecutionError, HauteValidationError):
+    """A trace its graph or its data cannot answer as asked.
+
+    Each kind names itself with a stable ``error_code``, which a worker's error payload
+    carries out of the process, so the trace route answers by type and never by the
+    message's wording. It is also a ``ValueError``, as every refused trace has been.
+    """
+
+
+class TraceRowMismatchError(TraceRequestError):
+    """No row of the target's data matches the clicked preview row any more."""
+
+    error_code = "trace_row_mismatch"
+
+
+class TraceRowAmbiguousError(TraceRequestError):
+    """Several rows of the target's data match the clicked preview row."""
+
+    error_code = "trace_row_ambiguous"
+
+
+class TraceRowOutOfRangeError(TraceRequestError):
+    """The clicked row index lies beyond the target's rows."""
+
+    error_code = "trace_row_out_of_range"
+
+
+class TraceTargetUnsupportedError(TraceRequestError):
+    """The target is not a frame a row can be traced in: it emits several frames, or it is
+    a Workbench Output whose table the trace cannot take."""
+
+    error_code = "trace_target_unsupported"
+
+
+class TraceTargetNotFoundError(TraceRequestError):
+    """The trace names a target the graph does not hold."""
+
+    error_code = "trace_target_not_found"
+
+
+class TraceNodeFailedError(ExecutionError):
+    """A node's own code failed while a trace ran it: a syntax error, a missing column.
+
+    The user fixes it on the node, so it is a public contract error naming the node, as a
+    preview shows the same failure on its node.
+    """
+
+    error_code = "trace_node_failed"
+    public_fields = ("node_id",)
+
+    def __init__(self, message: str, *, node_id: str) -> None:
+        self.node_id = node_id
+        super().__init__(message, node_id=node_id)
+
+
 INPUT_PREPARATION_REASON_CODES: tuple[str, ...] = (
     "cap_unavailable",
     "build_failed",

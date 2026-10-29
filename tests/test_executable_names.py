@@ -222,6 +222,30 @@ def test_save_refuses_a_violation_naming_the_node(
     assert message in str(excinfo.value.detail)
 
 
+@pytest.mark.parametrize(
+    ("route", "fields"),
+    [
+        pytest.param("/api/pipeline/trace", {"seed_plan": []}, id="trace"),
+        pytest.param("/api/pipeline/preview", {"node_id": "n0"}, id="preview"),
+        pytest.param("/api/pipeline/write-output", {"node_id": "n0"}, id="write-output"),
+        pytest.param("/api/pipeline/output-destination", {"node_id": "n0"}, id="destination"),
+        pytest.param("/api/output-assemble/dry-run", {"node_id": "n0"}, id="output-dry-run"),
+        pytest.param("/api/node-data/point", {"node_id": "n0"}, id="node-data"),
+        pytest.param("/api/banding/stats", {"node_id": "n0", "factor": {}}, id="banding"),
+        pytest.param("/api/rating/levels", {"node_id": "n0", "columns": ["x"]}, id="rating"),
+    ],
+)
+def test_every_route_taking_a_graph_answers_a_collision_with_400(
+    client: Any, route: str, fields: dict[str, Any]
+) -> None:
+    graph = _labels("Rates", "rates")
+
+    response = client.post(route, json={"graph": graph.model_dump(mode="json"), **fields})
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == format_name_violations(executable_name_violations(graph))
+
+
 def test_save_accepts_a_name_that_only_resembles_a_builtin(tmp_path: Path) -> None:
     SavePipelineService(tmp_path).validate_graph(
         _labels("Max premium", "Filter"), source_file="main.py"

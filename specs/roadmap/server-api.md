@@ -14,7 +14,6 @@ come from the [23 September 2026 codebase review](codebase-review-2026-09-23.md)
 |---|---|---:|---|
 | API-R02 | Planned | P3 | Domain services raise domain errors; only routes speak HTTP. |
 | API-R03 | Planned | P2 | Every browser type and response parser is generated from the Pydantic models. |
-| API-R06 | Planned | P2 | A user-fixable error is answered as one: a graph the flattener refuses, a trace that fails in the user's node code, and the two 400s that carry the server-error text, with the trace's status chosen by type rather than by message prefix. |
 | API-R08 | Planned | P2 | A save never round-trips through the file watcher, and its request is validated before any file is staged. |
 | API-R09 | Planned | P3 | The repair routes, the admit-run-translate pattern, the path-resolution preludes and the two point-analysis services exist once each, and a save loads the pipeline once. |
 | API-R10 | Planned | P3 | Every free string and list in a request is bounded; the dead response fields and helpers are gone; the repair message and the `file` field say what is true. |
@@ -115,45 +114,6 @@ models to the generated set.
 `frontend/src/api/types.ts`; `frontend/src/api/client.ts`;
 `src/haute/schemas.py`; `tests/fixtures/ui_contracts`;
 `frontend/src/types/__tests__/guards.contract.test.ts`.
-
-### API-R06 — Client errors answered as client errors
-**Why:** `flatten_executable_graph` refuses a client graph with a name violation or an
-undeclared handle by raising `ParseError`, which the trace, write-output,
-output-destination, OUTPUT dry-run, node-data, banding and rating routes call outside any
-`except` and no application handler claims (`ParseError` is a `HauteError`, not a
-`ValueError`), so a user-fixable graph error is answered with the sanitized 500
-"Operation failed. Check the server logs for details."; save and preview handle it
-route-locally. A failure in the user's own node code during a trace (a syntax error, a
-missing column) reaches the client as the same 500, while the same failure in a preview
-is embedded in `NodeResult.error`; two tests pin the 500. `GET /api/schema` and submodel
-creation answer a 400 with the server-error text, so the status says the request was
-wrong and the text says the server failed. The trace route chooses 409, 400 or 404 by
-matching the text of a `ValueError`, with the prefix table duplicated for the worker form,
-so a reworded message turns a 409 into a 500. This package comes from the
-[25 October 2026 codebase review](codebase-review-2026-10-25.md).
-
-**Plan:** Register one application handler `ParseError → 400` with the exception's
-message and drop the route-local clauses; map a node failure the trace walk raises to 422
-carrying the node id and `str(exc)`, as preview does, and change the two tests to assert
-it; let the unexpected `ValueError` in `get_schema` and `create_submodel` reach the 500
-backstop or map the known client errors to 400 with their own message; replace the trace
-prefix table with typed exceptions carrying an `error_code`, mapped once by type and
-carried through the worker's public payload.
-
-**Acceptance:** A graph with two nodes labelled `Rates` and `rates` is answered 400 with
-the collision message by every graph route; a trace of a node with a syntax error is
-answered 422 naming the node; no route answers 400 with the internal-error text; the trace
-route's status tests pass with the messages reworded.
-
-**Dependencies:** `API-R02` moves the services onto domain errors; this package covers
-the route-level mapping that exists today.
-
-**Evidence:** `src/haute/routes/_error_handlers.py::install_exception_handlers`;
-`src/haute/errors.py::ParseError`; `src/haute/routes/pipeline.py::trace_row`;
-`src/haute/routes/output_assemble.py`; `src/haute/routes/node_data.py::_prepared`;
-`src/haute/routes/banding.py`; `src/haute/routes/rating.py`;
-`src/haute/routes/files.py::get_schema`; `src/haute/routes/submodel.py::create_submodel`;
-`tests/test_trace_api.py`.
 
 ### API-R08 — A save never round-trips the watcher
 **Why:** The `.haute.json` sidecar write (`save_sidecar` → `atomic_write_text`) and the
