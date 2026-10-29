@@ -78,11 +78,9 @@ async def _workbench_error_handler(request: Request, exc: Exception) -> Response
 
 async def _parse_error_handler(request: Request, exc: Exception) -> Response:
     # A graph the user can fix (a name collision, an undeclared handle): the message says
-    # what to change; its context, which can hold a file path, stays in the log.
+    # what to change and its context which element (the edge, the definition) it is.
     logger.warning("graph_refused", error=str(exc))
-    return await _respond(
-        request, exc, HTTPException(status_code=400, detail=cast(ParseError, exc).message)
-    )
+    return await _respond(request, exc, HTTPException(status_code=400, detail=str(exc)))
 
 
 async def _path_error_handler(request: Request, exc: Exception) -> Response:
