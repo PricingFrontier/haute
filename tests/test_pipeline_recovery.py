@@ -1226,10 +1226,8 @@ def test_recovery_revision_authenticates_the_sidecars_and_configs_the_document_p
     from haute._pipeline_revision import pipeline_recovery_revision
 
     (tmp_path / "config" / "constant").mkdir(parents=True)
-    config = _write(
-        tmp_path / "config" / "constant" / "rates.json",
-        '{"values": [{"name": "base", "value": "1"}]}',
-    )
+    config = tmp_path / "config" / "constant" / "rates.json"
+    _write(config, '{"values": [{"name": "base", "value": "1"}]}')
     pipeline_file = _write(
         tmp_path / "main.py",
         """
@@ -1242,7 +1240,7 @@ def test_recovery_revision_authenticates_the_sidecars_and_configs_the_document_p
             ...
         """,
     )
-    sidecar = pipeline_file.with_suffix(".haute.json")
+    sidecar = tmp_path / "main.haute.json"
     sidecar.write_text('{"positions": {"rates": {"x": 5, "y": 7}}}', encoding="utf-8")
     originals = {path: path.read_bytes() for path in (pipeline_file, sidecar, config)}
     real_artifacts = _pipeline_recovery._recovery_artifacts
@@ -1301,7 +1299,8 @@ def test_two_configs_differing_only_in_case_never_share_bytes(tmp_path: Path) ->
 
     folder = tmp_path / "config" / "constant"
     folder.mkdir(parents=True)
-    upper, lower = folder / "Rates.json", folder / "rates.json"
+    upper = folder / "Rates.json"
+    lower = folder / "rates.json"
     upper.write_text('{"values": [{"name": "base", "value": "1"}]}', encoding="utf-8")
     lower.write_text('{"values": [{"name": "base", "value": "2"}]}', encoding="utf-8")
     pipeline_file = _write(
