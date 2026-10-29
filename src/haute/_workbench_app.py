@@ -7,8 +7,9 @@ and its ``artifacts``), the form without its sample (``form.json``), what the re
 The app serves the sheets' page from Haute's built frontend, the release, the form and the
 pricing, and, given a quote store, the quotes it keeps (``haute._workbench_app_quotes``). Every
 route but the health check needs the principal the host signed in: the identity follows the
-release's host, and a release with no host refuses everything else. A write from a page of
-another site is refused.
+release's host, and a release with no host refuses everything else. Served on an analyst's
+machine, it takes only a request for a loopback host that was not forwarded. A write from a
+page of another site is refused.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from haute._execution_admission import ExecutionAdmissionError
 from haute._execution_context import ExecutionMemoryLimitExceededError
 from haute._hashing import content_hash, content_hash_bytes
 from haute._json_safe import to_json_safe
+from haute._local_security import DEFAULT_TRUSTED_HOSTS, LocalTrustedHostMiddleware
 from haute._logging import get_logger
 from haute._output_assembler import render_output_document
 from haute._sandbox import set_project_root
@@ -564,7 +566,8 @@ def create_app(
     """The app serving the release in *release_dir*.
 
     *local_principal*, given by ``haute app serve`` on an analyst's machine, signs every
-    request in as that name, able to change quotes unless *local_reader*; otherwise the
+    request for a loopback host that was not forwarded in as that name, able to change quotes
+    unless *local_reader*, and refuses any other request; otherwise the
     release's host says who is signed in and, for a release with an ``edit_role``, whether
     they hold it. The page and
     its assets come from *static_dir*, Haute's built frontend unless given. *store_url* names
@@ -664,6 +667,12 @@ def create_app(
         request.state.principal = who
         request.state.can_edit = can_edit
         return await call_next(request)
+
+    if local_principal is not None:
+        # Every request is signed in as the analyst, so a page of a site whose name resolves
+        # to their machine, which the browser treats as that page's own, is refused before
+        # it is signed in. Added last, the check runs first.
+        app.add_middleware(LocalTrustedHostMiddleware, allowed_hosts=DEFAULT_TRUSTED_HOSTS)
 
     @app.get("/health")
     async def health() -> dict[str, str]:

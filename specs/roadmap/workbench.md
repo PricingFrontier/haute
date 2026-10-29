@@ -56,7 +56,6 @@ Workbench nodes stop keeping copies of the tables in a pull request after the fo
 | WB-36 | Planned | P2 | A number list in a Show when condition never splits a thousands separator into two values, and the app reads quote_details ids from one typed map. |
 | WB-37 | Planned | P3 | The column key, the refusal predicate, the 409 detail reader, the empty visibility constants, the half-window width, the collapsible group and the pricing basis each exist once in the workbench and the app. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
-| WB-39 | Planned | P1 | The locally served underwriter app rejects foreign Host and forwarded requests before assigning the analyst's identity. |
 | WB-41 | Planned | P2 | The Workbench Input and Workbench Output read their tables from the form folder instead of keeping copies, so a schema change shows once in a pull request and no copy can fall out of step. |
 
 ## Planned improvements
@@ -641,40 +640,6 @@ specification and the field stop calling the shape older.
 
 **Evidence:** `frontend/src/workbench/schema/AllowedField.tsx::TYPED_IN`,
 `src/haute/_workbench_form.py::FormSpec`, `frontend/src/utils/workbenchForm.ts`.
-
-### WB-39 — Enforce the local app's request boundary
-**Why:** The [28 October review](codebase-review-2026-10-28.md) measured a
-local-principal app accepting `Host: attacker.example:8001` for both a release
-read and a pricing POST with matching Origin and `Sec-Fetch-Site: same-origin`.
-Both returned 200 under the analyst's identity. `haute app serve` binds loopback,
-but `create_app` grants its local principal to every request and installs no
-trusted-host guard. `_cross_site` exempts reads and accepts a same-origin write.
-A hostile hostname resolving to loopback can therefore meet these checks;
-DNS-rebinding exposure is inferred from the measured request acceptance, not
-claimed as a browser exploit executed during the review. The quote routes use
-the same identity middleware, so this boundary also protects saved quotes.
-
-**Plan:** In local-principal mode, install the existing local trusted-host and
-forwarded-metadata boundary before authentication. Confirm the app's Origin
-and browser-request rules cover its local entry path without trusting arbitrary
-hostnames. Keep hosted identity handling separately specified; `WB-25` owns
-the Azure authentication-header policy. Document the local app threat boundary
-in the workbench and sandbox-security specifications before implementation.
-
-**Acceptance:** Local app requests with a foreign Host, with or without
-same-origin fetch metadata, are refused before release/form/quote reads or
-pricing and quote mutations. Forwarded metadata is refused in local mode.
-Normal supported loopback hosts still load, price and save quotes; read-only
-mode remains read-only. Include quote-store mutation assertions against a real
-temporary store. Hosted proxy operation remains covered by its existing tests.
-
-**Dependencies:** None; `WB-25` is a separate hosted trust decision.
-
-**Evidence:** `src/haute/_workbench_app.py::create_app`;
-`src/haute/_workbench_app.py::_cross_site`;
-`src/haute/cli/_app.py::handle_app_serve`;
-`src/haute/_local_security.py::LocalTrustedHostMiddleware`;
-`tests/test_workbench_app.py`.
 
 ### WB-41 — The Workbench nodes read the form folder
 **Why:** A Workbench Input and a Workbench Output keep copies of the tables, and the Input

@@ -213,6 +213,13 @@ reaches node code exactly as the preamble made it.
    Origin, then the session cookie. Browser WebSockets receive the HttpOnly cookie
    automatically; URL query parameters are never read.
 
+The underwriter app (`_workbench_app.create_app`) given a `local_principal` adds
+`LocalTrustedHostMiddleware(allowed_hosts=DEFAULT_TRUSTED_HOSTS)` after its sign-in
+middleware, so the gate runs first and a foreign Host or forwarded header is refused
+(400) before the analyst's identity is assigned. It installs no `LocalSessionMiddleware`:
+the app's own origin check refuses another site's writes. Its tests are in
+`tests/test_workbench_app_quotes.py`.
+
 **Runtime local-file containment (`_path_resolution.py` + execution core)**
 1. `canonical_dataframe_execution_graph` derives the execution root from the
    configured sandbox project root (`_sandbox._get_project_root()`), which is

@@ -624,7 +624,8 @@ builder on screen. With a quote store it is where they manage their quotes too.
 
 - `haute app serve` builds the app from the project as it is saved and serves it at
   `http://127.0.0.1:8001/`, signed in as your git identity, so you can see the sheets and
-  the Quotes page as underwriters will before you merge. Only your machine can reach it. The
+  the Quotes page as underwriters will before you merge. Only your machine can reach it, at
+  `127.0.0.1` or `localhost`: the app refuses any other name for your machine. The
   quotes you save there are kept in `.haute/app/quotes.sqlite`, which a rebuild leaves as it
   is; `haute app serve --reader` signs you in as an underwriter who may only read them.
 - `haute app build` writes a **release** to `.haute/app/release` (or the folder you name):

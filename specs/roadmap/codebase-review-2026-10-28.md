@@ -68,7 +68,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 |---|---|---|---|
 | P1 | An IDE save after assistant plan verification is overwritten by apply; the rename and post-save verification still succeed. | [ASSIST-61](assistant.md#assist-61--keep-the-authenticated-revision-through-commit) | Real temporary pipeline and transactional save; deterministic edit before commit. |
 | P1 | A concurrent milestone captures the Python from an in-flight save before its referenced configuration exists. | [GIT-R17](git-integration.md#git-r17--pipeline-saves-share-the-git-transaction-boundary) | Real Git repository, save and milestone with a barrier between artifact writes; both operations succeed. |
-| P1 | Local underwriter app accepts a foreign Host for reads and pricing as the analyst. | [WB-39](workbench.md#wb-39--enforce-the-local-apps-request-boundary) | Both requests returned 200; the pricing response contained premium 500. Browser and quote-mutation consequences are source-supported. |
 | P2 | Two independent API Input edits before identity resolution completes retain only the second edit. | [FSH-R10](frontend-shared.md#fsh-r10--retain-edits-during-input-identity-resolution) | Actual controller: expected `[false, false]`, received `[true, false]`; `onUpdateNode` surfaces the superseded edit as an error toast. |
 | P1 | Cancellation of A finishes after B starts; A's reply retires B or publishes A's result under B's calculation identity. | [FSH-R11](frontend-shared.md#fsh-r11--cancellation-replies-belong-to-one-job) | Two pivot hook/store probes. Training has the same source pattern but was not separately executed. |
 | P1 | Inference for `first.json` returns after the user selected `second.json` and added a table; old path/tables are written back. | [FNED-R06](frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft) | Actual API Input editor with delayed inference response. |
@@ -283,7 +282,7 @@ adds a finding group or changes the 42-group count.
 | inactive source-switch branch | Duplicate **EXEC-R14**. |
 | Literal-only chunked selects | Duplicate **EXEC-R09**; the deployed request-order witness is included in its accepted extension above. |
 | Model diagnostic weights | Duplicate **MOD-R05**. |
-| Hosted sign-in headers | Duplicate **WB-25**; separate local Host-boundary finding remains WB-39. |
+| Hosted sign-in headers | Duplicate **WB-25**. |
 | Asynchronous assistant tool blocking | Duplicate **ASSIST-57**. |
 
 ### Pending notes resolved by accepted findings
@@ -311,7 +310,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | quoted literal formatting | **TRACE-R02**. |
 | malformed connect extraction | **PCFG-R20**. |
 | keyword-only defaults | **PCFG-R21**. |
-| local app Host boundary | **WB-39**. |
 | save/repair Git transaction gap | **GIT-R17**. |
 | pyfunc classifier output shape | **MSC-11**. |
 | literal select row proof | **EXEC-R09**. |

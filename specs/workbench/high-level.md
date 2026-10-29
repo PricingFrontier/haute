@@ -1193,8 +1193,13 @@ Out of scope:
   since who may change quotes cannot be told. `haute app serve` builds a release of the
   project as it is saved and serves it on the analyst's machine, the principal the
   analyst's git identity, able to change quotes unless `--reader` signs them in as a
-  reader, so the sheets underwriters will see are checked before a merge. No credential
-  reaches the page.
+  reader, so the sheets underwriters will see are checked before a merge. Served so, the
+  app binds loopback and takes a request only for a loopback host (`localhost`,
+  `127.0.0.1` or `::1`, on any port) and only without forwarded metadata (`Forwarded` or
+  an `X-Forwarded-*` header), refusing any other (400) before it signs the request in:
+  loopback keeps other machines out, and the host keeps out a page of a site whose name
+  resolves to the analyst's machine, whose requests the browser counts as that page's own.
+  No credential reaches the page.
   Given a quote store, the app keeps the quotes saved in it, each revision's
   `quote_details` row in a table of its own (the quote store, below). A hosted app reads the store's SQLAlchemy URL from
   `HAUTE_QUOTE_STORE_URL`, which the host supplies at runtime, and does not start on a
@@ -2207,11 +2212,6 @@ Out of scope:
 
 ## Failure model
 
-> NOTE: The local-principal app currently accepts foreign Host headers before
-> assigning the analyst's identity; loopback binding alone does not enforce the
-> browser request boundary. Local Host and forwarded-request enforcement is
-> tracked in [WB-39](../roadmap/workbench.md#wb-39--enforce-the-local-apps-request-boundary).
-
 - A `[workbench]` table that is not a table, lacks `enabled`, gives `enabled` something other
   than `true` or `false`, or holds any other key, and a `haute.toml` that cannot be read, is
   not UTF-8 text or cannot be parsed when a workbench route reads it, each fail that route
@@ -2309,6 +2309,11 @@ Out of scope:
   anything is typed, and nothing is refused. A pricing of the app's quote that fails shows
   "Pricing failed: …" in its bar and empties the output columns, as the sample's does, and
   a save then keeps the quote unpriced.
+- An app served by `haute app serve` refuses a request for a host that is not loopback, or
+  one carrying `Forwarded` or an `X-Forwarded-*` header, with 400 before it signs the
+  request in, so such a request reads, prices and changes nothing as the analyst, the
+  health check included. A hosted app is reached through its host's front, which sets
+  those headers, and is not held to it.
 - The schema editor refuses nothing: a problem is shown beside its table, and a save
   writes the form as it is. The tables route then answers the structured 422 for a table
   the pipeline cannot take, which the tables fetch shows as one toast, so the problem is
