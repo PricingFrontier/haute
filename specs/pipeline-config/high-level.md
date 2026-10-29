@@ -670,11 +670,16 @@ handling.
 
 ## Failure model
 
-> NOTE: The full review found malformed connect calls silently repaired and keyword-only
-> configuration defaults dropped during round-trip, including a 120-to-90 result change.
-> [PCFG-R20](../roadmap/pipeline-config.md#pcfg-r20--malformed-connect-calls-are-parse-errors) and
+> NOTE: The full review found keyword-only configuration defaults dropped during
+> round-trip, including a 120-to-90 result change.
 > [PCFG-R21](../roadmap/pipeline-config.md#pcfg-r21--node-signatures-retain-their-configuration-bindings)
-> track strict call validation and conservation of configuration bindings.
+> tracks conservation of configuration bindings.
+
+A `connect()` call that the live signature would refuse (an unknown keyword, a third
+positional argument, a value bound twice, a missing or non-string endpoint, a port that is
+neither `None` nor a non-empty string) is a parse error naming the call's line and the
+argument, so the editor shows it on the call and Save is refused; it is never skipped or
+repaired.
 
 Missing, unreadable, or invalid-JSON sidecar files raise a config error naming the path.
 Using a folder-backed node type without a `config=` sidecar raises, naming the concrete

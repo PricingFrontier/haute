@@ -77,7 +77,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 
 | Priority | Trigger and observed consequence | Owning package | Evidence and practical limit |
 |---|---|---|---|
-| P2 | Invalid connect endpoints/keywords/ports are dropped or repaired; parameter inference can hide the discarded call. | [PCFG-R20](pipeline-config.md#pcfg-r20--malformed-connect-calls-are-parse-errors) | Actual strict parse/codegen versus executing original Python; four malformed call shapes. Existing helper tests preserve some wrong behavior. |
 | P1 | A keyword-only factor default disappears on Save; a preamble name takes over and changes 120 to 90. | [PCFG-R21](pipeline-config.md#pcfg-r21--node-signatures-retain-their-configuration-bindings) | Actual original and regenerated functions, strict file parse. |
 | P1 | Parser endpoint concatenation and multi-frame paste mint duplicate edge ids; healthy recovery can be refused and deleting one duplicate deletes both. | [NAME-10](name-collisions.md#name-10--every-distinct-connection-has-a-distinct-identity) | Real parser/codegen and actual keyboard/store paste/delete. Healthy recovery rejection follows its duplicate-id validator; malformed documents were not assumed to load normally. |
 | P3 | Delete with a selected node and unrelated selected edge leaves the edge. | [FGC-R07](frontend-graph-canvas.md#fgc-r07--delete-removes-the-complete-eligible-selection) | Actual keyboard/store witness; the remaining edge stays visible and can be deleted again. Undo behavior is an acceptance requirement, not an executed assertion after the failure. |
@@ -272,7 +271,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | tuning status fields | **MOD-R08**. |
 | edge ID collisions | **NAME-10**. |
 | failed new solve identity | **FSH-R12**. |
-| malformed connect extraction | **PCFG-R20**. |
 | keyword-only defaults | **PCFG-R21**. |
 | pyfunc classifier output shape | **MSC-11**. |
 | literal select row proof | **EXEC-R09**. |

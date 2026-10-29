@@ -701,6 +701,9 @@ it on the reading node instead of aborting the walk, and every other run propaga
 
 - `Pipeline.to_graph()` materialises live registrations through `_build_rf_nodes` and
   `_build_edges`; it does not maintain a second node-type or edge-inference implementation.
+- A static `connect()` call takes the live `connect()` signature's arguments and nothing else
+  (expression-parsing's `_connect_call_edge`): a malformed call is a `ParseError` naming its
+  line and argument, not a skipped edge or a port read as `None`.
 - A static `pipeline.connect()` endpoint must be a root node or a registered occurrence alias
   with a declared public port. A definition-owned child id, like any other unknown endpoint,
   raises `ParseError` from the parser's conservation gate with the authored connection in

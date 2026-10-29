@@ -561,22 +561,7 @@ def _recover_ast_connections(
                     )
                 )
             else:
-                if edge is None:
-                    unresolved.append(
-                        _unresolved_connection(
-                            placeholder,
-                            ordinal=ordinal,
-                            code="connection_declaration_invalid",
-                            message=(
-                                f"The authored {receiver}.connect() declaration does not "
-                                "contain string source and target identities."
-                            ),
-                            source_file=source_file,
-                            diagnostics=diagnostics,
-                        )
-                    )
-                else:
-                    connections.append(_RecoveredConnection(*edge, span=span))
+                connections.append(_RecoveredConnection(*edge, span=span))
             ordinal += 1
     return connections, unresolved
 

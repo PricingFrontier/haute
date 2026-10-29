@@ -385,52 +385,114 @@ def _eval_connect_value(receiver: str, role: str, node: ast.expr) -> Any:
             f"{receiver}.connect() arguments must be string literals: "
             f"{role} is the non-literal expression {_describe_expr(node)!r}",
             role=role,
+            argument=role,
             line=node.lineno,
         ) from exc
+
+
+_CONNECT_ENDPOINTS = ("source", "target")
+_CONNECT_PORTS = ("source_port", "target_port")
+
+
+def _connect_call_error(
+    receiver: str, problem: str, *, argument: str, node: ast.expr
+) -> ParseError:
+    return ParseError(
+        f"{receiver}.connect() on line {node.lineno}: {problem}",
+        argument=argument,
+        line=node.lineno,
+    )
 
 
 def _connect_call_edge(
     call: ast.Call,
     receiver: str,
-) -> tuple[str, str, str | None, str | None] | None:
+) -> tuple[str, str, str | None, str | None]:
     """Extract ``(src, tgt, source_port, target_port)`` from one connect call.
 
-    ``source`` / ``target`` are positional-or-keyword in the runtime
-    signature, so both spellings are accepted.  Returns ``None`` for calls
-    that carry no derivable edge (missing source/target, or literal values
-    that are not strings — both are runtime errors with no edge to record).
-    Non-literal values raise :class:`ParseError`: silently skipping them
-    would drop the edge from the graph and lose the line on the next save.
+    The call is read by the live ``connect(source, target, *, source_port=None,
+    target_port=None)`` signature's rules: ``source`` and ``target`` once each,
+    positionally or by keyword, each a non-empty string literal; the ports only
+    by keyword, each ``None`` or a non-empty string literal; nothing else. Any
+    other shape raises :class:`ParseError` naming the line and the argument,
+    because a skipped or repaired call would lose the authored line on the next
+    save, and an edge inferred from a parameter name could hide that it was lost.
     """
-    src_expr: ast.expr | None = call.args[0] if len(call.args) >= 1 else None
-    tgt_expr: ast.expr | None = call.args[1] if len(call.args) >= 2 else None
-    port_exprs: dict[str, ast.expr] = {}
-    for kw in call.keywords:
-        if kw.arg == "source" and src_expr is None:
-            src_expr = kw.value
-        elif kw.arg == "target" and tgt_expr is None:
-            tgt_expr = kw.value
-        elif kw.arg in ("source_port", "target_port"):
-            port_exprs[kw.arg] = kw.value
+    if len(call.args) > len(_CONNECT_ENDPOINTS):
+        raise _connect_call_error(
+            receiver,
+            "it takes at most two positional arguments, source and target; "
+            f"{len(call.args)} are given.",
+            argument="*",
+            node=call.args[len(_CONNECT_ENDPOINTS)],
+        )
+    values: dict[str, ast.expr] = {}
+    for role, expr in zip(_CONNECT_ENDPOINTS, call.args, strict=False):
+        if isinstance(expr, ast.Starred):
+            raise _connect_call_error(
+                receiver,
+                "its arguments must be written out, not unpacked from "
+                f"*{_describe_expr(expr.value)}.",
+                argument="*",
+                node=expr,
+            )
+        values[role] = expr
+    for keyword in call.keywords:
+        if keyword.arg is None:
+            raise _connect_call_error(
+                receiver,
+                "its arguments must be written out, not unpacked from "
+                f"**{_describe_expr(keyword.value)}.",
+                argument="**",
+                node=keyword.value,
+            )
+        if keyword.arg not in (*_CONNECT_ENDPOINTS, *_CONNECT_PORTS):
+            raise _connect_call_error(
+                receiver,
+                f"it has no argument {keyword.arg!r}; it takes source, target, source_port "
+                "and target_port.",
+                argument=keyword.arg,
+                node=keyword.value,
+            )
+        if keyword.arg in values:
+            raise _connect_call_error(
+                receiver,
+                f"argument {keyword.arg} is given twice.",
+                argument=keyword.arg,
+                node=keyword.value,
+            )
+        values[keyword.arg] = keyword.value
 
-    if src_expr is None or tgt_expr is None:
-        return None
-
-    src = _eval_connect_value(receiver, "source", src_expr)
-    tgt = _eval_connect_value(receiver, "target", tgt_expr)
-    if not (isinstance(src, str) and isinstance(tgt, str)):
-        return None
-
-    source_port: str | None = None
-    target_port: str | None = None
-    for role, expr in port_exprs.items():
-        val = _eval_connect_value(receiver, role, expr)
-        if isinstance(val, str) and val:
-            if role == "source_port":
-                source_port = val
-            else:
-                target_port = val
-    return (src, tgt, source_port, target_port)
+    endpoints: list[str] = []
+    for role in _CONNECT_ENDPOINTS:
+        if role not in values:
+            raise _connect_call_error(
+                receiver, f"argument {role} is missing.", argument=role, node=call
+            )
+        endpoint = _eval_connect_value(receiver, role, values[role])
+        if not isinstance(endpoint, str) or not endpoint:
+            raise _connect_call_error(
+                receiver,
+                f"argument {role} must be a non-empty string naming a node; it is {endpoint!r}.",
+                argument=role,
+                node=values[role],
+            )
+        endpoints.append(endpoint)
+    ports: list[str | None] = []
+    for role in _CONNECT_PORTS:
+        if role not in values:
+            ports.append(None)
+            continue
+        port = _eval_connect_value(receiver, role, values[role])
+        if port is not None and (not isinstance(port, str) or not port):
+            raise _connect_call_error(
+                receiver,
+                f"argument {role} must be None or a non-empty string; it is {port!r}.",
+                argument=role,
+                node=values[role],
+            )
+        ports.append(port)
+    return (endpoints[0], endpoints[1], ports[0], ports[1])
 
 
 def _extract_connect_calls(
@@ -454,9 +516,7 @@ def _extract_connect_calls(
 
     for node in tree.body:
         for link in _chained_receiver_calls(node, receiver=receiver, method="connect"):
-            edge = _connect_call_edge(link, receiver)
-            if edge is not None:
-                connects.append(edge)
+            connects.append(_connect_call_edge(link, receiver))
 
     return connects
 

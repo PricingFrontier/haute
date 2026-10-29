@@ -442,21 +442,38 @@ class TestExtractConnectCalls:
         with pytest.raises(ParseError, match="source_port"):
             _extract_connect_calls(tree)
 
-    def test_non_string_literal_args_skipped(self):
-        """Literal-but-not-string args keep the historical skip semantics
-        (such a call raises at runtime; the parser has no edge to record)."""
-        source = "pipeline.connect(1, 2)"
-        tree = ast.parse(source)
-        assert _extract_connect_calls(tree) == []
-
-    def test_under_specified_connect_skipped(self):
-        """connect("a") is a runtime TypeError — no edge can be derived."""
-        source = 'pipeline.connect("a")'
-        tree = ast.parse(source)
-        assert _extract_connect_calls(tree) == []
+    @pytest.mark.parametrize(
+        ("call", "argument", "fragment"),
+        [
+            ('pipeline.connect(1, "b")', "source", "must be a non-empty string"),
+            ('pipeline.connect("a", 2)', "target", "must be a non-empty string"),
+            ('pipeline.connect("", "b")', "source", "must be a non-empty string"),
+            ('pipeline.connect("a")', "target", "is missing"),
+            ('pipeline.connect(target="b")', "source", "is missing"),
+            ('pipeline.connect("a", "b", "c")', "*", "takes at most two positional"),
+            ('pipeline.connect("a", "b", source="c")', "source", "is given twice"),
+            ('pipeline.connect("a", "b", weird=1)', "weird", "has no argument"),
+            ('pipeline.connect("a", "b", source_prt="table")', "source_prt", "has no argument"),
+            ('pipeline.connect("a", "b", source_port=123)', "source_port", "None or a non-empty"),
+            ('pipeline.connect("a", "b", target_port="")', "target_port", "None or a non-empty"),
+            ("pipeline.connect(*pair)", "*", "unpacked"),
+            ('pipeline.connect("a", "b", **ports)', "**", "unpacked"),
+        ],
+    )
+    def test_a_call_the_live_signature_refuses_fails_the_parse(
+        self, call: str, argument: str, fragment: str
+    ):
+        """The parser reads connect() by the live signature's rules: a call Python or
+        ``Pipeline.connect`` would refuse is a located ParseError, never skipped or
+        repaired into an edge with a ``None`` port."""
+        tree = ast.parse(f"x = 1\n{call}")
+        with pytest.raises(ParseError, match=fragment) as raised:
+            _extract_connect_calls(tree)
+        assert raised.value.context["line"] == 2
+        assert raised.value.context["argument"] == argument
 
     def test_port_none_treated_as_absent(self):
-        source = 'pipeline.connect("a", "b", source_port=None)'
+        source = 'pipeline.connect("a", "b", source_port=None, target_port=None)'
         tree = ast.parse(source)
         assert _extract_connect_calls(tree) == [("a", "b", None, None)]
 
@@ -497,12 +514,6 @@ class TestExtractConnectCalls:
         source = 'pipeline.connect("a", target="b", target_port="base")'
         tree = ast.parse(source)
         assert _extract_connect_calls(tree) == [("a", "b", None, "base")]
-
-    def test_unknown_keyword_ignored(self):
-        """Unrecognised kwargs do not affect edge extraction."""
-        source = 'pipeline.connect("a", "b", weird=1)'
-        tree = ast.parse(source)
-        assert _extract_connect_calls(tree) == [("a", "b", None, None)]
 
     def test_ignores_wrong_method(self):
         source = 'pipeline.add("a", "b")'

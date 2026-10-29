@@ -330,6 +330,17 @@ no alias or migration shim; direct test callers use the same current contract.
   a missing/non-literal/blank/non-canonical `name`, rejected keywords (`definition_id=`,
   `instance_id=`, `alias=`, `label=`), and duplicate occurrence names fail before merge. No
   file/name/node-id inference is attempted.
+- **A `connect()` call is read by the live signature's rules**
+  (`haute._ast_helpers._connect_call_edge`): `source` and `target` once each, positionally
+  or by keyword, each a non-empty string literal; `source_port` and `target_port` only by
+  keyword, each `None` or a non-empty string literal; nothing else. A third positional
+  argument, an unknown keyword (`source_prt=`), a value bound twice, `*args`/`**kwargs`, a
+  missing endpoint, a non-string endpoint (`connect(123, "result")`) or an invalid port
+  (`source_port=123`, `""`) is a `ParseError` naming the call's line and the argument,
+  never a skipped call or a port turned into `None`, so an edge the parser infers from a
+  parameter name cannot hide the refused call. Editor recovery reports the same refusal on
+  the call as an unresolved `connection_declaration_invalid` connection, and Save is
+  refused until the source is corrected.
 - **Public boundary connections are explicit**: a parent `connect` endpoint
   that names an occurrence alias must also name a declared public port id.
   Function-parameter inference remains inside its owning root or definition

@@ -318,6 +318,49 @@ def test_an_editor_sidecar_with_a_byte_order_mark_still_reads(tmp_path: Path) ->
     assert document.sources == ["live", "Prämie"]
 
 
+def test_a_malformed_connect_is_located_and_no_inferred_edge_hides_it(
+    tmp_path: Path,
+) -> None:
+    """``result`` takes ``source`` by parameter name, so the graph would look the same
+    without the refused call: the parse still fails on it, and the editor names the call
+    and the argument."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+
+        pipeline = haute.Pipeline("connect")
+
+        @pipeline.polars
+        def source():
+            return None
+
+        @pipeline.polars
+        def result(source):
+            return source
+
+        pipeline.connect("source", "result", source_prt="table")
+        """,
+    )
+
+    with pytest.raises(ParseError, match="source_prt") as raised:
+        parse_pipeline_file(pipeline_file)
+    assert raised.value.context["line"] == 14
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "degraded"
+    assert document.capabilities.can_save is False
+    [unresolved] = document.unresolved_connections
+    [diagnostic] = [
+        item for item in document.diagnostics if item.code == "connection_declaration_invalid"
+    ]
+    assert "source_prt" in diagnostic.message
+    assert diagnostic.source_span is not None
+    assert diagnostic.source_span.start_line == 14
+
+
 def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

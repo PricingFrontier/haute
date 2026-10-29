@@ -20,7 +20,6 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 | PCFG-R15 | Planned | P3 | The unreachable config branches, the empty `_load_error` mechanism, the other dead symbols, the five duplicated mechanisms and the stale comments are gone. |
 | PCFG-R16 | Decision | P3 | The `earlier` step spelling is either dropped or named as the one allowed recogniser of old generated code. |
 | PCFG-R19 | Planned | P3 | Recovery ids are minted once so a diagnostic's "go to" finds its element, the revision captures cover sidecars and configs, a preamble `match` binds names the naming rule sees, and three duplicated recovery mechanisms exist once. |
-| PCFG-R20 | Planned | P2 | Static parsing and live registration agree on connect arguments; no malformed authored call or handle disappears on Save. |
 | PCFG-R21 | Planned | P1 | A parse/save round trip preserves supported keyword-only bindings or refuses an unsupported signature before losing it. |
 
 `PCFG-R04` to `PCFG-R09` come from the
@@ -337,28 +336,6 @@ capture and the revision is caught by the revision; a node named after a
 `src/haute/_support_code_names.py::support_code_inventory`;
 `src/haute/_polars_steps.py::rename_step_inputs`;
 `src/haute/_polars_steps.py::step_input_references`.
-
-### PCFG-R20 — Malformed connect calls are parse errors
-
-**Why:** The strict parser takes the first two positional arguments, ignores unknown keywords,
-skips invalid endpoints and turns invalid ports into `None`. Real parse/codegen probes accepted
-`source_port=123`, `source_prt="table"`, `connect(123,"result")` and a missing endpoint, while
-the original Python refused them. Parameter-based edge inference can hide the lost explicit
-call. Existing helper tests assert some of these silent repairs.
-
-**Plan:** Validate the full call shape before extracting edges: known keywords, supported
-positional arity, duplicate argument binding, endpoint types and optional nonempty string
-handles, in agreement with the live API. Produce a located parse/recovery diagnostic instead of
-classifying a discarded call as conserved. Replace tests that require silent skipping.
-
-**Acceptance:** Each malformed shape fails before a healthy graph is published and before Save;
-diagnostics identify the call and argument. Valid positional/keyword endpoints and supported
-`None` handles round-trip without change. A parameter-inferred edge cannot hide an invalid
-explicit connect.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_ast_helpers.py::_connect_call_edge`; `src/haute/_parser_conservation.py`; `tests/test_parser_helpers.py`; `tests/test_parser_conservation.py`.
 
 ### PCFG-R21 — Node signatures retain their configuration bindings
 
