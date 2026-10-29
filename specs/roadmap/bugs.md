@@ -17,7 +17,6 @@ app's boot and build script and the storage binding's unknown keys.
 | BUG-24 | Decision | P1 | Container targets log in to their registry before `haute deploy` pushes, and GitLab container deploys run where Docker is available. |
 | BUG-40 | Planned | P2 | The hosted Databricks app installs the wheel and its pinned dependencies from a lock at boot, and its build script takes the app name as a parameter. The build selects its current wheel rather than a stale lexicographic match. |
 | BUG-42 | Decision | P3 | The storage binding record either rejects unknown keys or is named as the exception to the canonical-only policy. |
-| BUG-46 | Planned | P2 | Rating a source column named value is either faithfully represented or refused before the editor overwrites its levels. |
 
 ## Planned improvements
 
@@ -93,26 +92,3 @@ by name.
 
 **Evidence:** `src/haute/_project_storage.py::StorageBinding`; `specs/README.md`;
 `specs/hosted-project-storage/high-level.md`.
-
-### BUG-46 — A rating factor cannot collide with its rate field
-
-**Why:** The editor offers `value` as a factor. Its Cartesian-entry builder spreads the factor
-values and then writes the rate into the same `value` key, losing the selected level. The
-canonical backend codec also accepts this shape, but the real rating join selects `["value",
-"value"]` and raises Polars `DuplicateError`. One flat key cannot carry both values.
-
-**Plan:** Specify one consistent representation/validation rule across rating config, grids,
-sidecars and runtime. Either separate factor-level storage from the rate field or explicitly
-refuse this reserved factor name with actionable rename guidance before mutation. Do not
-silently rename columns or coerce the lost level.
-
-**Acceptance:** A source string column named `value` and two distinct levels cannot produce an
-accepted ambiguous table. The chosen contract either rates both levels with distinct rates
-through editor/save/run or refuses selection and imported config before overwriting data.
-Ordinary factor names continue to round-trip.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/editors/RatingStepEditor.tsx::RatingStepEditor`;
-`frontend/src/panels/editors/rating/ratingTableUtils.ts::buildCartesianEntries`;
-`src/haute/_rating_step_config.py::_validate_factors`; `src/haute/_rating.py::rating_table_lookup`.

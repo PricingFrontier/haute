@@ -9,6 +9,9 @@ from typing import Any
 from haute._validation_error import ConfigSettingError
 
 _MAX_RATING_FACTORS = 3
+#: The key every rating row holds its rate under, beside its factors' levels, so no
+#: factor may share it: the row would keep one of the two.
+RATE_KEY = "value"
 
 
 def _table_context(index: int) -> str:
@@ -36,6 +39,16 @@ def _validate_factors(table: dict[str, Any], table_index: int) -> list[str]:
             raise ConfigSettingError(
                 f"{_table_context(table_index)}.factors contains duplicate column {factor!r}",
                 setting="tables",
+            )
+        if factor == RATE_KEY:
+            raise ConfigSettingError(
+                f"{_table_context(table_index)}.factors[{factor_index}] {factor!r} is the key "
+                "every rating row holds its rate under, so the factor's levels would be lost",
+                setting="tables",
+                fix=(
+                    "Rename the column upstream, in a Transform node for example, and use the "
+                    "renamed column as the factor."
+                ),
             )
         result.append(factor)
     if len(result) > _MAX_RATING_FACTORS:

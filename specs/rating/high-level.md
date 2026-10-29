@@ -101,6 +101,12 @@ Out of scope (owned by neighbouring components):
 
 - Each table declares one to three `factors` (input column names), an
   `outputColumn`, and `entries` (rows of factor values plus a numeric `value`).
+  A row keeps each factor's level under the factor's name and its rate under
+  `value`, so no factor may be named `value`: the config codec refuses such a
+  table wherever it comes from (an editor save, a sidecar read, the assistant),
+  naming the factor and asking for the column to be renamed upstream, and the
+  editor refuses to add one with the same advice. A column whose name only
+  contains `value`, or differs from it in case, is an ordinary factor.
   A left join matches input rows to table entries on the canonicalised factor
   key (see below).
 - A **miss** — an input row whose factor combination has no matching entry —
@@ -255,10 +261,6 @@ Out of scope (owned by neighbouring components):
   applied with identical join/miss semantics to any other rating table.
 
 ## Failure model
-
-> NOTE: A factor named `value` collides with the serialized rate field and can lose
-> its level in the editor before runtime fails.
-> [BUG-46](../roadmap/bugs.md#bug-46--a-rating-factor-cannot-collide-with-its-rate-field) owns the consistent representation/validation rule.
 
 - **Rating-table miss, no usable default, `onMissing: "error"` (default):**
   raises `RatingTableMissError` at frame materialisation (not at config-build

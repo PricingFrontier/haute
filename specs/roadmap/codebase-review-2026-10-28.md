@@ -86,7 +86,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P2 | Archive finishes after the user changes Team to Mine and reloads the older Team query as the newest request. | [WB-35](workbench.md#wb-35--every-quote-action-says-what-it-did), extended | Actual QuotesPage/store with deferred transport. Restore has the same source pattern but was not separately executed. |
 | P1 | Parser endpoint concatenation and multi-frame paste mint duplicate edge ids; healthy recovery can be refused and deleting one duplicate deletes both. | [NAME-10](name-collisions.md#name-10--every-distinct-connection-has-a-distinct-identity) | Real parser/codegen and actual keyboard/store paste/delete. Healthy recovery rejection follows its duplicate-id validator; malformed documents were not assumed to load normally. |
 | P3 | Delete with a selected node and unrelated selected edge leaves the edge. | [FGC-R07](frontend-graph-canvas.md#fgc-r07--delete-removes-the-complete-eligible-selection) | Actual keyboard/store witness; the remaining edge stays visible and can be deleted again. Undo behavior is an acceptance requirement, not an executed assertion after the failure. |
-| P2 | Rating factor `value` shares its serialized key with the rate, overwriting levels and later causing DuplicateError. | [BUG-46](bugs.md#bug-46--a-rating-factor-cannot-collide-with-its-rate-field) | Real accepted config and rating operation; editor availability/overwrite verified in source. |
 | P1 | Pending submodel drill-in replaces a newly loaded root with the old child and mismatched navigation context. | [FGC-R06](frontend-graph-canvas.md#fgc-r06--pending-submodel-navigation-belongs-to-its-document) | Actual navigation hook and stores, delayed layout. A subsequent destructive Save was not executed. |
 | P1 | Failed solve B restamps retained success A with B's identity, making old numbers appear current under a new objective. | [FSH-R12](frontend-shared.md#fsh-r12--failed-solves-cannot-relabel-retained-successful-results) | Actual store/hash/staleness helpers; preview label source checked. Publication already refuses the error state. |
 | P2 | Integer regression target yields a declared long MLflow output although the native pyfunc predicts floats. | [MOD-R09](modelling.md#mod-r09--output-signatures-describe-predictions) | Real small CatBoost fit and generated signature; no remote registry enforcement failure claimed. |
@@ -310,7 +309,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | blocked recovery inspector | **FGC-R09**. |
 | API Input / Data Input schema identity | **FNED-R06**. |
 | cached file browser error | **FNED-R02**. |
-| reserved rating `value` | **BUG-46**. |
 | cached pivot response consumer node identity | **EDA-R01**; numbers remain correct as recorded in the accepted report. |
 | tuning status fields | **MOD-R08**. |
 | edge ID collisions | **NAME-10**. |

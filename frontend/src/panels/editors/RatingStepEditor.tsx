@@ -18,6 +18,7 @@ import {
   extractPreviewCategoricalLevels,
   extractTableEntryFactorLevels,
   mergeFactorLevels,
+  ratingFactorProblem,
 } from "./rating/ratingTableUtils"
 import { OneWayEditor } from "./rating/OneWayEditor"
 import { TwoWayGrid } from "./rating/TwoWayGrid"
@@ -384,6 +385,11 @@ export default function RatingStepEditor({
   const addFactor = (idx: number, col: string) => {
     const t = tables[idx]
     if (t.factors.length >= 3 || t.factors.includes(col)) return
+    const problem = ratingFactorProblem(col)
+    if (problem !== null) {
+      setFactorLimitNotice(problem)
+      return
+    }
     setFactors(idx, [...t.factors, col])
   }
 
