@@ -295,7 +295,6 @@ production:
 | Execution engine | EXE-3 | `EXEC-R16` (Decision) |
 | Execution engine | EXE-4, EXE-5, EXE-6, EXE-7, EXE-8, EXE-9, EXE-15, STA-6, STA-7, the preamble `sys.path` edit | `EXEC-R17` |
 | IO layer | CIO-5, CIO-11 | `IO-R06` |
-| IO layer | CIO-6, CIO-7 | `IO-R08` |
 | Background jobs | WRK-2 | `ROAD-WORKER-06` |
 | Background jobs | WRK-5, WRK-6, WRK-11, WRK-14 | `ROAD-WORKER-07` |
 | Background jobs | WRK-8, WRK-9, WRK-10 | `ROAD-WORKER-08` |
@@ -383,9 +382,8 @@ assistant's current-directory project root (`PCFG-R04`); the Databricks client
 factory's and the save service's `HTTPException`s (`API-R02`); the assistant
 catalog's hand tables and
 key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
-(`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the API
-Input's supervised build (`IO-R08`), the Edge Join as a boundary (`EXEC-R15`)
-and Recover's `how="asof"` (`PCFG-R13`); node-level instances and their
+(`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the Edge
+Join as a boundary (`EXEC-R15`) and Recover's `how="asof"` (`PCFG-R13`); node-level instances and their
 rewriters (`SUB-R01`), the Explore routes' `ParseError` and the submodel route's
 400 (`API-R06`), the pivot registry at shutdown (`ROAD-WORKER-06`); the
 browser's hand-written contract mirrors (`API-R03`), `hashConfig`'s exclusion
@@ -471,8 +469,8 @@ All probes live outside the repository and wrote nothing into it.
 | Tool | Result |
 |---|---|
 | radon | 285 functions with cyclomatic complexity ≥ 20; 27 ≥ 50 (the largest in the optimiser service, the save service, the assistant tools and the RAM estimate). |
-| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `EXEC-R17`, `IO-R08`, `ROAD-WORKER-08`, `DEP-R13`, `CLI-R05`, `API-R10`, `PCFG-R15` and `ENGQ-R01`. |
-| jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13`, `EXEC-R17`, `IO-R08`, `ROAD-WORKER-08`, `API-R09` and `PCFG-R15`. |
+| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `EXEC-R17`, `ROAD-WORKER-08`, `DEP-R13`, `CLI-R05`, `API-R10`, `PCFG-R15` and `ENGQ-R01`. |
+| jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13`, `EXEC-R17`, `ROAD-WORKER-08`, `API-R09` and `PCFG-R15`. |
 | jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `FNED-R03`, `FNED-R05`, `FMOU-R05`, `EDA-R03` and `FGC-R04`. |
 | knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted; every frontend reviewer found the hits used inside their own module, so they are over-exports under `ENGQ-R01`'s gate, not dead code. |
 | sweeps | 35 campaign-named test modules (`ENGQ-R05`). |

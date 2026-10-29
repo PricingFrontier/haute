@@ -7,12 +7,10 @@ together, and its build shreds the source once in a hard-capped worker.
 
 from __future__ import annotations
 
-import dataclasses
 import functools
 import os
 import threading
 import time
-import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,10 +34,10 @@ from haute._execution_context import (
 )
 from haute._file_ops import PATH_TOO_LONG_REMEDIATION
 from haute._input_preparation import (
-    InputPreparationOutcome,
-    InputPreparationRequest,
-    build_input_snapshot_worker,
+    capped_worker_config,
     input_preparation_running,
+    published_data_input,
+    run_supervised_data_input_build,
 )
 from haute._input_providers import (
     build_input_snapshot,
@@ -60,19 +58,18 @@ from haute._source_cache import (
     SourceCacheIdentity,
     SourceCacheStatus,
     SourceCacheStore,
-    new_staging_token,
 )
 from haute._worker_isolation import (
+    IsolatedWorkerConfig,
     WorkerTerminalReason,
     isolated_worker_failure_is_memory,
     isolated_worker_failure_is_path_too_long,
     isolated_worker_memory_detail,
     run_isolated_worker,
-    worker_config_for_memory_policy,
 )
 from haute.routes._background_jobs import CancellableJobRegistry, SingleFlightCoordinator
 from haute.routes._job_lifecycle import JobLifecycle, require_job_status
-from haute.routes._job_store import RunningJobFields, get_job_store
+from haute.routes._job_store import RunningJobFields, TerminalReason, get_job_store
 from haute.routes._memory_messages import memory_limit_user_message
 from haute.routes._runtime_path_errors import runtime_path_http_exception
 from haute.schemas import (
@@ -554,6 +551,23 @@ def _build_failure(exc: BaseException) -> tuple[str, str]:
     return "Input snapshot build failed.", "build_failed"
 
 
+def _job_worker_config(budget: IsolatedExecutionBudget, token: Any) -> IsolatedWorkerConfig:
+    """An explicit build's worker config: the build timeout, stopped as its job is."""
+
+    def stop_reason() -> WorkerTerminalReason | None:
+        if not token.cancelled:
+            return None
+        reason = token.terminal_reason
+        return reason if reason in {"cancelled", "superseded", "timed_out"} else "cancelled"
+
+    return capped_worker_config(
+        budget,
+        timeout_seconds=_build_timeout(),
+        stop_reason=stop_reason,
+        process_name="haute-input-cache-build",
+    )
+
+
 def _supervise_admitted_eager_build(
     *,
     config: dict[str, Any],
@@ -572,61 +586,22 @@ def _supervise_admitted_eager_build(
     """
     store = _cache_store()
     budget = isolated_execution_budget(execution_context)
-    generation_id = str(uuid.uuid4())
-    staging_token = new_staging_token()
-
-    def stop_reason() -> WorkerTerminalReason | None:
-        if not token.cancelled:
-            return None
-        reason = token.terminal_reason
-        return reason if reason in {"cancelled", "superseded", "timed_out"} else "cancelled"
-
-    worker_config = dataclasses.replace(
-        worker_config_for_memory_policy(
-            memory_limit_bytes=budget.memory_limit_bytes,
-            timeout_seconds=_build_timeout(),
-            stop_reason=stop_reason,
-            process_name="haute-input-cache-build",
-        ),
-        require_memory_limit=True,
-    )
-    request = InputPreparationRequest(
-        config=dict(config),
-        base_dir=str(_pipeline_base_dir()),
-        cache_root=str(store.root),
-        project_root=str(_project_root()),
+    build = run_supervised_data_input_build(
+        run_isolated_worker,
+        config,
+        store=store,
+        identity=identity,
+        base_dir=_pipeline_base_dir(),
+        project_root=_project_root(),
         profile=profile,
         refresh=refresh,
-        generation_id=generation_id,
-        staging_token=staging_token,
+        budget=budget,
+        worker_config=_job_worker_config(budget, token),
     )
-    try:
-        outcome = run_isolated_worker(
-            build_input_snapshot_worker,
-            request,
-            budget,
-            config=worker_config,
-        )
-    except BaseException as exc:
-        settled = store.reconcile_unpublished(identity, generation_id, staging_token)
-        # Reconcile first so nothing is left behind, but never convert a base
-        # exception (an interrupt, a system exit) into this build's success.
-        if not isinstance(exc, Exception):
-            raise
-        if settled == "published":
-            published = store.open_generation(identity)
-            # The child deferred retirement; retire here, where this process's
-            # own lease counts are visible.
-            store.retire_unleased(identity)
-            return published
-        raise _admitted_eager_failure(exc, budget=budget, token=token) from exc
-    if not isinstance(outcome, InputPreparationOutcome):
-        raise RuntimeError("input snapshot build worker returned an unexpected outcome")
-    generation = store.open_generation(identity)
-    # The child deferred retirement; retire here, where this process's own lease
-    # counts are visible.
-    store.retire_unleased(identity)
-    return generation
+    if build.failure is not None:
+        raise _admitted_eager_failure(build.failure, budget=budget, token=token) from build.failure
+    published_data_input(store, identity, build)
+    return store.open_generation(identity)
 
 
 def _supervise_api_input_build(
@@ -660,22 +635,6 @@ def _supervise_api_input_build(
     if not labels:
         return
     budget = isolated_execution_budget(execution_context)
-
-    def stop_reason() -> WorkerTerminalReason | None:
-        if not token.cancelled:
-            return None
-        reason = token.terminal_reason
-        return reason if reason in {"cancelled", "superseded", "timed_out"} else "cancelled"
-
-    worker_config = dataclasses.replace(
-        worker_config_for_memory_policy(
-            memory_limit_bytes=budget.memory_limit_bytes,
-            timeout_seconds=_build_timeout(),
-            stop_reason=stop_reason,
-            process_name="haute-input-cache-build",
-        ),
-        require_memory_limit=True,
-    )
     try:
         run_supervised_api_input_build(
             source,
@@ -683,7 +642,7 @@ def _supervise_api_input_build(
             store=store,
             profile=ExecutionProfile.LAZY_SINK,
             budget=budget,
-            worker_config=worker_config,
+            worker_config=_job_worker_config(budget, token),
             spawn=run_isolated_worker,
         )
     except Exception as exc:
@@ -736,6 +695,27 @@ def _run_build(
                 }
             },
             expected_status="running",
+        )
+
+    def fail_build(
+        to: TerminalReason, message: str, *, error_code: str, phase: str, **fields: Any
+    ) -> None:
+        """Record this build's terminal failure, keeping its progress counters."""
+        lifecycle.transition(
+            job_id,
+            to=to,
+            message=message,
+            fields={
+                **fields,
+                "error_code": error_code,
+                "progress": {
+                    **_progress_payload(store.require_job(job_id)).model_dump(
+                        exclude={"elapsed_seconds"}
+                    ),
+                    "phase": phase,
+                },
+            },
+            elapsed_seconds=time.monotonic() - started_at,
         )
 
     try:
@@ -821,21 +801,12 @@ def _run_build(
             reason=failure.terminal,
             error_code=failure.error_code,
         )
-        lifecycle.transition(
-            job_id,
-            to=failure.terminal,
-            message=failure.message,
-            fields={
-                **failure.fields,
-                "error_code": failure.error_code,
-                "progress": {
-                    **_progress_payload(store.require_job(job_id)).model_dump(
-                        exclude={"elapsed_seconds"}
-                    ),
-                    "phase": failure.phase,
-                },
-            },
-            elapsed_seconds=time.monotonic() - started_at,
+        fail_build(
+            failure.terminal,
+            failure.message,
+            error_code=failure.error_code,
+            phase=failure.phase,
+            **failure.fields,
         )
     except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
         logger.warning(
@@ -843,23 +814,14 @@ def _run_build(
             job_id=job_id,
             error_type=type(exc).__name__,
         )
-        lifecycle.transition(
-            job_id,
-            to="memory_limited",
+        fail_build(
+            "memory_limited",
             # Shared user-facing shape (matching training and auto-range);
             # str(exc) names the internal operation and stays diagnostic.
-            message=memory_limit_user_message(exc, operation_noun="The input snapshot build"),
-            fields={
-                "error": str(exc),
-                "error_code": "memory_limit",
-                "progress": {
-                    **_progress_payload(store.require_job(job_id)).model_dump(
-                        exclude={"elapsed_seconds"}
-                    ),
-                    "phase": "failed",
-                },
-            },
-            elapsed_seconds=time.monotonic() - started_at,
+            memory_limit_user_message(exc, operation_noun="The input snapshot build"),
+            error_code="memory_limit",
+            phase="failed",
+            error=str(exc),
         )
     except (SourceCacheBuildError, ExecutionCancelledError) as exc:
         reason = token.terminal_reason
@@ -871,60 +833,28 @@ def _run_build(
         )
         if reason in {"cancelled", "superseded", "timed_out"}:
             timed_out = reason == "timed_out"
-            lifecycle.transition(
-                job_id,
-                to=reason,
-                message=(
+            fail_build(
+                reason,
+                (
                     "Input snapshot build exceeded its deadline."
                     if timed_out
                     else "Input snapshot build was cancelled."
                 ),
-                fields={
-                    "error_code": ("build_timed_out" if timed_out else "build_cancelled"),
-                    "progress": {
-                        **_progress_payload(store.require_job(job_id)).model_dump(
-                            exclude={"elapsed_seconds"}
-                        ),
-                        "phase": "cancelled",
-                    },
-                },
-                elapsed_seconds=time.monotonic() - started_at,
+                error_code="build_timed_out" if timed_out else "build_cancelled",
+                phase="cancelled",
             )
         else:
             message, error_code = _build_failure(exc)
-            lifecycle.transition(
-                job_id,
-                to="error",
-                message=message,
-                fields={
-                    "error_code": error_code,
-                    "progress": {
-                        **_progress_payload(store.require_job(job_id)).model_dump(
-                            exclude={"elapsed_seconds"}
-                        ),
-                        "phase": "failed",
-                    },
-                },
-                elapsed_seconds=time.monotonic() - started_at,
-            )
+            fail_build("error", message, error_code=error_code, phase="failed")
     except PipelineSettingsError as exc:
         # Admission reads the settings file again; its message names what to fix.
         logger.warning("input_cache_pipeline_settings_invalid", job_id=job_id, error=str(exc))
-        lifecycle.transition(
-            job_id,
-            to="error",
-            message=str(exc),
-            fields={
-                "error": str(exc),
-                "error_code": "pipeline_settings_invalid",
-                "progress": {
-                    **_progress_payload(store.require_job(job_id)).model_dump(
-                        exclude={"elapsed_seconds"}
-                    ),
-                    "phase": "failed",
-                },
-            },
-            elapsed_seconds=time.monotonic() - started_at,
+        fail_build(
+            "error",
+            str(exc),
+            error_code="pipeline_settings_invalid",
+            phase="failed",
+            error=str(exc),
         )
     except Exception as exc:
         logger.error(
@@ -934,21 +864,7 @@ def _run_build(
             error=_provider_error_diagnostic(exc, config),
         )
         message, error_code = _build_failure(exc)
-        lifecycle.transition(
-            job_id,
-            to="error",
-            message=message,
-            fields={
-                "error_code": error_code,
-                "progress": {
-                    **_progress_payload(store.require_job(job_id)).model_dump(
-                        exclude={"elapsed_seconds"}
-                    ),
-                    "phase": "failed",
-                },
-            },
-            elapsed_seconds=time.monotonic() - started_at,
-        )
+        fail_build("error", message, error_code=error_code, phase="failed")
     finally:
         timeout_timer.cancel()
         if execution_context is not None:

@@ -7,7 +7,7 @@
 | `src/haute/_io.py` | API-input flat-file adapters, source/schema validation, direct CSV/JSON/NDJSON/Parquet reads (a Parquet file with a map column refused), and external-object loading. |
 | `src/haute/_polars_io_registry.py` | Canonical Data Input/Output format registry, strict config and argument validation, capability publication, and Polars invocation; `parquet_source_map_columns` finds a Parquet source's map columns in its files' own schema, `refuse_direct_map_columns` refuses a direct Parquet scan whose files hold a map, and `read_parquet_map_entries_for_snapshot` reads such a file for its snapshot through pyarrow and refuses a map in a source of several files (*Map columns* under Edge cases and invariants). |
 | `src/haute/_input_providers.py` | Provider dispatch, source identity/signature construction, explicit snapshot build, and leased snapshot resolution. |
-| `src/haute/_input_preparation.py` | Automatic snapshot preparation planned before execution: freshness check, cap gate, in-process or worker build, per-process single-flight, preparation records, and staging-token cleanup. |
+| `src/haute/_input_preparation.py` | Automatic snapshot preparation planned before execution: freshness check, cap gate, in-process or worker build, per-process single-flight, preparation records, and staging-token cleanup; also the one supervised-build mechanism (`supervise_build`, `run_supervised_data_input_build`, `capped_worker_config`) that preparation, the explicit build route and an API Input's table build share. |
 | `src/haute/_database_io.py` | Credential-free database locator/query validation and bounded read-only SQLite snapshot batches. |
 | `src/haute/_credential_security.py` | Shared URI credential detection and provider-diagnostic redaction. |
 | `src/haute/_source_cache.py` | Primary owner of source-cache identities, generations, metadata, publication, leases, status, and cleanup. A generation's metadata records `build_seconds`, the wall-clock span from allocating its staging directory to writing that metadata — how long caching it took — absent on a generation published before it was recorded, which reads as unknown rather than instant. |
@@ -228,9 +228,9 @@ platforms, and on Windows with long paths on, nothing is renamed.
    `input_snapshot_missing` rejection. With `current_native_memory_backend()` set the
    build runs in-process through `build_input_snapshot()` with the context's cancellation,
    deadline, and stages; otherwise the build is spawned through `run_isolated_worker` with
-   `worker_config_for_memory_policy(memory_limit_bytes=budget.memory_limit_bytes, ...)`
-   where `budget = isolated_execution_budget(execution_context)`, with
-   `require_memory_limit=True` whatever `HAUTE_WORKER_MEMORY_ENFORCEMENT` says, and the
+   `capped_worker_config(budget, ...)`, where `budget = isolated_execution_budget(execution_context)`:
+   `worker_config_for_memory_policy(memory_limit_bytes=budget.memory_limit_bytes, ...)` with
+   `require_memory_limit=True` whatever `HAUTE_WORKER_MEMORY_ENFORCEMENT` says. The
    child creates `create_isolated_execution_context(budget)` and runs the same
    `build_input_snapshot()`. A host that cannot install the native cap reuses a
    ready-but-stale generation with warning code `cap_unavailable_stale_reused`, and refuses
@@ -256,7 +256,23 @@ platforms, and on Windows with long paths on, nothing is renamed.
 7. A spawned build sets `defer_retirement=True`; its supervising parent calls
    `SourceCacheStore.retire_unleased(identity)` after success or reconciliation reporting
    `published`. Shared lease markers protect readers in either process. There is no
-   retained-generation list on the worker request or build context.
+   retained-generation list on the worker request or build context. One mechanism
+   supervises every spawned build, automatic or explicit: `supervise_build(spawn, worker,
+   request, budget, config=, reconcile=)` spawns the worker on a request carrying the
+   parent-chosen generation ids and staging tokens, and after any failure calls `reconcile`
+   (settle exactly those, reporting whether everything was published). It returns a
+   `SupervisedBuild`: the worker's outcome, no outcome when the worker died after
+   publishing, or the worker's own failure when the build published nothing, which is
+   returned, never raised, so an exception that does leave it (the reconciliation's own)
+   is the parent's and never reaches a caller's handling of a worker failure. A base
+   exception is re-raised after the reconciliation, never turned into success. The caller
+   retires a build that published, after deciding about any worker failure:
+   `run_supervised_data_input_build` (preparation's spawned build and the explicit
+   admitted-eager build) is settled by `published_data_input`, which retires, checks the
+   outcome and describes the published generation, so a retirement failure propagates
+   rather than being read as a successor; `run_supervised_api_input_build` (an API Input's
+   tables, removing the build's scratch directory as it reconciles) raises the worker's
+   failure, then retires its tables itself.
 8. Worker failure classification maps the child's own exception type name carried by
    `IsolatedWorkerRemoteError.remote_type` first: `NativeMemoryLimitUnsupportedError` /
    `NativeMemoryLimitCleanupError` are `cap_unavailable`, and `PathTooLongError` is
@@ -1083,7 +1099,9 @@ failure sections above are the maintained answers.
   `published` and recorded `built`, and one whose generation was superseded before
   reconciliation by a fresh generation another process published (simulated by publishing
   through a second store handle) is recorded `reused` with the successor's generation id
-  and no failure; (15) a host without a native cap under
+  and no failure, while a failure of the parent's own (its retirement after a worker that
+  published, its reconciliation after one that failed) propagates as itself rather than
+  being read as the worker's; (15) a host without a native cap under
   `HAUTE_WORKER_MEMORY_ENFORCEMENT=best_effort` yields `cap_unavailable` before any
   provider access; (16) cache invalidation — a warmed preview (`execute_graph` preview
   cache) returns the new rows and records `refreshed`

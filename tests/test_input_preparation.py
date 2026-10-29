@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -1738,6 +1739,43 @@ def test_a_base_exception_during_a_spawned_build_is_never_swallowed(
     )
     assert spawn.request is not None
     assert pointer["generation_id"] == spawn.request.generation_id
+
+
+@pytest.mark.parametrize("failing", ["retire_unleased", "reconcile_unpublished"])
+def test_a_failure_of_the_parents_own_is_never_taken_for_the_workers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failing: str,
+) -> None:
+    """Only the worker's failure falls back to a generation published meanwhile.
+
+    Retiring after a worker that published, or reconciling after one that failed,
+    is this process's work: its error propagates as itself. Read as the worker's,
+    the generation the worker had just published would be reported ``reused``.
+    """
+    store = _project(tmp_path, monkeypatch)
+    path = tmp_path / "rows.csv"
+    pl.DataFrame({"id": [1, 2]}).write_csv(path)
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
+
+    def spawn(function: Any, request: Any, budget: Any, *, config: Any) -> Any:
+        outcome = build_input_snapshot_worker(request, budget)
+        if failing == "reconcile_unpublished":
+            raise RuntimeError("worker lost after publishing")
+        return outcome
+
+    def refused(*_args: Any) -> None:
+        raise OSError(errno.EIO, f"{failing} failed")
+
+    monkeypatch.setattr(store, failing, refused)
+    context = _context()
+    try:
+        with pytest.raises(OSError, match=f"{failing} failed"):
+            _prepare(
+                _csv_config(path), store=store, base_dir=tmp_path, context=context, spawn=spawn
+            )
+    finally:
+        context.release_admission()
 
 
 # --------------------------------------------- (A9) one deadline per preparation

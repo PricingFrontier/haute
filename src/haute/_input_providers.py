@@ -551,10 +551,11 @@ class _SnapshotLeasePlan:
     serialised; lease release remains intentionally tied to local plan GC.
     """
 
-    __slots__ = ("_finalizer", "__weakref__")
+    __slots__ = ("__weakref__",)
 
     def __init__(self, release: Callable[[], None]) -> None:
-        self._finalizer = weakref.finalize(self, release)
+        # The finalizer keeps itself alive until this plan is collected.
+        weakref.finalize(self, release)
 
     def __call__(self, batch: pl.DataFrame) -> pl.DataFrame:
         """Preserve the batch while keeping this lease owner in the plan."""

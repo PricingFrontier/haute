@@ -290,11 +290,11 @@ writes a table, for the data-point `building` probe. Schema inference stays on
   structured API Input's emitting tables and their distinct identities (empty for any
   other node, or for a schema the node builder would reject).
 - `DataPointResolver(graph, source, store=NodeSnapshotStore, building=probe)` canonicalises
-  the graph once. `building(kind, key)` reports a running build keyed by the input-snapshot
+  the graph once. `building(kind, digest)` reports a running build of the input-snapshot
   identity digest (a Data Input's, or an API-input table's own) or the node-output identity
   digest.
   `resolve(point, demand)` returns a `PointResolution` (kind, state, demand, data version,
-  build key, and the node-output identity/generation or input identity/generation id):
+  and the node-output identity/generation or input identity/generation id):
   - `data_input`, direct Parquet: `current`; the version hashes the resolved path, the size
     and `mtime_ns` of every file it names (`signed_source_files`, one for a file, each file
     of a folder or glob pattern; `missing` when it names none), and the node's lineage
@@ -310,7 +310,7 @@ writes a table, for the data-point `building` probe. Schema inference stays on
     node, source, `bounded`) and the `enforce_contracts=True` signature; a `current`
     generation whose columns do not cover the demand is `partial`; the version is the
     generation id.
-  A non-current point whose build key has a running build is `building`.
+  A non-current point whose identity digest has a running build is `building`.
 - `lease_frame(point, demand, execution_context=None)` (and the module-level
   `lease_point_frame(graph, point, source, columns)`) raises `CacheRequiredError`
   (`cache_required`, carrying the resolution) unless the point is `current`, then yields a
