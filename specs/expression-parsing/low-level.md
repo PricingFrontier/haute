@@ -200,21 +200,27 @@ no alias or migration shim; direct test callers use the same current contract.
   `items += (x,)`); a `pop`, `popitem` or `setdefault` call anywhere; a method called on its
   own line that changes one of Python's containers (`update`, `append`, `extend`, `insert`,
   `remove`, `clear`, `sort`, `reverse`, `add`, `discard`, the set updates), on any value, or
-  any method called on its own line on a value the code bound; and a call passing a value to a
-  function the code defines that changes its arguments: one that changes a parameter or a name
-  that may hold one, or passes one to another such function. A hit on a name the code bound
-  only ever to values that cannot change, counting every binding a block may make, is no change
-  (`factor += 0.1` on a number, `expr.alias("z")` alone on a closed Polars expression). The
-  scan reaches every depth of a statement
-  (a loop body, a function body); a name a function, lambda, class or comprehension binds for
-  itself counts only when a binding of it there reads a value from outside, so a helper
-  changing its own list or parameter changes nothing until it is called, while decorators,
+  any method called on its own line on a value the code bound, also in a comprehension run for
+  its effect; and any use of a changing function. A hit on a name the code bound only ever to
+  values that cannot change is no change (`factor += 0.1` on a number, `expr.alias("z")` alone
+  on a closed Polars expression). The scan reaches every depth of a statement, a loop body and
+  a class body included.
+- **A function the code defines changes values when it is used**: a `def` or `lambda` whose body
+  changes a value in place, uses another such function, or changes one of its own names that a
+  binding there could make a container (a parameter always can; `t += x` on `t = 0` cannot) is
+  a changing function, and so is every name bound to a value that refers to one
+  (`run = bump`). Its body runs when it is used, so the change counts at every use: a call by
+  name or as a method, or handing it on to be called (an alias, an argument, a decorator, a
+  `lambda` written where it is passed). A definition nobody uses changes nothing; decorators,
   defaults and base classes run where they are written. A change made by a function the code
   does not define (`random.shuffle(cols)`, a preamble helper) is not followed: that is the
   boundary of what reading the code can see.
 - **Every way of binding a name counts**: besides assignments, a `match` capture,
   `except ... as e` and a walrus inside a simple assignment's value bind their names, so a name
-  they bind is unknown afterwards.
+  they bind is unknown afterwards. Whether a name may hold a value that can change counts every
+  binding a block may make, reads a binding's value without the names the block may bind
+  (those may hold something else by then), and treats a name bound with no value to read
+  (`except ... as e`) as able to hold anything.
 - **A formula sees the changes of its own statement**: a `with_columns`/`select` call inside
   `if`/`for`/`while`/`try`/`with`/`match`, or in a statement that changes a value in place
   (`with_columns(a=pl.lit(d.pop("k")), y=...)`), takes the bindings in force after that whole

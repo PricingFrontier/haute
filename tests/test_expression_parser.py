@@ -1960,6 +1960,33 @@ class TestValuesChangedInPlace:
                 "bump(factors)\n" + _TIMES_A.format("factors"),
                 "factors",
             ),
+            (
+                "factors = [1.0]\nitems = ()\nif True:\n    items = factors\n    alias = items\n"
+                "    alias.append(2.0)\n"
+                'df = df.with_columns(y=pl.col("x") * factors[-1])',
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\nerror = None\ntry:\n    raise ValueError(factors)\n'
+                'except ValueError as error:\n    error.args[0]["A"] = 2.0\n'
+                + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\ndef bump(d):\n    box = {}\n    box["d"] = d\n'
+                '    box["d"]["A"] = 2.0\nbump(factors)\n' + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\ndef bump():\n    factors["A"] = 2.0\n'
+                'factors = {"A": 1.0}\nbump()\n' + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\ndef bump(d):\n    d["A"] = 2.0\nrun = bump\nrun(factors)\n'
+                + _TIMES_A.format("factors"),
+                "factors",
+            ),
         ],
         ids=[
             "subscript",
@@ -2000,6 +2027,11 @@ class TestValuesChangedInPlace:
             "a-store-through-a-call",
             "passed-inside-a-list-to-a-function-that-changes-it",
             "a-parameter-changed-through-a-local-alias",
+            "an-alias-of-a-name-rebound-in-the-block",
+            "an-exception-capture",
+            "a-parameter-held-in-a-local-container",
+            "a-function-run-after-the-value-is-bound-again",
+            "a-function-called-through-an-alias",
         ],
     )
     def test_the_value_is_reported_not_guessed(self, code: str, unknown: str) -> None:
@@ -2055,6 +2087,11 @@ class TestValuesChangedInPlace:
                 'df = df.with_columns(y=pl.coalesce(pl.lit(default), pl.col("x")))',
                 10.0,
             ),
+            (
+                'factors = {"A": 2.0}\ndef total(xs):\n    t = 0\n    for x in xs:\n'
+                "        t += x\n    return t\nn = total([1, 2])\n" + _TIMES_A.format("factors"),
+                20.0,
+            ),
         ],
         ids=[
             "read-before-the-change",
@@ -2066,6 +2103,7 @@ class TestValuesChangedInPlace:
             "arithmetic-on-a-number",
             "a-method-alone-on-a-polars-expression",
             "a-null-default",
+            "a-helper-summing-numbers",
         ],
     )
     def test_a_value_the_code_did_not_change_keeps_it(self, code: str, value: float) -> None:
