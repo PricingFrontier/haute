@@ -1235,15 +1235,14 @@ no longer has; and `InputSource` in
   name twice, which the save refuses, naming the row.
 - Table and column ids starting with `?` are refused by `FormSpec`, so the unresolved ids
   a read makes (`?` and a name) can bind to nothing.
-- Only a Workbench Input takes the workbench's tables: a fetch never changes a Quote Input,
+- Only the workbench nodes take the workbench's tables: a fetch never changes a Quote Input,
   whose connections still follow a rename by position as `migrateApiInputEdges` allows.
-- Each Workbench Input gets each fetch's tables at most once per generation: the fetch-driven
-  pass and a palette drop's report never send the same update twice, and an undone update
-  stays undone until the next fetch. An update that does not commit, such as one whose node a
-  submodel hid while its identity was resolving, is forgotten through `onSettled`, so the next
-  pass, when the top level shows again or the next fetch arrives, sends it again.
-- A fetch that completes while a submodel is open, or the document is read-only, applies
-  when the top level shows again and the document can change.
+- A fetch changes no node: the workbench nodes' ports follow the newest fetch at once, and
+  only their connections to a table it no longer has are removed, outside the undo history,
+  so an undo brings back no tables, and a connection it brings back is removed again.
+- A fetch that completes while the document is read-only removes nothing until the document
+  can change; one that completes while a submodel is open holds the submodel's connections,
+  and the top level's when it shows again.
 - An empty `tables` list is a valid answer, and so is one whose tables have no columns yet:
   the Workbench Input has no ports, and `workbench_table_labels` and `workbench_table_frames`
   refuse to make any, each saying what to add.
