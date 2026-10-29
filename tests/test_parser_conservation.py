@@ -290,6 +290,7 @@ class TestPreambleAliasAware:
         assert "BuildPipeline" not in preamble
         assert "pipeline =" not in preamble
 
+
 # ---------------------------------------------------------------------------
 # F312 — implicit param-name edges were not de-duplicated, so a duplicated
 # parameter name produced two GraphEdges with identical ids.

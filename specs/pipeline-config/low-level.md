@@ -6,7 +6,7 @@
 |---|---|
 | `src/haute/pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). A configured node's `Node` classifies its function as a declaration or a hook at registration (`function_kind`) and runs its configured work through `run_configured_node`; `_runs_node` is what a configured node's decorator returns. `Pipeline` takes a keyword-only `global_constants` argument (only `config/global_constants.json`), and every registry's `global_constants` property returns the standalone sentinel; `Pipeline.run(source=...)` and `score()` call each node function as a copy that binds the run's constants (`Node._invoke`, `Pipeline._run_constants`). |
 | `src/haute/_standalone_nodes.py` | What each configured node type does in a standalone run or score: `run_configured_node(node_type, kind, name, config, fn, frames, pipeline_dir)` performs the node's work through the same shared helpers canvas execution uses (`resolve_api_input_from_config`, `resolve_data_input_from_config`, `constant_frame`, `select_live_switch_input`, `execute_edge_join`, `apply_banding_from_config`, `apply_rating_step_from_config`, `expand_scenarios_from_config`, `score_from_config`, `apply_optimiser_apply_from_config`, `assemble_output_from_config`, `resolve_optimiser_data_input`, `load_external_object_from_config`); `function_kind` classifies a function as a declaration or hook; `has_empty_body` recognises a body that does nothing from its bytecode; `pipeline_directory` finds the directory a function's `config=` paths resolve against (the defining file's directory joined with its registry's `pipeline_dir`); `seeded_workbench_input_ports` gives the ports of a Workbench Input a score seeds with frames, its sidecar read and given the project form's tables. |
-| `src/haute/_config_builder.py` | Per-node-type config dict construction from decorator kwargs + function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). For Live Switch nodes, `config["inputs"]` records only positional edge parameters (frame labels for apiInput edges, sanitised source labels otherwise), the same strings referenced by the input-to-scenario mapping; keyword-only configuration parameters are excluded. It consumes the per-type user-code extractors from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
+| `src/haute/_config_builder.py` | The config of a node that keeps its settings on its decorator, an Edge Join, an Explore or a transform, from the decorator kwargs and function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). For Live Switch nodes, `config["inputs"]` records only positional edge parameters (frame labels for apiInput edges, sanitised source labels otherwise), the same strings referenced by the input-to-scenario mapping; keyword-only configuration parameters are excluded. It consumes the per-type user-code extractors from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
 | `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers (a node's JSON config is read as strict UTF-8 by `_load_json_object`, and a byte that is not UTF-8 is a `ConfigError` naming the file and the byte; `node_configs_read_through` installs another byte reader for a block, which editor recovery uses so its revision authenticates the config bytes it read; `node_config_json` is the one sidecar text every save path writes), `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs, and the Windows-reserved-filename guard. It also owns the global constants file: `parse_global_constants` validates its strict UTF-8 bytes, `load_global_constants` reads it, and `global_constants_json` writes it canonically. |
 | `src/haute/_global_constants.py` | Global constants analysis and the standalone sentinel: `code_constant_reads`, `step_constant_reads`, `node_code_sources` and `node_constant_reads` (what a node reads, from its steps' Constant operands and the AST of its code, or `EVERY_CONSTANT`), `code_binds_global_constants`, `preamble_binds_global_constants`, `module_binding_lines` and `is_generated_binding` (what would shadow the reserved name), `STANDALONE_GLOBAL_CONSTANTS`, the sentinel every registry's global-constants property returns, `reference_problem` and `node_step_constant_problems` (whether a step's Constant operand can read its constant: defined, of a type its slot takes, and at least zero for every source where required), and the run-time table: `GlobalConstantsNamespace` (one source's values and its per-code views), `node_code_globals`, `bind_code_view`, `function_constant_reads` and `bind_function_view`. |
 | `src/haute/_config_validation.py` | `VALID_KEYS` registry derived from each node type's TypedDict definition, `unrecognized_config_keys`, and `reject_unrecognized_config_keys`. |
@@ -223,9 +223,9 @@ comment or a respelling in free code included, is a hand edit): keep, discard wi
 `_steps_discarded` plus `_discarded_sidecar` for the transform only, or keep an
 unrenderable list behind an empty body; `steps` plus `inputMapping` on an original
 transform is a `ConfigError`); raises
-`_sidecar_required_error` if the node type is folder-backed but no `config=` was given; or
-dispatches into `_build_node_config`'s per-`NodeType` branch to build the config purely from
-decorator kwargs + body. Before any of this, `_validate_node_function` enforces the
+`_sidecar_required_error` if the node type is folder-backed but no `config=` was given; or,
+for the three types that keep their settings on the decorator (Edge Join, Explore and
+transform), builds the config from the decorator kwargs and body in `_build_node_config`. Before any of this, `_validate_node_function` enforces the
 declaration/hook shapes the standalone runtime relies on: for a configured node a body that
 is only `...` or `pass` (after an optional docstring, `is_declaration_body`) is a declaration
 and must not take `df` (for an External File, `obj`); any other body is a hook and must take
@@ -737,11 +737,10 @@ it on the reading node instead of aborting the walk, and every other run propaga
 - `async def` node bodies are rejected only in the static parse path. A live `Pipeline` can
   register an `async def`-defined function via a decorator with no error; the rejection only
   fires once that same source file is parsed by `_graph_builders`.
-- `OUTPUT` and `DATA_INPUT`/`DATA_OUTPUT` are folder-backed types, so their branches inside
-  `_build_node_config` are unreachable on the healthy path — `_resolve_node_config`'s sidecar-
-  required check raises first. The branches are kept as explicit no-ops (not removed) so a
-  stray inline decorator usage can't silently fall through to the generic "transform" branch
-  and pick up a `code` config it shouldn't have.
+- `_build_node_config` builds only an Edge Join, an Explore and a transform. Every other type
+  is folder-backed, so `_resolve_node_config` loads its sidecar, or refuses the node for
+  lacking one, first; given one anyway, the builder raises `ValueError` rather than reading
+  it as a transform and giving it a `code` config.
 - `unrecognized_config_keys(node_type, config)` returns, sorted, every top-level key that is
   not `_`-prefixed, not `code`, and not declared for the node type.
   `reject_unrecognized_config_keys(node_type, config, node_label=...)` raises `ConfigError`
@@ -936,15 +935,16 @@ API and real JSON round-trips rather than mocks:
   and preservation of the prior sidecar when validation fails.
 - **`test_config_validation.py`** — `VALID_KEYS` registry completeness
   (`TestValidKeysRegistry`), `unrecognized_config_keys` / `reject_unrecognized_config_keys`
-  behaviour, and alignment between
-  each type's decorator kwargs and the config keys `_build_node_config` actually produces
+  behaviour, and alignment between the decorator kwargs of the three types
+  `_build_node_config` builds and the config keys it produces
   (`TestBuildNodeConfigProducesValidKeys`, `TestConfigKeyTupleAlignment`).
 - **`test_parser_helpers.py`** — AST extraction (`TestExtractDecoratedNodes`),
   function-body extraction keeping the comments above the first statement and none from a
-  multi-line signature (`TestFunctionBodySource`), decorator kwarg parsing, `_build_node_config` per node type
-  (`TestBuildNodeConfigExtended`), `_resolve_node_config` sidecar and contract paths
-  (`TestResolveNodeConfig`, including a sidecar-backed node's other decorator keywords
-  refused by name), and edge/GraphNode building (`TestBuildEdges`,
+  multi-line signature (`TestFunctionBodySource`), decorator kwarg parsing, `_build_node_config`
+  for the Edge Join, Explore and transform it builds (`TestBuildNodeConfigExtended`),
+  `_resolve_node_config` sidecar and contract paths (`TestResolveNodeConfig`, including every
+  folder-backed type parsed from its palette-default sidecar while the inline builder refuses
+  it, and a sidecar-backed node's other decorator keywords refused by name), and edge/GraphNode building (`TestBuildEdges`,
   `TestBuildRfNodes`), including deferred cross-boundary endpoints and fail-loud rejection of
   genuinely dangling connects.
 - **`test_graph_shape_contracts.py`** — Explore in/out-degree contracts

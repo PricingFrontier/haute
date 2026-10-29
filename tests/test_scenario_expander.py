@@ -4,7 +4,6 @@ import numpy as np
 import polars as pl
 import pytest
 
-from haute._config_builder import _build_node_config
 from haute._types import GraphNode, NodeData, NodeType
 from haute.codegen import _node_to_code
 from haute.executor import _build_node_fn
@@ -20,31 +19,6 @@ def _make_node(config: dict, label: str = "test_expander") -> GraphNode:
             config=config,
         ),
     )
-
-
-class TestBuildConfig:
-    def test_build_config(self):
-        decorator_kwargs = {
-            "scenario_expander": True,
-            "quote_id": "policy_id",
-            "column_name": "scenario_value",
-            "min_value": 0.8,
-            "max_value": 1.2,
-            "stepCount": 11,
-            "step_column": "step",
-        }
-        config = _build_node_config(
-            node_type=NodeType.SCENARIO_EXPANDER,
-            decorator_kwargs=decorator_kwargs,
-            param_names=["df"],
-            body="",
-        )
-        assert config["quote_id"] == "policy_id"
-        assert config["column_name"] == "scenario_value"
-        assert config["min_value"] == 0.8
-        assert config["max_value"] == 1.2
-        assert config["stepCount"] == 11
-        assert config["step_column"] == "step"
 
 
 class TestCodegen:

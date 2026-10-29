@@ -489,4 +489,3 @@ class TestUnkeptModuleStatements:
 
         assert unkept_module_statements(source) == []
         assert _extract_preamble(source) == "RATE = 1.05"
-

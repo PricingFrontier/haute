@@ -42,6 +42,7 @@ from haute._ast_helpers import (
 )
 from haute._code_extraction import _unwrap_chain_assignment, extract_user_code
 from haute._config_builder import _build_node_config, _copy_config_keys, _resolve_node_config
+from haute._config_io import has_config_folder
 from haute._graph_builders import _build_edges, _build_rf_nodes, _extract_decorated_nodes
 from haute._types import NodeType
 from haute.errors import ParseError
@@ -739,184 +740,6 @@ class TestExtractPreservedBlocks:
 
 
 class TestBuildNodeConfigExtended:
-    def test_banding_multi_factor(self):
-        config = _build_node_config(
-            NodeType.BANDING,
-            {
-                "factors": [
-                    {
-                        "banding": "discrete",
-                        "column": "age",
-                        "output_column": "age_band",
-                        "rules": [],
-                        "default": "0",
-                    },
-                ]
-            },
-            "",
-            [],
-        )
-        assert len(config["factors"]) == 1
-        assert config["factors"][0]["outputColumn"] == "age_band"
-        assert config["factors"][0]["default"] == "0"
-
-    def test_banding_single_factor_format(self):
-        config = _build_node_config(
-            NodeType.BANDING,
-            {
-                "banding": "breakpoints",
-                "column": "x",
-                "output_column": "x_factor",
-                "rules": [{"boundary": "1", "label": "1.0"}],
-            },
-            "",
-            [],
-        )
-        assert len(config["factors"]) == 1
-        assert config["factors"][0]["column"] == "x"
-
-    def test_banding_non_list_factors_wrapped(self):
-        """If 'factors' is not a list, empty list is used."""
-        config = _build_node_config(
-            NodeType.BANDING,
-            {"factors": "not_a_list"},
-            "",
-            [],
-        )
-        assert config["factors"] == []
-
-    def test_rating_step_canonical_decorator_keys_map_to_graph_config(self) -> None:
-        config = _build_node_config(
-            NodeType.RATING_STEP,
-            {
-                "tables": [
-                    {
-                        "factors": ["band"],
-                        "output_column": "factor",
-                        "default_value": 1.0,
-                        "entries": [{"band": "A", "value": 2.0}],
-                    }
-                ],
-                "combined_outputs": [
-                    {
-                        "output_column": "premium",
-                        "operation": "multiply",
-                        "base_value": 100,
-                    }
-                ],
-            },
-            "",
-            [],
-        )
-
-        assert config == {
-            "tables": [
-                {
-                    "factors": ["band"],
-                    "outputColumn": "factor",
-                    "defaultValue": 1.0,
-                    "entries": [{"band": "A", "value": 2.0}],
-                }
-            ],
-            "combinedOutputs": [
-                {
-                    "outputColumn": "premium",
-                    "operation": "multiply",
-                    "baseValue": 100,
-                }
-            ],
-            "code": "",
-        }
-
-    def test_constant_values(self):
-        config = _build_node_config(
-            NodeType.CONSTANT,
-            {"values": [{"name": "pi", "value": 3.14}]},
-            "",
-            [],
-        )
-        assert config["values"] == [{"name": "pi", "value": "3.14"}]
-
-    def test_constant_non_list_values(self):
-        config = _build_node_config(
-            NodeType.CONSTANT,
-            {"values": "bad"},
-            "",
-            [],
-        )
-        assert config["values"] == []
-
-    def test_scenario_expander_config(self):
-        config = _build_node_config(
-            NodeType.SCENARIO_EXPANDER,
-            {
-                "scenario_expander": True,
-                "quote_id": "qid",
-                "min_value": 0.8,
-                "max_value": 1.2,
-                "stepCount": 5,
-            },
-            "",
-            [],
-        )
-        assert config["quote_id"] == "qid"
-        assert config["min_value"] == 0.8
-        assert config["stepCount"] == 5
-
-    def test_scenario_expander_config_extracts_hook_code(self):
-        body = '    """Expand."""\n    df = df.filter(pl.col("sv") > 0.9)\n    return df'
-        config = _build_node_config(
-            NodeType.SCENARIO_EXPANDER,
-            {"scenario_expander": True, "stepCount": 5},
-            body,
-            ["df"],
-        )
-        assert config["code"] == 'df = df.filter(pl.col("sv") > 0.9)'
-
-    def test_scenario_expander_declaration_has_empty_code(self):
-        body = '    """Expand."""\n    ...'
-        config = _build_node_config(
-            NodeType.SCENARIO_EXPANDER,
-            {"scenario_expander": True, "stepCount": 5},
-            body,
-            ["source"],
-        )
-        assert config["code"] == ""
-
-    def test_optimiser_config(self):
-        config = _build_node_config(
-            NodeType.OPTIMISER,
-            {"optimiser": True, "mode": "online", "quote_id": "id", "objective": "premium"},
-            "",
-            [],
-        )
-        assert config["mode"] == "online"
-        assert config["objective"] == "premium"
-
-    def test_optimiser_apply_config(self):
-        config = _build_node_config(
-            NodeType.OPTIMISER_APPLY,
-            {
-                "optimiser_apply": True,
-                "source_type": "file",
-                "artifact_path": "/path/to/artifact.json",
-            },
-            "",
-            [],
-        )
-        assert config["sourceType"] == "file"
-        assert config["artifact_path"] == "/path/to/artifact.json"
-
-    def test_modelling_config(self):
-        config = _build_node_config(
-            NodeType.MODELLING,
-            {"modelling": True, "target": "loss", "algorithm": "catboost", "task": "regression"},
-            "",
-            [],
-        )
-        assert config["target"] == "loss"
-        assert config["algorithm"] == "catboost"
-
     def test_instance_reference_added_to_config(self):
         config = _build_node_config(
             NodeType.POLARS,
@@ -925,51 +748,6 @@ class TestBuildNodeConfigExtended:
             [],
         )
         assert config["instanceOf"] == "original_node"
-
-    def test_data_input_config_is_not_synthesised_without_its_sidecar(self):
-        config = _build_node_config(
-            NodeType.DATA_INPUT,
-            {
-                "input_type": "file",
-                "format": "parquet",
-                "mode": "scan",
-                "cache_mode": "direct",
-                "path": "data.parquet",
-                "arguments": {},
-            },
-            "",
-            [],
-        )
-        assert config == {}
-
-    def test_data_output_config_is_not_synthesised_without_its_sidecar(self):
-        config = _build_node_config(
-            NodeType.DATA_OUTPUT,
-            {
-                "output_type": "file",
-                "format": "parquet",
-                "mode": "sink",
-                "path": "",
-                "arguments": {},
-            },
-            "",
-            [],
-        )
-        assert config == {}
-
-    def test_model_score_source_type_mapped_to_camelcase(self):
-        config = _build_node_config(
-            NodeType.MODEL_SCORE,
-            {"source_type": "run", "run_id": "abc"},
-            "",
-            [],
-        )
-        assert config["sourceType"] == "run"
-
-    def test_model_score_hook_code_is_extracted(self):
-        body = "    x = 1\n    df = df.with_columns(pl.lit(x).alias('x'))\n    return df"
-        config = _build_node_config(NodeType.MODEL_SCORE, {}, body, ["df"])
-        assert config["code"] == "x = 1\ndf = df.with_columns(pl.lit(x).alias('x'))"
 
 
 # ===========================================================================
@@ -996,6 +774,45 @@ class TestResolveNodeConfig:
                 None,
                 explicit_node_type=NodeType.DATA_INPUT,
             )
+
+    @pytest.mark.parametrize(
+        "node_type",
+        sorted((kind for kind in NodeType if has_config_folder(kind)), key=lambda kind: kind.value),
+        ids=lambda kind: kind.value,
+    )
+    def test_a_folder_backed_type_takes_its_settings_from_its_sidecar(self, tmp_path, node_type):
+        """Every type with a config folder parses from its sidecar alone, as a new node
+        writes it, and the inline builder refuses it: no decorator form stands in for
+        the file."""
+        from haute._config_builder import _build_node_config
+        from haute._config_io import (
+            NODE_TYPE_TO_FOLDER,
+            _normalise_loaded_config,
+            palette_default_config,
+        )
+
+        folder = NODE_TYPE_TO_FOLDER[node_type]
+        settings = palette_default_config(node_type)
+        sidecar = tmp_path / "config" / folder / "node.json"
+        sidecar.parent.mkdir(parents=True)
+        sidecar.write_text(json.dumps(settings), encoding="utf-8")
+
+        resolved_type, config = _resolve_node_config(
+            {"config": f"config/{folder}/node.json"},
+            "...",
+            [],
+            tmp_path,
+            func_name="node",
+            explicit_node_type=node_type,
+        )
+
+        assert resolved_type == node_type
+        expected = _normalise_loaded_config(dict(settings), node_type)
+        assert {key: value for key, value in config.items() if key not in {"code", "inputs"}} == {
+            key: value for key, value in expected.items() if key not in {"code", "inputs"}
+        }
+        with pytest.raises(ValueError, match="keep their settings in a JSON sidecar"):
+            _build_node_config(node_type, {}, "...", [])
 
     def test_sidecar_required_error_names_folder_and_remediation(self):
         """The sidecar-required error must name the concrete folder and how to fix it.
