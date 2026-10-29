@@ -7790,6 +7790,102 @@
       "hidden_columns": [["t_target", "c_x"]]
     },
     {
+      "name": "a date with nothing typed counts as not equal to another date",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_end",
+              "op": "not_equals",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_start"},
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_start": "2026-01-01"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a date that is no real day is never after another date",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_end",
+              "op": "above",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_start"},
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_start": "2026-01-01", "c_end": "2026-13-01"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a date a day past another plus 365 days is not equal to it",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_end",
+              "op": "not_equals",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_start"},
+              "days": 365
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_start": "2026-01-01", "c_end": "2027-01-02"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a date exactly another plus 365 days fails a not-equal test against it",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_end",
+              "op": "not_equals",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_start"},
+              "days": 365
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_start": "2026-01-01", "c_end": "2027-01-01"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
       "name": "a test of a row against another column of the same row passes in a row where it holds",
       "form": "compare",
       "show_when": {
