@@ -13,6 +13,7 @@ import pytest
 from haute._node_snapshots import NodeSnapshotStore
 from haute._seed_plans import ListedSeed
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
+from tests._workbench_helpers import form_table, workbench_project
 from tests.test_preview_snapshot_seeding import (
     _ROWS,
     _code,
@@ -194,14 +195,16 @@ def test_first_preview_then_trace_reads_the_capture(project: Path, api: Any) -> 
 
 def test_a_workbench_outputs_cell_reads_its_own_tables_seeds(project: Path, api: Any) -> None:
     # Each table is filled through its own join. The preview ran every table and listed both
-    # joins; the cell's trace reads its own table's join and never the other's.
-    def columns(*specs: tuple[str, str]) -> list[dict[str, str]]:
-        return [{"name": name, "type": kind} for name, kind in specs]
-
-    tables = [
-        {"name": "a_table", "rows": "many", "columns": columns(("id", "int"), ("a", "int"))},
-        {"name": "d_table", "rows": "many", "columns": columns(("id", "int"), ("d", "float"))},
-    ]
+    # joins; the cell's trace reads its own table's join and never the other's. The routes
+    # give the Workbench Output the tables of the project's form.
+    workbench_project(
+        project,
+        [
+            form_table("t_a", "a_table", "output", ("id", "int"), ("a", "int"), many=True),
+            form_table("t_d", "d_table", "output", ("id", "int"), ("d", "float"), many=True),
+        ],
+        pipeline="rating/main.py",
+    )
     graph = _graph(
         project,
         [
@@ -209,7 +212,7 @@ def test_a_workbench_outputs_cell_reads_its_own_tables_seeds(project: Path, api:
             ("claims", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
             ("first", NodeType.POLARS, _code("df = policies.join(claims, on='id', how='left')")),
             ("second", NodeType.POLARS, _code("df = claims.join(policies, on='id', how='left')")),
-            ("response", NodeType.WORKBENCH_OUTPUT, {"tables": tables}),
+            ("response", NodeType.WORKBENCH_OUTPUT, {}),
         ],
         [("policies", "first"), ("claims", "first"), ("claims", "second"), ("policies", "second")],
     )

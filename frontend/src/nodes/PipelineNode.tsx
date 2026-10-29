@@ -5,12 +5,13 @@ import PolarsIcon from "../components/PolarsIcon"
 import { NODE_TYPES, NODE_TYPE_META, SOURCE_ONLY_TYPES, SINK_ONLY_TYPES, PILL_TYPES, isRequestInputType, nodeTypeIcons, nodeTypeColors, nodeTypeLabels, type NodeTypeValue } from "../utils/nodeTypes"
 import { formatValueCompact } from "../utils/formatValue"
 import useSettingsStore from "../stores/useSettingsStore"
+import useWorkbenchStore from "../stores/useWorkbenchStore"
 import { STATUS_COLORS } from "../theme/colors"
 import type { PipelineFlowNode } from "../types/node"
 import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_BOTTOM_HANDLE, EDGE_JOIN_JOIN_HANDLE } from "../utils/edgeJoinRoles"
 import { OUTPUT_ORIGIN_HANDLE_CLASS } from "../utils/flowHandles"
-import { authoritativeSourceHandles } from "../utils/apiInputPorts"
-import { workbenchTablePorts } from "../utils/workbenchTables"
+import { requestInputSourceHandles } from "../utils/apiInputPorts"
+import { workbenchNodePorts } from "../utils/workbenchTables"
 import FramePortRows, { DefaultInputPort } from "./FramePortRows"
 
 const statusColors: Record<string, string> = {
@@ -159,6 +160,11 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   const typeLabel = nodeTypeLabels[nodeType] || "NODE"
   const isDeployInput = isRequestInputType(nodeType)
   const isWorkbenchOutput = nodeType === NODE_TYPES.WORKBENCH_OUTPUT
+  // A workbench node's ports are the tables the workbench store fetched (specs/workbench),
+  // so a fetch re-renders the workbench nodes alone.
+  const workbench = useWorkbenchStore((state) => (
+    nodeType === NODE_TYPES.WORKBENCH_INPUT || isWorkbenchOutput ? state.tables : null
+  ))
   const isLiveSwitch = nodeType === NODE_TYPES.LIVE_SWITCH
   const isInstance = !!(nodeData.config?.instanceOf)
   const isSourceOnly = SOURCE_ONLY_TYPES.has(nodeType)
@@ -171,14 +177,14 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   // source Handles, full-detail body rows, and the re-measure signature.
   const frameLabels = useMemo<string[]>(
     () => (isDeployInput
-      ? authoritativeSourceHandles({ id, data: nodeData })
+      ? requestInputSourceHandles({ id, data: nodeData }, workbench)
       : []),
-    [id, isDeployInput, nodeData],
+    [id, isDeployInput, nodeData, workbench],
   )
   // A Workbench Output's tables are its input ports (specs/workbench).
   const tableLabels = useMemo<string[]>(
-    () => (isWorkbenchOutput ? workbenchTablePorts(nodeData.config) : []),
-    [isWorkbenchOutput, nodeData.config],
+    () => (isWorkbenchOutput ? workbenchNodePorts(nodeType, workbench) : []),
+    [isWorkbenchOutput, nodeType, workbench],
   )
 
   // JSON serialization is a collision-safe value-equality proxy for the

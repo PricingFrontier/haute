@@ -392,37 +392,29 @@ describe("prepareNodeUpdate rename stable bindings", () => {
   })
 })
 
-describe("prepareNodeUpdate on a Workbench Output", () => {
-  const outputTable = (name: string) => ({ name, rows: "one", columns: [{ name: "x", type: "int" }] })
-  const fill = (id: string, source: string, table: string): Edge => ({
-    id,
-    source,
-    target: "response",
-    sourceHandle: null,
-    targetHandle: table,
-  })
-
-  it("keeps a connection while its table remains, wherever it moved, and removes it with its table", () => {
-    const response = makeNode("response", "response", NODE_TYPES.WORKBENCH_OUTPUT, {
-      tables: [outputTable("pricing_output"), outputTable("layers")],
-    })
+describe("prepareNodeUpdate on a workbench node", () => {
+  // Its ports are the tables the workbench store fetched, which no update of the node
+  // changes (specs/workbench): useWorkbenchConnections holds its connections to them.
+  it.each([
+    [NODE_TYPES.WORKBENCH_INPUT, { id: "e_out", source: "workbench", target: "priced", sourceHandle: "policy", targetHandle: null }],
+    [NODE_TYPES.WORKBENCH_OUTPUT, { id: "e_in", source: "priced", target: "workbench", sourceHandle: null, targetHandle: "pricing_output" }],
+  ])("removes none of a %s's connections", (nodeType, connection) => {
+    const workbench = makeNode("workbench", "workbench", nodeType)
     const priced = makeNode("priced", "priced", NODE_TYPES.POLARS)
-    const layered = makeNode("layered", "layered", NODE_TYPES.POLARS)
-    const edges = [fill("e_priced", "priced", "pricing_output"), fill("e_layered", "layered", "layers")]
 
     const result = prepareNodeUpdate({
-      nodeId: "response",
-      data: { ...response.data, config: { tables: [outputTable("summary"), outputTable("pricing_output")] } },
-      refreshSourceIdentity: false,
+      nodeId: "workbench",
+      data: { ...workbench.data, description: "Quotes from the sheets" },
+      refreshSourceIdentity: true,
       readOnly: false,
-      graph: { nodes: [response, priced, layered], edges },
+      graph: { nodes: [workbench, priced], edges: [connection] },
       submodels: {},
       reservedApiInputFrameLabels: RESERVED,
     })
 
     expect(result.ok).toBe(true)
     const prepared = result as PreparedNodeUpdate
-    expect(prepared.edges.map((edge) => edge.id)).toEqual(["e_priced"])
-    expect(prepared.removed.map(({ edge }) => edge.id)).toEqual(["e_layered"])
+    expect(prepared.edges.map((edge) => edge.id)).toEqual([connection.id])
+    expect(prepared.removed).toEqual([])
   })
 })

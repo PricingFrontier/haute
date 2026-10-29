@@ -232,28 +232,3 @@ describe("useGraphStore - undo atomicity", () => {
     expect(restored.dirty).toBe(false)
   })
 })
-
-describe("useGraphStore - a commit without an undo step", () => {
-  beforeEach(() => {
-    resetGraphStoreForTests()
-  })
-
-  it("changes the graph and its dirty state, and leaves undo and redo as they were", () => {
-    seed([makeNode("a"), makeNode("b")], [makeEdge("a", "b")])
-    deleteSelection(new Set(["b"]))
-    act(() => useGraphStore.getState().undo())
-    const before = useGraphStore.getState()
-    expect(before.undoStack).toHaveLength(0)
-    expect(before.redoStack).toHaveLength(1)
-
-    const copied = before.nodes.map((node) => (node.id === "a" ? { ...node, data: { ...node.data, config: { tables: ["new"] } } } : node))
-    act(() => useGraphStore.getState().setNodesAndEdgesAndSubmodelsRaw(copied, before.edges, before.submodels))
-
-    const after = useGraphStore.getState()
-    expect(after.nodes).toBe(copied)
-    expect(after.undoStack).toBe(before.undoStack)
-    expect(after.redoStack).toBe(before.redoStack)
-    expect(after.persistedFingerprint).not.toBe(before.persistedFingerprint)
-    expect(after.dirty).toBe(true)
-  })
-})

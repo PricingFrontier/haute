@@ -11,6 +11,7 @@ import { EditorLabel, ValidatedTextField } from "../../components/form"
 import { useGraph } from "../useGraph"
 import { buildGraph } from "../../utils/buildGraph"
 import useSettingsStore from "../../stores/useSettingsStore"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { outputAssembleDryRun, previewNode, ApiError } from "../../api/client"
 import { apiErrorMessage } from "../../api/errors"
 import { FrameTableActions } from "./FrameTableActions"
@@ -21,8 +22,9 @@ import {
   dropMappingHeader,
 } from "./outputPathTools"
 import { makeOutputPath, parsePath, segmentPrefix, type Seg } from "./jsonpath"
-import { isRequestInputType } from "../../utils/nodeTypes"
-import { authoritativeSourceHandles, edgeInputName, requestInputFrameColumns } from "../../utils/apiInputPorts"
+import { NODE_TYPES, isRequestInputType } from "../../utils/nodeTypes"
+import { edgeInputName, requestInputFrameColumns, requestInputSourceHandles } from "../../utils/apiInputPorts"
+import type { WorkbenchTables } from "../../utils/workbenchTables"
 
 // ─── Preview chunk size ───────────────────────────────────────────
 //
@@ -88,12 +90,28 @@ function framePortId(
   return edgeInputName(edge, sourceNode, submodels)
 }
 
-function frameIsUnresolved(edge: SimpleEdge, sourceNode: SimpleNode | undefined): boolean {
+function frameIsUnresolved(
+  edge: SimpleEdge,
+  sourceNode: SimpleNode | undefined,
+  workbench: WorkbenchTables | null,
+): boolean {
   return sourceNode !== undefined
     && isRequestInputType(sourceNode.data.nodeType)
     && (edge.sourceHandle === null
       || edge.sourceHandle === undefined
-      || !authoritativeSourceHandles(sourceNode).includes(edge.sourceHandle))
+      || !requestInputSourceHandles(sourceNode, workbench).includes(edge.sourceHandle))
+}
+
+/**
+ * Whether a source's frames are declared rather than captured by a preview: a Workbench
+ * Input's in the newest fetch of the workbench's tables (specs/workbench), which its config
+ * does not hold, and an apiInput's in its v2 `tables` config.
+ */
+function declaresFrames(sourceNode: SimpleNode, workbench: WorkbenchTables | null): boolean {
+  const data = sourceNode.data as Record<string, unknown>
+  if (data.nodeType === NODE_TYPES.WORKBENCH_INPUT) return workbench !== null
+  const cfg = data.config as Record<string, unknown> | undefined
+  return Boolean(cfg && Array.isArray(cfg.tables))
 }
 
 /**
@@ -115,15 +133,18 @@ function frameIsUnresolved(edge: SimpleEdge, sourceNode: SimpleNode | undefined)
  * per-frame schema endpoint can replace that helper without touching any
  * caller — callers only ever see `string[]`.
  */
-function frameColumns(edge: SimpleEdge, sourceNode: SimpleNode | undefined): string[] {
+function frameColumns(
+  edge: SimpleEdge,
+  sourceNode: SimpleNode | undefined,
+  workbench: WorkbenchTables | null,
+): string[] {
   if (!sourceNode) return []
   const data = sourceNode.data as Record<string, unknown>
   const cfg = data.config as Record<string, unknown> | undefined
-  const tables = cfg && Array.isArray(cfg.tables) ? (cfg.tables as unknown[]) : null
 
   // apiInput v2: derive from the runtime-eligible config table for this frame.
-  if (tables) {
-    return requestInputFrameColumns(data.nodeType, cfg, edge.sourceHandle).map((column) => column.name)
+  if (declaresFrames(sourceNode, workbench)) {
+    return requestInputFrameColumns(data.nodeType, cfg, edge.sourceHandle, workbench).map((column) => column.name)
   }
 
   // Non-apiInput source: cached columns from preview/run.
@@ -149,15 +170,15 @@ function frameColumns(edge: SimpleEdge, sourceNode: SimpleNode | undefined): str
 function frameSchemaColumns(
   edge: SimpleEdge,
   sourceNode: SimpleNode | undefined,
+  workbench: WorkbenchTables | null,
 ): { name: string; type: string }[] {
   if (!sourceNode) return []
   const data = sourceNode.data as Record<string, unknown>
   const cfg = data.config as Record<string, unknown> | undefined
-  const tables = cfg && Array.isArray(cfg.tables) ? (cfg.tables as unknown[]) : null
 
   // apiInput v2: derive from the runtime-eligible config table for this frame.
-  if (tables) {
-    return requestInputFrameColumns(data.nodeType, cfg, edge.sourceHandle).map((column) => ({
+  if (declaresFrames(sourceNode, workbench)) {
+    return requestInputFrameColumns(data.nodeType, cfg, edge.sourceHandle, workbench).map((column) => ({
       name: column.name,
       type: column.dtype,
     }))
@@ -220,6 +241,8 @@ export default function OutputEditor({
   nodeId: string
 }) {
   const { allNodes, edges, submodels, preamble } = useGraph()
+  // A Workbench Input's frames are the tables the workbench store fetched (specs/workbench).
+  const workbench = useWorkbenchStore((state) => state.tables)
 
   // Incoming edges = the frames mapped into the response. One block each.
   const incomingEdges = useMemo(
@@ -244,11 +267,11 @@ export default function OutputEditor({
           parentLabel: sourceNode.data.label,
           port: name,
           label: name,
-          frameUnresolved: frameIsUnresolved(edge, sourceNode),
-          columns: frameColumns(edge, sourceNode),
+          frameUnresolved: frameIsUnresolved(edge, sourceNode, workbench),
+          columns: frameColumns(edge, sourceNode, workbench),
         }
       }),
-    [incomingEdges, nodeById, submodels],
+    [incomingEdges, nodeById, submodels, workbench],
   )
 
   // Per-frame INPUT schema (columns + types) for the expandable "Frames (N)"
@@ -258,9 +281,9 @@ export default function OutputEditor({
     () =>
       frames.map((f) => ({
         label: f.label,
-        columns: frameSchemaColumns(f.edge, f.sourceNode),
+        columns: frameSchemaColumns(f.edge, f.sourceNode, workbench),
       })),
-    [frames],
+    [frames, workbench],
   )
 
   // Two incoming frames that resolve to the SAME `source_port` would collide on

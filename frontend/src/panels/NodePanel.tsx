@@ -3,7 +3,8 @@ import { X, Link2, AlertTriangle, RefreshCw, Lock } from "lucide-react"
 import { fetchExplorePivotMembers } from "../api/client"
 import { NODE_TYPES, NODE_TYPE_META, REQUEST_INPUT_TYPES, isRequestInputType } from "../utils/nodeTypes"
 import type { NodeTypeValue } from "../utils/nodeTypes"
-import { authoritativeSourceHandles, edgeInputName } from "../utils/apiInputPorts"
+import { edgeInputName, requestInputSourceHandles } from "../utils/apiInputPorts"
+import type { WorkbenchTables } from "../utils/workbenchTables"
 import {
   ColumnsTab,
   SteppedCodePane,
@@ -24,6 +25,7 @@ import useUIStore, { type ExplorePane, type ModellingPane, type OptimiserPane } 
 import useNodeDataStore, { profileForConsumer } from "../stores/useNodeDataStore"
 import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
+import useWorkbenchStore from "../stores/useWorkbenchStore"
 import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
 import { recoverySummaryKey, useRecoverySummaryStore } from "../stores/useRecoverySummaryStore"
 import { buildNodeDataCacheIdentity } from "./dataPointIdentity"
@@ -68,8 +70,6 @@ type NodePanelProps = {
   readOnly?: boolean
   /** True when the current pipeline document is not executable/mutable. */
   documentReadOnly?: boolean
-  /** True while a submodel is open, so the node shown is inside one. */
-  insideSubmodel?: boolean
   /** Node-scoped save for a `scoped_editable` node while the document stays fenced. */
   scopedSave?: () => Promise<{ ok: boolean; error?: string }>
   /** Opens an explicitly confirmed document-level recovery action. */
@@ -562,6 +562,7 @@ function upstreamColumnsSignature(edges: SimpleEdge[], nodeMap: Record<string, S
 function inputSourceForEdge(
   edge: SimpleEdge,
   nodeMap: Record<string, SimpleNode>,
+  workbench: WorkbenchTables | null,
   submodels?: Record<string, unknown>,
 ): InputSource {
   const sourceNode = nodeMap[edge.source]
@@ -574,7 +575,7 @@ function inputSourceForEdge(
     isRequestInputType(sourceNode.data.nodeType)
     && (edge.sourceHandle === null
       || edge.sourceHandle === undefined
-      || !authoritativeSourceHandles(sourceNode).includes(edge.sourceHandle))
+      || !requestInputSourceHandles(sourceNode, workbench).includes(edge.sourceHandle))
 
   const columns = edgeSourceColumns(edge, nodeMap)
   return {
@@ -591,11 +592,12 @@ function inputSourceForEdge(
 function upstreamInputSourceSignature(
   edges: SimpleEdge[],
   nodeMap: Record<string, SimpleNode>,
+  workbench: WorkbenchTables | null,
   submodels?: Record<string, unknown>,
 ): string {
   return JSON.stringify(
     edges.map((edge) => {
-      const source = inputSourceForEdge(edge, nodeMap, submodels)
+      const source = inputSourceForEdge(edge, nodeMap, workbench, submodels)
       return [
         edge.id,
         edge.source,
@@ -1507,7 +1509,6 @@ function NodePanelContent({
   selectedPreviewLoading = false,
   readOnly = false,
   documentReadOnly = false,
-  insideSubmodel = false,
   scopedSave,
   onRemoveUnavailableNode,
 }: ActiveNodePanelProps) {
@@ -1677,9 +1678,11 @@ function NodePanelContent({
     () => edges.filter((e) => e.target === selectedNodeId),
     [edges, selectedNodeId],
   )
-  const upstreamInputSourceSig = upstreamInputSourceSignature(upstreamEdges, nodeMap, submodels)
+  // A Workbench Input's frames are the tables the workbench store fetched (specs/workbench).
+  const workbench = useWorkbenchStore((state) => state.tables)
+  const upstreamInputSourceSig = upstreamInputSourceSignature(upstreamEdges, nodeMap, workbench, submodels)
   const inputSources: InputSource[] = useMemo(() => {
-    return upstreamEdges.map((edge) => inputSourceForEdge(edge, nodeMap, submodels))
+    return upstreamEdges.map((edge) => inputSourceForEdge(edge, nodeMap, workbench, submodels))
     // Keyed by selected node plus each upstream edge's source/display identity:
     // source labels, source handles, resolved frame labels, and resolution
     // state can all change while the edge id stays the same.
@@ -1798,7 +1801,6 @@ function NodePanelContent({
       exploreConfigHash={exploreConfigHash}
       reservedApiInputFrameLabels={reservedApiInputFrameLabelSet}
       accentColor={accentColor}
-      insideSubmodel={insideSubmodel}
     />
   )
 

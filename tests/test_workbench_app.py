@@ -27,8 +27,6 @@ from haute._workbench_app import (
     write_release,
 )
 from haute._workbench_form import (
-    IDENTITY_COLUMNS,
-    QUOTE_DETAILS_COLUMNS,
     FormSpec,
     OptionsSource,
     WorkbenchFormError,
@@ -608,33 +606,11 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         '[workbench.app]\nhost = "azure-container-apps"\n',
         encoding="utf-8",
     )
-    _write(with_details_copy(_priced()), tmp_path, "main")
+    # Its Workbench nodes hold no tables: they are given the form's wherever it runs.
+    _write(_priced(), tmp_path, "main")
     write_sheets(tmp_path, PROJECT_TABLES)
     yield tmp_path
     set_project_root(original)
-
-
-def with_details_copy(graph: PipelineGraph) -> PipelineGraph:
-    """*graph* with its Workbench nodes' copies of the tables as the editor copies them from
-    a form: Haute's ``quote_details`` table first in the Workbench Input's, and every other
-    table leading with the quote's reference and option."""
-    from tests.test_workbench_output import _column, _table
-
-    identity = [_column(name, type_) for _, name, type_ in IDENTITY_COLUMNS]
-    for node in graph.nodes:
-        if node.data.nodeType not in (NodeType.WORKBENCH_INPUT, NodeType.WORKBENCH_OUTPUT):
-            continue
-        tables = [
-            {**table, "columns": [*identity, *table["columns"]]}
-            for table in node.data.config["tables"]
-        ]
-        if node.data.nodeType == NodeType.WORKBENCH_INPUT:
-            details = _table(
-                "quote_details", *((name, type_) for _, name, type_ in QUOTE_DETAILS_COLUMNS)
-            )
-            tables = [details, *tables]
-        node.data.config["tables"] = tables
-    return graph
 
 
 def write_sheets(project: Path, tables: list[dict[str, Any]]) -> None:
@@ -745,7 +721,7 @@ def test_the_app_prices_on_the_utility_code_the_release_carries(project: Path) -
 
     from tests.test_workbench_output import _priced, _write
 
-    graph = with_details_copy(_priced())
+    graph = _priced()
     graph.preamble = "from utility import RATE\n"
     graph.node_map["priced"].data.config["code"] = (
         "df = policy.with_columns(premium=pl.col('limit') / 10 * RATE, referral=pl.lit('none'))"
@@ -821,6 +797,8 @@ def test_a_release_allows_what_its_params_files_hold_when_it_is_built(
 
 
 def test_a_release_is_refused_for_what_the_project_cannot_ship(project: Path) -> None:
+    from haute.errors import DeployError
+
     def refused() -> str:
         with pytest.raises(WorkbenchAppError) as caught:
             build_release(project, project / "build" / "app")
@@ -833,11 +811,15 @@ def test_a_release_is_refused_for_what_the_project_cannot_ship(project: Path) ->
     assert (other / "notes.txt").is_file()
     (other / "notes.txt").unlink()
 
-    # A form disagreeing with the pipeline's Workbench nodes does not validate.
-    pricing = _form_table("t_pricing", "pricing", "output", ("premium", "float"), ("tax", "float"))
-    write_sheets(project, [*PROJECT_TABLES[:2], pricing, PROJECT_TABLES[3]])
-    assert "The pipeline did not validate" in refused()
-    assert "tax" in refused()
+    # A form without a table the pipeline fills is refused, naming the connection.
+    write_sheets(project, PROJECT_TABLES[:3])
+    with pytest.raises(DeployError) as unconnectable:
+        build_release(project, project / "build" / "app")
+    assert unconnectable.value.message == (
+        "'item_premiums' fills table 'item_prices' of Workbench Output 'response', which "
+        "workbench does not have."
+    )
+    write_sheets(project, PROJECT_TABLES)
 
     # A folder gone is restored from version history, never built from a blank form.
     import shutil

@@ -1045,30 +1045,44 @@ describe("useWebSocketSync", () => {
       expect(useDocumentStatusStore.getState().systemFailure).toBeNull()
     })
 
-    it("counts each connection as a possible change of the form's file, which went unannounced while disconnected", () => {
+    it("counts each connection as a possible change of the form's file, which went unannounced while disconnected, and fetches the tables again", () => {
       const params = makeHookParams("rating/main.py")
-      useWorkbenchStore.setState({ formChanges: 0 })
-      renderHook(() => useWebSocketSync(params))
+      const { refreshTables: fetchTables } = useWorkbenchStore.getState()
+      const refreshTables = vi.fn(() => 1)
+      useWorkbenchStore.setState({ formChanges: 0, refreshTables })
+      try {
+        renderHook(() => useWebSocketSync(params))
 
-      act(() => latestWS().onopen?.(new Event("open")))
+        act(() => latestWS().onopen?.(new Event("open")))
 
-      expect(useWorkbenchStore.getState().formChanges).toBe(1)
+        expect(useWorkbenchStore.getState().formChanges).toBe(1)
+        expect(refreshTables).toHaveBeenCalledOnce()
+      } finally {
+        useWorkbenchStore.setState({ refreshTables: fetchTables })
+      }
     })
 
-    it("counts each change of the workbench's form file on disk, and nothing else", async () => {
+    it("counts each change of the workbench's form file on disk and fetches its tables again, the workbench nodes' ports, and nothing else", async () => {
       const params = makeHookParams("rating/main.py")
-      useWorkbenchStore.setState({ formChanges: 0 })
-      renderHook(() => useWebSocketSync(params))
+      const { refreshTables: fetchTables } = useWorkbenchStore.getState()
+      const refreshTables = vi.fn(() => 1)
+      useWorkbenchStore.setState({ formChanges: 0, refreshTables })
+      try {
+        renderHook(() => useWebSocketSync(params))
 
-      await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({ type: "workbench_form_changed", form: "rating/workbench" }),
-        }))
-      })
+        await act(async () => {
+          latestWS().onmessage?.(new MessageEvent("message", {
+            data: JSON.stringify({ type: "workbench_form_changed", form: "rating/workbench" }),
+          }))
+        })
 
-      expect(useWorkbenchStore.getState().formChanges).toBe(1)
-      expect(useDocumentStatusStore.getState().systemFailure).toBeNull()
-      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+        expect(useWorkbenchStore.getState().formChanges).toBe(1)
+        expect(refreshTables).toHaveBeenCalledOnce()
+        expect(useDocumentStatusStore.getState().systemFailure).toBeNull()
+        expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      } finally {
+        useWorkbenchStore.setState({ refreshTables: fetchTables })
+      }
     })
 
     it("sends the initially loaded document's fingerprint on the first connection", () => {

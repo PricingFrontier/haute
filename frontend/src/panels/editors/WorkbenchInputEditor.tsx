@@ -3,35 +3,29 @@ import type { WorkbenchTable } from "../../api/types"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { apiInputLabelIssue, apiInputLabelIssueMessage } from "../../utils/apiInputPorts"
 import { withAlpha } from "../../utils/color"
-import { readWorkbenchTables } from "../../utils/workbenchTables"
+import { NODE_TYPES } from "../../utils/nodeTypes"
+import { workbenchNodeTables } from "../../utils/workbenchTables"
 
 const SECTION_LABEL = "text-[11px] font-bold uppercase tracking-[0.08em]"
 
 /**
- * The Workbench Input's panel (specs/workbench): the tables the project's workbench
- * supplies, read-only, with whatever stops a table's name being a port. It reads no
- * file: previews run on the workbench's sample quote, a table it gives no rows being
- * one row of nulls. The editor keeps the copies current (`useWorkbenchTables`);
- * nothing here edits them.
+ * The Workbench Input's panel (specs/workbench): the tables the newest fetch of the
+ * project's workbench gave, read-only, with whatever stops a table's name being a port.
+ * It reads no file: previews run on the workbench's sample quote, a table it gives no
+ * rows being one row of nulls. Nothing of the tables is in the node, and nothing here
+ * edits them.
  */
 export default function WorkbenchInputEditor({
-  config,
   accentColor,
   reservedFrameLabels,
-  insideSubmodel = false,
 }: {
-  config: Record<string, unknown>
   accentColor: string
   reservedFrameLabels: ReadonlySet<string>
-  /** A submodel is open: the editor updates the tables only at the pipeline's top level. */
-  insideSubmodel?: boolean
 }) {
-  const enabled = useWorkbenchStore((state) => state.enabled)
-  const tables = readWorkbenchTables(config)
+  const workbench = useWorkbenchStore((state) => state.tables)
+  const tables = workbenchNodeTables(NODE_TYPES.WORKBENCH_INPUT, workbench)
   const names = tables.map((table) => table.name)
-  const sample = config.sample
-  const hasSample =
-    sample !== null && typeof sample === "object" && !Array.isArray(sample) && Object.keys(sample).length > 0
+  const hasSample = workbench !== null && Object.keys(workbench.sample).length > 0
 
   return (
     <div className="px-4 py-3 space-y-3" data-testid="workbench-input-editor">
@@ -54,11 +48,7 @@ export default function WorkbenchInputEditor({
       </p>
 
       <section data-testid="workbench-input-tables" className="space-y-1.5">
-        <WorkbenchTablesHeader
-          enabled={enabled}
-          insideSubmodel={insideSubmodel}
-          empty={tables.length === 0}
-        />
+        <WorkbenchTablesHeader empty={tables.length === 0} />
         {tables.map((table, index) => (
           <WorkbenchTableCard
             key={`${index}:${table.name}`}
@@ -87,28 +77,17 @@ export function tableLabelIssue(
   )
 }
 
-/** The note both workbench panels show while the project's workbench is not enabled. */
-export const WORKBENCH_DISABLED_NOTE =
-  "The workbench is not enabled in haute.toml, so these tables are the last copy and nothing updates them."
-
 /**
  * The title of a workbench node's tables, the way to the workbench's view while the
- * workbench is enabled, and its notes: the workbench is not enabled, or a submodel is open.
+ * workbench is enabled, and a note while there are none.
  */
-export function WorkbenchTablesHeader({
-  enabled,
-  insideSubmodel,
-  empty,
-}: {
-  enabled: boolean
-  insideSubmodel: boolean
-  empty: boolean
-}) {
+export function WorkbenchTablesHeader({ empty }: { empty: boolean }) {
+  const enabled = useWorkbenchStore((state) => state.enabled)
   return (
     <>
       <div className="flex items-baseline justify-between gap-2">
         <h3 className={SECTION_LABEL} style={{ color: "var(--text-muted)" }}>
-          {enabled ? "Tables from the workbench" : "Tables"}
+          Tables from the workbench
         </h3>
         {enabled && (
           <button
@@ -121,16 +100,6 @@ export function WorkbenchTablesHeader({
           </button>
         )}
       </div>
-      {!enabled && (
-        <p role="note" className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-          {WORKBENCH_DISABLED_NOTE}
-        </p>
-      )}
-      {insideSubmodel && (
-        <p role="note" className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-          The editor updates these tables only at the pipeline's top level.
-        </p>
-      )}
       {empty && (
         <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
           No tables yet.

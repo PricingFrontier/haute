@@ -16,6 +16,7 @@ from haute._ast_helpers import _extract_function_bodies, _is_pipeline_authored_d
 from haute._banding_config import normalise_banding_factors
 from haute._builders import load_external_file_object
 from haute._config_io import collect_node_configs, config_path_for_node, node_emits_sidecar
+from haute._flatten import flatten_with_form_tables
 from haute._git import commit_parent
 from haute._graph_builders import _extract_decorated_node_skeletons, _resolve_node_skeleton
 from haute._graph_utils import _sanitize_func_name, edge_input_name
@@ -75,7 +76,6 @@ from haute.executor import (
     _compile_preamble,
     _pipeline_dir,
 )
-from haute.graph_utils import flatten_graph
 from haute.modelling._train_config import (
     MISSING_TARGET_MESSAGE,
     TrainingConfigError,
@@ -384,7 +384,8 @@ class _PreparedGraph:
             raise PreambleFailedError(exc, graph=graph) from exc
         return cls(
             graph=graph,
-            flattened=flatten_graph(graph),
+            # Run as the project's pipeline: its workbench nodes take the form's tables.
+            flattened=flatten_with_form_tables(graph, project_root=Path.cwd()),
             preamble_ns=preamble_ns or None,
         )
 

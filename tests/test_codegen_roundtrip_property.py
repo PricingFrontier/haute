@@ -233,41 +233,22 @@ def _capstone_root_graph(
             ),
             description="API " + description,
         ),
-        # Read as the Quote Input is; unconnected, since a round trip never runs it.
+        # Its tables and sample are the form's, given where it runs, so its config holds
+        # neither; unconnected, since a round trip never runs it.
         _node(
             workbench,
             "Workbench Input {Brace}",
             NodeType.WORKBENCH_INPUT,
-            _opaque(
-                {
-                    "tables": [
-                        {
-                            "name": "keyed",
-                            "rows": "one",
-                            "columns": [{"name": "state", "type": "str"}],
-                        }
-                    ],
-                }
-            ),
+            _opaque({}),
             description="workbench " + description,
         ),
-        # Filled from the frames on its tables' ports; unconnected, as a round trip never
-        # runs it.
+        # Filled from the frames on its tables' ports, the form's; unconnected, as a round
+        # trip never runs it.
         _node(
             workbench_output,
             "Workbench Output {Brace}",
             NodeType.WORKBENCH_OUTPUT,
-            _opaque(
-                {
-                    "tables": [
-                        {
-                            "name": "priced",
-                            "rows": "one",
-                            "columns": [{"name": "premium", "type": "float"}],
-                        }
-                    ],
-                }
-            ),
+            _opaque({}),
             description="workbench output " + description,
         ),
         _node(

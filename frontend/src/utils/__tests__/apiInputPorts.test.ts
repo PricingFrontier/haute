@@ -51,18 +51,15 @@ const apiInputLabelIssue = (
   candidate: string,
   otherLabels: readonly string[],
 ) => apiInputPorts.apiInputLabelIssue(candidate, otherLabels, RESERVED_FRAME_LABELS)
-// A Quote Input's, unless a test names the Workbench Input.
 const reconcileApiInputEdges = <E extends SimpleEdge>(
-  args: Omit<Parameters<typeof apiInputPorts.reconcileApiInputEdges<E>>[0], "reservedLabels" | "nodeType">
-    & { nodeType?: string },
-) => apiInputPorts.reconcileApiInputEdges({ nodeType: NODE_TYPES.API_INPUT, ...args, reservedLabels: RESERVED_FRAME_LABELS })
+  args: Omit<Parameters<typeof apiInputPorts.reconcileApiInputEdges<E>>[0], "reservedLabels">,
+) => apiInputPorts.reconcileApiInputEdges({ ...args, reservedLabels: RESERVED_FRAME_LABELS })
 const migrateApiInputEdges = <E extends SimpleEdge>(
   args: Omit<Parameters<typeof apiInputPorts.migrateApiInputEdges<E>>[0], "reservedLabels">,
 ) => apiInputPorts.migrateApiInputEdges({ ...args, reservedLabels: RESERVED_FRAME_LABELS })
 const applyApiInputConfigChange = <E extends SimpleEdge>(
-  args: Omit<Parameters<typeof apiInputPorts.applyApiInputConfigChange<E>>[0], "reservedLabels" | "nodeType">
-    & { nodeType?: string },
-) => apiInputPorts.applyApiInputConfigChange({ nodeType: NODE_TYPES.API_INPUT, ...args, reservedLabels: RESERVED_FRAME_LABELS })
+  args: Omit<Parameters<typeof apiInputPorts.applyApiInputConfigChange<E>>[0], "reservedLabels">,
+) => apiInputPorts.applyApiInputConfigChange({ ...args, reservedLabels: RESERVED_FRAME_LABELS })
 
 // A table is a runtime port only if it is emit:true AND has >=1 selected
 // column (matches the backend `load_v2_api_source`), so the helper gives a
@@ -268,6 +265,16 @@ describe("edgeInputName", () => {
   it("returns an explicit unresolved marker for a null-handle apiInput edge", () => {
     expect(
       edgeInputName(sourceEdge(null), sourceNode("apiInput"), {}),
+    ).toBe("<unresolved>")
+  })
+
+  it("names a Workbench Input's frame by its handle, which no identity holds", () => {
+    // The server sends a Workbench Input no handle identities: its ports are the form's.
+    expect(
+      edgeInputName(sourceEdge("policy_details"), sourceNode("workbenchInput"), {}),
+    ).toBe("policy_details")
+    expect(
+      edgeInputName(sourceEdge(null), sourceNode("workbenchInput"), {}),
     ).toBe("<unresolved>")
   })
 
@@ -824,98 +831,41 @@ describe("applyApiInputConfigChange", () => {
 })
 
 describe("a Workbench Input's frames", () => {
-  // The workbench's tables (specs/workbench): a table with a column is a frame, named by
-  // its table and judged a handle as a Quote Input's label is.
-  const workbenchTable = (name: string, columns: Record<string, unknown>[] = [{ name: "c", type: "int" }]) =>
-    ({ name, rows: "one", columns })
-  const config = {
+  // The tables the workbench store fetched (specs/workbench), which its config does not hold.
+  const workbenchTable = (name: string, columns: { name: string; type: "int" | "str" | "float" }[] = [{ name: "c", type: "int" }]) =>
+    ({ name, rows: "one" as const, columns })
+  const workbench = {
     tables: [
       workbenchTable("policy"),
       workbenchTable("bare", []),
-      workbenchTable("class"),
-      workbenchTable("two words"),
-      workbenchTable("Policy"),
       workbenchTable("items", [{ name: "item_id", type: "str" }, { name: "value", type: "float" }]),
     ],
+    sample: {},
+    responseTables: [workbenchTable("pricing_output")],
+    fetch: 1,
   }
+  const workbenchInput = { id: "wb_in", data: { nodeType: NODE_TYPES.WORKBENCH_INPUT, config: {}, _sourceHandleInputNames: {} } }
 
-  it("are its tables with a column whose names can be handles, in order", () => {
-    expect(apiInputPorts.requestInputFrameLabels(NODE_TYPES.WORKBENCH_INPUT, config, RESERVED_FRAME_LABELS))
-      .toEqual(["policy", "items"])
-    expect(apiInputPorts.workbenchInputFrameLabels({ tables: [] }, RESERVED_FRAME_LABELS)).toEqual([])
-    // A Quote Input's config reads as a Quote Input's.
-    expect(apiInputPorts.requestInputFrameLabels(NODE_TYPES.API_INPUT, { tables: [table("quote", true)] }, RESERVED_FRAME_LABELS))
-      .toEqual(["quote"])
-    expect(apiInputPorts.requestInputFrameLabels(NODE_TYPES.API_INPUT, config, RESERVED_FRAME_LABELS)).toEqual([])
+  it("are its ports from the newest fetch, none before it lands, where a Quote Input's are its identities", () => {
+    expect(apiInputPorts.requestInputSourceHandles(workbenchInput, workbench)).toEqual(["policy", "items"])
+    expect(apiInputPorts.requestInputSourceHandles(workbenchInput, null)).toEqual([])
+    const quoteInput = { id: "quote", data: { nodeType: NODE_TYPES.API_INPUT, config: {}, _sourceHandleInputNames: { quotes: "quotes" } } }
+    expect(apiInputPorts.requestInputSourceHandles(quoteInput, workbench)).toEqual(["quotes"])
   })
 
   it("carry their tables' columns, typed as declared", () => {
-    expect(apiInputPorts.requestInputFrameColumns(NODE_TYPES.WORKBENCH_INPUT, config, "items")).toEqual([
+    const columns = (handle: string | null, fetched: typeof workbench | null = workbench) =>
+      apiInputPorts.requestInputFrameColumns(NODE_TYPES.WORKBENCH_INPUT, {}, handle, fetched)
+    expect(columns("items")).toEqual([
       { name: "item_id", dtype: "str" },
       { name: "value", dtype: "float" },
     ])
-    expect(apiInputPorts.requestInputFrameColumns(NODE_TYPES.WORKBENCH_INPUT, config, "bare")).toEqual([])
-    expect(apiInputPorts.requestInputFrameColumns(NODE_TYPES.WORKBENCH_INPUT, config, null)).toEqual([])
-    expect(apiInputPorts.requestInputFrameColumns(NODE_TYPES.API_INPUT, { tables: [table("quote", true)] }, "quote"))
+    expect(columns("bare")).toEqual([])
+    expect(columns(null)).toEqual([])
+    expect(columns("items", null)).toEqual([])
+    // A Quote Input's come from its config, whatever the workbench holds.
+    expect(apiInputPorts.requestInputFrameColumns(NODE_TYPES.API_INPUT, { tables: [table("quote", true)] }, "quote", workbench))
       .toEqual([{ name: "c", dtype: "" }])
-  })
-})
-
-describe("connections follow table names", () => {
-  // The workbench's tables (specs/workbench) may be reordered or replaced wholesale, so a
-  // Workbench Input never rebinds a connection by position.
-  const tablesOf = (...names: string[]) => ({
-    tables: names.map((name) => ({ name, rows: "one", columns: [{ name: "c", type: "int" }] })),
-  })
-  const quoteTablesOf = (...labels: string[]) => ({ tables: labels.map((label) => ({ ...table(label, true), path: "$[:]" })) })
-  const policy = edgeFrom("api_1", "policy", "e_policy")
-  const account = edgeFrom("api_1", "account", "e_account")
-
-  it("keeps a connection while its table's name remains and removes the rest, never rebinding", () => {
-    for (const next of [tablesOf("account", "building"), tablesOf("building", "account")]) {
-      const result = applyApiInputConfigChange({
-        nodeId: "api_1",
-        nodeType: NODE_TYPES.WORKBENCH_INPUT,
-        prevConfig: tablesOf("policy", "account"),
-        nextConfig: next,
-        edges: [policy, account],
-      })
-      expect(result.rebound).toEqual([])
-      expect(result.edges).toEqual([account])
-      expect(result.removed.map((removal) => removal.edge)).toEqual([policy])
-    }
-  })
-
-  it("keeps every connection when the tables are only reordered", () => {
-    const edges = [policy, account]
-    const result = applyApiInputConfigChange({
-      nodeId: "api_1",
-      nodeType: NODE_TYPES.WORKBENCH_INPUT,
-      prevConfig: tablesOf("policy", "account"),
-      nextConfig: tablesOf("account", "policy"),
-      edges,
-    })
-    expect(result).toEqual({ edges, rebound: [], removed: [] })
-  })
-
-  it("removes a renamed table's connections, where a Quote Input's rebind", () => {
-    const workbenchRename = applyApiInputConfigChange({
-      nodeId: "api_1",
-      nodeType: NODE_TYPES.WORKBENCH_INPUT,
-      prevConfig: tablesOf("policy"),
-      nextConfig: tablesOf("policy_details"),
-      edges: [policy],
-    })
-    expect(workbenchRename.rebound).toEqual([])
-    expect(workbenchRename.edges).toEqual([])
-
-    const quoteRename = applyApiInputConfigChange({
-      nodeId: "api_1",
-      prevConfig: quoteTablesOf("policy"),
-      nextConfig: quoteTablesOf("policy_details"),
-      edges: [policy],
-    })
-    expect(quoteRename.rebound.map((rebinding) => rebinding.to)).toEqual(["policy_details"])
   })
 })
 

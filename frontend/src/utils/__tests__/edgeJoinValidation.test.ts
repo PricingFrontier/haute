@@ -297,5 +297,34 @@ describe("edgeJoinValidation", () => {
         "Base key policy_id is not in the current upstream columns.",
       )
     })
+
+    it("reads a Workbench Input's columns from the newest fetch of the workbench's tables, as current without any fence", () => {
+      // Its config holds none of its tables; before the first fetch lands its columns
+      // are only what a preview captured.
+      const workbenchInput = node("wb_in", {
+        data: { label: "Quote", nodeType: "workbenchInput", config: {}, _columns: [] },
+      })
+      const join = edgeJoin({ how: "left", leftOn: ["policy_id"], rightOn: ["state"] })
+      const nodes = [workbenchInput, stampedInput("lookup", ["state"]), join]
+      const edges = [
+        edge("policy", "wb_in", "join", "base", "policy"),
+        edge("e-lookup", "lookup", "join", "join"),
+      ]
+      const workbench = {
+        tables: [{ name: "policy", rows: "one" as const, columns: [{ name: "state", type: "str" as const }] }],
+        sample: {},
+        responseTables: [],
+        fetch: 1,
+      }
+
+      const issue = findFirstInvalidEdgeJoin(nodes, edges, undefined, workbench)
+
+      expect(issue?.analysis.baseColumns).toEqual([{ name: "state", dtype: "str" }])
+      expect(issue?.analysis.diagnostics).toContain(
+        "Base key policy_id is not in the current upstream columns.",
+      )
+      expect(findFirstInvalidEdgeJoin(nodes, edges, undefined, null)?.analysis.diagnostics ?? [])
+        .not.toContain("Base key policy_id is not in the current upstream columns.")
+    })
   })
 })

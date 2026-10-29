@@ -59,8 +59,9 @@ Out of scope, owned elsewhere:
   starter nodes/sidecars are generated.
 - `haute run [pipeline_file]` executes a pipeline end-to-end through the same
   parse → flatten → `execute_graph` path the GUI uses (each submodel occurrence runs as its
-  definition's nodes), printing a per-node row/column summary and a preview of the final node's
-  output.
+  definition's nodes, and a Workbench node takes its tables from the project's form folder,
+  [workbench](../workbench/high-level.md)), printing a per-node row/column summary and a
+  preview of the final node's output.
 - `haute lint [pipeline_file]` strictly parses a pipeline and exits non-zero on syntax,
   configuration, topology, or other parse failures. For a valid canonical graph it reports
   structural problems (edges pointing at missing nodes and orphan nodes) without executing

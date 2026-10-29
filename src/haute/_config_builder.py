@@ -22,6 +22,7 @@ from haute._code_extraction import (
 )
 from haute._config_io import NODE_TYPE_TO_FOLDER, has_config_folder, load_node_config
 from haute._config_validation import (
+    reject_form_given_keys,
     reject_removed_config_keys,
     reject_unrecognized_config_keys,
     validate_node_config,
@@ -90,15 +91,17 @@ def _build_node_config(
 ) -> dict[str, Any]:
     """Build the config dict for a node given its type and decorator kwargs."""
     reject_removed_config_keys(node_type, decorator_kwargs)
+    # A workbench node's tables and sample are the form's, given where it runs.
+    reject_form_given_keys(node_type, decorator_kwargs)
     config: dict[str, Any] = {}
     if node_type in REQUEST_INPUT_NODE_TYPES:
         # A Workbench Input reads no file; a Quote Input's previews read `path`.
         if node_type == NodeType.API_INPUT:  # the Quote Input alone
             config["path"] = decorator_kwargs.get("path", "")
-        # `tables[]` is the schema mapping, typically loaded from the sidecar
-        # by ``_resolve_node_config``; `row_id_column` belongs to each table.
-        if isinstance(decorator_kwargs.get("tables"), list):
-            config["tables"] = decorator_kwargs["tables"]
+            # `tables[]` is the schema mapping, typically loaded from the sidecar
+            # by ``_resolve_node_config``; `row_id_column` belongs to each table.
+            if isinstance(decorator_kwargs.get("tables"), list):
+                config["tables"] = decorator_kwargs["tables"]
         if isinstance(decorator_kwargs.get("contract"), str):
             config["contract"] = decorator_kwargs["contract"]
     elif node_type == NodeType.LIVE_SWITCH:

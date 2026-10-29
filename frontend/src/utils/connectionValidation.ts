@@ -2,7 +2,7 @@ import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import { isSubmodelDefinition, isSubmodelInstanceConfig } from "../types/node"
 import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 import { SUBMODEL_INPUT_HANDLE } from "./flowHandles"
-import { workbenchTablePorts } from "./workbenchTables"
+import { workbenchNodePorts, type WorkbenchTables } from "./workbenchTables"
 import {
   edgeInputName,
   incomingEdgeInputNames,
@@ -91,18 +91,20 @@ function targetEndpointIsSource(connection: ConnectionLike): boolean {
 
 /**
  * Why a connection cannot fill a table of the Workbench Output *target*, or null when it
- * can: it lands on one of its tables' ports, a table takes one connection, and a node
- * fills one table (specs/workbench).
+ * can: it lands on one of its tables' ports, its ports from *workbench*, the newest fetch
+ * of the workbench's tables; a table takes one connection; and a node fills one table
+ * (specs/workbench).
  */
 function workbenchOutputConnectionFailure(
   candidate: { source: string; targetHandle: string | null | undefined },
   target: SimpleNode,
   nodesById: Map<string, SimpleNode>,
   edges: readonly SimpleEdge[],
+  workbench: WorkbenchTables | null,
 ): string | null {
   const name = (nodeId: string) => String(nodesById.get(nodeId)?.data.label ?? nodeId)
   const table = candidate.targetHandle
-  if (typeof table !== "string" || !workbenchTablePorts(target.data.config).includes(table)) {
+  if (typeof table !== "string" || !workbenchNodePorts(target.data.nodeType, workbench).includes(table)) {
     return `Connect to one of ${name(target.id)}'s tables`
   }
   const incoming = edges.filter((edge) => edge.target === target.id)
@@ -128,13 +130,15 @@ function resolvedTarget(
  * candidate is rejected when its derived input name already belongs to an
  * incoming edge of the target, or when an API source has no labelled frame
  * handle. The latter deliberately rejects the zero-frame default handle in
- * both Loose-mode gesture directions.
+ * both Loose-mode gesture directions. *workbench* is the newest fetch of the
+ * workbench's tables, whose response tables are a Workbench Output's ports.
  */
 export function validatePipelineConnection(
   connection: ConnectionLike,
   nodes: readonly SimpleNode[] = [],
   edges: readonly SimpleEdge[] = [],
   submodels: SubmodelsLike = undefined,
+  workbench: WorkbenchTables | null = null,
 ): ConnectionValidationResult {
   if (!connection.source || !connection.target) {
     return { ok: false, reason: { kind: "invalid-connection", message: "Connection endpoints are incomplete" } }
@@ -163,7 +167,7 @@ export function validatePipelineConnection(
   }
 
   if (targetNode.data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT) {
-    const failure = workbenchOutputConnectionFailure(candidate, targetNode, nodesById, edges)
+    const failure = workbenchOutputConnectionFailure(candidate, targetNode, nodesById, edges, workbench)
     if (failure !== null) return { ok: false, reason: { kind: "invalid-connection", message: failure } }
   }
 
@@ -290,6 +294,7 @@ export function isPipelineConnectionValid(
   nodes: readonly SimpleNode[] = [],
   edges: readonly SimpleEdge[] = [],
   submodels: SubmodelsLike = undefined,
+  workbench: WorkbenchTables | null = null,
 ): boolean {
-  return validatePipelineConnection(connection, nodes, edges, submodels).ok
+  return validatePipelineConnection(connection, nodes, edges, submodels, workbench).ok
 }

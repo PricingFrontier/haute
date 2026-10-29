@@ -12,7 +12,6 @@ from haute._executable_names import ROOT_MODULE
 from haute._graph_utils import _sanitize_func_name, executable_input_name, is_frame_label
 from haute._support_code_names import UtilityReader, name_violations
 from haute._types import REQUEST_INPUT_NODE_TYPES, GraphNode, NodeData, NodeType, PipelineGraph
-from haute._workbench_tables import COLUMN_DTYPES
 
 
 @dataclass(frozen=True)
@@ -56,49 +55,17 @@ def recoverable_api_input_source_handles(config: Mapping[str, Any]) -> tuple[str
     return tuple(handles)
 
 
-def recoverable_workbench_source_handles(config: Mapping[str, Any]) -> tuple[str, ...]:
-    """A Workbench Input's bindable handles while its config may still need repair.
-
-    Read as the editor reads a copy (`readWorkbenchTables`, then `workbenchInputFrameLabels`):
-    each table with a name, `one` or `many` rows and a column of a known type is a frame,
-    named by the table, when its name can be a handle; a name counts once, whatever its case.
-    Nothing is refused here: a config the analyst may still fix must render.
-    """
-    tables = config.get("tables")
-    if not isinstance(tables, list):
-        return ()
-    handles: list[str] = []
-    seen: set[str] = set()
-    for table in tables:
-        if not isinstance(table, dict) or table.get("rows") not in ("one", "many"):
-            continue
-        columns = table.get("columns")
-        if not isinstance(columns, list) or not any(_is_workbench_column(c) for c in columns):
-            continue
-        name = table.get("name")
-        if not isinstance(name, str) or not is_frame_label(name):
-            continue
-        folded = name.casefold()
-        if folded in seen:
-            continue
-        seen.add(folded)
-        handles.append(name)
-    return tuple(handles)
-
-
-def _is_workbench_column(value: object) -> bool:
-    if not isinstance(value, dict) or not isinstance(value.get("name"), str):
-        return False
-    kind = value.get("type")
-    return isinstance(kind, str) and kind in COLUMN_DTYPES
-
-
 def recoverable_request_input_source_handles(
     node_type: NodeType, config: Mapping[str, Any]
 ) -> tuple[str, ...]:
-    """A request input's bindable handles, by its type: the one derivation for either."""
+    """A request input's bindable handles, by its type: the one derivation for either.
+
+    A Workbench Input names none: it holds no tables, being given the form's wherever it
+    runs (specs/workbench), and an edge out of it takes its handle as its input name
+    (:func:`haute._graph_utils.executable_input_name`), which the editor derives alike.
+    """
     if node_type is NodeType.WORKBENCH_INPUT:
-        return recoverable_workbench_source_handles(config)
+        return ()
     return recoverable_api_input_source_handles(config)
 
 

@@ -115,9 +115,10 @@ def _config_node_type_from_path(path: Path) -> NodeType | None:
 
 def _normalise_loaded_config(config: dict[str, Any], node_type: NodeType | None) -> dict[str, Any]:
     if node_type is not None:
-        from haute._config_validation import reject_removed_config_keys
+        from haute._config_validation import reject_form_given_keys, reject_removed_config_keys
 
         reject_removed_config_keys(node_type, config)
+        reject_form_given_keys(node_type, config)
     if node_type == NodeType.BANDING:
         return expand_banding_config_from_sidecar(config)
     if node_type == NodeType.RATING_STEP:
@@ -133,11 +134,13 @@ def _prepare_config_for_sidecar(
 ) -> dict[str, Any]:
     from haute._config_validation import (
         CODE_CONFIG_KEYS,
+        reject_form_given_keys,
         reject_removed_config_keys,
         reject_unrecognized_config_keys,
     )
 
     reject_removed_config_keys(node_type, config)
+    reject_form_given_keys(node_type, config)
     # Save validation has already refused an undeclared key; the write
     # boundary refuses it too, so no path drops a user key and continues.
     reject_unrecognized_config_keys(node_type, config, node_label=node_label)

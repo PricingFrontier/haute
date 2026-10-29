@@ -1,16 +1,15 @@
 /**
- * The copy rules for a Workbench Input, whose tables and sample quote the project's
- * workbench supplies, and a Workbench Output, whose response tables it supplies
- * (specs/workbench): how a copy is read, which tables are ports, when a copy needs
- * updating, and what each starts with from the palette.
+ * The rules for a Workbench Input, whose tables and sample quote the project's workbench
+ * supplies, and a Workbench Output, whose response tables it supplies (specs/workbench):
+ * which tables of a fetch are a node's ports, which connections a fetch leaves without a
+ * table, and how a frame's column fills a response column.
  */
+import type { Edge } from "@xyflow/react"
 import { describe, expect, it } from "vitest"
 import {
-  paletteWorkbenchInputConfig,
-  paletteWorkbenchOutputConfig,
-  quoteTablesPatch,
-  readWorkbenchTables,
-  responseTablesPatch,
+  workbenchDisconnections,
+  workbenchNodePorts,
+  workbenchNodeTables,
   workbenchTablePorts,
   dtypeFits,
   type WorkbenchTables,
@@ -26,91 +25,90 @@ const fetched: WorkbenchTables = {
   fetch: 3,
 }
 
-describe("readWorkbenchTables", () => {
-  it("reads each table's name, rows and typed columns, leaving out what is not one", () => {
-    const config = {
-      tables: [
-        table,
-        { name: "equipment", rows: "many", columns: [{ name: "value", type: "float" }, { name: "x", type: "text" }, 5] },
-        { name: "bare", rows: "one", columns: [] },
-        { path: "$[:]", label: "old", emit: true, columns: [] },
-        { name: "neither", rows: "some", columns: [] },
-        "policy",
-        null,
-      ],
-    }
-
-    expect(readWorkbenchTables(config)).toEqual([
-      table,
-      { name: "equipment", rows: "many", columns: [{ name: "value", type: "float" }] },
-      { name: "bare", rows: "one", columns: [] },
-    ])
-    expect(readWorkbenchTables({})).toEqual([])
-    expect(readWorkbenchTables(undefined)).toEqual([])
-  })
-})
-
 describe("workbenchTablePorts", () => {
   it("makes each table with a column a port, by name, in order, once", () => {
-    const config = {
-      tables: [
-        responseTable,
-        { name: "bare", rows: "one", columns: [] },
-        table,
-        { name: "layers", rows: "one", columns: [{ name: "again", type: "int" }] },
-      ],
+    const tables = [
+      responseTable,
+      { name: "bare", rows: "one" as const, columns: [] },
+      table,
+      { name: "layers", rows: "one" as const, columns: [{ name: "again", type: "int" as const }] },
+    ]
+
+    expect(workbenchTablePorts(tables)).toEqual(["layers", "policy_details"])
+    expect(workbenchTablePorts([])).toEqual([])
+  })
+})
+
+describe("a workbench node's tables", () => {
+  it("are the input tables for a Workbench Input and the response tables for a Workbench Output, from the newest fetch", () => {
+    expect(workbenchNodeTables("workbenchInput", fetched)).toBe(fetched.tables)
+    expect(workbenchNodeTables("workbenchOutput", fetched)).toBe(fetched.responseTables)
+    expect(workbenchNodePorts("workbenchInput", fetched)).toEqual(["policy_details"])
+    expect(workbenchNodePorts("workbenchOutput", fetched)).toEqual(["layers"])
+  })
+
+  it("are none before the first fetch lands, and none for any other node", () => {
+    expect(workbenchNodePorts("workbenchInput", null)).toEqual([])
+    expect(workbenchNodePorts("workbenchOutput", null)).toEqual([])
+    expect(workbenchNodeTables("apiInput", fetched)).toEqual([])
+    expect(workbenchNodeTables("output", fetched)).toEqual([])
+  })
+})
+
+describe("workbenchDisconnections", () => {
+  const port = (name: string) => ({ name, rows: "one" as const, columns: [{ name: "c", type: "int" as const }] })
+  const tablesOf = (inputs: string[], outputs: string[] = []): WorkbenchTables =>
+    ({ tables: inputs.map(port), sample: {}, responseTables: outputs.map(port), fetch: 1 })
+  const node = (id: string, nodeType: string) => ({ id, data: { label: id, nodeType } })
+  const nodes = [
+    node("wb_in", "workbenchInput"),
+    node("quote", "apiInput"),
+    node("priced", "polars"),
+    node("wb_out", "workbenchOutput"),
+  ]
+  const edge = (id: string, source: string, sourceHandle: string | null, target: string, targetHandle: string | null = null): Edge =>
+    ({ id, source, sourceHandle, target, targetHandle })
+  const policy = edge("e_policy", "wb_in", "policy", "priced")
+  const account = edge("e_account", "wb_in", "account", "priced")
+  const filled = edge("e_filled", "priced", null, "wb_out", "pricing_output")
+
+  it("keeps every connection whose table's name the tables still have, however they were reordered", () => {
+    const edges = [policy, account, filled]
+
+    expect(workbenchDisconnections({ nodes, edges }, tablesOf(["account", "policy"], ["pricing_output"]))).toBeNull()
+  })
+
+  it("removes a connection to a table whose name has gone, a renamed one's included, by the node that loses it", () => {
+    const result = workbenchDisconnections(
+      { nodes, edges: [policy, account, filled] },
+      tablesOf(["policy_details", "account"], ["premiums"]),
+    )
+
+    expect(result?.edges).toEqual([account])
+    expect(result?.removed).toEqual([
+      { node: nodes[0], edges: [policy] },
+      { node: nodes[3], edges: [filled] },
+    ])
+  })
+
+  it("removes a connection out of a Workbench Input from no table at all", () => {
+    const result = workbenchDisconnections({ nodes, edges: [edge("e_bare", "wb_in", null, "priced")] }, tablesOf(["policy"]))
+
+    expect(result?.edges).toEqual([])
+  })
+
+  it("never removes a Quote Input's connections, nor one through a submodel's boundary", () => {
+    const quoted = edge("e_quote", "quote", "gone", "priced")
+    const boundary: Edge = {
+      ...edge("e_boundary", "wb_in", "gone", "boundary_out"),
+      data: { submodelBoundary: { direction: "output", parentConsumerEdges: [], name: "out" } },
     }
 
-    expect(workbenchTablePorts(config)).toEqual(["layers", "policy_details"])
-    expect(workbenchTablePorts({})).toEqual([])
+    expect(workbenchDisconnections({ nodes, edges: [quoted, boundary] }, tablesOf([]))).toBeNull()
   })
 })
 
-describe("quoteTablesPatch", () => {
-  it("updates a copy whose tables or sample differ from the workbench's, with both", () => {
-    expect(quoteTablesPatch({ tables: [], sample }, fetched)).toEqual({ tables: [table], sample })
-    expect(quoteTablesPatch({}, fetched)).toEqual({ tables: [table], sample })
-    expect(quoteTablesPatch({ tables: [table], sample: {} }, fetched)).toEqual({ tables: [table], sample })
-  })
-
-  it("leaves a copy that matches alone, whatever the order of its keys", () => {
-    const reordered = Object.fromEntries(Object.entries(table).reverse())
-    expect(quoteTablesPatch({ tables: [reordered], sample }, fetched)).toBeNull()
-  })
-
-  it("reads a copy without a sample as one with an empty sample", () => {
-    expect(quoteTablesPatch({ tables: [table] }, { ...fetched, sample: {} })).toBeNull()
-  })
-
-  it("changes nothing before a fetch", () => {
-    expect(quoteTablesPatch({ tables: [] }, null)).toBeNull()
-  })
-
-  it("gives the config its own copy of the fetched tables and sample", () => {
-    expect(quoteTablesPatch({}, fetched)?.tables[0]).not.toBe(table)
-    expect(quoteTablesPatch({}, fetched)?.sample.policy_details).not.toBe(sample.policy_details)
-  })
-})
-
-describe("paletteWorkbenchInputConfig", () => {
-  it("starts a Workbench Input with the newest tables and sample fetched, or none until they are", () => {
-    const defaults = { tables: [] }
-
-    expect(paletteWorkbenchInputConfig(defaults, fetched)).toEqual({ tables: [table], sample })
-    expect(paletteWorkbenchInputConfig(defaults, null)).toEqual({ tables: [], sample: {} })
-    expect(paletteWorkbenchInputConfig(defaults, fetched).tables).not.toBe(fetched.tables)
-  })
-})
-
-describe("the response's tables", () => {
-  it("updates a Workbench Output's copy whose tables differ, and leaves a matching one alone", () => {
-    expect(responseTablesPatch({ tables: [] }, fetched)).toEqual({ tables: [responseTable] })
-    const reordered = Object.fromEntries(Object.entries(responseTable).reverse())
-    expect(responseTablesPatch({ tables: [reordered] }, fetched)).toBeNull()
-    expect(responseTablesPatch({ tables: [] }, null)).toBeNull()
-    expect(responseTablesPatch({}, fetched)?.tables[0]).not.toBe(responseTable)
-  })
-
+describe("dtypeFits", () => {
   // The backend's `column_fits` cases (tests/test_workbench_output.py), as previews render the dtypes.
   it.each([
     ["int", "Int32", true],
@@ -131,10 +129,5 @@ describe("the response's tables", () => {
     ["int", "Null", true],
   ] as const)("judges whether a %s column takes a frame's %s column: %s", (declared, dtype, fits) => {
     expect(dtypeFits(declared, dtype)).toBe(fits)
-  })
-
-  it("starts a Workbench Output with the newest response tables fetched, or none until they are", () => {
-    expect(paletteWorkbenchOutputConfig({ tables: [] }, fetched)).toEqual({ tables: [responseTable] })
-    expect(paletteWorkbenchOutputConfig({ tables: [] }, null)).toEqual({ tables: [] })
   })
 })
