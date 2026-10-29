@@ -6,15 +6,14 @@ Submodel definitions and occurrences, and the other mechanisms for reusing
 logic in a pipeline. Current behaviour is specified in
 [the submodels specification](../submodels/high-level.md). `SUB-R01`
 comes from the [23 September 2026 codebase review](codebase-review-2026-09-23.md).
-`SUB-R04` and `SUB-R05`
-come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md).
+`SUB-R05` comes from the
+[25 October 2026 codebase review](codebase-review-2026-10-25.md).
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | SUB-R01 | Planned | P3 | One mechanism reuses a node or group of nodes. |
-| SUB-R04 | Planned | P2 | A Load File child whose free code names a second input keeps that input across a submodel boundary, as a Polars child does. |
 | SUB-R05 | Planned | P3 | The no-op alias rewrite, the hidden-port fields nothing produces, the parse that create and dissolve never read, and the second validation per flatten are gone. |
 
 ## Planned improvements
@@ -75,30 +74,6 @@ is in the [specification README](../README.md#canonical-only-format-policy).
 `docs/building-models/nodes/instances.md`;
 `docs/building-models/nodes/submodel.md`;
 `frontend/src/utils/canonicalSubmodelBoundaryEditing.ts`.
-
-### SUB-R04 — A Load File child keeps its second input
-**Why:** When flattening renames a definition's physical input (the port name
-becomes the upstream name), `rewrite_boundary_input_names` records an
-`inputMapping` only for a stepped surface or a `POLARS` node, while
-`_build_external_file` binds free code by edge name through
-`_exec_user_code(..., input_mapping=...)` and the stepped-surface table says a
-Load File's other edges stay addressable. A Load File child whose free code
-names a second input therefore loses it across the boundary and fails at
-execution naming a frame that no longer exists; the specification names only
-Polars code as keeping its logical name.
-
-**Plan:** Key the rename branch on "a surface whose code addresses inputs by
-name and holds no steps" rather than on `NodeType.POLARS`, so a free-code Load
-File child gets the same `inputMapping`; add a flatten test with a Load File
-child reading a second input; say so in the specification.
-
-**Acceptance:** A grouped Load File child that names a renamed second input
-executes after flattening with the same result as before grouping.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_submodel_instances.py::rewrite_boundary_input_names`;
-`src/haute/_builders.py::_build_external_file`.
 
 ### SUB-R05 — Dead rewrites, hidden ports and double work
 **Why:** `rewrite_submodel_alias_references` is a no-op: its only caller passes

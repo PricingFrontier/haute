@@ -37,6 +37,7 @@ from haute.codegen import graph_to_code_multi
 from haute.errors import ParseError
 from haute.parser import parse_pipeline_source
 from haute.routes._submodel_ops import create_submodel_graph
+from tests.conftest import make_file_input_config
 
 
 def _node(
@@ -879,6 +880,105 @@ def test_flatten_preserves_public_input_label_for_ordinary_polars_code() -> None
     generated = graph_to_code_multi(result, pipeline_name="main")["main.py"]
     assert "def Child_transform(policy: pl.LazyFrame)" in generated
     assert "df = policy" in generated
+
+
+@pytest.mark.usefixtures("_widen_sandbox_root")
+def test_flatten_keeps_the_input_names_a_load_file_childs_code_reads(tmp_path: Path) -> None:
+    """Free Load File code names its inputs as Polars code does, so it keeps those names."""
+    from haute.executor import execute_graph
+
+    lookup = tmp_path / "lookup.json"
+    lookup.write_text(json.dumps({"factor": 3}))
+    policies = tmp_path / "policies.parquet"
+    pl.DataFrame({"k": [1, 2], "x": [10, 20]}).write_parquet(policies)
+    rates = tmp_path / "rates.parquet"
+    pl.DataFrame({"k": [1, 2], "rate": [0.5, 2.0]}).write_parquet(rates)
+
+    def source(node_id: str, label: str, path: Path) -> GraphNode:
+        return _node(node_id, NodeType.DATA_INPUT, label=label, config=make_file_input_config(path))
+
+    loader = _node(
+        "loader",
+        NodeType.EXTERNAL_FILE,
+        label="Loader",
+        config={
+            "path": str(lookup),
+            "fileType": "json",
+            # The first input is df; the second is read by its name.
+            "code": "df = df.join(rates, on='k').with_columns("
+            "premium=pl.col('x') * pl.col('rate') * obj['factor'])",
+        },
+    )
+    before_grouping = PipelineGraph(
+        nodes=[
+            source("policies", "policies", policies),
+            source("rates", "rates", rates),
+            loader,
+        ],
+        edges=[
+            GraphEdge(id="p", source="policies", target="loader"),
+            GraphEdge(id="r", source="rates", target="loader"),
+        ],
+    )
+    # A node instance of the loader reads the original's names through it.
+    copy = _node("copy", NodeType.EXTERNAL_FILE, label="Copy", config={"instanceOf": "loader"})
+    definition = _definition(
+        graph=PipelineGraph(nodes=[loader, copy], edges=[]),
+        input_ports=[
+            SubmodelInputPort(
+                name="policies",
+                targets=[SubmodelEndpoint(node_id="loader"), SubmodelEndpoint(node_id="copy")],
+            ),
+            SubmodelInputPort(
+                name="rates",
+                targets=[SubmodelEndpoint(node_id="loader"), SubmodelEndpoint(node_id="copy")],
+            ),
+        ],
+        output_ports=[
+            SubmodelOutputPort(name="priced", source=SubmodelEndpoint(node_id="loader")),
+        ],
+    )
+    # The parent's sources are named otherwise, so expansion renames both inputs.
+    grouped = PipelineGraph(
+        nodes=[
+            source("policy_table", "Policy table", policies),
+            source("rate_table", "Rate table", rates),
+            _instance("pricing"),
+        ],
+        edges=[
+            GraphEdge(id="p", source="policy_table", target="pricing", targetHandle="in__policies"),
+            GraphEdge(id="r", source="rate_table", target="pricing", targetHandle="in__rates"),
+        ],
+        submodels={"definition_scoring": definition},
+    )
+
+    flattened = flatten_graph(grouped)
+    loader_id = qualified_runtime_node_id("pricing", "loader")
+
+    assert flattened.node_map[loader_id].data.config["inputMapping"] == {
+        "policies": "Policy_table",
+        "rates": "Rate_table",
+    }
+    before = execute_graph(before_grouping)["loader"]
+    results = execute_graph(flattened)
+    assert before.status == "ok", before.error
+    for child_id in ("loader", "copy"):
+        after = results[qualified_runtime_node_id("pricing", child_id)]
+        assert after.status == "ok", after.error
+        assert (
+            after.preview
+            == before.preview
+            == [
+                {"k": 1, "x": 10, "rate": 0.5, "premium": 15.0},
+                {"k": 2, "x": 20, "rate": 2.0, "premium": 120.0},
+            ]
+        )
+    # Dissolved and saved, the loader's function takes the names its code reads.
+    generated = graph_to_code_multi(flattened, pipeline_name="main")["main.py"]
+    assert (
+        "def Loader(policies: pl.LazyFrame, rates: pl.LazyFrame, *, obj) -> pl.LazyFrame:\n"
+        "    df = policies\n"
+    ) in generated
 
 
 def test_flatten_preserves_public_output_label_for_ordinary_polars_code() -> None:

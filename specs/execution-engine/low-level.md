@@ -1880,8 +1880,10 @@ present a structural or schema result as execution evidence.
   raises `ConfigError` instead of falling back to greedy first-fit — the code
   docstring notes a prior greedy implementation could silently swap two inputs and
   produce a clean-looking but wrong run.
-- **A non-instance Polars `inputMapping` preserves authored input identity across
-  parent replacement.** `resolve_orig_source_names` derives the current input names
+- **A non-instance Transform or Load File `inputMapping` preserves authored input
+  identity across parent replacement.** Both are the surfaces whose code names its
+  inputs (`stepped_surface_allows_input_references`), and an instance of either
+  resolves its original's logical names through the original's mapping the same way. `resolve_orig_source_names` derives the current input names
   from the node's incoming edges, validates the mapping as a one-to-one
   `{logical_name: current_edge_name}` relation, and returns logical names in current
   edge order. `_exec_user_code` therefore exposes both the current binding and the

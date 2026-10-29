@@ -76,9 +76,10 @@ const table = (
 })
 
 describe("prepareNodeUpdate rename stable bindings", () => {
-  it("1. coded consumer gains the binding on rename", () => {
+  // A Load File's free code names its inputs as a Transform's does.
+  it.each([NODE_TYPES.POLARS, NODE_TYPES.EXTERNAL_FILE])("1. coded %s consumer gains the binding on rename", (consumerType) => {
     const src = makeNode("src", "src", NODE_TYPES.POLARS)
-    const consumer = makeNode("consumer", "Consumer", NODE_TYPES.POLARS, {
+    const consumer = makeNode("consumer", "Consumer", consumerType, {
       code: 'df = src.select("v")',
     })
     const edge = makeEdge("e1", "src", "consumer", null, "src")

@@ -143,8 +143,12 @@ Expansion is a pure transform per instance:
    upstream parent identity. Rewrite cloned child configs through that map.
    Also rewrite remaining parent consumers from the selected occurrence's
    public output port name to the qualified runtime output source. When
-   this changes the physical name of an ordinary Polars input, preserve the
-   public logical name with `inputMapping`. An unbound, ambiguous, or otherwise stale declared reference
+   this changes the physical name of an input that a Transform's or a Load
+   File's free code reads by name, preserve the public logical name with
+   `inputMapping` (the same `stepped_surface_allows_input_references` rule that
+   makes steps on those surfaces have their references rewritten instead), so a
+   Load File child reading its second input by name runs after expansion as it
+   did before grouping. An unbound, ambiguous, or otherwise stale declared reference
    is an error. Unregistered opaque fields are unchanged, never guessed.
 4. Expand each input binding to the port's ordered targets and each output
    binding from the port's single source, preserving authored endpoint handles
@@ -558,8 +562,10 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
 - `tests/test_submodel_instances.py` — canonical definition and occurrence
   validation, parse/codegen round trips, public-port expansion, targeted
   flattening, shared-definition retention, OUTPUT source-port migration across
-  a public boundary, and explicit rejection of missing identity or malformed
-  topology.
+  a public boundary, a Load File child (and a node instance of it) reading its
+  renamed second input by name with the rows it gave before grouping and its
+  dissolved function named by those inputs, and explicit rejection of missing
+  identity or malformed topology.
 - `tests/test_flattening_dedup.py` — parity between parser-driven flattening
   and the shared `flatten_graph` implementation, including single-node,
   multi-node, chained, nested, and hierarchical-then-flat cases.

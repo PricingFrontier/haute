@@ -513,6 +513,11 @@ def _gen_explore(node: GraphNode, source_names: list[str]) -> NodeSource:
 
 @_register_codegen(NodeType.EXTERNAL_FILE)
 def _gen_external_file(node: GraphNode, source_names: list[str]) -> NodeSource:
+    # Its free code reads the names ``inputMapping`` keeps (the sidecar holds the
+    # mapping), so the function takes them as a Transform's does.
+    input_mapping = node.data.config.get("inputMapping")
+    if input_mapping is not None:
+        source_names = resolve_input_mapping_names(source_names, input_mapping)
     return _config_backed(node, source_names)
 
 

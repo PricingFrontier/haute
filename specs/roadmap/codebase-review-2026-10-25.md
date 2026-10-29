@@ -357,7 +357,6 @@ production:
 | Assistant | ASB-1, ASB-2, ASB-10, ASB-12 | `ASSIST-57` |
 | Assistant | ASB-4, ASB-5, ASB-6, ASB-8, ASB-9 | `ASSIST-58` |
 | Assistant | ASB-3, ASB-7, ASB-11 | `ASSIST-59` |
-| Submodels | SUB-1 | `SUB-R04` |
 | Submodels | SUB-2, SUB-3, SUB-4, SUB-11 | `SUB-R05` |
 | Explore / EDA | SUB-5, SUB-6, SUB-7, SUB-10 | `EDA-R01` |
 | Explore / EDA | SUB-8, SUB-9, SUB-12 | `EDA-R02` |

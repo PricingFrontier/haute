@@ -223,7 +223,11 @@ Every builder except `_gen_transform` describes a configured node.
   object arrives as the keyword-only `obj`, and the body begins with
   `df = <first input>` before the code and the closing `return df`. A
   disconnected External File with code has no positional parameters and no
-  binding line.
+  binding line. A non-instance External File carrying `inputMapping` (in its
+  sidecar, which keeps every non-code config key) is named by the mapping's
+  logical names, validated by `resolve_input_mapping_names` as `_gen_transform`
+  validates a transform's, so a standalone run binds the frames positionally to
+  the names its code reads.
 - The code-accepting builders raise `ConfigError` for an input named `df`.
 - Removed `dataSource`/`dataSink` enum values, decorators, templates, and
   extractor aliases have no compatibility path. Round trips preserve the

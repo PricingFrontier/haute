@@ -222,6 +222,9 @@ Out of scope (owned by neighbouring components):
     parameter, receives the loaded object as the keyword-only `obj`, and binds
     `df = <first input>` as its first statement, the names its code box
     documents: `def <name>(<inputs>: pl.LazyFrame, *, obj) -> pl.LazyFrame:`.
+    Its free code names its inputs as a Transform's does, so a sidecar
+    `inputMapping` names those parameters, and the binding, by its logical
+    names.
   - API Input, Data Output, Edge Join, Banding, Output, Live Switch,
     Modelling, Optimiser, Optimiser Apply and Constant nodes never carry code
     and are always declarations.

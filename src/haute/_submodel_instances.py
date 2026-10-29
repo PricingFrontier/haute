@@ -357,8 +357,9 @@ def rewrite_boundary_input_names(
     """Rewrite every schema-owned input-name reference after boundary expansion.
 
     Selector fields and live-switch map keys follow the new physical edge name.
-    Ordinary Polars code retains its public logical name through
-    ``inputMapping``; instance mappings only update existing physical values.
+    Free Transform and Load File code retains its public logical name through
+    ``inputMapping``, their steps have the references rewritten, and instance
+    mappings only update existing physical values.
     """
     rewritten: list[GraphNode] = []
     for node in nodes:
@@ -464,14 +465,14 @@ def rewrite_boundary_input_names(
             renamed_currents = set()
 
         steps = config.get("steps")
-        if (
-            stepped_surface_allows_input_references(node.data.nodeType)
-            and not config.get("instanceOf")
-            and isinstance(steps, list)
-        ):
-            # A stepped edges surface addresses inputs by their edge names, so the
-            # boundary rename rewrites the references inside the steps rather
-            # than recording an ``inputMapping`` indirection.
+        # Transform and Load File code address their inputs by edge name.
+        names_inputs = stepped_surface_allows_input_references(
+            node.data.nodeType
+        ) and not config.get("instanceOf")
+        if names_inputs and isinstance(steps, list):
+            # Steps hold the edge names themselves, so the boundary rename
+            # rewrites the references inside the steps rather than recording
+            # an ``inputMapping`` indirection.
             try:
                 renamed_steps = rename_step_inputs(steps, renames)
             except PolarsStepError as exc:
@@ -483,7 +484,8 @@ def rewrite_boundary_input_names(
             if renamed_steps != steps:
                 config["steps"] = renamed_steps
                 changed = True
-        elif node.data.nodeType == NodeType.POLARS and not config.get("instanceOf"):
+        elif names_inputs:
+            # Free code keeps reading the names it was written with.
             for logical, current in renames.items():
                 if logical == current or logical in renamed_currents:
                     continue
