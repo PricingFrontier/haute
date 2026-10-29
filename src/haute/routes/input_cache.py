@@ -48,7 +48,7 @@ from haute._input_providers import (
     source_signature,
 )
 from haute._logging import get_logger
-from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
+from haute._path_resolution import RuntimePathError, resolve_node_input_path
 from haute._pipeline_settings import PipelineSettingsError, project_pipeline_settings
 from haute._polars_io_registry import PolarsIoConfigError, validate_data_input_config
 from haute._project import _toml_configured_pipeline
@@ -179,18 +179,16 @@ def _safe_config(
     if config["inputType"] in {"file", "lakehouse"}:
         # Canonicalise, don't merely validate: the snapshot identity, the
         # freshness signature, and the bytes the build reads all follow this
-        # path. Execution resolves the same locator through this resolver with
-        # these arguments (``canonical_dataframe_execution_graph``), so
-        # anchoring it any other way here would publish a generation under an
-        # identity execution never looks up, built from a file it never reads.
+        # path. Execution resolves the same locator by the same rule
+        # (``canonical_dataframe_execution_graph``), so anchoring it any other
+        # way here would publish a generation under an identity execution never
+        # looks up, built from a file it never reads.
         try:
             config["path"] = str(
-                resolve_runtime_file_path(
+                resolve_node_input_path(
                     str(config["path"]),
                     pipeline_dir=_pipeline_base_dir(),
                     project_root=_project_root(),
-                    prefer="project",
-                    enforce_project_root=True,
                 )
             )
         except RuntimePathError as exc:
@@ -248,12 +246,8 @@ def _safe_api_input(body: InputCacheSourceRequest) -> ApiInputSnapshotSource:
     ):
         raise _invalid_api_input()
     try:
-        data_path = resolve_runtime_file_path(
-            path,
-            pipeline_dir=_pipeline_base_dir(),
-            project_root=_project_root(),
-            prefer="project",
-            enforce_project_root=True,
+        data_path = resolve_node_input_path(
+            path, pipeline_dir=_pipeline_base_dir(), project_root=_project_root()
         )
     except RuntimePathError as exc:
         raise runtime_path_http_exception(exc) from None

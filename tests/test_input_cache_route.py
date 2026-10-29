@@ -1109,6 +1109,10 @@ def test_build_identity_names_the_file_execution_opens(
         executed_config,
         base_dir=execution_base_dir,
     )
+    # The registry anchoring the saved, relative locator names the same file,
+    # not the decoy beside the pipeline.
+    assert built_identity == source_cache_identity(raw_config, base_dir=pipeline_dir)
+    assert built_identity.descriptor["path"] == str((tmp_path / "data" / "x.csv").resolve())
     assert source_signature(
         built_config,
         base_dir=input_cache._pipeline_base_dir(),

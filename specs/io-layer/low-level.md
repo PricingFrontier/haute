@@ -162,26 +162,34 @@ platforms, and on Windows with long paths on, nothing is renamed.
 2. `source_cache_identity()` canonicalises the logical source. Database named connections
    retain only the environment reference; Databricks retains fixed host/token references and
    excludes `batch_size`; inline records contribute only a canonical content digest and row
-   count, never raw record values. Relative file/lakehouse locators are resolved through the
-   shared runtime path resolver — project root first, configured pipeline directory as
-   fallback, an existing file beating a missing candidate, the project-root copy winning when
-   both exist — identically for build, execution, execution fingerprinting, and RAM metadata
-   inspection, so one locator names one file at every seam. Raw SQLite URIs remain anchored to
-   the configured pipeline directory.
+   count, never raw record values. Relative file/lakehouse locators are anchored by the one
+   rule below. Raw SQLite URIs remain anchored to the configured pipeline directory.
+
+   **The anchoring rule.** A relative local path a node's config reads from (a Data Input's,
+   API Input's or External File's `path`, a Model Score's model file and feature contract,
+   an Optimiser Apply's file artifact) is resolved by
+   `_path_resolution.resolve_node_input_path`: the project root first, where the editor's
+   file browser writes paths from, then the pipeline directory, an existing file (or a glob
+   pattern matching a path) beating a missing candidate and the project-root copy winning
+   when both exist. Windows backslashes read as separators, neither candidate may leave the
+   runtime project root, a path found in neither place keeps the project-root candidate,
+   and one with no candidate inside the root raises `RuntimePathOutsideProjectError`. Every
+   reader applies it: the registry (`anchor_config_source_path`, behind
+   `source_cache_identity`, `source_signature`, direct Parquet resolution, data points and
+   the RAM estimate), the engine's canonical graph (`canonical_dataframe_execution_graph`)
+   and runtime-input fingerprint, the node builders, the standalone sidecar run, the
+   explicit snapshot build, the preview request's path check and the API Input's schema
+   inference, so one locator names one file at every seam. Deploy bundles a Data Input's
+   file by its own rule, the pipeline directory first ([deploy](../deploy/low-level.md)).
 3. `data_input_is_direct()` derives the execution mode: file-backed Parquet with
    effective mode `scan` is direct; every other canonical Data Input is snapshot-backed.
    No cache-mode field is stored — validation rejects a config still carrying the removed
    `cacheMode` field as inactive; nothing is normalised or migrated.
-4. Direct Parquet resolution anchors the configured path (`anchor_config_source_path`,
-   through the shared runtime path resolver: the pipeline directory first, then the
-   project root, Windows backslashes read as separators, neither candidate leaving the
-   runtime project root, as deploy validates and bundles it; a pipeline directory outside
-   the runtime project is its own root, as `_infer_project_root` treats a pipeline outside
-   the selected project. A glob pattern is found where it matches a path. A path found in
-   neither place keeps the first candidate inside the root, and one with no candidate
-   inside raises `RuntimePathOutsideProjectError`)
-   and returns the registry's
-   `scan_parquet` lazy scan without creating or consulting a source snapshot.
+4. Direct Parquet resolution anchors the configured path by the anchoring rule
+   (`anchor_config_source_path`; a pipeline directory outside the runtime project is its
+   own root, as `_infer_project_root` treats a pipeline outside the selected project) and
+   returns the registry's `scan_parquet` lazy scan without creating or consulting a source
+   snapshot.
 5. Snapshot creation calls `build_input_snapshot()`, selects a provider builder, creates a
    `SourceCacheBuildContext`, and calls `SourceCacheStore.build()`.
 6. Snapshot execution calls `resolve_data_input()`, which leases the current generation
@@ -1002,6 +1010,12 @@ failure sections above are the maintained answers.
   `test_bounded_hashed_sink_cancels_native_query_and_publishes_nothing`,
   `test_hashed_streaming_sink_cleans_up_after_a_partial_write`) verifies native streaming
   execution, cancellation without publication, and cleanup after partial writes.
+- `tests/test_saved_path_resolution.py` places the same relative path at the project root and
+  a decoy beside the pipeline: the registry's anchoring and the canonical graph both name the
+  project-root file and the read returns its rows; a path only beside the pipeline is found
+  there, and one found nowhere keeps the project-root candidate.
+  `tests/test_input_cache_route.py::test_build_identity_names_the_file_execution_opens`
+  holds the explicit build's identity equal to the registry's for the saved locator.
 - `tests/test_discovery.py` and `tests/test_path_case_audit.py` cover pipeline discovery,
   deduplication, unreadable files, retained resolver seams, and cross-platform path spelling.
 - `tests/test_input_cache_route.py` covers HTTP build/status/cancel/clear lifecycle and

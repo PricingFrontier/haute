@@ -1508,11 +1508,10 @@ def write_polars_output(
 def anchor_config_source_path(config: Mapping[str, Any], base_dir: Any = None) -> dict[str, Any]:
     """Return *config* with a relative path-kind source anchored to *base_dir*.
 
-    A relative ``path`` resolves as deploy bundles it: against the pipeline dir
-    first, then the project root, where the editor's file browser writes paths
-    from, with Windows backslashes read as separators, and neither may leave the
-    runtime project root (:class:`RuntimePathOutsideProjectError` when both do).
-    A path found in neither place keeps the first candidate inside the root.
+    A relative ``path`` resolves by the one anchoring rule the engine applies
+    (:func:`haute._path_resolution.resolve_node_input_path`): the project root
+    first, then the pipeline dir *base_dir*, and neither may leave the runtime
+    project root (:class:`RuntimePathOutsideProjectError` when both do).
     Non-path source kinds pass through unchanged.
     """
     from pathlib import Path
@@ -1520,7 +1519,7 @@ def anchor_config_source_path(config: Mapping[str, Any], base_dir: Any = None) -
     from haute._path_resolution import (
         _normalise_path_text,
         current_runtime_project_root,
-        resolve_runtime_file_path,
+        resolve_node_input_path,
     )
 
     result = dict(config)
@@ -1532,13 +1531,11 @@ def anchor_config_source_path(config: Mapping[str, Any], base_dir: Any = None) -
             pipeline_dir = Path(base_dir).resolve()
             root = current_runtime_project_root()
             result["path"] = str(
-                resolve_runtime_file_path(
+                resolve_node_input_path(
                     raw,
                     pipeline_dir=pipeline_dir,
                     # not contained_path: chooses the root; an outside pipeline is its own
                     project_root=root if pipeline_dir.is_relative_to(root) else pipeline_dir,
-                    prefer="pipeline",
-                    enforce_project_root=True,
                 )
             )
     return result

@@ -42,7 +42,7 @@ from haute._graph_utils import upstream_node_ids
 from haute._hashing import HASH_ALGO, content_hash_bytes
 from haute._json_shred._source_proof import file_signature
 from haute._native_memory_limit import current_native_memory_backend
-from haute._path_resolution import _infer_project_root, resolve_runtime_file_path
+from haute._path_resolution import _infer_project_root, resolve_node_input_path
 from haute._polars_selectors import preamble_selector_aliases
 from haute._ram_estimate import (
     MaterialisationEstimate,
@@ -163,13 +163,11 @@ def canonical_dataframe_execution_graph(graph: PipelineGraph) -> PipelineGraph:
             raw_path = config.get(key)
             if isinstance(raw_path, str) and raw_path:
                 resolved = str(
-                    resolve_runtime_file_path(
+                    resolve_node_input_path(
                         raw_path,
                         source_file=graph.source_file,
                         pipeline_dir=pipeline_dir,
                         project_root=root,
-                        prefer="project",
-                        enforce_project_root=True,
                     )
                 )
                 if resolved != raw_path:
@@ -810,11 +808,7 @@ def _runtime_path_from_graph_config(
     raw_path: str,
 ) -> Path:
     return (
-        resolve_runtime_file_path(
-            raw_path,
-            source_file=graph.source_file,
-            prefer="project",
-        )
+        resolve_node_input_path(raw_path, source_file=graph.source_file)
         if graph.source_file
         else Path(raw_path)
     )
@@ -1188,8 +1182,8 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
         for index, candidate in enumerate(model_contract_candidates(paths["model_path"])):
             # Contained before it is hashed: a sibling that resolves outside the
             # project through a symlink is refused, never read.
-            paths[f"contract_candidate:{index}"] = resolve_runtime_file_path(
-                str(candidate), source_file=graph.source_file, prefer="project"
+            paths[f"contract_candidate:{index}"] = resolve_node_input_path(
+                str(candidate), source_file=graph.source_file
             )
     return paths
 

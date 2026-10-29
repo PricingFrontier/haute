@@ -63,6 +63,7 @@ from haute._native_memory_limit import NativeMemoryLimitUnsupportedError
 from haute._node_snapshots import NodeSnapshotStore
 from haute._path_resolution import (
     RuntimePathError,
+    resolve_node_input_path,
     resolve_runtime_file_path,
     runtime_project_root_scope,
 )
@@ -573,12 +574,7 @@ def _validate_runtime_input_paths(graph: PipelineGraph) -> None:
                 continue
 
             try:
-                resolve_runtime_file_path(
-                    raw_path,
-                    source_file=graph.source_file,
-                    prefer="project",
-                    enforce_project_root=True,
-                )
+                resolve_node_input_path(raw_path, source_file=graph.source_file)
             except RuntimePathError as exc:
                 raise runtime_path_http_exception(exc) from None
 

@@ -14,31 +14,11 @@ continues from the September 2026 review's packages, which are retired.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| IO-R05 | Planned | P2 | The registry and the engine anchor a relative config path the same way, and the specification states one rule. |
 | IO-R06 | Planned | P3 | A snapshot build validates its generation outside the store-wide lease lock, and the cache-usage endpoint stops walking every generation per preview. |
 | IO-R07 | Planned | P3 | A clear keeps a deferred generation indexed, the POSIX revision applies the settle rule on coarse clocks, and `catalog` is excluded from config by decision. |
 | IO-R08 | Planned | P3 | The supervised-build mechanism exists once, and the IO layer's write-only fields are gone. |
 
 ## Planned improvements
-
-### IO-R05 — One anchoring rule for config paths
-**Why:** `anchor_config_source_path` resolves a relative path with `prefer="pipeline"`
-while the canonical graph build uses `prefer="project"`, so a relative path that exists
-under both the pipeline's directory and the project root names two different files
-between validation (the registry) and execution (the engine); the IO-layer low-level
-specification states both rules.
-
-**Plan:** Use one preference (the project root, as the canonical graph does) in both
-places through one helper, and make the specification say so once.
-
-**Acceptance:** A relative path present in both locations resolves to the same file in
-the registry's validation and in the walker, with a test that places a decoy file in
-the other location.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_polars_io_registry.py::anchor_config_source_path`;
-`src/haute/execution.py` (the canonical graph's `prefer="project"` call).
 
 ### IO-R06 — Lock hold and usage cost
 **Why:** A snapshot build validates its new generation (every part's footer, Arrow schema

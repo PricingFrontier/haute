@@ -129,17 +129,11 @@ def _anchored_required_path(config: Mapping[str, Any], base_dir: str | Path | No
         raise ValueError("retained input config requires non-empty 'path'")
 
     from haute._path_case_audit import warn_if_case_ambiguous
-    from haute._path_resolution import current_runtime_project_root, resolve_runtime_file_path
+    from haute._path_resolution import current_runtime_project_root, resolve_node_input_path
 
     project_root = current_runtime_project_root()
 
-    resolved = resolve_runtime_file_path(
-        path,
-        pipeline_dir=base_dir,
-        project_root=project_root,
-        prefer="project",
-        enforce_project_root=True,
-    )
+    resolved = resolve_node_input_path(path, pipeline_dir=base_dir, project_root=project_root)
     warn_if_case_ambiguous(resolved, stop=project_root)
     return str(resolved)
 
