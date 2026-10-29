@@ -693,7 +693,9 @@ it on the reading node instead of aborting the walk, and every other run propaga
   immediately because live submodel children are not registered there.
 - A Polars node's positional parameters are exactly its connected inputs, by name: an
   ordinary source contributes its sanitised node name, an API input its frame handle, and an
-  occurrence its sanitised public output port name, independent of its alias or output count;
+  occurrence its output's name (its sanitised public output port name from an owner,
+  `<occurrence>_<port>` from an instance, its occurrence name from a linked node), independent
+  of its output count;
   a declared `inputMapping={logical: connected}` lets the code keep another name. The
   parser infers nothing else: a parameter that matches no connected input, a connected input
   with no parameter, or a duplicate raises `ParseError` (`unbound_parameters`,

@@ -83,7 +83,7 @@
   carries one identity: `name` is the input's single name — chip text, code argument, and the
   key persisted contracts use (the live-switch `input_scenario_map`, the instance
   `inputMapping`) — derived per edge by `edgeInputName` (an API-input edge's frame label
-  verbatim; a submodel `out__` edge's input name is the sanitised public output port name, resolved by the backend identity endpoint; else the sanitised source-node
+  verbatim; a submodel `out__` edge's input name is the output's name (the sanitised public output port name from an owner, `<instance>_<port>` from an instance, the occurrence's name from a linked node), resolved by the backend identity endpoint; else the sanitised source-node
   label). `sourceLabel` is provenance metadata used only to explain an unresolved source;
   resolved tooltips, removal titles, and selectors identify the edge by `name`, never by the
   source-node label or id;
@@ -660,8 +660,8 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   boundary, or unknown row is an invariant violation and throws rather than falling back to the
   composite node's literal `INPUT` label.
 - `edgeInputName` treats only API-input sources' handles as frame names; a submodel
-  `out__` edge's input name is the sanitised public output port name, resolved by the backend identity endpoint; and every other
-  node type derives the sanitised source label. Renaming an occurrence renames its alias (the node id follows at Save, when the reparse re-keys it to the name, so `node.id == data.label == config.alias` holds in every parsed document), validates identifier syntax (refusing with `Occurrence names must be identifiers; use "<functionName>".`) and uniqueness among parent nodes (refusing with `"<name>" is already used by another node.`), and leaves downstream public port names unchanged.
+  `out__` edge's input name is the output's name, resolved by the backend identity endpoint; and every other
+  node type derives the sanitised source label. Renaming an occurrence renames its alias (the node id follows at Save, when the reparse re-keys it to the name, so `node.id == data.label == config.alias` holds in every parsed document), validates identifier syntax (refusing with `Occurrence names must be identifiers; use "<functionName>".`) and uniqueness among parent nodes (refusing with `"<name>" is already used by another node.`), and leaves downstream public port names unchanged; an instance's and a linked node's outputs are named by the occurrence, so its rename renames those frames and reconciles their consumers as an ordinary node rename does.
 - The API-input editor rejects a frame label that fails backend invariant B4 (not an ASCII
   identifier, or a Python hard keyword) at commit time with the same inline validation used
   for blank/duplicate labels (`apiInputLabelIssue` — the exact ASCII mirror) — the label is
@@ -774,7 +774,7 @@ and field-level invalid-key borders.
 
 The input-identity work is pinned by `frontend/src/panels/__tests__/NodePanel.test.tsx`
 (`name` derivation for API-frame edges — sole frame included — ordinary sources, and submodel
-`out__` edges whose input name is the sanitised public output port name, resolved by the backend identity endpoint; the `frameUnresolved` warning chip for a
+`out__` edges whose input name is the output's name, resolved by the backend identity endpoint; the `frameUnresolved` warning chip for a
 zero-eligible-frame API source; the unresolved→resolved transition under an unchanged name
 string clearing the warning; signature-driven refresh on a frame rename; two frames from one
 API input rendering two distinct, independently removable chips whose names equal the

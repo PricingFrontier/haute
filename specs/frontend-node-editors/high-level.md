@@ -31,9 +31,12 @@ backend API modules own validation and persistence.
   code**, 1:1 with the generated function signature: an API-input frame edge's chip shows the
   frame label carried on the edge (`quotes` is displayed as `quotes` and callable as `quotes`),
   an ordinary source's chip shows the sanitised node label, and a submodel `out__` edge's input name
-  is the sanitised public output port name, independent of the occurrence alias and
-  number of output ports. Renaming an occurrence leaves its output frame names
-  unchanged. Connections contributing duplicate input names are rejected explicitly.
+  is the output's name: the sanitised public output port name from an owner,
+  `<instance>_<port>` from an instance and the occurrence's name from a linked node,
+  independent of the number of output ports. Renaming the owner of a multi-node
+  definition leaves its output frame names unchanged; renaming an instance or a
+  linked node renames them, as renaming an ordinary node does. Connections
+  contributing duplicate input names are rejected explicitly.
   Polars input chips, their tooltips, and connection-removal controls always use
   this frame name. A source card's display label, occurrence alias, internal child
   label, or structural handle must never replace a declared frame name, including

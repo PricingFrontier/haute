@@ -39,8 +39,9 @@ inputs:
 An instance of a submodel (an occurrence with `instance_of`) has none of
 those, but it binds only frames named like one of the definition's public
 inputs (the editor refuses any other with "New public inputs can only be
-added through the definition owner"), it reports no missing columns, and a
-collapsed occurrence can be neither previewed nor edited in place. Files named
+added through the definition owner"), it reports no missing columns, its
+outputs carry the owner's names (so no node can read both), and a collapsed
+occurrence can be neither previewed nor edited in place. Files named
 after submodels hold 6,300 source lines and 11,700 test lines, and 25 of the
 48 submodel commits since May 2026 were fixes or hardening of identity and
 aliasing.
@@ -52,6 +53,8 @@ aliasing.
 - An instance reuses logic on another set of inputs, of a single node or of
   a submodel. Every instance has an explicit input mapping, since its inputs
   are usually named otherwise than the original's.
+- An instance has its own name, and its outputs are named from it, never as
+  the original's are.
 - One machinery serves both: a definition with named public inputs and
   outputs, and its occurrences. An instance of a single node is an occurrence
   of a one-node definition (its own `modules/<name>.py`), shown on the canvas
@@ -72,14 +75,18 @@ aliasing.
   asks which. Nothing pairs inputs by position or by substring. The panel of
   every occurrence lists its public inputs with the connection that feeds
   each, and choosing another connection re-targets the edge.
+- **Output names.** An instance's outputs are named from its own name: a
+  linked node's output by its name, as a node's is by its label, and a
+  submodel instance's by `<instance>_<port>`. The original keeps its names (a
+  submodel's port names, a linked node's own name), so one node can read the
+  original and its instances side by side, and renaming an instance renames
+  its frames for its consumers.
 - **Linked nodes.** An occurrence of a one-node definition is drawn as its
   node's card with a link mark, and clicking it previews that node. The
   original's panel is the node's own editor, whose edits change the shared
   definition; an instance's shows the same editor read-only, with
-  "Instance of <original>", its input mapping and its missing columns. A
-  linked node's output is named by its occurrence's name, as a node's is by
-  its label, so renaming it renames that frame for its consumers. It has no
-  drill-in. Duplicate gives an unlinked plain copy, and Unlink, once no
+  "Instance of <original>", its input mapping and its missing columns. It
+  has no drill-in. Duplicate gives an unlinked plain copy, and Unlink, once no
   instance is left, turns the original back into a plain node.
 - **Create Instance.** On a plain node it wraps the node, in place, in a
   one-node definition named after it (`modules/<name>.py`, suffixed `_2`,
@@ -95,9 +102,12 @@ aliasing.
 **Plan:** five phases, each a commit that changes the specifications it
 needs first.
 
-1. Bindings for instances of submodels: the drop rule, the choice of input
-   and the input mapping in the occurrence panel. It stands alone: today's
-   submodel instances gain differently named inputs.
+1. Bindings and output names for instances of submodels: the drop rule, the
+   choice of input, the input mapping in the occurrence panel, and
+   `<instance>_<port>` output names in the shared input-name rule
+   (`edge_input_name` and its browser mirror) and on the card. It stands
+   alone: today's submodel instances gain differently named inputs and
+   outputs of their own.
 2. Linked nodes: the server transform that wraps a node
    (`POST /api/submodel/instance`), the one-node output name in the shared
    input-name rule (`edge_input_name` and its browser mirror), and the card,
@@ -134,6 +144,9 @@ needs first.
   instance renames its output for its consumers.
 - The same holds for a Model Score node, and for an instance of a multi-node
   submodel bound to frames named otherwise than its public inputs.
+- One node reads an original and its instance side by side: a linked node's
+  outputs as `<name>` and `<name>_2`, a submodel's output `premium` as
+  `premium` and `<instance>_premium`.
 - No path pairs inputs by position or by substring.
 - `@pipeline.instance(...)`, `of=` on a node decorator and `instanceOf` on an
   ordinary node's config are refused with a message naming the linked-node

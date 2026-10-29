@@ -142,7 +142,7 @@ Expansion is a pure transform per instance:
    to qualified runtime ids and from each bound public input port id to its
    upstream parent identity. Rewrite cloned child configs through that map.
    Also rewrite remaining parent consumers from the selected occurrence's
-   public output port name to the qualified runtime output source. When
+   output names (see Output names below) to the qualified runtime output source. When
    this changes the physical name of an input that a Transform's or a Load
    File's free code reads by name, preserve the public logical name with
    `inputMapping` (the same `stepped_surface_allows_input_references` rule that
@@ -211,18 +211,27 @@ that another connection binds unbinds that other connection, in the same
 undoable edit. Removing a connection unbinds its input, and the public input
 stays declared.
 
+**Output names.** `edge_input_name` names an edge out of an occurrence by the
+output's name: from a linked node, owner or instance, the occurrence's
+sanitised name, as an ordinary node's edge is named by its label; from any
+other occurrence, the sanitised public output port name on the owner and
+`<occurrence>_<port>` (the sanitised occurrence and port names joined by `_`)
+on an instance. The browser's `edgeInputName` agrees, and an occurrence card
+labels each output with its name. No name depends on the number of outputs.
+Renaming an instance or a linked node therefore renames its frames for its
+consumers, and the rename reconciles their bindings as an ordinary rename
+does; renaming the owner of any other definition renames nothing downstream.
+Two outputs that one consumer would read under one name are refused there,
+as any duplicate input name is.
+
 **Linked nodes.** A definition whose `graph` holds exactly one node is a
 one-node definition, and each of its occurrences is a linked node. Its input
 ports each target that node, with the node's own handle (an Edge Join's `base`
 or `join`), and it has one output port sourced from the node when the node
 produces a frame (none for an Explore, Model Training or Optimiser node).
 
-- **Output name.** `edge_input_name` names an edge from a linked node by the
-  occurrence's sanitised name, as an ordinary node's edge is named by its
-  label, rather than by the public output port name, and the browser's
-  `edgeInputName` agrees. Renaming a linked occurrence therefore renames its
-  frame for its consumers, and the rename reconciles their bindings as an
-  ordinary rename does.
+- **Output name.** The occurrence's name (see Output names), so the owner's
+  consumers keep the name they read before the node was wrapped.
 - **Preview and trace target.** The editor targets a linked node as
   `qualified_runtime_node_id(<occurrence>, <node id>)` on the parent graph, as
   it targets a drilled child, and shows the result as the occurrence's.
@@ -678,8 +687,10 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
 - `tests/test_submodel_instances.py` — canonical definition and occurrence
   validation, parse/codegen round trips, public-port expansion, targeted
   flattening, shared-definition retention, an instance bound to frames named
-  otherwise than its public inputs, a linked node's output named by its
-  occurrence and renamed with it, an instance's missing columns, Unlink
+  otherwise than its public inputs, an instance's outputs named
+  `<instance>_<port>` and read beside the owner's by one consumer, a linked
+  node's output named by its occurrence and renamed with it, an instance's
+  missing columns, Unlink
   restoring the plain node, OUTPUT source-port migration across
   a public boundary, one validation per flatten (a count of
   `resolve_submodel_instances` calls), a Load File child (and a node instance of it) reading its

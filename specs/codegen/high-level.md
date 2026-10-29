@@ -161,7 +161,8 @@ Out of scope (owned by neighbouring components):
   `haute._graph_utils.edge_input_name` in edge order: an `apiInput`-frame edge
   contributes its frame label verbatim (labels are validated as ASCII Python
   identifiers by the api-input schema), a submodel-output edge contributes the
-  sanitised public output port name (independent of alias or port count), and every ordinary
+  sanitised public output port name from an owner, `<occurrence>_<port>` from an instance
+  and the occurrence's name from a linked node (none depending on port count), and every ordinary
   edge contributes the sanitised source-node label. A frame emitted as `quotes` is therefore callable as
   `quotes` in every downstream body — the same string the editor lists as the
   input. When a canvas topology rewrite replaces a Polars node's parent while
@@ -192,9 +193,10 @@ Out of scope (owned by neighbouring components):
   aliases are never inferred. Parent connections name declared public port
   names; `in__<name>`/`out__<name>` exist only in graph JSON and are not
   emitted as authored parameter names. Inside a definition, child
-  parameters use sanitised public input port names. Downstream, each output port
-  contributes its sanitised public port name as the executable input name,
-  independent of the occurrence alias; public ports declare a single
+  parameters use sanitised public input port names. Downstream, each output
+  contributes its output name as the executable input name (its sanitised
+  public port name from an owner, `<occurrence>_<port>` from an instance, the
+  occurrence's name from a linked node); public ports declare a single
   canonical name: portId and label are not emitted.
   `graph_to_code` refuses a hierarchical graph rather than returning an
   arbitrary file. Each definition file carries its declared
@@ -280,7 +282,8 @@ Out of scope (owned by neighbouring components):
   `pipeline.connect("<frame>", "<name>", target_port="<input>")`, so parsing restores
   every binding without name heuristics. A linked node (a one-node definition) is
   emitted as the module holding that one node; its consumers' parameters read it under
-  its occurrence's name. No node declaration carries `of=`.
+  its occurrence's name, and those of any other instance read each output as
+  `<occurrence>_<port>`. No node declaration carries `of=`.
 - **Polars transforms bind inputs by name only.** A `polars` node's function
   parameters are its logical inputs, one per incoming edge in edge order; `df` is
   purely the output variable and is never pre-bound to an input. The body is the

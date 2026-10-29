@@ -116,7 +116,7 @@
    (`_submodel_paths.submodel_module_name`); a file that is not a `modules/<name>.py`
    module importable by that name raises `ParseError` with the definition id. Then omit occurrence nodes from the root function
    list, translate parent boundary handles only to declared public port names,
-   derive child-boundary parameters from sanitised public input port names and downstream names from sanitised public output port names, and emit one explicit
+   derive child-boundary parameters from sanitised public input port names and downstream names from each output's name (`edge_input_name`: the public output port name from an owner, `<occurrence>_<port>` from an instance, the occurrence's name from a linked node), and emit one explicit
    `pipeline.submodel(<module>.submodel, name)` registration per occurrence (with `instance_of=owner_name` for copies), with the pipeline's
    `from modules import ...` (`_submodel_import`) naming every definition's module. Parent `connect` calls refer to aliases
    plus public port names; synthetic `in__`/`out__` handles never enter source.

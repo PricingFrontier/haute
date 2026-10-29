@@ -81,7 +81,9 @@ into a plain node.
 Each occurrence owns its label, position, selection, and incident edges.
 One identity per submodel occurrence: the occurrence node id is its name
 (`node.id == data.label == config.alias`). Renaming an occurrence renames its
-alias and rebinds downstream consumers without code edits; as for an ordinary
+alias and rebinds downstream consumers without code edits (an instance's and a
+linked node's outputs are named by the occurrence, so its consumers' frames are
+renamed as an ordinary node's are); as for an ordinary
 node, the React Flow node id stays until Save, when codegen emits the name and
 the reparse re-keys the id. It never renames the definition file. A proposed occurrence rename is refused early if
 the name is not a canonical identifier (error: `Occurrence names must be identifiers; use "<functionName>".`),
@@ -96,7 +98,9 @@ Removing or dissolving targets the clicked occurrence name, and an owner cannot
 be dissolved while instances reference it.
 
 Submodel cards render only declared public ports. Handles are
-`in__<name>`/`out__<name>` and labels come from the port name; internal
+`in__<name>`/`out__<name>`; input labels come from the port name and output
+labels show each output's name (the port name on an owner, `<instance>_<port>`
+on an instance; see submodels Output names); internal
 child ids are neither rendered nor accepted as parent endpoints. Each canonical
 input handle accepts at most one parent binding. A connection dropped on an
 instance's inputs socket binds by the submodels binding rule: the public input
@@ -677,7 +681,9 @@ candidate, with the error toast.
   time.** Every ordinary incoming edge contributes its API frame label or
   sanitised source label. A canonical drilled Input contributes its sanitised
   public input port ID, and a canonical occurrence output contributes its
-  sanitised public output port name. A connection whose derived name duplicates an existing
+  output name (the sanitised public output port name from an owner,
+  `<instance>_<port>` from an instance, the occurrence's name from a linked
+  node). A connection whose derived name duplicates an existing
   executable input on the target is refused with a named toast, mirroring the
   backend's save-time `ParseError`. The
   alternative — accepting the edge and letting codegen suffix a parameter —

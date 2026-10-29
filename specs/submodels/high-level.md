@@ -152,7 +152,9 @@ from any surface — it anchors the shared definition, so retiring it means
 dissolving the submodel (after its copies are
 removed or dissolved); blocked attempts say so visibly. The owner cannot be
 dissolved while instances still reference it. Renaming an occurrence changes
-presentation only. Drilling into the owner opens the shared definition editor and states
+presentation only, except that an instance's and a linked node's outputs are
+named by the occurrence, so renaming one renames those frames for its consumers
+(see Reuse). Drilling into the owner opens the shared definition editor and states
 that edits affect every instance; drilling into an instance opens the same
 definition as an explicitly read-only view. All mutation surfaces are disabled
 there, including config fields, labels, node/edge edits, boundary edits,
@@ -356,7 +358,8 @@ must resolve the original pipeline-owned sidecars.
   matching the case-insensitive module no-clobber rule.
 - **Canonical boundary identity and executable naming are separate.** Parent edges
   address only `in__<name>` and `out__<name>` handles. Public input port names
-  and public output port names provide the executable frame names, internal endpoint ids stay
+  and public output port names provide the executable frame names (an instance's
+  and a linked node's outputs are named by the occurrence; see Reuse), internal endpoint ids stay
   definition-private, and public ports have a single name field. Drill-down projects the
   definition contract as one composite Input and one composite Output card.
   Declared outputs remain visible and round-trip without consumers. Draft or
@@ -414,6 +417,18 @@ across a rewire.
   the input it fed unbound. An unbound input is an ordinary editing state: the
   nodes it targets run without it and report what their code misses, as an
   unconnected node does.
+- **Output names.** An instance has its own name, and the frames it outputs
+  are named from it, so they never share the owner's names and one consumer
+  can read the owner and its instances side by side. The owner of a
+  multi-node definition names each output by its public output port name,
+  and an instance of it names each output `<instance>_<port>`; a linked node,
+  owner or instance, names its one output by its occurrence's name, as an
+  ordinary node's output is named by its label. No name depends on how many
+  outputs the definition declares, and an occurrence card labels each output
+  with its name. Renaming an instance or a linked node renames its frames for
+  its consumers, coded consumers keeping their code through `inputMapping` as
+  for any rename; renaming the owner of a multi-node definition renames
+  nothing downstream.
 - **Missing columns.** For each public input that an instance and its owner
   both bind, the instance reports, as `missing` schema warnings, the columns
   the owner's frame carries that the instance's does not, read from the walk's
@@ -427,11 +442,8 @@ across a rewire.
   a qualified runtime target. The owner's panel is the node's own editor, and
   its edits change the shared definition, so every instance follows; an
   instance's panel shows the same editor read-only, with "Instance of <owner>",
-  its input mapping and its missing columns. A linked node's output is named
-  by its occurrence's name, as an ordinary node's output is by its label: a
-  consumer reads the owner and an instance under different names, and renaming
-  either renames its frame downstream, coded consumers keeping their code
-  through `inputMapping` as for any rename. Duplicate gives an unlinked plain
+  its input mapping and its missing columns. Its output is named by its
+  occurrence's name (see Output names). Duplicate gives an unlinked plain
   copy of the node. Unlink, offered on an owner no instance references,
   dissolves it into a plain node under the linked node's name and position.
 - **Create Instance.** On a submodel occurrence it places another occurrence
@@ -537,14 +549,14 @@ across a rewire.
 - A downstream node fed across a canonical submodel boundary resolves the
   occurrence's `out__<name>` handle through the referenced definition to
   that public output's internal `{nodeId, handleId}` data source. Its parent
-  input name is the sanitised public output port name, independent of the
-  occurrence alias and number of outputs, except for a linked node, whose
-  output is named by its occurrence (see Reuse). See
+  input name is the output's name (see Reuse): the sanitised public output
+  port name from an owner, `<instance>_<port>` from an instance and the
+  occurrence's name from a linked node. See
   [frontend-node-editors](../frontend-node-editors/high-level.md)
   for chip derivation and [codegen](../codegen/high-level.md) for the backend
   rule.
 - A downstream `edgeJoin`'s base/join role is governed solely by each boundary edge's target
-  handle. Resolve `out__<name>` for the edge's executable input identity (the occurrence name or `<name>__<port_name>`) before duplicate-name
+  handle. Resolve `out__<name>` for the edge's executable input identity (the output's name) before duplicate-name
   validation, so two public outputs of one occurrence remain distinct even though their parent
   edges share the same occurrence `source`.
 
