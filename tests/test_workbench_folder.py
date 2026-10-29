@@ -53,6 +53,7 @@ from haute._workbench_form import (
     with_quote_details,
 )
 from haute._workbench_tables import sample_quote
+from tests._source_files import source_files
 from tests._workbench_helpers import FORM as FOLDER
 from tests._workbench_helpers import enable, form_files, form_folder, write_files, write_form
 
@@ -561,8 +562,7 @@ def files_of(form: dict[str, Any] | FormSpec, project: Path) -> dict[str, bytes]
 def on_disk(folder: Path) -> dict[str, bytes]:
     return {
         path.relative_to(folder).as_posix(): path.read_bytes()
-        for path in sorted(folder.rglob("*"))
-        if path.is_file()
+        for path in source_files(folder, suffix=None)
     }
 
 
