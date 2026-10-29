@@ -930,11 +930,19 @@ class TestStarredExpressions:
         assert expr_y is not None
         assert expr_y.expression_text == "b * 2"
 
-    def test_starred_inline_list_falls_back_to_opaque(self):
+    def test_starred_inline_list_is_read_like_its_items(self):
+        # ``*[...]`` passes the list's items one by one, as a literal list does.
         code = 'df = df.with_columns(*[(pl.col("a") + 1).alias("result")])'
         expr = parse_expression(code, "result")
         assert expr is not None
-        assert expr.expression_type == "opaque"
+        assert expr.expression_type == "arithmetic"
+        assert expr.expression_text == "a + 1"
+
+    def test_a_tuple_of_expressions_is_read_like_its_items(self):
+        code = 'df = df.with_columns(((pl.col("a") + 1).alias("result"),))'
+        expr = parse_expression(code, "result")
+        assert expr is not None
+        assert expr.expression_text == "a + 1"
 
 
 class TestStaticallyUnparseableCode:

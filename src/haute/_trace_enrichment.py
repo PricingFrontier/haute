@@ -27,7 +27,6 @@ from __future__ import annotations
 import ast
 import dataclasses
 import math
-import re
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
@@ -38,9 +37,12 @@ from haute._banding_config import normalise_banding_factors
 from haute._expression_parser import (
     AssignmentPhases,
     assignment_phases,
+    assigns_column,
+    copied_from,
     evaluate_expression,
     parse_expression,
     parse_expression_chain,
+    renamed_from,
 )
 from haute._graph_utils import edge_input_name, select_edge_source_output
 from haute._logging import get_logger
@@ -1107,58 +1109,35 @@ def _attach_banding_lineage(step: TraceStep, detail: dict[str, Any], column: str
 def _detect_rename(
     step: TraceStep,
     code: str,
-    raw_code: str,
     column: str,
     all_steps: list[TraceStep],
     node_map: dict[str, Any] | None = None,
 ) -> None:
-    """Detect if the column is a rename and populate calculation/node_detail."""
+    """Detect if the column is a rename and populate calculation/node_detail.
 
-    # Case 1: .rename({'old': 'new'}) syntax
-    rename_match = re.search(r"\.rename\s*\(\s*\{", raw_code)
-    if rename_match:
-        # Parse rename mapping from the raw code
-        pairs = re.findall(r"['\"](\w+)['\"]\s*:\s*['\"](\w+)['\"]", raw_code)
-        for old_name, new_name in pairs:
-            if new_name == column:
-                if step.calculation is None:
-                    step.calculation = {}
-                step.calculation["original_name"] = old_name
+    Both cases are read from the syntax tree: a ``rename`` call's own literal
+    mapping (never another call's dict, such as ``replace``'s), or an
+    assignment that copies another column unchanged.
+    """
+    renamed = renamed_from(code, column)
+    original = renamed if renamed is not None else copied_from(code, column)
+    if original is None:
+        return
+    if step.calculation is None:
+        step.calculation = {}
+    step.calculation["original_name"] = original
 
-                # Build rename chain by looking at previous steps
-                chain = _build_rename_chain(all_steps, step, old_name, column, node_map)
-                if chain and len(chain) > 2:
-                    step.calculation["rename_chain"] = chain
+    # Build rename chain by looking at previous steps
+    chain = _build_rename_chain(all_steps, step, original, column, node_map)
+    if chain and len(chain) > 2:
+        step.calculation["rename_chain"] = chain
 
-                if step.node_detail is None:
-                    step.node_detail = {}
-                step.node_detail["detail_type"] = "rename"
-                step.node_detail["original_name"] = old_name
-                step.node_detail["new_name"] = new_name
-                return
-
-    # Case 2: .with_columns(new_name=pl.col('old_name')) — pure rename (col reference only)
-    if ".with_columns(" in raw_code:
-        col_match = re.search(
-            rf"{re.escape(column)}\s*=\s*pl\.col\(\s*['\"](\w+)['\"]\s*\)",
-            raw_code,
-        )
-        if col_match:
-            old_name = col_match.group(1)
-            # Check if this is a pure rename (no additional operations)
-            # The expression text should be just the column name
-            expr = step.expression
-            if expr and expr.get("expression_type") == "arithmetic":
-                expr_text = expr.get("expression_text", "")
-                if expr_text.strip() == old_name:
-                    if step.calculation is None:
-                        step.calculation = {}
-                    step.calculation["original_name"] = old_name
-
-                    # Build rename chain
-                    chain = _build_rename_chain(all_steps, step, old_name, column, node_map)
-                    if chain and len(chain) > 2:
-                        step.calculation["rename_chain"] = chain
+    if renamed is not None:
+        if step.node_detail is None:
+            step.node_detail = {}
+        step.node_detail["detail_type"] = "rename"
+        step.node_detail["original_name"] = renamed
+        step.node_detail["new_name"] = column
 
 
 def _build_rename_chain(
@@ -1189,22 +1168,18 @@ def _build_rename_chain(
             continue
 
         # Try to detect what column was the source by parsing the step's code
-        if node_map and parse_expression is not None:
+        if node_map:
             try:
                 nd = node_map.get(prev_step.node_id)
                 if nd:
                     cfg = nd.data.config if isinstance(nd.data.config, dict) else {}
                     raw_code = cfg.get("code", "") or ""
                     if raw_code:
-                        wrapped = _wrap_node_code(raw_code)
-                        parsed = parse_expression(wrapped, current_name)
-                        if parsed and parsed.expression_type == "arithmetic":
-                            refs = parsed.referenced_columns
-                            if len(refs) == 1 and refs[0] != current_name:
-                                if parsed.expression_text.strip() == refs[0]:
-                                    chain.insert(0, refs[0])
-                                    current_name = refs[0]
-                                    continue
+                        source = copied_from(_wrap_node_code(raw_code), current_name)
+                        if source is not None:
+                            chain.insert(0, source)
+                            current_name = source
+                            continue
             except Exception as exc:
                 # Walking the rename chain is best-effort — if parsing a
                 # prior step's code blows up we stop walking and return
@@ -1653,10 +1628,10 @@ def enrich_steps(
                                 step.calculation = dict(err_payload)
                             else:
                                 step.calculation.setdefault("error", err_payload["error"])
-            _col_in_code = False
-            if column and raw_code and ".with_columns(" in raw_code:
-                # Check if the column is a keyword arg or appears as an alias target
-                _col_in_code = bool(re.search(rf"\b{re.escape(column)}\s*=", raw_code))
+            # A step whose code assigns the column (to the value it already
+            # held, say) still shows its formula; a comment, a string or a
+            # comparison naming the column is not an assignment.
+            _col_in_code = bool(column and assigns_column(code, column))
             if column and (_col_in_schema or _col_in_code):
                 parsed = None
                 try:
@@ -1842,7 +1817,7 @@ def enrich_steps(
             # --- Rename detection ---
             if column:
                 try:
-                    _detect_rename(step, code, raw_code, column, steps, node_map)
+                    _detect_rename(step, code, column, steps, node_map)
                 except Exception as exc:
                     logger.warning(
                         "rename_detection_failed",

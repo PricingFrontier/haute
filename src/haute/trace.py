@@ -35,7 +35,6 @@ directly and does not depend on this facade being imported first.
 from __future__ import annotations
 
 import functools
-import re
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -52,6 +51,7 @@ from haute._execute_lazy import lineage_preparation_order
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionCancelledError, ExecutionContext, ExecutionProfile
 from haute._expression_parser import (
+    assigns_column,
     evaluate_expression,
     parse_expression,
     parse_expression_chain,
@@ -87,8 +87,9 @@ from haute._trace_correlation import (
     trace_edge_alignment,
     trace_head_prefixes,
 )
-from haute._trace_enrichment import column_derivation as _column_derivation
 from haute._trace_enrichment import (
+    _effective_node_code,
+    _wrap_node_code,
     detect_row_lineage_type,
     enrich_banding,
     enrich_live_switch,
@@ -97,6 +98,7 @@ from haute._trace_enrichment import (
     enrich_rating_step,
     enrich_scenario_expansion,
 )
+from haute._trace_enrichment import column_derivation as _column_derivation
 from haute._trace_enrichment import enrich_steps as _enrich_steps
 from haute._trace_enrichment import input_source_entry as _input_source_entry
 from haute._trace_lineage import ColumnRead, JoinInputs, ValueLineage, trace_value_lineage
@@ -2019,8 +2021,9 @@ def _prune_to_column_relevance(
          inputs must stay in the trace even when they live on branches that do
          not themselves carry the traced column.
 
-    A kept step is ``column_relevant`` when the value's lineage reaches it, and
-    its ``contributed_columns`` are the columns it computes for the value.
+    A kept step is ``column_relevant`` exactly when the value's lineage
+    reaches it, and its ``contributed_columns`` are the columns it computes
+    for the value.
     """
     carrier_ids = {s.node_id for s in steps if _carries_column(s, column)}
 
@@ -2032,16 +2035,14 @@ def _prune_to_column_relevance(
         if column in s.schema_diff.columns_added or column in s.schema_diff.columns_modified
     }
 
-    # Also check for nodes whose code creates the column (for failed-execution cases)
-    code_origin_ids: set[str] = set()
+    # Also keep nodes whose code assigns the column though their row shows no
+    # change (an assignment of the value it already held).
     for s in steps:
         nd = node_map.get(s.node_id)
         if nd:
             cfg = nd.data.config if isinstance(nd.data.config, dict) else {}
-            rc = cfg.get("code", "") or ""
-            if rc and ".with_columns(" in rc and re.search(rf"\b{re.escape(column)}\s*=", rc):
-                code_origin_ids.add(s.node_id)
-    origin_ids |= code_origin_ids
+            if assigns_column(_wrap_node_code(_effective_node_code(cfg, node_map)), column):
+                origin_ids.add(s.node_id)
 
     # Collect ancestors that actually contribute to the formula.
     # If the expression tells us which columns are referenced (e.g.
@@ -2097,7 +2098,7 @@ def _prune_to_column_relevance(
         keep_ids |= contributing_ids
     kept = [s for s in steps if s.node_id in keep_ids]
     for s in kept:
-        s.column_relevant = s.node_id in lineage.reached or s.node_id in code_origin_ids
+        s.column_relevant = s.node_id in lineage.reached
         s.contributed_columns = lineage.contributed_columns(s.node_id)
     return kept
 

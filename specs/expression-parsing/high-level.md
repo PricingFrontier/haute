@@ -131,6 +131,26 @@ Out of scope (owned by neighbouring components, cross-linked below):
   UDFs, values assigned inside `if`/`for`/`try`/`with`/`match`, or anything that fails to parse —
   becomes an `"opaque"` result carrying the original source text, which is the honest "could not
   understand this" signal rather than a guessed value.
+- **A name reads the value it held where the formula ran.** Node code runs as one module-level
+  namespace, so `factor = 2`, a `with_columns` call reading `factor`, then `factor = 3` computed
+  with 2, and the formula shows 2. A binding keeps the names it read when its own statement ran.
+  A name assigned in a way the code does not show statically before the formula's statement —
+  inside control flow, by an augmented or unpacking assignment — has no value the parser can
+  prove: the formula is opaque, and evaluating it reports `unresolved_name: <name>` rather than
+  computing with a stale binding or the preamble's value of the same name.
+- **Every fact comes from the located expression.** `evaluate_expression` types an expression
+  `window` when the expression that assigns the column contains an `.over()` call, describes each
+  window in words from its syntax tree (`rank of x over g`, or `10.0 / (sum of a over g)` for one
+  inside arithmetic), and adds the partition columns it names as strings to its referenced
+  columns. Another column of the same node, even one in the same call, keeps its own type,
+  substituted text and columns.
+- **Substitution renders, never rewrites text.** The substituted text is the located expression
+  written again from its syntax tree with each column reference replaced by the row's value and
+  each literal preamble or global constant read by its value; quoted literals, method names and
+  keywords stay as written, so a literal spelled like a column (`concat_str(x, "x")`) or a
+  column named like a method keeps its meaning. Operators keep the grouping the tree gives them:
+  a unary operator keeps the parentheses of a looser operand, so `-(x + z)` never reads as
+  `-x + z`.
 - `evaluate_expression(code, target_column, row_values, ..., row=None)` additionally
   substitutes concrete column values into the formula text and has **Polars** compute the result
   on the traced row. `row` is that row as a one-row frame in the dtypes the pipeline gave it; the
@@ -225,10 +245,6 @@ submodel constructor that declares constants are `ParseError`s naming the line.
   whether one row determines it.
 
 ## Failure model
-
-> NOTE: The full review reproduced final scalar bindings used at earlier expressions,
-> lost unary parentheses and substitution inside string literals.
-> [TRACE-R02](../roadmap/tracing.md#trace-r02--expression-facts-from-the-located-expression) tracks statement-scoped bindings and syntax-preserving rendering.
 
 - Structural parsing converts a whole-file `SyntaxError` into contextual `ParseError`; no
   syntax-invalid source returns a canonical `PipelineGraph`.

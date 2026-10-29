@@ -17,7 +17,7 @@ import datetime as _dt
 import json
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, cast
@@ -29,10 +29,13 @@ __all__ = [
     "AssignmentPhases",
     "ParsedExpression",
     "EvaluatedExpression",
+    "assigns_column",
     "assignment_phases",
+    "copied_from",
     "parse_expression",
     "evaluate_expression",
     "parse_expression_chain",
+    "renamed_from",
 ]
 
 
@@ -135,9 +138,12 @@ _PREC_COMPARE = 0  # below BitOr(1); e.g. (a < b) * c must keep its parens
 _PREC_BOOL_OR = -2
 _PREC_BOOL_AND = -1
 _PREC_IFEXP = -3
-# Unary minus binds looser than ** (so ``-a ** b`` is ``-(a ** b)`` and
-# ``(-a) ** b`` needs parens) but tighter than multiplication.
+# Unary minus, plus and invert bind looser than ** (so ``-a ** b`` is
+# ``-(a ** b)`` and ``(-a) ** b`` needs parens) but tighter than multiplication.
 _PREC_USUB = 7
+# ``not`` binds looser than a comparison (``not a == b`` is ``not (a == b)``)
+# and tighter than ``and``.
+_PREC_NOT = -0.5
 
 
 _COLUMN_PRODUCER_METHODS: frozenset[str] = frozenset({"with_columns", "select"})
@@ -348,7 +354,7 @@ class _ExprConverter:
 
     # -- node handlers -------------------------------------------------------
 
-    def _operand_prec(self, node: ast.AST) -> int:
+    def _operand_prec(self, node: ast.AST) -> float:
         """Effective binding precedence of *node* when it appears as an operand.
 
         Higher binds tighter. Atoms (names, calls, literals, subscripts) bind
@@ -365,8 +371,8 @@ class _ExprConverter:
             return _PREC_BOOL_AND if isinstance(node.op, ast.And) else _PREC_BOOL_OR
         if isinstance(node, ast.IfExp):
             return _PREC_IFEXP
-        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-            return _PREC_USUB
+        if isinstance(node, ast.UnaryOp):
+            return _PREC_NOT if isinstance(node.op, ast.Not) else _PREC_USUB
         return 100  # atom
 
     def _binop(self, node: ast.BinOp, parent_op: ast.operator | None = None) -> str:
@@ -395,6 +401,9 @@ class _ExprConverter:
 
     def _unaryop(self, node: ast.UnaryOp) -> str:
         operand = self.convert(node.operand)
+        # A looser operand keeps its parentheses: ``-(x + z)`` is not ``-x + z``.
+        if self._operand_prec(node.operand) < self._operand_prec(node):
+            operand = f"({operand})"
         if isinstance(node.op, ast.USub):
             self.expr_type = "arithmetic"
             return f"-{operand}"
@@ -456,9 +465,14 @@ class _ExprConverter:
             resolved = self._symbol_table[name]
             if isinstance(resolved, ast.AST):
                 self._resolving.add(name)
+                table = self._symbol_table
+                # A binding was resolved when its statement ran: a name still in
+                # it was not bound then, so no later binding is what it read.
+                self._symbol_table = {}
                 try:
                     return self.convert(resolved)
                 finally:
+                    self._symbol_table = table
                     self._resolving.discard(name)
         if name == "None":
             return "None"
@@ -467,6 +481,14 @@ class _ExprConverter:
         if name == "False":
             return "False"
         # Unknown name: treat as opaque reference
+        return self._free_name_text(name)
+
+    def _free_name_text(self, name: str) -> str:
+        """How a name the node's code does not bind is written."""
+        return name
+
+    def _column_text(self, name: str) -> str:
+        """How a column reference is written."""
         return name
 
     def _attribute(self, node: ast.Attribute) -> str:
@@ -611,13 +633,7 @@ class _ExprConverter:
 
             # .over() — window function
             if method_name == "over":
-                base_text = self.convert(receiver)
-                over_args = []
-                for a in node.args:
-                    over_args.append(self.convert(a))
-                for kw in node.keywords:
-                    over_args.append(self.convert(kw.value))
-                return f"{base_text}.over({', '.join(over_args)})"
+                return self._over(node)
 
             # .cast(pl.Type)
             if method_name == "cast":
@@ -653,6 +669,17 @@ class _ExprConverter:
         # Fallback
         return ast.dump(node)
 
+    def _over(self, node: ast.Call) -> str:
+        """A window call as written: ``x.sum().over("g")``."""
+        assert isinstance(node.func, ast.Attribute)
+        base_text = self.convert(node.func.value)
+        over_args = []
+        for a in node.args:
+            over_args.append(self.convert(a))
+        for kw in node.keywords:
+            over_args.append(self.convert(kw.value))
+        return f"{base_text}.over({', '.join(over_args)})"
+
     def _pl_col(self, node: ast.Call) -> str:
         if (
             node.args
@@ -662,7 +689,7 @@ class _ExprConverter:
             col_name = node.args[0].value
             if col_name not in self.columns:
                 self.columns.append(col_name)
-            return col_name
+            return self._column_text(col_name)
         elif node.args:
             # Dynamic column name — check symbol table
             arg = node.args[0]
@@ -672,7 +699,7 @@ class _ExprConverter:
                     col_name = resolved.value
                     if col_name not in self.columns:
                         self.columns.append(col_name)
-                    return col_name
+                    return self._column_text(col_name)
             # Opaque
             self._is_opaque = True
             self.expr_type = "opaque"
@@ -727,7 +754,7 @@ class _ExprConverter:
                     col_name = a.value
                     if col_name not in self.columns:
                         self.columns.append(col_name)
-                    args_parts.append(col_name)
+                    args_parts.append(self._column_text(col_name))
                 else:
                     args_parts.append(self.convert(a))
         return f"format({', '.join(args_parts)})"
@@ -743,7 +770,7 @@ class _ExprConverter:
                         col_name = elt.value
                         if col_name not in self.columns:
                             self.columns.append(col_name)
-                        args_parts.append(col_name)
+                        args_parts.append(self._column_text(col_name))
                     else:
                         args_parts.append(self.convert(elt))
                 continue
@@ -949,23 +976,107 @@ def _infer_auto_name(node: ast.AST) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _build_safe_symbol_table(stmts: list[ast.stmt]) -> dict[str, ast.AST]:
-    """Build a symbol table only from top-level simple assignments (not inside
-    control flow). This avoids resolving variables assigned conditionally."""
+_OWN_SCOPES = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.ClassDef,
+    ast.Lambda,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+)
+
+
+def _names_assigned_by(node: ast.AST) -> set[str]:
+    """The names *node* assigns a value in the code's own scope.
+
+    An import binds a module and a definition a callable, so neither counts.
+    """
+    if isinstance(node, _OWN_SCOPES):
+        return set()
+    if isinstance(node, ast.Name):
+        return set() if isinstance(node.ctx, ast.Load) else {node.id}
+    names: set[str] = set()
+    for child in ast.iter_child_nodes(node):
+        names |= _names_assigned_by(child)
+    return names
+
+
+def _simple_binding(stmt: ast.stmt) -> tuple[str, ast.expr] | None:
+    """``name = value`` or ``name: type = value``, the bindings a table can follow."""
+    if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+        target = stmt.targets[0]
+        if isinstance(target, ast.Name):
+            return target.id, stmt.value
+    if (
+        isinstance(stmt, ast.AnnAssign)
+        and stmt.value is not None
+        and isinstance(stmt.target, ast.Name)
+    ):
+        return stmt.target.id, stmt.value
+    return None
+
+
+def _statement_index(stmts: list[ast.stmt], node: ast.AST) -> int:
+    """The index of the top-level statement *node* sits in."""
+    position = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+    for index, stmt in enumerate(stmts):
+        start = (stmt.lineno, stmt.col_offset)
+        end = (stmt.end_lineno or stmt.lineno, stmt.end_col_offset or 0)
+        if start <= position <= end:
+            return index
+    return len(stmts)
+
+
+def _bind_statement(stmt: ast.stmt, table: dict[str, ast.AST], unprovable: set[str]) -> None:
+    """Fold one top-level statement into the names the code has bound.
+
+    A simple assignment binds its value with the names it reads resolved as
+    they stand, so a later rebinding never changes it; a binding that reads a
+    name whose value is unknown is unknown too. Any other assignment (inside
+    control flow, augmented, unpacking) leaves its names unknown.
+    """
+    binding = _simple_binding(stmt)
+    if binding is None:
+        for name in _names_assigned_by(stmt):
+            table.pop(name, None)
+            unprovable.add(name)
+        return
+    name, value = binding
+    if _is_df_assignment(value):
+        return
+    resolved = _substitute_names_in_ast(value, table)
+    table[name] = resolved
+    if any(isinstance(sub, ast.Name) and sub.id in unprovable for sub in ast.walk(resolved)):
+        unprovable.add(name)
+    else:
+        unprovable.discard(name)
+
+
+@lru_cache(maxsize=256)
+def _calls_with_bindings(
+    code: str,
+) -> tuple[tuple[ast.Call, int | None, dict[str, ast.AST], frozenset[str]], ...]:
+    """Every ``with_columns``/``select`` call of *code* in execution order, with
+    the names bound before its statement and those whose value there is unknown.
+
+    The tables are shared through the cache: callers read them, never change them.
+    """
+    tree = _cached_parse(code)
+    stmts = tree.body
+    calls = _find_with_columns_calls(tree)
+    indices = [_statement_index(stmts, call) for call, _lineno in calls]
+    wanted = set(indices)
+    snapshots: dict[int, tuple[dict[str, ast.AST], frozenset[str]]] = {}
     table: dict[str, ast.AST] = {}
-    for stmt in stmts:
-        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
-            target = stmt.targets[0]
-            if isinstance(target, ast.Name):
-                name = target.id
-                if _is_df_assignment(stmt.value):
-                    continue
-                table[name] = stmt.value
-        elif isinstance(stmt, ast.AugAssign):
-            # Not safe to resolve augmented assignments simply, but we can
-            # represent expr = expr <op> rhs by reconstructing the AST
-            pass
-    return table
+    unprovable: set[str] = set()
+    for index in range(len(stmts) + 1):
+        if index in wanted:
+            snapshots[index] = (dict(table), frozenset(unprovable))
+        if index < len(stmts):
+            _bind_statement(stmts[index], table, unprovable)
+    return tuple((call, lineno, *snapshots[index]) for (call, lineno), index in zip(calls, indices))
 
 
 def _is_df_assignment(value: ast.AST) -> bool:
@@ -1023,13 +1134,29 @@ def _has_control_flow_wrapping_target(stmts: list[ast.stmt], target_column: str)
     return False
 
 
+# A ``with_columns``/``select`` call takes its expressions one by one or as
+# one list or tuple of them.
+_EXPRESSION_SEQUENCES = (ast.List, ast.Tuple)
+
+
+def _spread(args: list[ast.expr]) -> list[ast.expr]:
+    """A call's positional arguments with a literal list or tuple spread into its items."""
+    items: list[ast.expr] = []
+    for arg in args:
+        if isinstance(arg, _EXPRESSION_SEQUENCES):
+            items.extend(arg.elts)
+        else:
+            items.append(arg)
+    return items
+
+
 def _contains_with_columns_producing(node: ast.AST, target_column: str) -> bool:
     """Check if any node in subtree has with_columns that produces target_column."""
     for child in ast.walk(node):
         if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute):
             if child.func.attr in _COLUMN_PRODUCER_METHODS:
                 # Check if any arg produces the target column
-                for arg in child.args:
+                for arg in _spread(child.args):
                     _, alias = _strip_alias(arg)
                     if alias == target_column:
                         return True
@@ -1042,6 +1169,15 @@ def _contains_with_columns_producing(node: ast.AST, target_column: str) -> bool:
 # ---------------------------------------------------------------------------
 # with_columns extraction
 # ---------------------------------------------------------------------------
+
+
+def _source_span(node: ast.AST) -> tuple[int, int, int, int]:
+    return (
+        getattr(node, "lineno", 0) or 0,
+        getattr(node, "col_offset", 0) or 0,
+        getattr(node, "end_lineno", 0) or 0,
+        getattr(node, "end_col_offset", 0) or 0,
+    )
 
 
 def _find_with_columns_calls(tree: ast.Module) -> list[tuple[ast.Call, int | None]]:
@@ -1061,58 +1197,36 @@ def _find_with_columns_calls(tree: ast.Module) -> list[tuple[ast.Call, int | Non
             if node.func.attr in _COLUMN_PRODUCER_METHODS:
                 lineno = getattr(node, "lineno", None)
                 results.append((node, lineno))
-
-    def _span(item: tuple[ast.Call, int | None]) -> tuple[int, int, int, int]:
-        n = item[0]
-        return (
-            getattr(n, "lineno", 0) or 0,
-            getattr(n, "col_offset", 0) or 0,
-            getattr(n, "end_lineno", 0) or 0,
-            getattr(n, "end_col_offset", 0) or 0,
-        )
-
-    results.sort(key=_span)
+    results.sort(key=lambda item: _source_span(item[0]))
     return results
 
 
 def _extract_expressions_from_with_columns(
     call_node: ast.Call,
     symbol_table: dict[str, ast.AST],
-) -> list[tuple[ast.AST, str | None, int | None]]:
-    """Extract (expression_ast, alias_name, lineno) from a with_columns call."""
-    results = []
+) -> list[tuple[ast.AST, str | None, int | None, str | None]]:
+    """Extract (expression_ast, alias_name, lineno, bound_name) from a with_columns call.
+
+    ``bound_name`` is the variable an argument names when the expression is that
+    variable's binding, already resolved where it was bound; ``None`` for an
+    expression written in the call.
+    """
+    results: list[tuple[ast.AST, str | None, int | None, str | None]] = []
     lineno = getattr(call_node, "lineno", None)
 
     for arg in call_node.args:
-        actual_arg = arg
-        # Handle Starred: *exprs
-        if isinstance(arg, ast.Starred):
-            actual_arg = arg.value
-            # Resolve the variable
-            if isinstance(actual_arg, ast.Name) and actual_arg.id in symbol_table:
-                resolved = symbol_table[actual_arg.id]
-                if isinstance(resolved, ast.List):
-                    for elt in resolved.elts:
-                        expr_node, alias_name = _strip_alias(elt, symbol_table)
-                        results.append((expr_node, alias_name, lineno))
-                    continue
-
-        # If it's a variable name referencing a list
+        actual_arg = arg.value if isinstance(arg, ast.Starred) else arg
+        # A variable naming a list of expressions, or one expression
         if isinstance(actual_arg, ast.Name) and actual_arg.id in symbol_table:
-            resolved = symbol_table[actual_arg.id]
-            if isinstance(resolved, ast.List):
+            bound = actual_arg.id
+            resolved = symbol_table[bound]
+            if isinstance(resolved, _EXPRESSION_SEQUENCES):
                 for elt in resolved.elts:
                     expr_node, alias_name = _strip_alias(elt, symbol_table)
-                    results.append((expr_node, alias_name, lineno))
+                    results.append((expr_node, alias_name, lineno, bound))
                 continue
-            # It's a single expression variable
             expr_node, alias_name = _strip_alias(resolved, symbol_table)
-            if alias_name is None:
-                # Try stripping alias from the name usage context — the variable
-                # itself might be used like: var.alias("x")
-                # Actually the arg itself is a Name, check if it has .alias
-                pass
-            results.append((expr_node, alias_name, lineno))
+            results.append((expr_node, alias_name, lineno, bound))
             continue
 
         # Handle list comprehension — opaque
@@ -1120,15 +1234,15 @@ def _extract_expressions_from_with_columns(
             # Can't resolve statically
             continue
 
-        expr_node, alias_name = _strip_alias(actual_arg, symbol_table)
-        if alias_name is None:
-            auto_name = _infer_auto_name(expr_node)
-            alias_name = auto_name
-        results.append((expr_node, alias_name, lineno))
+        for item in _spread([actual_arg]):
+            expr_node, alias_name = _strip_alias(item, symbol_table)
+            if alias_name is None:
+                alias_name = _infer_auto_name(expr_node)
+            results.append((expr_node, alias_name, lineno, None))
 
     for kw in call_node.keywords:
         if kw.arg is not None:
-            results.append((kw.value, kw.arg, lineno))
+            results.append((kw.value, kw.arg, lineno, None))
 
     return results
 
@@ -1153,6 +1267,51 @@ def parse_expression(code: str, target_column: str) -> ParsedExpression | None:
         return _opaque(target_column, code if code else "")
 
 
+@dataclass(frozen=True)
+class _Definition:
+    """The expression that last assigns a column, and the names in force where it runs.
+
+    ``symbol_table`` resolves the names the expression reads: none when it is
+    a variable's binding (``bound_name``), which was resolved where it was bound.
+    """
+
+    node: ast.AST
+    source_line: int | None
+    symbol_table: dict[str, ast.AST]
+    unprovable: frozenset[str]
+    bound_name: str | None
+
+    def reads_unknown(self, unknown: Collection[str]) -> bool:
+        """Whether the expression reads a name whose value is not known."""
+        return self.bound_name in unknown or _expr_references_vars(self.node, set(unknown))
+
+
+def _find_definition(code: str, target_column: str) -> _Definition | None:
+    """The last ``with_columns``/``select`` expression writing *target_column*.
+
+    An unaliased expression is named after its leftmost column, as Polars
+    names it. The expression's names resolve through the bindings in force at
+    its own statement. *code* must parse.
+    """
+    best: _Definition | None = None
+    for call, _lineno, table, unprovable in _calls_with_bindings(code):
+        for expr_node, alias_name, line, bound in _extract_expressions_from_with_columns(
+            call, table
+        ):
+            if alias_name == target_column:
+                best = _Definition(expr_node, line, {} if bound else table, unprovable, bound)
+    return best
+
+
+def _definition_in(code: str, target_column: str) -> _Definition | None:
+    code = code.lstrip("\ufeff")
+    try:
+        _cached_parse(code)
+    except SyntaxError:
+        return None
+    return _find_definition(code, target_column)
+
+
 def _parse_expression_impl(code: str, target_column: str) -> ParsedExpression | None:
     if not code or not code.strip():
         return _opaque(target_column, "")
@@ -1173,99 +1332,32 @@ def _parse_expression_impl(code: str, target_column: str) -> ParsedExpression | 
     if _has_control_flow_wrapping_target(stmts, target_column):
         return _opaque(target_column, code)
 
-    # Build symbol table (only from top-level assignments, not inside control flow)
-    symbol_table = _build_safe_symbol_table(stmts)
-
-    # Find variables assigned inside control flow (they are not statically resolvable)
-    cf_assigned = _find_control_flow_assigned_vars(stmts)
-
-    # Also handle reassignment chains: expr = pl.col("base"); expr = expr * pl.col("f")
-    # by resolving them iteratively
-    _resolve_reassignment_chains(stmts, symbol_table)
-
-    # Find all with_columns calls
-    wc_calls = _find_with_columns_calls(tree)
-
-    if not wc_calls:
+    if not _find_with_columns_calls(tree):
         # Check for pipe or other non-with_columns patterns
         return _opaque(target_column, code)
 
-    # Search for the target column in with_columns calls (last match wins)
-    best_match: tuple[ast.AST, int | None] | None = None
-
-    for wc_call, lineno in wc_calls:
-        exprs = _extract_expressions_from_with_columns(wc_call, symbol_table)
-        for expr_node, alias_name, ln in exprs:
-            if alias_name == target_column:
-                best_match = (expr_node, ln)
-
-    if best_match is None:
-        # Try f-string alias matching or dynamic alias detection
-        # Also check if any with_columns arg, when resolved through the symbol
-        # table, might have the alias
-        for wc_call, lineno in wc_calls:
-            for arg in wc_call.args:
-                if isinstance(arg, ast.Starred):
-                    pass
-                elif isinstance(arg, ast.Name) and arg.id in symbol_table:
-                    resolved = symbol_table[arg.id]
-                    if isinstance(resolved, ast.List):
-                        for elt in resolved.elts:
-                            inner, alias = _strip_alias(elt, symbol_table)
-                            if alias == target_column:
-                                best_match = (inner, lineno)
-                                break
-                    continue
-                else:
-                    pass
-                if best_match:
-                    break
-            if best_match:
-                break
-
-    if best_match is None:
-        # Target not found — check for no-alias expressions
-        for wc_call, lineno in wc_calls:
-            for arg in wc_call.args:
-                if isinstance(arg, ast.Starred):
-                    continue
-                expr_node, alias_name = _strip_alias(arg, symbol_table)
-                if alias_name is None:
-                    auto = _infer_auto_name(expr_node)
-                    if auto == target_column:
-                        best_match = (expr_node, lineno)
-                        break
-            if best_match:
-                break
-
-    if best_match is None:
+    definition = _find_definition(code, target_column)
+    if definition is None:
         return _opaque(target_column, "")
 
-    expr_node, source_line = best_match
-
-    # Check if the expression references variables assigned in control flow
-    if cf_assigned and _expr_references_vars(expr_node, cf_assigned):
-        return _opaque(target_column, code, source_line)
+    # A name assigned inside control flow, or rebound before the call in a way
+    # the code does not show statically, has no value the trace can prove.
+    if definition.reads_unknown(_find_control_flow_assigned_vars(stmts) | definition.unprovable):
+        return _opaque(target_column, code, definition.source_line)
 
     # Convert the expression AST to text
-    converter = _ExprConverter(symbol_table)
-    expression_text = converter.convert(expr_node)
-    referenced_columns = converter.columns
-    constants = converter.constants
-    expr_type = converter.expr_type
-    sub_expressions = converter.sub_expressions
-
-    if converter._is_opaque:
-        expr_type = "opaque"
+    converter = _ExprConverter(definition.symbol_table)
+    expression_text = converter.convert(definition.node)
+    expr_type = "opaque" if converter._is_opaque else converter.expr_type
 
     return ParsedExpression(
         target_column=target_column,
         expression_text=expression_text,
         expression_type=expr_type,
-        referenced_columns=referenced_columns,
-        constants=constants,
-        sub_expressions=sub_expressions,
-        source_line=source_line,
+        referenced_columns=converter.columns,
+        constants=converter.constants,
+        sub_expressions=converter.sub_expressions,
+        source_line=definition.source_line,
     )
 
 
@@ -1283,109 +1375,15 @@ def _expr_references_vars(node: ast.AST, var_names: set[str]) -> bool:
     return False
 
 
-def _resolve_reassignment_chains(stmts: list[ast.stmt], table: dict[str, ast.AST]) -> None:
-    """Handle patterns like:
-        expr = pl.col("base")
-        expr = expr * pl.col("factor_a")
-        expr = expr * pl.col("factor_b")
-    by processing assignments sequentially and updating the symbol table.
-    """
-    for stmt in stmts:
-        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
-            target = stmt.targets[0]
-            if isinstance(target, ast.Name):
-                name = target.id
-                if _is_df_assignment(stmt.value):
-                    continue
-                # Resolve any references to existing symbol table entries in the value
-                resolved = _substitute_names_in_ast(stmt.value, table)
-                table[name] = resolved
-
-
 def _substitute_names_in_ast(node: ast.AST, table: dict[str, ast.AST]) -> ast.AST:
-    """Recursively substitute Name nodes with their values from the symbol table.
-    Returns a new AST (or the same node if no substitution needed)."""
-    if isinstance(node, ast.Name):
-        if node.id in table:
-            return table[node.id]
+    """*node* with every name *table* binds replaced by its value, as a new tree.
+
+    Each substituted value keeps the source position of the name it replaces,
+    so the result compiles.
+    """
+    if not table:
         return node
-    if isinstance(node, ast.BinOp):
-        new_left = _substitute_names_in_ast(node.left, table)
-        new_right = _substitute_names_in_ast(node.right, table)
-        if new_left is node.left and new_right is node.right:
-            return node
-        new_node = ast.BinOp(
-            left=cast(ast.expr, new_left),
-            op=node.op,
-            right=cast(ast.expr, new_right),
-        )
-        ast.copy_location(new_node, node)
-        return new_node
-    if isinstance(node, ast.UnaryOp):
-        new_operand = _substitute_names_in_ast(node.operand, table)
-        if new_operand is node.operand:
-            return node
-        new_node_u = ast.UnaryOp(op=node.op, operand=cast(ast.expr, new_operand))
-        ast.copy_location(new_node_u, node)
-        return new_node_u
-    if isinstance(node, ast.Call):
-        new_args = [_substitute_names_in_ast(a, table) for a in node.args]
-        new_keywords = []
-        for kw in node.keywords:
-            new_val = _substitute_names_in_ast(kw.value, table)
-            if new_val is kw.value:
-                new_keywords.append(kw)
-            else:
-                new_kw = ast.keyword(arg=kw.arg, value=cast(ast.expr, new_val))
-                new_keywords.append(new_kw)
-        new_func = _substitute_names_in_ast(node.func, table)
-        if (
-            new_func is node.func
-            and all(n is o for n, o in zip(new_args, node.args))
-            and all(n is o for n, o in zip(new_keywords, node.keywords))
-        ):
-            return node
-        new_node_c = ast.Call(
-            func=cast(ast.expr, new_func),
-            args=cast(list[ast.expr], new_args),
-            keywords=new_keywords,
-        )
-        ast.copy_location(new_node_c, node)
-        return new_node_c
-    if isinstance(node, ast.Attribute):
-        new_value = _substitute_names_in_ast(node.value, table)
-        if new_value is node.value:
-            return node
-        new_node_a = ast.Attribute(value=cast(ast.expr, new_value), attr=node.attr, ctx=node.ctx)
-        ast.copy_location(new_node_a, node)
-        return new_node_a
-    if isinstance(node, ast.Compare):
-        new_left = _substitute_names_in_ast(node.left, table)
-        new_comps = [_substitute_names_in_ast(c, table) for c in node.comparators]
-        if new_left is node.left and all(n is o for n, o in zip(new_comps, node.comparators)):
-            return node
-        new_node_cmp = ast.Compare(
-            left=cast(ast.expr, new_left),
-            ops=node.ops,
-            comparators=cast(list[ast.expr], new_comps),
-        )
-        ast.copy_location(new_node_cmp, node)
-        return new_node_cmp
-    if isinstance(node, ast.List):
-        new_elts = [_substitute_names_in_ast(e, table) for e in node.elts]
-        if all(n is o for n, o in zip(new_elts, node.elts)):
-            return node
-        new_node_l = ast.List(elts=cast(list[ast.expr], new_elts), ctx=node.ctx)
-        ast.copy_location(new_node_l, node)
-        return new_node_l
-    if isinstance(node, ast.Starred):
-        new_value = _substitute_names_in_ast(node.value, table)
-        if new_value is node.value:
-            return node
-        new_node_s = ast.Starred(value=cast(ast.expr, new_value), ctx=node.ctx)
-        ast.copy_location(new_node_s, node)
-        return new_node_s
-    return node
+    return cast(ast.AST, _NameResolver(table).visit(copy.deepcopy(node)))
 
 
 # ---------------------------------------------------------------------------
@@ -1432,10 +1430,6 @@ def _wrap_expression_code(code: str) -> str:
 
 
 _GLOBAL_CONSTANT_READ = re.compile(r"\bglobal_constants\.([A-Za-z][A-Za-z0-9_]*)\b")
-#: A quoted string (group 1, kept as written) or a constant read outside one (group 2).
-_DISPLAYED_CONSTANT_READ = re.compile(
-    r"""('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")|\bglobal_constants\.([A-Za-z][A-Za-z0-9_]*)\b"""
-)
 
 
 def _global_constant_values(namespace: Mapping[str, Any], code: str) -> dict[str, Any]:
@@ -1524,21 +1518,6 @@ class _InlineGlobalConstants(ast.NodeTransformer):
         return self.generic_visit(node)
 
 
-def _inline_global_constants(code: str, values: Mapping[str, Any]) -> str:
-    """*code* with each resolved ``global_constants.<name>`` read replaced by its literal.
-
-    A constant is a scalar literal of the run, so inlining it lets the row-local
-    evaluation compute the formula; the displayed formula keeps the name.
-    """
-    if not values:
-        return code
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
-        return code
-    return ast.unparse(ast.fix_missing_locations(_InlineGlobalConstants(values).visit(tree)))
-
-
 def _evaluate_expression_impl(
     code: str,
     target_column: str,
@@ -1551,73 +1530,63 @@ def _evaluate_expression_impl(
     constant_values = _global_constant_values(namespace, code)
 
     # Literal preamble constants display beside the row's values; the row wins.
-    effective_row = {
+    literals = {
         name: value for name, value in namespace.items() if _literal_node(value) is not None
     }
-    effective_row.update(row_values)
-
-    # Detect window function: .over() in code
-    is_window = ".over(" in code
+    effective_row = {**literals, **row_values}
 
     parsed = parse_expression(code, target_column)
     if parsed is None:
         parsed = _opaque(target_column, "")
+    definition = _definition_in(code, target_column)
 
-    # Window function handling
-    if is_window:
-        parsed_expr_type = "window"
-        # Extract partition columns from .over() calls
-        _add_window_partition_cols(code, parsed)
-    else:
-        parsed_expr_type = parsed.expression_type
+    # A window is the located expression's own: another column's window in the
+    # same node says nothing about this one.
+    is_window = definition is not None and _is_window(definition.node)
+    referenced_columns = list(parsed.referenced_columns)
+    if definition is not None and is_window:
+        for column in _window_partition_columns(definition.node):
+            if column not in referenced_columns:
+                referenced_columns.append(column)
 
     # Build input_values: only cols that are referenced
-    input_values = {k: v for k, v in effective_row.items() if k in parsed.referenced_columns}
+    input_values = {k: v for k, v in effective_row.items() if k in referenced_columns}
 
-    # Build substituted text
-    if is_window:
-        substituted_text = _build_window_description(code, target_column, effective_row, parsed)
+    unprovable = definition.unprovable if definition is not None else frozenset()
+    if definition is None:
+        substituted_text = parsed.expression_text
     else:
-        substituted_text = _substitute_values(
-            parsed.expression_text, _display_values(input_values, row)
-        )
+        substituted_text = _ValueRenderer(
+            definition,
+            columns=_display_values(input_values, row),
+            names={name: value for name, value in literals.items() if name not in unprovable},
+            constants=constant_values,
+        ).render()
 
-    # Show each global constant's value where the formula reads it.
-    substituted_text = _DISPLAYED_CONSTANT_READ.sub(
-        lambda match: (
-            _format_value(constant_values[match.group(2)])
-            if match.group(2) in constant_values
-            else match.group(0)
-        ),
-        substituted_text,
-    )
-
-    # Resolve preamble constants in substituted text
-    if preamble_ns:
-        for name, val in preamble_ns.items():
-            if name not in row_values and _literal_node(val) is not None:
-                # Replace unresolved preamble constant names with their values
-                substituted_text = _replace_column_name(substituted_text, name, _format_value(val))
-
+    # A name the code rebound out of sight before the call has no value to
+    # compute with, whatever the preamble binds it to.
+    evaluation_ns = {name: value for name, value in namespace.items() if name not in unprovable}
     traced_row = _native_row(row_values) if row is None else row
-    node = _locate_defining_expression(
-        _inline_global_constants(code, constant_values), target_column
+    node = (
+        None
+        if definition is None
+        else _inline_global_constants(_resolve_names(definition), constant_values)
     )
     computed = (
         _RowValue(reason="expression_not_located")
         if node is None
-        else _row_value(node, traced_row, namespace)
+        else _row_value(node, traced_row, evaluation_ns)
     )
 
     branches: dict[str, Any] = {}
     if node is not None and parsed.expression_type == "conditional":
-        branches = _branch_selection(node, traced_row, namespace) or {}
+        branches = _branch_selection(node, traced_row, evaluation_ns) or {}
 
     return EvaluatedExpression(
         target_column=parsed.target_column,
         expression_text=parsed.expression_text,
-        expression_type=parsed_expr_type,
-        referenced_columns=parsed.referenced_columns,
+        expression_type="window" if is_window else parsed.expression_type,
+        referenced_columns=referenced_columns,
         constants=parsed.constants,
         sub_expressions=parsed.sub_expressions,
         source_line=parsed.source_line,
@@ -1632,74 +1601,144 @@ def _evaluate_expression_impl(
     )
 
 
-def _add_window_partition_cols(code: str, parsed: ParsedExpression) -> None:
-    """Extract partition columns from .over() calls and add to referenced_columns."""
-    # Match .over('col') or .over("col")
-    over_pattern = re.findall(r"\.over\(\s*['\"](\w+)['\"]\s*\)", code)
-    for col in over_pattern:
-        if col not in parsed.referenced_columns:
-            parsed.referenced_columns.append(col)
+def _inline_global_constants(node: ast.AST, values: Mapping[str, Any]) -> ast.AST:
+    """*node* with each resolved ``global_constants.<name>`` read replaced by its literal.
 
-
-def _build_window_description(
-    code: str,
-    target_column: str,
-    row_values: dict[str, Any],
-    parsed: ParsedExpression,
-) -> str:
-    """Build a human-readable description for window functions."""
-    # Extract the aggregation function and column
-    # e.g., pl.col('premium').sum().over('region') -> "sum of premium over region"
-    agg_funcs = re.findall(r"\.(\w+)\(\)\s*\.over\(", code)
-    col_match = re.findall(r"pl\.col\(['\"](\w+)['\"]\)", code)
-    over_match = re.findall(r"\.over\(\s*['\"](\w+)['\"]\s*\)", code)
-
-    agg_func = agg_funcs[0] if agg_funcs else "aggregate"
-    agg_col = col_match[0] if col_match else "column"
-    part_col = over_match[0] if over_match else "partition"
-
-    return f"{agg_func} of {agg_col} over {part_col}"
-
-
-_IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-
-
-def _substitute_values(expression_text: str, values: dict[str, Any]) -> str:
-    """Replace column names in expression text with their values.
-
-    Identifier-like names are substituted in a SINGLE left-to-right pass via one
-    combined word-boundary regex, so a value inserted for one column can never be
-    re-scanned and corrupted by a later (shorter) column name matching a word
-    inside it. Longest names are tried first so ``ab`` cannot shadow ``abc``.
+    A constant is a scalar literal of the run, so inlining it lets the row-local
+    evaluation compute the formula; the displayed formula keeps the name.
     """
     if not values:
-        return expression_text
-
-    ident = {k: v for k, v in values.items() if _IDENT_RE.match(k)}
-    other = {k: v for k, v in values.items() if k not in ident}
-
-    result = expression_text
-    if ident:
-        names = sorted(ident.keys(), key=len, reverse=True)
-        pattern = r"\b(" + "|".join(re.escape(n) for n in names) + r")\b"
-        result = re.sub(pattern, lambda m: _format_value(ident[m.group(0)]), result)
-
-    # Names with spaces/special chars fall back to literal replacement (they are
-    # not the case the single-pass guard targets).
-    for col_name in sorted(other.keys(), key=len, reverse=True):
-        result = result.replace(col_name, _format_value(other[col_name]))
-    return result
+        return node
+    return cast(ast.AST, ast.fix_missing_locations(_InlineGlobalConstants(values).visit(node)))
 
 
-def _replace_column_name(text: str, col_name: str, replacement: str) -> str:
-    """Replace column name in expression text, being careful with word boundaries."""
-    # Use regex with word boundaries for simple alphanumeric names
-    if re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", col_name):
-        pattern = r"\b" + re.escape(col_name) + r"\b"
-        return re.sub(pattern, replacement, text)
-    else:
-        # For names with spaces/special chars, do exact replacement
-        return text.replace(col_name, replacement)
+def _is_over_call(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "over"
+    )
+
+
+def _is_window(node: ast.AST) -> bool:
+    """Whether *node* computes a window: an ``.over()`` call anywhere in it."""
+    return any(_is_over_call(sub) for sub in ast.walk(node))
+
+
+def _partition_arguments(node: ast.Call) -> list[ast.expr]:
+    """What an ``.over()`` call partitions by, a list spread into its items."""
+    arguments = [*node.args, *(kw.value for kw in node.keywords if kw.arg == "partition_by")]
+    items: list[ast.expr] = []
+    for argument in arguments:
+        if isinstance(argument, (ast.List, ast.Tuple)):
+            items.extend(argument.elts)
+        else:
+            items.append(argument)
+    return items
+
+
+def _string_constant(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _window_partition_columns(node: ast.AST) -> list[str]:
+    """The columns the windows in *node* partition by when named as strings.
+
+    A ``pl.col`` partition is a column reference the converter already counts.
+    """
+    columns: list[str] = []
+    for sub in ast.walk(node):
+        if not _is_over_call(sub):
+            continue
+        assert isinstance(sub, ast.Call)
+        for argument in _partition_arguments(sub):
+            name = _string_constant(argument)
+            if name is not None and name not in columns:
+                columns.append(name)
+    return columns
+
+
+def _window_description(node: ast.Call, symbol_table: dict[str, ast.AST]) -> str:
+    """A window call in words, from its syntax tree: ``sum of premium over region``."""
+    names = _ExprConverter(symbol_table)
+
+    def written(argument: ast.AST) -> str:
+        name = _string_constant(argument)
+        return name if name is not None else names.convert(argument)
+
+    partitions = ", ".join(written(argument) for argument in _partition_arguments(node))
+    assert isinstance(node.func, ast.Attribute)
+    receiver = node.func.value
+    computed = names.convert(receiver)
+    if (
+        isinstance(receiver, ast.Call)
+        and isinstance(receiver.func, ast.Attribute)
+        and not names._is_pl_call(receiver, "col")
+    ):
+        method = receiver.func.attr
+        base = receiver.func.value
+        if isinstance(base, ast.Name) and base.id == "pl":
+            # ``pl.sum("x")``: the function's own arguments name what it reads.
+            operand = ", ".join(written(argument) for argument in receiver.args)
+        else:
+            operand = names.convert(base)
+            if names._operand_prec(base) < 100:
+                operand = f"({operand})"
+        computed = f"{method} of {operand}" if operand else method
+    return f"{computed} over {partitions}" if partitions else computed
+
+
+class _ValueRenderer(_ExprConverter):
+    """A located expression written again with the traced row's values in it.
+
+    Only the syntax tree's column references, its free names bound to literal
+    constants and its global constant reads take a value: quoted literals,
+    method names and keywords stay as written, and every operator keeps the
+    grouping the tree gives it. A window is described in words, since one
+    row's value would misstate what it computed.
+    """
+
+    def __init__(
+        self,
+        definition: _Definition,
+        *,
+        columns: Mapping[str, Any],
+        names: Mapping[str, Any],
+        constants: Mapping[str, Any],
+    ) -> None:
+        super().__init__(definition.symbol_table)
+        self._root = definition.node
+        self._column_values = columns
+        self._name_values = names
+        self._constant_values = constants
+
+    def render(self) -> str:
+        return self.convert(self._root)
+
+    def _column_text(self, name: str) -> str:
+        if name in self._column_values:
+            return _format_value(self._column_values[name])
+        return name
+
+    def _free_name_text(self, name: str) -> str:
+        if name in self._name_values:
+            return _format_value(self._name_values[name])
+        return name
+
+    def _attribute(self, node: ast.Attribute) -> str:
+        if (
+            isinstance(node.value, ast.Name)
+            and node.value.id == "global_constants"
+            and node.attr in self._constant_values
+        ):
+            return _format_value(self._constant_values[node.attr])
+        return super()._attribute(node)
+
+    def _over(self, node: ast.Call) -> str:
+        description = _window_description(node, self._symbol_table)
+        return description if node is self._root else f"({description})"
 
 
 def _display_values(values: dict[str, Any], row: pl.DataFrame | None) -> dict[str, Any]:
@@ -1834,9 +1873,9 @@ def _call_writes(call: ast.Call, symbol_table: dict[str, ast.AST]) -> tuple[froz
     for arg in call.args:
         value = arg.value if isinstance(arg, ast.Starred) else arg
         bound = symbol_table.get(value.id) if isinstance(value, ast.Name) else None
-        if isinstance(bound, ast.List):
+        if isinstance(bound, _EXPRESSION_SEQUENCES):
             items.extend(bound.elts)
-        elif isinstance(value, ast.List):
+        elif isinstance(value, _EXPRESSION_SEQUENCES):
             items.extend(value.elts)
         elif isinstance(arg, ast.Starred) or isinstance(value, (ast.ListComp, ast.GeneratorExp)):
             unknown = True
@@ -1866,14 +1905,12 @@ def _call_writes(call: ast.Call, symbol_table: dict[str, ast.AST]) -> tuple[froz
 
 def assignment_phases(code: str, target_column: str) -> AssignmentPhases | None:
     """Split the columns *code* assigns around the last call assigning *target_column*."""
+    code = _wrap_expression_code(code).lstrip("﻿")
     try:
-        tree = _cached_parse(_wrap_expression_code(code).lstrip("﻿"))
+        _cached_parse(code)
     except SyntaxError:
         return None
-    stmts = tree.body
-    symbol_table = _build_safe_symbol_table(stmts)
-    _resolve_reassignment_chains(stmts, symbol_table)
-    calls = [_call_writes(call, symbol_table) for call, _lineno in _find_with_columns_calls(tree)]
+    calls = [_call_writes(call, table) for call, _line, table, _ in _calls_with_bindings(code)]
     target_calls = [
         index for index, (names, _unknown) in enumerate(calls) if target_column in names
     ]
@@ -1890,39 +1927,82 @@ def assignment_phases(code: str, target_column: str) -> AssignmentPhases | None:
 
 def _locate_defining_expression(code: str, target_column: str) -> ast.AST | None:
     """The expression that last assigns *target_column*, with same-node names resolved."""
-    code_clean = code.lstrip("﻿")
+    definition = _definition_in(code, target_column)
+    return None if definition is None else _resolve_names(definition)
+
+
+def _resolve_names(definition: _Definition) -> ast.AST:
+    """*definition*'s expression with the names bound where it runs replaced by their values."""
+    return cast(
+        ast.AST,
+        _NameResolver(definition.symbol_table).visit(copy.deepcopy(definition.node)),
+    )
+
+
+def assigns_column(code: str, column: str) -> bool:
+    """Whether *code* assigns *column*: a ``with_columns`` or ``select`` call writes it.
+
+    Read from the syntax tree, so a comment, a string or a comparison naming
+    the column is not an assignment.
+    """
+    return bool(code.strip()) and (
+        assignment_phases(code, column) is not None
+        or _locate_defining_expression(code, column) is not None
+    )
+
+
+def renamed_from(code: str, column: str) -> str | None:
+    """The column a ``rename`` call's literal mapping renames to *column*.
+
+    Only a ``rename`` call's own mapping counts, never another call's dict
+    (``replace({...})``). The last such call wins.
+    """
     try:
-        tree = _cached_parse(code_clean)
+        tree = _cached_parse(code.lstrip("\ufeff"))
     except SyntaxError:
         return None
+    calls = sorted(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "rename"
+        ),
+        key=_source_span,
+    )
+    original: str | None = None
+    for call in calls:
+        mapping = (
+            call.args[0]
+            if call.args
+            else next((kw.value for kw in call.keywords if kw.arg == "mapping"), None)
+        )
+        if not isinstance(mapping, ast.Dict):
+            continue
+        for key, value in zip(mapping.keys, mapping.values):
+            old = None if key is None else _string_constant(key)
+            if old is not None and _string_constant(value) == column:
+                original = old
+    return original
 
-    stmts = tree.body
-    symbol_table = _build_safe_symbol_table(stmts)
-    _resolve_reassignment_chains(stmts, symbol_table)
 
-    wc_calls = _find_with_columns_calls(tree)
-    best_match: ast.AST | None = None
-    for wc_call, _lineno in wc_calls:
-        for expr_node, alias_name, _ln in _extract_expressions_from_with_columns(
-            wc_call, symbol_table
-        ):
-            if alias_name == target_column:
-                best_match = expr_node
-
-    if best_match is None:
-        # An unaliased expression is named after the column it reads.
-        for wc_call, _lineno in wc_calls:
-            for arg in wc_call.args:
-                expr_node, alias_name = _strip_alias(arg, symbol_table)
-                if alias_name is None and _infer_auto_name(expr_node) == target_column:
-                    best_match = expr_node
-                    break
-            if best_match is not None:
-                break
-
-    if best_match is None:
-        return None
-    return cast(ast.AST, _NameResolver(symbol_table).visit(copy.deepcopy(best_match)))
+def copied_from(code: str, column: str) -> str | None:
+    """The column *code*'s last assignment of *column* copies unchanged: ``pl.col("old")``."""
+    node = _locate_defining_expression(code, column)
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "col"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "pl"
+        and len(node.args) == 1
+        and not node.keywords
+    ):
+        original = _string_constant(node.args[0])
+        if original is not None and original != column:
+            return original
+    return None
 
 
 class _NameResolver(ast.NodeTransformer):
@@ -1933,7 +2013,7 @@ class _NameResolver(ast.NodeTransformer):
 
     def visit_Name(self, node: ast.Name) -> ast.AST:
         bound = self._bindings.get(node.id)
-        if bound is None:
+        if bound is None or not isinstance(node.ctx, ast.Load):
             return node
         return ast.copy_location(copy.deepcopy(bound), node)
 
@@ -2092,32 +2172,28 @@ def _parse_expression_chain_impl(code: str, target_column: str) -> list[ParsedEx
     code_wrapped = _wrap_expression_code(code)
 
     try:
-        tree = _cached_parse(code_wrapped)
+        _cached_parse(code_wrapped)
     except SyntaxError:
         parsed = parse_expression(code_wrapped, target_column)
         return [parsed] if parsed else []
 
-    stmts = tree.body
-    symbol_table = _build_safe_symbol_table(stmts)
-    _resolve_reassignment_chains(stmts, symbol_table)
-
-    wc_calls = _find_with_columns_calls(tree)
-
     # Parse each column definition ONCE, reusing the single tree + converter
     # output, instead of re-invoking parse_expression (a full reparse) per
     # chain element. "Last match wins" keeps the effective (outermost)
-    # definition, matching _find_with_columns_calls' execution ordering.
+    # definition, matching _find_with_columns_calls' execution ordering. Each
+    # call reads the names bound before its own statement.
     parsed_by_col: dict[str, ParsedExpression] = {}
     refs_by_col: dict[str, list[str]] = {}
 
-    for wc_call, lineno in wc_calls:
+    for wc_call, _lineno, symbol_table, _unprovable in _calls_with_bindings(code_wrapped):
         exprs = _extract_expressions_from_with_columns(wc_call, symbol_table)
-        for expr_node, alias_name, ln in exprs:
+        for expr_node, alias_name, ln, bound in exprs:
             if alias_name is None:
                 alias_name = _infer_auto_name(expr_node)
             if alias_name is None:
                 continue
-            converter = _ExprConverter(symbol_table)
+            # A variable's binding was resolved where it was bound.
+            converter = _ExprConverter({} if bound else symbol_table)
             text = converter.convert(expr_node)
             expr_type = "opaque" if converter._is_opaque else converter.expr_type
             parsed_by_col[alias_name] = ParsedExpression(

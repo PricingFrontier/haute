@@ -15,66 +15,11 @@ from the [25 October 2026 codebase review](codebase-review-2026-10-25.md).
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| TRACE-R02 | Planned | P2 | A step's expression type, description, referenced columns and rename detail come from the located expression's syntax tree, never from regular expressions over the node's whole code. Explanations use statement-time scalar bindings and preserve unary grouping and quoted literals in backend and browser formatting. |
 | TRACE-R03 | Planned | P2 | A parent row proven by carried values is matched strictly or omitted, a banding coercion that fails is an error marker, an unnameable edge is reported, and a failed comparison names its real cause. |
 | TRACE-R04 | Planned | P3 | The unreachable partial-trace path, the test-only correlation branch, the dead helper, the stale comments and the three duplicated mechanisms are gone. |
 | TRACE-R05 | Planned | P2 | The trace panel shows an additive waterfall step with its own operator, the clicked column's conditional or opaque card shows its value, export failures say their cause, a power renders as a power, omission notes are chosen by code, and the panel's test-only helpers are gone. |
 
 ## Planned improvements
-
-### TRACE-R02 — Expression facts from the located expression
-**Why:** `evaluate_expression` decides "window" by the substring `.over(`
-anywhere in the node's code, so every column of a `with_columns` that also
-contains a window is typed `window`, given the window's regex-built description
-as its `substituted_text` and the window's partition column among its referenced
-columns; only the value is right (probed: `y = a * 2` shown as "rank of x over
-g"). `_detect_rename` finds `.rename({` anywhere and then reads every `'k': 'v'`
-pair in the whole code as a rename mapping, so an unrelated `replace({...})`
-labels the step a rename with a wrong original name (probed). Two sites decide
-"this node's code assigns `column`" with the regex `\b{column}\s*=` over the raw
-code, which matches comments, string literals and `==` comparisons, forcing
-`column_relevant` for a step the lineage never reached; AST answers to the same
-question exist three times.
-
-**Plan:** Decide window-ness from the located defining expression and build the
-description from its syntax tree; read the `.rename(...)` call's dict argument
-from the AST or retire rename detection; replace both regexes with one shared
-helper over `assignment_phases` and `_locate_defining_expression`, and let
-`column_relevant` come from the lineage alone; align the expression-parsing
-specification, which documents the substring detection.
-
-**Acceptance:** A node mixing a window and a row-local column types each column
-by its own expression; a `replace` mapping beside a `rename` does not label the
-step a rename; a comment containing `premium ==` does not make a step relevant.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_expression_parser.py::evaluate_expression`;
-`src/haute/_expression_parser.py::_build_window_description`;
-`src/haute/_expression_parser.py::_locate_defining_expression`;
-`src/haute/_trace_enrichment.py::_detect_rename`;
-`src/haute/trace.py::_prune_to_column_relevance`;
-`src/haute/_trace_waterfall.py::_step_targets_column`.
-
-**28 October full-pass addition:** Expression binding and rendering also drift. A real full
-trace of `factor=2; df=src.with_columns(y=pl.col("x")*factor); factor=3` returns output 20 but
-calculation/derivation `10 * 3 = 30`, because the symbol table uses the final binding. Unary
-minus renders `-(x+z)` as `-x + z`, and regex substitution changes the string literal in
-`concat_str(x, "x")` into `concat_str("A", ""A"")`. **Plan/acceptance:** resolve scalar
-bindings at the defining expression's statement, preserve AST precedence, and substitute only
-column-expression tokens, never literal text. Execute the reassignment graph and assert
-explanation agrees with its actual output; cover nested unary/binary expressions and literals
-equal to column names. If a binding cannot be proved, report that limitation instead of a
-confident alternative result. Evidence: `src/haute/_expression_parser.py::_build_safe_symbol_table`, `src/haute/_expression_parser.py::_resolve_reassignment_chains`, `src/haute/_expression_parser.py::_ExprConverter._unaryop`, `src/haute/_expression_parser.py::_substitute_values`;
-`_trace_enrichment.py` currently trusts the wrong row-local evaluation.
-
-The browser also replaces every `*` and `/` in displayed expressions, including
-quoted literals: its real formatter turns `replace('a/b', 'a*b')` into
-`replace('a÷b', 'a×b')`. Include the shared formatter and CalculationHero's
-substituted-text rendering in the same syntax-preserving contract; test quoted
-operators unchanged while actual arithmetic operators receive display glyphs.
-Evidence: `frontend/src/trace/traceFormatting.ts::formatDisplayExpression` and
-`frontend/src/trace/CalculationHero.tsx::CalculationHero.renderBody` (other trace renderers repeat this rule).
 
 ### TRACE-R03 — Proven matches stay strict; failures carry their cause
 **Why:** A head-frame match on proven carried values still allows relaxed

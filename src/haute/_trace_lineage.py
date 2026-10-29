@@ -20,6 +20,7 @@ from haute._expression_parser import (
     AssignmentPhases,
     _locate_defining_expression,
     assignment_phases,
+    assigns_column,
     parse_expression,
 )
 from haute._trace_correlation import _edge_join_key_pairs
@@ -400,10 +401,7 @@ class _Derivation:
                 self._value_before_code(reference)
 
     def _code_writes(self, column: str) -> bool:
-        return bool(self.code.strip()) and (
-            assignment_phases(self.code, column) is not None
-            or _locate_defining_expression(self.code, column) is not None
-        )
+        return assigns_column(self.code, column)
 
     def _code_derivation(
         self, column: str

@@ -266,6 +266,40 @@ def _policy_graph(tmp_path) -> object:
     )
 
 
+def test_a_comment_naming_the_column_does_not_make_a_step_relevant(tmp_path):
+    pl.DataFrame({"quote_id": ["q1"], "a": [2.0]}).write_parquet(tmp_path / "quotes.parquet")
+    pl.DataFrame({"quote_id": ["q1"], "z": [1.0]}).write_parquet(tmp_path / "notes.parquet")
+    graph = make_graph(
+        {
+            "nodes": [
+                make_source_node("quotes", str(tmp_path / "quotes.parquet")),
+                make_source_node("notes", str(tmp_path / "notes.parquet")),
+                make_transform_node(
+                    "side",
+                    "# premium == 0 is checked downstream\n"
+                    'df = notes.with_columns((pl.col("z") + 1).alias("z2"))',
+                ),
+                _left_join("J"),
+                make_transform_node(
+                    "calc", 'df = J.with_columns((pl.col("a") * 2).alias("premium"))'
+                ),
+            ],
+            "edges": [
+                make_edge("quotes", "J", target_handle="base"),
+                make_edge("notes", "side"),
+                make_edge("side", "J", target_handle="join"),
+                make_edge("J", "calc"),
+            ],
+        }
+    )
+
+    steps = _steps_by_id(execute_trace(graph, target_node_id="calc", column="premium"))
+
+    # The joined-in side never reaches premium; its comment assigns nothing.
+    assert steps["calc"].column_relevant is True
+    assert "side" not in steps or steps["side"].column_relevant is False
+
+
 @pytest.mark.parametrize(
     ("column", "omitted"),
     [("from_sale", ["policies"]), ("from_x", [])],

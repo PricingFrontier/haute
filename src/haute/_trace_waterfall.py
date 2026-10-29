@@ -24,9 +24,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from haute._edge_join import EDGE_JOIN_DEFAULT_SUFFIX
+from haute._expression_parser import assigns_column
 from haute._graph_utils import upstream_node_ids
 from haute._json_safe import MAX_SAFE_INTEGER
 from haute._logging import get_logger
+from haute._trace_enrichment import _effective_node_code, _wrap_node_code
 
 if TYPE_CHECKING:
     from haute.trace import TraceStep
@@ -366,71 +368,16 @@ def _step_targets_column(
     A multiplicative/additive step whose factor is the identity for the
     traced row (e.g. a region relativity of ``1.0``) leaves the cell
     numerically unchanged, so the schema diff records it as *passed*, not
-    *modified*, and it would be silently dropped from the waterfall.
-    Inspecting ``with_columns`` calls in the parsed AST lets such a
-    structurally relevant step still appear as an explicit identity
-    contribution without mistaking comments or equality tests for writes.
+    *modified*, and it would be silently dropped from the waterfall. The
+    code's syntax tree says whether it assigns the column, so a comment or an
+    equality test is never mistaken for a write.
     """
-    if not node_map:
+    node = (node_map or {}).get(step.node_id)
+    config = getattr(getattr(node, "data", None), "config", None)
+    if not isinstance(config, dict) or node_map is None:
         return False
-    node = node_map.get(step.node_id)
-    data = getattr(node, "data", None)
-    config = getattr(data, "config", None)
-    code = config.get("code", "") if isinstance(config, dict) else ""
-    if not isinstance(code, str) or not code:
-        return False
-    code = code.strip()
-    if not code:
-        return False
-    source = f"df = (df\n{code})" if code.startswith(".") else code
-    try:
-        tree = ast.parse(source)
-    except (SyntaxError, ValueError):
-        return False
-
-    def _literal_string(node: ast.AST) -> str | None:
-        return (
-            node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
-        )
-
-    def _positional_output_names(expression: ast.AST) -> set[str]:
-        if isinstance(expression, (ast.List, ast.Tuple)):
-            return {
-                name for element in expression.elts for name in _positional_output_names(element)
-            }
-        if (
-            isinstance(expression, ast.Call)
-            and isinstance(expression.func, ast.Attribute)
-            and expression.func.attr == "alias"
-            and expression.args
-        ):
-            alias = _literal_string(expression.args[0])
-            if alias is not None:
-                return {alias}
-        for candidate in ast.walk(expression):
-            if (
-                isinstance(candidate, ast.Call)
-                and isinstance(candidate.func, ast.Attribute)
-                and candidate.func.attr == "col"
-                and candidate.args
-            ):
-                name = _literal_string(candidate.args[0])
-                if name is not None:
-                    return {name}
-        return set()
-
-    for candidate in ast.walk(tree):
-        if (
-            not isinstance(candidate, ast.Call)
-            or not isinstance(candidate.func, ast.Attribute)
-            or candidate.func.attr != "with_columns"
-        ):
-            continue
-        if any(keyword.arg == column for keyword in candidate.keywords):
-            return True
-        if any(column in _positional_output_names(argument) for argument in candidate.args):
-            return True
-    return False
+    code = _effective_node_code(config, node_map).strip()
+    return assigns_column(_wrap_node_code(code), column)
 
 
 def _detail_uses_default(value: Any) -> bool:

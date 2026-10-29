@@ -543,6 +543,32 @@ class TestColumnRenameTracking:
             "node_detail must indicate rename operation"
         )
 
+    def test_a_replace_mapping_beside_a_rename_is_not_a_rename(self, tmp_path):
+        p = tmp_path / "data.parquet"
+        pl.DataFrame({"code": ["a"], "x": [2.0], "other": [1]}).write_parquet(p)
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node(
+                        "t",
+                        "df = src.with_columns(\n"
+                        "    label=pl.col('code').replace({'a': 'y'}),\n"
+                        "    y=pl.col('x') * 2,\n"
+                        ").rename({'other': 'other_id'})",
+                    ),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
+
+        step = _step_by_id(execute_trace(graph, target_node_id="t", column="y"), "t")
+
+        # Only the rename call's own mapping renames: y was computed, not renamed from "a".
+        assert step.calculation is not None
+        assert "original_name" not in step.calculation
+        assert step.node_detail is None or step.node_detail.get("detail_type") != "rename"
+
     def test_rename_does_not_break_column_relevance(self, tmp_path):
         """Renamed column still appears as relevant in the trace."""
         p = tmp_path / "data.parquet"

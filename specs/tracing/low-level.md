@@ -631,7 +631,10 @@ its public facade.
    creator's expression, so all three enrichment paths follow the identical
    `instanceOf`/`.with_columns(` rule.
 2. Parses/evaluates the expression for `column` when the column is
-   added/modified at this step, or (for the *target* step only) borrows the
+   added/modified at this step or its code assigns it (`assigns_column` in
+   `_expression_parser.py`: `assignment_phases` or `_locate_defining_expression`
+   finds the assignment in the syntax tree, so a comment, a string or a `==`
+   comparison naming the column is not one), or (for the *target* step only) borrows the
    expression/calculation of the step a pass-through value came from.
    `_pass_through_origin` follows the target's value back one step at a time
    through the single parent that holds `column` with that same value, to the
@@ -693,8 +696,12 @@ its public facade.
    target the chain assigns once. `execute_trace` passes enrichment the compiled preamble
    namespace (cached per process) over any caller-supplied `preamble_ns`, so formulas resolve the
    names the node code ran with.
-4. Detects renames (`.rename({...})` or a pure `.with_columns(new=pl.col(old))`)
-   and builds a rename chain by walking backward through prior steps.
+4. Detects renames from the syntax tree: a `rename` call whose own literal mapping
+   renames a column to `column` (`renamed_from`; another call's dict, such as
+   `replace({...})`, never counts), which also marks the step's `node_detail` a rename, or
+   an assignment of `column` that copies another column unchanged (`copied_from`:
+   `pl.col(old)` as a keyword or an alias), and builds a rename chain by walking backward
+   through prior steps' copies.
 5. Dispatches node-type enrichment by `node_type` (`ratingStep`, `banding`,
    `modelScore`, `scenarioExpander`, `liveSwitch`, `optimiserApply`) into
    `step.node_detail`; for `banding`, additionally attaches lineage
@@ -775,8 +782,8 @@ Each node's entry is derived once per trace.
    opens the chain as `"base"` (`value_before = observed`). Each subsequent step
    where the column is modified, *or* where the node's code structurally
    assigns the column even though this row's value did not change
-   (`_step_targets_column` parses `with_columns(...)` assignments with the
-   Python AST; comments and `==` comparisons are not assignments — an identity
+   (`_step_targets_column` asks `assigns_column` of the node's effective code;
+   comments and `==` comparisons are not assignments — an identity
    factor like `×1.0` would otherwise vanish as a `"passed"` schema-diff entry),
    contributes an entry via
    `_classify_contribution()`.
@@ -882,16 +889,19 @@ snapshot deterministically.
   branches); a calculated/modified column keeps its origin node(s) plus every
   ancestor that produces a column its formula's `referenced_columns` actually
   names (falling back to keeping *all* ancestors when no expression info is
-  available, e.g. an opaque node). Pruning decides which steps are returned; the
-  lineage decides which of them are relevant.
+  available, e.g. an opaque node). A node whose effective code assigns the column
+  (`assigns_column`) is an origin even when its row shows no change. Pruning decides
+  which steps are returned; the lineage alone decides which of them are relevant, so a
+  step whose code only mentions the column (a comment, a comparison) is never made
+  relevant by it.
 - **The value lineage is a backward demand walk** (`trace_value_lineage`). Each node
   gets the set of its output columns the value depends on (or "every column"), seeded
   with the traced column at the target and visited in reverse topological order over
   the graph's parents. At a step, a demanded column it computes is contributed and
   replaced by its dependencies; a demanded column it does not compute is carried to its
   parents. A step computes a column its row shows added or modified, its effective code
-  assigns (even to the value the column already held, or to a helper column it later
-  drops), or one of its rules generates. A pure router (`edgeJoin`, `liveSwitch`,
+  assigns (`assigns_column`; even to the value the column already held, or to a helper
+  column it later drops), or one of its rules generates. A pure router (`edgeJoin`, `liveSwitch`,
   `dataOutput`) computes nothing: every column is carried, including one its schema
   diff shows as added because the parent holding it was not correlated. A source
   computes its columns from nothing.
@@ -1105,7 +1115,12 @@ integration/regression suites:
   pre-assignment-value substitution fix for self-referential assignments
   (`premium = premium * factor`), both as a single expression and as an
   intra-node chain that feeds a self-referential intermediate forward into a
-  dependent entry.
+  dependent entry. It also pins a window beside a row-local column in one call explaining
+  each by its own expression, and (`TestStatementTimeBindings`) a scalar rebound after the
+  formula explained with the value the pipeline ran with, in the calculation and the
+  derivation alike. `tests/test_trace_hero_tdd.py` pins a `replace` mapping beside a
+  `rename` never labelling the step a rename, and `tests/test_trace_value_lineage.py` a
+  comment naming the traced column never making a joined-in step relevant.
 - **`tests/test_trace_waterfall.py`** — the C8 arithmetic-contract
   regression suite, driving flagship multiplicative/additive scenarios through
   `execute_trace` end-to-end (not hand-fed factors) so a regression in

@@ -1402,6 +1402,36 @@ class TestWindowFunctions:
         assert step.expression is not None
         assert step.output_values["rnk"] is not None
 
+    def test_a_window_beside_a_row_local_column_explains_each_by_its_own_expression(self, tmp_path):
+        p = tmp_path / "data.parquet"
+        pl.DataFrame({"g": ["A", "A"], "x": [3.0, 1.0], "a": [10.0, 20.0]}).write_parquet(p)
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node(
+                        "t",
+                        "df = src.with_columns(\n"
+                        "    r=pl.col('x').rank().over('g'),\n"
+                        "    y=pl.col('a') * 2,\n"
+                        ")",
+                    ),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
+
+        y = _calc(_step_by_id(execute_trace(graph, target_node_id="t", column="y"), "t"))
+        r = _calc(_step_by_id(execute_trace(graph, target_node_id="t", column="r"), "t"))
+
+        assert y is not None and r is not None
+        assert y["expression_type"] == "arithmetic"
+        assert y["substituted_text"] == "10.0 * 2"
+        assert "g" not in y["referenced_columns"]
+        assert y["result_value"] == 20.0
+        assert r["expression_type"] == "window"
+        assert r["substituted_text"] == "rank of x over g"
+
 
 # ===========================================================================
 # CATEGORY 7: Joins and Row Lineage (8+ tests)
@@ -2281,6 +2311,39 @@ class TestCalculationValueVerification:
         input_vals = step.calculation.get("input_values", {})
         assert input_vals.get("price") == 25.0
         assert input_vals.get("tax_rate") == 0.2
+
+
+class TestStatementTimeBindings:
+    """A formula reads a name as it stood at the formula's own statement."""
+
+    def test_a_scalar_rebound_after_the_formula_explains_the_output(self, tmp_path):
+        p = tmp_path / "data.parquet"
+        pl.DataFrame({"x": [10.0]}).write_parquet(p)
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node(
+                        "t",
+                        "factor = 2\ndf = src.with_columns(y=pl.col('x') * factor)\nfactor = 3",
+                    ),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
+
+        result = execute_trace(graph, target_node_id="t", column="y")
+        step = _step_by_id(result, "t")
+        calculation = _calc(step)
+
+        # The pipeline ran with factor 2: the explanation agrees with its output.
+        assert result.output_value == 20.0
+        assert calculation is not None
+        assert calculation["substituted_text"] == "10.0 * 2"
+        assert calculation["result_value"] == result.output_value
+        derivation = next(d for d in step.derivations if d["column"] == "y")
+        assert derivation["substituted_text"] == "10.0 * 2"
+        assert derivation["result_value"] == result.output_value
 
 
 class TestSelfReferentialCalculation:

@@ -15,6 +15,7 @@ import {
   type WaterfallStep,
 } from "./traceHelpers"
 import {
+  displayOperators,
   formatSmartValue,
   formatResultValueFull,
   formatDisplayExpression,
@@ -530,8 +531,7 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
     }
 
     // Default: everything in one unified box, top-down chronological
-    const rawSubText = calculation?.substituted_text ?? ""
-    const subText = rawSubText.replace(/\*/g, "\u00d7").replace(/\//g, "\u00f7")
+    const subText = displayOperators(calculation?.substituted_text ?? "")
     const formulaText = hasExpressionText && !isOpaque
       ? formatDisplayExpression(expression!.expression_text).text
       : null
