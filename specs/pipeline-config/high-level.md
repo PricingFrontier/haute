@@ -40,7 +40,7 @@ save/load/discovery to the GUI are [server-api](../server-api/high-level.md).
 decorator per authorable node type — `api_input`, `workbench_input`, `polars`, `banding`, `rating_step`,
 `model_score`, `output`, `workbench_output`, `edge_join`, `live_switch`, `optimiser`, `optimiser_apply`,
 `scenario_expander`, `modelling`, `constant`, `data_input`, `data_output`,
-`explore`, `external_file`, `instance` — each a thin wrapper that tags the function with its
+`explore`, `external_file` — each a thin wrapper that tags the function with its
 `NodeType` and delegates to a shared registration path. Configured request inputs (Quote
 and Workbench Inputs), Data Input and Constant nodes are sources whatever their signature; any other function with zero
 positional parameters is treated as a source node; duplicate function names are rejected the

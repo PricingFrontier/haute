@@ -185,7 +185,11 @@ execution/preview/submodel/repair fence and carries a sorted unique
 `node_id`, `label`, canonical `node_type`, nullable submodel alias, and at most
 1,024 unique bounded source handles. Validators enforce node-type-specific alias
 and handle rules; API-input handles must already be non-keyword ASCII identifiers,
-while submodel outputs use `out__<port_id>`. `EditorIdentitiesResponse` returns one exact-order identity per
+while submodel outputs use `out__<port_id>`. A `submodel` node also carries `instance_of`, its
+owner's name (absent on the owner), and lists in `source_handles` every public output its
+definition declares, since an instance's output names depend on both (see
+[submodels](../submodels/low-level.md)); with a naming context, a node whose `instance_of` or
+handles differ from the context's is HTTP 422. `EditorIdentitiesResponse` returns one exact-order identity per
 request node with non-empty function/default/handle identities and an optional
 config reference. The request's optional `graph` is the editor document's naming context (a
 `PipelineGraph`, as save receives it, its preserved blocks included). The request's nodes
@@ -472,8 +476,8 @@ concurrent plain saves, but does not coordinate another worker process):
    graph), that no Quote Input table is labelled like another node's sanitized name, and
    that no node carries a `_load_error` marker. A submodel boundary cannot hide a
    second singleton, and creating another occurrence of a definition that contains one counts
-   as another executable singleton. A node whose `instanceOf` names a `liveSwitch` is refused
-   (a switch routes by its own input names, which an instance's inputs do not share).
+   as another executable singleton. A node other than a submodel occurrence carrying
+   `instanceOf` is refused.
 2. Resolve and validate `source_file` against the active pipeline root.
    Then require `base_revision` to equal the on-disk document's `source_revision`
    (`null` only when the target file does not exist); a mismatch raises

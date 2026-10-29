@@ -138,11 +138,20 @@ Expansion is a pure transform per instance:
    parent binding before removing an occurrence.
 2. Clone definition nodes and edges with qualified ids derived from the
    immutable instance id plus local id; record reversible origin metadata.
+   The owner's clones keep their names; an instance's are named
+   `<instance>__<child>`, the occurrence name and the child's joined by two
+   underscores, so a parent consumer reads an owner and its instances, or two
+   instances, under distinct physical names. The consumers of a renamed clone,
+   its siblings inside the clone and the parent consumers of its outputs, keep
+   the names they read through step 3's rename. A dissolve names an instance's
+   nodes the same way, and a name that then collides with another node's is a
+   name violation, as any is.
 3. Build one schema-declared reference map per occurrence from local node ids
    to qualified runtime ids and from each bound public input port id to its
    upstream parent identity. Rewrite cloned child configs through that map.
    Also rewrite remaining parent consumers from the selected occurrence's
-   output names (see Output names below) to the qualified runtime output source. When
+   output names (see Output names below) to the qualified runtime output source,
+   and a renamed clone's siblings from its definition name to its clone name. When
    this changes the physical name of an input that a Transform's or a Load
    File's free code reads by name, preserve the public logical name with
    `inputMapping` (the same `stepped_surface_allows_input_references` rule that
@@ -213,22 +222,45 @@ stays declared.
 output's name: on the owner, the sanitised public output port name; on an
 instance, the instance's sanitised name when its definition declares one
 public output, and `<instance>_<port>` (the sanitised instance and port names
-joined by `_`) for each output when it declares several. The browser's
-`edgeInputName` agrees, and an occurrence card labels each output with its
-name. Renaming an instance renames its frames for its consumers, and the
-rename reconciles their bindings as an ordinary rename does; renaming the
-owner renames nothing downstream. A definition edit that takes it from one
-public output to several, or back, renames every instance's frames in the
-same undoable edit, reconciled the same way. Two outputs that one consumer
-would read under one name are refused there, as any duplicate input name is.
+joined by `_`) for each output when it declares several. It reads both facts
+from the graph: the occurrence's `instanceOf`, and every public output the
+definition declares, connected or not. An occurrence card labels each output
+with its name.
+
+The browser takes these names from the editor identity request and never
+derives them itself. A `submodel` request node (`EditorIdentityRequestNode`)
+carries `instance_of`, its owner's name (absent on the owner), and lists in
+`source_handles` every public output its definition declares, so the
+response's `source_handle_input_names` give each output's name; when the
+request carries the document graph, a node whose `instance_of` or handles
+differ from the graph's is refused (`422`). An occurrence's cached
+`_sourceHandleInputNames` are resolved for the new state before, and replaced
+in, the one undoable commit of any edit that changes them: renaming an
+instance, or a definition edit that takes the definition from one public
+output to several or back.
+
+That commit renames the frames for their consumers as an ordinary rename does
+(see [frontend-node-editors](../frontend-node-editors/low-level.md)): input
+mappings, scenario-map keys, selectors, step references and response mappings
+(`outputMapping[].source_port`) follow, and the whole edit is refused before it
+applies when a consumer would then read two inputs under one name. Renaming the
+owner renames nothing downstream. Distinct names are not guaranteed, since
+port names and occurrence names are separate (an owner output `rating_2` beside
+an instance `rating_2`): two outputs that one consumer would read under one
+name are refused there, at the connection, as any duplicate input name is.
 
 **Previewing an occurrence.** The editor never sends an occurrence itself as a
-preview target. Selecting one previews, on the parent graph, each public
-output's source as `qualified_runtime_node_id(<occurrence>, <source node id>)`,
-as it targets a drilled child, and shows the results as the occurrence's, one
-frame per output under its output name, switched as a multi-frame preview's
-frames are; trace-cell clicks trace that target, and Refresh re-runs them. An
-occurrence with no public output previews nothing.
+preview target. Each public output's source endpoint `{nodeId, handleId}` is a
+preview target on the parent graph: `qualified_runtime_node_id(<occurrence>,
+nodeId)`, as a drilled child is targeted, with `handleId` as the request's
+`port_label` when that child emits several frames, so two outputs of one child
+preview their own frames. The preview shows one output at a time, under its
+output name: the first declared output when the occurrence is selected, and
+another when the user picks it from the preview's frame selector, which lists
+the occurrence's outputs. Each output is its own preview request, cache entry
+and Refresh, superseded by a newer request as any preview is; an output whose
+preview fails shows its own error; trace-cell clicks trace that target and
+frame. An occurrence with no public output previews nothing.
 
 **One-node definitions.** A definition whose `graph` holds one node is an
 ordinary definition. A node's Create Instance makes one: its input ports each
@@ -239,13 +271,20 @@ occurrences are drawn, opened, previewed and named as any occurrence, and
 dissolving the owner once no instance references it gives back the plain node,
 as dissolving any occurrence expands its nodes.
 
-**Missing columns.** Flattening carries each instance occurrence's owner with
-the flattened graph, never in node config. The executor's schema-warning pass
-compares, for each public input that an instance and its owner both bind, the
-columns the owner's bound edge carries with those the instance's carries (from
-the walk's recorded schemas; a request input's edge carries the declared frame
-its handle names), and reports the difference as `missing` warnings on each of
-the instance's nodes that input targets.
+**Missing columns.** Flattening carries with the flattened graph, never in node
+config, each instance's shared bindings: for every public input that the
+instance and its owner both bind, the expanded source endpoint of each binding.
+The executor's schema-warning pass runs for every instance with an expanded
+node in the run's result order. For each such input it compares the columns
+the owner's frame carries with those the instance's carries, and reports the
+difference under the instance's occurrence id as `missing` warnings that name
+the input (`SchemaWarning.input`). It reads a frame's columns from the walk's
+recorded schemas (a request input's frame by its handle) and resolves a frame
+the walk did not reach schema-only, from its lazy lineage, collecting no rows.
+A frame whose schema cannot be resolved makes that input's comparison one
+`unavailable` warning carrying the error (`SchemaWarning.detail`, with no
+column), never an empty result. The instance's panel lists the warnings by
+input.
 
 **Removed node-level instances.** No graph node but a `SUBMODEL` occurrence
 carries `instanceOf`. The parser refuses `@pipeline.instance(...)` and an `of=`
@@ -444,16 +483,20 @@ Acquires `save_lock` and runs the body in a threadpool, as create does:
 3. Name the definition after the node's executable name, suffixed `_2`, `_3`
    until no definition in the graph and no module in the pipeline's `modules/`
    folder has that name under any casing.
-4. Wrap: the definition's graph is the node at local position (0, 0) with its
-   config unchanged. Each incoming frame becomes a public input named by the
-   executable name the node read it under (the name grouping gives a crossing
-   edge), targeting the node with the edge's target handle, and the node's
-   output, when it has one, becomes one public output. The owner occurrence is
-   named by the node's executable name (its id, label and alias) and placed at
-   the node's position, and the node's parent edges are re-targeted to
-   `in__<name>` and re-sourced from `out__<name>`; consumers keep their input
-   names, since an owner's output is read by its port name, which is the
-   node's executable name.
+4. Wrap: the definition's graph is the node at local position (0, 0). The
+   node's output, when it has one, becomes one public output named by the
+   node's executable name. Each incoming frame becomes a public input named by
+   the executable name the node read it under (the name grouping gives a
+   crossing edge), targeting the node with the edge's target handle; a name
+   equal to the output's takes the next free suffix (`_2`, `_3`), since public
+   names are unique across both directions, and the node keeps reading the
+   name it read before through the boundary rename (`inputMapping` on free
+   code, rewritten step references and selectors), its config changing only
+   there. The owner occurrence is named by the node's executable name (its id,
+   label and alias) and placed at the node's position, and the node's parent
+   edges are re-targeted to `in__<name>` and re-sourced from `out__<name>`;
+   consumers keep their input names, since an owner's output is read by its
+   port name.
 5. Place an instance of the definition with `instanceOf` the owner, named and
    positioned as the browser names and places a submodel copy (`<name>_2`,
    collision-free), with no bindings.
@@ -680,12 +723,20 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
   validation, parse/codegen round trips, public-port expansion, targeted
   flattening, shared-definition retention, an instance bound to frames named
   otherwise than its public inputs, an instance's output named after it (each
-  output `<instance>_<port>` when its definition declares several), read
-  beside the owner's by one consumer and renamed with it, an instance's
-  missing columns, a one-node owner dissolved back into its plain node,
+  output `<instance>_<port>` when its definition declares several, an added
+  unconnected output included), an owner and two instances read by one
+  consumer with each one's rows through preview, `haute run`, the standalone
+  run and a save/reload round trip, an owner output named like an instance
+  refused at the consumer, an instance's clones named `<instance>__<child>` in
+  flattening and in a dissolve, an instance's missing columns (an
+  instance-only preview against an owner fed by a separate branch, two public
+  inputs targeting one child, an owner frame whose schema cannot be
+  resolved), wrapping a node that reads a frame named like itself with
+  unchanged rows and consumer names through save/reload and dissolve, a
+  one-node owner dissolved back into its plain node,
   OUTPUT source-port migration across
   a public boundary, one validation per flatten (a count of
-  `resolve_submodel_instances` calls), a Load File child (and a node instance of it) reading its
+  `resolve_submodel_instances` calls), a Load File child (and an instance of its submodel) reading its
   renamed second input by name with the rows it gave before grouping and its
   dissolved function named by those inputs, and explicit rejection of missing
   identity or malformed topology.
@@ -709,6 +760,14 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
   registration and import forms (the removed path form with its import-form remediation,
   another spelling of the import, an unused import, an unimported module, a module named
   like a built-in).
+- `tests/test_api_contracts.py` — an editor identity request naming an
+  instance's outputs after it, and refusing a `submodel` node whose
+  `instance_of` or handles differ from its naming context.
+- `frontend/src/utils/__tests__/nodeUpdatePlan.test.ts` — an instance rename
+  and a definition edit crossing between one and several outputs renaming the
+  instance's frames for their consumers (input mappings, step references and
+  a Quote Response's `outputMapping[].source_port`), undone and redone as one
+  step, and refused whole on a collision.
 - `frontend/src/utils/__tests__/submodelBoundaryEditing.test.ts` — boundary
   connection editing, input-port removal, parent-binding cleanup, and an
   instance's binding rule (by name, the one unbound input, the user's pick, the

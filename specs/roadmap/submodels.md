@@ -53,8 +53,8 @@ aliasing.
 - An instance reuses logic on another set of inputs, of a single node or of
   a submodel. Every instance has an explicit input mapping, since its inputs
   are usually named otherwise than the original's.
-- An instance has its own name, and its outputs are named from it, never as
-  the original's are.
+- An instance has its own name, and its outputs are named after it rather
+  than as the original's are.
 - One machinery serves both: a definition (a module, `modules/<name>.py`)
   with named public inputs and outputs, and its occurrences. An instance of a
   single node is an occurrence of a one-node submodel, so editing the
@@ -82,10 +82,12 @@ aliasing.
   (`rating_ie_premium`). One node can read the original and its instances
   side by side, and renaming an instance renames its frames for its
   consumers. Adding a second output to a submodel, or removing all but one,
-  renames its instances' frames the same way.
+  renames its instances' frames the same way. When the graph is flattened to
+  run, an instance's internal nodes are named `<instance>__<node>`, so the
+  frames stay apart there too.
 - **Preview.** Clicking any submodel, original or instance, previews its
-  outputs, one frame per output; today a submodel cannot be previewed until
-  it is opened.
+  first output, and any other the user picks; today a submodel cannot be
+  previewed until it is opened.
 - **Create Instance.** On a plain node it wraps the node, in place, in a
   one-node submodel named after it (`modules/<name>.py`, suffixed `_2`, `_3`
   when that module exists), keeping the node's name, position, connections
@@ -99,39 +101,43 @@ aliasing.
   original bind, the instance reports the columns the original's frame
   carries that its own does not.
 
-**Plan:** six phases, each a commit that changes the specifications it
-needs first.
+**Plan:** five phases, each a commit. The component specifications already
+describe the result, so each phase implements against them; until the last,
+the code still holds node-level instances.
 
 1. Bindings and output names for instances of submodels: the drop rule, the
-   choice of input, the input mapping in the occurrence panel, and instance
-   output names in the shared input-name rule (`edge_input_name` and its
-   browser mirror) and on the card, renames reconciled for consumers. It
-   stands alone: today's submodel instances gain differently named inputs
-   and outputs of their own.
-2. Preview of any submodel from the canvas: its outputs, one frame per
-   output, each targeted as a qualified runtime node as a drilled preview
-   is.
-3. Reusing a node: the server transform that wraps a node in a one-node
-   submodel (`POST /api/submodel/instance`) and Create Instance on plain
-   nodes.
-4. Missing columns for instances, from the walk's recorded schemas as
-   SUB-R06 reads them, by public input. Flattening carries each instance's
-   original with the flattened graph, never in node config.
-5. Proof: for every type Create Instance offers, a one-node submodel with
-   remapped inputs passes preview, trace, `haute run`, a standalone
+   choice of input, the input mapping in the occurrence panel, instance
+   output names in the shared input-name rule (`edge_input_name`, the editor
+   identity request and its browser cache) and on the card, an instance's
+   internal nodes named `<instance>__<node>` when flattened, and renames
+   reconciled for consumers, response mappings included (the ordinary rename
+   gains them too). It stands alone: today's submodel instances gain
+   differently named inputs and outputs of their own, and one node can read
+   an original and its instances.
+2. Preview of any submodel from the canvas: one output at a time, each its
+   source node and frame targeted as a qualified runtime node, as a drilled
+   preview is.
+3. Reusing a node, type by type: the server transform that wraps a node in a
+   one-node submodel (`POST /api/submodel/instance`) and Create Instance on
+   plain nodes. A type moves to the wrap only once a one-node submodel of it
+   with remapped inputs passes preview, trace, `haute run`, a standalone
    `pipeline.run()`, a codegen round trip and deploy, and the type's own job
-   where it has one (training, a solve); it also passes the multi-frame
-   regression in `tests/test_apiinput_multi_port_runtime.py`. A type that
-   fails is withdrawn from Create Instance and brought back as a decision.
-6. Removal: the parser and config validation refuse node-level instances
-   with the one-node submodel remediation; the node-instance resolver,
+   where it has one (training, a solve), with the multi-frame regression in
+   `tests/test_apiinput_multi_port_runtime.py`; until then the type keeps
+   today's node-level instance.
+4. Missing columns for instances, by public input, from schemas alone: the
+   walk's recorded schemas as SUB-R06 reads them, and the owner's frame
+   resolved without rows when the preview did not reach it. Flattening
+   carries each instance's shared bindings with the flattened graph, never in
+   node config.
+5. Removal: the parser and config validation refuse node-level instances
+   with the one-node submodel remediation, and the node-instance resolver,
    `build_instance_mapping`, instance codegen and their editor, assistant,
-   trace, cache and recovery paths go, with their passages in the
-   execution-engine, codegen, pipeline-config, assistant, caching, tracing,
-   sandbox-security, server-api and frontend specifications;
-   `docs/building-models/nodes/instances.md` becomes "Reusing a node" and
-   `docs/building-models/nodes/submodel.md` describes an instance's input
-   mapping.
+   trace, cache and recovery paths go. A type that has not passed phase 3's
+   proof by then is withdrawn from Create Instance and brought back as a
+   decision. `docs/building-models/nodes/instances.md` becomes "Reusing a
+   node" and `docs/building-models/nodes/submodel.md` describes an
+   instance's input mapping.
 
 **Acceptance:**
 
@@ -146,7 +152,8 @@ needs first.
   instance renames its output for its consumers.
 - The same holds for a Model Score node, and for an instance of a multi-node
   submodel bound to frames named otherwise than its public inputs.
-- One node reads an original and its instance side by side: a one-output
+- One node reads an original and its instance side by side, with each one's
+  rows in preview, `haute run` and the standalone run: a one-output
   submodel's `premium` as `premium` and `<instance>`, a two-output
   submodel's `premium` as `premium` and `<instance>_premium`.
 - A submodel edited down to one node, or a one-node submodel given a second
@@ -157,7 +164,8 @@ needs first.
   submodel form; nothing migrates them.
 - `instanceOf` appears only on submodel occurrences, in every layer.
 - An instance reports the columns its original's inputs carry that its own
-  do not.
+  do not, also when it is previewed alone and the original is fed from
+  another branch.
 - The documentation describes only supported mechanisms.
 
 **Dependencies:** None.

@@ -26,7 +26,7 @@ Modelling and optimiser result presentation belongs to
   the same control. It refreshes the active node's preview and shared data cache
   as before, and remains available before results arrive. A submodel's
   boundary ports do not offer Refresh, and a submodel occurrence's Refresh
-  re-runs the preview of its outputs; the schema-warning banner retains its
+  re-runs the preview of the output it shows; the schema-warning banner retains its
   separate Refresh and check action.
 - Data previews render loading, error and successful data, support column search, selected-frame
   switching, trace-cell clicks, and virtualise large row/column grids. Row limits, column

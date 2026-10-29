@@ -85,8 +85,7 @@
 
 **Pipeline code execution (`_user_exec._exec_user_code`)**
 1. Build the local dataframe bindings — seeds `pl` (polars), positional source
-   dataframes under `src_names`, and an `orig`→`inst` name-mapping fallback via
-   `build_instance_mapping` (execution-engine helper). `df` is NOT pre-bound
+   dataframes under `src_names`. `df` is NOT pre-bound
    for polars transforms: inputs are only
    their named bindings and `df` is the output the code must assign. The name
    `df` is therefore reserved and rejected as a polars input, while a preamble

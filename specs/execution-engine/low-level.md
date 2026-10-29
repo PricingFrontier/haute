@@ -1884,11 +1884,14 @@ present a structural or schema result as execution evidence.
   from the public input their code reads.
 - **An instance's missing-column warnings compare the frames its edges carry.** For
   each public input that an instance occurrence and its owner both bind (flattening
-  carries each instance's owner with the flattened graph), every preview (full,
-  target-only, a run of the whole graph) reports as `missing`, on each of the
-  instance's nodes the input targets, the columns the owner's bound edge carries that
-  the instance's does not, read from the walk's recorded schemas rather than a
-  materialised frame, so a source the preview did not materialise still counts. A
+  carries each instance's shared bindings with the flattened graph), every preview
+  (full, target-only, a run of the whole graph) that reaches one of the instance's
+  nodes reports as `missing`, under the occurrence's id and naming the input
+  (`SchemaWarning.input`), the columns the owner's bound frame carries that the
+  instance's does not. Columns come from schemas, never rows: the walk's recorded
+  schemas, and a lazy schema-only resolution of a bound frame the walk did not
+  reach; a frame whose schema cannot be resolved gives one `unavailable` warning
+  for that input, carrying the error (`SchemaWarning.detail`). A
   request input emits one frame per table it declares, and its edge carries the
   declared schema of the frame its `sourceHandle` names (the schema the walk reports
   for that frame), never the bundle; an edge naming no table the input declares

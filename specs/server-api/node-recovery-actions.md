@@ -49,8 +49,8 @@ carries as its remediation (for the file path, `from modules import rates`, then
   single-node code generator. It preserves
   identity, description, position and authored connections, but replaces that node's
   settings and function body. Existing config references are preserved and their content
-  replaced only when exclusively owned by this node. Unknown types, node instances,
-  submodels and ambiguous/shared artifacts cannot be reset. Resetting an empty Polars
+  replaced only when exclusively owned by this node. Unknown types, nodes refused for a
+  removed node-level instance form, submodels and ambiguous/shared artifacts cannot be reset. Resetting an empty Polars
   node produces the normal explicit incomplete-code template; it never invents a
   passthrough. The confirmation explains that configuration/code may be needed before running.
   The reset node's `contract=` annotation is derived offline, as Recover settings derives
@@ -114,8 +114,9 @@ carries as its remediation (for the file path, `from modules import rates`, then
   can keep (a Data Input or Data Output whose config file is missing, or whose `inputType`
   or `outputType` is unknown) are refused with `repair_action_unsupported`, naming Reset.
   An `async def` node function, which the parser refuses, is a node function to Recover
-  and Reset alike, and both regenerate it as a plain `def`. Unknown types, node instances,
-  submodels, and ambiguous or shared artifacts cannot be recovered by this action.
+  and Reset alike, and both regenerate it as a plain `def`. Unknown types, nodes refused for a
+  removed node-level instance form, submodels, and ambiguous or shared artifacts cannot be
+  recovered by this action.
 
 ## Remove connection
 

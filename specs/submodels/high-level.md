@@ -314,7 +314,8 @@ must resolve the original pipeline-owned sidecars.
   same definition opens this one shared definition graph.
 - **Dissolution** (`POST /api/submodel/dissolve`): the inverse of creation —
   the selected occurrence is expanded from the submitted canonical definition
-  graph via targeted `flatten_graph`. The definition remains while any sibling
+  graph via targeted `flatten_graph`, an instance's nodes named
+  `<instance>__<child>` so they do not repeat the definition's names. The definition remains while any sibling
   occurrence survives. Dissolve is one undoable dirty editor transform and
   does not rewrite the parent or delete a module/sidecar. On explicit Save,
   the normal transaction derives removed definitions. The recorded child
@@ -417,8 +418,9 @@ across a rewire.
   nodes it targets run without it and report what their code misses, as an
   unconnected node does.
 - **Output names.** An instance has its own name, and the frames it outputs
-  are named after it, so they never share the owner's names and one consumer
-  can read the owner and its instances side by side. The owner names each
+  are named after it, so one consumer can read the owner and its instances
+  side by side whenever their names differ (an owner output named like an
+  instance is refused at the consumer, as any duplicate input name is). The owner names each
   output by its public output port name. An instance names its output by its
   own name when the definition declares one public output, and each output
   `<instance>_<port>` when it declares several. An occurrence card labels
@@ -426,24 +428,30 @@ across a rewire.
   consumers, coded consumers keeping their code through `inputMapping` as for
   any rename, and so does a definition edit that takes it from one public
   output to several or back; renaming the owner renames nothing downstream.
+  An edit that would give a consumer two inputs of one name is refused before
+  it applies.
 - **Missing columns.** For each public input that an instance and its owner
-  both bind, the instance reports, as `missing` schema warnings, the columns
-  the owner's frame carries that the instance's does not, read from the walk's
-  recorded schemas as for any node. An instance's panel lists them by input,
-  and its drilled view shows them on the nodes each input targets.
+  both bind, the instance reports, as `missing` schema warnings naming the
+  input, the columns the owner's frame carries that the instance's does not,
+  read from schemas alone (the owner's frame is resolved without rows when the
+  preview did not reach it); an owner frame whose schema cannot be resolved is
+  reported as unavailable, never as no difference. An instance's panel lists
+  them by input.
 - **Preview.** Clicking any occurrence, owner or instance, previews its
-  outputs without drilling in: each public output's source node runs on this
-  occurrence's inputs, as a qualified runtime target, and the preview shows
-  one frame per output under the name its consumers read. An occurrence with
-  no public output has nothing to preview.
+  outputs without drilling in, one at a time: the first declared output, and
+  any other the user picks, each shown under the name its consumers read. An
+  output previews its source node, and that node's frame, run on this
+  occurrence's inputs as a qualified runtime target. An occurrence with no
+  public output has nothing to preview.
 - **Create Instance.** On a submodel occurrence it places another occurrence
   of the definition, as described above. On a plain node it wraps the node in
   place in a one-node definition: the definition and its module take the
   node's name (`modules/<name>.py`, suffixed `_2`, `_3` while a module of that
   name exists under any casing); the owner occurrence keeps the node's name,
-  position and connections, each incoming frame becoming a public input named
-  as the node read it and its output the one public output, named as its
-  frame was, so its consumers read what they read before; and an unbound
+  position and connections, its output becoming the one public output, named
+  as its frame was, so its consumers read what they read before, and each
+  incoming frame a public input named as the node read it (suffixed `_2` when
+  that is the output's name, the node still reading its old name); and an unbound
   instance, named as a submodel copy is (`<name>_2`), is placed beside it.
   From then on both are ordinary occurrences: the node is edited by drilling
   into the owner, and Dissolve, once no instance references the owner, turns

@@ -702,9 +702,7 @@ data of one *point*, and the backend's `/api/node-data/point` response is the on
 it (specified in the [server API](../server-api/low-level.md#node-data-builds)).
 
 1. `panels/dataPointIdentity.ts` builds the identity that gates the request: the consumer's
-   upstream subgraph and the original of every instance in it (execution runs an instance with
-   its original's configuration, and that original can sit outside the consumer's own edges),
-   each node's data-affecting configuration (Explore's overview, pivot, chart, and formula
+   upstream subgraph, each node's data-affecting configuration (Explore's overview, pivot, chart, and formula
    settings excluded), every edge with its source and target handles, the submodels, and the
    preamble. Covering more than the backend's signature costs an extra request, never a wrong
    answer. A Banding or Rating Step consumer reads its input rather than its own output, so its

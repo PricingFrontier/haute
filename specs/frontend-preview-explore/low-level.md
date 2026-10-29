@@ -411,8 +411,7 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
   Data Input's Refresh keeps its freshness rules; Import is the one action that
   re-reads a source whose changes cannot be detected.
 - **Refresh re-reads a structured Quote Input.** Refresh on a JSON, JSONL,
-  NDJSON or XML Quote Input with an emitting table (or on an instance of one,
-  which re-reads its original's source) re-reads the file and caches every
+  NDJSON or XML Quote Input with an emitting table re-reads the file and caches every
   table again, whether or not the file changed, and then previews the node
   (`refreshPreview`'s `rereadSource`, in
   [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)). The

@@ -634,8 +634,9 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   state as chips) and read/write `input_scenario_map` by that same `name` — two frames from one
   API input are two distinct map keys, individually routable for the first time. A frame
   rename's atomic commit updates every name-referencing config in the same pass that rebinds
-  the edges: `input_scenario_map` keys on downstream live-switches and `inputMapping` values
-  on downstream Transform and Load File nodes. An instance's input mapping is its edges'
+  the edges: `input_scenario_map` keys on downstream live-switches, `inputMapping` values
+  on downstream Transform and Load File nodes, and `outputMapping[].source_port` on a
+  downstream Quote Response, whose entries must stay distinct. An instance's input mapping is its edges'
   `in__<name>` handles, which a frame rename does not change. The commit is **preflighted**: before anything mutates, every affected target's
   post-rename input-name set is checked for duplicates (the new name colliding with another
   input already on that target), and a collision rejects the entire rename with an inline
@@ -924,8 +925,9 @@ inputs under INPUTS, each with a selector of the occurrence's incoming connectio
 their frame names) or "not connected"; choosing a connection re-targets that edge to the
 input, as one undoable edit, and an input left without one shows "not connected". The
 selector is live on an instance, whose definition is otherwise read-only. An instance's
-panel also lists MISSING COLUMNS by input: the `missing` schema warnings its preview
-reported, one per column. A panel is the same whatever the definition holds.
+panel also lists MISSING COLUMNS by input: the `missing` schema warnings reported under its
+occurrence id, one per column, or an input's `unavailable` warning with its error. A panel
+is the same whatever the definition holds.
 
 ## Minimal unavailable-node removal implementation
 

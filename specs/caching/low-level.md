@@ -259,8 +259,9 @@ writes a table, for the data-point `building` probe. Schema inference stays on
 
 `src/haute/_data_points.py` owns the consumer-to-point mapping and leased reads.
 
-- Every entry point first resolves instance nodes (`resolve_instance_nodes`), so an
-  instance maps, classifies, executes, and signs with its original's configuration.
+- No node carries `instanceOf`: a submodel instance's nodes reach every entry point
+  expanded, carrying their definition's configuration, and map, classify, execute and
+  sign as any node does.
 - `consumer_point(graph, consumer_node_id)` returns a `ConsumerPoint(consumer_node_id,
   point, demand)`. Banding reads the single incoming edge's point with the factors'
   `column` values as demand; Rating Step reads it with the tables' `factors`; a blank-code
@@ -367,8 +368,7 @@ resulting plan.
   at a seed and never reads the metadata of anything above it. Every other visited node is
   executed.
 - **Capture points** are executed nodes, other than pass-through types, non-`node_output`
-  points, and the explicit build's node, with configs read instance-resolved so an instance
-  runs its original's operations. Capture decisions evaluate the segment upstream of each
+  points, and the explicit build's node. Capture decisions evaluate the segment upstream of each
   node. The segment is the walk up effective edges from the node (inclusive) that stops at,
   and excludes, a seed, a capture point already decided in this resolution (captures are
   decided in execution order), or a source base case. A node's own facts come from
@@ -421,7 +421,7 @@ resulting plan.
   batch would sit in memory until the capture below wrote it. Captured, it scores every row a
   batch at a time into its own parts whatever the row limit, and the capture below reads parquet
   parts. A Model Score nothing below captures, including a previewed target, still scores
-  row-locally. A preview records no skips. A preview may seed its own target. A node whose own or instance-resolved config
+  row-locally. A preview records no skips. A preview may seed its own target. A node whose config
   selects or renames its output columns (`selected_columns`, `column_renames`) is seeded only
   from a generation that recorded its unshaped columns: a preview reports every node's columns
   before that shaping — the columns its Columns editor offers and its stale-selection warnings
@@ -466,8 +466,7 @@ resulting plan.
   re-resolves, at most three times, then raises `SourceCacheGenerationMissingError`.
   `open_seed_plan` first runs automatic input preparation for the nodes reachable along effective
   edges — signatures sign prepared generations, and a branch reached only through an unselected
-  pass-through input is never prepared. Preparation reads instance-resolved configs, so a Data
-  Input instance prepares its original's snapshot.
+  pass-through input is never prepared.
 - **Preview preparation.** A node's signature already signs each snapshot-backed input's
   generation pointer and current source signature, so a stale, missing, or cleared input fails
   every seed below it before anything is prepared. For a `PREVIEW_EAGER` request
@@ -478,7 +477,7 @@ resulting plan.
   terminates the loop. Structured API Inputs are snapshot-backed inputs here too: their
   tables are prepared the same way.
 - **Admission.** `preview_lineage_admitted(graph, target, source=)` decides per source of the
-  target's lineage (instance nodes resolved), before any preparation: a Data Input is admitted,
+  target's lineage, before any preparation: a Data Input is admitted,
   since it executes from a Parquet scan or its prepared snapshot; so is a structured (JSON,
   NDJSON, XML) API Input, which reads its prepared table snapshots exactly as a bounded run
   does; a flat-file API Input is admitted when `resolve_api_input_from_config` under
@@ -664,8 +663,8 @@ cache lifecycle changes.
   plain fan-out, feeder, target, or Model Score), seeding the target, preparing nothing above a
   seed, a rewritten source dropping the seed below it before preparation, resolving again after
   preparing, a real input build moving the capture to the prepared signature, exhausted rounds
-  preparing the rest of the lineage once, instance nodes read through their originals (a
-  group-by instance captured, a Data Input instance listed and prepared), and listed plans leasing
+  preparing the rest of the lineage once, a submodel instance's expanded nodes (a group-by
+  inside an instance captured, a Data Input inside one listed and prepared), and listed plans leasing
   exactly their generations through a refresh, an empty list, expiry on a retired generation, an
   edited lineage, or a point outside it, corruption propagating, a non-covering generation being
   recomputed yet still leased through a clear, and a listed seed built from a recomputed point
@@ -703,7 +702,8 @@ cache lifecycle changes.
   originals, a table cache rebuilt between resolution and load versioned as the data read,
   and a status probe returning `building` promptly while a build holds the cache locks.
 - `tests/test_node_snapshot_signature.py` covers the `node_snapshot_signature` field set
-  and its invalidation matrix, including an instance node following its original.
+  and its invalidation matrix, including a submodel instance's expanded node following its
+  definition.
 - `tests/test_analysis_results.py` covers a document served only for its own data version and
   removed once the point moves on, other kinds and analysis versions of the same point being
   kept, unparsable, mis-keyed, unknown-schema, and invalid-result documents being discarded

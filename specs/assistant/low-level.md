@@ -97,7 +97,9 @@ orphaned halves).
   input-naming rule of `haute._graph_utils.executable_input_name` in words (an
   input is named after its incoming edge: the upstream node's name, except that
   an edge from a Quote Input or Workbench Input frame, which `add_edge`'s `source_handle` selects,
-  is named by that frame, and an edge from a submodel output by its port); the
+  is named by that frame, and an edge from a submodel output by its port on the owner
+  and, on an instance, by the instance's name, or `<instance>_<port>` when its submodel
+  has several outputs); the
   system prompt, the authoring guide's "Names and wiring" and the `input names`
   field of the Polars, Quote Response and Source Switch cards state it verbatim,
   held so by test, and no card says an input is "the upstream node's name"
@@ -266,8 +268,8 @@ orphaned halves).
     the palette's (a Data Input or Data Output provider, a Model Score or Apply
     Optimisation source, an Optimiser mode or a training algorithm, the discriminants
     config recovery also uses) keeps only the palette's `steps`, as the palette belongs
-    to one branch and must not fill another's fields. A config naming `instanceOf` takes
-    no palette config, because an instance's configuration is its original's.
+    to one branch and must not fill another's fields. A config naming `instanceOf` is
+    refused: only a submodel occurrence carries it.
   - `update_node {node, config}` — shallow key merge into the existing config; an explicit
     JSON `null` value removes that key. The operation schema's `config` description
     states both rules to the model: a written top-level key replaces its whole value, so
@@ -287,9 +289,7 @@ orphaned halves).
     error whose `where.step` names that id. The operation needs a node holding a `steps`
     list on a stepped surface: a code-mode node is refused pointing at `update_node
     {code}`, and a stepped-type node with neither steps nor code is refused pointing at
-    `update_node {steps}` with the surface's free-code form. An instance (`instanceOf`
-    set) runs its original's configuration, so it is refused pointing at the original
-    node, the one to edit.
+    `update_node {steps}` with the surface's free-code form.
   - All three node operations follow the stepped-node write contract in Edge cases: a write
     that would change how a stepped-type node is authored is refused, and a write that
     does not land in the materialised config fails the plan with `op_not_applied`.
@@ -1916,11 +1916,6 @@ the turn that follows.
     is out of scope. A stepped-type node with no `steps` and no code has nothing to
     lose and accepts a step list;
   - in `add_node` of a stepped type: a `code` key or a `steps` value that is not a list;
-  - on a node that is, or that the operation leaves, an instance (`instanceOf` set,
-    whatever its type): any `steps` or `code` key, since an instance runs its original's
-    configuration and its own would never be read. The refusal names the original and
-    points there; writing `instanceOf: null` with the logic detaches the node first and
-    the rules above then apply.
   Code-mode nodes keep `code` editing. Each refusal names the node, its surface
   (`STEPPED_SURFACE_LABELS`) and the free-code form to write instead: on a surface
   whose steps choose their input (`start == "input"`, the Transform)
@@ -1954,8 +1949,7 @@ the turn that follows.
   on an Explore was redirected to free code, which took the model further from the
   `pivots` entry the analyst asked for.
 - **The model sees how each stepped node is authored, without values.** `get_pipeline`
-  and the turn context's graph brief carry, for every node of a stepped type (an
-  instance has none: its configuration is its original's), `_render.node_authoring`'s
+  and the turn context's graph brief carry, for every node of a stepped type, `_render.node_authoring`'s
   facts, read from the saved config alone: its state
   (`stepped` when its `steps` list renders, `incomplete` when the list does not render
   or the node has neither steps nor code, `code` otherwise), whether the editor

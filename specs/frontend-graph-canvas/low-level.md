@@ -121,12 +121,13 @@ its alias (`data.label === config.alias`). Hooks and utilities must use
 `node.data.nodeType === 'submodel'` plus the typed config; parsing `submodel__*`
 ids is forbidden.
 
-For ordinary pipeline nodes, Create Instance retains the established
-`config.instanceOf` behavior. Instancing an existing instance first validates
-that its pointer names an existing, same-type canonical owner with no
-`instanceOf` of its own; dangling, self-pointing, type-mismatched, and chained
-identity is rejected rather than traversed or repaired. For a canonical
-`SUBMODEL`, the action is a pure
+For an ordinary pipeline node, Create Instance sends `POST /api/submodel/instance`
+and commits the graph it returns, the node wrapped in a one-node submodel with an
+unbound instance beside it, as one undo step; no ordinary node carries
+`config.instanceOf`. Instancing an existing instance first validates that its
+pointer names an existing canonical owner occurrence with no `instanceOf` of its
+own; dangling, self-pointing, type-mismatched, and chained identity is rejected
+rather than traversed or repaired. For a canonical `SUBMODEL`, the action is a pure
 single-snapshot graph mutation that retains `definitionId`, allocates a fresh
 collision-free immutable node id and deterministic alias (copy numbering
 continues past nine: `scoring_10` clones to `scoring_11`, never
@@ -743,7 +744,7 @@ reconciliation rather than dropping them or committing a second mutation.
     inputs the preview reads (`previewInputs`, `POST /api/pipeline/preview/inputs`
     — none above a shared snapshot it seeds from, none outside its lineage) and
     awaits the dynamically loaded `ensureInputSnapshots` on just those graph
-    nodes, an input instance contributing its original's config — its cache-preparation code loads only when a preview requires it,
+    nodes — its cache-preparation code loads only when a preview requires it,
     rather than during initial application startup. Those missing snapshot-backed
     inputs are built or joined first (see the caching spec) — and an ensure
     failure surfaces as that node's preview error; `refreshPreview` (for the
@@ -1537,7 +1538,8 @@ again through the editor and save paths.
     snapshot at drag start, no mid-drag/selection-only history churn, and
     structural/non-structural change separation.
   - `frontend/src/hooks/__tests__/useNodeHandlers.test.ts` — ordinary
-    delete-as-one-atomic-step and `config.instanceOf` creation; owner and
+    delete-as-one-atomic-step and a plain node's Create Instance committing the
+    wrapped graph as one undo step; owner and
     malformed-identity deletion refusal with direct instance-copy deletion;
     reusable occurrence creation with retained definition id, collision-free
     immutable id, normalized deterministic alias suffix (including past-nine
@@ -1574,7 +1576,9 @@ again through the editor and save paths.
     `graphRefreshingRef`-guarded deselection skip; node-click panel-open +
     preview fetch (including Optimiser debounce, modelling/explore
     preview, API-input-without-`tables[]` automatic-preview skip,
-    Data Output/output/submodel/submodel-port preview skip, same-node
+    Data Output/output/submodel-port preview skip, a submodel occurrence
+    previewing its first output and another chosen from the frame selector
+    (two outputs of one child by their frames), same-node
     re-click skip, rapid distinct
     selections); edge deletion; context menu singleton/submodel flags;
     drag-over/drop node creation from palette metadata.
@@ -1669,8 +1673,8 @@ again through the editor and save paths.
   - `frontend/src/hooks/__tests__/usePipelineAPI.rereadSource.test.ts` — the
     frame's Refresh on a structured Quote Input forces a rebuild of its tables
     before the preview request, raising the node-data epoch so the stored
-    preview is current and not fetched again, with no build toast; an instance
-    re-reads its original's file; a re-preview without the option, a Data Input,
+    preview is current and not fetched again, with no build toast; a re-preview
+    without the option, a Data Input,
     a Quote Input with no emitting table and one reading a flat file keep the
     freshness rules; Stop cancels the re-read and runs no preview; a failed
     re-read is the node's preview error; a graph edited during the re-read

@@ -254,8 +254,10 @@ candidate, with the error toast.
   the edit is atomic and undoable. A read-only drilled occurrence renders the
   list without remove controls. Output keeps one target handle;
   every child-to-Output mapping carries an immutable public output `name` and
-  one internal source endpoint. A canonical occurrence contributes each output
-  port's sanitised public name downstream, independent of its alias. Parent bindings stay on
+  one internal source endpoint. A canonical occurrence contributes each
+  output's name downstream: the owner its sanitised public port names, an
+  instance its own name or, with several outputs, `<instance>_<port>` (see
+  submodels Output names). Parent bindings stay on
   `in__<name>`/`out__<name>`. Changing internal endpoints while retaining
   a port name and direction is a compatible shared-definition edit. Incidental
   removal or direction changes of a bound port are rejected atomically across
@@ -562,9 +564,10 @@ candidate, with the error toast.
   is a second entry point, not a second policy: the same three rules gate both
   triggers (editable
   context, main canvas, 2+ nodes) and both answer a refusal with the same
-  toast. The toolbar pair also exposes Instance, which stamps `instanceOf` for
-  a single selected non-singleton node — the context menu offers Create Instance
-  only for submodel occurrences. Singleton availability is derived from the
+  toast. The toolbar pair also exposes Instance, which runs Create Instance on
+  a single selected node a definition can hold (a plain node is wrapped in a
+  one-node submodel) — the context menu offers Create Instance only for
+  submodel occurrences. Singleton availability is derived from the
   same canonical node-type metadata used by the shared handler; an attempted
   unavailable action remains explainable without being presented as enabled.
   The context menu's entry for an existing submodel node
@@ -576,7 +579,8 @@ candidate, with the error toast.
   selecting a submodel does not reflow the toolbar. A repeat click while
   that dissolve is in flight sends nothing: a second transform would
   supersede the first and report it as not applied. Clicking a submodel node
-  opens the standard node inspector and previews its outputs (see
+  opens the standard node inspector and previews its first output, or another
+  chosen from the preview's frame selector (see
   [submodels](../submodels/high-level.md#reuse-instances-of-nodes-and-submodels-normative)). Create and dissolve are main-canvas
   operations: while a drilled submodel view is active both handlers refuse to
   run and toast an instruction to return to the main pipeline — the same

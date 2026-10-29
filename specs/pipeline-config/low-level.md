@@ -107,8 +107,9 @@
   result contract.
 - **`VALID_KEYS`** (`_config_validation.py`) — `dict[NodeType, frozenset[str]]`, precomputed
   at import time from each node type's config `TypedDict.__annotations__` plus
-  `_UNIVERSAL_KEYS` (`instanceOf`, `inputMapping`, `selected_columns`, `column_renames`,
-  `contract` — keys any node type may legitimately carry).
+  `_UNIVERSAL_KEYS` (`inputMapping`, `selected_columns`, `column_renames`, `contract` —
+  keys any node type may legitimately carry; `instanceOf` belongs to a submodel occurrence's
+  config alone).
 - **`NODE_TYPE_TO_FOLDER` / `FOLDER_TO_NODE_TYPE`** (`_config_io.py`) — the bidirectional
   map between a `NodeType` and its `config/<folder>/` sidecar directory name. 17 of the 21
   node types store external config (all except `edgeJoin`, `explore`, `submodel`, and
@@ -260,8 +261,7 @@ absent field from `node_defaults.json` and never takes a default from another pr
 **Save refuses a config the executor cannot build.** Save runs
 `src/haute/_config_validation.py::validate_node_config` with `require_complete=False` for every
 node type whose builder has a required setting, and for Modelling, whose configured values
-must be trainable, on each authored config (an instance carries
-its original's config and is checked there). A required setting with a legitimate incomplete
+must be trainable, on each authored config. A required setting with a legitimate incomplete
 form stays saveable, because refusing to save unfinished work is worse than the deferred
 error; one without is refused with a 400 naming the node and the setting, before anything is
 written. The node-scoped save runs the same validator on the proposed config and keeps its own
@@ -305,7 +305,7 @@ execution, lint, deploy, or strict post-save verification.
 
 **Sidecar write path.** `_config_io.collect_node_configs(graph)` walks a `PipelineGraph`,
 skips nodes that emit no sidecar (`node_emits_sidecar`: no config folder, or a `polars`
-node without a `steps` list), instance nodes (`config["instanceOf"]` set), and
+node without a `steps` list), and
 nodes flagged `config["_load_error"]` (protects the on-disk file from a bad in-memory state
 clobbering it), preserves exact incoming-edge names in Optimiser and Optimiser Apply config
 without node-id remapping. Before allowlist filtering, known removed identity fields are rejected:
@@ -519,9 +519,8 @@ declaration's body is not empty (its code would never run; on a code-less type t
 names the type) or when a hook's body is empty. Configured API Input, Data Input and Constant
 nodes are sources whatever their signature. `_register_node` returns the function itself for
 a transform and otherwise a `functools.wraps` wrapper that calls the `Node` with its
-positional frames, so calling a configured or instance node's name runs the node exactly as
-`run()` does (an instance therefore fails loudly there too); `Node.fn` stays the user's
-function. `NodeRegistry` gives every node its `pipeline_dir`: `.` for a `Pipeline`, the
+positional frames, so calling a configured node's name runs the node exactly as `run()`
+does; `Node.fn` stays the user's function. `NodeRegistry` gives every node its `pipeline_dir`: `.` for a `Pipeline`, the
 constructor's validated value for a `Submodel` (`is_pipeline_dir`: `.` or `..` segments).
 
 When `run()`/`score()` executes a configured node, `run_configured_node` performs its work

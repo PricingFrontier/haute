@@ -534,8 +534,9 @@ running heavy work in a child process the parent can kill on timeout or memory l
   owner and, from an instance, the instance's sanitised name when its
   definition has one output or `<instance>_<port>` when it has several; every
   ordinary edge's name is the sanitised source-node label. Distinct occurrences
-  feeding a common consumer must contribute distinct input names (an owner and
-  its instances always do); collisions fail explicitly.
+  feeding a common consumer must contribute distinct input names; collisions fail
+  explicitly. Flattening names an instance's expanded nodes `<instance>__<child>`,
+  so an owner and its instances stay distinct once flattened.
   Public submodel inputs likewise contribute their sanitised labels to child nodes.
   Immutable public port ids address boundary handles only and never become frame names.
   That name is simultaneously the name listed in
