@@ -531,8 +531,8 @@ running heavy work in a child process the parent can kill on timeout or memory l
   `apiInput`-frame edge's name is its frame label verbatim (frame labels are
   validated as ASCII Python identifiers by the api-input schema); a collapsed
   submodel-output edge's name is its sanitised public output port name from an
-  owner and `<occurrence>_<port>` from an instance, and a linked node's edge's
-  name is its sanitised occurrence name, none depending on the port count; every
+  owner and, from an instance, the instance's sanitised name when its
+  definition has one output or `<instance>_<port>` when it has several; every
   ordinary edge's name is the sanitised source-node label. Distinct occurrences
   feeding a common consumer must contribute distinct input names (an owner and
   its instances always do); collisions fail explicitly.

@@ -63,27 +63,22 @@ copies no internal graph or file, starts with no bindings, and participates in t
 undo/redo snapshot. It is available only in the parent view; nesting remains
 unsupported.
 
-A plain node is reused the same way, as a **linked node** (an occurrence of a
-one-node definition; see
+A plain node is reused the same way, once it is wrapped in a one-node
+submodel (see
 [submodels](../submodels/high-level.md#reuse-instances-of-nodes-and-submodels-normative)).
 Its **Create instance** sends `POST /api/submodel/instance` with the node, the
 graph and the document's revision, and commits the returned graph (the node
-wrapped in place, an unbound instance beside it) as one undo step, as a
-grouping is committed. A linked node is drawn as its node's card, with the
-occurrence's name, a link mark and the node's own sockets, and has no
-drill-in: clicking it previews the node and opens its editor, the owner's
-editable (its edits change the shared definition) and an instance's read-only
-with "Instance of <owner>", its input mapping and its missing columns.
-Duplicate on a linked node gives an unlinked plain copy of its node, and
-**Unlink**, offered on an owner that no instance references, turns it back
-into a plain node.
+replaced in place by a submodel holding it, an unbound instance beside it) as
+one undo step, as a grouping is committed. From then on both are ordinary
+submodel occurrences, drawn, opened and previewed as any other; how many
+nodes a definition holds changes nothing on the canvas.
 
 Each occurrence owns its label, position, selection, and incident edges.
 One identity per submodel occurrence: the occurrence node id is its name
 (`node.id == data.label == config.alias`). Renaming an occurrence renames its
-alias and rebinds downstream consumers without code edits (an instance's and a
-linked node's outputs are named by the occurrence, so its consumers' frames are
-renamed as an ordinary node's are); as for an ordinary
+alias and rebinds downstream consumers without code edits (an instance's
+outputs are named after it, so its consumers' frames are renamed as an
+ordinary node's are); as for an ordinary
 node, the React Flow node id stays until Save, when codegen emits the name and
 the reparse re-keys the id. It never renames the definition file. A proposed occurrence rename is refused early if
 the name is not a canonical identifier (error: `Occurrence names must be identifiers; use "<functionName>".`),
@@ -99,8 +94,8 @@ be dissolved while instances reference it.
 
 Submodel cards render only declared public ports. Handles are
 `in__<name>`/`out__<name>`; input labels come from the port name and output
-labels show each output's name (the port name on an owner, `<instance>_<port>`
-on an instance; see submodels Output names); internal
+labels show each output's name (the port name on an owner; on an instance, its
+name, or `<instance>_<port>` when the definition has several outputs); internal
 child ids are neither rendered nor accepted as parent endpoints. Each canonical
 input handle accepts at most one parent binding. A connection dropped on an
 instance's inputs socket binds by the submodels binding rule: the public input
@@ -221,7 +216,7 @@ candidate, with the error toast.
   name truncates with the full name available as a tooltip. Frame labels
   use the same semibold primary-text typography as node names.
 - **Visual state.** Nodes show: a selection border; a dashed border for
-  submodel instances, and a link mark on linked nodes; a "LIVE" badge on live-switch nodes when the active
+  submodel instances; a "LIVE" badge on live-switch nodes when the active
   data source is live; one run-status dot that is green for a clean success,
   yellow for a successful run with an execution or schema warning, red for an
   error, and pulsing while running; a standalone yellow warning dot only when
@@ -338,18 +333,16 @@ candidate, with the error toast.
   it as one atomic undo step. Duplicating offsets the copy's position and is a
   no-op for singleton node types (the request inputs, Quote Input and Workbench Input,
   which share one slot, and the response nodes, Quote Response and Workbench Output, which
-  share another). Generic Duplicate is unavailable for a submodel occurrence of a
-  multi-node definition, and the handler directs callers to Create Instance; on a
-  linked node it gives an unlinked plain copy of its node. The palette, duplicate,
+  share another). Generic Duplicate is unavailable for a submodel occurrence,
+  and the handler directs callers to Create Instance. The palette, duplicate,
   paste, instance, and context-menu paths consume the same singleton metadata,
   matching the backend save invariant. Create Instance also refuses a Source
   Switch, which routes by its own input names; the instance guard lives in the shared
   handler rather than in each caller's enabled-state check, so a new entry
   point cannot reach an unguarded path. Creating an
-  instance of an ordinary node wraps it into a linked node through
+  instance of an ordinary node wraps it in a one-node submodel through
   `POST /api/submodel/instance` (above); no ordinary node carries
-  `config.instanceOf`. Creating an instance of a canonical `SUBMODEL`, a linked
-  node included, retains only its
+  `config.instanceOf`. Creating an instance of a canonical `SUBMODEL` retains only its
   `definitionId`, allocates a fresh immutable node id and collision-free alias,
   labels the copy with its alias,
   copies presentation defaults, and starts with no boundary bindings as one undo
@@ -583,8 +576,8 @@ candidate, with the error toast.
   selecting a submodel does not reflow the toolbar. A repeat click while
   that dissolve is in flight sends nothing: a second transform would
   supersede the first and report it as not applied. Clicking a submodel node
-  opens the standard node inspector but fetches no preview — submodel is a
-  non-previewable node type. Create and dissolve are main-canvas
+  opens the standard node inspector and previews its outputs (see
+  [submodels](../submodels/high-level.md#reuse-instances-of-nodes-and-submodels-normative)). Create and dissolve are main-canvas
   operations: while a drilled submodel view is active both handlers refuse to
   run and toast an instruction to return to the main pipeline — the same
   client-side gate as save — instead of sending a mis-scoped request that the
@@ -681,9 +674,9 @@ candidate, with the error toast.
   time.** Every ordinary incoming edge contributes its API frame label or
   sanitised source label. A canonical drilled Input contributes its sanitised
   public input port ID, and a canonical occurrence output contributes its
-  output name (the sanitised public output port name from an owner,
-  `<instance>_<port>` from an instance, the occurrence's name from a linked
-  node). A connection whose derived name duplicates an existing
+  output name (the sanitised public output port name from an owner and, from
+  an instance, the instance's name or, with several outputs,
+  `<instance>_<port>`). A connection whose derived name duplicates an existing
   executable input on the target is refused with a named toast, mirroring the
   backend's save-time `ParseError`. The
   alternative — accepting the edge and letting codegen suffix a parameter —

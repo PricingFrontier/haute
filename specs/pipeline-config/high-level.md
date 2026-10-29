@@ -179,8 +179,8 @@ module itself, naming `<module>.submodel`; a module that defines no `submodel` f
 Python's own `AttributeError` when the pipeline file is imported.
 There are no node-level instances: `Pipeline` has no `instance` decorator, and the parser
 refuses `@pipeline.instance(...)` and an `of=` keyword on any node decorator with a message
-naming the replacement. A node is reused as a linked node, an occurrence of a one-node
-definition in its own `modules/<name>.py`, registered once for the original and once per
+naming the replacement. A node is reused through a one-node submodel, the node in its own
+`modules/<name>.py`, registered once for the original and once per
 instance (`instance_of="<original>"`), with each instance's inputs bound by
 `connect(..., target_port="<input>")`; `run()` and `score()` execute those occurrences as they
 do any submodel's.

@@ -360,8 +360,8 @@ Tests live under `tests/`, split by concern:
   `hypothesis.find` negative control rewrites one legal connection into the private form and
   shows the acceptance flip naming exactly that connection. Consumers of an occurrence
   output name their parameter after the output's name (the sanitised public output
-  port name from an owner, `<occurrence>_<port>` from an instance, the occurrence's
-  name from a linked node), as codegen emits; any other parameter name is rejected
+  port name from an owner; from an instance, the instance's name, or
+  `<instance>_<port>` when the definition has several outputs), as codegen emits; any other parameter name is rejected
   unless explicitly bound through `inputMapping`.
 - **`test_parser_conservation.py`** — regression tests asserting that parsing (and the implicit
   regeneration path) conserves source structure: boilerplate, docstrings, parameter buckets, node

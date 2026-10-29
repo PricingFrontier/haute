@@ -905,7 +905,8 @@ the turn that follows.
      `add_edge` `source_handle` that selects it and the input name
      `executable_input_name` derives for an edge from it: a Quote Input frame is
      selected and read by its label, a submodel output port `<port>` is selected by
-     `out__<port>` and read as `<port>`), and for a Source Switch the
+     `out__<port>` and read as `<port>` from an owner and, from an instance, as the
+     instance's name (one output) or `<instance>_<port>` (several)), and for a Source Switch the
      sorted names of the scenarios its `input_scenario_map` routes (scenario names are
      pipeline metadata; which input each routes is configuration and is not listed).
      Schemas resolve schema-only in

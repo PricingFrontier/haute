@@ -24,8 +24,9 @@ Modelling and optimiser result presentation belongs to
   minimise/expand controls, including in the collapsed bar, rather than beside
   Close in the node editor. Data, Explore, modelling and optimiser previews use
   the same control. It refreshes the active node's preview and shared data cache
-  as before, and remains available before results arrive. Submodels and their
-  boundary ports do not offer Refresh; the schema-warning banner retains its
+  as before, and remains available before results arrive. A submodel's
+  boundary ports do not offer Refresh, and a submodel occurrence's Refresh
+  re-runs the preview of its outputs; the schema-warning banner retains its
   separate Refresh and check action.
 - Data previews render loading, error and successful data, support column search, selected-frame
   switching, trace-cell clicks, and virtualise large row/column grids. Row limits, column

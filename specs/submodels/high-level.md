@@ -16,9 +16,9 @@ they operate on a single flat graph with the boundaries dissolved.
 A definition is also the unit of reuse. An **instance** applies a definition's
 logic to another set of inputs, through an explicit input mapping: an instance
 of a submodel reuses the group, and an instance of a single node reuses that
-node, which becomes a **linked node**, an occurrence of a one-node definition
-drawn on the canvas as the node itself. There is no other reuse mechanism:
-node-level instances are refused. This
+node once it is wrapped in a one-node submodel. A submodel works one way
+however many nodes it holds, and an instance one way whatever it reuses.
+There is no other reuse mechanism: node-level instances are refused. This
 component owns both sides of that representation boundary: constructing the hierarchical
 (collapsed) form and flattening one or all occurrences back into executable graph nodes.
 
@@ -151,10 +151,9 @@ from every canvas delete surface. The definition owner is never raw-deleted
 from any surface — it anchors the shared definition, so retiring it means
 dissolving the submodel (after its copies are
 removed or dissolved); blocked attempts say so visibly. The owner cannot be
-dissolved while instances still reference it. Renaming an occurrence changes
-presentation only, except that an instance's and a linked node's outputs are
-named by the occurrence, so renaming one renames those frames for its consumers
-(see Reuse). Drilling into the owner opens the shared definition editor and states
+dissolved while instances still reference it. Renaming the owner changes
+presentation only; an instance's outputs are named after it, so renaming an
+instance renames those frames for its consumers (see Reuse). Drilling into the owner opens the shared definition editor and states
 that edits affect every instance; drilling into an instance opens the same
 definition as an explicitly read-only view. All mutation surfaces are disabled
 there, including config fields, labels, node/edge edits, boundary edits,
@@ -167,8 +166,7 @@ explicit remove action: it retires the selected public input together with all
 of its internal routes and every parent binding across occurrences as one
 undoable definition edit. Every collapsed
 occurrence presents one generic `inputs` socket rather than one socket per
-public frame (a linked node instead shows its node's own input sockets; see
-Reuse). Multiple parent edges may share that socket. Each drop binds a declared
+public frame. Multiple parent edges may share that socket. Each drop binds a declared
 public port by the binding rule under Reuse: an owner binds the port named like
 the upstream frame's authoritative executable name, or mints one named after it
 (suffixing `_2`, `_3` on collision across both directions) when none is; an
@@ -195,7 +193,7 @@ remove-connection wording. A read-only occurrence shows the same list without
 removal controls. New
 public output ports are added in the drilled view by wiring a child output to
 the Output boundary. Instance copies retain the generic parent socket and
-read-only drill-down; a linked node has neither (see Reuse).
+read-only drill-down.
 
 Flattening expands each occurrence independently. Runtime node ids are
 qualified from immutable `(instanceId, localNodeId)` values and retain a
@@ -327,7 +325,7 @@ must resolve the original pipeline-owned sidecars.
   graph, unchanged source revision, and selected instance/definition identity;
   it exposes no file-deletion compatibility state.
 - **Selection validity.** A grouped submodel must contain at least 2 unique node ids
-  (a one-node definition comes only from Create Instance),
+  (Create Instance wraps a single node in a one-node submodel),
   every requested id must exist in the submitted graph, and duplicates are an
   invalid client request rather than an instruction to coalesce entries. A
   stale id rejects the entire operation; creation never silently groups a
@@ -359,7 +357,7 @@ must resolve the original pipeline-owned sidecars.
 - **Canonical boundary identity and executable naming are separate.** Parent edges
   address only `in__<name>` and `out__<name>` handles. Public input port names
   and public output port names provide the executable frame names (an instance's
-  and a linked node's outputs are named by the occurrence; see Reuse), internal endpoint ids stay
+  outputs are named after it; see Reuse), internal endpoint ids stay
   definition-private, and public ports have a single name field. Drill-down projects the
   definition contract as one composite Input and one composite Output card.
   Declared outputs remain visible and round-trip without consumers. Draft or
@@ -388,7 +386,8 @@ must resolve the original pipeline-owned sidecars.
 A submodel groups nodes that form one process. An **instance** reuses logic on
 another set of inputs: an instance of a submodel is another occurrence of its
 definition, and an instance of a single node is another occurrence of a
-one-node definition. There is no other reuse mechanism: `@pipeline.instance`,
+one-node definition. Nothing below depends on how many nodes a definition
+holds. There is no other reuse mechanism: `@pipeline.instance`,
 an `of=` keyword on a node decorator and an `instanceOf` on an ordinary node are
 refused (see Failure model), and nothing migrates them. `inputMapping` on a
 plain Transform or Load File is not reuse: it keeps the names its code reads
@@ -408,8 +407,8 @@ across a rewire.
   editor asks which of its unbound inputs the connection feeds. A drop on an
   instance whose every public input is bound is refused, naming the instance.
   An instance never mints a public input. The owner binds a public input named
-  like the frame, or mints one named after it, which on a linked node targets
-  its one node. No path pairs inputs by position or by substring.
+  like the frame, or mints one named after it. No path pairs inputs by
+  position or by substring.
 - **The input mapping in the panel.** Every occurrence's panel lists its
   definition's public inputs, each with the connection that feeds it on this
   occurrence, or "not connected". Choosing another of the occurrence's
@@ -418,47 +417,41 @@ across a rewire.
   nodes it targets run without it and report what their code misses, as an
   unconnected node does.
 - **Output names.** An instance has its own name, and the frames it outputs
-  are named from it, so they never share the owner's names and one consumer
-  can read the owner and its instances side by side. The owner of a
-  multi-node definition names each output by its public output port name,
-  and an instance of it names each output `<instance>_<port>`; a linked node,
-  owner or instance, names its one output by its occurrence's name, as an
-  ordinary node's output is named by its label. No name depends on how many
-  outputs the definition declares, and an occurrence card labels each output
-  with its name. Renaming an instance or a linked node renames its frames for
-  its consumers, coded consumers keeping their code through `inputMapping` as
-  for any rename; renaming the owner of a multi-node definition renames
-  nothing downstream.
+  are named after it, so they never share the owner's names and one consumer
+  can read the owner and its instances side by side. The owner names each
+  output by its public output port name. An instance names its output by its
+  own name when the definition declares one public output, and each output
+  `<instance>_<port>` when it declares several. An occurrence card labels
+  each output with its name. Renaming an instance renames its frames for its
+  consumers, coded consumers keeping their code through `inputMapping` as for
+  any rename, and so does a definition edit that takes it from one public
+  output to several or back; renaming the owner renames nothing downstream.
 - **Missing columns.** For each public input that an instance and its owner
   both bind, the instance reports, as `missing` schema warnings, the columns
   the owner's frame carries that the instance's does not, read from the walk's
-  recorded schemas as for any node. A linked instance shows them in its panel;
-  a submodel instance on the nodes the input targets.
-- **Linked nodes.** An occurrence of a definition whose graph holds exactly one
-  node is a linked node. The canvas draws it as that node's card, with the
-  occurrence's name and a link mark, and the node's own input and output
-  sockets (an Edge Join's `base` and `join` sockets each bind the public input
-  that targets that role). It has no drill-in. Clicking it previews the node as
-  a qualified runtime target. The owner's panel is the node's own editor, and
-  its edits change the shared definition, so every instance follows; an
-  instance's panel shows the same editor read-only, with "Instance of <owner>",
-  its input mapping and its missing columns. Its output is named by its
-  occurrence's name (see Output names). Duplicate gives an unlinked plain
-  copy of the node. Unlink, offered on an owner no instance references,
-  dissolves it into a plain node under the linked node's name and position.
+  recorded schemas as for any node. An instance's panel lists them by input,
+  and its drilled view shows them on the nodes each input targets.
+- **Preview.** Clicking any occurrence, owner or instance, previews its
+  outputs without drilling in: each public output's source node runs on this
+  occurrence's inputs, as a qualified runtime target, and the preview shows
+  one frame per output under the name its consumers read. An occurrence with
+  no public output has nothing to preview.
 - **Create Instance.** On a submodel occurrence it places another occurrence
   of the definition, as described above. On a plain node it wraps the node in
   place in a one-node definition: the definition and its module take the
   node's name (`modules/<name>.py`, suffixed `_2`, `_3` while a module of that
   name exists under any casing); the owner occurrence keeps the node's name,
   position and connections, each incoming frame becoming a public input named
-  as the node read it and its output the one public output; and an unbound
+  as the node read it and its output the one public output, named as its
+  frame was, so its consumers read what they read before; and an unbound
   instance, named as a submodel copy is (`<name>_2`), is placed beside it.
-  It is one undoable editor transform through `POST /api/submodel/instance`,
-  written only by Save, as grouping is. It is offered on every node type a
-  definition can hold, apart from the document-wide singletons (`apiInput`,
-  `workbenchInput`, `output`, `workbenchOutput`) and the Source Switch, and
-  only in the parent view.
+  From then on both are ordinary occurrences: the node is edited by drilling
+  into the owner, and Dissolve, once no instance references the owner, turns
+  it back into the plain node. It is one undoable editor transform through
+  `POST /api/submodel/instance`, written only by Save, as grouping is. It is
+  offered on every node type a definition can hold, apart from the
+  document-wide singletons (`apiInput`, `workbenchInput`, `output`,
+  `workbenchOutput`) and the Source Switch, and only in the parent view.
 
 ## Design rationale
 
@@ -500,9 +493,13 @@ across a rewire.
   Python; and every engine and editor layer had to carry them on a second
   path. Submodel instances bind named public inputs explicitly, run standalone
   and expand through the one flatten path. Making a node's instance an
-  occurrence of a one-node definition, drawn as the node, keeps what node
-  instances did (the same logic on other inputs, edits followed everywhere)
-  on that machinery, and gives every instance an explicit input mapping.
+  occurrence of a one-node submodel keeps what node instances did (the same
+  logic on other inputs, edits followed everywhere) on that machinery, and
+  gives every instance an explicit input mapping. A one-node submodel is drawn
+  and edited as any other, so a definition gaining or losing nodes changes
+  nothing about how it, its instances or their output names behave; the cost
+  is that a reused node shows on the canvas as a submodel rather than as
+  itself.
 - **Nesting is disallowed by construction, not by convention.** Rejecting any
   selection that includes a submodel occurrence keeps the occurrence model,
   the `in__`/`out__` handle scheme, and the flatten pass single-level;
@@ -550,8 +547,8 @@ across a rewire.
   occurrence's `out__<name>` handle through the referenced definition to
   that public output's internal `{nodeId, handleId}` data source. Its parent
   input name is the output's name (see Reuse): the sanitised public output
-  port name from an owner, `<instance>_<port>` from an instance and the
-  occurrence's name from a linked node. See
+  port name from an owner and, from an instance, the instance's name (one
+  output) or `<instance>_<port>` (several). See
   [frontend-node-editors](../frontend-node-editors/high-level.md)
   for chip derivation and [codegen](../codegen/high-level.md) for the backend
   rule.

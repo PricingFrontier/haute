@@ -181,7 +181,7 @@ together. Parent edge order is persisted state — the dirty fingerprint
 compares it and codegen emits `connect` calls in it — so a restored binding
 returns to its own position rather than to the end of the parent edge list.
 
-### Linked nodes and instance bindings (normative)
+### Instance bindings, output names and previews (normative)
 
 An instance's input mapping is the set of parent edges into it: an edge's
 `in__<name>` target handle names the public input it binds, and each public
@@ -200,10 +200,8 @@ validated by `validatePipelineConnection`) to the first of:
 A drop on an instance whose every public input is bound is refused with
 "Every input of <name> is connected", and no edge is added. An instance never
 mints a public input. An owner binds by name or mints a public input named
-after the frame (suffixing `_2`, `_3` across both directions); on a linked node
-the minted input's one target is its node. A linked node's role socket (an
-Edge Join's `base` or `join`) binds the public input that targets that role
-directly. No step pairs by position or substring.
+after the frame (suffixing `_2`, `_3` across both directions). No step pairs
+by position or substring.
 
 **Re-targeting.** An occurrence panel's input mapping changes an edge's target
 handle to the chosen input's `in__<name>`. A connection moved onto an input
@@ -212,39 +210,34 @@ undoable edit. Removing a connection unbinds its input, and the public input
 stays declared.
 
 **Output names.** `edge_input_name` names an edge out of an occurrence by the
-output's name: from a linked node, owner or instance, the occurrence's
-sanitised name, as an ordinary node's edge is named by its label; from any
-other occurrence, the sanitised public output port name on the owner and
-`<occurrence>_<port>` (the sanitised occurrence and port names joined by `_`)
-on an instance. The browser's `edgeInputName` agrees, and an occurrence card
-labels each output with its name. No name depends on the number of outputs.
-Renaming an instance or a linked node therefore renames its frames for its
-consumers, and the rename reconciles their bindings as an ordinary rename
-does; renaming the owner of any other definition renames nothing downstream.
-Two outputs that one consumer would read under one name are refused there,
-as any duplicate input name is.
+output's name: on the owner, the sanitised public output port name; on an
+instance, the instance's sanitised name when its definition declares one
+public output, and `<instance>_<port>` (the sanitised instance and port names
+joined by `_`) for each output when it declares several. The browser's
+`edgeInputName` agrees, and an occurrence card labels each output with its
+name. Renaming an instance renames its frames for its consumers, and the
+rename reconciles their bindings as an ordinary rename does; renaming the
+owner renames nothing downstream. A definition edit that takes it from one
+public output to several, or back, renames every instance's frames in the
+same undoable edit, reconciled the same way. Two outputs that one consumer
+would read under one name are refused there, as any duplicate input name is.
 
-**Linked nodes.** A definition whose `graph` holds exactly one node is a
-one-node definition, and each of its occurrences is a linked node. Its input
-ports each target that node, with the node's own handle (an Edge Join's `base`
-or `join`), and it has one output port sourced from the node when the node
-produces a frame (none for an Explore, Model Training or Optimiser node).
+**Previewing an occurrence.** The editor never sends an occurrence itself as a
+preview target. Selecting one previews, on the parent graph, each public
+output's source as `qualified_runtime_node_id(<occurrence>, <source node id>)`,
+as it targets a drilled child, and shows the results as the occurrence's, one
+frame per output under its output name, switched as a multi-frame preview's
+frames are; trace-cell clicks trace that target, and Refresh re-runs them. An
+occurrence with no public output previews nothing.
 
-- **Output name.** The occurrence's name (see Output names), so the owner's
-  consumers keep the name they read before the node was wrapped.
-- **Preview and trace target.** The editor targets a linked node as
-  `qualified_runtime_node_id(<occurrence>, <node id>)` on the parent graph, as
-  it targets a drilled child, and shows the result as the occurrence's.
-- **Editing.** The owner's panel edits the definition's one node: each config
-  edit replaces that node's config in `submodels[definitionId].graph` as one
-  undoable definition edit. An instance's panel is read-only apart from its
-  input mapping.
-- **Duplicate** gives a plain node holding a copy of the definition node's
-  config, under a fresh name, as duplicating an ordinary node does.
-- **Unlink** is `flatten_graph(graph, target_instance_id=<owner>)` on an owner
-  that no instance references, the expanded node taking the occurrence's name
-  as its label, at the occurrence's position. Save then derives the
-  removed definition and deletes its managed module, as for any dissolve.
+**One-node definitions.** A definition whose `graph` holds one node is an
+ordinary definition. A node's Create Instance makes one: its input ports each
+target the node with the handle its edge used (an Edge Join's `base` or
+`join`), and it has one output port sourced from the node when the node
+produces a frame (none for an Explore, Model Training or Optimiser node). Its
+occurrences are drawn, opened, previewed and named as any occurrence, and
+dissolving the owner once no instance references it gives back the plain node,
+as dissolving any occurrence expands its nodes.
 
 **Missing columns.** Flattening carries each instance occurrence's owner with
 the flattened graph, never in node config. The executor's schema-warning pass
@@ -459,7 +452,8 @@ Acquires `save_lock` and runs the body in a threadpool, as create does:
    named by the node's executable name (its id, label and alias) and placed at
    the node's position, and the node's parent edges are re-targeted to
    `in__<name>` and re-sourced from `out__<name>`; consumers keep their input
-   names, since a linked node's output is named by its occurrence.
+   names, since an owner's output is read by its port name, which is the
+   node's executable name.
 5. Place an instance of the definition with `instanceOf` the owner, named and
    positioned as the browser names and places a submodel copy (`<name>_2`,
    collision-free), with no bindings.
@@ -574,12 +568,10 @@ scalar input selectors follow renamed edges. A collision refuses the entire edit
   definition ids for every canonical child path present in both the persisted
   and submitted registries. A different id for the same path is a `409`, not
   an unchanged definition or an implicit migration.
-- **A one-node definition is a linked node wherever it comes from.** Grouping
-  needs two nodes, so it comes from a node's Create Instance or a hand-authored
-  file, and either is drawn and named as a linked node.
-- **A linked owner is anchored like any owner.** It cannot be raw-deleted, and
-  Unlink is refused while an instance references it; its instances delete as
-  copies do.
+- **Nothing depends on how many nodes a definition holds.** A one-node
+  definition, whether a node's Create Instance, an edit that leaves one node or
+  a hand-authored file made it, behaves as any other, and giving it another
+  node changes nothing about its occurrences.
 
 ## Error handling
 
@@ -613,7 +605,7 @@ scalar input selectors follow renamed edges. A collision refuses the entire edit
 | Sanitised node-name collision | `HTTPException(400, <specific collision detail>)` | `SavePipelineService` validation, before writes. |
 | Create Instance on a missing node, a submodel occurrence, a document-wide singleton or a Source Switch | `HTTPException(400, <reason>)` | `POST /api/submodel/instance`, before the transform. |
 | A connection dropped on an instance whose every public input is bound | Refused in the editor, naming the instance; no edge is added | The browser's binding rule. |
-| `@pipeline.instance(...)`, an `of=` keyword on a node decorator, or `instanceOf` on a node that is not an occurrence | `ParseError` naming the removed form, whose `remediation` is the linked-node form | The parser and config validation; the editor shows the node unavailable with the message, and nothing migrates it. |
+| `@pipeline.instance(...)`, an `of=` keyword on a node decorator, or `instanceOf` on a node that is not an occurrence | `ParseError` naming the removed form, whose `remediation` is the one-node submodel form | The parser and config validation; the editor shows the node unavailable with the message, and nothing migrates it. |
 | Any write step in the later explicit Save transaction fails (config write, sidecar write, module delete) | Best-effort rollback by `SavePipelineService`, original error re-raised | The server's unexpected-exception handler produces `500 {"detail": _INTERNAL_ERROR_DETAIL}`; a failed compensating operation is logged and can leave partial state. See [server-api](../server-api/high-level.md). |
 | Child is hand-authored/shared, ownership is ambiguous, or reference audit is incomplete | Later explicit Save retains the source and sidecar | Uncertainty never authorises deletion. |
 
@@ -687,11 +679,11 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
 - `tests/test_submodel_instances.py` — canonical definition and occurrence
   validation, parse/codegen round trips, public-port expansion, targeted
   flattening, shared-definition retention, an instance bound to frames named
-  otherwise than its public inputs, an instance's outputs named
-  `<instance>_<port>` and read beside the owner's by one consumer, a linked
-  node's output named by its occurrence and renamed with it, an instance's
-  missing columns, Unlink
-  restoring the plain node, OUTPUT source-port migration across
+  otherwise than its public inputs, an instance's output named after it (each
+  output `<instance>_<port>` when its definition declares several), read
+  beside the owner's by one consumer and renamed with it, an instance's
+  missing columns, a one-node owner dissolved back into its plain node,
+  OUTPUT source-port migration across
   a public boundary, one validation per flatten (a count of
   `resolve_submodel_instances` calls), a Load File child (and a node instance of it) reading its
   renamed second input by name with the rows it gave before grouping and its

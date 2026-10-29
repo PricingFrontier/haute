@@ -83,7 +83,7 @@
   carries one identity: `name` is the input's single name — chip text, code argument, and the
   key persisted contracts use (the live-switch `input_scenario_map`, the instance
   `inputMapping`) — derived per edge by `edgeInputName` (an API-input edge's frame label
-  verbatim; a submodel `out__` edge's input name is the output's name (the sanitised public output port name from an owner, `<instance>_<port>` from an instance, the occurrence's name from a linked node), resolved by the backend identity endpoint; else the sanitised source-node
+  verbatim; a submodel `out__` edge's input name is the output's name (the sanitised public output port name from an owner and, from an instance, the instance's name or, with several outputs, `<instance>_<port>`), resolved by the backend identity endpoint; else the sanitised source-node
   label). `sourceLabel` is provenance metadata used only to explain an unresolved source;
   resolved tooltips, removal titles, and selectors identify the edge by `name`, never by the
   source-node label or id;
@@ -661,7 +661,7 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   composite node's literal `INPUT` label.
 - `edgeInputName` treats only API-input sources' handles as frame names; a submodel
   `out__` edge's input name is the output's name, resolved by the backend identity endpoint; and every other
-  node type derives the sanitised source label. Renaming an occurrence renames its alias (the node id follows at Save, when the reparse re-keys it to the name, so `node.id == data.label == config.alias` holds in every parsed document), validates identifier syntax (refusing with `Occurrence names must be identifiers; use "<functionName>".`) and uniqueness among parent nodes (refusing with `"<name>" is already used by another node.`), and leaves downstream public port names unchanged; an instance's and a linked node's outputs are named by the occurrence, so its rename renames those frames and reconciles their consumers as an ordinary node rename does.
+  node type derives the sanitised source label. Renaming an occurrence renames its alias (the node id follows at Save, when the reparse re-keys it to the name, so `node.id == data.label == config.alias` holds in every parsed document), validates identifier syntax (refusing with `Occurrence names must be identifiers; use "<functionName>".`) and uniqueness among parent nodes (refusing with `"<name>" is already used by another node.`), and leaves downstream public port names unchanged; an instance's outputs are named after it, so an instance's rename renames those frames and reconciles their consumers as an ordinary node rename does.
 - The API-input editor rejects a frame label that fails backend invariant B4 (not an ASCII
   identifier, or a Python hard keyword) at commit time with the same inline validation used
   for blank/duplicate labels (`apiInputLabelIssue` — the exact ASCII mirror) — the label is
@@ -923,12 +923,9 @@ update handlers reject calls.
 inputs under INPUTS, each with a selector of the occurrence's incoming connections (shown by
 their frame names) or "not connected"; choosing a connection re-targets that edge to the
 input, as one undoable edit, and an input left without one shows "not connected". The
-selector is live on an instance, whose definition is otherwise read-only. A linked node's
-panel is its node's own editor (the node type's tabs) instead of the submodel summary: on
-the owner it edits the definition's one node, and every instance follows; on an instance it
-renders read-only under "Instance of <owner>", with the INPUTS selectors and MISSING
-COLUMNS (the `missing` schema warnings its preview reported, one per column). An owner that
-no instance references offers **Unlink**.
+selector is live on an instance, whose definition is otherwise read-only. An instance's
+panel also lists MISSING COLUMNS by input: the `missing` schema warnings its preview
+reported, one per column. A panel is the same whatever the definition holds.
 
 ## Minimal unavailable-node removal implementation
 
@@ -940,10 +937,10 @@ Known unavailable ordinary nodes offer `Recover settings` as the primary action
 and `Reset node` as the destructive alternative, except an Edge Join, which offers no
 Reset: a new join has no keys, and a join without keys cannot be written. A node whose
 connections are wrong (a `node_topology_invalid` diagnostic) offers neither, since
-rebuilding its settings cannot mend them; removal stays. Submodels (linked nodes included),
-unknown types and blocked nodes cannot reset or recover; a node refused for a removed
-node-level instance form (`@pipeline.instance`, `of=`, `instanceOf`) offers removal only,
-with the parser's message naming the linked-node form. The editor does not open an
+rebuilding its settings cannot mend them; removal stays. Submodels, unknown types and
+blocked nodes cannot reset or recover; a node refused for a removed node-level instance
+form (`@pipeline.instance`, `of=`, `instanceOf`) offers removal only, with the parser's
+message naming the one-node submodel form. The editor does not open an
 unavailable submodel's definition, so that submodel's inspector lists the
 definition's unavailable nodes (`submodels[config.definitionId]`) under
 "Unavailable nodes in this submodel", each with its diagnostics, `Recover settings`
