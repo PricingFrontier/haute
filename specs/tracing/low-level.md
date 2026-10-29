@@ -451,6 +451,10 @@ the limited preview shows rather than independent source samples.
    the preamble's selector aliases, and the child's `inputMapping` aliases, which the proof
    resolves to the edge input names it reports (`input_aliases`). The proof is closed and syntactic over
    `df = <chain>` statements rooted at one input:
+   - a statement that only binds a name to a value no frame flows into (`factor = 2`, plain,
+     annotated or augmented) rewrites no frame and is skipped; binding `df` or an input, or
+     reading a frame (`n = src.height`), fails the proof, and a later use of the bound name
+     as a frame fails it on its own;
    - `filter`, `sort`, `head`, `tail`, `limit`, `slice`, `unique`, `drop`, `drop_nulls`,
      and `lazy` keep values;
    - `with_columns` and `select` assign every keyword output and every output that is not a
@@ -1057,6 +1061,8 @@ integration/regression suites:
   its input through an `inputMapping` alias traced through both upstream Edge Joins, a
   node its nearest child cannot prove traced through another child, and a left join's
   unmatched and null keys reported as `join_no_match`.
+  `tests/test_column_lineage.py::test_carried_column_proof_skips_a_binding_no_frame_flows_into`
+  pins the proof past a scalar binding and refusing one that binds or reads a frame.
   `tests/test_trace_multi_frame.py::test_a_source_row_is_given_only_to_the_child_reading_its_frame`
   pins a multi-frame source's row coming from the join base's frame and never given as
   the input of a child reading another frame. `tests/test_column_lineage.py` pins the

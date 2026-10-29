@@ -2336,6 +2336,9 @@ class TestStatementTimeBindings:
         step = _step_by_id(result, "t")
         calculation = _calc(step)
 
+        # The scalar statements hide nothing: the source row is traced too.
+        assert result.omissions == []
+        assert step.input_values == {"x": 10.0}
         # The pipeline ran with factor 2: the explanation agrees with its output.
         assert result.output_value == 20.0
         assert calculation is not None
