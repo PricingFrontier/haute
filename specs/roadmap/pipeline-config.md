@@ -21,7 +21,6 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 | PCFG-R14 | Planned | P3 | Both save paths write the same canonical sidecar bytes, the configured pipeline path stays inside the project, and no placeholder file name reaches an error. |
 | PCFG-R15 | Planned | P3 | The unreachable config branches, the empty `_load_error` mechanism, the other dead symbols, the five duplicated mechanisms and the stale comments are gone. |
 | PCFG-R16 | Decision | P3 | The `earlier` step spelling is either dropped or named as the one allowed recogniser of old generated code. |
-| PCFG-R17 | Planned | P1 | A closing `return df` that shares its line with a statement keeps that statement, instead of the parse loading the node empty and the next save writing a placeholder over the authored body. |
 | PCFG-R18 | Planned | P2 | A rendered step body is the fixed point of `ruff format` the specification promises (free-code trailing whitespace, exponent floats), so a reformat never discards a node's steps, and body extraction splits lines as Python does. |
 | PCFG-R19 | Planned | P3 | Recovery ids are minted once so a diagnostic's "go to" finds its element, the revision captures cover sidecars and configs, a preamble `match` binds names the naming rule sees, and three duplicated recovery mechanisms exist once. |
 | PCFG-R20 | Planned | P2 | Static parsing and live registration agree on connect arguments; no malformed authored call or handle disappears on Save. |
@@ -361,35 +360,6 @@ matches them.
 **Evidence:** `src/haute/_config_builder.py::_reconcile_steps`;
 `src/haute/_polars_steps.py::StepSpelling`; `specs/README.md`;
 `specs/pipeline-config/low-level.md`.
-
-### PCFG-R17 — A same-line closing return keeps its statement
-**Why:** `_strip_outer_trailing_return` finds the closing `return df` by AST, proves
-it is the last outer statement and that nothing follows it, then drops the return's
-whole *line* rather than its column: a hand-written body `df = quotes.head(1); return
-df` extracts to empty code (probed for the Polars and hook kinds; a two-line body
-keeps only its first line). The strict parse succeeds, so the editor document is
-`ready`, the node shows no code, and the next save writes the incomplete placeholder
-over the authored body; for a hook type the regenerated function is a declaration,
-so its signature goes too. Codegen never writes a `;`-joined return, so the trigger
-is a hand-written or hand-edited file, which is the authoring surface the
-pipeline-config specification describes first; the specification says extraction
-removes only the generated statements. `_function_body_source` already cuts a
-one-line `def` at the column.
-
-**Plan:** Cut the line at the return's column (`line.encode("utf-8")[: last.col_offset]`)
-keeping the text before it, or refuse a closing return that shares a line with another
-statement with a `ParseError` naming the line; add the `;`-joined case to the strip tests.
-
-**Acceptance:** `df = quotes.head(1); return df` round-trips as `df = quotes.head(1)`
-(or fails the parse naming the line); no save writes a placeholder over a body that
-parsed with statements.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_code_extraction.py::_strip_outer_trailing_return`;
-`src/haute/_code_extraction.py::extract_user_code`;
-`src/haute/_ast_helpers.py::_function_body_source`;
-`tests/test_code_extraction_coverage.py`.
 
 ### PCFG-R18 — Rendered bodies are ruff fixed points; lines split as Python does
 **Why:** `_render_free_code` strips trailing whitespace from the whole snippet only,

@@ -28,6 +28,8 @@ Return-boundary detection:
 from __future__ import annotations
 
 import ast
+import io
+import tokenize
 from collections.abc import Callable
 from typing import NamedTuple
 
@@ -197,7 +199,8 @@ def _strip_outer_trailing_return(source: str, return_var: str) -> str:
         return _rstrip_blank_lines(source)
     # Only the code's own last statement is the closing return: one nested in a
     # loop or branch stays, and the early-return check then refuses it.
-    closing = _parse_user_code(source, context="user code").body[-1]
+    body = _parse_user_code(source, context="user code").body
+    closing = body[-1]
     if (closing.lineno, closing.col_offset) != (last.lineno, last.col_offset):
         return _rstrip_blank_lines(source)
 
@@ -215,9 +218,36 @@ def _strip_outer_trailing_return(source: str, return_var: str) -> str:
             # returns to be LAST, but defensive for comments etc.).
             return _rstrip_blank_lines(source)
 
-    # Drop the return's source span (lineno..end_lineno inclusive, 1-based).
-    kept = lines[: last.lineno - 1]
+    if len(body) > 1 and _follows_a_semicolon(source, last):
+        # ``df = quotes.head(1); return df``: the return shares a logical line
+        # with the statement before it, so the kept code ends where that
+        # statement ends, never at the start of the return's line.
+        previous = body[-2]
+        assert previous.end_lineno is not None and previous.end_col_offset is not None
+        last_kept = lines[previous.end_lineno - 1].encode("utf-8")[: previous.end_col_offset]
+        kept = [*lines[: previous.end_lineno - 1], last_kept.decode("utf-8")]
+    else:
+        # Drop the return's source span (lineno..end_lineno inclusive, 1-based).
+        kept = lines[: last.lineno - 1]
     return _rstrip_blank_lines("".join(kept))
+
+
+_TOKENS_BETWEEN_STATEMENTS = frozenset(
+    {tokenize.NL, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT}
+)
+
+
+def _follows_a_semicolon(source: str, statement: ast.stmt) -> bool:
+    """Whether *statement* follows the one before it on one logical line, after a ``;``."""
+    line = source.splitlines(keepends=True)[statement.lineno - 1]
+    start = (statement.lineno, len(line.encode("utf-8")[: statement.col_offset].decode("utf-8")))
+    previous: tokenize.TokenInfo | None = None
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.start == start:
+            return previous is not None and previous.exact_type == tokenize.SEMI
+        if token.type not in _TOKENS_BETWEEN_STATEMENTS:
+            previous = token
+    return False
 
 
 def _rstrip_blank_lines(source: str) -> str:

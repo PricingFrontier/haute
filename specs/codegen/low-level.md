@@ -259,7 +259,10 @@ and hooks honest, belong to [pipeline-config](../pipeline-config/low-level.md).
 4. Slice from `result.start_idx`, `_dedent`, strip a trailing
    `return <var>` for each `return_vars` entry via `_strip_trailing_return`
    (AST-based — `_strip_outer_trailing_return` only removes the return if it
-   is the literal last OUTER-scope statement).
+   is the literal last OUTER-scope statement). It removes the return's span,
+   not its lines: a closing return that shares its line with the statement
+   before it (`df = quotes.head(1); return df`) is cut at that statement's
+   end, so the statement stays and only the `;` and the return go.
 5. Finalise through `_finalise_polars`, with the parameter names for `polars`
    and none for the other kinds. A closing outer-scope `return <expr>` becomes
    `df = <expr>`; any other outer-scope `return` (inside an `if` or loop, or
@@ -592,7 +595,10 @@ than one file per module:
   the sidecar.
 - **`test_code_extraction_coverage.py`** — internal-helper unit coverage for
   `_code_extraction.py`: user-code parsing, bare-return rewriting, trailing-
-  return stripping, declaration bodies (`...`, `pass`, docstring only), the
+  return stripping (a closing return joined by `;` to the statement before it
+  keeps that statement, on one line or after a multi-line one, for the
+  `polars` and `hook` kinds, and such a body survives a parse and save),
+  declaration bodies (`...`, `pass`, docstring only), the
   External File binding matcher, finalisers, and the redundant-RHS-wrapper proof.
 - **`test_code_extraction_roundtrip.py`** — "remediation 5.1 (C5) + 5.6":
   the chain-assignment unwrap proof, a chain-assignment save→load→save

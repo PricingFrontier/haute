@@ -220,9 +220,6 @@ these are the Majors still open.
   and merged over the sidecar by Recover** (Major, `PCFG-R11`).
 - **Every save drops authored comments outside the kept regions** (Major,
   `PCFG-R12`; five kinds reproduced) with no diagnostic.
-- **A closing `return df` on the same line as a statement drops the statement**
-  (Major, `PCFG-R17`; reproduced): the node loads empty and the next save writes
-  a placeholder over the authored body. The package is P1.
 - **The optimiser's MLflow log writes the complete result artifact without the
   finiteness gate the save applies** (Major, `OPT-R01`): a missing defence layer
   on a pricing artifact, since the status poll corrects the UI path.
@@ -314,7 +311,6 @@ production:
 | Pipeline config | PCF-8, PCF-11, PCF-14, PCF-15 | `PCFG-R14` |
 | Pipeline config | PCF-4, PCF-9, PCF-10, PCF-12 | `PCFG-R15` |
 | Pipeline config | PCF-13 | `PCFG-R16` (Decision) |
-| Pipeline config | PCR-1 | `PCFG-R17` |
 | Pipeline config | PCR-2, PCR-3, PCR-4 | `PCFG-R18` |
 | Pipeline config | PCR-5, PCR-6, PCR-7, PCR-8 | `PCFG-R19` |
 | Optimiser | OPR-1, OPR-8, OPR-12 | `OPT-R01` |

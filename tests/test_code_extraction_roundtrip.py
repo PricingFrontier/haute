@@ -327,6 +327,37 @@ class TestChainAssignmentSaveLoadSave:
         )
 
 
+class TestSemicolonJoinedClosingReturn:
+    """A hand-written ``x; return df`` keeps ``x`` through a parse and save."""
+
+    def test_a_transform_keeps_its_statement_through_a_save(self, tmp_path: Path) -> None:
+        box1, regen1, box2, _regen2 = _roundtrip_node_code(
+            _POLARS_NODE,
+            ["df = up.head(1); return df"],
+            "clean",
+            tmp_path,
+        )
+        assert box1 == "df = up.head(1)"
+        assert box2 == box1
+        assert "df = up.head(1)" in _node_block(regen1, "clean")
+
+    def test_a_hook_keeps_its_signature_and_statement_through_a_save(self, tmp_path: Path) -> None:
+        _write_sidecars(tmp_path)
+        write_data_input_config(tmp_path, "hooked", "data.parquet")
+        source = _PIPELINE_HEADER + (
+            '\n@pipeline.data_input(config="config/data_input/hooked.json")\n'
+            "def hooked(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+            "    df = df.head(1); return df\n"
+        )
+        graph = parse_pipeline_source(source, source_file="demo.py", _base_dir=tmp_path)
+        assert next(n for n in graph.nodes if n.id == "hooked").data.config["code"] == (
+            "df = df.head(1)"
+        )
+        block = _node_block(graph_to_code(graph, pipeline_name="demo"), "hooked")
+        assert "def hooked(df: pl.LazyFrame) -> pl.LazyFrame:" in block
+        assert "df = df.head(1)" in block
+
+
 class TestExtractionFailsLoudOnUnparseableBodies:
     """Established contract: unparseable bodies raise ParseError loudly.
 
