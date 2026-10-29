@@ -888,9 +888,14 @@ def bind_remote(url: str, project_root: Path, bound_by: str | None = None) -> Bi
     and reports that a restart is needed — lifting a different project over a
     running server's working directory is not safe to do live, and the boot
     path already does it cleanly.
+
+    An adopted binding's restart target is the working branch the publication
+    carried, which each transport reads under the repository's Git lock with the
+    refs or bundle it publishes, as every later publish records its own: a branch
+    read before the publication could name one a concurrent switch left
+    unpublished, for the first restart to look for.
     """
     from haute import _git
-    from haute._git_state import read_working_branch
 
     remote_url = precheck_bind(url)
 
@@ -905,12 +910,6 @@ def bind_remote(url: str, project_root: Path, bound_by: str | None = None) -> Bi
     else:
         _git.ensure_remote(REMOTE_NAME, remote_url, cwd=project_root)
         populated = _git.remote_holds_other_history(REMOTE_NAME, project_root, cwd=project_root)
-    binding = StorageBinding(
-        remote_url=remote_url,
-        branch=read_working_branch(project_root),
-        bound_by=bound_by,
-        bound_at=now_iso(),
-    )
 
     if populated:
         # The stored project is NOT this session's project, so this session's
@@ -918,7 +917,11 @@ def bind_remote(url: str, project_root: Path, bound_by: str | None = None) -> Bi
         # restart look for a branch the clone has never heard of. Left unset,
         # the restored session lands in the branch-selection modal, which is
         # the honest state: a project arrived, choose where to work in it.
-        write_binding(replace(binding, branch=None))
+        write_binding(
+            StorageBinding(
+                remote_url=remote_url, branch=None, bound_by=bound_by, bound_at=now_iso()
+            )
+        )
         # Deliberately NOT activated in this process: the project on disk is
         # not yet the bound remote's project, so publishing from here would
         # push the wrong history. The restart's restore path activates it.
@@ -935,9 +938,13 @@ def bind_remote(url: str, project_root: Path, bound_by: str | None = None) -> Bi
         # this (empty) location must not let that label attach itself to an
         # unrelated project.
         clear_uc_lineage(remote_url)
-        publish_to_uc(remote_url, project_root)
+        published_branch = publish_to_uc(remote_url, project_root)
     else:
-        _git.push_working_pair(REMOTE_NAME, project_root, cwd=project_root)
+        response = _git.push_working_pair(REMOTE_NAME, project_root, cwd=project_root)
+        published_branch = response.working_branch
+    binding = StorageBinding(
+        remote_url=remote_url, branch=published_branch, bound_by=bound_by, bound_at=now_iso()
+    )
     write_binding(binding)
     _session.binding = binding
     # An adopted location was empty, so it cannot be a fork.

@@ -254,10 +254,6 @@ project sizes and is dwarfed by the container's own dependency install.
 
 ## Failure model
 
-> NOTE: Initial bind can record a branch captured before publication rather than
-> the branch actually published. [BUG-47](../roadmap/bugs.md#bug-47--initial-storage-binding-records-the-published-branch)
-> tracks branch-snapshot coherence for initial Git and UC binding.
-
 Every failure surface follows the MAGINOT low-context-error class:
 name the user-model objects (remote alias, branch, pending-save count)
 and the action, never raw library text.

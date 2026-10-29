@@ -137,6 +137,19 @@ def _replace_container(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_uc_transport, "_writer", _uc_transport._WriterState())
 
 
+def _two_saved_branches(project: Path) -> str:
+    """A save on WORKING, then ALT created with a save of its own; the clone is left on
+    WORKING. Returns ALT's save."""
+    (project / "rating.py").write_text("# working priced\n", encoding="utf-8")
+    assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
+    _git.set_working_branch(ALT, project, cwd=project, create=True)
+    (project / "rating.py").write_text("# alt priced\n", encoding="utf-8")
+    sha = _git.commit_save(["rating.py"], ALT, cwd=project)
+    assert sha is not None
+    _git.set_working_branch(WORKING, project, cwd=project)
+    return sha
+
+
 def _bind_and_publish(project: Path, *, content: str = "# priced\n") -> str:
     """Bind ``UC_URL``, save once, publish — generation 2, the common prelude."""
     _project_storage.bind_remote(UC_URL, project)
@@ -788,6 +801,52 @@ class TestContainerDeathSurvival:
         assert binding.branch == WORKING
         assert binding.bound_by == "someone@example.com"
 
+    def test_a_branch_switched_before_the_first_push_is_the_one_bound(
+        self,
+        project: Path,
+        bare_remote: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """BUG-47: the bind read the working branch before the push took the Git lock, so a
+        switch in between published the new pair while the binding named the old branch,
+        which the remote lacked, and the first restart looked for unpublished state."""
+        sha = _two_saved_branches(project)
+        real_push = _git.push_working_pair
+
+        def switch_then_push(remote: str, project_root: Path, cwd: Path | None = None):
+            # Between the bind's first look and the push's lock.
+            _git.set_working_branch(ALT, project_root, cwd=project_root)
+            return real_push(remote, project_root, cwd=cwd)
+
+        monkeypatch.setattr(_git, "push_working_pair", switch_then_push)
+
+        assert _project_storage.bind_remote(f"file://{bare_remote}", project) == "adopted"
+
+        binding = _project_storage.read_binding()
+        assert binding is not None and binding.branch == ALT
+        published = _run_git(bare_remote, "branch", "--format=%(refname:short)").splitlines()
+        assert {ALT, f"{ALT}-save"} <= set(published)
+        assert WORKING not in published
+        _replace_container(monkeypatch)
+        restored = tmp_path / "restored"
+        assert _project_storage.restore_if_bound(restored) == "restored"
+        _assert_resumed_on(restored, ALT, "# alt priced\n", sha)
+
+    def test_a_failed_first_push_records_no_binding(
+        self, project: Path, bare_remote: Path, files_api: _FakeFiles
+    ) -> None:
+        rule = bare_remote / "hooks" / "pre-receive"
+        rule.write_text("#!/bin/sh\nexit 1\n", newline="\n")
+        rule.chmod(0o755)
+
+        with pytest.raises(_git.GitError):
+            _project_storage.bind_remote(f"file://{bare_remote}", project)
+
+        assert _project_storage.read_binding() is None
+        assert _project_storage.active_binding() is None
+
     def test_populated_remote_defers_to_a_restart(
         self, project: Path, bare_remote: Path, files_api: _FakeFiles, tmp_path: Path
     ) -> None:
@@ -1406,6 +1465,51 @@ class TestUcContainerDeathSurvival:
         assert binding is not None
         assert binding.remote_url == UC_URL
         assert binding.branch == WORKING
+
+    def test_a_branch_switched_before_the_first_publication_is_the_one_bound(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """BUG-47, on a volume: the bind named the branch it read before the bundle was
+        captured under the Git lock, not the one the publication carried."""
+        # One app: the restore takes over the replaced container's claim, as a redeploy's does.
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        sha = _two_saved_branches(project)
+        real_publish = _project_storage.publish_to_uc
+
+        def switch_then_publish(url: str, project_root: Path) -> str | None:
+            # Between the bind's first look and the bundle's capture.
+            _git.set_working_branch(ALT, project_root, cwd=project_root)
+            return real_publish(url, project_root)
+
+        monkeypatch.setattr(_project_storage, "publish_to_uc", switch_then_publish)
+
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+
+        binding = _project_storage.read_binding()
+        assert binding is not None and binding.branch == ALT
+        _replace_container(monkeypatch)
+        restored = tmp_path / "restored"
+        assert _project_storage.restore_if_bound(restored) == "restored"
+        _assert_resumed_on(restored, ALT, "# alt priced\n", sha)
+
+    def test_a_failed_first_publication_records_no_binding(
+        self, project: Path, files_api: _FakeFiles
+    ) -> None:
+        def refuse_bundles(path: str) -> None:
+            if "/bundles/" in path:
+                raise RuntimeError("upload refused")
+
+        files_api.before_upload = refuse_bundles
+
+        with pytest.raises(StorageUnavailableError):
+            _project_storage.bind_remote(UC_URL, project)
+
+        assert _project_storage.read_binding() is None
+        assert _project_storage.active_binding() is None
 
     def test_publish_emits_one_phase_separated_measurement(
         self, project: Path, files_api: _FakeFiles

@@ -18,7 +18,6 @@ app's boot and build script and the storage binding's unknown keys.
 | BUG-40 | Planned | P2 | The hosted Databricks app installs the wheel and its pinned dependencies from a lock at boot, and its build script takes the app name as a parameter. The build selects its current wheel rather than a stale lexicographic match. |
 | BUG-42 | Decision | P3 | The storage binding record either rejects unknown keys or is named as the exception to the canonical-only policy. |
 | BUG-46 | Planned | P2 | Rating a source column named value is either faithfully represented or refused before the editor overwrites its levels. |
-| BUG-47 | Planned | P2 | The initial storage binding and restart marker name the branch actually published under the Git transaction. |
 
 ## Planned improvements
 
@@ -117,25 +116,3 @@ Ordinary factor names continue to round-trip.
 **Evidence:** `frontend/src/panels/editors/RatingStepEditor.tsx::RatingStepEditor`;
 `frontend/src/panels/editors/rating/ratingTableUtils.ts::buildCartesianEntries`;
 `src/haute/_rating_step_config.py::_validate_factors`; `src/haute/_rating.py::rating_table_lookup`.
-
-### BUG-47 — Initial storage binding records the published branch
-
-**Why:** Initial bind captures a working branch before acquiring the publisher's Git lock and
-ignores the branch snapshot returned by publication. A real local-Git probe switches from
-`first` to `second` before publication: the remote has `second` and `second-save`, while the
-binding records `first`, absent remotely. The first restart can therefore target unpublished
-state. Both Git and UC initial publisher call sites discard their returned snapshot; only Git
-was executed.
-
-**Plan:** Authenticate the initial branch snapshot under the publication transaction and build
-the binding from the transport's successful published snapshot, as later publication does. Keep
-claim, binding and restart-marker state coherent when a branch transition or publication fails.
-
-**Acceptance:** Barrier-controlled initial Git bind with a branch switch records a branch
-present remotely with its matching save ledger; restore opens it. Exercise the equivalent UC
-publication snapshot contract without a live workspace dependency, plus publication failure
-leaving no false successful binding.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_project_storage.py::bind_remote`; `src/haute/_project_storage.py::bind_remote`; `tests/test_project_storage.py`.
