@@ -614,10 +614,9 @@ def test_recover_regenerates_a_stale_contract_annotation(tmp_path):
 
 def test_recover_reports_what_it_could_not_fix_as_completeness(tmp_path):
     """The worked example: a Scenario Expander sidecar from before the stepCount rename
-    (`steps: 11`, no `stepCount`) that has also lost its `min_value`. The recover
-    applies: `stepCount` takes the palette default, and the engine's issue about the
-    range, which has no default, reaches the plan as completeness instead of being
-    dropped."""
+    (`steps: 11`) whose `stepCount` was then hand-edited to 0. The recover applies: the
+    stale `steps` is removed, and the engine's refusal of the count, a value it will not
+    invent, reaches the plan as completeness instead of being dropped."""
     from haute._config_io import collect_node_configs
     from haute._pipeline_repair import build_recover_unavailable_node_plan
     from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
@@ -660,8 +659,7 @@ def test_recover_reports_what_it_could_not_fix_as_completeness(tmp_path):
         config_file.write_text(content)
     sidecar = tmp_path / "config/expander/grid.json"
     stale = json.loads(sidecar.read_text())
-    del stale["stepCount"]
-    del stale["min_value"]
+    stale["stepCount"] = 0
     stale["steps"] = 11
     sidecar.write_text(json.dumps(stale))
     document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
@@ -672,18 +670,18 @@ def test_recover_reports_what_it_could_not_fix_as_completeness(tmp_path):
     plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
 
     assert [(entry.path, entry.code, entry.message) for entry in plan.response.completeness] == [
-        ("/", "incomplete_range", "Scenario range and stepCount are required.")
+        ("/stepCount", "invalid_value", "Scenario expander requires stepCount >= 1, got 0")
     ]
     assert all(entry.element_id == target.recovery_id for entry in plan.response.completeness)
     outcomes = {(change.path, change.outcome) for change in plan.response.field_changes}
-    assert ("/stepCount", "defaulted") in outcomes
+    assert ("/steps", "removed") in outcomes
     result = _apply(tmp_path, request)
-    assert [entry.code for entry in result.completeness] == ["incomplete_range"]
+    assert [entry.code for entry in result.completeness] == ["invalid_value"]
     applied = next(node for node in result.document.nodes if node.authored_id == "grid")
     assert applied.availability == "ready"
     written = json.loads(sidecar.read_text())
-    assert written["stepCount"] == 21
-    assert "min_value" not in written
+    assert written["stepCount"] == 0
+    assert "steps" not in written
 
 
 def test_recover_empty_locator_applies_as_incomplete(tmp_path):
@@ -879,6 +877,70 @@ def test_recover_gives_a_join_saved_without_its_order_the_order_for_its_type(tmp
     assert 'maintain_order="right_left"' in (tmp_path / "main.py").read_text()
     joined = parse_pipeline_file(tmp_path / "main.py").node_map["joined"]
     assert joined.data.config["maintainOrder"] == "right_left"
+
+
+def test_recover_refuses_an_asof_join_with_the_engines_message_at_how(tmp_path):
+    """Edge Join supports no asof join: Recover names the setting and the engine's
+    reason instead of a bare failure to generate the node."""
+    from haute._edge_join import build_edge_join_kwargs
+    from haute._pipeline_repair import PipelineRepairError, build_recover_unavailable_node_plan
+    from haute.errors import ConfigError
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n\n'
+        + _ORDERLESS_JOIN.replace("OWNER", "pipeline").replace("HOW", "asof")
+    )
+    before = (tmp_path / "main.py").read_bytes()
+    with pytest.raises(ConfigError) as engine:
+        build_edge_join_kwargs({"how": "asof", "on": ["quote_id"], "maintainOrder": "left"})
+
+    with pytest.raises(PipelineRepairError) as refused:
+        build_recover_unavailable_node_plan(
+            project_root=tmp_path, request=_request(tmp_path, "joined", "recover")
+        )
+    assert refused.value.code == "repair_action_unsupported"
+    assert f"/how: {engine.value}" in refused.value.message
+    assert refused.value.fields["issues"] == [
+        {"path": "/how", "code": "invalid_value", "message": engine.value.to_payload()["message"]}
+    ]
+    assert (tmp_path / "main.py").read_bytes() == before
+
+
+def test_recover_inside_a_submodel_keeps_a_local_pipeline_name_in_the_code(tmp_path):
+    """The regenerated function is written on the submodel's receiver; the node's own
+    code, which binds a local named ``pipeline``, is not rewritten."""
+    from haute.schemas import PipelineRepairRecoverRequest
+
+    parent = _submodel_with_an_unbound_node(tmp_path, parent_node="priced")
+    child = tmp_path / "modules" / "Inputs.py"
+    child.write_text(
+        child.read_text(encoding="utf-8").replace(
+            "    df = ghost\n",
+            '    pipeline = pl.LazyFrame({"quote_id": [1]})\n    df = pipeline\n',
+        ),
+        encoding="utf-8",
+    )
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+    assert document.submodels is not None
+    (definition,) = document.submodels.values()
+    inner = next(n for n in definition.graph.nodes if n.authored_id == "uses")
+
+    result = _apply(
+        tmp_path,
+        PipelineRepairRecoverRequest(
+            source_file=document.source_file,
+            source_revision=document.source_revision,
+            target_source_file=inner.source_file,
+            target_recovery_id=inner.recovery_id,
+            action="recover",
+        ),
+    )
+
+    assert result.document.load_status == "ready"
+    source = child.read_text(encoding="utf-8")
+    assert "@submodel.polars\ndef uses() -> pl.LazyFrame:\n" in source
+    assert '    pipeline = pl.LazyFrame({"quote_id": [1]})\n    df = pipeline\n' in source
 
 
 def test_recover_reaches_a_join_saved_without_its_order_inside_a_submodel(tmp_path):

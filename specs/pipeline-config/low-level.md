@@ -262,7 +262,7 @@ fixed. It reads a sidecar-backed node's settings as the parser does
 other decorator keyword reported as a removed field and never written over the sidecar
 (`contract=` stays on the decorator). It converts no spelling: a `source_type` key is an
 unknown key like any other. For a candidate that still loads, every error-level engine issue that survives the
-reconciliation (a required value the engine will not invent, an invalid range) is reported, for
+reconciliation (a required value the engine will not invent, a value the engine refuses) is reported, for
 every node type, as a completeness entry on the target: the issue's field path (`/` for a
 whole-config issue), its code and the engine's own message, beside the Data Input/Output
 provider gaps; the node panel shows them with the recover summary. The recover applies and the

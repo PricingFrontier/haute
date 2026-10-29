@@ -16,7 +16,6 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 | PCFG-R08 | Planned | P3 | Editor-only state travels beside the node config, not inside it. |
 | PCFG-R09 | Planned | P3 | A node type is declared in one place. |
 | PCFG-R12 | Planned | P2 | A save keeps every authored comment, or reports the ones it would drop before it proceeds. |
-| PCFG-R13 | Planned | P2 | Recover validates with the engine's own validators and resets a submodel node without renaming names in the user's code. |
 | PCFG-R14 | Planned | P3 | Both save paths write the same canonical sidecar bytes, the configured pipeline path stays inside the project, and no placeholder file name reaches an error. |
 | PCFG-R15 | Planned | P3 | The unreachable config branches, the empty `_load_error` mechanism, the other dead symbols, the five duplicated mechanisms and the stale comments are gone. |
 | PCFG-R16 | Decision | P3 | The `earlier` step spelling is either dropped or named as the one allowed recogniser of old generated code. |
@@ -216,34 +215,6 @@ pipeline file, so a comment check built beside it covers both.
 **Evidence:** `src/haute/codegen.py::_render_module`;
 `src/haute/_ast_helpers.py::_function_body_source`;
 `src/haute/_ast_helpers.py::unkept_module_statements`.
-
-### PCFG-R13 — Recovery uses the engine's validators and the node's receiver
-**Why:** `_validator_issues` re-implements rules the engine owns and has drifted: it
-accepts an Edge Join `how="asof"` that `_edge_join.build_edge_join_kwargs` refuses,
-so Recover reports no issue and then fails with the generic "cannot be generated
-from these settings"; it hand-writes the Live Switch map, Scenario Expander range,
-Constant values, External File, Model Score, Modelling and Optimiser rules, and its
-issue paths mix four formats beside the JSON pointers `_reconcile_value` emits.
-`_reset_node` generates a submodel node's function with `receiver="pipeline"` and
-then renames every `pipeline` name in the generated text to `submodel`, including
-names inside the user's hook code, although `_node_to_code` takes `receiver=`.
-
-**Plan:** Call the engine's own validators (`build_edge_join_kwargs`, the scenario,
-constant and io-layer validators) and translate their `ConfigError`s into recovery
-issues with JSON-pointer paths; pass `receiver=` to `_node_to_code` and delete the
-rename.
-
-**Acceptance:** Recover on an Edge Join with `how="asof"` reports the engine's
-message at `/how`; a submodel node whose hook binds a local `pipeline` name is
-reset without that name changing.
-
-**Dependencies:** `PCFG-R07` makes the typed models the one validation boundary;
-this package removes the drift that exists today.
-
-**Evidence:** `src/haute/_node_config_recovery.py::_validator_issues`;
-`src/haute/_edge_join.py::_ALLOWED_HOW`;
-`src/haute/_pipeline_repair_actions.py::_reset_node`;
-`src/haute/codegen.py::_node_to_code`.
 
 ### PCFG-R14 — Canonical, complete sidecar bytes and contained paths
 **Why:** The whole-document save writes a `contract` copy into every sidecar whose

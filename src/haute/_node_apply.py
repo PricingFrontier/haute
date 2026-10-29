@@ -252,6 +252,28 @@ def workbench_input_ports_from_config(
     )
 
 
+def validate_external_file_config(config: Mapping[str, Any]) -> None:
+    """Refuse External File settings its object cannot be loaded with, naming the setting.
+
+    Loading checks them first and Recover reports their refusal, so both apply
+    one rule. A ``ConfigSettingError`` is a ``ValueError``: a preview reports it
+    on the node.
+    """
+    from haute._io import EXTERNAL_FILE_TYPES, unsupported_external_file_type
+    from haute._validation_error import ConfigSettingError
+
+    path = config.get("path")
+    if not isinstance(path, str) or not path.strip():
+        raise ConfigSettingError("external file config requires non-empty 'path'", setting="path")
+    file_type = config.get("fileType")
+    if not isinstance(file_type, str) or not file_type.strip():
+        raise ConfigSettingError(
+            "external file config requires non-empty 'fileType'", setting="fileType"
+        )
+    if file_type not in EXTERNAL_FILE_TYPES:
+        raise ConfigSettingError(unsupported_external_file_type(file_type), setting="fileType")
+
+
 def load_external_object_from_config(
     config_or_path: Mapping[str, Any] | str | PathLike[str],
     *,
@@ -259,14 +281,12 @@ def load_external_object_from_config(
 ) -> object:
     """Load an external object from its current inline config or sidecar."""
     config = _resolve_node_config(config_or_path, base_dir)
+    validate_external_file_config(config)
     path = _anchored_required_path(config, base_dir)
-    file_type = config.get("fileType")
-    if not isinstance(file_type, str) or not file_type.strip():
-        raise ValueError("external file config requires non-empty 'fileType'")
 
     from haute._io import load_external_object
 
-    return load_external_object(path, file_type)
+    return load_external_object(path, config["fileType"])
 
 
 # ---------------------------------------------------------------------------

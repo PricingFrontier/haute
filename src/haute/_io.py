@@ -590,7 +590,12 @@ def _load_external_object_uncached(path: str, file_type: str) -> object:
         from haute._sandbox import safe_unpickle
 
         return safe_unpickle(path)
-    raise ValueError(
+    raise ValueError(unsupported_external_file_type(file_type))
+
+
+def unsupported_external_file_type(file_type: object) -> str:
+    """The message for a Load File naming a file type it cannot load."""
+    return (
         f"Unsupported file_type: {file_type!r}. Load File loads "
         f"{', '.join(repr(supported) for supported in EXTERNAL_FILE_TYPES)} files."
     )

@@ -304,7 +304,6 @@ production:
 | Server API | SRV-6, SRV-7, SRV-8, SRV-13, SRV-15 | `API-R09` |
 | Server API | SRV-10, SRV-12, SRV-14, SRV-16, SRV-17 | `API-R10` |
 | Pipeline config | PCF-3 | `PCFG-R12` |
-| Pipeline config | PCF-6, PCF-7 | `PCFG-R13` |
 | Pipeline config | PCF-8, PCF-11, PCF-14, PCF-15 | `PCFG-R14` |
 | Pipeline config | PCF-4, PCF-9, PCF-10, PCF-12 | `PCFG-R15` |
 | Pipeline config | PCF-13 | `PCFG-R16` (Decision) |
@@ -381,8 +380,8 @@ factory's and the save service's `HTTPException`s (`API-R02`); the assistant's
 own containment comparisons (`SBX-R01`); the assistant catalog's hand tables and
 key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
 (`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the API
-Input's supervised build (`IO-R08`), the Edge Join as a boundary (`EXEC-R15`)
-and Recover's `how="asof"` (`PCFG-R13`); node-level instances and their
+Input's supervised build (`IO-R08`) and the Edge Join as a boundary
+(`EXEC-R15`); node-level instances and their
 rewriters (`SUB-R01`), the Explore routes' `ParseError` and the submodel route's
 400 (`API-R06`), the pivot registry at shutdown (`ROAD-WORKER-06`); the
 browser's hand-written contract mirrors (`API-R03`), `hashConfig`'s exclusion

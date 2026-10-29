@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 
+from haute._edge_join import build_edge_join_kwargs
+from haute._model_source import parse_model_source
+from haute._node_apply import constant_frame, scenario_step_count, validate_external_file_config
 from haute._node_config_recovery import (
     node_config_schema,
     reconcile_config,
     validate_recovery_config,
 )
 from haute._types import NodeType
+from haute.errors import ConfigError, HauteError
 
 
 def test_data_input_retains_valid_path_and_mode_when_argument_is_invalid() -> None:
@@ -56,8 +62,8 @@ def test_shape_invalid_discriminants_do_not_reach_semantic_validators(
 def test_invalid_nested_shape_keeps_field_errors_and_unknown_field_warnings() -> None:
     issues = validate_recovery_config(NodeType.BANDING, {"factors": [None], "future": True})
     assert {(issue.path, issue.code, issue.severity) for issue in issues} == {
-        ("factors", "invalid_value", "error"),
-        ("future", "unknown_field", "warning"),
+        ("/factors", "invalid_value", "error"),
+        ("/future", "unknown_field", "warning"),
     }
 
 
@@ -70,7 +76,142 @@ def test_validation_uses_exact_live_switch_input_names() -> None:
     issues = validate_recovery_config(
         NodeType.LIVE_SWITCH, {"input_scenario_map": {"wrong": "live"}}, input_names=["quotes"]
     )
-    assert any(issue.code == "invalid_reference" for issue in issues)
+    assert {(issue.path, issue.code) for issue in issues} == {
+        ("/input_scenario_map/quotes", "required"),
+        ("/input_scenario_map/wrong", "invalid_reference"),
+    }
+
+
+def _engine_refusal(check: Callable[[], object]) -> str:
+    """The engine's refusal in the wording its public error contract gives it."""
+    with pytest.raises((ConfigError, ValueError)) as refused:
+        check()
+    error = refused.value
+    return error.to_payload()["message"] if isinstance(error, HauteError) else str(error)
+
+
+@pytest.mark.parametrize(
+    ("node_type", "config", "check", "path", "code"),
+    [
+        pytest.param(
+            NodeType.EDGE_JOIN,
+            {"how": "asof", "on": ["quote_id"], "maintainOrder": "left"},
+            build_edge_join_kwargs,
+            "/how",
+            "invalid_value",
+            id="edge-join-asof",
+        ),
+        pytest.param(
+            NodeType.EDGE_JOIN,
+            {"how": "left", "on": ["quote_id"], "validate": "1:x", "maintainOrder": "left"},
+            build_edge_join_kwargs,
+            "/validate",
+            "invalid_value",
+            id="edge-join-validate",
+        ),
+        pytest.param(
+            NodeType.EDGE_JOIN,
+            {"how": "left", "maintainOrder": "left"},
+            build_edge_join_kwargs,
+            "",
+            "invalid_group",
+            id="edge-join-no-keys",
+        ),
+        pytest.param(
+            NodeType.SCENARIO_EXPANDER,
+            {"stepCount": 0},
+            scenario_step_count,
+            "/stepCount",
+            "invalid_value",
+            id="scenario-step-count",
+        ),
+        pytest.param(
+            NodeType.CONSTANT,
+            {"values": [{"name": "rate", "value": "1"}, {"name": "rate", "value": "2"}]},
+            lambda config: constant_frame(config["values"]),
+            "/values",
+            "invalid_value",
+            id="constant-duplicate",
+        ),
+        pytest.param(
+            NodeType.MODEL_SCORE,
+            {"sourceType": "run", "run_id": ""},
+            parse_model_source,
+            "/run_id",
+            "required",
+            id="model-score-run-id",
+        ),
+        pytest.param(
+            NodeType.EXTERNAL_FILE,
+            {"path": "", "fileType": "json"},
+            validate_external_file_config,
+            "/path",
+            "required",
+            id="external-file-path",
+        ),
+    ],
+)
+def test_an_issue_is_the_engines_own_refusal_at_the_setting_it_names(
+    node_type: NodeType,
+    config: dict[str, object],
+    check: Callable[[dict[str, object]], object],
+    path: str,
+    code: str,
+) -> None:
+    """Recovery restates no engine rule: it reports the engine's message where the
+    engine says, so it can neither accept what the engine refuses nor refuse more."""
+    message = _engine_refusal(lambda: check(config))
+    assert [
+        (issue.path, issue.code, issue.message)
+        for issue in validate_recovery_config(node_type, config)
+        if issue.severity == "error"
+    ] == [(path, code, message)]
+
+
+@pytest.mark.parametrize(
+    ("node_type", "config"),
+    [
+        (NodeType.SCENARIO_EXPANDER, {"stepCount": 3}),
+        (NodeType.SCENARIO_EXPANDER, {"stepCount": 3, "min_value": 1.2, "max_value": 0.8}),
+        (NodeType.CONSTANT, {"values": [{"name": "Prämie 2024", "value": "1"}, {"value": "2"}]}),
+        (NodeType.CONSTANT, {}),
+    ],
+)
+def test_recovery_refuses_nothing_the_engine_runs(
+    node_type: NodeType, config: dict[str, object]
+) -> None:
+    assert not [
+        issue for issue in validate_recovery_config(node_type, config) if issue.severity == "error"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("node_type", "config", "inputs"),
+    [
+        (NodeType.BANDING, {"factors": [None], "future": True}, None),
+        (NodeType.EDGE_JOIN, {"how": "asof", "on": [1]}, None),
+        (NodeType.LIVE_SWITCH, {"input_scenario_map": {"a/b": ""}}, ["quotes"]),
+        (NodeType.LIVE_SWITCH, {}, None),
+        (NodeType.SCENARIO_EXPANDER, {"stepCount": "many"}, None),
+        (NodeType.CONSTANT, {"values": [{"name": "a"}, {"name": "a"}]}, None),
+        (NodeType.EXTERNAL_FILE, {"fileType": "catboost"}, None),
+        (NodeType.MODEL_SCORE, {"sourceType": "registered"}, None),
+        (NodeType.OPTIMISER_APPLY, {"sourceType": "run"}, ["df"]),
+        (NodeType.MODELLING, {"algorithm": "glm"}, None),
+        (NodeType.OPTIMISER, {"max_iter": 0}, None),
+        (NodeType.POLARS, {"code": "df = ("}, None),
+        (NodeType.POLARS, {"contract": {"inputs": 3}}, None),
+        (NodeType.DATA_INPUT, {"inputType": "oracle"}, None),
+    ],
+)
+def test_every_issue_path_is_a_json_pointer(
+    node_type: NodeType, config: dict[str, object], inputs: list[str] | None
+) -> None:
+    issues = validate_recovery_config(node_type, config, input_names=inputs)
+    assert issues
+    assert all(issue.path == "" or issue.path.startswith("/") for issue in issues), [
+        issue.path for issue in issues
+    ]
 
 
 def test_every_node_type_has_a_recovery_schema() -> None:
@@ -373,7 +514,7 @@ def test_recover_gives_an_edge_join_saved_without_its_order_the_order_for_its_ty
     """Polars 2 keeps a join's order only when told to, so Edge Join's order is required."""
     raw = {"how": how, "on": ["policy_id"], "suffix": "_right"}
 
-    assert ("maintainOrder", "required") in {
+    assert ("/maintainOrder", "required") in {
         (issue.path, issue.code) for issue in validate_recovery_config(NodeType.EDGE_JOIN, raw)
     }
     result = reconcile_config(NodeType.EDGE_JOIN, dict(raw))
@@ -384,7 +525,7 @@ def test_recover_gives_an_edge_join_saved_without_its_order_the_order_for_its_ty
 
 def test_an_unknown_edge_join_order_is_reported() -> None:
     raw = {"how": "left", "on": ["policy_id"], "maintainOrder": "sideways"}
-    assert ("maintainOrder", "invalid_value") in {
+    assert ("/maintainOrder", "invalid_value") in {
         (issue.path, issue.code) for issue in validate_recovery_config(NodeType.EDGE_JOIN, raw)
     }
 
@@ -456,11 +597,11 @@ def test_unrecoverable_list_entries_are_excluded_not_null() -> None:
 
 def test_a_file_sourced_model_score_without_its_file_names_model_path() -> None:
     issues = validate_recovery_config(NodeType.MODEL_SCORE, {"sourceType": "file"})
-    assert [(issue.path, issue.code) for issue in issues] == [("model_path", "required")]
+    assert [(issue.path, issue.code) for issue in issues] == [("/model_path", "required")]
 
 
 def test_a_load_file_naming_catboost_is_an_unsupported_file_type() -> None:
     issues = validate_recovery_config(
         NodeType.EXTERNAL_FILE, {"path": "model.cbm", "fileType": "catboost"}
     )
-    assert [(issue.path, issue.code) for issue in issues] == [("fileType", "invalid_value")]
+    assert [(issue.path, issue.code) for issue in issues] == [("/fileType", "invalid_value")]
