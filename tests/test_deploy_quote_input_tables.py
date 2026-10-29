@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -209,10 +210,19 @@ def test_ports_receive_their_declared_types_and_one_quote_scores_alone(sample):
         ([QUOTES[0], "not a quote"], "quote 1 is not an object"),
         (
             [{"quote_id": 1, "region": "N", "drivers": [{"age": 30}, "x"]}],
-            "1 in 'drivers'",
+            re.escape(
+                "quote 0 holds a value that is not an object at $[:].drivers[:], where "
+                "table 'drivers' reads an object."
+            ),
         ),
-        ([{"quote_id": 1, "region": "N", "drivers": {"age": 30}}], "1 in 'drivers'"),
-        ([{"quote_id": 1, "region": "N", "drivers": "x"}], "1 in 'drivers'"),
+        (
+            [QUOTES[0], {"quote_id": 1, "region": "N", "drivers": {"age": 30}}],
+            re.escape("quote 1 holds a value that is not an array at $[:].drivers[:]"),
+        ),
+        (
+            [{"quote_id": 1, "region": "N", "drivers": "x"}],
+            re.escape("quote 0 holds a value that is not an array at $[:].drivers[:]"),
+        ),
         ([{"quote_id": "one", "region": "N", "drivers": []}], "column 'quote_id'"),
     ],
 )
@@ -224,6 +234,106 @@ def test_a_request_that_does_not_fit_the_tables_is_refused(sample, quotes, messa
             input_node_ids=["request"],
             output_node_id="out",
         )
+
+
+CLAIM_TABLES = [
+    {
+        "path": "$[:]",
+        "label": "quote",
+        "emit": True,
+        "columns": [_column("quote_id", "$[:].quote_id", "int")],
+    },
+    {
+        "path": "$[:].drivers[:].claims[:]",
+        "label": "claims",
+        "emit": True,
+        "columns": [
+            _column("quote_id", "$[:].quote_id", "int"),
+            _column("amount", "$[:].drivers[:].claims[:].amount", "int"),
+        ],
+    },
+]
+
+
+def _claims_total(sample: Path, quotes: list[dict[str, Any]], tables=CLAIM_TABLES) -> pl.DataFrame:
+    """Each quote's claims summed, read from claims nested under drivers no table emits."""
+    graph = PipelineGraph.model_validate(
+        {
+            "nodes": [
+                _node("request", "apiInput", {"path": str(sample), "tables": tables}),
+                _node(
+                    "total",
+                    "polars",
+                    {
+                        "code": "df = claims.group_by('quote_id', maintain_order=True)"
+                        ".agg(pl.col('amount').sum().alias('total'))"
+                    },
+                ),
+            ],
+            "edges": [
+                {"id": "c", "source": "request", "target": "total", "sourceHandle": "claims"}
+            ],
+        }
+    )
+    return score_graph(
+        graph=graph,
+        input_df=QuoteRequest(tuple(quotes)),
+        input_node_ids=["request"],
+        output_node_id="total",
+    )
+
+
+def _claim(amount: int) -> dict[str, Any]:
+    return {"claims": [{"amount": amount}]}
+
+
+def test_claims_under_drivers_no_table_emits_price_every_driver(sample):
+    quotes = [
+        {"quote_id": 1, "drivers": [_claim(100), _claim(50)]},
+        {"quote_id": 2},
+        {"quote_id": 3, "drivers": []},
+        {"quote_id": 4, "drivers": None},
+        {"quote_id": 5, "drivers": [{"claims": []}, {"claims": None}, {}, _claim(20)]},
+        # Nulls and empty strings (an empty XML element) hold nothing.
+        {"quote_id": 6, "drivers": [None, "", {"claims": [None, "", {"amount": 30}]}]},
+        {"quote_id": 7, "drivers": ""},
+    ]
+
+    assert _claims_total(sample, quotes).to_dicts() == [
+        {"quote_id": 1, "total": 150},
+        {"quote_id": 5, "total": 20},
+        {"quote_id": 6, "total": 30},
+    ]
+
+
+@pytest.mark.parametrize("driver", [7, "x", [_claim(50)]], ids=["scalar", "string", "nested-list"])
+@pytest.mark.parametrize("drivers_emit", [False, True], ids=["not-emitting", "emitting"])
+def test_a_driver_that_is_not_an_object_refuses_the_request(sample, driver, drivers_emit):
+    # Before, the valid sibling's claims priced at 100 and the malformed driver vanished.
+    tables = [
+        *CLAIM_TABLES,
+        {
+            "path": "$[:].drivers[:]",
+            "label": "drivers",
+            "emit": drivers_emit,
+            "columns": [_column("quote_id", "$[:].quote_id", "int")],
+        },
+    ]
+    quotes = [
+        {"quote_id": 1, "drivers": [_claim(100)]},
+        {"quote_id": 2, "drivers": [_claim(100), driver]},
+    ]
+
+    with pytest.raises(
+        ApiInputSchemaError,
+        match=re.escape(
+            "quote 1 holds a value that is not an object at $[:].drivers[:], where table "
+        ),
+    ) as refused:
+        _claims_total(sample, quotes, tables)
+
+    assert refused.value.context["path"] == "$[:].drivers[:]"
+    assert refused.value.context["table"] == ("drivers" if drivers_emit else "claims")
 
 
 def test_drivers_nested_under_each_quote_answer_a_batch_quote_by_quote(sample):

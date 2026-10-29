@@ -146,6 +146,8 @@ def build_edge_join_kwargs(config: dict[str, Any]) -> dict[str, Any]:
 
     coalesce = config.get("coalesce")
     if coalesce is not None and coalesce != "":
+        if not isinstance(coalesce, bool):
+            raise ConfigError("edgeJoin coalesce must be true or false.", coalesce=coalesce)
         kwargs["coalesce"] = coalesce
 
     require_edge_join_order(config)

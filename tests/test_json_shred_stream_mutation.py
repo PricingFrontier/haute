@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import io
-from collections.abc import Callable
 from types import SimpleNamespace
+from typing import Any
 
 import orjson
 import pytest
@@ -439,48 +439,112 @@ def test_trailing_json_error_reports_the_exact_absolute_byte_offset() -> None:
     assert raised.value.pos == 8
 
 
-def _byte_reader(*values: bytes) -> tuple[Callable[[], bytes], list[bytes]]:
-    remaining = iter(values)
-    observed: list[bytes] = []
-
-    def read() -> bytes:
-        value = next(remaining, b"")
-        observed.append(value)
-        return value
-
-    return read, observed
+def _elements(body: bytes, *, limit: int = 1 << 20) -> list[Any]:
+    """The elements of the root array whose bytes after its ``[`` are *body*."""
+    return list(_records._iter_root_array_values(io.BytesIO(body), 1, limit))
 
 
-def test_root_array_string_accepts_the_exact_byte_limit() -> None:
-    read, observed = _byte_reader(b'"', b",")
+@pytest.mark.parametrize(
+    "element",
+    [b'"ab"', b"1234", b"[12]", b'{"a":1}', b'{"s":"[x"}', b"[1]  "],
+    ids=["string", "scalar", "array", "object", "misleading-string", "trailing-space"],
+)
+def test_root_array_element_may_fill_the_limit_but_not_pass_it(element: bytes) -> None:
+    # Whitespace before the delimiter counts towards the element, as it is held.
+    body = element + b",0]"
 
-    assert _records._read_root_array_value(b'"', read, lambda: len(observed), max_bytes=2) == (
-        b'""',
-        b",",
-    )
-    assert observed == [b'"', b","]
+    assert _elements(body, limit=len(element)) == [orjson.loads(element), 0]
+    with pytest.raises(ApiInputSchemaError, match="JSON array element exceeds"):
+        _elements(body, limit=len(element) - 1)
 
 
 @pytest.mark.parametrize("opening", [b'"', b"["])
-def test_root_array_nested_token_crosses_the_limit_only_on_the_next_byte(
+def test_root_array_element_cut_by_the_end_of_the_file_is_refused_first_by_the_limit(
     opening: bytes,
 ) -> None:
-    read, observed = _byte_reader(opening, b"x")
+    with pytest.raises(ApiInputSchemaError, match="JSON array element exceeds"):
+        _elements(b"1" + opening + b"x", limit=2)
+    with pytest.raises(orjson.JSONDecodeError, match="unexpected end of data") as raised:
+        _elements(b"1" + opening + b"x", limit=3)
+    assert raised.value.pos == 4
+
+
+# Strings holding brackets, commas, escapes and multibyte UTF-8, nested values and
+# whitespace: every chunk size below splits some token of it.
+_SPLIT_DOCUMENT = (
+    b' [ {"s":"a,]}\\"[\\\\","u":"\xc3\xa9\xe2\x82\xac\xf0\x9f\x98\x80",'
+    b'"n":[{"k":[1,{"x":null}]},2]} ,\n "t\\u00e9" , 3.5e2, [ [] ,{}] , {"s":"]"},'
+    b' {"e":"\\\\"}, true ]  \n'
+)
+
+
+@pytest.mark.parametrize("chunk_bytes", [*range(1, 18), 64])
+def test_root_array_elements_split_across_chunks_decode_identically(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, chunk_bytes: int
+) -> None:
+    path = tmp_path / "split.json"
+    path.write_bytes(_SPLIT_DOCUMENT)
+    monkeypatch.setattr(_records, "_STRUCTURED_INPUT_PARSE_CHUNK_BYTES", chunk_bytes)
+    elements = orjson.loads(_SPLIT_DOCUMENT)
+    stats = _records.ShredSkipStats()
+
+    assert list(_records._iter_records(path, stats=stats)) == [
+        element for element in elements if isinstance(element, dict)
+    ]
+    assert stats.skipped_records == sum(not isinstance(element, dict) for element in elements)
+
+
+@pytest.mark.parametrize(
+    "element",
+    [b'{"s":"[x"}', b'{"s":"}"}', b'["]"]', b'{"s":"{"}', b'[{"a":"]["}]', b'{"q":"\\"}"}'],
+)
+def test_a_bracket_inside_a_string_never_moves_an_element_boundary(element: bytes) -> None:
+    assert _elements(element + b"," + element + b"]") == [orjson.loads(element)] * 2
+
+
+def test_a_guess_that_runs_past_its_element_is_found_exactly() -> None:
+    # Counting the brackets inside the strings makes one balanced match cover both
+    # elements; orjson refuses that guess, and the exact scan finds the two.
+    assert _elements(b'{"a":"{"},{"b":"}"}]') == [{"a": "{"}, {"b": "}"}]
+
+
+def test_a_malformed_element_with_balanced_brackets_raises_its_parse_error() -> None:
+    with pytest.raises(orjson.JSONDecodeError):
+        _elements(b"{a:1},2]")
+
+
+def test_an_element_nested_deeper_than_one_match_follows_is_found_exactly() -> None:
+    deep = b"[" * 12 + b'{"a":"]"}' + b"]" * 12
+
+    assert _elements(deep + b"," + deep + b"]") == [orjson.loads(deep)] * 2
+
+
+def test_root_array_yields_its_first_record_after_reading_one_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _RecordingBinarySource(b"[" + b",".join(b'{"i":%d}' % i for i in range(5000)) + b"]")
+    path = SimpleNamespace(suffix=".json", open=lambda _mode: source)
+    monkeypatch.setattr(_records, "_STRUCTURED_INPUT_PARSE_CHUNK_BYTES", 64)
+    monkeypatch.setattr(_records, "_structured_input_record_limit", lambda: 128)
+
+    records = _records._iter_records(path)
+
+    assert next(records) == {"i": 0}
+    assert source.read_sizes == [1, 64]
+
+
+def test_root_array_element_over_the_limit_is_refused_within_one_chunk_of_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _RecordingBinarySource(b'["' + b"x" * 10_000 + b'"]')
+    path = SimpleNamespace(suffix=".json", open=lambda _mode: source)
+    monkeypatch.setattr(_records, "_STRUCTURED_INPUT_PARSE_CHUNK_BYTES", 64)
+    monkeypatch.setattr(_records, "_structured_input_record_limit", lambda: 100)
 
     with pytest.raises(ApiInputSchemaError, match="JSON array element exceeds"):
-        _records._read_root_array_value(b"1", read, lambda: len(observed), max_bytes=2)
-
-    assert observed == [opening, b"x"]
-
-
-def test_root_array_scalar_accepts_the_exact_byte_limit() -> None:
-    read, observed = _byte_reader(b"2", b",")
-
-    assert _records._read_root_array_value(b"1", read, lambda: len(observed), max_bytes=2) == (
-        b"12",
-        b",",
-    )
-    assert observed == [b"2", b","]
+        list(_records._iter_records(path))
+    # The leading byte, then chunks until the held element passes 100 bytes.
+    assert source.read_sizes == [1, 64, 64]
 
 
 def _root_column_config(type_token: str) -> dict[str, object]:

@@ -603,7 +603,7 @@ def test_fused_json_range_matches_orjson_for_integer_bounds_and_numbers(
     source = tmp_path / "numeric-tail.jsonl"
     source.write_bytes(b"\n".join(tail_lines) + b"\n")
 
-    original_loads = _inference.orjson.loads
+    original_loads = orjson.loads
     parsed = 0
 
     def counting_loads(value: Any, *args: Any, **kwargs: Any) -> Any:
@@ -611,7 +611,7 @@ def test_fused_json_range_matches_orjson_for_integer_bounds_and_numbers(
         parsed += 1
         return original_loads(value, *args, **kwargs)
 
-    monkeypatch.setattr(_inference.orjson, "loads", counting_loads)
+    monkeypatch.setattr(orjson, "loads", counting_loads)
     delta = _inference._infer_jsonl_range(source, 0, source.stat().st_size, seed=filter_.snapshot())
     assert parsed == expected_orjson_loads
     prefix.merge(delta)
@@ -724,7 +724,7 @@ def test_fused_json_range_keeps_strip_framing_for_known_shapes(
         prefix.walk({"id": 1})
     source = tmp_path / "framing.jsonl"
     source.write_bytes(raw + b"\n")
-    original_loads = _inference.orjson.loads
+    original_loads = orjson.loads
     parsed = 0
 
     def counting_loads(value: bytes, *args: Any, **kwargs: Any) -> Any:
@@ -732,7 +732,7 @@ def test_fused_json_range_keeps_strip_framing_for_known_shapes(
         parsed += 1
         return original_loads(value, *args, **kwargs)
 
-    monkeypatch.setattr(_inference.orjson, "loads", counting_loads)
+    monkeypatch.setattr(orjson, "loads", counting_loads)
     state = _inference._infer_jsonl_range(source, 0, source.stat().st_size, seed=learned.snapshot())
     prefix.merge(state)
 

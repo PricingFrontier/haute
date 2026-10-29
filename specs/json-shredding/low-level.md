@@ -40,8 +40,9 @@ Submodel graph expansion and boundary rewiring are owned by
 
 **`_api_input_schema.py`**
 
-- `ColumnV2`, `TableV2`, `ApiInputV2Config` are total-false `TypedDict`s for
-  the wire/sidecar shape. `ColumnType` is exactly `int|float|str|bool|date`;
+- `ColumnV2` and `TableV2` are total-false `TypedDict`s for
+  the wire/sidecar shape; a `date` column's optional `format` is its strftime
+  pattern (ISO `%Y-%m-%d` when absent). `ColumnType` is exactly `int|float|str|bool|date`;
   `ColumnStatus` is exactly `Confirmed|Inferred`; optional `emit` and
   `selected` fields, when present, are exact booleans rather than truthy
   lookalikes;
@@ -77,6 +78,26 @@ Submodel graph expansion and boundary rewiring are owned by
   all route through it so they can never disagree about which parquets exist.
 - `_POLARS_TYPE_MAP` — the five v2 `ColumnType` tokens (`int`, `float`, `str`,
   `bool`, `date`) mapped to Polars `DataType` classes.
+- `_iter_root_array_values(f, pos, limit)` — the one root-JSON-array scanner, shared by
+  `_iter_records` and the inference sampler through `_iter_root_array_records` (which
+  keeps the objects and counts the rest as skipped records). It reads 64 KiB chunks
+  (`_STRUCTURED_INPUT_PARSE_CHUNK_BYTES`) and yields each element parsed. An element is
+  first guessed by one native match that counts brackets, paired by kind with up to
+  eight levels inside, ignoring strings (`_bracketed_element`); the guess is kept only
+  when it fits the record limit and orjson parses it, because a guess that ends early is
+  a strict prefix of a JSON value and one that ends late holds the delimiter after it,
+  and neither parses. Otherwise the element is found exactly: compiled patterns skip
+  every byte that cannot end or nest it, whole strings included, while the string,
+  escape and depth state is carried across chunks, and the element is sliced out of the
+  chunks it spans, its trailing whitespace stripped, then parsed. The limit counts the
+  element's bytes up to its delimiter and is checked before more than one chunk past it
+  is held; decode errors (`unexpected end of data`, `trailing comma in array`,
+  `unexpected '}'`, `unexpected trailing data`) carry the number of bytes read. On a
+  42–53 MB, 167,103-record nested array it reads in about 2.5 times the JSONL time,
+  against 41 times for the byte-at-a-time reader it replaced.
+- `_jsonl_record(raw_line, stats)` — the one JSONL line decode (strip, skip a blank
+  line, parse, keep an object or count the line), shared by the serial and range
+  readers and parallel inference.
 - `_iter_xml_records(data_path)` — rejects DTD/entity declarations with a bounded
   chunk scan, then uses `XMLPullParser` rather than a complete-document byte buffer.
   A parallel event-only Expat tracker records each direct child's encoded start offset
@@ -132,7 +153,8 @@ Submodel graph expansion and boundary rewiring are owned by
 then validates each table's label/path/columns, unique raw and sanitised
 labels, unique column names, supported column type/status/levels shapes,
 exact-boolean `emit`/`selected` values when present, ancestor-or-own column
-paths, and `row_id_column`. Scalar-shape failures name the exact
+paths, a `format` only on a `date` column and only as a string holding a `%`
+directive, and `row_id_column`. Scalar-shape failures name the exact
 `tables[i]...` field path and happen before any truthiness consumer.
 Labels must additionally be ASCII-only
 Python identifiers and not hard keywords — `label.isascii() and
@@ -168,8 +190,20 @@ before shredding can consume either value by truthiness.
 **OUTPUT mapping** — `assemble_output_from_mapping(frames, mapping)` groups active
 rows by source port after running `validate_v2_output_mapping`, selects/aliases source
 columns to output paths, and passes the field frames to `_assemble_document`. The
-validator parses every distinct active path once, sorts the parsed destinations, and
-uses adjacent comparisons for duplicate/prefix and array-prefix-chain conflicts
+validator parses every distinct active path once; `_parse_output_path` refuses a
+path whose last segment is `[:]`, which names no field. A level (`_array_prefix`)
+is a path's segments through its last `[:]`, object hops included, so levels are
+compared as whole `(name, is_array)` segment tuples and `_child_hop` gives the keys
+at which a child level's array sits inside its parent object. Within one port, two
+columns on one path are refused. `_location_conflict` then walks every distinct
+path of every port once: each place a path steps through is an object (an object
+hop) or an array (a `[:]` hop) and its last segment is a field, keyed by the names
+up to that place. The first place claimed as two kinds raises
+`OutputMappingSchemaError` naming both paths (`output_path` `a vs b`) and their
+frames (`source_port`, or `source_ports` when they differ) before any frame is
+collected. This is the leaf-is-also-a-container check within a frame and across
+frames alike; a field claimed by several frames is one kind. Each frame's levels
+are sorted and adjacent pairs compared for array-prefix-chain conflicts
 (`O(n log n)`, not an `O(n²)` pair scan). It also rejects divergent emit prefixes
 within one source frame and, across frames, a second frame whose emit prefix (its
 deepest array prefix) is already taken, naming both frames and one path from each.
@@ -181,11 +215,12 @@ order, levels shallowest first) missing one raises `OutputMappingSchemaError` wi
 `source_port`, `output_path` (the frame's level, rendered as `$[:]…[:]`) and `key`
 (the missing path) — all before any frame collection. `_assemble_document` resolves
 the lazy schemas before data materialisation, maps each emit prefix to its one frame
-(raising the same `OutputMappingSchemaError` if called directly with two frames at
-one level, or with a frame missing a relation key), and collects each emitting
-frame exactly once. It never joins frames.
+(raising the same `OutputMappingSchemaError` if called directly with a place used
+as two kinds, two frames at one level, or a frame missing a relation key), and
+collects each emitting frame exactly once, ancestors first. It never joins frames.
 The prefix-tree builder nests child arrays by ancestor values without
-joining siblings. An object's identity at a level is the tuple of its own leaf
+joining siblings, attaching each child level's objects at its `_child_hop` below
+the parent object. An object's identity at a level is the tuple of its own leaf
 values, canonicalised by `_identity`: scalars (including `None`) pass through
 unchanged, while container-valued leaves (`List`, `Struct`, `Array`) are
 canonicalised into hashable tuples — recursively, with struct fields kept in
@@ -208,8 +243,10 @@ from the mapping paths and the source frames' schemas alone, mirroring
 dtype, object segments nest as `Struct`, array segments nest as `List(Struct)`,
 each leaf sits at its own subpath within its array element (so an ancestor key
 carried by a deeper frame for matching is emitted at the level it belongs to and
-never re-emitted inside the child element), and child arrays are attached after
-the level's own fields in sorted order — the field order `_set_nested` produces.
+never re-emitted inside the child element), and child arrays are attached at their
+`_child_hop` below the level (`$[:].cover.vehicles[:]` as `cover: Struct({vehicles:
+List(Struct)})`) after the level's own fields in sorted order — the field order
+`_set_nested` produces.
 A missing source port or column, and one output path mapped from source columns
 of different dtypes, are `OutputMappingSchemaError` rejections.
 
@@ -252,15 +289,20 @@ v2 config and returns the source file (resolved) with its emitting tables in
 schema order. Each table's store identity (`haute._source_cache.SourceCacheIdentity`,
 provider `api_input`) has the descriptor
 `{path: <resolved source file>, table: {path: <table path>, columns: [[name,
-column path, type], ...selected columns in config order]}, shred_version: 2}`.
+column path, type], ...selected columns in config order]}, shred_version: 3}`, a
+date column that sets a `format` appending it to its entry, so a changed format is
+a new table.
 Sibling tables and the port label are not part of it: editing one table moves only
 that table's identity, and two tables with identical specifications share one.
 `group_digest` hashes the source path with the node's distinct table digests and
 keys node-level work (single-flight, route jobs). `shred_version`
 (`SHRED_SEMANTICS_VERSION`) is raised whenever the walk or the frame it writes
-changes, so older generations stop matching. Version 2 is the walk that reads XML's
-single elements at a declared array as one-element lists and counts a skip for every
-table at or below a non-list there.
+changes, so older generations stop matching. Version 2 read XML's single elements
+at a declared array as one-element lists and counted a skip for every table at or
+below a non-list there. Version 3 also holds a null or an empty string as absent
+wherever an object or an array is expected, counts the misshapen elements and object
+steps above an emitting table, and reads date columns in their declared format (ISO
+unless set) rather than by Polars' format guess.
 
 **Freshness** — `api_input_source_signature(path)` is the table generations'
 `source_signature`: `xxh64:<digest>:<size>` from the shared
@@ -403,13 +445,24 @@ the skip/conservation accounting.
 4. Walk: `_emit_at(pos, record, ancestors)` emits a row into every table registered
    at `pos` (skipping — and counting — a shape-mismatched record for that table),
    then descends into each child array via `_walk_array`, which iterates the array
-   and recurses into `_emit_at` per element (a `None` element is a real row for a
-   scalar table, a counted skip for an object table; a nested list is a counted
-   shape mismatch, never fabricated as a null scalar row). A missing key or a null
-   at the array position yields nothing. Any other value that is not a list there
-   counts one row skip against every emitting table at or below the position
-   (`labels_at_or_below`); a served request is JSON, so `shred_request` refuses
-   such a value naming the table. An XML file's records reach the walk through
+   and recurses into `_emit_at` per element. `_holds_nothing` names the absent
+   values: a null, and an empty string, which is what XML makes of an empty element.
+   An absent element is a real row for a scalar table (its `$value` is that null or
+   empty value) and no row and no skip for an object table or any table below; a
+   nested list is a counted shape mismatch, never fabricated as a null scalar row. A
+   missing key or an absent value at the array position yields nothing. Any other
+   value that is not a list there counts one row skip against every emitting table
+   at or below the position (`labels_at_or_below`). Any other element that is not an
+   object (a scalar or a nested list) also counts one skip against every emitting
+   table strictly below its position (`labels_below`), whether or not a table is
+   registered there, since it holds none of their arrays; and while descending, an
+   object step whose value is neither an object nor absent counts one skip against
+   every table at or below the child array.
+   Each count carries a `_RowSkip` (label, record index, place rendered by
+   `make_table_path`, and the expected `an object`/`a scalar`/`an array`) to the
+   optional `_on_row_skip`; `shred_request` passes one that raises
+   `ApiInputSchemaError` at the first, naming the quote (`quote`), the place (`path`)
+   and the table (`table`), so a served request never prices without supplied data. An XML file's records reach the walk through
    `file_records(data_path, v2_config, stats=None)` (both file shreds in
    `_writer.py`, and a deploy's sample quote), which for an `.xml` source
    (`_records.record_format`, by suffix) applies `single_element_lists(v2_config)`:
@@ -529,8 +582,9 @@ planning, so an admitted execution sizes the generation it will read.
    `_InferenceState` accumulators, and the parent merges results in file order;
    it never transfers records between processes. Smaller newline-delimited
    files, XML, root JSON arrays, and every explicit bounded sample remain serial.
-   A root-array sample uses `_iter_sampled_json_array_records`, which hand-parses
-   only enough of the array to avoid materialising the whole file. Parallel
+   A root-array sample uses `_iter_sampled_json_array_records`, which reads the
+   array through the shared scanner and stops after the sampled objects, so it
+   neither materialises the whole file nor checks what follows them. Parallel
    inference compares source device/inode/size/mtime before and after the worker
    scan and fails clearly if the source changed instead of returning evidence
    merged from different file generations.
@@ -686,7 +740,9 @@ production edge-join path calls bare Polars `.collect()`.
 `build_edge_join_kwargs` accepts exactly `inner`, `left`, `right`, `full`,
 `semi`, `anti`, and `cross`. `cross` rejects `on`, `leftOn`, and `rightOn`;
 every other mode requires either a non-empty `on` value or non-empty,
-equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
+equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms. A set
+`coalesce` must be a boolean (an empty value is unset); any other value is a
+`ConfigError`, never a Polars `TypeError` at the join.
 
 ## Edge cases and invariants
 
@@ -697,17 +753,23 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   own-depth column, plus any number of shallower ancestor columns (which
   distribute), but never another own-depth sibling — enforced at both inference
   (source key never literally `$value`) and shred time (`_reject_reserved_leaf_collision`,
-  for hand-edited configs inference could never itself produce).
+  for hand-edited configs inference could never itself produce). `$value` names an
+  array element itself, so `parse_data_path` accepts it only directly after `[:]`
+  (the root included); `$[:].a.$value` is refused rather than read as a literal
+  `"$value"` key. The frontend's `parseDataPath` mirrors the rule.
 - **A dotted column leaf crossing a non-empty array fails loud**, not "take
   element 0" — that would silently discard every other element. Crossing an
   *empty* array resolves to `None` (nothing was discarded).
 - **Empty-array type inference doesn't poison later concrete types**:
   `scalar_levels` seeds `None` (type-unknown) for an only-ever-empty array, not
   `"str"`, so a later `[1, 2]` still infers `int` rather than being forced to
-  `str` by an earlier `[]`.
-- **A `None` array element** is a legitimate row for a scalar child table (its
-  `$value` resolves to `None`) but a counted shape-mismatch skip for an object
-  table.
+  `str` by an earlier `[]`. A null-only array (`[null]`) is no evidence either: it
+  seeds `None` like `[]` and never widens an already-typed level, so `[1, 2]` then
+  `[null]` keeps `int`.
+- **A null or empty-string array element** is a legitimate row for a scalar child
+  table (its `$value` resolves to it) and absent for an object table and the
+  tables below it: no row and no skip, so an XML feed's empty element or a JSON
+  null for "none" never refuses a served request.
 - **Conservation is asserted, not assumed**: every shred (a table build or the
   standalone path) cross-checks `emitted + skipped == records_read` for every
   emit-true root table and raises `RuntimeError` on any discrepancy — a shred bug
@@ -717,7 +779,13 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   raise on its own for the first case; a raw JSON int/bool successfully
   reinterprets as a days-since-epoch offset for the second) — both checked
   explicitly in `_rows_to_frame` before the Polars build, once per column from the
-  set of value types it holds.
+  set of value types it holds. A date column is built as strings and parsed with
+  `str.to_date` in its declared `format` (`_dates`; `_EmittingTableSpec.date_formats`
+  carries each set format, ISO `%Y-%m-%d` otherwise), never by Polars'
+  format-guessing `Date` build; a string that does not parse in that format
+  (`15/01/2024` under ISO, `2024-02-30`) raises `ApiInputSchemaError` with `column`,
+  `declared_type`, `format` and `value`. A pattern that reads no date leaves every
+  value unparsed and so is refused the same way.
 - **Table freshness remains content-authoritative.** The source file's complete
   content hash is reused only behind its freshness token: a native revision
   comprising file identity, length, last-write value, and an
@@ -781,15 +849,18 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
 - `haute.errors.ConfigError` — raised by `_edge_join.py` for any malformed
   `edgeJoin` config: wrong connected-input count/distinctness, unresolved or
   ambiguous base/join role, unsupported `how`, missing/conflicting join keys,
-  mismatched key counts, non-string suffix, malformed `on`/`leftOn`/`rightOn`.
+  mismatched key counts, non-string suffix, non-boolean `coalesce`, malformed
+  `on`/`leftOn`/`rightOn`.
 - `ValueError` — used by the small config validators in `_edge_join.py` for
   malformed non-graph-sourced inputs.
 - Grammar rejections in `_jsonpath.parse_path` / `parse_data_path` raise whatever
   the caller injected as `error` — `ApiInputSchemaError` from the INPUT side,
-  `OutputMappingSchemaError` from the OUTPUT side — carrying the offending
-  `output_path`.
-- `OutputMappingSchemaError` covers a non-array root, two different columns from
-  one port targeting the same path, leaf/container prefix collisions, one frame
+  `OutputMappingSchemaError` from the OUTPUT side — carrying the offending path
+  under the key its noun names: `table_path` or `column_path` on the INPUT side,
+  `output_path` on the OUTPUT side.
+- `OutputMappingSchemaError` covers a non-array root, a path ending at `[:]`, two
+  different columns from one port targeting the same path, a place used as two of a
+  field, an object and an array within or across ports, one frame
   targeting divergent emit prefixes, two frames emitting at the same array
   level (`source_ports` names both), and a frame taking part in a nesting without
   one of its relation keys (`source_port`, `output_path` naming the frame's level,
@@ -819,7 +890,20 @@ Shred / inference / table snapshots (the `_json_shred/` package):
   a leaf that is also another column's prefix, ancestor and `$value` sources,
   string coercion, and the first crossing column in declared order); an object and
   a scalar where an array is declared each count one skip in that table and in the
-  table below it, while a missing, null or empty array counts nothing.
+  table below it, while a missing, null, empty-string or empty array counts nothing;
+  a null or empty-string driver, claim or `cover` is no row and no skip, emitting or
+  not, and `shred_request` prices it; a scalar, string or nested-list driver counts
+  one skip in the claims table below it whether or not the drivers table emits, and
+  a list or scalar where `cover` is an object on the way to
+  `$[:].cover.vehicles[:]` counts one skip there and refuses `shred_request` naming
+  the quote and place; a date column reads `15/01/2024` under `%d/%m/%Y`, and a
+  `format` on a non-date column or without a `%` directive is a schema error.
+- `tests/test_deploy_quote_input_tables.py` — the deployed strict boundary through a
+  real `QuoteRequest` and `score_graph`: a quote that is not an object, an element or
+  array of the wrong shape, and a scalar, string or nested-list driver beside a valid
+  sibling (with and without an emitting drivers table) refuse naming the quote, the
+  place and the table; omitted, null, empty-string and empty arrays, and null or
+  empty drivers and claims, still price.
 - `tests/test_v2_object_nesting_inference.py` — the 2026-06-17 object-nesting
   transparency ruling, end to end through inference/shred/grammar agreement; a key
   held as a list and as one object (with a nested array and a null-only field) or
@@ -830,7 +914,8 @@ Shred / inference / table snapshots (the `_json_shred/` package):
   build/read values, and fail-loud rejection of DTD/entity declarations; a single
   `<driver>` beside repeated ones infers one child table and keeps its row, a later
   file of single elements keeps its rows under that schema while the same tag under
-  another parent does not join the table, and single scalar elements join their list.
+  another parent does not join the table, and single scalar elements join their list;
+  an empty element (`<driver/>`), alone or among repeated ones, is no row and no skip.
 - `tests/test_json_shred_parallel.py` — byte-range splitting (exact tiling, no
   record split, order preserved) and serial-equivalence of parallel inference
   and build: identical inferred schema ordering, late-field discovery and type
@@ -860,7 +945,8 @@ Shred / inference / table snapshots (the `_json_shred/` package):
   inferred table-label derivation, symmetric collision qualification,
   deterministic suffixing, case-only collisions, and validation closure.
 - `tests/test_load_v2_api_source.py` — direct coverage of the shared runtime entry
-  point: emit checks, `port_columns` projection rules, store-leased table reads
+  point: emit checks, `port_columns` projection rules (a projected date column keeps
+  its declared format), store-leased table reads
   (a missing table is `input_snapshot_missing`; a built table reads without its
   source; under the schema tier recorder a missing table resolves its declared
   schema without a request file, is recorded with its declared column count, and
@@ -880,7 +966,8 @@ Shred / inference / table snapshots (the `_json_shred/` package):
   (`a_items`/`b_items`), the numeric-suffix backstop, and the closure
   property that inferred output passes `validate_v2_schema` unchanged.
 - `tests/test_api_input_table_snapshots.py` — table identities (one per emitting
-  table, label- and sibling-independent), the source signature and table
+  table, label- and sibling-independent, a date format part of its column's entry),
+  the source signature and table
   freshness, the one-shred build (full width, shared identities built once, exact
   plans, missing and changing sources, cancellation, skip reporting, serial/parallel
   dispatch, scratch cleanup), store-leased reads without the source, the supervised
@@ -915,8 +1002,12 @@ V2 schema codec and OUTPUT shape:
 - `tests/test_output_assembler.py` and
   `tests/test_output_assembler_mutation_witnesses.py` own mapping validation,
   focused mutation boundaries, the rejection of two frames at one array level
-  (the root or a nested level, before any frame is collected), sibling-array
-  non-explosion, pruning,
+  (the root or a nested level, before any frame is collected), complete
+  destination paths as literal documents (object hops before and between arrays,
+  arrays of one name under different objects as separate levels, limited assembly
+  through object hops), a path ending at `[:]`, places used as two kinds within one
+  frame and across frames with both paths named, shared relation keys staying
+  valid, sibling-array non-explosion, pruning,
   rendering (a row that prunes to nothing kept as `{}`), exact assembled shapes, one-parse-per-distinct-path validation,
   incomplete editor rows, multi-frame relation keys absent from a
   non-participating frame, and limited assembly (the first documents read only
@@ -929,7 +1020,8 @@ V2 schema codec and OUTPUT shape:
   `tests/test_executor_builders.py` and `tests/test_codegen_builders.py` own the
   executor/generated-code integration boundary, and
   `tests/test_output_schema_only.py` owns `output_document_schema` — its fidelity
-  against the assembler's own nesting and field order, its dtype fidelity and
+  against the assembler's own nesting and field order (object hops included, as a
+  literal expected schema), its dtype fidelity and
   rendering-neutrality, and the schema-only build that never assembles.
 - `frontend/src/__tests__/editors/OutputEditor.test.tsx`,
   `frontend/src/__tests__/editors/OutputEditorPathTools.test.tsx`, and
@@ -977,10 +1069,8 @@ mechanism is a *switchable* parser/assembler, not one overloaded parser and not
 format sniffing.
 
 This section fixes the formalism to **array-outer JSON** — a document whose root
-is an array of records — and pins the *preferred form* of path for it. It is
-deliberately **not** a catalogue of everything the parser accepts: the parser is
-wider than the grammar. Validity is a property of the **assembler**, which
-imposes a model of what is correct even where it does not strictly enforce it.
+is an array of records — and states its grammar, which is exactly what the
+parser accepts.
 
 ### JSON invariants (transport-agnostic)
 
@@ -995,23 +1085,21 @@ use:
 
 XML does not share these; it would be a ground-up rebuild.
 
-### Two grammars — the preferred form, not the parser's reach
+### The grammar — one spelling per feature
 
-Both share one key property: **any piece of data in a haute-compatible document
-has exactly one canonical path.**
-
-**Canonical — one spelling per feature**
+Its key property: **any piece of data in a haute-compatible document has exactly
+one path.**
 
 ```
-canonical_path ::= "$[:]" ( "." name [ "[:]" ] )*
-name           ::= [A-Za-z_][A-Za-z0-9_]*          ; identifier only
+path ::= "$[:]" ( "." name [ "[:]" ] )*
+name ::= [A-Za-z_][A-Za-z0-9_]*          ; ASCII identifier only
 ```
 
 - **Array selector `[:]`** — full-array selection, the only array selector.
 - **Object selector `.name`** — a dotted identifier, the only object selector.
 - **Root `$[:]`** — array-outer JSON is entered only through the root array, so
-  `$[:]` is the canonical root prefix. `$` alone names the root container, not a
-  piece of data.
+  `$[:]` is the root prefix. `$` alone names the root container, not a piece of
+  data.
 - **Depth is the count of `[:]` hops.** Object hops are relationally
   transparent: `$[:].a.b` sits at the same relational level as `$[:]` — they add
   meaning, not structure.
@@ -1021,59 +1109,39 @@ means "step into this object."** Two glyphs, two meanings — no brackets, no
 quotes, no whitespace.
 
 Input and output paths differ only at the endpoint: an input **table path** ends
-at an array; an input **column path** and an **output path** end at a leaf.
-An input column path may live in an *enclosing* record rather than inside its
-table's array — `$[:].policy_id` can be a column of the table `$[:].claims[:]`,
-an inherited key from the parent record.
+at an array; an input **column path** and an **output path** end at a leaf (an
+output path ending at `[:]` is refused). An input column path may live in an
+*enclosing* record rather than inside its table's array — `$[:].policy_id` can be
+a column of the table `$[:].claims[:]`, an inherited key from the parent record.
+The INPUT-only `$value` leaf names a scalar-array element itself and follows `[:]`
+directly.
 
-**Full-width — wider, accepted for interoperability**
-
-Real APIs carry keys the canonical identifier set cannot spell (`"a.b.c"`,
-`"2024"`, `"a key"`). These are accepted rather than refused — **valid but
-non-canonical**; they assemble identically and round-trip.
-
-- **Bracket object selector** `['name']` or `["name"]`, either quote style. The
-  bracket interior is any run of non-quote characters — identifier or not.
-- The canonical equivalent of a bracket name is `.name` **only when it is a
-  bare identifier**. A non-identifier bracket name has **no safe dot form** and
-  is left exactly as written — never split, never re-keyed.
+A key the identifier set cannot spell (`"a.b.c"`, `"2024"`, `"a key"`, `"a-b"`)
+has no path: bracket-quoted names (`['a.b']`, `["2024"]`) are rejected like every
+other selector outside the grammar, and inference refuses such a source key
+(`_reject_unexpressible_key`) before returning a schema, so the key is renamed in
+the source. Every rejection is worded for the path it refuses: `parse_path` and
+`parse_data_path` take a `noun` (`output path` by default; INPUT passes `table
+path` or `column path`) that names it in the message (`malformed table path`,
+`unsupported column-path selector …`) and in the error's context key
+(`table_path`, `column_path`, `output_path`).
 
 ### The validity gate
 
 Two distinct kinds of wrong, handled differently:
 
-**(a) Won't reliably assemble into array-outer JSON.** Object-outer roots,
-stream roots, a mix of root forms in one mapping, a root naming no leaf, and the
-structural constructs that do not statically locate data — wildcards, indices,
-ranges, filters, descendants. The assembler is clever enough that it would
-probably *produce something* for the root cases, but with no guarantee it glues
-into correct array-outer JSON. → **Rejected**, to keep assembler behaviour
-defined.
+A path that won't reliably assemble into array-outer JSON is **rejected**, to keep
+assembler behaviour defined: object-outer roots, stream roots, a mix of root forms
+in one mapping, a root naming no leaf, and the structural constructs that do not
+statically locate data — wildcards, indices, ranges, filters, descendants. The
+assembler is clever enough that it would probably *produce something* for the root
+cases, but with no guarantee it glues into correct array-outer JSON.
 
-**(b) Assembles fine but isn't in normal form.** The full-width interop
-spellings. → **Accepted; warn, never rewrite.**
-
-**The one rule worth enforcing: every path must start `$[:]`.** That single gate
-rules out the whole level-(a) root family without deciding admissibility schema
-by schema — and whether a path starts `$[:]` is a property of the whole schema
-rather than the individual path, which is exactly why it is pinned rather than
-reasoned about. Everything *past* the prefix is accept-widely: enforcing more
-would either break interoperability or override a form the user explicitly
-specified.
-
-### Non-canonical pragmatics — warn, highlight, never rewrite
-
-The canonical form is **preferred, not enforced**. A valid non-canonical path
-commits and assembles identically. **Never silently rewrite** — a rewrite can
-change meaning, the same reason a wildcard is rejected rather than normalised to
-a full-array selector.
-
-- **Surface it non-modally.** When schema inference introduces non-canonical
-  fields, warn without interrupting, and highlight those fields persistently in
-  the UI so the user can see what and where. There is no single fix, so there is
-  no call to action — the value is informational, and it often signals something
-  to fix upstream.
-- **Bulk normalise-on-import** is deferred. There is no per-path rewrite button.
+**Every path must start `$[:]`.** That single gate rules out the whole root family
+without deciding admissibility schema by schema — and whether a path starts `$[:]`
+is a property of the whole schema rather than the individual path, which is exactly
+why it is pinned rather than reasoned about. Past the prefix, the grammar above is
+the whole of what is accepted.
 
 ### The code is the grammar
 

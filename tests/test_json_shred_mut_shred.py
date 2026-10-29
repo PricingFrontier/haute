@@ -289,19 +289,19 @@ def test_emit_at_table_loop_continue_not_break() -> None:
 #   `if any(leaf == _SCALAR_VALUE_LEAF ...): emit None-row else: count skip`
 
 
-def test_null_element_emits_for_scalar_table_counts_for_object_table() -> None:
-    # Eq cluster: a null array element.
-    #   - scalar ($value) table: emits a real row with value None.
-    #   - object table: a null is a non-record -> counted skip, no row.
-    # A mutant that fails to recognise $value would route the scalar table's
-    # null to the skip branch (no None-row) instead.
+def test_null_or_empty_element_emits_for_scalar_table_and_is_absent_for_object_table() -> None:
+    # A null or empty-string array element:
+    #   - scalar ($value) table: emits a real row with that value.
+    #   - object table: it holds nothing -> no row and no skip.
+    # A mutant that fails to recognise $value would drop the scalar table's
+    # rows; one that counted an absent element would record a skip.
     cfg = _mixed_two_tables_cfg()
     stats = ShredSkipStats()
-    records = [{"items": [None]}]
+    records = [{"items": [None, ""]}]
     buffers = shred_to_buffers(records, cfg, stats=stats)
-    assert buffers["scalars"] == [{"value": None}]
+    assert buffers["scalars"] == [{"value": None}, {"value": ""}]
     assert buffers["objects"] == []
-    assert stats.skipped_rows_by_table == {"objects": 1}
+    assert stats.skipped_rows_by_table == {}
 
 
 # ─── _rows_to_frame: date column rejects raw int ──────────────────────

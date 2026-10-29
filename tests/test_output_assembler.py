@@ -22,6 +22,7 @@ from haute._output_assembler import (
     _prune,
     assemble_output_from_mapping,
     is_active_mapping_entry,
+    output_document_schema,
     render_output_document,
     validate_v2_output_mapping,
 )
@@ -71,6 +72,7 @@ def test_parse_output_path_segments() -> None:
         "$[:].drivers.:.name",  # the dropped dot form
         "drivers.name",  # no root
         "$[:]",  # names no leaf
+        "$[:].tags[:]",  # ends at an array, names no field
     ],
 )
 def test_parse_output_path_rejects_unsupported_selectors(bad: str) -> None:
@@ -436,6 +438,253 @@ def test_frames_at_different_levels_and_sibling_branches_are_valid() -> None:
             _entry("vehicles", "make", "$[:].vehicles[:].make"),
         ]
     )
+
+
+# ─── Complete destination paths ────────────────────────────────────
+
+
+def test_object_hops_before_an_array_are_kept() -> None:
+    document = assemble_output_from_mapping(
+        {"quotes": pl.LazyFrame({"quote_id": ["q1"], "vehicle_id": ["v1"]})},
+        [
+            _entry("quotes", "quote_id", "$[:].quote_id"),
+            _entry("quotes", "vehicle_id", "$[:].cover.vehicles[:].id"),
+        ],
+    )
+
+    assert document == [{"quote_id": "q1", "cover": {"vehicles": [{"id": "v1"}]}}]
+
+
+def test_object_hops_place_arrays_in_the_document_schema() -> None:
+    mapping = [
+        _entry("quotes", "quote_id", "$[:].quote_id"),
+        _entry("quotes", "premium", "$[:].cover.premium"),
+        _entry("quotes", "vehicle_id", "$[:].cover.vehicles[:].id"),
+        _entry("quotes", "claim", "$[:].cover.vehicles[:].history.claims[:].amount"),
+    ]
+    schemas = {
+        "quotes": pl.Schema(
+            {"quote_id": pl.String, "premium": pl.Int64, "vehicle_id": pl.String, "claim": pl.Int64}
+        )
+    }
+
+    assert output_document_schema(schemas, mapping) == pl.Schema(
+        {
+            "quote_id": pl.String,
+            "cover": pl.Struct(
+                {
+                    "premium": pl.Int64,
+                    "vehicles": pl.List(
+                        pl.Struct(
+                            {
+                                "id": pl.String,
+                                "history": pl.Struct(
+                                    {"claims": pl.List(pl.Struct({"amount": pl.Int64}))}
+                                ),
+                            }
+                        )
+                    ),
+                }
+            ),
+        }
+    )
+
+
+def test_object_hops_between_two_array_levels_are_kept() -> None:
+    document = assemble_output_from_mapping(
+        {"claims": pl.LazyFrame({"driver": ["d1", "d1"], "amount": [5, 7]})},
+        [
+            _entry("claims", "driver", "$[:].drivers[:].name"),
+            _entry("claims", "amount", "$[:].drivers[:].history.claims[:].amount"),
+        ],
+    )
+
+    assert document == [
+        {"drivers": [{"name": "d1", "history": {"claims": [{"amount": 5}, {"amount": 7}]}}]}
+    ]
+
+
+def test_arrays_of_one_name_under_different_objects_are_separate_levels() -> None:
+    frames = {
+        "left": pl.LazyFrame({"quote_id": ["q1", "q1"], "value": [1, 2]}),
+        "right": pl.LazyFrame({"quote_id": ["q1"], "value": [3]}),
+    }
+    mapping = [
+        _entry("left", "quote_id", "$[:].quote_id"),
+        _entry("left", "value", "$[:].left.items[:].value"),
+        _entry("right", "quote_id", "$[:].quote_id"),
+        _entry("right", "value", "$[:].right.items[:].value"),
+    ]
+
+    assert assemble_output_from_mapping(frames, mapping) == [
+        {
+            "quote_id": "q1",
+            "left": {"items": [{"value": 1}, {"value": 2}]},
+            "right": {"items": [{"value": 3}]},
+        }
+    ]
+
+
+def test_one_frame_cannot_emit_into_two_arrays_of_one_name_under_different_objects() -> None:
+    with pytest.raises(OutputMappingSchemaError, match="divergent array branches"):
+        validate_v2_output_mapping(
+            [
+                _entry("p", "a", "$[:].left.items[:].value"),
+                _entry("p", "b", "$[:].right.items[:].value"),
+            ]
+        )
+
+
+def test_limited_assembly_keeps_object_hops_and_reads_only_the_first_quotes_children() -> None:
+    frames = {
+        "quotes": pl.LazyFrame({"quote_id": ["q1", "q2"], "premium": [10, 20]}),
+        "drivers": pl.LazyFrame({"quote_id": ["q1", "q2"], "driver": ["d1", "d2"]}),
+        "claims": pl.LazyFrame(
+            {"quote_id": ["q1", "q2", "q2"], "driver": ["d1", "d2", "d2"], "amount": [5, 7, 9]}
+        ),
+    }
+    mapping = [
+        _entry("quotes", "quote_id", "$[:].quote_id"),
+        _entry("quotes", "premium", "$[:].cover.premium"),
+        _entry("drivers", "quote_id", "$[:].quote_id"),
+        _entry("drivers", "driver", "$[:].cover.drivers[:].name"),
+        _entry("claims", "quote_id", "$[:].quote_id"),
+        _entry("claims", "driver", "$[:].cover.drivers[:].name"),
+        _entry("claims", "amount", "$[:].cover.drivers[:].history.claims[:].amount"),
+    ]
+
+    full = assemble_output_from_mapping(frames, mapping)
+    limited = assemble_output_from_mapping(frames, mapping, row_limit=1)
+
+    assert full == [
+        {
+            "quote_id": "q1",
+            "cover": {
+                "premium": 10,
+                "drivers": [{"name": "d1", "history": {"claims": [{"amount": 5}]}}],
+            },
+        },
+        {
+            "quote_id": "q2",
+            "cover": {
+                "premium": 20,
+                "drivers": [{"name": "d2", "history": {"claims": [{"amount": 7}, {"amount": 9}]}}],
+            },
+        },
+    ]
+    assert limited == full[:1]
+
+
+@pytest.mark.parametrize(
+    ("mapping", "paths", "frames"),
+    [
+        pytest.param(
+            [
+                _entry("quotes", "quote_id", "$[:].quote_id"),
+                _entry("quotes", "label", "$[:].items"),
+                _entry("items", "quote_id", "$[:].quote_id"),
+                _entry("items", "value", "$[:].items[:].value"),
+            ],
+            "$[:].items vs $[:].items[:].value",
+            {"source_ports": ["quotes", "items"]},
+            id="field-and-array-across-frames",
+        ),
+        pytest.param(
+            [
+                _entry("quotes", "quote_id", "$[:].quote_id"),
+                _entry("quotes", "cover", "$[:].cover"),
+                _entry("vehicles", "quote_id", "$[:].quote_id"),
+                _entry("vehicles", "vehicle_id", "$[:].cover.vehicles[:].id"),
+            ],
+            "$[:].cover vs $[:].cover.vehicles[:].id",
+            {"source_ports": ["quotes", "vehicles"]},
+            id="field-and-object-across-frames",
+        ),
+        pytest.param(
+            [
+                _entry("quotes", "label", "$[:].items"),
+                _entry("quotes", "value", "$[:].items[:].value"),
+            ],
+            "$[:].items vs $[:].items[:].value",
+            {"source_port": "quotes"},
+            id="field-and-array-in-one-frame",
+        ),
+        pytest.param(
+            [
+                _entry("quotes", "label", "$[:].items.label"),
+                _entry("quotes", "value", "$[:].items[:].value"),
+            ],
+            "$[:].items.label vs $[:].items[:].value",
+            {"source_port": "quotes"},
+            id="object-and-array-in-one-frame",
+        ),
+        pytest.param(
+            [_entry("quotes", "a", "$[:].a"), _entry("quotes", "b", "$[:].a.b")],
+            "$[:].a vs $[:].a.b",
+            {"source_port": "quotes"},
+            id="field-and-object-in-one-frame",
+        ),
+    ],
+)
+def test_a_place_used_as_two_kinds_is_refused_naming_both_paths(
+    mapping: list[dict[str, object]], paths: str, frames: dict[str, object]
+) -> None:
+    with pytest.raises(OutputMappingSchemaError, match="as two things") as exc_info:
+        validate_v2_output_mapping(mapping)
+
+    context = exc_info.value.context
+    assert context["output_path"] == paths
+    assert {key: context[key] for key in frames} == frames
+
+
+def test_assembly_refuses_a_place_used_as_two_kinds_before_collecting_a_frame() -> None:
+    collected: list[str] = []
+
+    def frame(port: str, data: dict[str, list[object]]) -> pl.LazyFrame:
+        def mark(batch: pl.DataFrame) -> pl.DataFrame:
+            collected.append(port)
+            return batch
+
+        return pl.LazyFrame(data).map_batches(mark)
+
+    frames = {
+        "quotes": frame("quotes", {"quote_id": ["q1"], "label": ["scalar"]}),
+        "items": frame("items", {"quote_id": ["q1"], "value": [7]}),
+    }
+    mapping = [
+        _entry("quotes", "quote_id", "$[:].quote_id"),
+        _entry("quotes", "label", "$[:].items"),
+        _entry("items", "quote_id", "$[:].quote_id"),
+        _entry("items", "value", "$[:].items[:].value"),
+    ]
+
+    with pytest.raises(OutputMappingSchemaError, match="as two things"):
+        assemble_output_from_mapping(frames, mapping)
+    with pytest.raises(OutputMappingSchemaError, match="as two things"):
+        _assemble_document(
+            {
+                "quotes": frame("quotes", {"$[:].quote_id": ["q1"], "$[:].items": ["scalar"]}),
+                "items": frame("items", {"$[:].quote_id": ["q1"], "$[:].items[:].value": [7]}),
+            }
+        )
+    assert collected == []
+
+
+def test_one_field_mapped_by_several_frames_is_one_kind() -> None:
+    frames = {
+        "quotes": pl.LazyFrame({"quote_id": ["q1"], "premium": [10]}),
+        "vehicles": pl.LazyFrame({"quote_id": ["q1", "q1"], "vehicle_id": ["v1", "v2"]}),
+    }
+    mapping = [
+        _entry("quotes", "quote_id", "$[:].quote_id"),
+        _entry("quotes", "premium", "$[:].cover.premium"),
+        _entry("vehicles", "quote_id", "$[:].quote_id"),
+        _entry("vehicles", "vehicle_id", "$[:].cover.vehicles[:].id"),
+    ]
+
+    assert assemble_output_from_mapping(frames, mapping) == [
+        {"quote_id": "q1", "cover": {"premium": 10, "vehicles": [{"id": "v1"}, {"id": "v2"}]}}
+    ]
 
 
 def test_validate_parses_each_distinct_active_path_once(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1224,12 +1473,12 @@ def _limited_level(
     plan: pl.LazyFrame,
     *,
     level_paths: set[str],
-    collected_by_prefix: dict[tuple[str, ...], pl.DataFrame],
+    collected_by_prefix: dict[tuple[_Seg, ...], pl.DataFrame],
 ) -> pl.LazyFrame:
     paths = set(level_paths).union(*(frame.columns for frame in collected_by_prefix.values()))
     return _limit_level_plan(
         plan,
-        prefix=("a", "b"),
+        prefix=(_Seg("a", True), _Seg("b", True)),
         row_limit=1,
         level_paths=level_paths,
         all_paths={path: _parse_output_path(path) for path in paths},
@@ -1253,7 +1502,7 @@ def test_limited_level_filters_on_its_nearest_collected_ancestors_own_key() -> N
         level_paths=set(level.collect_schema().names()),
         collected_by_prefix={
             (): pl.DataFrame({"$[:].id": [1]}),
-            ("a",): pl.DataFrame({"$[:].id": [1], "$[:].a[:].k": ["k1"]}),
+            (_Seg("a", True),): pl.DataFrame({"$[:].id": [1], "$[:].a[:].k": ["k1"]}),
         },
     )
 
@@ -1277,7 +1526,7 @@ def test_limited_level_semi_joins_on_every_own_key_of_its_ancestor() -> None:
         level_paths=set(level.collect_schema().names()),
         collected_by_prefix={
             (): pl.DataFrame({"$[:].id": [7]}),
-            ("a",): pl.DataFrame({"$[:].a[:].k1": [1, 2], "$[:].a[:].k2": ["x", "y"]}),
+            (_Seg("a", True),): pl.DataFrame({"$[:].a[:].k1": [1, 2], "$[:].a[:].k2": ["x", "y"]}),
         },
     )
 
@@ -1326,7 +1575,7 @@ def test_limited_level_without_ancestor_keys_reads_every_row() -> None:
         level_paths={"$[:].a[:].b[:].v"},
         collected_by_prefix={
             (): pl.DataFrame({"$[:].id": [1]}),
-            ("a",): pl.DataFrame({"$[:].a[:].k": ["k1"]}),
+            (_Seg("a", True),): pl.DataFrame({"$[:].a[:].k": ["k1"]}),
         },
     )
 

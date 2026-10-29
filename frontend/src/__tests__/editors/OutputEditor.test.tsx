@@ -796,10 +796,9 @@ describe("OutputEditor - path validation", () => {
     expect(screen.getByTestId("output-frame-0-row-1-path-warning")).toBeTruthy()
   })
 
-  it("a scalar leaf and an array container at the same name do NOT conflict (array-flag aware)", () => {
-    // `$[:].obj` (scalar leaf) vs `$[:].obj[:].x` (array container) differ at
-    // the `obj` segment's array flag, so the backend `_prefix_comparable`
-    // accepts them — the editor must not false-flag a conflict.
+  it("a scalar leaf and an array container at the same name conflict", () => {
+    // `$[:].obj` makes `obj` a field and `$[:].obj[:].x` makes it an array; the
+    // backend refuses a place used as two kinds.
     render(
       <OutputEditor
         {...DEFAULT_PROPS}
@@ -814,8 +813,77 @@ describe("OutputEditor - path validation", () => {
       { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
     )
     expandFrame("output-frame-0")
+    expect(screen.getByTestId("output-frame-0-row-0-path-warning")).toBeTruthy()
+    expect(screen.getByTestId("output-frame-0-row-1-path-warning")).toBeTruthy()
+  })
+
+  it("a place used as two kinds by two frames marks the rows of both", () => {
+    render(
+      <OutputEditor
+        {...DEFAULT_PROPS}
+        config={{
+          outputMapping: [
+            { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
+            { source_port: "policies", source_column: "premium", output_path: "$[:].cover", enabled: true },
+            { source_port: "drivers", source_column: "driver_id", output_path: "$[:].cover.drivers[:].driver_id", enabled: true },
+          ],
+          outputFormat: "json",
+        }}
+      />,
+      { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
+    )
+    expandFrame("output-frame-0")
+    expandFrame("output-frame-1")
     expect(screen.queryByTestId("output-frame-0-row-0-path-warning")).toBeNull()
-    expect(screen.queryByTestId("output-frame-0-row-1-path-warning")).toBeNull()
+    expect(screen.getByTestId("output-frame-0-row-1-path-warning")).toBeTruthy()
+    expect(screen.getByTestId("output-frame-1-row-0-path-warning")).toBeTruthy()
+  })
+
+  it("one field mapped by two frames, and object hops shared by a field and an array, do not conflict", () => {
+    render(
+      <OutputEditor
+        {...DEFAULT_PROPS}
+        config={{
+          outputMapping: [
+            { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
+            { source_port: "policies", source_column: "premium", output_path: "$[:].cover.premium", enabled: true },
+            { source_port: "drivers", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
+            { source_port: "drivers", source_column: "driver_id", output_path: "$[:].cover.drivers[:].driver_id", enabled: true },
+          ],
+          outputFormat: "json",
+        }}
+      />,
+      { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
+    )
+    expandFrame("output-frame-0")
+    expandFrame("output-frame-1")
+    expect(screen.queryAllByTestId(/-path-warning$/)).toHaveLength(0)
+  })
+
+  it("an output path ending at [:] is refused in the editor", () => {
+    const onUpdateSpy = vi.fn()
+    render(
+      <StatefulHarness
+        initialConfig={{
+          outputMapping: [
+            { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
+          ],
+          outputFormat: "json",
+        }}
+        onUpdateSpy={onUpdateSpy}
+        allNodes={MULTI_FRAME_NODES}
+        edges={MULTI_FRAME_EDGES}
+      />,
+    )
+    expandFrame("output-frame-0")
+    const pathInput = screen.getByTestId("output-frame-0-row-0-path") as HTMLInputElement
+    fireEvent.change(pathInput, { target: { value: "$[:].tags[:]" } })
+    fireEvent.blur(pathInput)
+
+    expect(screen.getByTestId("output-frame-0-row-0-path-error").textContent).toContain(
+      "Output path must end at a field name, not at '[:]'.",
+    )
+    expect(onUpdateSpy).not.toHaveBeenCalled()
   })
 })
 
@@ -958,6 +1026,24 @@ describe("OutputEditor - one frame per array level (JSON-R02)", () => {
     expect(banner.textContent).toContain("Frames policies, drivers and claims emit at the same array level ($[:].drivers[:])")
   })
 
+  it("a level reached through object hops is named with them", () => {
+    render(
+      <OutputEditor
+        {...DEFAULT_PROPS}
+        config={{
+          outputMapping: [
+            row("policies", "policy_id", "$[:].cover.drivers[:].policy_id"),
+            row("drivers", "driver_id", "$[:].cover.drivers[:].driver_id"),
+          ],
+          outputFormat: "json",
+        }}
+      />,
+      { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
+    )
+    const banner = screen.getByTestId("output-same-level-banner")
+    expect(banner.textContent).toContain("Frames policies and drivers emit at the same array level ($[:].cover.drivers[:])")
+  })
+
   // Each mapping would share a level if the excluded rows or frame counted.
   it.each([
     [
@@ -975,6 +1061,15 @@ describe("OutputEditor - one frame per array level (JSON-R02)", () => {
     [
       "the other frame's root row has an invalid path",
       [row("policies", "policy_id", "$[:].policy_id"), row("drivers", "driver_id", "$.driver_id")],
+    ],
+    [
+      "the frames emit at arrays of one name under different objects",
+      [
+        row("policies", "policy_id", "$[:].policy_id"),
+        row("policies", "premium", "$[:].left.items[:].premium"),
+        row("drivers", "policy_id", "$[:].policy_id"),
+        row("drivers", "driver_id", "$[:].right.items[:].driver_id"),
+      ],
     ],
     [
       "the other frame emits into divergent branches (its own error)",

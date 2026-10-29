@@ -228,8 +228,8 @@ _mixed_elements = st.one_of(
 def test_shred_conserves_object_array_elements_as_rows_plus_skips(
     records: list[dict[str, Any]],
 ) -> None:
-    """Every element of an object-table array is either an emitted row or a
-    counted skip — emitted + skipped == total, for any mix of shapes."""
+    """Every element of an object-table array is an emitted row, a counted skip,
+    or absent (a null or an empty string holds nothing) — for any mix of shapes."""
     cfg = {
         "tables": [
             {
@@ -258,9 +258,10 @@ def test_shred_conserves_object_array_elements_as_rows_plus_skips(
     # array is schema-inexpressible and treated as a shape mismatch) is one
     # counted skip. No recursive flattening.
     visited = sum(len(r["drivers"]) for r in records)
+    absent = sum(1 for r in records for el in r["drivers"] if el is None or el == "")
     emitted = len(buffers["drivers"])
     skipped = stats.skipped_rows_by_table.get("drivers", 0)
-    assert emitted + skipped == visited, (records, emitted, skipped, visited)
+    assert emitted + skipped + absent == visited, (records, emitted, skipped, visited)
     # Only object elements emit; everything else must be in the skip count.
     object_elements = sum(1 for r in records for el in r["drivers"] if isinstance(el, dict))
     assert emitted == object_elements

@@ -27,6 +27,9 @@ export interface ApiInputColumnV2 {
   status: ColumnStatus
   selected: boolean
   levels?: (string | null)[] | null
+  /** A `date` column's strftime pattern for its source values; ISO
+   * ({@link ISO_DATE_FORMAT}) when absent. Written only for a `date` column. */
+  format?: string
   /** Originating dimension (see {@link ColumnOrigin}). */
   origin?: ColumnOrigin
   /** True once this field has been used as a key — added or sourced through
@@ -48,6 +51,19 @@ export interface ApiInputConfigV2 {
   path?: string
   contract?: string
   tables: ApiInputTableV2[]
+}
+
+/** The date format a `date` column reads when it sets none. Mirror of the
+ * backend's `_ISO_DATE_FORMAT`. */
+export const ISO_DATE_FORMAT = "%Y-%m-%d"
+
+/** A date column's format: empty for {@link ISO_DATE_FORMAT}, otherwise a
+ * strftime pattern. Mirror of the backend's `validate_v2_schema` rule. */
+export function validateDateFormat(candidate: string): string | null {
+  const format = candidate.trim()
+  return format === "" || format.includes("%")
+    ? null
+    : "A date format is a strftime pattern, such as %d/%m/%Y."
 }
 
 /** Tagged-union classification — only v2 and empty kinds. */
@@ -217,6 +233,7 @@ export function readV2(
         status: cstatus,
         selected: cselected,
         levels: clevels,
+        ...(typeof cc.format === "string" && cc.format !== "" ? { format: cc.format } : {}),
         origin: corigin,
         key: cc.key === true,
       })
@@ -259,6 +276,7 @@ export function writeV2(v2: ApiInputConfigV2): Record<string, unknown> {
         status: c.status,
         selected: c.selected,
         levels: c.levels ?? null,
+        ...(c.type === "date" && c.format ? { format: c.format } : {}),
         origin: c.origin ?? "inferred",
         key: c.key ?? false,
       })),

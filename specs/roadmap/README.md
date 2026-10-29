@@ -39,7 +39,6 @@ records corrections to that audit's claims and proposed remedies.
 | [Frontend shared](frontend-shared.md) | A save that keeps the browser in step after a reconnect, surfaced completion errors, aborted fetches, a bootstrap deadline; Ctrl+S saving what is being typed and creation fenced on structure; one copy of each store derivation and helper; the specification as the code is; the results store; independent edits during input resolution, job-bound cancellation replies, and failed solves retaining the identity of prior successful results | `FSH-R05` |
 | [Git integration](git-integration.md) | Git failures the analyst can act on, a dirty tree and a virtual environment at delete and seed, long argument lists through stdin, dead symbols and one compensation helper, hooks on automatic saves (a decision); a git panel that guards and reports every tree change; broken pairs reported with Repair; pipeline saves sharing the Git transaction boundary and push recovery retaining its remote | `GIT-R02` |
 | [IO layer](io-layer.md) | Missing against corrupt generations, one path-anchoring rule, lock holds and usage cost, clear and settle rules, one supervised build | `IO-R04` |
-| [JSON shredding](json-shredding.md) | Root arrays tokenised in chunks, declared types that hold exactly, the path grammar as specified, one counted shred; OUTPUT preserving complete destination paths and strict requests rejecting malformed non-emitting ancestors | `JSON-R02` |
 | [Model scoring](model-scoring.md) | Generic model-file suffixes, pyfunc files, loader errors that keep their meaning; pyfunc classifiers preserving separate labels and positive-class probabilities | `MSC-06` |
 | [Modelling](modelling.md) | Publication outside the lock, diagnostics measured as the fit was; adaptive low-memory fitting: exact chunked GLM, a low-memory boosted-tree mode (both awaiting a decision); feasible stratified allocation, recorded tuning progress reaching the browser, prediction-based MLflow signatures, and accurate model-card and PDP labels | `MOD-R03` |
 | [Name collisions](name-collisions.md) | Input-binding editors showing their name violations inline; distinct parsed, recovered and pasted connections retaining distinct identities | `NAME-09` |
@@ -105,10 +104,11 @@ and the inventory-wide source follow-up at `2c3151b0`. The scratch ledger marks
 inventoried for targeted evidence. Its batch-level notes do not prove that every
 statement was individually inspected. The 2,377-record ledger is kept outside the
 repository; its hashes refer to Windows working-tree bytes, not Git blobs.
-Forty-two finding groups are assigned to 30 new component packages and extensions
+Forty-two finding groups were assigned to 30 new component packages and extensions
 to 9 existing owners. They cover saved work, calculation and request correctness,
 containment, editor state, model/deploy contracts and assurance gates. The report distinguishes
-executed witnesses from source-supported variants and states the review limits.
+executed witnesses from source-supported variants and states the review limits;
+findings whose packages were delivered have been removed.
 These additions are not yet assigned delivery rounds. Component packages own
 implementation; no production fix is claimed by this review.
 

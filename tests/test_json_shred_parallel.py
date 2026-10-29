@@ -522,7 +522,7 @@ def test_fused_range_skips_orjson_for_shared_prefix_shapes(
     src = _write_jsonl(tmp_path / "fused-known.jsonl", records)
     prefix, seed = _inference._learn_jsonl_prefix(src, src.stat().st_size)
     expected = _full_walk_schema(records)
-    original_loads = _inference.orjson.loads
+    original_loads = orjson.loads
     parsed = 0
 
     def counting_loads(raw: bytes, *args: Any, **kwargs: Any) -> Any:
@@ -530,7 +530,7 @@ def test_fused_range_skips_orjson_for_shared_prefix_shapes(
         parsed += 1
         return original_loads(raw, *args, **kwargs)
 
-    monkeypatch.setattr(_inference.orjson, "loads", counting_loads)
+    monkeypatch.setattr(orjson, "loads", counting_loads)
     delta = _inference._infer_jsonl_range(src, 0, src.stat().st_size, seed=seed)
     prefix.merge(delta)
 
@@ -786,7 +786,7 @@ def test_parallel_build_matches_serial_build_exactly(
     at the 200-byte chunk size."""
     records = _sample_records(300)
     records[13]["claims"] = [{"amt": 130}, "stray", {"amt": 131}]
-    records[257]["claims"] = [{"amt": 2570}, None]
+    records[257]["claims"] = [{"amt": 2570}, 7]
     serial_src = _write_jsonl(tmp_path / "serial.jsonl", records)
     serial_skip, serial_frames = _build(serial_src, tmp_path / "serial_cache")
     assert serial_skip.skipped_rows_by_table == {"claims": 2}, (

@@ -75,6 +75,7 @@ def _projected_table_specs(
                 columns=tuple(
                     column for column in complete_spec.columns if column[0] in physical_columns
                 ),
+                date_formats=complete_spec.date_formats,
             ),
         )
     # Preserve v2 schema order even when the caller supplied its mapping in

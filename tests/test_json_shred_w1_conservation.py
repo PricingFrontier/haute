@@ -16,6 +16,8 @@ These pin the remediation of the wave-1 findings whose theme is
 from __future__ import annotations
 
 import json
+import re
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -188,6 +190,88 @@ def test_only_ever_empty_array_defaults_to_str(tmp_path: Path) -> None:
     nums_table = next(t for t in schema["tables"] if t["path"] == "$[:].nums[:]")
     (value_col,) = nums_table["columns"]
     assert value_col["type"] == "str"
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
+        [{"nums": [1, 2]}, {"nums": [None]}],
+        [{"nums": [None]}, {"nums": [1, 2]}],
+        [{"nums": [None, None]}, {"nums": [3]}, {"nums": [None]}],
+    ],
+    ids=["typed-then-null-only", "null-only-then-typed", "null-only-around-typed"],
+)
+def test_a_null_only_array_does_not_widen_the_element_type(
+    tmp_path: Path, records: list[dict[str, Any]]
+) -> None:
+    # A null-only array, like an empty one, carries no evidence of the type.
+    p = _write(tmp_path, records)
+    schema = infer_v2_schema_from_data(p)
+    nums_table = next(t for t in schema["tables"] if t["path"] == "$[:].nums[:]")
+    (value_col,) = nums_table["columns"]
+    assert value_col["type"] == "int"
+
+
+def test_only_ever_null_only_array_defaults_to_str(tmp_path: Path) -> None:
+    p = _write(tmp_path, [{"nums": [None]}, {"nums": []}])
+    schema = infer_v2_schema_from_data(p)
+    nums_table = next(t for t in schema["tables"] if t["path"] == "$[:].nums[:]")
+    (value_col,) = nums_table["columns"]
+    assert value_col["type"] == "str"
+
+
+# ─── Declared dates parse year first, never by a guessed format ─────
+
+
+def test_a_date_column_reads_iso_dates() -> None:
+    frame = _rows_to_frame(
+        [("2024-01-15",), (None,), ("2024-02-01",)], [("start", "start", "date")]
+    )
+
+    assert frame["start"].to_list() == [date(2024, 1, 15), None, date(2024, 2, 1)]
+
+
+@pytest.mark.parametrize("value", ["15/01/2024", "01/02/2024", "2024-02-30", "Jan 15 2024"])
+def test_a_date_column_refuses_a_value_that_is_not_an_iso_date(value: str) -> None:
+    # Polars' own Date build would read 15/01/2024 as 15 January and 01/02/2024
+    # as 1 February without a word.
+    with pytest.raises(
+        ApiInputSchemaError, match=re.escape(f"holds {value!r}, which is not an ISO-8601 date")
+    ) as refused:
+        _rows_to_frame([("2024-01-15",), (value,)], [("start", "start", "date")])
+
+    assert refused.value.context["column"] == "start"
+    assert refused.value.context["value"] == value
+
+
+@pytest.mark.parametrize(
+    ("date_format", "value", "expected"),
+    [
+        ("%d/%m/%Y", "15/01/2024", date(2024, 1, 15)),
+        ("%d/%m/%Y", "01/02/2024", date(2024, 2, 1)),
+        ("%m/%d/%Y", "01/02/2024", date(2024, 1, 2)),
+    ],
+    ids=["day-first", "day-first-ambiguous", "month-first"],
+)
+def test_a_date_column_reads_dates_in_its_declared_format(
+    date_format: str, value: str, expected: date
+) -> None:
+    frame = _rows_to_frame(
+        [(value,), (None,)], [("start", "start", "date")], {"start": date_format}
+    )
+
+    assert frame["start"].to_list() == [expected, None]
+
+
+def test_a_date_column_refuses_a_value_not_written_in_its_format() -> None:
+    with pytest.raises(
+        ApiInputSchemaError,
+        match=re.escape("holds '2024-01-15', which is not a date written %d/%m/%Y"),
+    ) as refused:
+        _rows_to_frame([("2024-01-15",)], [("start", "start", "date")], {"start": "%d/%m/%Y"})
+
+    assert refused.value.context["format"] == "%d/%m/%Y"
+    assert refused.value.context["value"] == "2024-01-15"
 
 
 # ─── F717 + conservation — build consumes the iterator and reconciles ─

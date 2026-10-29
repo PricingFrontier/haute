@@ -316,6 +316,32 @@ def test_a_single_xml_element_where_another_quote_repeats_it_is_a_one_row_list(
     assert tables["driver"] == [{"age": "30"}, {"age": "40"}, {"age": "50"}]
 
 
+def test_an_empty_xml_element_holds_nothing(tmp_path: Path) -> None:
+    """An empty element (``<driver/>``) arrives as an empty string, alone or among
+    repeated elements: it is no row and no skipped row, so a feed that writes one
+    for "none" builds cleanly."""
+    from haute._json_shred._records import ShredSkipStats
+    from haute._json_shred._shred import file_records, shred_request, shred_to_buffers
+
+    data_path = tmp_path / "quotes.xml"
+    data_path.write_text(_SINGLETON_DRIVERS, encoding="utf-8")
+    schema = infer_v2_schema_from_data(data_path)
+    for table in schema["tables"]:
+        table["emit"] = True
+    data_path.write_text(
+        "<quotes><quote><id>1</id><driver/></quote>"
+        "<quote><id>2</id><driver><age>50</age></driver><driver/></quote></quotes>",
+        encoding="utf-8",
+    )
+    stats = ShredSkipStats()
+
+    buffers = shred_to_buffers(file_records(data_path, schema), schema, stats=stats)
+
+    assert buffers["driver"] == [{"age": "50"}]
+    assert stats.skipped_rows_by_table == {}
+    assert shred_request(list(file_records(data_path, schema)), schema)["driver"].height == 1
+
+
 def test_a_schema_keeps_singleton_elements_as_lists_in_a_later_file(tmp_path: Path) -> None:
     learned = tmp_path / "learned"
     learned.mkdir()

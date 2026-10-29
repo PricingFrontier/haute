@@ -45,11 +45,12 @@ Each column row has, from left to right:
 |---|---|
 | Tick box | Whether the column is kept. Untick the columns you don't need. |
 | Name | The column's name in the table. It is required and must be unique in its table. A name used in another table for a different field is shaded, with a warning that a name should mean one field everywhere. |
-| Path | Where the value sits in the request, such as `$[:].proposer.date_of_birth`. It must name a field at the table's own level or a shallower one; a path deeper than the table, or on another branch, is flagged under the row. |
+| Path | Where the value sits in the request, such as `$[:].proposer.date_of_birth`. It must name a field at the table's own level or a shallower one; a path deeper than the table, or on another branch, is flagged under the row. Each key in a path is written after a dot and must be an ASCII identifier (letters, digits and underscores, not starting with a digit): a request whose keys hold a hyphen, a space or a dot, or start with a digit, cannot be read, and **Infer Tables** stops naming the key, so rename it in the source. |
 | Type | `int`, `float`, `str`, `bool` or `date`. A column typed `date` arrives as a date, so no parsing code is needed downstream. |
+| Date format | Shown for a `date` column: how the request writes its dates, as a strftime pattern such as `%d/%m/%Y` for `15/01/2024`. Left empty, dates are read as ISO-8601 (`%Y-%m-%d`, such as `2024-01-15`). A value not written in the column's format stops the build with an error naming the column, the value and the format. |
 | Key icon | Marks the column as a key: it is confirmed and moves into the keys at the top of the table. Click again to unmark it. |
 | Origin chip | Where the column came from: **INFERRED**, **INHERITED** (a key copied from a shallower table) or **MANUAL** (typed in by hand), with a tick once confirmed. |
-| Confirm tick | Confirms the column (shown until it is confirmed). Editing a column's name, path or type also confirms it. |
+| Confirm tick | Confirms the column (shown until it is confirmed). Editing a column's name, path, type or date format also confirms it. |
 | × | Removes the column. |
 
 ## Frames
@@ -70,16 +71,18 @@ Click **Infer Tables** and the editor reads the whole preview file and proposes 
 
 - **One table per level.** The top-level records become one table, labelled `quote_info`. Every array in the request  - an array of objects such as `additional_drivers`, or a scalar array such as `["TPFT", "comprehensive"]`  - starts its own child table, labelled from its key (`$[:].proposer.claims[:]` becomes `claims`).
 - **Columns from nested objects.** A field inside a nested object becomes a column of its table, named by its own key: `proposer.date_of_birth` becomes `date_of_birth`. When two fields in one table share a key, both are named by their path with underscores instead, such as `proposer_date_of_birth` and `vehicle_date_of_birth`.
-- **Types from every record.** Each column gets the type that fits all the records in the file: `int`, `float`, `str`, `bool` or `date`.
+- **Types from every record.** Each column gets the type that fits all the records in the file: `int`, `float`, `str` or `bool`. Dates arrive as text: type such a column `date` yourself.
 
 Then shape the tables in the editor:
 
-- **Rename and retype columns.** Edit a column's name, or pick another type from its list. A column typed `date` arrives as a date, so no parsing code is needed downstream. A name should mean one field everywhere: the editor flags a name that another table uses for a different field.
+- **Rename and retype columns.** Edit a column's name, or pick another type from its list. A column typed `date` arrives as a date, so no parsing code is needed downstream; set its **Date format** when the request writes dates other than year first, such as `%d/%m/%Y`. A name should mean one field everywhere: the editor flags a name that another table uses for a different field.
 - **Choose columns.** Untick the columns you don't need.
 - **Emit the tables you use.** Only an emitted table becomes an output of the node, named by its label, which is the input name downstream nodes see. Each extra emitted table is an extra output.
 - **Carry keys into child tables.** A child table needs its parent's key, such as `quote_id`, to join back. Mark a field as a key with its key icon, then use **Cascade keys** to push a key into every deeper table on its branch, or a table's **Inherit** to pull a key from a shallower table onto it. A table's **Add keys** picks keys from the file's fields or takes one you type. The **salt names** option controls how a copied key is named: ticked (the default), `customer.id` becomes `customer_id`; unticked, it keeps the bare `id`. A remaining clash gets a numeric suffix (`_2`).
 - **Confirm what you've checked.** Inferred columns stay marked as inferred until you confirm them, one at a time or with **Confirm all**. Running **Infer Tables** again asks before it replaces anything (**Replace tables**): tables at the same path keep your labels and emit choices and your confirmed columns, and pick up newly found columns.
 - **Build a table by hand** with **Add Table**.
+
+A null, or an empty element in XML (`<drivers/>`), where a list or a nested object is expected means there is none: it adds no row and is never an error. A value of the wrong shape, such as a number where a driver object is expected, is counted as a skipped row when the tables are built, and a deployed pipeline refuses a request holding one, naming the quote and the place.
 
 ## In the data preview
 

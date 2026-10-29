@@ -10,8 +10,6 @@ from itertools import islice
 from pathlib import Path
 from typing import Any, TypeVar
 
-import orjson
-
 from haute._api_input_schema import (
     _RESERVED_LEAF as _SCALAR_VALUE_LEAF,
 )
@@ -209,9 +207,13 @@ class _InferenceState:
                         if item is None:
                             continue
                         element_type = _widen_type(element_type, _infer_type(item))
-                    self.scalar_levels[child_level] = _widen_type(
-                        self.scalar_levels.get(child_level), element_type or "str"
-                    )
+                    if element_type is None:
+                        # Null-only, like an empty array: no evidence of the type.
+                        self.scalar_levels.setdefault(child_level, None)
+                    else:
+                        self.scalar_levels[child_level] = _widen_type(
+                            self.scalar_levels.get(child_level), element_type
+                        )
             elif child_value is None:
                 self.null_leaves.setdefault(level, {})[object_path] = None
             else:
@@ -277,11 +279,8 @@ def _infer_jsonl_lines(
     for raw_line in lines:
         if known_structure.matches_json(raw_line):
             continue
-        stripped = raw_line.strip()
-        if not stripped:
-            continue
-        record = orjson.loads(stripped)
-        if isinstance(record, dict):
+        record = _records._jsonl_record(raw_line, None)
+        if record is not None:
             state.walk(record)
             known_structure.observe(record)
     return state

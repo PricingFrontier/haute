@@ -373,3 +373,49 @@ describe("readV2 / writeV2 origin", () => {
     expect(raw.tables[0].columns[0].origin).toBe("manual")
   })
 })
+
+describe("readV2 / writeV2 date format", () => {
+  const onDisk = (type: string) => ({
+    path: "d.json",
+    contract: "opaque",
+    tables: [
+      {
+        path: "$[:]",
+        label: "root",
+        emit: true,
+        columns: [
+          { name: "start", path: "$[:].start", type, status: "Confirmed", selected: true, format: "%d/%m/%Y" },
+        ],
+      },
+    ],
+  })
+
+  it("round-trips a date column's format", () => {
+    const written = writeV2(readV2(onDisk("date"))) as { tables: { columns: Record<string, unknown>[] }[] }
+    expect(written.tables[0].columns[0].format).toBe("%d/%m/%Y")
+  })
+
+  it("writes no format for a column that is not a date", () => {
+    const written = writeV2(readV2(onDisk("str"))) as { tables: { columns: Record<string, unknown>[] }[] }
+    expect(written.tables[0].columns[0]).not.toHaveProperty("format")
+  })
+})
+
+describe("a date column's format travels with its key", () => {
+  it("is carried by the inventory into an inherited column", () => {
+    const dated = { ...col("start", "$[:].start", "date"), format: "%d/%m/%Y" }
+    const inventory = buildPathInventory([tbl("$[:]", [dated, col("qid", "$[:].quote_id")])], null)
+
+    expect(inventory.get("$[:].start")?.format).toBe("%d/%m/%Y")
+    expect(inventory.get("$[:].quote_id")).not.toHaveProperty("format")
+    const [inherited] = buildInsertedColumns(["$[:].start"], inventory, new Set())
+    expect(inherited).toMatchObject({ type: "date", format: "%d/%m/%Y", status: "Confirmed" })
+  })
+
+  it("is not taken from a column that is not a date", () => {
+    const stale = { ...col("start", "$[:].start", "str"), format: "%d/%m/%Y" }
+    const inventory = buildPathInventory([tbl("$[:]", [stale])], null)
+
+    expect(inventory.get("$[:].start")).not.toHaveProperty("format")
+  })
+})

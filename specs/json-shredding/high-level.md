@@ -78,9 +78,13 @@ generations, projected to the columns it demands, never the raw source. A deploy
 Quote Input shreds each served request the same way, in memory
 (`_shred.py::shred_request`), and refuses the request where a build would count a
 skip: a quote that is not an object, an array element whose shape does not fit its
-table, or an object or scalar where the schema declares an array raises
-`ApiInputSchemaError` naming the table, since a deployed answer must not
-lose a quote's rows silently ([deploy](../deploy/high-level.md)). Generated
+table or that is not an object where tables below it read objects, a value that is
+not an object where the schema steps into an object on the way to an array, or an
+object or scalar where the schema declares an array raises `ApiInputSchemaError` at
+the first such value, naming the quote, the place and the table, since a deployed
+answer must not lose a quote's rows silently ([deploy](../deploy/high-level.md)).
+A null or an empty string inside a quote holds nothing and is never refused (see
+below): analysts cannot choose how a feed writes "none". Generated
 standalone code runs without a project store and shreds its source in-process
 through the same parsed table specs, type checks, skip accounting and conservation
 guards, into private spill-backed lazy frames.
@@ -153,8 +157,20 @@ table, or is counted as a skip against that table (its shape didn't match — an
 object where a scalar was expected, or vice versa), or — for a non-object top-level
 record — is counted as a skipped record. A JSON object or scalar where the schema
 declares an array is counted as a skip against every table at or below that array,
-since all their rows from it are lost; a missing key, a null and an empty array hold
-no elements and count nothing. Where a JSON key holds a list in some records and one
+since all their rows from it are lost; a missing key, a null, an empty string and an
+empty array hold no elements and count nothing. A null or an empty string where an
+object is expected holds nothing either: as an element of an object table's array, or
+as the object on the way to an array (`cover` in `$[:].cover.vehicles[:]`), it is no
+row and no skip, for that table and every table below. That is how XML's empty
+element (`<drivers/>`, which arrives as an empty string) and JSON's null are read, and
+a scalar child table keeps such an element as its null or empty value. Any other array
+element that is not an object (a scalar or a nested list) holds none of the arrays
+below its own, so it counts one skip against every emitting table below it — whether
+or not a table emits at its array, which is how a malformed driver is accounted for
+when only the claims under drivers emit — beside its own table's count where one
+emits there; and any other value that is not an object where the schema steps through
+an object to reach an array counts one skip against every table at or below that
+array. Where a JSON key holds a list in some records and one
 object or scalar in others, inference keeps the child table, logs the key as mixed
 (`json_schema_mixed_shape`), and the shred counts the single values. No element
 silently disappears.
@@ -172,7 +188,10 @@ parsed — the exact hidden mapping this rule forbids — and ASCII lets the
 frontend mirror the rule exactly instead of approximating Unicode
 `str.isidentifier()`. Each table also carries a non-empty path,
 unique column names, known column types, and an optional row-ID column that
-must name one of its own columns. When present, `emit` and `selected` are
+must name one of its own columns. A `date` column may set `format`, the strftime
+pattern its source writes dates in (`%d/%m/%Y` for a day-first feed); without one
+it reads ISO-8601 dates (`%Y-%m-%d`). A format on any other type, or one that is not
+a strftime pattern, is rejected. When present, `emit` and `selected` are
 actual booleans (integer/string lookalikes are rejected), and column `status`
 is exactly `Confirmed` or `Inferred`. These declared scalar types are checked
 at this boundary before the shred can coerce them by truthiness. Table paths
@@ -180,10 +199,14 @@ end at an array boundary; columns may live at that boundary
 or at an ancestor boundary so an ancestor value can be distributed into child
 rows. The OUTPUT side consumes only active, complete mapping rows and requires
 the same single array-outer path grammar: `$[:]` at the root, dotted ASCII
-identifier keys, and `[:]` for array traversal. Its explicit structural
-validator rejects same-port duplicate or prefix-comparable destinations, a
-single source frame mapped to divergent emit prefixes, and two source frames that
-emit at the same array level. The runtime assembler invokes
+identifier keys, and `[:]` for array traversal; an output path ends at a field,
+never at `[:]`. Its explicit structural validator rejects two columns of one
+frame mapped to one path; a place in the document that the active rows of any
+frames use as two kinds — a field and an object, a field and an array, or an
+object and an array, such as `$[:].items` beside `$[:].items[:].value` — naming
+both paths; a single source frame mapped to divergent emit prefixes; and two
+source frames that emit at the same array level. One field mapped by several
+frames is one kind, so a shared relation key stays valid. The runtime assembler invokes
 that validator before frame collection, so dry-run, direct runtime, generated, and
 deployed execution share one acceptance boundary. Validation scales with the
 mapping set rather than repeatedly reparsing every pair of paths. Incomplete
@@ -213,11 +236,14 @@ specification defines it.
 1. *Frames and fields.* Each active mapping row renames one column of one source
    frame (its `source_port`) to one output path; a column mapped to several paths
    appears once per path. A frame's *fields* are its output paths.
-2. *Levels.* A path's *array prefix* is the sequence of its `[:]` segments; the
-   root `$[:]` is the empty prefix. A frame *emits* at its deepest array prefix —
-   the structural validator has already required its prefixes to form one chain
-   — and carries its shallower paths as keys for nesting. The *levels* of the
-   document are every emitting prefix and all of its ancestors.
+2. *Levels.* A path's *array prefix* is its segments through its last `[:]`,
+   object hops included: `$[:].cover.vehicles[:].id` sits at
+   `$[:].cover.vehicles[:]`, and `$[:].left.items[:]` and `$[:].right.items[:]`
+   are two levels. The root `$[:]` is the empty prefix. A frame *emits* at its
+   deepest array prefix — the structural validator has already required its
+   prefixes to form one chain — and carries its shallower paths as keys for
+   nesting. The *levels* of the document are every emitting prefix and all of its
+   ancestors, the array prefixes it extends.
 3. *One frame per level.* At most one frame emits at a level (decided
    24 September 2026). Two frames at one level are rejected by the structural
    validator before any frame is collected, naming both frames; the assembler
@@ -237,7 +263,10 @@ specification defines it.
    subtree carries (the *relation keys* of that parent and child) join the scope
    with that object's values, and the child level takes the rows whose values
    equal the scope on every key in it. A level whose scope is empty takes every
-   row of its level. Sibling levels are assembled independently, so the
+   row of its level. The child's objects are placed in the parent object at the
+   child's path below the parent, its object hops and then its array key, so
+   `$[:].cover.vehicles[:]` is the `vehicles` list inside each root object's
+   `cover`. Sibling levels are assembled independently, so the
    document costs the sum of the branch sizes, never their product.
    Every frame taking part in a nesting carries all of its relation keys: the
    frame emitting at the parent level, and every frame emitting at or below the
@@ -259,7 +288,7 @@ strategies `inner`, `left`, `right`, `full`, `semi`, `anti`, and `cross`.
 `cross` rejects every key field. Every other strategy requires either a
 non-empty `on` key (one name or a list shared by both frames) or both
 non-empty `leftOn` and `rightOn` keys with equal lengths; `on` cannot coexist
-with the paired form. The base and join frames are explicit roles, not inferred
+with the paired form. A `coalesce` option, when set, is `true` or `false`. The base and join frames are explicit roles, not inferred
 from edge order. Every persisted
 incoming edge carries its role as `targetHandle="base"` or `targetHandle="join"`;
 exactly one of each is required. Those handles are the sole role authority, so two different
@@ -267,13 +296,15 @@ frame edges from one API Input are valid. Roles come solely from `targetHandle`;
 `baseInput`/`joinInput` config key exists. A handle-less or partially handled join is invalid.
 
 Every path in an input or output mapping is read against the array-outer JSON formalism and
-must start `$[:]`. The canonical form has one spelling per feature — `[:]` selects every row
-of a list, a dotted identifier steps into an object — and any piece of data has exactly one
-canonical path. Bracket-quoted names are accepted for interoperability, assemble identically,
-and are never rewritten; constructs that do not statically locate data (wildcards, indices,
-ranges, filters, descendants) are rejected. The full grammar, the validity gate, and the
-transport-agnostic JSON invariants are stated in the low-level specification's path-grammar
-section.
+must start `$[:]`. The grammar has one spelling per feature — `[:]` selects every row of a
+list, a dotted ASCII identifier steps into an object — and any piece of data has exactly one
+path. Nothing else is accepted: bracket-quoted names and the constructs that do not
+statically locate data (wildcards, indices, ranges, filters, descendants) are rejected, so a
+source key that is not an ASCII identifier (one holding a hyphen, a space or a dot, or
+starting with a digit) cannot be addressed, and inference refuses such a key rather than
+inventing a path for it. A rejection names the path it refuses as a table path, a column
+path or an output path. The full grammar, the validity gate, and the transport-agnostic
+JSON invariants are stated in the low-level specification's path-grammar section.
 
 ## Design rationale
 
@@ -330,9 +361,15 @@ reader only avoids repeating that work, which dominates the cost of a large buil
 **Silent numeric/date coercion is rejected even though the underlying columnar
 library would allow it.** Polars will silently coerce a Python `bool` into a numeric
 column (`True → 1`) and will silently reinterpret a raw JSON integer or boolean
-loaded into a `Date` column as a days-since-epoch offset. Both would produce a
-column that "succeeds" but is wrong. The shred detects these shapes ahead of the
-strict build and raises a specific, column-named error instead.
+loaded into a `Date` column as a days-since-epoch offset. Its `Date` build also
+guesses a string's format, reading `15/01/2024` as 15 January and `01/02/2024` as
+1 February. Each would produce a column that "succeeds" but is wrong. The shred
+detects the first two shapes ahead of the strict build, and parses a date
+column's strings in the one format the column declares — ISO-8601 (`YYYY-MM-DD`)
+unless it sets another, such as `%d/%m/%Y` for a feed the analyst cannot change —
+refusing any other string; each raises a specific, column-named error instead.
+Declaring the format keeps the analyst in control of a source they do not write,
+without Haute guessing which of day and month comes first.
 
 ## Interactions
 
@@ -363,22 +400,14 @@ strict build and raises a specific, column-named error instead.
 
 ## Failure model
 
-> NOTE: Malformed elements in non-emitting ancestor arrays can currently escape strict
-> request accounting. [JSON-R07](../roadmap/json-shredding.md#json-r07--malformed-ancestors-cannot-hide-skipped-request-data)
-> tracks the shared walker and deployed-request correction.
-
-> NOTE: OUTPUT currently drops object hops before arrays and can overwrite a
-> scalar with a conflicting array mapped from another frame. Full destination
-> paths and cross-frame container validation are tracked in
-> [JSON-R06](../roadmap/json-shredding.md#json-r06--output-preserves-the-complete-destination-path).
-
 - A malformed v2 schema config (bad table/column shape; wrong-typed
   `tables[i].emit` / `tables[i].columns[j].selected`; or a column status other
   than `Confirmed|Inferred`) is rejected up front with the exact field path by
   schema validation before any shredding happens, not coerced or discovered
   mid-walk.
 - Every OUTPUT assembly entry point calls the structural validator before frame
-  collection. Malformed syntax, duplicate/prefix conflicts, divergent per-frame
+  collection. Malformed syntax, a path ending at `[:]`, two columns of one frame
+  on one path, a place used as two kinds, divergent per-frame
   emit prefixes, two frames emitting at one array level, a frame taking part in a
   nesting without one of its relation keys, and missing source ports/columns
   therefore fail loudly rather than becoming ambiguous, partial or empty output.
@@ -396,7 +425,8 @@ strict build and raises a specific, column-named error instead.
   table whose rows would all silently vanish as shape mismatches.
 - A value that doesn't fit its declared column type — including the silent-coercion
   shapes Polars would otherwise accept — fails the build with an error naming the
-  offending column and declared type.
+  offending column and declared type; a date column's string that is not a date in
+  its format (ISO-8601 unless it declares one) also names the value and the format.
 - A root-level conservation violation (rows lost or duplicated without accounting)
   aborts the build with `RuntimeError` rather than publishing a table with
   unaccounted data loss.
@@ -426,5 +456,6 @@ strict build and raises a specific, column-named error instead.
   Planner uncertainty is represented by a full-width demand, never by dropping an
   unproven column.
 - `edgeJoin` node misconfiguration (ambiguous/missing base or join role, unsupported
-  join strategy, keys on `cross`, missing/conflicting key forms, or mismatched key
-  counts) raises `ConfigError` before any join runs.
+  join strategy, keys on `cross`, missing/conflicting key forms, mismatched key
+  counts, or a `coalesce` that is not a boolean) raises `ConfigError` before any join
+  runs.

@@ -1209,6 +1209,18 @@ def test_edge_join_runtime_suffix_untouched_when_no_columns_collide() -> None:
 # -- coalesce ----------------------------------------------------------------
 
 
+@pytest.mark.parametrize("coalesce", ["yes", 1, "true", ["k"]])
+def test_edge_join_refuses_a_coalesce_that_is_not_a_boolean_before_any_join(
+    coalesce: object,
+) -> None:
+    with pytest.raises(ConfigError, match="coalesce must be true or false") as refused:
+        build_edge_join_kwargs(
+            {"how": "inner", "maintainOrder": "left_right", "on": ["k"], "coalesce": coalesce}
+        )
+
+    assert refused.value.context["coalesce"] == coalesce
+
+
 @pytest.mark.parametrize(
     ("coalesce", "expected_columns", "expected_rows"),
     [

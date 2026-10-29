@@ -37,7 +37,9 @@ What lives in v2:
     ``int|float|str|bool|date`` (B1: unknown types are rejected at
     validate-time, not silently downgraded); ``status`` is
     ``"Confirmed"`` or ``"Inferred"``; ``selected`` is bool; ``levels``
-    is an optional categorical-values list.
+    is an optional categorical-values list; a ``date`` column may set
+    ``format``, the strftime pattern its source values are written in
+    (ISO ``%Y-%m-%d`` when absent).
 
 Object-nesting transparency (2026-06-17 ruling): relational depth is the
 ARRAY (``[:]``) nesting depth ONLY. Nesting inside a 1-1 object does not
@@ -63,7 +65,14 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Literal, TypedDict
 
 from haute._graph_utils import _sanitize_identifier_characters, is_frame_label
-from haute._jsonpath import _Seg, make_output_path, parse_data_path
+from haute._jsonpath import (
+    COLUMN_PATH,
+    TABLE_PATH,
+    PathNoun,
+    _Seg,
+    make_output_path,
+    parse_data_path,
+)
 from haute.errors import HauteError
 
 _V2_TABLES_KEY = "tables"
@@ -141,6 +150,8 @@ class ColumnV2(TypedDict, total=False):
     status: ColumnStatus
     selected: bool
     levels: list[str | None] | None
+    #: A date column's strftime pattern for its source values; ISO ``%Y-%m-%d`` when absent.
+    format: str
 
 
 class TableV2(TypedDict, total=False):
@@ -152,14 +163,6 @@ class TableV2(TypedDict, total=False):
     emit: bool
     row_id_column: str | None
     columns: list[ColumnV2]
-
-
-class ApiInputV2Config(TypedDict, total=False):
-    """apiInput config stored under ``rating/config/<...>.json``."""
-
-    path: str
-    contract: str
-    tables: list[TableV2]
 
 
 _STRUCTURED_API_INPUT_SUFFIXES = (".json", ".jsonl", ".ndjson", ".xml")
@@ -229,7 +232,7 @@ def _to_pathsegs(segments: tuple[_Seg, ...]) -> tuple[PathSeg, ...]:
     return tuple((seg.name, seg.is_array) for seg in segments)
 
 
-def _parse_dollar_path(path: str, *, allow_root: bool = False) -> list[PathSeg]:
+def _parse_dollar_path(path: str, *, noun: PathNoun, allow_root: bool = False) -> list[PathSeg]:
     """Parse a ``$``-rooted dotted path into ``(key, is_array)`` segments.
 
     Delegates the whole acceptance grammar to the shared lynchpin
@@ -240,10 +243,12 @@ def _parse_dollar_path(path: str, *, allow_root: bool = False) -> list[PathSeg]:
     index/range/filter, ``..``, ``.:``, whitespace, non-identifier dot keys).
     With *allow_root* ``$[:]`` parses to ``[]`` (a table
     path's outermost level); without it a leaf is required (a column path).
+    *noun* names the path in a rejection: a table path or a column path.
     """
     parsed = parse_data_path(
         path,
         ApiInputSchemaError,
+        noun=noun,
         allow_root=allow_root,
         reserved_leaf=_RESERVED_LEAF,
     )
@@ -286,7 +291,7 @@ def parse_table_path(path: str) -> tuple[PathSeg, ...]:
     key — that key's leaves are columns of the enclosing array level).
     """
     # A table path may sit at the bare root array (``$[:]`` -> ``()``).
-    segments = _parse_dollar_path(path, allow_root=True)
+    segments = _parse_dollar_path(path, noun=TABLE_PATH, allow_root=True)
     if segments and not segments[-1][1]:
         raise ApiInputSchemaError(
             "v2 table path must end at an array '[:]' — a bare object key is not a "
@@ -317,7 +322,7 @@ def parse_column_path_full(column_path: str) -> tuple[tuple[PathSeg, ...], str]:
     """
     # A column path must name a leaf — the bare root iterator (``$`` / ``$[:]``)
     # is rejected by the shared parser (``allow_root`` left False).
-    segments = _parse_dollar_path(column_path)
+    segments = _parse_dollar_path(column_path, noun=COLUMN_PATH)
     # The leaf is the maximal trailing run of object (non-array) hops; the
     # locating segments are everything up to and including the deepest array.
     last_array = -1
@@ -515,6 +520,23 @@ def validate_v2_schema(config: dict[str, Any]) -> None:
                     column=cname,
                     type=ctype,
                 )
+            if "format" in col:
+                date_format = col["format"]
+                if ctype != "date":
+                    raise ApiInputSchemaError(
+                        f"v2 tables[{ti}].columns[{ci}].format is set on a {ctype!r} "
+                        "column; only a date column takes a format",
+                        table=label,
+                        column=cname,
+                    )
+                if not isinstance(date_format, str) or "%" not in date_format:
+                    raise ApiInputSchemaError(
+                        f"v2 tables[{ti}].columns[{ci}].format must be a strftime "
+                        "pattern such as %d/%m/%Y",
+                        table=label,
+                        column=cname,
+                        format=date_format,
+                    )
 
             levels = col.get("levels")
             if levels is not None:
