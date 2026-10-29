@@ -302,6 +302,19 @@ describe("problems", () => {
     expect(spec.sample).toEqual({ t: [{ a: "x" }] })
   })
 
+  it("drops a table's sample rows when it is made an output, which only typing fills", () => {
+    let spec = addSchemaTable(withTable(column("a", "value")), table("u", "u", { columns: [column("b", "other")] }))
+    spec = withSampleCell(spec, "t", 0, "a", "x")
+    spec = withSampleCell(spec, "u", 0, "b", "y")
+
+    const output = updateSchemaTable(spec, "t", { role: "output" })
+
+    // The form folder writes no sample for an output table, so a save would refuse them.
+    expect(output.sample).toEqual({ u: [{ b: "y" }] })
+    // An edit as any other: the form before it, which undo goes back to, keeps them.
+    expect(spec.sample).toEqual({ t: [{ a: "x" }], u: [{ b: "y" }] })
+  })
+
   it("changes a column's type, dropping the rules the new type cannot have", () => {
     let spec = withTable(
       column("a", "value", {
@@ -1130,6 +1143,13 @@ describe("what the sheets show", () => {
     expect(widgetProblems(dangling).map((p) => p.message)).toEqual([
       'Table "Equipment" shows a column that is no longer in the schema',
     ])
+    // A name a sheet's file gives that its schema doesn't hold reads as "?" and the name: the
+    // same problem, on a known table or an unknown one.
+    for (const field of [{ table: "equipment", column: "?gone" }, { table: "?gone", column: "?x" }]) {
+      expect(widgetProblems(updateWidget(spec, "w_grid", { fields: [field] })).map((p) => p.message)).toEqual([
+        'Table "Equipment" shows a column that is no longer in the schema',
+      ])
+    }
 
     // A table switched between one row and many after its columns were chosen.
     expect(widgetProblems(setSchemaTableRows(spec, "policy", "many")).map((p) => p.message)).toEqual([

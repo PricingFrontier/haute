@@ -288,14 +288,15 @@ def build_release(
     when it holds anything else, or is or holds the project or the working directory. The
     release is built in a folder beside it and takes its place only once it has built, so a
     build that fails leaves the earlier release as it was. Raises :class:`WorkbenchAppError`
-    for a project without a workbench, sheets never saved, allowed values a params file can no
-    longer give, a directory that is not a release, or a pipeline that does not validate.
+    for a project without a workbench, sheets naming a column the schema does not hold, allowed
+    values a params file can no longer give, a directory that is not a release, or a pipeline
+    that does not validate.
     """
     import shutil
 
     from haute._project import resolve_pipeline_file
     from haute._workbench_config import read_workbench_config
-    from haute._workbench_form import read_form_document
+    from haute._workbench_folder import read_form_document, unresolved_references
     from haute._workbench_params import ParamFileError, with_param_options
     from haute.deploy._config import (
         DeployConfig,
@@ -314,8 +315,9 @@ def build_release(
             "This project has no workbench: add [workbench] enabled = true to haute.toml."
         )
     document = read_form_document(config)
-    if document.revision is None:
-        raise WorkbenchAppError(f"{config.form} has never been saved: save the sheets first.")
+    unresolved = unresolved_references(document.spec)
+    if unresolved:
+        raise WorkbenchAppError(f"{config.form}/" + f"; {config.form}/".join(unresolved) + ".")
     # The allowed values a params file gives are what it holds at this commit, not the copy
     # the form kept when they were picked.
     try:

@@ -43,9 +43,14 @@ Out of scope, owned elsewhere:
 - `haute init [--target ...] [--ci ...] [--workbench] [--force]` scaffolds a new project in the
   current directory: `haute.toml`, a blank `rating/` pipeline package, `.env.example`, test-quote
   fixtures, CI/CD workflow files for the chosen provider, a git pre-commit hook, and `.gitignore`
-  guard entries; with `--workbench`, the `[workbench]` table in `haute.toml` and a blank
-  `forms/form.json` ([workbench](../workbench/high-level.md)).
-  Refuses to run if `haute.toml` already exists unless `--force` is given. A root `main.py` is
+  guard entries; with `--workbench`, the `[workbench]` table in `haute.toml` and a blank form
+  folder, `rating/workbench/` ([workbench](../workbench/high-level.md)).
+  Refuses to run if `haute.toml` already exists unless `--force` is given, but for
+  `--workbench` alone, which in a project that has a `haute.toml` adds the `[workbench]`
+  table to it and writes the blank form folder in its pipeline folder, touching nothing
+  else, and refuses when the table or the folder is already there. Either way a path of
+  the form folder reached through a link or junction refuses the init before anything is
+  written. A root `main.py` is
   always deleted: `uv init` recreates that placeholder every time it runs, and a Haute project's
   real entry point is `rating/main.py`, so the root file is a tooling artifact — never user
   content — and removing it keeps the entry point unambiguous. No `prompts/` directory or

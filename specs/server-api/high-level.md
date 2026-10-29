@@ -691,8 +691,9 @@ update replaces the canvas with the parse-error view; no earlier canvas stays vi
 local graph stays in the client, fenced and hidden, until a renderable document arrives. If the editor document itself cannot
 be read or built, the server logs the underlying exception and sends a sanitized
 `parse_error`; that frame carries only document transport failure — authored errors always
-arrive as degraded or source-only documents. A change on disk to the workbench's form file
-is announced as `workbench_form_changed`, naming the file; the workbench reads it again.
+arrive as degraded or source-only documents. A change on disk to a file of the workbench's form
+folder is announced as `workbench_form_changed`, naming the folder; the workbench reads
+it again.
 
 ## Minimal transactional pipeline repair
 

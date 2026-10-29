@@ -33,6 +33,10 @@ cells shown row by row through "this row" tests were offered again and not taken
 review](codebase-review-2026-10-25.md): the server's pricing executor and first saves, and
 what the review found in the Workbench view and the underwriter app in the browser.
 
+`WB-41` finishes moving the form into the pipeline folder, the folder of named files the
+workbench specification describes. The owner chose on 28 October 2026 that the
+Workbench nodes stop keeping copies of the tables in a pull request after the folder's.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -53,6 +57,7 @@ what the review found in the Workbench view and the underwriter app in the brows
 | WB-37 | Planned | P3 | The column key, the refusal predicate, the 409 detail reader, the empty visibility constants, the half-window width, the collapsible group and the pricing basis each exist once in the workbench and the app. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
 | WB-39 | Planned | P1 | The locally served underwriter app rejects foreign Host and forwarded requests before assigning the analyst's identity. |
+| WB-41 | Planned | P2 | The Workbench Input and Workbench Output read their tables from the form folder instead of keeping copies, so a schema change shows once in a pull request and no copy can fall out of step. |
 
 ## Planned improvements
 
@@ -671,3 +676,34 @@ temporary store. Hosted proxy operation remains covered by its existing tests.
 `src/haute/cli/_app.py::handle_app_serve`;
 `src/haute/_local_security.py::LocalTrustedHostMiddleware`;
 `tests/test_workbench_app.py`.
+
+### WB-41 — The Workbench nodes read the form folder
+**Why:** A Workbench Input and a Workbench Output keep copies of the tables, and the Input
+keeps a copy of the sample, in their config files. The editor keeps the copies current and
+deploy holds them to the form, so every schema change shows twice in a pull request
+(commercial-pricing's copies are 21,167 and 7,959 bytes), and a copy out of step is a
+failure that exists only because there is a copy. The copy's rationale, that runs, tests,
+generated code and deploy never read the form, no longer holds: the form is in the
+pipeline folder, and deploy already reads it to check the copies.
+
+**Plan:** Rewrite "A copy, not a reference" in the workbench specification first. The
+nodes then take their tables from the form folder through its reader: the schema
+gives the ports and the request's shape, and the sample is the one `sample_quote` makes,
+with its visibility and preset rows, never the typed rows read raw. The node configs hold
+no tables, the editor's synchronisation of the copies goes, and deploy's comparison
+becomes a check that the form reads and fits the pipeline. The folder's files join the
+nodes' cache keys and the pipeline's revision, and generated code and the deploy bundle
+take the tables from the folder.
+
+**Acceptance:** A schema change shows in the form folder alone. Previews, runs, `haute
+deploy` and the release price commercial-pricing's requests as before, hidden fields
+still left out of the sample. No copy can fall out of step, and an undo never brings one
+back.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_workbench_folder.py::read_form_document`;
+`src/haute/_workbench_input.py::workbench_input_tables`;
+`src/haute/_workbench_tables.py::sample_quote`;
+`src/haute/deploy/_validators.py::_workbench_form_errors`;
+`frontend/src/hooks/useWorkbenchTables.ts`.

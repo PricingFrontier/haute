@@ -1,0 +1,35 @@
+{
+  "id": "t_policy",
+  "role": "input",
+  "rows": "one",
+  "columns": [
+    {
+      "id": "c_state",
+      "name": "state",
+      "type": "str",
+      "label": "State",
+      "required": true,
+      "options": [
+        "CA",
+        "NY"
+      ],
+      "default_value": "CA"
+    },
+    {
+      "id": "c_exposure",
+      "name": "exposure",
+      "type": "float",
+      "group": "Cover",
+      "min": 0.0,
+      "help": "Sum insured",
+      "placeholder": "e.g. 250,000",
+      "number_format": "currency_gbp",
+      "decimal_places": 0
+    },
+    {
+      "id": "c_renewal",
+      "name": "renewal",
+      "type": "bool"
+    }
+  ]
+}

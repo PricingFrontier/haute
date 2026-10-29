@@ -1,0 +1,15 @@
+{
+  "id": "t_pricing",
+  "role": "output",
+  "rows": "one",
+  "columns": [
+    {
+      "id": "c_premium",
+      "name": "premium",
+      "type": "float",
+      "label": "Premium",
+      "number_format": "currency_gbp",
+      "decimal_places": 2
+    }
+  ]
+}

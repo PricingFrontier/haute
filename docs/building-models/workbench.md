@@ -4,16 +4,18 @@ The workbench is where a pricing team lays out the quote an underwriter keys in:
 **schema** of typed tables the pipeline reads, and the **sheets**, each a stack of
 **sections** holding Tables and Collections that show those tables' columns, Charts that
 plot them and Headings that name them. It is part of Haute, switched
-on per project, and what it holds lives in a file in the project, `forms/form.json`,
-versioned beside the pipeline.
+on per project, and what it holds lives in the pipeline folder, in `rating/workbench/`,
+versioned beside the pipeline: a file for each table and each sheet
+([The workbench's files](#the-workbenchs-files)).
 
 !!! note "Enabling it"
-    Add the table to `haute.toml` (`haute init --workbench` writes it for a new project):
+    `haute init --workbench` switches it on: in a new project, or in one that has no
+    workbench yet, it adds the table to `haute.toml` and writes the blank workbench's
+    files.
 
     ```toml
     [workbench]
     enabled = true
-    form = "forms/form.json"   # optional; this is the default
     ```
 
     While it is enabled, the node palette offers the [Workbench Input](nodes/workbench-input.md)
@@ -34,20 +36,49 @@ Out**, in the same places as the pipeline editor's, then **Build** over **Previe
 **Schema** over **Display**. They stay in place in both modes: Display is greyed out in
 Preview. Preview prices the sample on the source the dropdown shows.
 
-**Save** and Ctrl+S save the project, the same from either view: `forms/form.json` first
-when the workbench has unsaved edits, then the pipeline, with the Workbench Input's and
-Workbench Output's tables brought up to date in between, and each file's save is recorded
-on your branch's save ledger, so it shows in the Git panel's history. **Commit** records a
-milestone of the whole project after that save. A save is refused when the form file
-changed on disk since the workbench read it (an edit by hand, or a branch switched outside
-Haute), and then the pipeline is not saved either; the banner's **Reload** reads the file
-again, dropping your unsaved edits. When the form file changes on disk (an edit by hand, a
-pull, or a branch switched), the workbench follows it, unless you have unsaved edits, when
-the banner appears instead. A form whose file leaves a component below its section or past its
-sheet's edge, as a merge or an edit by hand can, opens with that section or sheet grown
-to hold it, nothing moved: a notice says what grew, and the next save keeps it.
+**Save** and Ctrl+S save the project, the same from either view: the workbench's files
+that changed first, when the workbench has unsaved edits, then the pipeline, with the
+Workbench Input's and Workbench Output's tables brought up to date in between, and each
+save is recorded on your branch's save ledger, so it shows in the Git panel's history.
+**Commit** records a milestone of the whole project after that save. A save is refused
+when one of the workbench's files changed on disk since the workbench read them (an edit
+by hand, or a branch switched outside Haute), and then the pipeline is not saved either;
+the banner's **Reload** reads them again, dropping your unsaved edits. When one of them
+changes on disk (an edit by hand, a pull, or a branch switched), the workbench follows
+it, unless you have unsaved edits, when the banner appears instead. A layout file that
+leaves a component below its section or past its sheet's edge, as a merge or an edit by
+hand can, opens with that section or sheet grown to hold it, nothing moved: a notice
+says what grew, and the next save keeps it.
 
 Both workbench nodes' panels have **Edit in Workbench**, which opens the view.
+
+## The workbench's files
+
+The workbench keeps what it holds in the pipeline folder's `workbench/` folder, a JSON
+file for each part, so a pull request shows each change in the file of the table or
+sheet it changed. A save writes only the files that changed.
+
+| File | What it holds |
+|---|---|
+| `workbench/form.json` | The project's name, the sheets' colours set under **Display** in the toolbar, and the order of the tables and of the sheets |
+| `workbench/schema/<table>.json` | A table: its role, its rows and its columns with their settings. `quote_details.json` holds only what the project sets on Haute's own table |
+| `workbench/sheets/<sheet>.json` | A sheet: its sections, and their components with what they show and how they look |
+| `workbench/sheets/<sheet>.layout.json` | Where the sheet's components sit: the sheet's width, each section's height, and each component's place and size |
+| `workbench/sample/<table>.json` | The sample's rows for an input table, while it has any |
+
+A table's files are named after the table in lower case, and a sheet's after its title
+(**BR Coverages** is `br_coverages.json`). Each file says only what is set: a setting left
+at its default is not written. A component names a column as `table.column`, or by the
+column's name alone where its table is already given. Each table and column keeps the id
+written beside its name for good, so renaming one keeps the values saved quotes hold for
+it. The quote's reference and option lead every table without being written in its file.
+
+The workbench opens only a folder whose files `form.json` lists: a file it doesn't list,
+a listed file that is missing, a file named in capitals, or a table's file naming two columns
+alike stops it opening, with a message naming the file. A missing folder is restored from
+version history; the workbench never starts it again blank. A column that a sheet names but
+the schema doesn't hold, as an edit by hand can leave, shows as a missing column on the
+sheet, and a deploy refuses the project until it is put right.
 
 ## Schema
 

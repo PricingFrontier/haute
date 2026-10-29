@@ -733,6 +733,17 @@ describe("WidgetBody", () => {
     expect(within(boxes()).getAllByTestId("collection-spacer")).toHaveLength(1)
   })
 
+  it("names a field its sheet's file gives a name the schema doesn't hold, read as an unresolved id, while building", () => {
+    // policy.region in the file, which the schema doesn't hold, reads as "?region".
+    const fields = [{ table: "policy", column: "policy.state" }, { table: "policy", column: "?region" }]
+    loadForm(updateWidget(coverForm(), "w_boxes", { fields, spacers: [] }))
+    render(<SheetCanvas />)
+    const boxes = () => screen.getByTestId("sheet-widget-w_boxes")
+
+    expect(within(boxes()).getByText("Missing column")).toBeInTheDocument()
+    expect(within(boxes()).getByRole("combobox", { name: "State" })).toBeInTheDocument()
+  })
+
   it("names a field whose column is gone while building, a column Haute makes no more among them, and leaves it out in Preview", () => {
     // A field on quote_details' valid_until, which an earlier Haute made, beside the state.
     const fields = [{ table: "policy", column: "policy.state" }, { table: "quote_details", column: "qd_valid_until" }]

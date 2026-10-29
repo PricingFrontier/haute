@@ -164,10 +164,42 @@ export type HeadingOptions = Pick<HeadingWidget, "size" | "align">
 export const TABLE_ROWS_MAX = 50
 export const COLLECTION_COLUMNS_MAX = 12
 
+/** A table's or a column's id: 64 random bits after `prefix`, `t` or `c`. */
 export function newId(prefix: string): string {
   const bits = crypto.getRandomValues(new Uint8Array(8))
   return `${prefix}_${Array.from(bits, (byte) => byte.toString(16).padStart(2, "0")).join("")}`
 }
+
+/** What a sheet's part's id is made of after its kind. */
+const PART_ID_CHARACTERS = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+/** What a sheet's part is, as its id starts: a component's kind, `table` for a Table. */
+export type PartKind = "sheet" | "section" | "table" | Exclude<WidgetType, "tableInput">
+
+/** The kind a component of `type`'s id starts with. */
+export const partKind = (type: WidgetType): PartKind => (type === "tableInput" ? "table" : type)
+
+/**
+ * A sheet's, a section's or a component's id, as the form folder's files name it, so a
+ * layout line says what it places: its kind, then `_` and four random lowercase letters or
+ * digits, drawn again while `taken`, the form's own ids, holds it.
+ */
+export function newPartId(kind: PartKind, taken: Iterable<string> = []): string {
+  const used = new Set(taken)
+  let id: string
+  do {
+    const bytes = crypto.getRandomValues(new Uint8Array(4))
+    id = `${kind}_${Array.from(bytes, (byte) => PART_ID_CHARACTERS[byte % PART_ID_CHARACTERS.length]).join("")}`
+  } while (used.has(id))
+  return id
+}
+
+/** Every sheet's, section's and component's id in `spec`, which a new one must not take. */
+export const formPartIds = (spec: FormSpec): string[] => [
+  ...spec.pages.map((page) => page.id),
+  ...allSections(spec).map((section) => section.id),
+  ...allWidgets(spec).map((widget) => widget.id),
+]
 
 /** `base`, or `base_2`, `base_3`… until it is none of `taken`. */
 export function uniqueName(base: string, taken: Iterable<string>): string {
@@ -294,10 +326,31 @@ export const addSchemaTable = (spec: FormSpec, table: SchemaTable): FormSpec =>
     draft.schema.tables.push(table)
   })
 
+/**
+ * A table's settings changed; a table made an output loses what only typing gives: the
+ * rules only what is typed takes (`INPUT_ONLY_RULES`) and its sample rows, which the form
+ * folder writes for no output table.
+ */
 export const updateSchemaTable = (spec: FormSpec, id: string, patch: Partial<SchemaTable>): FormSpec =>
   edit(spec, (draft) => {
-    Object.assign(schemaTableOf(draft, id), patch)
+    const table = schemaTableOf(draft, id)
+    Object.assign(table, patch)
+    if (patch.role === "output") {
+      table.columns = table.columns.map((column) => ({ ...column, ...INPUT_ONLY_RULES }))
+      delete draft.sample[id]
+    }
   })
+
+/** The settings only an input column takes, each as a column without it holds it. */
+const INPUT_ONLY_RULES: Pick<SchemaColumn, "required" | "min" | "max" | "options" | "options_source" | "row_per_value" | "default_value"> = {
+  required: false,
+  min: null,
+  max: null,
+  options: [],
+  options_source: null,
+  row_per_value: false,
+  default_value: "",
+}
 
 /**
  * Move the table at `from` in the schema to `to`; Haute's quote_details table, first, stays
@@ -617,9 +670,12 @@ function pageOf(spec: FormSpec, id: string): Page {
 /** When a new sheet, section or component shows: always, with no conditions. */
 const alwaysShown = (): ShowWhen => ({ match: "all", conditions: [] })
 
-/** A new section of `page`, named in turn on it, `height` tall, always shown and empty. */
-export const createSection = (page: Page, height: number = NEW_SECTION_HEIGHT): Section => ({
-  id: newId("section"),
+/**
+ * A new section of `page`, named in turn on it, `height` tall, always shown and empty, its
+ * id none of `taken`, the form's own (`formPartIds`).
+ */
+export const createSection = (page: Page, height: number = NEW_SECTION_HEIGHT, taken: Iterable<string> = []): Section => ({
+  id: newPartId("section", taken),
   title: uniqueName(`Section ${page.sections.length + 1}`, page.sections.map((section) => section.title)),
   height,
   show_when: alwaysShown(),
@@ -631,14 +687,15 @@ export const createSection = (page: Page, height: number = NEW_SECTION_HEIGHT): 
  * none), always shown, holding one section `BLANK_SECTION_HEIGHT` tall: the whole sheet.
  */
 export function createPage(spec: FormSpec): Page {
+  const taken = formPartIds(spec)
   const page: Page = {
-    id: newId("page"),
+    id: newPartId("sheet", taken),
     title: uniqueName(`Sheet ${spec.pages.length + 1}`, spec.pages.map((candidate) => candidate.title)),
     width: spec.pages.at(-1)?.width ?? BLANK_SHEET_WIDTH,
     show_when: alwaysShown(),
     sections: [],
   }
-  page.sections.push(createSection(page, BLANK_SECTION_HEIGHT))
+  page.sections.push(createSection(page, BLANK_SECTION_HEIGHT, [...taken, page.id]))
   return page
 }
 
@@ -988,12 +1045,12 @@ export const CHART_OPTIONS: Readonly<ChartOptions> = {
 /** A new Heading's options: medium, a section's heading, aligned left. */
 export const HEADING_OPTIONS: Readonly<HeadingOptions> = { size: "medium", align: "left" }
 
-/** A new component of `type` at `rect`, showing nothing yet, and always. */
-export function createWidget<T extends WidgetType>(type: T, rect: Rect): Extract<Widget, { type: T }>
-export function createWidget(type: WidgetType, rect: Rect): Widget {
+/** A new component of `type` at `rect`, showing nothing yet, and always, its id none of `taken`, the form's own (`formPartIds`). */
+export function createWidget<T extends WidgetType>(type: T, rect: Rect, taken?: Iterable<string>): Extract<Widget, { type: T }>
+export function createWidget(type: WidgetType, rect: Rect, taken: Iterable<string> = []): Widget {
   // In the file's order, so a component the view made compares equal to it saved.
   const { x, y, w, h } = rect
-  const placed = { id: newId("w"), x, y, w, h }
+  const placed = { id: newPartId(partKind(type), taken), x, y, w, h }
   const showing = { title: "", fields: [] as FieldRef[], show_when: alwaysShown() }
   switch (type) {
     case "collection":
@@ -1055,7 +1112,7 @@ export function addWidgetInFreePlace(spec: FormSpec, sectionId: string, type: Wi
   const found = findSection(spec, sectionId)
   if (found === null) throw new Error(`No sheet has a section ${sectionId}`)
   const fitted = { w: Math.min(size.w, found.page.width), h: size.h }
-  const widget = createWidget(type, { ...freePlace(found.section.widgets, fitted, found.page.width), ...fitted })
+  const widget = createWidget(type, { ...freePlace(found.section.widgets, fitted, found.page.width), ...fitted }, formPartIds(spec))
   const next = edit(spec, (draft) => {
     const { page, section } = findSection(draft, sectionId)!
     section.widgets.push(widget)
@@ -1181,7 +1238,9 @@ export const COPY_OFFSET = 16
 
 /** A copy of a component just below and to the right of it, in the same section, kept inside it and its sheet's width (`keptInside`). */
 export function duplicateWidget(spec: FormSpec, id: string): { spec: FormSpec; id: string } {
-  const copyId = newId("w")
+  const original = findWidget(spec, id)
+  if (original === null) throw new Error(`No sheet has a component ${id}`)
+  const copyId = newPartId(partKind(original.widget.type), formPartIds(spec))
   const next = edit(spec, (draft) => {
     const found = findWidget(draft, id)
     if (found === null) throw new Error(`No sheet has a component ${id}`)
@@ -1216,7 +1275,7 @@ export function pasteWidget(spec: FormSpec, widget: Widget, sectionId: string): 
     if (next.x === at.x && next.y === at.y) break
     at = next
   }
-  const id = newId("w")
+  const id = newPartId(partKind(widget.type), formPartIds(spec))
   const copy: Widget = { ...structuredClone(widget), id, ...at }
   const gone = (field: FieldRef) => fieldColumn(spec, field) === null
   dropShown(copy, gone)

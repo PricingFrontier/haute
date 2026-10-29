@@ -400,7 +400,9 @@ branch needs no `live` value), adds every `project_modules` import message (a pr
 import the bundle does not carry), rechecks the projected output-field invariant, checks
 a workbench project's Workbench nodes against its form (`_workbench_form_errors`: with
 a Workbench node in the pruned graph and `[workbench] enabled = true`, the form is read
-by `read_form_document`, a file that does not exist refused, and each node's
+from its folder by `read_form_document`, a folder that does not exist refused, a form
+naming a table or column its schema does not hold refused through `unresolved_references`,
+naming each file, place and name, and each node's
 `tables` config compared with `input_tables` or `output_tables` of the form by
 `table_disagreements`, one error per node naming every difference and the Save that
 brings the copy up to date; a node's copy or a form that cannot be read is reported as
@@ -1108,9 +1110,10 @@ what they cover:
   guard clauses in `score_test_quotes`); `test_deploy_validators_gaps.py` also holds the
   workbench form check: copies equal to the form pass, each kind of difference (a table
   or column on one side only, rows per quote, a column's type, table and column order, an
-  output copy) is named with the Save that fixes it, a form file that does not exist or
-  is not JSON and a copy not as the workbench writes it are reported, and a project whose
-  workbench is off is not checked.
+  output copy) is named with the Save that fixes it, a form folder that does not exist, a
+  file in it that is not JSON, a form naming a column its schema does not hold and a copy
+  not as the workbench writes it are reported, and a project whose workbench is off is not
+  checked.
 - **`test_deploy_scorer_artifact_cache.py`** — `StatGatedCache` behaviour specific to
   deploy: model loaded once per artefact across repeated scoring calls, cache
   invalidation on stat-gate (mtime/size) change, deploy artefact-path fingerprint

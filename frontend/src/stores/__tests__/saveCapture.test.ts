@@ -83,15 +83,15 @@ describe("reportSaveCapture", () => {
   })
 
   it("keeps every file a capture skipped, each once, until a capture takes them", async () => {
-    reportSaveCapture({ identity_required: true, uncaptured: ["forms/form.json"] })
-    reportSaveCapture({ identity_required: true, uncaptured: ["rating/files/data/a.csv", "forms/form.json"] })
-    expect(useGitStore.getState().uncaptured).toEqual(["forms/form.json", "rating/files/data/a.csv"])
+    reportSaveCapture({ identity_required: true, uncaptured: ["rating/workbench/form.json"] })
+    reportSaveCapture({ identity_required: true, uncaptured: ["rating/files/data/a.csv", "rating/workbench/form.json"] })
+    expect(useGitStore.getState().uncaptured).toEqual(["rating/workbench/form.json", "rating/files/data/a.csv"])
 
     // The identity is set now: one capture takes both, and nothing is kept.
     vi.mocked(captureFiles).mockResolvedValue({ git_sha: "ledger-2", warnings: [], identity_required: false, uncaptured: [] })
     await captureUncaptured()
 
-    expect(captureFiles).toHaveBeenCalledWith(["forms/form.json", "rating/files/data/a.csv"])
+    expect(captureFiles).toHaveBeenCalledWith(["rating/workbench/form.json", "rating/files/data/a.csv"])
     expect(useGitStore.getState().uncaptured).toEqual([])
     expect(useGitStore.getState().status?.last_save_sha).toBe("ledger-2")
 
@@ -101,20 +101,20 @@ describe("reportSaveCapture", () => {
   })
 
   it("keeps what a capture still skips, and everything when the request fails", async () => {
-    reportSaveCapture({ uncaptured: ["forms/form.json", "rating/pipeline.py"] })
+    reportSaveCapture({ uncaptured: ["rating/workbench/form.json", "rating/pipeline.py"] })
     vi.mocked(captureFiles).mockResolvedValueOnce({
       git_sha: null,
       warnings: ["Changes saved; version capture failed: busy"],
       identity_required: false,
-      uncaptured: ["forms/form.json", "rating/pipeline.py"],
+      uncaptured: ["rating/workbench/form.json", "rating/pipeline.py"],
     })
     await captureUncaptured()
-    expect(useGitStore.getState().uncaptured).toEqual(["forms/form.json", "rating/pipeline.py"])
+    expect(useGitStore.getState().uncaptured).toEqual(["rating/workbench/form.json", "rating/pipeline.py"])
 
     vi.mocked(captureFiles).mockRejectedValueOnce(new ApiError("HTTP 500", 500, "the server stopped", null, null))
     await captureUncaptured()
 
-    expect(useGitStore.getState().uncaptured).toEqual(["forms/form.json", "rating/pipeline.py"])
+    expect(useGitStore.getState().uncaptured).toEqual(["rating/workbench/form.json", "rating/pipeline.py"])
     expect(toasts()).toEqual([
       ["warning", "Changes saved; version capture failed: busy"],
       ["error", "Version capture failed: the server stopped"],
@@ -122,7 +122,7 @@ describe("reportSaveCapture", () => {
   })
 
   it("keeps a file a write reports while the capture is under way", async () => {
-    reportSaveCapture({ uncaptured: ["forms/form.json"] })
+    reportSaveCapture({ uncaptured: ["rating/workbench/form.json"] })
     let answer: (value: Awaited<ReturnType<typeof captureFiles>>) => void = () => undefined
     vi.mocked(captureFiles).mockReturnValueOnce(new Promise((resolve) => { answer = resolve }))
 

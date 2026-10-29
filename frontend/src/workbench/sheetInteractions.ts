@@ -43,6 +43,7 @@ import {
   createWidget,
   findSection,
   findWidget,
+  formPartIds,
   keptInside,
   moveSection,
   placeWidget,
@@ -273,7 +274,7 @@ export function startCreate(e: ReactPointerEvent, type: PaletteType): void {
       if (type === "section") {
         const drop = sectionDropAt(event.clientX, event.clientY)
         if (drop === null) return
-        const section = createSection(page)
+        const section = createSection(page, undefined, formPartIds(form))
         const { place } = drop
         change((spec) => ("split" in place ? splitSection(spec, place.split, place.at, section) : addSection(spec, page.id, section, place.index)))
         view.showPage(page.id)
@@ -282,7 +283,7 @@ export function startCreate(e: ReactPointerEvent, type: PaletteType): void {
       }
       const drop = dropAt(type, event.clientX, event.clientY)
       if (drop === null) return
-      const widget = createWidget(type, drop.rect)
+      const widget = createWidget(type, drop.rect, formPartIds(form))
       change((spec) => addWidget(spec, drop.sectionId, widget))
       view.showPage(page.id)
       view.select(widget.id)
@@ -310,7 +311,7 @@ export function createWithoutPointer(type: PaletteType): string | null {
   const selected = view.selectedId === null ? null : findWidget(form, view.selectedId)
   const at = page.sections.findIndex((section) => section.id === (view.sectionId ?? selected?.section.id))
   if (type === "section") {
-    const section = createSection(page)
+    const section = createSection(page, undefined, formPartIds(form))
     change((spec) => addSection(spec, page.id, section, at === -1 ? page.sections.length : at + 1))
     view.showPage(page.id)
     view.selectSection(section.id)

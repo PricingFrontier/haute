@@ -633,6 +633,20 @@ def _canonical_remote(cwd: Path | None = None) -> str | None:
     return None
 
 
+def _workbench_form_part(path: Path) -> str | None:
+    """A workbench form folder's file as a save's message names it: ``workbench/`` and its
+    path in the folder without ``.json``, a sheet's layout as ``layout``; None for any other
+    file."""
+    parts = path.parts
+    if "workbench" not in parts or path.suffix != ".json":
+        return None
+    inside = parts[len(parts) - 1 - parts[::-1].index("workbench") :]
+    name = "/".join(inside)
+    if name.endswith(".layout.json"):
+        return name.removesuffix(".layout.json") + " layout"
+    return name.removesuffix(".json")
+
+
 def _generate_commit_message(changed_files: list[str]) -> str:
     """Generate a human-readable commit message from changed file paths."""
     if not changed_files:
@@ -642,7 +656,10 @@ def _generate_commit_message(changed_files: list[str]) -> str:
     names: list[str] = []
     for f in changed_files:
         p = Path(f)
-        if p.suffix == ".py" and p.stem != "__init__":
+        form_part = _workbench_form_part(p)
+        if form_part is not None:
+            names.append(form_part)
+        elif p.suffix == ".py" and p.stem != "__init__":
             names.append(p.stem)
         elif p.suffix == ".json" and "config" in str(p):
             names.append(f"config/{p.stem}")

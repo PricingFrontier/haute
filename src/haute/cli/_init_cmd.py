@@ -15,6 +15,7 @@ import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
 import click
 from packaging.requirements import Requirement
@@ -31,7 +32,7 @@ class InitConfig:
     target: str
     ci: str
     force: bool = False
-    # Enable the project's workbench: the [workbench] table and a blank forms/form.json.
+    # Enable the project's workbench: the [workbench] table and a blank form folder.
     workbench: bool = False
 
 
@@ -486,6 +487,87 @@ def write_generated_files(project_dir: Path, files: Mapping[str, str]) -> list[s
     return changed
 
 
+def _form_folder_problem(project_dir: Path, relative: str, files: Mapping[str, str]) -> str | None:
+    """Why the form folder at *relative* cannot be written with *files*: the first path that
+    is no ordinary one of the project's (a link or junction on the way, one leading out of
+    the project, a reserved name), said as the refusal; None when every path is."""
+    from haute._artifact_paths import PATH_PROBLEMS, ordinary_path_problem
+
+    for path in files:
+        _, problem = ordinary_path_problem(project_dir, f"{relative}/{path}")
+        if problem is not None:
+            return f"{relative}/{path} {PATH_PROBLEMS[problem]}."
+    return None
+
+
+def _write_form_folder(folder: Path, files: dict[str, str]) -> None:
+    """The form folder's *files*, each its text by its path from *folder*, written as LF bytes,
+    as the folder's own saves write them, so its first save rewrites none of them."""
+    for path, text in files.items():
+        target = folder / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(text.encode("utf-8"))
+
+
+def _add_workbench(project_dir: Path) -> None:
+    """``haute init --workbench`` in a project that has a ``haute.toml``: the
+    ``[workbench]`` table appended to it and the blank form folder written in its pipeline
+    folder, nothing else. Refused, writing nothing, while either is there or a path it would
+    write is no ordinary file of the project's; a failure removes the folder it made and
+    leaves ``haute.toml`` as it was, so a second run starts from where the first did."""
+    import shutil
+    import tomllib
+
+    from haute._file_ops import atomic_write_bytes
+    from haute._project import resolve_pipeline_file
+    from haute._scaffold import starter_form
+    from haute._workbench_config import FORM_FOLDER
+
+    def refuse(message: str) -> NoReturn:
+        click.echo(f"Error: {message}", err=True)
+        raise SystemExit(1)
+
+    toml_path = project_dir / "haute.toml"
+    original = toml_path.read_bytes()
+    try:
+        data = tomllib.loads(original.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        refuse(f"haute.toml could not be read: {exc}")
+    if "workbench" in data:
+        refuse("haute.toml already has a [workbench] table; the project has its workbench.")
+    try:
+        pipeline_file = resolve_pipeline_file(project_dir)
+    except FileNotFoundError as exc:
+        refuse(f"the workbench's form goes beside the pipeline: {exc}")
+    folder = pipeline_file.parent / FORM_FOLDER
+    try:
+        relative = folder.resolve().relative_to(project_dir.resolve()).as_posix()
+    except ValueError:
+        refuse(f"the pipeline folder is outside the project, so its form folder would be: {folder}")
+    if folder.exists():
+        refuse(f"{relative} is already there; the project has its workbench's form.")
+    project = data.get("project")
+    name = (
+        str(project["name"])
+        if isinstance(project, dict) and isinstance(project.get("name"), str)
+        else project_dir.name
+    )
+    files = starter_form(name, folder)
+    problem = _form_folder_problem(project_dir, relative, files)
+    if problem is not None:
+        refuse(problem)
+    try:
+        _write_form_folder(folder, files)
+        atomic_write_bytes(toml_path, original.rstrip() + b"\n\n[workbench]\nenabled = true\n")
+    except OSError as exc:
+        # The folder did not exist before this run, so all of it is this run's.
+        shutil.rmtree(folder, ignore_errors=True)
+        refuse(f"the workbench could not be added: {exc}")
+    click.echo(f"Added the workbench to '{name}'\n")
+    click.echo("  haute.toml            - [workbench] enabled = true")
+    click.echo(f"  {relative + '/':<21} - the workbench's blank form")
+
+
 def handle_init(config: InitConfig) -> None:
     """Scaffold a Haute project at :func:`pathlib.Path.cwd`.
 
@@ -509,6 +591,7 @@ def handle_init(config: InitConfig) -> None:
         starter_utility_features,
         starter_utility_init,
     )
+    from haute._workbench_config import FORM_FOLDER
 
     target = config.target
     ci = config.ci
@@ -519,6 +602,9 @@ def handle_init(config: InitConfig) -> None:
     project_dir = Path.cwd()
 
     if (project_dir / "haute.toml").exists() and not config.force:
+        if config.workbench:
+            _add_workbench(project_dir)
+            return
         click.echo(
             "Error: haute.toml already exists - project already initialised. "
             "Re-run with --force to overwrite the existing scaffold.",
@@ -541,6 +627,18 @@ def handle_init(config: InitConfig) -> None:
             pyproject = tomllib.load(fh)
         if "project" in pyproject and "name" in pyproject["project"]:
             name = pyproject["project"]["name"]
+
+    # -- rating/workbench/'s paths, checked before anything is written ---------
+    # A form folder already there, on a --force re-init, is the analyst's form: never a blank
+    # one in its place.
+    form_folder = project_dir / "rating" / FORM_FOLDER
+    form_files = (
+        starter_form(name, form_folder) if config.workbench and not form_folder.exists() else {}
+    )
+    problem = _form_folder_problem(project_dir, f"rating/{FORM_FOLDER}", form_files)
+    if problem is not None:
+        click.echo(f"Error: {problem}", err=True)
+        raise SystemExit(1)
 
     # -- pyproject.toml - ensure haute is a dependency -------------------------
     _ensure_haute_dependency(pyproject_path, name)
@@ -584,11 +682,9 @@ def handle_init(config: InitConfig) -> None:
         encoding="utf-8",
     )
 
-    # -- forms/form.json - the workbench's blank form --------------------------
-    if config.workbench:
-        forms_dir = project_dir / "forms"
-        forms_dir.mkdir(exist_ok=True)
-        (forms_dir / "form.json").write_text(starter_form(name), encoding="utf-8")
+    # -- rating/workbench/ - the workbench's blank form folder ------------------
+    if form_files:
+        _write_form_folder(form_folder, form_files)
 
     # -- .env.example - target-specific credentials ----------------------------
     (project_dir / ".env.example").write_text(env_example(target), encoding="utf-8")
@@ -613,7 +709,7 @@ def handle_init(config: InitConfig) -> None:
     # stale workflows don't linger.
     if config.force:
         _prune_stale_ci_files(project_dir, keep=ci)
-    generated_ci = ci_files(target, ci, workbench=config.workbench, python_version=python_version)
+    generated_ci = ci_files(target, ci, python_version=python_version)
     write_generated_files(project_dir, generated_ci)
 
     # -- Pre-commit hook -------------------------------------------------------
@@ -652,7 +748,7 @@ def handle_init(config: InitConfig) -> None:
     click.echo("  pyproject.toml        - haute added as dependency")
     if config.workbench:
         click.echo("  haute.toml            - project, deploy, safety, CI & workbench config")
-        click.echo("  forms/form.json       - the workbench's blank form")
+        click.echo("  rating/workbench/     - the workbench's blank form")
     else:
         click.echo("  haute.toml            - project, deploy, safety & CI config")
     click.echo(f"  .env.example         - {target} credentials template")
@@ -708,7 +804,7 @@ def handle_init(config: InitConfig) -> None:
     is_flag=True,
     help=(
         "Enable the project's workbench: add the [workbench] table to haute.toml and a "
-        "blank forms/form.json."
+        "blank form folder beside the pipeline, in a new project or in one that has none."
     ),
 )
 @click.option(
@@ -723,7 +819,8 @@ def init(target: str, ci: str, workbench: bool, force: bool) -> None:
     Generates haute.toml, CI/CD workflows, credentials template, and a
     starter pipeline - all configured for the chosen deploy target and
     CI provider. With --workbench, the project's workbench is enabled in
-    haute.toml and its blank form written to forms/form.json.
+    haute.toml and its blank form folder written to rating/workbench/; in a project
+    that already has a haute.toml, --workbench adds the table and the folder alone.
 
     \b
     Examples:

@@ -19,7 +19,8 @@ from haute._logging import get_logger
 from haute._output_assembler import pruned_document
 from haute._types import GLOBAL_CONSTANTS_FILE, NodeType, PipelineGraph
 from haute._workbench_config import WorkbenchConfigError, read_workbench_config
-from haute._workbench_form import WorkbenchFormError, identity_clashes, read_form_document
+from haute._workbench_folder import read_form_document, unresolved_references
+from haute._workbench_form import WorkbenchFormError, identity_clashes
 from haute._workbench_tables import (
     WorkbenchTablesError,
     input_tables,
@@ -484,9 +485,10 @@ def _workbench_form_errors(resolved: ResolvedDeploy) -> list[str]:
 
     The editor copies the form's input tables into the Workbench Input and its output tables
     into the Workbench Output, so the pipeline runs without the form; a copy that no longer
-    matches the form would deploy tables the sheets do not ask for. The form is read
-    strictly: one that does not exist is refused, not read as the blank form. A table a
-    column of the project's own keeps from the quote's reference and option is refused too.
+    matches the form would deploy tables the sheets do not ask for. The form is read from its
+    folder strictly: a folder that does not exist is refused. A table a column of the
+    project's own keeps from the quote's reference and option is refused too, and so is a
+    sheet naming a table or column the schema does not hold.
     """
     nodes = [
         node
@@ -502,13 +504,8 @@ def _workbench_form_errors(resolved: ResolvedDeploy) -> list[str]:
         document = read_form_document(config)
     except (WorkbenchConfigError, WorkbenchFormError) as exc:
         return [str(exc)]
-    if document.revision is None:
-        return [
-            f"The workbench is enabled but {config.form} does not exist, so the pipeline's "
-            "Workbench nodes cannot be checked against the form. Save the project in Haute's "
-            "editor to write it, or turn the workbench off in haute.toml."
-        ]
     errors = [f"{config.form}: {clash}." for clash in identity_clashes(document.spec)]
+    errors += [f"{config.form}/{found}." for found in unresolved_references(document.spec)]
     for node in nodes:
         reads_quotes = node.data.nodeType == NodeType.WORKBENCH_INPUT
         owner = "Workbench Input" if reads_quotes else "Workbench Output"

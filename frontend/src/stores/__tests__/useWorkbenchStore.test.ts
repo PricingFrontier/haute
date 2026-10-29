@@ -19,12 +19,12 @@ describe("useWorkbenchStore", () => {
   })
 
   it("reads whether the project's workbench is enabled, and where its form is, from GET /api/workbench", async () => {
-    const fetchSpy = respond({ enabled: true, form: "forms/form.json" })
+    const fetchSpy = respond({ enabled: true, form: "rating/workbench" })
 
     await useWorkbenchStore.getState().load()
 
     expect(String(fetchSpy.mock.calls[0][0])).toContain("/api/workbench")
-    expect(useWorkbenchStore.getState()).toMatchObject({ enabled: true, formPath: "forms/form.json" })
+    expect(useWorkbenchStore.getState()).toMatchObject({ enabled: true, formPath: "rating/workbench" })
     expect(useToastStore.getState().toasts).toEqual([])
   })
 
@@ -182,7 +182,7 @@ describe("refreshTables", () => {
     const kept = store().tables
 
     store().refreshTables()
-    const missing = "forms/form.json does not exist: create it, point [workbench].form at the form, or set [workbench] enabled = false in haute.toml."
+    const missing = "rating/workbench does not exist: restore it from version history (a project starts its workbench with haute init --workbench)"
     held.answer(1, { detail: missing }, 409)
 
     await vi.waitFor(() => expect(useToastStore.getState().toasts).toHaveLength(1))

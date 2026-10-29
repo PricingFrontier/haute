@@ -55,8 +55,10 @@ _SEED_PATHSPECS: tuple[str, ...] = (
     "*.haute.json",
     "config/",
     "*/config/*",
-    # The workbench's form (specs/workbench), versioned beside the pipeline.
-    "forms/",
+    # The workbench's form folder (specs/workbench), in the pipeline folder or, for a
+    # pipeline at the root, at the root.
+    "workbench/",
+    "*/workbench/*",
     "prompts/",
     "tests/",
     ".githooks/",

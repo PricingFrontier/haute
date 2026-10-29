@@ -1,0 +1,14 @@
+{
+  "columns": [
+    {
+      "name": "quote_option",
+      "number_format": "number",
+      "decimal_places": 0
+    },
+    {
+      "name": "insured",
+      "label": "Insured name",
+      "required": true
+    }
+  ]
+}

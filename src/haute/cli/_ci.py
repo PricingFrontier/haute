@@ -136,7 +136,6 @@ def handle_ci_update() -> None:
         production_environment_problem,
         staging_suffix_problem,
     )
-    from haute._workbench_config import WorkbenchConfigError, read_workbench_config
     from haute.cli._init_cmd import _prune_stale_ci_files, write_generated_files
 
     project_dir, deploy_config = _project()
@@ -152,14 +151,12 @@ def handle_ci_update() -> None:
             raise click.ClickException(f"{key} in haute.toml {problem}.")
     try:
         python_version = project_python_version(project_dir)
-        workbench = read_workbench_config(project_dir).enabled
-    except (ProjectPythonError, WorkbenchConfigError) as exc:
+    except ProjectPythonError as exc:
         raise click.ClickException(str(exc)) from exc
     try:
         generated = ci_files(
             target,
             provider,
-            workbench=workbench,
             python_version=python_version,
             staging_suffix=staging_suffix,
             production_environment=production_environment,

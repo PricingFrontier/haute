@@ -1,0 +1,183 @@
+{
+  "id": "sheet_cv01",
+  "title": "BR Coverages",
+  "sections": [
+    {
+      "id": "section_cv01",
+      "title": "Cover",
+      "components": [
+        {
+          "id": "collection_k3f9",
+          "type": "collection",
+          "title": "Policy",
+          "fields": [
+            "policy.state",
+            "policy.exposure",
+            "pricing.premium"
+          ],
+          "columns": 2,
+          "labels": "beside",
+          "column_looks": [
+            {
+              "column": "policy.state",
+              "header_color": "#2563EB",
+              "bold": true,
+              "show_when": {
+                "conditions": [
+                  {
+                    "table": "layers",
+                    "where": [
+                      {
+                        "column": "limit",
+                        "op": "filled"
+                      }
+                    ],
+                    "op": "at_least",
+                    "count": 1
+                  }
+                ]
+              }
+            }
+          ],
+          "spacers": [1]
+        },
+        {
+          "id": "table_l4y5",
+          "type": "table",
+          "title": "Layers",
+          "fields": [
+            "layers.layer",
+            "layers.limit",
+            "layers.layer_name"
+          ],
+          "show_when": {
+            "match": "any",
+            "conditions": [
+              {
+                "table": "layers",
+                "rows": "any",
+                "where": [
+                  {
+                    "column": "limit",
+                    "op": "above",
+                    "values": [
+                      "0"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "rows": 5,
+          "column_looks": [
+            {
+              "column": "layers.limit",
+              "width": 120
+            }
+          ]
+        },
+        {
+          "id": "chart_c6h7",
+          "type": "chart",
+          "title": "Limits",
+          "fields": [
+            "layers.limit"
+          ],
+          "category": "layers.layer_name",
+          "chart_type": "line"
+        }
+      ]
+    },
+    {
+      "id": "section_pr01",
+      "title": "Perils",
+      "show_when": {
+        "match": 1,
+        "conditions": [
+          {
+            "match": "any",
+            "conditions": [
+              {
+                "column": "policy.state",
+                "op": "one_of",
+                "values": [
+                  "CA",
+                  "NY"
+                ]
+              },
+              {
+                "table": "BR_Perils",
+                "total": "sum",
+                "column": "rate",
+                "where": [],
+                "op": "below",
+                "value": "10"
+              }
+            ]
+          }
+        ]
+      },
+      "components": [
+        {
+          "id": "heading_h8d9",
+          "type": "heading",
+          "text": "Équipement",
+          "description": "By peril",
+          "size": "large"
+        },
+        {
+          "id": "table_p2r3",
+          "type": "table",
+          "title": "Perils",
+          "fields": [
+            "BR_Perils.peril",
+            "BR_Perils.rate"
+          ]
+        },
+        {
+          "id": "import_i1m2",
+          "type": "import",
+          "label": "Import perils",
+          "source": {
+            "format": "sql",
+            "connection": "rating_db",
+            "query": "select * from perils where state = :state",
+            "parameters": [
+              {
+                "name": "state",
+                "column": "policy.state"
+              }
+            ]
+          },
+          "table": "BR_Perils",
+          "mode": "update",
+          "column_names": [
+            {
+              "column": "rate",
+              "name": "Rate %"
+            }
+          ]
+        },
+        {
+          "id": "export_e3x4",
+          "type": "export",
+          "label": "Export",
+          "target": {
+            "format": "sql",
+            "connection": "warehouse",
+            "table_names": [
+              {
+                "table": "layers",
+                "name": "quote_layers"
+              }
+            ]
+          },
+          "tables": [
+            "layers",
+            "pricing"
+          ]
+        }
+      ]
+    }
+  ]
+}

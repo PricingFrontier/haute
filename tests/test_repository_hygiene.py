@@ -736,6 +736,11 @@ _BACKEND_MINT_ALLOWLIST = {
     # One-shot scaffold: project dir name -> package name at `haute init`;
     # single value, no collision space.
     "src/haute/cli/_init_cmd.py",
+    # sheet_name: a sheet's file name from its title as the form folder's
+    # specification defines it (lower case, each run of other characters one
+    # "_"); a save refuses two titles making one name, or none, so no collision
+    # reaches the folder.
+    "src/haute/_workbench_folder.py",
     # NOTE (not an entry): _scaffold.py's clean_columns mint lives inside the
     # starter-pipeline TEMPLATE STRING that `haute init` writes into the
     # user's project — string constants are invisible to the AST walk, and

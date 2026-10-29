@@ -3127,7 +3127,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
   }
 
   it("shows the workbench over the hidden, inert pipeline editor with its own toolbar and shortcuts, and switches back", async () => {
-    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
     render(<App />)
     await waitForAppReady()
 
@@ -3171,7 +3171,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
   })
 
   it("Commit in the workbench's toolbar saves the form's edits, brings the Workbench Input's tables up to date, then saves the pipeline and opens the milestone modal", async () => {
-    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
     withWorkbenchInput()
     render(<App />)
     await waitForAppReady()
@@ -3212,7 +3212,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
   })
 
   it("Commit is refused, saving no pipeline, when the workbench's tables cannot be fetched after the form's save", async () => {
-    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
     withWorkbenchInput()
     render(<App />)
     await waitForAppReady()
@@ -3236,7 +3236,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
   })
 
   it("Save in the pipeline toolbar saves the form's unsaved edits first, brings the Workbench Input's tables up to date, then saves the pipeline, as Commit does", async () => {
-    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
     withWorkbenchInput()
     render(<App />)
     await waitForAppReady()
@@ -3270,7 +3270,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
   })
 
   it("Save puts back a copy an undo took back while it waited, and saves the pipeline carrying the form's tables", async () => {
-    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
     const input = makeNode("wb_in", "Workbench Input", "workbenchInput")
     input.data.config = { tables: [], sample: {} }
     const output = makeNode("wb_out", "Workbench Output", "workbenchOutput")
@@ -3310,7 +3310,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
   })
 
   it("Save is refused before the form is saved while the pipeline document cannot be saved, so the form is never saved ahead of the pipeline", async () => {
-    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
     const input = makeNode("wb_in", "Workbench Input", "workbenchInput")
     input.data.config = { tables: [], sample: {} }
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
@@ -3342,7 +3342,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
   })
 
   it("two Saves pressed while the first waits on a node's identity are saved in turn, the pipeline by both and no update superseded", async () => {
-    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
     withWorkbenchInput()
     render(<App />)
     await waitForAppReady()
@@ -3390,7 +3390,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
   })
 
   it("Ctrl+S during the assistant's turn is refused before the form is saved, as Save is disabled then", async () => {
-    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
     withWorkbenchInput()
     render(<App />)
     await waitForAppReady()
@@ -3419,7 +3419,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
   })
 
   it("an assistant turn that starts while a Save waits on the form's save refuses the rest of it, so the pipeline never carries copies behind the sheets", async () => {
-    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "forms/form.json" })
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
     withWorkbenchInput()
     render(<App />)
     await waitForAppReady()

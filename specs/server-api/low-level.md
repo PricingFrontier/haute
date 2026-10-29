@@ -307,8 +307,8 @@ no-ops. The server sends exactly three frame types: a complete
 `{"type":"pipeline_document_update","schema_version":1,"document":object,
 "document_fingerprint":sha256,"source_file":str,"origin"?:object}`,
 `{"type":"parse_error","error":str,"source_file":str}`, or
-`{"type":"workbench_form_changed","form":str}`, the workbench's form file, as
-`haute.toml` names it, changed on disk (see [workbench](../workbench/low-level.md)). `origin` is present only on an
+`{"type":"workbench_form_changed","form":str}`, a file of the workbench's form
+folder, named as the workbench's status names it, changed on disk (see [workbench](../workbench/low-level.md)). `origin` is present only on an
 update an assistant apply or undo published: `{"kind":"assistant","session_id":str,
 "change_id":str,"node_ids":[str]}` (see [assistant](../assistant/high-level.md)); the
 watcher and resyncs never send it.
@@ -403,19 +403,20 @@ crash. Every filesystem event batches into `pending_changes`; a 300ms debounce t
 1. Snapshots and clears `pending_changes` (so new events queue independently of the batch
    being processed).
 2. Bails out entirely if `watcher_is_paused()` (a haute-initiated git op holds the pause).
-3. Consumes self-write markers (`is_self_write(path, consume=True)`) by content identity:
+3. Announces a change to a file of the workbench's form folder, the pipeline folder's
+   `workbench/` while the workbench is enabled (`_workbench_form_file`, read at each
+   flush, nothing while `haute.toml` cannot be read), before any self-write check: one
+   `workbench.form.changed` publish for the batch, `{"form": <the folder's path from the
+   project root>}`, the form's own saves included, their markers consumed, so another
+   window learns of a save and the view that made it finds its own revision. Then
+   consumes self-write markers (`is_self_write(path, consume=True)`) by content identity:
    a marker matches only while the file's current bytes (or its absence, for a deletion
    marker) equal what the server committed. Matched paths are skipped and never reach the
    parse step; a marker whose content no longer matches is discarded and the event is
    processed as an external change. A consumed marker also clears the path's
    last-broadcast fingerprint, so an external restore of previously broadcast content is
    broadcast rather than deduplicated.
-4. Classifies each remaining `.py`/`.json` change: the workbench's form file, as
-   `haute.toml` names it while the workbench is enabled (`_workbench_form_file`, read at
-   each flush, nothing while `haute.toml` cannot be read) → one `workbench.form.changed`
-   publish for the batch, `{"form": <its path as haute.toml names it>}`, the form's own
-   saves included (no self-write marker: the view that saved finds its own revision);
-   `config/*.json` → re-parse every
+4. Classifies each remaining `.py`/`.json` change: `config/*.json` → re-parse every
    discovered pipeline; `modules/*.py` → re-parse only pipelines importing that module stem
    (case-insensitively, via `_module_dep_key`); any other `.py` (excluding `utility/` and
    dunder-prefixed files) → re-parse that pipeline directly when added/modified. Any direct
@@ -1227,8 +1228,8 @@ for route-level tests, and direct unit tests for the pure-function modules.
   `/ws/sync` protocol (resync requests, fingerprint short-circuit, rejection reasons), a
   preview of several frames its own request for supersession, and
   the file watcher end-to-end (debounce, module-dependency re-parse, config-triggered
-  full-reparse, the workbench's form file announced once a batch, as `haute.toml` names it,
-  other JSON and a disabled workbench not, content-identity self-write suppression: an external write to a
+  full-reparse, a change to the workbench's form folder announced once a batch, the
+  server's own saves included, other JSON and a disabled workbench not, content-identity self-write suppression: an external write to a
   server-written path before the coalesced flush is broadcast, an unchanged self-write
   and a self-deletion are suppressed, an external recreate and an unrelated same-batch
   edit are broadcast with their actual document content), and `_broadcast_tree_change`

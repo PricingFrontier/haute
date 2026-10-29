@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from haute._project_python import DEFAULT_PYTHON, container_base_image
-from haute._workbench_config import DEFAULT_FORM_PATH
-from haute._workbench_form import blank_form, render_form
+from haute._workbench_folder import folder_files
+from haute._workbench_form import blank_form
 from haute.deploy._config import DEFAULT_STAGING_ENDPOINT_SUFFIX, DEFAULT_TEST_QUOTES_DIR
 
 # ── Per-target configuration ─────────────────────────────────────────
@@ -196,13 +196,6 @@ _RELEASE_INPUT_DIRS = (PurePosixPath(PIPELINE_FILE).parent.as_posix(), DEFAULT_T
 _RELEASE_INPUT_FILES = ("haute.toml", "pyproject.toml", "uv.lock")
 
 
-def _release_input_dirs(workbench: bool) -> tuple[str, ...]:
-    """The release's input directories; a workbench project's form directory with them."""
-    if not workbench:
-        return _RELEASE_INPUT_DIRS
-    return (*_RELEASE_INPUT_DIRS, PurePosixPath(DEFAULT_FORM_PATH).parent.as_posix())
-
-
 #: The Python a generated CI job runs when the project names none (``haute init`` passes
 #: the project's own, ``haute._project_python``). The templates below are written with
 #: it, and ``_pin_ci_python`` swaps in the project's.
@@ -296,16 +289,16 @@ def _production_environment(name: str) -> str:
     return name
 
 
-def _github_trigger_paths(workbench: bool) -> str:
+def _github_trigger_paths() -> str:
     """The deploy workflow's ``on.push.paths`` entries, one per release input."""
-    dirs = [f'      - "{name}/**"' for name in _release_input_dirs(workbench)]
+    dirs = [f'      - "{name}/**"' for name in _RELEASE_INPUT_DIRS]
     files = [f'      - "{name}"' for name in _RELEASE_INPUT_FILES]
     return "\n".join([*dirs, *files])
 
 
-def _azure_devops_trigger_paths(workbench: bool) -> str:
+def _azure_devops_trigger_paths() -> str:
     """The pipeline's ``trigger.paths.include`` entries, one per release input."""
-    dirs = [f"      - {name}/" for name in _release_input_dirs(workbench)]
+    dirs = [f"      - {name}/" for name in _RELEASE_INPUT_DIRS]
     files = [f"      - {name}" for name in _RELEASE_INPUT_FILES]
     return "\n".join([*dirs, *files])
 
@@ -438,10 +431,9 @@ endpoint_suffix = "{DEFAULT_STAGING_ENDPOINT_SUFFIX}"
     ]
     if workbench:
         sections.append(
-            f"""\
+            """\
 [workbench]
 enabled = true
-form = "{DEFAULT_FORM_PATH}"
 """
         )
     return "\n".join(sections)
@@ -642,16 +634,15 @@ jobs:
 def github_deploy_yml(
     target: str,
     *,
-    workbench: bool = False,
     python_version: str = DEFAULT_CI_PYTHON,
     staging_suffix: str = DEFAULT_STAGING_ENDPOINT_SUFFIX,
 ) -> str:
     """:func:`_github_deploy_yml` on *python_version*, its staging steps on *staging_suffix*."""
-    text = _pin_ci_python(_github_deploy_yml(target, workbench=workbench), python_version)
+    text = _pin_ci_python(_github_deploy_yml(target), python_version)
     return _pin_staging_suffix(text, staging_suffix)
 
 
-def _github_deploy_yml(target: str, *, workbench: bool = False) -> str:
+def _github_deploy_yml(target: str) -> str:
     """Merge-to-main deploy workflow for GitHub Actions.
 
     Runs automatically: validate → staging → smoke test → impact analysis.
@@ -722,7 +713,7 @@ on:
   push:
     branches: [main]
     paths:
-{_github_trigger_paths(workbench)}
+{_github_trigger_paths()}
   workflow_dispatch:
 
 concurrency:
@@ -991,7 +982,6 @@ deploy-production:
 def azure_devops_yml(
     target: str,
     *,
-    workbench: bool = False,
     python_version: str = DEFAULT_CI_PYTHON,
     staging_suffix: str = DEFAULT_STAGING_ENDPOINT_SUFFIX,
     production_environment: str = "",
@@ -999,11 +989,11 @@ def azure_devops_yml(
     """:func:`_azure_devops_yml` on *python_version* and *staging_suffix*, production under
     *production_environment*, ``production`` when it is empty."""
     environment = _production_environment(production_environment) or _AZURE_PRODUCTION_ENVIRONMENT
-    text = _azure_devops_yml(target, workbench=workbench, environment=environment)
+    text = _azure_devops_yml(target, environment=environment)
     return _pin_staging_suffix(_pin_ci_python(text, python_version), staging_suffix)
 
 
-def _azure_devops_yml(target: str, *, workbench: bool = False, environment: str) -> str:
+def _azure_devops_yml(target: str, *, environment: str) -> str:
     """Combined CI + deploy pipeline for Azure DevOps.
 
     Uses stages to enforce ordering.  The ``DeployProduction`` stage
@@ -1093,7 +1083,7 @@ trigger:
     include: [main]
   paths:
     include:
-{_azure_devops_trigger_paths(workbench)}
+{_azure_devops_trigger_paths()}
 
 pr:
   branches:
@@ -1238,7 +1228,6 @@ def ci_files(
     target: str,
     ci: str,
     *,
-    workbench: bool = False,
     python_version: str = DEFAULT_CI_PYTHON,
     staging_suffix: str = DEFAULT_STAGING_ENDPOINT_SUFFIX,
     production_environment: str = "",
@@ -1256,7 +1245,6 @@ def ci_files(
             ".github/workflows/ci.yml": github_ci_yml(python_version=python_version),
             ".github/workflows/deploy-staging.yml": github_deploy_yml(
                 target,
-                workbench=workbench,
                 python_version=python_version,
                 staging_suffix=staging_suffix,
             ),
@@ -1279,7 +1267,6 @@ def ci_files(
         return {
             "azure-pipelines.yml": azure_devops_yml(
                 target,
-                workbench=workbench,
                 python_version=python_version,
                 staging_suffix=staging_suffix,
                 production_environment=production_environment,
@@ -1476,6 +1463,9 @@ def starter_test_quote() -> str:
 """
 
 
-def starter_form(name: str) -> str:
-    """Generate the workbench's blank ``forms/form.json`` for ``haute init --workbench``."""
-    return render_form(blank_form(name))
+def starter_form(name: str, folder: Path) -> dict[str, str]:
+    """The workbench's blank form folder for ``haute init --workbench`` at *folder*: each
+    file's text by its path from the folder."""
+    return {
+        path: data.decode("utf-8") for path, data in folder_files(blank_form(name), folder).items()
+    }
