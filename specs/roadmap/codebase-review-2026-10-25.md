@@ -125,8 +125,8 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the eighteen packages delivered or settled since (thirteen by 28
-October 2026, five more on 29 October) have been removed from the sections below; the coverage table keeps the
+The findings of the nineteen packages delivered or settled since (thirteen by 28
+October 2026, six more on 29 October) have been removed from the sections below; the coverage table keeps the
 original counts.
 
 ## Validation — 25 October 2026
@@ -383,7 +383,6 @@ production:
 | Sandbox security | PM-42 | `SBX-R04` |
 | Workbench | PM-44 | `WB-33` |
 | Workbench | PM-45 | `WB-10` (selected server engine's atomic form insertion) |
-| Bugs | PM-47 | `BUG-42` (Decision) |
 | Engineering quality | PM-29 (Haute's own workflows) | `ENGQ-CI06` |
 | Engineering quality | PM-48 | `ENGQ-R06` |
 | Engineering quality | PM-50 | `ENGQ-R01` (evidence added) |
