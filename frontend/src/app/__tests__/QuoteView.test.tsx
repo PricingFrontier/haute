@@ -31,7 +31,7 @@ import { APP_SET_COLUMNS } from "../openRelease"
 import NewQuoteWindow from "../NewQuoteWindow"
 import { draftKey, writeDraft } from "../quoteValues"
 import QuoteView from "../QuoteView"
-import { navigate, setLeaveGuard, type AppRoute } from "../route"
+import { navigate, setLeaveGuard, useAppRoute, type AppRoute } from "../route"
 import QuestionDialog from "../../components/QuestionDialog"
 import useQuestionStore from "../../stores/useQuestionStore"
 import useAppStore from "../useAppStore"
@@ -49,6 +49,12 @@ function show(route: QuoteRoute) {
       <ToastContainer />
     </>,
   )
+}
+
+/** The quote the address names, as the app routes it: moving the page opens what it moves to. */
+function RoutedQuote() {
+  const route = useAppRoute()
+  return route.page === "quote" ? <QuoteView route={route} /> : null
 }
 
 const opened = async (route: QuoteRoute = { page: "quote", id: "q1", revision: null }) => {
@@ -167,13 +173,13 @@ describe("QuoteView", () => {
     await opened()
     type("CA")
 
-    let left: Promise<boolean> = Promise.resolve(true)
+    let left: ReturnType<typeof navigate> = Promise.resolve("moved")
     act(() => {
       left = navigate("/")
     })
     expect(await screen.findByTestId("question")).toHaveTextContent("Leave without saving?")
     confirmQuestion("Cancel")
-    expect(await left).toBe(false)
+    expect(await left).toBe("kept")
     expect(window.location.pathname).toBe("/quotes/q1")
   })
 
@@ -290,7 +296,8 @@ describe("QuoteView", () => {
   it("shows an earlier revision read only, with the newest a press away", async () => {
     vi.mocked(openAppQuote).mockResolvedValueOnce(answer({ latest: 2 }, { number: 1 })).mockResolvedValue(answer({ latest: 2 }, { number: 2 }))
     await navigate("/quotes/q1/revisions/1", { force: true })
-    await opened({ page: "quote", id: "q1", revision: 1 })
+    render(<RoutedQuote />)
+    await screen.findByTestId("quote-line")
 
     expect(screen.getByTestId("notice-past")).toHaveTextContent("Revision 1 as it was saved, read only. The newest is revision 2.")
     expect(screen.getByRole("combobox", { name: "State" })).toBeDisabled()
@@ -298,6 +305,46 @@ describe("QuoteView", () => {
 
     await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/q1"))
     await vi.waitFor(() => expect(screen.queryByTestId("notice-past")).toBeNull())
+    // Moved to the quote's address, whose route opens it: it is read once.
+    expect(vi.mocked(openAppQuote).mock.calls).toEqual([
+      ["q1", 1],
+      ["q1", null],
+    ])
+  })
+
+  it("opens the newest from a conflict at the quote's own address, reading it once", async () => {
+    vi.mocked(openAppQuote).mockResolvedValueOnce(answer()).mockResolvedValue(answer({ latest: 2 }, { number: 2 }))
+    vi.mocked(saveAppQuote).mockRejectedValue(new ApiError("HTTP 409", 409, "moved", {}, { message: "Q-000001 has changed since you opened it: jo saved it.", error_code: "stale_quote_revision", quote: appQuote({ latest: 2 }) }))
+    await opened()
+    type("CA")
+    fireEvent.click(screen.getByTestId("save-quote"))
+    fireEvent.click(within(await screen.findByTestId("notice-conflict")).getByRole("button", { name: "Open the newest" }))
+
+    await vi.waitFor(() => expect(useOpenQuoteStore.getState().quote?.latest).toBe(2))
+    expect(window.location.pathname).toBe("/quotes/q1")
+    expect(openAppQuote).toHaveBeenCalledTimes(2)
+  })
+
+  it("says a duplicate was made when leaving the quote's unsaved values for it is cancelled", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer({ latest: 2 }, { number: 2 }))
+    vi.mocked(carryAppQuote).mockResolvedValue({ values: { ...VALUES, quote_details: [{ qd_insured: "Acme" }] }, dropped: [] })
+    vi.mocked(createAppQuote).mockResolvedValue(answer({ id: "q2", reference: "DEF-2", relation: "duplicate" }, { tables: null }))
+    await opened()
+    type("CA")
+    fireEvent.click(screen.getByTestId("quote-more"))
+    fireEvent.click(screen.getByRole("menuitem", { name: "Duplicate" }))
+    const window_ = await screen.findByRole("dialog", { name: "Duplicate Q-000001/1" })
+    await vi.waitFor(() => expect(within(window_).getByRole("textbox", { name: "Insured" })).toHaveValue("Acme"))
+    key("Quote reference", "DEF-2")
+    fireEvent.click(screen.getByTestId("new-quote-create"))
+
+    // Made, and leaving for it asks first: Cancel keeps the quote and its unsaved values.
+    expect(await screen.findByTestId("question")).toHaveTextContent("Leave without saving?")
+    confirmQuestion("Cancel")
+    expect(await screen.findByText("Made DEF-2/1")).toBeInTheDocument()
+    expect(window.location.pathname).toBe("/quotes/q1")
+    expect(screen.getByTestId("quote-unsaved")).toBeInTheDocument()
+    expect(createAppQuote).toHaveBeenCalledTimes(1)
   })
 
   it("moves a quote on earlier sheets onto the current ones, naming what no longer fits", async () => {

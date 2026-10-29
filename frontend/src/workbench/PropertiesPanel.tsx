@@ -22,7 +22,7 @@
  * deleting it.
  */
 import { Rows3, Sheet } from "lucide-react"
-import { SidePanel } from "../haute-ui"
+import { halfWindowWidth, SidePanel } from "../haute-ui"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { activePage } from "../stores/useWorkbenchViewStore"
 import { findSection, findWidget } from "../utils/workbenchForm"
@@ -37,7 +37,7 @@ import { SheetSettings } from "./panel/SheetSettings"
 const MIN_WIDTH = 320
 
 /** At most half the window, so the sheet stays in view. */
-const maxWidth = () => Math.max(MIN_WIDTH, Math.floor(window.innerWidth / 2))
+const maxWidth = () => halfWindowWidth(MIN_WIDTH)
 
 export default function PropertiesPanel() {
   const form = useWorkbenchFormStore((s) => s.form)

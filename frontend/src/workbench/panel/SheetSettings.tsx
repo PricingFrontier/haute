@@ -4,6 +4,7 @@ import type { FormSpec, Page } from "../../api/types"
 import { CommittedTextField, FIELD_CLASS, INPUT_STYLE, LabelledRow, ValidatedTextField, wholeNumber } from "../../components/form"
 import { confirmed } from "../../stores/useQuestionStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import { takesNothingTyped } from "../../utils/sheetVisibility"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { leastSheetHeight, leastSheetWidth, sectionsHeight } from "../../utils/sheetGeometry"
 import { pageWidgets, removePage, renamePage, setPageHeight, setPageShowWhen, setPageWidth } from "../../utils/workbenchForm"
@@ -51,6 +52,7 @@ export function SheetSettings({ form, page }: { form: FormSpec; page: Page }) {
         <ShowWhenEditor
           form={form}
           showWhen={page.show_when}
+          priced={takesNothingTyped(form, page)}
           onChange={(next) => change((spec) => setPageShowWhen(spec, page.id, next))}
         />
       </Section>

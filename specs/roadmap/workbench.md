@@ -16,22 +16,9 @@ that fill the sheets from databases and APIs.
 
 `WB-25` is the app's sign-in, which waits on the Azure work.
 
-`WB-28` and `WB-29` give the Show when of a sheet, a section, a component and a field
-more to test: other fields, text within text, dates apart and the price. A Table's column
-and a Collection's field have a Show when of their own ([workbench](../workbench/high-level.md)),
-the whole column hiding; a Table's cell does not hide row by row. The packages keep the
-rule that decides what shows now:
-everything starts shown and rounds only hide, so a condition fails once what it tests
-hides, and there is no "none of", "at most", "exactly" or "not" over a group, any of which
-could come to hold as hiding went on. Decisions taken 2026-10-20: the rounds stay, reading
-a hidden value as empty in dependency order, which would allow those four, not planned;
-and rules named once and used by many sheets were offered and not taken. Fields and
-columns with conditions of their own, not taken that day, were asked for on 2026-10-22;
-cells shown row by row through "this row" tests were offered again and not taken.
-
-`WB-33` to `WB-38` come from the [25 October 2026 codebase
-review](codebase-review-2026-10-25.md): the server's pricing executor and first saves, and
-what the review found in the Workbench view and the underwriter app in the browser.
+`WB-38` comes from the [25 October 2026 codebase
+review](codebase-review-2026-10-25.md): what the review found in the Workbench view's
+Allowed field.
 
 `WB-41` finishes moving the form into the pipeline folder, the folder of named files the
 workbench specification describes. The owner chose on 28 October 2026 that the
@@ -49,14 +36,7 @@ Workbench nodes stop keeping copies of the tables in a pull request after the fo
 | WB-12 | Decision | P3 | Analysts keep test quotes and price them again as the pipeline changes, built again after the first version was taken out. |
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
-| WB-28 | Planned | P3 | A condition tests a field against another field, text within text, and a date against another date give or take a number of days. |
-| WB-29 | Planned | P3 | A component that takes nothing typed, or a section or a sheet holding only such components, shows by conditions on the price, applied after it so the price never decides what is priced. |
-| WB-33 | Planned | P2 | A pricing that outruns its timeout cannot hold the app's executor: pricings run in a bounded pool and the app answers 503 when it is full. |
-| WB-35 | Planned | P2 | Every quote action in the app says what it did: a quote made while the page stays is announced, a storeless page offers Reload when the release changed, "Open the newest" opens once, and the Quotes page's keys leave a focused select alone. Late archive/restore completion keeps the current query. |
-| WB-36 | Planned | P2 | A number list in a Show when condition never splits a thousands separator into two values, and the app reads quote_details ids from one typed map. |
-| WB-37 | Planned | P3 | The column key, the refusal predicate, the 409 detail reader, the empty visibility constants, the half-window width, the collapsible group and the pricing basis each exist once in the workbench and the app. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
-| WB-39 | Planned | P1 | The locally served underwriter app rejects foreign Host and forwarded requests before assigning the analyst's identity. |
 | WB-41 | Planned | P2 | The Workbench Input and Workbench Output read their tables from the form folder instead of keeping copies, so a schema change shows once in a pull request and no copy can fall out of step. |
 
 ## Planned improvements
@@ -438,190 +418,6 @@ misconfiguration either way.
 **Evidence:** `src/haute/_workbench_app.py::create_app` (the principal read from the
 headers when the release names its host).
 
-### WB-28 — Other values to test against
-**Why:** A condition tests a column against values typed into the condition. It cannot
-test one field against another (in the commercial-pricing project, `policy_limit` above
-`mga_limit`), text within text (an insured whose name contains "Holdings"), or one date
-against another (a project completing more than 365 days after it starts,
-`project_completion_date` against `project_start_date`).
-
-**Plan:** A condition's value may be another field of the same type instead of values
-typed: a one-row table's column, or, in a test of a list's rows, a column of the same
-row. A date compared with another date may add or take away a whole number of days.
-Text gains contains, does not contain, starts with and ends with, compared as equals
-compares text. A test against another field holds only while both are fields that show,
-so hiding still only hides more, and reads the other field's value as
-it reads its own. A date against today is left out: a saved quote would then show other
-sheets, and so be priced otherwise, on another day; a date field on the form stands in for
-it.
-
-**Acceptance:** A section shown while `policy_limit` is above `mga_limit`, one while the
-insured contains "Holdings", and one while the completion date is more than 365 days after
-the start date, each failing while either field hides; the server and the view are held to
-new cases in the shared visibility fixture.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_workbench_visibility.py::_passes` (each test against the
-condition's own values); `src/haute/_workbench_form.py::Condition` (`values`, typed text
-alone).
-
-### WB-29 — Conditions on the price
-**Why:** Conditions test input tables alone; one naming an output column is a problem
-("which is in an output table"). In the commercial-pricing project the referral reasons
-(`product_premium.referral_reasons`) matter only while `premium.referral_count` is above 0,
-and a warning on rate adequacy only while `rate_adequacy` is below 1.
-
-**Plan:** A condition may test an output column, but only in the Show when of what takes
-nothing typed: a Heading, a Chart, a Collection or a Table of output columns alone, a
-field of an output column, or a section or a sheet holding only those. Hiding it never changes the quote, so the price never
-decides what is priced: the rounds decide what shows from the inputs, these conditions
-holding, and these conditions are then applied to the price the sheets show, the last one
-while a new one is on its way, and before the first every output read as empty. The
-server's `visibility` leaves them out, as they never change `hidden`. An input component
-placed later in a section with such a condition, or such a condition on what takes
-values, is named as a problem, not refused. An output table with many rows is
-tested as a list is.
-
-**Acceptance:** A Table of referral reasons, and a section holding it, each shown while
-`referral_count` is above 0, hidden before the first price and after a price with none, in
-the sheets, Preview and the app; an output condition on a section holding an input
-Collection, or on an input Collection, named as a problem; the quote the same whatever the output conditions say, held by cases on both
-sides.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/utils/sheetVisibility.ts::conditionFault` (a column of an output
-table named as a fault); `src/haute/_workbench_visibility.py::_tested_column` (input tables
-alone); `src/haute/_workbench_tables.py::sample_quote` (the hidden columns the quote leaves
-out).
-
-### WB-33 — Pricings that outrun the timeout
-**Why:** The underwriter app prices a quote in the default executor under
-`asyncio.wait_for(..., PRICE_TIMEOUT_SECONDS)`; a pricing that outruns the 60 s is left
-running with no cancellation, so a pipeline slow on some quotes accumulates threads, and
-once the executor's workers (`min(32, cpus + 4)`) are all held every later pricing queues
-behind them and times out too, with no recovery until the stuck ones finish. This
-package comes from the [25 October 2026 codebase review](codebase-review-2026-10-25.md).
-
-**Plan:** Price in a bounded executor sized for the app (or in the batch worker with a
-cancellable timeout), count the pricings in flight and answer 503 with a retry hint when
-the bound is reached.
-
-**Acceptance:** With the bound held by sleeping pricings, a further price request is
-answered 503 at once rather than timing out; when one finishes, the next is served.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_workbench_app.py::PRICE_TIMEOUT_SECONDS`.
-
-### WB-35 — Every quote action says what it did
-**Why:** Duplicate and Renew from a quote with unsaved values create the new quote on the
-server, close the window and only then ask the page's leave guard; `navigate` is called
-without `force` and its answer is dropped, so on Cancel the quote exists and nothing on
-the page says so (only the Save-as-new branch toasts). The storeless app (`OneQuote`)
-reads the preview store's error alone, so a release change arrives as "Pricing failed:
-This page was drawn for another release ... reload" with no Reload control; the Reload
-notice is rendered only by the store-backed page. "Open the newest" calls `openQuote`
-and then `navigate`, whose route effect calls `openQuote` again. The Quotes page gates
-`/` and `N` with `isTypingTarget`, so with the Order or Assigned-to select focused `N`
-opens the New quote window instead of the select's type-ahead; the pipeline editor and
-the Workbench view use `isFormControl` for such keys. From the [25 October 2026 codebase
-review](codebase-review-2026-10-25.md) (FWB-1, FWB-6, FWB-8, FWB-9).
-
-**Plan:** Ask the leave guard before Create for Duplicate and Renew, or toast "Made
-<label>" whenever the page does not move to the quote; state the guard case in the
-workbench specification's `send` description. Render the same Reload notice in
-`OneQuote` when `releaseChanged`. Make `navigate` report whether the path changed and
-call `openQuote` only when it did not. Guard the Quotes page's keys with
-`isFormControl`.
-
-**Acceptance:** Tests: Duplicate from a dirty quote followed by Cancel at the guard
-shows the toast naming the quote made (or the guard runs before creation and no quote is
-made); the storeless page shows the Reload notice on a 409 release mismatch; "Open the
-newest" reads the quote once; `N` with a select focused opens no window.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/app/useNewQuoteStore.ts::send`, `frontend/src/app/route.ts::navigate`,
-`frontend/src/app/UnderwriterApp.tsx::OneQuote`, `frontend/src/app/QuoteView.tsx`,
-`frontend/src/app/QuotesPage.tsx`, `frontend/src/hooks/keyboardTargets.ts::isFormControl`.
-
-**28 October full-pass addition:** Archive/restore completion calls `load(query)` using the
-query captured before its await. A real QuotesPage archive witness switches from Team to Mine
-while the request waits; completion starts a newer load for Team and replaces Mine.
-**Plan/acceptance:** reconcile the mutation against the current list generation/query, or
-reload the current query. A delayed archive or restore must not replace newer
-search/filter/sort/navigation state; test with the actual page/store and deferred API response.
-The archive case was executed; restore shares the same source pattern at `frontend/src/app/QuotesPage.tsx::QuotesPage.restore`.
-
-### WB-36 — Number lists in Show when, and the quote_details ids from one map
-**Why:** "is one of" and "is not one of" on a number column without allowed values split
-the typed list on every comma, so a thousands-separated "1,000" becomes the values "1"
-and "000"; `parseTypedNumber` strips separators, so both pass `valueFits`, no fault
-shows, and the condition silently tests 1 and 0. The single-value field of the same
-column reads "1,000" correctly, and the specification shares the gap ("values typed
-comma-separated"). Separately, the app repeats Haute's quote_details column ids and
-names as string literals (`qd_is_renewal`, `qd_quote_name`, `qd_reference`, the listed
-columns) instead of reading `QUOTE_DETAILS_COLUMNS`, so a rename on the server passes
-`tsc` and the parity tests while the renewal tick, the name cell, the reference and the
-listed columns silently miss. From the [25 October 2026 codebase
-review](codebase-review-2026-10-25.md) (FWB-2, FWB-3).
-
-**Plan:** For Integer and Decimal columns take one value per field, or refuse a comma
-inside a number with a fault; keep the comma split for text; update both specification
-sentences. Export a typed id map from `workbenchForm.ts` (`QUOTE_DETAILS.is_renewal` and
-the rest) and import it at the four sites, or extend the parity test to assert each
-literal is a member of the table.
-
-**Acceptance:** Tests: "1,000" typed into an is-one-of on an Integer column is the one
-value 1000 or shows a fault, never two values; a renamed quote_details id fails `tsc` or
-the parity test.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/workbench/ShowWhenEditor.tsx`,
-`frontend/src/utils/sheetValues.ts::parseTypedNumber`,
-`frontend/src/utils/sheetVisibility.ts::valueFits`,
-`frontend/src/utils/workbenchForm.ts::QUOTE_DETAILS_COLUMNS`, `frontend/src/app/quoteValues.ts`,
-`frontend/src/app/QuoteView.tsx`, `frontend/src/app/useNewQuoteStore.ts`,
-`frontend/src/utils/quoteIdentity.ts`; `specs/workbench/high-level.md` and
-`specs/workbench/low-level.md` (the comma-separated sentences).
-
-### WB-37 — One copy of each workbench helper
-**Why:** The `tableId:columnId` key that looks, Order rows, the Columns list, the
-condition select, the draft's places and the window's fields are looked up by is
-hand-spelled in six places while `columnKey` is exported and already imported by two
-others; the format is load-bearing, so a change to it breaks lookups silently. The
-`refused` predicate (status under 500) is defined twice verbatim; the 409 detail is
-unwrapped by hand in two stores while `api/errors.ts` has an unexported reader; the
-empty visibility and locked constants, the half-window panel width, a collapsible titled
-group and the pricing basis expression (`basisOf` exists but two stores inline it) are
-each written two or three times; `adopted` is a module-level mutable in a component
-file. From the [25 October 2026 codebase review](codebase-review-2026-10-25.md) (FWB-4,
-FWB-5, FAP-14).
-
-**Plan:** Import `columnKey` everywhere and delete the private copies. Export
-`apiErrorRefused` and `apiErrorRawDetail` from `api/errors.ts` and use them in both
-stores. Export the empty constants from `useSheetValues.ts`. One `halfWindowWidth`
-helper, one `Collapsible` in `app/ui.tsx`, `basisOf` called from `useQuoteValues` and the
-preview store, `adopted` moved into the open-quote store.
-
-**Acceptance:** One definition of each by grep; the workbench and app tests pass
-unchanged.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/utils/sheetVisibility.ts::columnKey`,
-`frontend/src/workbench/ShowWhenEditor.tsx`, `frontend/src/workbench/panel/FieldOrder.tsx`,
-`frontend/src/workbench/panel/lookParts.tsx`, `frontend/src/workbench/sheet/fieldCells.ts`,
-`frontend/src/app/quoteValues.ts::basisOf`, `frontend/src/app/useNewQuoteStore.ts`,
-`frontend/src/app/useOpenQuoteStore.ts`, `frontend/src/api/errors.ts::rawDetailRecord`,
-`frontend/src/workbench/useSheetValues.ts`, `frontend/src/stores/useWorkbenchPreviewStore.ts`,
-`frontend/src/app/NewQuoteWindow.tsx`, `frontend/src/app/HistoryPanel.tsx`,
-`frontend/src/app/QuotesPage.tsx`, `frontend/src/workbench/PropertiesPanel.tsx`,
-`frontend/src/workbench/SchemaPane.tsx`.
-
 ### WB-38 — Allowed values typed into an older form
 **Why:** The Allowed field carries a branch for "values typed in, as an older form holds
 them" (`TYPED_IN`), a shape the builder can no longer produce and `schemaProblems` names
@@ -641,40 +437,6 @@ specification and the field stop calling the shape older.
 
 **Evidence:** `frontend/src/workbench/schema/AllowedField.tsx::TYPED_IN`,
 `src/haute/_workbench_form.py::FormSpec`, `frontend/src/utils/workbenchForm.ts`.
-
-### WB-39 — Enforce the local app's request boundary
-**Why:** The [28 October review](codebase-review-2026-10-28.md) measured a
-local-principal app accepting `Host: attacker.example:8001` for both a release
-read and a pricing POST with matching Origin and `Sec-Fetch-Site: same-origin`.
-Both returned 200 under the analyst's identity. `haute app serve` binds loopback,
-but `create_app` grants its local principal to every request and installs no
-trusted-host guard. `_cross_site` exempts reads and accepts a same-origin write.
-A hostile hostname resolving to loopback can therefore meet these checks;
-DNS-rebinding exposure is inferred from the measured request acceptance, not
-claimed as a browser exploit executed during the review. The quote routes use
-the same identity middleware, so this boundary also protects saved quotes.
-
-**Plan:** In local-principal mode, install the existing local trusted-host and
-forwarded-metadata boundary before authentication. Confirm the app's Origin
-and browser-request rules cover its local entry path without trusting arbitrary
-hostnames. Keep hosted identity handling separately specified; `WB-25` owns
-the Azure authentication-header policy. Document the local app threat boundary
-in the workbench and sandbox-security specifications before implementation.
-
-**Acceptance:** Local app requests with a foreign Host, with or without
-same-origin fetch metadata, are refused before release/form/quote reads or
-pricing and quote mutations. Forwarded metadata is refused in local mode.
-Normal supported loopback hosts still load, price and save quotes; read-only
-mode remains read-only. Include quote-store mutation assertions against a real
-temporary store. Hosted proxy operation remains covered by its existing tests.
-
-**Dependencies:** None; `WB-25` is a separate hosted trust decision.
-
-**Evidence:** `src/haute/_workbench_app.py::create_app`;
-`src/haute/_workbench_app.py::_cross_site`;
-`src/haute/cli/_app.py::handle_app_serve`;
-`src/haute/_local_security.py::LocalTrustedHostMiddleware`;
-`tests/test_workbench_app.py`.
 
 ### WB-41 — The Workbench nodes read the form folder
 **Why:** A Workbench Input and a Workbench Output keep copies of the tables, and the Input

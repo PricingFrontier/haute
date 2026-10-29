@@ -61,7 +61,7 @@ const boxes = (id: string, columns: string[]): CollectionWidget => ({
 /** The schema with a box, cover, and a name beside the policy's required exposure. */
 const covered: FormSchema = { tables: [{ ...policy, columns: [...policy.columns, column("c3", "cover", { type: "bool" }), column("c4", "name")] }, pricing] }
 /** Shown only while cover is ticked. */
-const whileCovered: ShowWhen = { match: "all", conditions: [{ table: "t1", column: "c3", op: "ticked", values: [] }] }
+const whileCovered: ShowWhen = { match: "all", conditions: [{ table: "t1", column: "c3", op: "ticked", values: [], field: null, days: 0 }] }
 
 /** What the app's route answers: the premium, and the quote as the server typed it. */
 const answered = (premium: number): PricedValues => ({ tables: { pricing_output: [{ model_premium: premium }] }, sample: { policy_details: { exposure: premium } } })

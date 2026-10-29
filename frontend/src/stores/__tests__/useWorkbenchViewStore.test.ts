@@ -179,7 +179,7 @@ describe("useWorkbenchViewStore", () => {
   it("in Preview keeps a sheet's sections that show, in order, each with only its components that show", () => {
     const form = sectionedForm()
     // The note shows only while the policy's state is NY.
-    widgetsOf(form, 0, 2)[0].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"] }] }
+    widgetsOf(form, 0, 2)[0].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"], field: null, days: 0 }] }
     const [policy, flood, notes] = form.pages[0].sections
 
     // Nothing typed: Flood hidden with cover unticked, and Notes shown without its note,

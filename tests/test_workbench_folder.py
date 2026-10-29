@@ -1570,6 +1570,61 @@ def test_each_reference_is_written_by_name_and_read_by_id_an_unknown_name_unreso
         assert any(_word(name).search(entry) for name in unknown), entry
 
 
+def test_a_test_against_another_field_is_written_by_name_with_its_days_and_read_back(
+    project: Path,
+) -> None:
+    form = json.loads(json.dumps(FORM))
+    table_of(form, "t_policy")["columns"] += [
+        {"id": "c_start", "name": "start", "type": "date"},
+        {"id": "c_end", "name": "end", "type": "date"},
+    ]
+    table_of(form, "t_layers")["columns"].append(
+        {"id": "c_retention", "name": "retention", "type": "float"}
+    )
+    later = {
+        **{"table": "t_policy", "column": "c_end", "op": "above", "values": []},
+        "field": {"table": "t_policy", "column": "c_start"},
+        "days": 365,
+    }
+    insured = {
+        **{"table": "t_policy", "column": "c_state", "op": "contains", "values": []},
+        "field": {"table": "quote_details", "column": "qd_insured"},
+        "days": 0,
+    }
+    above = {"column": "c_limit", "op": "above", "values": [], "field": "c_retention", "days": 0}
+    layers = {"table": "t_layers", "rows": "any", "where": [above]}
+    form["pages"][0]["show_when"] = {"match": "any", "conditions": [later, insured, layers]}
+
+    files = write_form(project, form)
+
+    # The field by name, as a condition's column is, and its days, each only while it has one,
+    # as every setting at its default is left out.
+    written = json.loads(files["sheets/br_coverages.json"])["show_when"]["conditions"]
+    assert written == [
+        {"column": "policy.end", "op": "above", "field": "policy.start", "days": 365},
+        {"column": "policy.state", "op": "contains", "field": "quote_details.insured"},
+        {
+            "table": "layers",
+            "rows": "any",
+            "where": [{"column": "limit", "op": "above", "field": "retention"}],
+        },
+    ]
+    assert read_form_document(config(project)).spec == spec_of(form)
+
+    # A field the schema does not hold is unresolved, and named for a build or a deploy.
+    sheet = json.loads(files["sheets/br_coverages.json"])
+    sheet["show_when"]["conditions"][0]["field"] = "policy.started"
+    sheet["show_when"]["conditions"][2]["where"][0]["field"] = "retained"
+    write_files(
+        form_folder(project),
+        {"sheets/br_coverages.json": render_folder_file(SheetFile.model_validate(sheet))},
+    )
+    spec = read_form_document(config(project)).spec
+    found = unresolved_references(spec)
+    assert any(_word("policy.started").search(entry) for entry in found), found
+    assert any(_word("retained").search(entry) for entry in found), found
+
+
 def test_a_reference_never_binds_through_a_column_s_old_name(project: Path) -> None:
     write_form(project, FORM)
     folder = form_folder(project)

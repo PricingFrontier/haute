@@ -3,32 +3,18 @@
  * handover note, edited here; the quote it came from and those made from it; its revisions,
  * each opened as it was; and what was done to it, by whom and when, newest first.
  */
-import { ChevronDown, ChevronRight, History } from "lucide-react"
-import { useState, type ReactNode } from "react"
+import { History } from "lucide-react"
+import { useState } from "react"
 import type { WorkbenchAppQuote } from "../api/types"
-import { SidePanel } from "../haute-ui"
+import { halfWindowWidth, SidePanel } from "../haute-ui"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { RELATION_TEXT as RELATION, eventText, fullTime, relativeTime } from "./quoteValues"
 import { followLink, quotePath, revisionPath } from "./route"
-import { BUTTON } from "./ui"
+import { BUTTON, Collapsible } from "./ui"
 import useOpenQuoteStore, { busy, canEdit } from "./useOpenQuoteStore"
 
 const MIN_WIDTH = 300
-const maxWidth = () => Math.max(MIN_WIDTH, Math.floor(window.innerWidth / 2))
-
-function Section({ title, count, children }: { title: string; count?: number; children: ReactNode }) {
-  const [open, setOpen] = useState(true)
-  return (
-    <section className="flex flex-col gap-1" aria-label={title}>
-      <button type="button" onClick={() => setOpen(!open)} aria-expanded={open} className="flex h-6 items-center gap-1 text-[10px] font-semibold tracking-wider uppercase" style={{ color: "var(--text-muted)" }}>
-        {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-        {title}
-        {count !== undefined && <span className="ml-1 tabular-nums">{count}</span>}
-      </button>
-      {open && children}
-    </section>
-  )
-}
+const maxWidth = () => halfWindowWidth(MIN_WIDTH)
 
 function NoteEditor({ quote }: { quote: WorkbenchAppQuote }) {
   const change = useOpenQuoteStore((s) => s.change)
@@ -86,9 +72,9 @@ export default function HistoryPanel() {
       onClose={() => setHistoryOpen(false)}
     >
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-2.5 text-xs">
-        <Section title="Note">
+        <Collapsible title="Note">
           <NoteEditor quote={quote} />
-        </Section>
+        </Collapsible>
         {history === null ? (
           <p role="status" style={{ color: "var(--text-muted)" }}>
             Reading the history…
@@ -96,7 +82,7 @@ export default function HistoryPanel() {
         ) : (
           <>
             {(history.source || history.derived.length > 0) && (
-              <Section title="Related quotes" count={(history.source ? 1 : 0) + history.derived.length}>
+              <Collapsible title="Related quotes" count={(history.source ? 1 : 0) + history.derived.length}>
                 <ul className="flex flex-col gap-0.5">
                   {history.source && (
                     <li>
@@ -118,9 +104,9 @@ export default function HistoryPanel() {
                     </li>
                   ))}
                 </ul>
-              </Section>
+              </Collapsible>
             )}
-            <Section title="Revisions" count={history.revisions.length}>
+            <Collapsible title="Revisions" count={history.revisions.length}>
               <ul className="flex flex-col">
                 {[...history.revisions].reverse().map((each) => {
                   const showing = revision?.number === each.number
@@ -139,8 +125,8 @@ export default function HistoryPanel() {
                   )
                 })}
               </ul>
-            </Section>
-            <Section title="Activity" count={history.events.length}>
+            </Collapsible>
+            <Collapsible title="Activity" count={history.events.length}>
               <ol className="flex flex-col gap-1">
                 {[...history.events].reverse().map((event) => (
                   <li key={event.id} className="flex flex-col" data-testid={`event-${event.kind}`}>
@@ -153,7 +139,7 @@ export default function HistoryPanel() {
                   </li>
                 ))}
               </ol>
-            </Section>
+            </Collapsible>
           </>
         )}
       </div>

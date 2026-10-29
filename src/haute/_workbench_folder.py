@@ -326,9 +326,19 @@ def _entry_file(entry: Any, names: _Names) -> dict[str, Any]:
             "column": names.dotted(entry.table, entry.column),
             "op": entry.op,
             "values": entry.values,
+            "field": None
+            if entry.field is None
+            else names.dotted(entry.field.table, entry.field.column),
+            "days": entry.days,
         }
     where = [
-        {"column": names.column(entry.table, test.column), "op": test.op, "values": test.values}
+        {
+            "column": names.column(entry.table, test.column),
+            "op": test.op,
+            "values": test.values,
+            "field": None if test.field is None else names.column(entry.table, test.field),
+            "days": test.days,
+        }
         for test in entry.where
     ]
     table = names.table(entry.table)
@@ -689,10 +699,22 @@ def _entry(entry: Any, names: _Names) -> dict[str, Any]:
             "conditions": [_entry(item, names) for item in entry.conditions],
         }
     if kind == "one":
-        return {**names.ref(entry.column), "op": entry.op, "values": entry.values}
+        return {
+            **names.ref(entry.column),
+            "op": entry.op,
+            "values": entry.values,
+            "field": None if entry.field is None else names.ref(entry.field),
+            "days": entry.days,
+        }
     table_id = names.table_id(entry.table)
     where = [
-        {"column": names.column_id(table_id, test.column), "op": test.op, "values": test.values}
+        {
+            "column": names.column_id(table_id, test.column),
+            "op": test.op,
+            "values": test.values,
+            "field": None if test.field is None else names.column_id(table_id, test.field),
+            "days": test.days,
+        }
         for test in entry.where
     ]
     if kind == "rows":
@@ -1003,10 +1025,14 @@ def _entry_refs(entry: Any) -> Iterator[_Ref]:
         return
     if kind == "one":
         yield entry.table, entry.column
+        if entry.field is not None:
+            yield entry.field.table, entry.field.column
         return
     yield entry.table, None
     for test in entry.where:
         yield entry.table, test.column
+        if test.field is not None:
+            yield entry.table, test.field
     if kind == "total":
         yield entry.table, entry.column
 

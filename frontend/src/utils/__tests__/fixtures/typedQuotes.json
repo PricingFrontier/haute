@@ -107,7 +107,7 @@
                 ],
                 "show_when": {
                   "match": "all",
-                  "conditions": [{ "table": "t_policy", "column": "c_flood", "op": "ticked", "values": [] }]
+                  "conditions": [{ "table": "t_policy", "column": "c_flood", "op": "ticked", "values": [], "field": null, "days": 0 }]
                 }
               },
               {
@@ -133,7 +133,7 @@
                 "fields": [{ "table": "t_flood", "column": "c_flood_si" }],
                 "show_when": {
                   "match": "all",
-                  "conditions": [{ "table": "quote_details", "column": "qd_created_by", "op": "equals", "values": ["ana@example.com"] }]
+                  "conditions": [{ "table": "quote_details", "column": "qd_created_by", "op": "equals", "values": ["ana@example.com"], "field": null, "days": 0 }]
                 }
               }
             ]

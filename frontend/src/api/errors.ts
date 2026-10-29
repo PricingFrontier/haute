@@ -1,6 +1,7 @@
 import { executionErrorDetailMessage } from "../utils/executionDiagnostics"
 
-function rawDetailRecord(error: unknown): Record<string, unknown> | null {
+/** The detail a route refused with, when it is an object: the fields a refusal carries past its message. */
+export function apiErrorRawDetail(error: unknown): Record<string, unknown> | null {
   if (typeof error !== "object" || error === null || !("rawDetail" in error)) return null
   const raw = (error as { rawDetail?: unknown }).rawDetail
   return typeof raw === "object" && raw !== null && !Array.isArray(raw)
@@ -10,7 +11,7 @@ function rawDetailRecord(error: unknown): Record<string, unknown> | null {
 
 /** The machine-readable `error_code` a route put in its error detail, if any. */
 export function apiErrorCode(error: unknown): string | null {
-  const code = rawDetailRecord(error)?.error_code
+  const code = apiErrorRawDetail(error)?.error_code
   return typeof code === "string" && code ? code : null
 }
 
@@ -33,6 +34,12 @@ export function apiErrorStatus(error: unknown): number | null {
   if (typeof error !== "object" || error === null || !("status" in error)) return null
   const status = (error as { status?: unknown }).status
   return typeof status === "number" ? status : null
+}
+
+/** The server refused what was sent, a status below 500, so nothing of it was written. */
+export function apiErrorRefused(error: unknown): boolean {
+  const status = apiErrorStatus(error)
+  return status !== null && status < 500
 }
 
 /**
@@ -62,7 +69,7 @@ function validationMessage(error: unknown): string | null {
  * This is the one error-text helper; lint rejects local copies.
  */
 export function apiErrorMessage(error: unknown, fallback?: string): string {
-  const record = rawDetailRecord(error)
+  const record = apiErrorRawDetail(error)
   const message = record?.message
   if (typeof message === "string" && message.trim()) return message
   const detail = executionErrorDetailMessage(error)

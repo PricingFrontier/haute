@@ -795,7 +795,7 @@ describe("PropertiesPanel", () => {
     fireEvent.click(within(showWhen).getByRole("button", { name: "Add condition" }))
     fireEvent.change(within(showWhen).getByRole("combobox", { name: "Condition 1 value" }), { target: { value: "NY" } })
 
-    expect(grid().show_when).toEqual({ match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"] }] })
+    expect(grid().show_when).toEqual({ match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"], field: null, days: 0 }] })
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(2)
   })
 
@@ -868,7 +868,7 @@ describe("PropertiesPanel", () => {
     expect(within(showWhen).getByText("Always")).toBeInTheDocument()
     fireEvent.click(within(showWhen).getByRole("button", { name: "Add condition" }))
     fireEvent.change(within(showWhen).getByRole("combobox", { name: "Condition 1 value" }), { target: { value: "NY" } })
-    expect(heading().show_when).toEqual({ match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"] }] })
+    expect(heading().show_when).toEqual({ match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"], field: null, days: 0 }] })
     expect(undoSteps()).toBe(8)
   })
 
@@ -890,7 +890,7 @@ describe("PropertiesPanel", () => {
 
     const showWhen = screen.getByRole("region", { name: "Show when" })
     fireEvent.change(within(showWhen).getByRole("combobox", { name: "Condition 1 test" }), { target: { value: "not_ticked" } })
-    expect(sheet().show_when.conditions).toEqual([{ table: "policy", column: "policy.cover", op: "not_ticked", values: [] }])
+    expect(sheet().show_when.conditions).toEqual([{ table: "policy", column: "policy.cover", op: "not_ticked", values: [], field: null, days: 0 }])
 
     act(() => useWorkbenchViewStore.getState().select("w_year"))
     showPane("Display")
@@ -1018,7 +1018,7 @@ describe("PropertiesPanel", () => {
     const showWhen = screen.getByRole("region", { name: "Show when" })
     expect(within(showWhen).getByRole("combobox", { name: "Condition 1 column" })).toHaveValue("policy:policy.cover")
     fireEvent.change(within(showWhen).getByRole("combobox", { name: "Condition 1 test" }), { target: { value: "not_ticked" } })
-    expect(sectionOf("s_flood").show_when).toEqual({ match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "not_ticked", values: [] }] })
+    expect(sectionOf("s_flood").show_when).toEqual({ match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "not_ticked", values: [], field: null, days: 0 }] })
     expect(currentForm().pages[0].show_when.conditions).toEqual([])
     expect(grid().show_when.conditions).toEqual([])
     expect(undoSteps()).toBe(2)
