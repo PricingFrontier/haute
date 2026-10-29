@@ -22,6 +22,7 @@ from haute._config_io import (
 from haute._pipeline_repair import PipelineRepairError
 from haute._polars_steps import STEPPED_NODE_TYPES
 from haute._recovery_schemas import RecoveryFieldChange
+from haute._source_layout import python_lines
 from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import NodeType
 from haute.errors import ConfigError
@@ -122,7 +123,7 @@ def read_raw_node_settings(
                     "Correct the file manually, or use Reset node to replace it."
                 ) from exc
     params = [arg.arg for arg in (*function.args.posonlyargs, *function.args.args)]
-    body = _function_body_source(source.splitlines(), function)
+    body = _function_body_source(python_lines(source), function)
     keyword_only = [arg.arg for arg in function.args.kwonlyargs]
     body_dropped = uncalled_function_body(node_type, body, [*params, *keyword_only], params)
     if body_dropped:

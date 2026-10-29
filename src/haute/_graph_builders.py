@@ -21,6 +21,7 @@ from haute._ast_helpers import (
 from haute._config_builder import _resolve_node_config
 from haute._graph_utils import _edge_id, resolve_input_mapping_names
 from haute._polars_steps import stepped_surface_allows_input_references
+from haute._source_layout import python_lines
 from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType
 from haute.errors import ConfigError, ParseError
@@ -75,7 +76,7 @@ def _extract_decorated_node_skeletons(
     than sharing the last value from the legacy name-keyed body map.
     """
     skeletons: list[PipelineNodeSkeleton] = []
-    source_lines = source.splitlines() if source is not None else None
+    source_lines = python_lines(source) if source is not None else None
     for stmt in ast.iter_child_nodes(tree):
         if not isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
             continue

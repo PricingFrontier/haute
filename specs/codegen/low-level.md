@@ -46,7 +46,7 @@
 | `src/haute/_executable_names.py` | The executable-name rule (codegen high-level "One function per node"): `RESERVED_NAMES` with what the generated module binds each to, `BUILTIN_NAMES`, `function_name_violations` (case-folded buckets over every node function name and occurrence alias in the root and each definition graph, submodel ports excepted; reserved and built-in hits), `input_binding_violations` (edge-derived names, `inputMapping` aliases and submodel input ports a body receives), `data_output_violations` over `data_output_destination` (io-layer: two Data Outputs writing one destination, once per submodel occurrence), `executable_name_violations` (all three), the `NameViolation`/`NameParty` result with one `message()` per violation and `format_name_violations` for the whole list; `function_name_problem` (one candidate label, for the assistant), `reserved_or_builtin` (for the standalone pipeline's registration) and `reserved_input_problem` (for user-code execution). Codegen's check raises the parse error. |
 | `src/haute/_support_code_names.py` | The support-code half of the naming rule (codegen high-level "Names cannot collide with support code"): `support_code_inventory` builds the static `SupportBinding` list (name, provenance, source, line) of the root and submodel preambles, the pipeline's submodel imports (`_submodel_modules`: one `from modules import <name>` binding per definition whose file is a `modules/<name>.py` module, labelled `_SUBMODEL_IMPORTS`), the preserved blocks and their `utility.<module>` star imports, resolved through a `UtilityReader`, collecting the statements it cannot read; `support_code_violations` turns it into the five support kinds of violation (a node or input colliding with a helper, two helpers in conflict, a reserved binding, an unreadable statement), apart from a root occurrence named after a submodel module or a node input of that name, which collide with nothing; `utility_reader` reads `utility/<module>.py` from the first directory holding it; `name_violations` joins them with the executable-name violations. |
 | `src/haute/_codegen_builders.py` | One `_gen_*` builder per `NodeType`, registered into `haute._registry.NODE_REGISTRY` via `@_register_codegen`; each returns a `NodeSource` rather than text. Shared helpers build a configured node's declaration or hook (`_configured_node`), the config-backed decorator keywords (`_config_keywords`), parameters (`_params` — the per-edge input names supplied by the orchestrator; duplicates are rejected by `src/haute/codegen.py::_validate_duplicate_node_inputs`) and the transform body (`_transform_body`, which adds the output declaration only when the code binds `df` nowhere). `render_node_source` prints a `NodeSource` through the shared document printer; `_sanitize_description` and `_docstring_lines` prepare docstring text. |
-| `src/haute/_source_layout.py` | The document printer both codegen and the Polars step layout use: the Wadler/Prettier document (`Group`, `Indent`, `Line`, `IfBreak`), `print_doc`, string quoting as ruff writes it (`quote_string`), collections laid out one entry per line when broken (`bracketed`), call and signature arguments laid out as ruff lays them out (`arguments`: flat, then on one indented line, then one per line with a trailing comma; a broken signature's lone parameter also takes the comma, a lone call argument never), and the literal printer (`literal`) for decorator values. |
+| `src/haute/_source_layout.py` | The document printer both codegen and the Polars step layout use: the Wadler/Prettier document (`Group`, `Indent`, `Line`, `IfBreak`), `print_doc`, string quoting as ruff writes it (`quote_string`), collections laid out one entry per line when broken (`bracketed`), call and signature arguments laid out as ruff lays them out (`arguments`: flat, then on one indented line, then one per line with a trailing comma; a broken signature's lone parameter also takes the comma, a lone call argument never), the literal printer (`literal`) for decorator values, the float form ruff writes (`float_literal`), and Python's own line splitting (`python_lines`: at `\n`, `\r\n` and `\r` only). |
 | `src/haute/_python_syntax.py` | Formatting-preserving valid-Python boundary: exact method-call discovery, exact expression/function replacement, and one import inserted below another (`insert_import_after`, used by the node-scoped save), with stable structured syntax failures. It never repairs invalid Python syntax or evaluates source. Codegen no longer edits generated source, so it does not use this module. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): codegen registers and reads per-node code builders through the canonical registry. |
 | `src/haute/_code_extraction.py` | Reverse direction of the builders: recovers the user-authored code from a function body. Three kinds (`polars`, `hook`, `external`) share one engine (`extract_user_code`): strip the docstring, recognise a declaration body (`is_declaration_body`: nothing but `...` or `pass`), strip the transform output declaration or the External File `df = <first input>` binding, recognise the incomplete placeholder, strip the trailing `return df`, and finalise with the Polars rules. |
@@ -147,8 +147,16 @@ indented line, otherwise one argument per line with a trailing comma (as ruff do
 a lone parameter of a broken signature takes the comma too and a lone call argument
 never does); a list or
 dict value that does not fit puts one entry per line with a trailing comma.
-Strings take double quotes unless single ones need fewer escapes. The result is
-a fixed point of `ruff format` at its defaults.
+Strings take double quotes unless single ones need fewer escapes, and a float takes
+`_source_layout.float_literal`'s form, its `repr` without the `+` ruff drops from an
+exponent (`1e20`, never `1e+20`); the step renderer and its restyle write floats through
+the same helper. The result is a fixed point of `ruff format` at its defaults.
+
+Source text is split into lines as Python reads them, at `\n`, `\r\n` and `\r` only
+(`_source_layout.python_lines`), wherever an AST line number indexes the lines or code is
+split and joined again: `str.splitlines` also breaks at a form feed, U+2028 and the other
+Unicode separators, which Python keeps inside a line, so it would shift every body after
+one by a line or rewrite the character as a newline.
 
 `_emission_order(sorted_nodes, edges)` keeps the topological order of every node
 that has inputs and moves each input-less node that feeds another to just before
@@ -505,7 +513,10 @@ file tree on disk.
   a node named like a preamble helper refused), execution, the assistant and the document's
   reserved frame labels.
 - `tests/test_codegen_input_identity.py` — graph-to-source tests pin edge-derived input names as generated Python parameters and persisted `connect` metadata.
-- `tests/test_codegen_layout.py` — the generated-file shape: a corpus graph covering every
+- `tests/test_codegen_layout.py` — Python's line splitting (`python_lines` keeps a form
+  feed and U+2028 inside a line, and a form feed between two nodes leaves both bodies and
+  the comment holding one intact) and floats written as ruff writes them; the generated-file
+  shape: a corpus graph covering every
   node type as a declaration and every code-accepting type as a hook (plus a transform, an
   instance and a submodel definition file) generates modules that `ruff format --check`
   (ruff's defaults) leaves unchanged and that `ruff check --isolated` passes with the

@@ -140,7 +140,6 @@ target dependency resolution. The component roadmaps now carry the resulting pla
 |---|---|
 | `EXEC-R17` | Keep same-size/same-mtime utility freshness and support deferred imports while scoping `sys.path`; bytecode invalidation is a correctness defence. |
 | `EXEC-R13` | Measure actual RSS at a readiness handshake; native VMS, private-commit and cgroup baselines are different accounting. Preserve startup supervision. |
-| `PCFG-R18` | Normalise syntactic whitespace using token boundaries; preserve indentation and multiline literal contents. |
 | `FSH-R07`, `API-R08`, `FSH-R05` | Recover a save only from complete canonical saved-content equality, retain newer dirty edits, and distinguish intended other-tab broadcasts from watcher duplicates and self-echoes. |
 | `DEP-R11` | Check every response batch before positional pairing; require explicit first-deploy intent or authoritative absence, never infer absence from an outage. |
 | `DEP-R09` | Resolve and verify dependency locks for each target Python/platform and extras. |
@@ -307,7 +306,6 @@ production:
 | Pipeline config | PCF-8, PCF-11, PCF-14, PCF-15 | `PCFG-R14` |
 | Pipeline config | PCF-4, PCF-9, PCF-10, PCF-12 | `PCFG-R15` |
 | Pipeline config | PCF-13 | `PCFG-R16` (Decision) |
-| Pipeline config | PCR-2, PCR-3, PCR-4 | `PCFG-R18` |
 | Pipeline config | PCR-5, PCR-6, PCR-7, PCR-8 | `PCFG-R19` |
 | Optimiser | OPR-1, OPR-8, OPR-12 | `OPT-R01` |
 | Optimiser | OPR-3 | `OPT-R02` |
@@ -445,7 +443,6 @@ All probes live outside the repository and wrote nothing into it.
 | dropped comments | Five comment kinds (a section, decorator-to-`def`, trailing, between functions, on `connect`) are absent after parse → `graph_to_code`; `unkept_module_statements` reports none. |
 | corrupt parquet scan | `pl.scan_parquet` on a corrupt file returns a lazy frame; `collect_schema()` raises `ComputeError` (Polars 2.0.0). |
 | evaluation plan size | 2,000,000 rows, five folds: a 71 MB plan; the parent's reload takes 13.3 s with a 0.65 GB peak. |
-| reformat discards steps | A free-code step whose comment carries trailing spaces survives two saves; `ruff format` of the file then logs `polars_steps_discarded`. |
 | `match` bindings | `support_code_inventory` on a preamble `match` lists only `os`; the equivalent `if`/`else` lists `helper` twice. |
 | trace input sources | A left join of A `(policy, x=10)` with B `(policy, x=1000)` and `y = x * 2`: `calc.x` is 10.0 while `input_sources["x"]` names B with 1000.0; declaring B first names A with 10.0; `derivations[].reads` names A both ways. |
 | parser display | `with_columns(rank=pl.col('x').rank().over('g'), y=pl.col('a') * 2)` evaluated for `y`: `expression_type: window`, `substituted_text: rank of x over g`, `result_value: 42.0`; a `replace({'A': 'premium'})` beside a `rename` labels the step a rename of `A`. |

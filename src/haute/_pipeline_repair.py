@@ -26,6 +26,7 @@ from haute._cache import canonical_json
 from haute._git_lock import repository_mutation
 from haute._graph_builders import PipelineNodeSkeleton, _extract_decorated_node_skeletons
 from haute._pipeline_recovery import load_pipeline_editor_document
+from haute._source_layout import python_lines
 from haute.errors import HauteError
 from haute.parser import parse_pipeline_file
 from haute.schemas import (
@@ -671,9 +672,9 @@ def _remove_position_entry(sidecar_bytes: bytes, authored_id: str) -> bytes:
 def _bounded_diff(edit: RepairArtifactEdit) -> tuple[str, bool]:
     if not edit.expose_diff:
         return "", False
-    before = (edit.before or b"").decode("utf-8-sig", errors="replace").splitlines(keepends=True)
+    before = python_lines((edit.before or b"").decode("utf-8-sig", errors="replace"), keepends=True)
     after_bytes = edit.after or b""
-    after = after_bytes.decode("utf-8-sig", errors="replace").splitlines(keepends=True)
+    after = python_lines(after_bytes.decode("utf-8-sig", errors="replace"), keepends=True)
     rendered = "".join(
         difflib.unified_diff(
             before,

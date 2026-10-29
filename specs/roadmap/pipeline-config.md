@@ -19,7 +19,6 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 | PCFG-R14 | Planned | P3 | Both save paths write the same canonical sidecar bytes, the configured pipeline path stays inside the project, and no placeholder file name reaches an error. |
 | PCFG-R15 | Planned | P3 | The unreachable config branches, the empty `_load_error` mechanism, the other dead symbols, the five duplicated mechanisms and the stale comments are gone. |
 | PCFG-R16 | Decision | P3 | The `earlier` step spelling is either dropped or named as the one allowed recogniser of old generated code. |
-| PCFG-R18 | Planned | P2 | A rendered step body is the fixed point of `ruff format` the specification promises (free-code trailing whitespace, exponent floats), so a reformat never discards a node's steps, and body extraction splits lines as Python does. |
 | PCFG-R19 | Planned | P3 | Recovery ids are minted once so a diagnostic's "go to" finds its element, the revision captures cover sidecars and configs, a preamble `match` binds names the naming rule sees, and three duplicated recovery mechanisms exist once. |
 | PCFG-R20 | Planned | P2 | Static parsing and live registration agree on connect arguments; no malformed authored call or handle disappears on Save. |
 | PCFG-R21 | Planned | P1 | A parse/save round trip preserves supported keyword-only bindings or refuses an unsupported signature before losing it. |
@@ -302,46 +301,6 @@ matches them.
 **Evidence:** `src/haute/_config_builder.py::_reconcile_steps`;
 `src/haute/_polars_steps.py::StepSpelling`; `specs/README.md`;
 `specs/pipeline-config/low-level.md`.
-
-### PCFG-R18 — Rendered bodies are ruff fixed points; lines split as Python does
-**Why:** `_render_free_code` strips trailing whitespace from the whole snippet only,
-so each free-code line keeps its own trailing spaces in the rendered body, and
-`_same_program` compares comment tokens verbatim; after `ruff format`, which strips
-trailing whitespace, a free-code comment that carried trailing spaces no longer
-matches and the node's steps are discarded as a hand edit (reproduced end to end:
-two saves keep the steps, `ruff format` then discards them), against the
-specification's promises that a reformatted body keeps its steps and that rendering
-removes trailing whitespace. A float whose `repr` uses exponent form (`1e+20`) is
-rendered as Python writes it and rewritten by ruff (`1e20`), so such a body is not
-the fixed point the specification promises (steps survive, since the tree is the
-same; the cost is churn and drift). Body extraction indexes AST line numbers into
-`str.splitlines()`, which also breaks on form feed, U+2028 and five other characters
-Python does not count as line breaks, so one such character shifts every body after
-it by a line (thirteen sites; mostly loud, one silent drop of a body's last line).
-
-**Plan:** Use Python token boundaries to remove trailing syntactic whitespace only
-outside string literals, preserving indentation and literal contents; compare COMMENT
-tokens with trailing whitespace removed. Per-line `strip` destroys indentation and even
-per-line `rstrip` changes multiline strings. Normalise exponent floats as ruff does in
-one helper used by `_literal`, `_render_variable` and `_source_layout.literal`; split
-on Python's line breaks in one shared helper used by every site. Handle a leading bare
-string that becomes a function docstring explicitly: formatting must not silently change
-authored string contents or discard the step. Add these cases to the fixed-point and
-body-extraction tests.
-
-**Acceptance:** A free-code step with trailing whitespace survives `ruff format` with
-its steps kept; multiline strings retain significant trailing spaces at runtime and
-indented blocks keep their structure. A leading bare-string step remains a fixed point
-without changing its literal value. `1e20` renders unchanged by ruff; a form-feed line
-between two nodes leaves both bodies intact.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_polars_steps.py::_render_free_code`;
-`src/haute/_polars_steps.py::_literal`; `src/haute/_polars_steps.py::_render_variable`;
-`src/haute/_source_layout.py::literal`; `src/haute/_config_builder.py::_same_program`;
-`src/haute/_config_builder.py::_comments`;
-`src/haute/_ast_helpers.py::_extract_function_bodies`; `tests/test_polars_steps.py`.
 
 ### PCFG-R19 — Recovery ids, captures, `match` bindings and clones
 **Why:** Node and occurrence diagnostics are created with a `recovery_id` minted over

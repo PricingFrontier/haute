@@ -495,8 +495,9 @@ def _validate_node_function(
 
 
 def _comments(code: str) -> list[str]:
+    """The comments of *code*, each without the trailing whitespace ``ruff format`` removes."""
     return [
-        token.string
+        token.string.rstrip()
         for token in tokenize.generate_tokens(io.StringIO(code).readline)
         if token.type == tokenize.COMMENT
     ]

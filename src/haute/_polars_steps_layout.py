@@ -44,7 +44,9 @@ from haute._source_layout import (
     Group,
     Indent,
     bracketed,
+    float_literal,
     print_doc,
+    python_lines,
     quote_string,
     width,
 )
@@ -363,18 +365,23 @@ def restyle_statement(statement: str) -> str:
         ) from None
     unparsed = ast.unparse(tree)
     line_starts = [0]
-    for line in unparsed.splitlines(keepends=True):
+    for line in python_lines(unparsed, keepends=True):
         line_starts.append(line_starts[-1] + len(line))
-    strings = [
+    literals = [
         token
         for token in tokenize.generate_tokens(io.StringIO(unparsed).readline)
-        if token.type == tokenize.STRING
+        if token.type in (tokenize.STRING, tokenize.NUMBER)
     ]
     restyled = unparsed
-    for token in reversed(strings):
+    for token in reversed(literals):
         start = line_starts[token.start[0] - 1] + token.start[1]
         end = line_starts[token.end[0] - 1] + token.end[1]
         value = ast.literal_eval(token.string)
+        if token.type == tokenize.NUMBER:
+            # ``ast.unparse`` writes a float's ``repr``; ruff drops its exponent's ``+``.
+            if isinstance(value, float):
+                restyled = f"{restyled[:start]}{float_literal(value)}{restyled[end:]}"
+            continue
         if not isinstance(value, str):
             raise ValueError(f"Cannot restyle the rendered statement {statement!r}: bytes literal.")
         restyled = f"{restyled[:start]}{quote_string(value)}{restyled[end:]}"

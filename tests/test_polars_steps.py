@@ -4128,6 +4128,110 @@ def test_parse_discards_steps_when_only_a_free_code_comment_was_edited(tmp_path:
     assert node.data.config["_steps_discarded"].startswith("Steps were discarded because")
 
 
+def test_free_code_trailing_whitespace_survives_ruff_format_with_its_steps(
+    tmp_path: Path,
+) -> None:
+    """Rendering takes off the whitespace ``ruff format`` takes off, the spaces ending a
+    line outside a string, so a reformatted file keeps its steps; a multiline string
+    keeps its own trailing spaces and an indented block its structure."""
+    quotes, _rates = _frames(tmp_path)
+    snippet = (
+        "# keep two rows   \n"
+        'note = """first  \n'
+        'second"""   \n'
+        "if True:   \n"
+        "    df = df.head(2)  # inside   \n"
+        "df = df.with_columns(note=pl.lit(note))\t\n"
+    )
+    steps = [source(), step("c", "free_code", code=snippet)]
+    rendered = render_polars_steps(steps, ["quotes"], start="input").code
+    assert rendered == (
+        "df = quotes\n"
+        "# keep two rows\n"
+        'note = """first  \n'
+        'second"""\n'
+        "if True:\n"
+        "    df = df.head(2)  # inside\n"
+        "df = df.with_columns(note=pl.lit(note))"
+    )
+    graph = PipelineGraph(nodes=[quotes, _stepped("t", steps)], edges=[make_edge("quotes", "t")])
+    generated = graph_to_code(graph, pipeline_name="main")
+    reformatted = subprocess.run(
+        RUFF_FORMAT, input=generated, capture_output=True, text=True, encoding="utf-8", check=True
+    ).stdout
+    assert reformatted == generated
+    _write_sidecars(tmp_path, graph)
+
+    # A file saved before trailing whitespace was taken off, then reformatted.
+    padded = generated.replace("# keep two rows", "# keep two rows   ")
+    for body in (generated, padded, reformatted):
+        parsed = parse_pipeline_source(body, _base_dir=tmp_path)
+        node = next(n for n in parsed.nodes if n.id == "t")
+        assert node.data.config["steps"] == steps
+        assert "_steps_discarded" not in node.data.config
+    result = execute_graph(parsed, target_node_id="t", execution_context=_capped_context())["t"]
+    assert result.status == "ok", result.error
+    assert [row["note"] for row in result.preview] == ["first  \nsecond"] * 2
+
+
+def test_floats_with_an_exponent_render_as_ruff_writes_them() -> None:
+    steps = [
+        source(),
+        step("v", "variable", name="cap", value=num(1e20)),
+        step("v2", "variable", name="floor", value=num(1.5e-7)),
+        step(
+            "f",
+            "filter",
+            match="all",
+            conditions=[cond("premium", "lt", value=num(2.5e300))],
+        ),
+    ]
+    code = render_polars_steps(steps, ["quotes"], start="input").code
+    assert "cap = 1e20\n" in code
+    assert "floor = 1.5e-07\n" in code
+    assert "2.5e300" in code
+    assert "e+" not in code
+    module = "def node():\n" + "\n".join(f"    {line}" for line in code.splitlines()) + "\n"
+    formatted = subprocess.run(
+        RUFF_FORMAT, input=module, capture_output=True, text=True, encoding="utf-8", check=True
+    ).stdout
+    assert formatted == module
+
+
+def test_a_leading_bare_string_step_is_a_fixed_point_with_its_value(tmp_path: Path) -> None:
+    """A frame-mode body may open with a free-code string; it is never the docstring,
+    so formatting and the parse leave its value and the steps as they were."""
+    data = tmp_path / "quotes.parquet"
+    pl.DataFrame({"premium": [1.0, 2.0]}).write_parquet(data)
+    steps = [step("c", "free_code", code='"Prämie  "\ndf = df.head(1)')]
+    node = GraphNode(
+        id="quotes",
+        data=NodeData(
+            label="quotes",
+            nodeType=NodeType.DATA_INPUT,
+            config={
+                "inputType": "file",
+                "format": "parquet",
+                "mode": "scan",
+                "path": str(data),
+                "arguments": {},
+                "steps": steps,
+            },
+        ),
+    )
+    graph = PipelineGraph(nodes=[node], edges=[])
+    generated = graph_to_code(graph, pipeline_name="main")
+    reformatted = subprocess.run(
+        RUFF_FORMAT, input=generated, capture_output=True, text=True, encoding="utf-8", check=True
+    ).stdout
+    assert reformatted == generated
+    assert '    """"""\n    "Prämie  "\n' in generated
+    _write_sidecars(tmp_path, graph)
+    parsed = next(n for n in parse_pipeline_source(generated, _base_dir=tmp_path).nodes)
+    assert parsed.data.config["steps"] == steps
+    assert parsed.data.config["code"] == '"Prämie  "\ndf = df.head(1)'
+
+
 def test_parse_keeps_incomplete_steps_saved_through_the_placeholder(tmp_path: Path) -> None:
     quotes, _rates = _frames(tmp_path)
     incomplete = [source(), step("f", "filter", match="all", conditions=[])]
@@ -5710,7 +5814,7 @@ def test_recovery_and_save_report_incomplete_steps_on_every_surface(project_root
         raw = {k: v for k, v in node.data.config.items() if not k.startswith("_") and k != "code"}
         assert "_steps_error" not in raw
         issues = validate_recovery_config(node.data.nodeType, raw, input_names=None)
-        assert any(issue.path == "steps" and issue.code == "incomplete" for issue in issues), (
+        assert any(issue.path == "/steps" and issue.code == "incomplete" for issue in issues), (
             node.data.nodeType
         )
         # A renderable list on the same raw shape reports nothing.
@@ -5718,7 +5822,7 @@ def test_recovery_and_save_report_incomplete_steps_on_every_surface(project_root
         assert not [
             issue
             for issue in validate_recovery_config(node.data.nodeType, ok_raw, input_names=None)
-            if issue.path == "steps"
+            if issue.path == "/steps"
         ], node.data.nodeType
 
     quotes, rates = _frames(project_root)

@@ -339,9 +339,12 @@ the way `ruff format` lays it out,
 except that a broken call always puts one argument per line with a trailing comma; a
 list that still does not fit is broken the same way. The body reads like a formatted
 pipeline file, and `ruff format` at its default line length and quote style leaves it
-unchanged; free-code steps keep their authored layout. A saved body is compared with
-the rendering of its steps as a program, not as text (the same syntax tree and the
-same comments), so a body saved in an earlier layout, quoting or call spelling of the
+unchanged: a float is written as ruff writes it, with no `+` in its exponent (`1e20`), and
+a free-code step keeps its authored layout with only the whitespace ruff removes taken
+off, the spaces ending a line outside a string literal (a multiline string keeps every
+character it holds). A saved body is compared with the rendering of its steps as a
+program, not as text (the same syntax tree and the same comments, a comment's trailing
+whitespace aside), so a body saved in an earlier layout, quoting or call spelling of the
 same steps (lists where the renderer now passes separate arguments, Polars' sort and
 unique defaults spelled out), or reformatted by `ruff format`, keeps its steps, while
 any other edit discards them.
@@ -499,8 +502,11 @@ node-level `return`, `yield`, `await`, or loop control outside a loop fail with 
 offending step index; returns inside helper functions are allowed. Validation
 compiles but never executes authored code; frame validation models `df` already
 bound, and diagnostics and ranges refer to authored lines. The stored snippet is
-preserved; rendering normalises line endings and removes trailing whitespace so
-generated code round-trips through the existing extractor. Free code shares the existing
+preserved; rendering normalises line endings and removes the whitespace ending each line
+outside a string literal, as `ruff format` does, so generated code round-trips through the
+existing extractor and through a reformat. A step whose code opens with a bare string is
+never its function's docstring: the generated body puts an empty docstring before it, so
+neither the parser nor a formatter treats the string as documentation. Free code shares the existing
 code execution and planning contracts, with no separate evaluator. Input renames
 continue to rewrite structured input fields; authored Python is unchanged. Use
 `df` to operate on the current frame across input renames; direct references to

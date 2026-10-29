@@ -70,7 +70,7 @@ from haute._registry import (
 from haute._registry import (
     set_codegen as _set_codegen_in_registry,
 )
-from haute._source_layout import INDENT, Doc, arguments, literal, print_doc
+from haute._source_layout import INDENT, Doc, arguments, literal, print_doc, python_lines
 from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import (
     COLUMN_CONFIG_KEYS,
@@ -227,7 +227,9 @@ def render_node_source(
         if not source.description and _starts_with_string(source.body):
             # Keep a leading string in the code: an empty docstring comes first.
             lines.append(f'{INDENT}""""""')
-        lines.extend(f"{INDENT}{line}" if line.strip() else "" for line in source.body.splitlines())
+        lines.extend(
+            f"{INDENT}{line}" if line.strip() else "" for line in python_lines(source.body)
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -324,7 +326,7 @@ _INCOMPLETE_STEPS = INCOMPLETE_STEPS_BODY.rstrip("\n")
 
 def _unindented(body: str) -> str:
     """A generated body constant written for a function body, at column 0."""
-    return "\n".join(line.removeprefix(INDENT) for line in body.rstrip("\n").splitlines())
+    return "\n".join(line.removeprefix(INDENT) for line in python_lines(body.rstrip("\n")))
 
 
 def _configured_node(
@@ -566,7 +568,7 @@ def _code_makes_df_local(code: str) -> bool:
     local, and a ``global df`` declaration claims it too. Only when neither
     holds could ``return df`` reach a module global.
     """
-    wrapped = "def _node():\n" + "\n".join(f"{INDENT}{line}" for line in code.splitlines())
+    wrapped = "def _node():\n" + "\n".join(f"{INDENT}{line}" for line in python_lines(code))
     try:
         table = symtable.symtable(wrapped, "<node>", "exec")
     except SyntaxError:

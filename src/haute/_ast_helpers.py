@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from haute._global_constants import module_binding_lines
+from haute._source_layout import python_lines
 from haute._submodel_paths import SUBMODEL_PACKAGE
 from haute._types import (
     DECORATOR_TO_NODE_TYPE,
@@ -265,7 +266,7 @@ def _strip_docstring(lines: list[str]) -> list[str]:
     # parse time; the extra ``def`` header shifts line numbers by one.
     body_source = _dedent("\n".join(lines))
     wrapped = "def _f():\n" + "\n".join(
-        f"    {line}" if line else line for line in body_source.splitlines()
+        f"    {line}" if line else line for line in python_lines(body_source)
     )
     try:
         func = ast.parse(wrapped).body[0]
@@ -294,7 +295,7 @@ def _strip_docstring(lines: list[str]) -> list[str]:
 
 def _dedent(code: str) -> str:
     """Remove common leading whitespace."""
-    code_lines = code.splitlines()
+    code_lines = python_lines(code)
     if not code_lines:
         return code
     indents = [len(line) - len(line.lstrip()) for line in code_lines if line.strip()]
@@ -324,7 +325,7 @@ def _extract_function_bodies(
             are computed from two different snapshots of the file, and
             avoids a silent second ``ast.parse()`` call that masks errors.
     """
-    source_lines = source.splitlines()
+    source_lines = python_lines(source)
     bodies: dict[str, str] = {}
 
     for node in ast.iter_child_nodes(tree):
@@ -833,7 +834,7 @@ def _extract_preamble_from_ast(
     constructor_name: str,
 ) -> str:
     """Extract a valid module's preamble from AST source boundaries."""
-    lines = source.splitlines()
+    lines = python_lines(source)
     boundaries = _module_boundaries(
         tree, line_count=len(lines), receiver=receiver, constructor_name=constructor_name
     )
@@ -927,7 +928,7 @@ def unkept_module_statements(
     """
     if tree is None:
         tree = ast.parse(source)
-    lines = source.splitlines()
+    lines = python_lines(source)
     boundaries = _module_boundaries(
         tree, line_count=len(lines), receiver=receiver, constructor_name=constructor_name
     )
@@ -1035,7 +1036,7 @@ def _extract_preamble_textual(
     the generated construction into the preamble and duplicates it on the
     next round-trip save.
     """
-    lines = source.splitlines()
+    lines = python_lines(source)
     # Find the end of standard imports region, capturing either supported
     # spelling of the requested constructor.
     last_standard_idx = -1
@@ -1111,7 +1112,7 @@ def _extract_preserved_blocks(source: str) -> list[str]:
     starts are ignored.
     """
     blocks: list[str] = []
-    lines = source.splitlines()
+    lines = python_lines(source)
     i = 0
     while i < len(lines):
         if lines[i].rstrip() == _PRESERVE_START:

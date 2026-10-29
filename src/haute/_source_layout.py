@@ -23,6 +23,7 @@ values and names they control, never parsed source.
 from __future__ import annotations
 
 import math
+import re
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -212,6 +213,30 @@ def quote_string(value: str) -> str:
     return f"{quote}{body}{quote}"
 
 
+def float_literal(value: float) -> str:
+    """A finite float as ``ruff format`` writes it: its ``repr`` without an exponent's ``+``.
+
+    Python writes ``1e+20`` and ruff rewrites it ``1e20``, so a body or decorator
+    printed from ``repr`` would not be the fixed point of ruff it promises to be.
+    """
+    return repr(value).replace("e+", "e")
+
+
+_PYTHON_LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$")
+
+
+def python_lines(text: str, *, keepends: bool = False) -> list[str]:
+    """Split *text* into lines where Python ends a line: at ``\\n``, ``\\r\\n`` and ``\\r``.
+
+    ``str.splitlines`` also breaks at a form feed, U+2028 and the other Unicode
+    separators, which Python keeps inside a line, so lines it returns no longer
+    match the line numbers of a syntax tree, and joining them again rewrites
+    those characters as newlines.
+    """
+    lines = _PYTHON_LINE.findall(text)
+    return lines if keepends else [line.rstrip("\r\n") for line in lines]
+
+
 def literal(value: object) -> Doc:
     """The Python literal for a JSON-like *value*: what a decorator keyword can carry.
 
@@ -229,7 +254,7 @@ def literal(value: object) -> Doc:
                 "A generated decorator value must be a finite number.",
                 value=repr(value),
             )
-        return repr(value)
+        return float_literal(value)
     if isinstance(value, str):
         return quote_string(value)
     if isinstance(value, list):

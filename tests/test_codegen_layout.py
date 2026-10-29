@@ -1517,3 +1517,63 @@ def test_a_node_type_without_code_takes_an_input_named_df_as_any_other(
     code = graph_to_code(_fed_by_df(node_type, config), pipeline_name="plain")
 
     assert "\ndef Target_Node(df): ...\n" in code
+
+
+@pytest.mark.parametrize(
+    ("text", "lines"),
+    [
+        ("", []),
+        ("a\nb", ["a", "b"]),
+        ("a\r\nb\rc\n", ["a", "b", "c"]),
+        ("\n\n", ["", ""]),
+        ("x = 1\x0c\n\x0c\ny = '\u2028'\x1c\x85\n", ["x = 1\x0c", "\x0c", "y = '\u2028'\x1c\x85"]),
+    ],
+)
+def test_source_lines_split_where_python_ends_a_line(text: str, lines: list[str]) -> None:
+    """A form feed, U+2028 and the other separators ``str.splitlines`` breaks at are
+    characters of a line to Python."""
+    from haute._source_layout import python_lines
+
+    assert python_lines(text) == lines
+    assert "".join(python_lines(text, keepends=True)) == text
+
+
+@pytest.mark.parametrize(
+    ("value", "written"),
+    [(1e20, "1e20"), (1.5e300, "1.5e300"), (1e-07, "1e-07"), (0.1, "0.1"), (-2e16, "-2e16")],
+)
+def test_floats_are_written_as_ruff_writes_them(value: float, written: str) -> None:
+    from haute._source_layout import float_literal, literal, print_doc
+
+    assert float_literal(value) == written
+    assert print_doc(literal(value)) == written
+
+
+def test_a_form_feed_between_two_nodes_leaves_both_bodies_intact() -> None:
+    """Python counts no line break at a form feed, so the bodies after one keep their
+    lines: each node reloads with exactly its own code."""
+    from haute.parser import parse_pipeline_source
+
+    source = (
+        "import haute\nimport polars as pl\n\n"
+        'pipeline = haute.Pipeline("main")\n\n\n'
+        "@pipeline.polars\n"
+        "def first() -> pl.LazyFrame:\n"
+        '    df = pl.LazyFrame({"a": [1]})  # a\x0cb\n'
+        "    return df\n"
+        "\x0c\n"
+        "\n"
+        "@pipeline.polars\n"
+        "def second(first: pl.LazyFrame) -> pl.LazyFrame:\n"
+        "    df = first.head(1)\n"
+        '    df = df.with_columns(b=pl.lit("x"))\n'
+        "    return df\n"
+    )
+    graph = parse_pipeline_source(source, source_file="main.py")
+    code = {node.id: node.data.config["code"] for node in graph.nodes}
+    assert code == {
+        "first": 'df = pl.LazyFrame({"a": [1]})  # a\x0cb',
+        "second": 'df = first.head(1)\ndf = df.with_columns(b=pl.lit("x"))',
+    }
+    regenerated = graph_to_code(graph, pipeline_name="main")
+    assert "# a\x0cb\n" in regenerated

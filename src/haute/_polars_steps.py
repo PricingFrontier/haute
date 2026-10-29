@@ -24,9 +24,11 @@ from __future__ import annotations
 
 import ast
 import datetime as _dt
+import io
 import keyword
 import math
 import re
+import tokenize
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -39,6 +41,7 @@ import polars as pl
 
 from haute._polars_dtypes import parse_rendered_dtype
 from haute._polars_steps_layout import layout_statement
+from haute._source_layout import float_literal, python_lines
 from haute._types import GLOBAL_CONSTANTS_NAME, GlobalConstant, NodeType
 from haute._user_exec import _exec_user_code
 from haute.errors import SchemaMismatchError
@@ -899,6 +902,32 @@ def _needs_parentheses(child_op: object, parent: tuple[str, str] | None) -> bool
     return _PRECEDENCE[child_op] < _PRECEDENCE[parent_op]
 
 
+#: Tokens whose text is a string literal's own characters: a line ending inside
+#: one keeps its whitespace.
+_LITERAL_TOKENS = frozenset(
+    getattr(tokenize, name)
+    for name in ("STRING", "FSTRING_MIDDLE", "TSTRING_MIDDLE")
+    if hasattr(tokenize, name)
+)
+
+
+def _without_line_end_whitespace(code: str) -> str:
+    """*code* without the whitespace ending its lines outside string literals.
+
+    ``ruff format`` removes it, so a rendering that kept it would not be the fixed
+    point its function body promises. A line ending inside a multiline string keeps
+    its whitespace, which is the string's own; indentation is never touched.
+    """
+    inside_literal: set[int] = set()
+    for token in tokenize.generate_tokens(io.StringIO(code).readline):
+        if token.type in _LITERAL_TOKENS and token.end[0] > token.start[0]:
+            inside_literal.update(range(token.start[0], token.end[0]))
+    return "\n".join(
+        line if number in inside_literal else line.rstrip(" \t\f")
+        for number, line in enumerate(python_lines(code), start=1)
+    )
+
+
 class _Renderer:
     def __init__(
         self,
@@ -1022,7 +1051,7 @@ class _Renderer:
             if exc.msg == "'return' outside function":
                 raise self.fail("Assign the result to df instead of using return.") from None
             raise self.fail(f"Invalid Python on line {exc.lineno or 1}: {exc.msg}.") from None
-        return code
+        return _without_line_end_whitespace(code)
 
     # -- field helpers ---------------------------------------------------
 
@@ -1095,7 +1124,7 @@ class _Renderer:
                 raise self.fail(f"{label} must be a number.")
             if isinstance(value, float) and not math.isfinite(value):
                 raise self.fail(f"{label} must be a finite number.")
-            return literal_type, repr(value)
+            return literal_type, float_literal(value) if isinstance(value, float) else repr(value)
         if literal_type == "text":
             if not isinstance(value, str):
                 raise self.fail(f"{label} must be text.")

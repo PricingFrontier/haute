@@ -57,6 +57,7 @@ from haute._sidecar import (
     _normalise_sidecar_sources,
     read_sidecar_state,
 )
+from haute._source_layout import python_lines
 from haute._submodel_paths import resolve_submodel_reference, submodel_source_key
 from haute._submodel_recovery import submodel_registration_evidence
 from haute._types import (
@@ -1947,7 +1948,7 @@ def _unkept_statement_diagnostics(
     statement until it moves into the preamble or a preserved block.
     """
     constructor = "Pipeline" if receiver == "pipeline" else "Submodel"
-    lines = source.splitlines()
+    lines = python_lines(source)
     diagnostics = []
     for start_line, end_line in unkept_module_statements(
         source, receiver=receiver, constructor_name=constructor
@@ -2336,7 +2337,7 @@ def _load_readable_pipeline_editor_document(
                 failure = strict_failure or ParseError("Pipeline parsing failed.")
                 context = failure.context if isinstance(failure, HauteError) else {}
                 line = context.get("line")
-                lines = source.splitlines()
+                lines = python_lines(source)
                 diagnostics.append(
                     _diagnostic(
                         code="pipeline_parse_invalid",

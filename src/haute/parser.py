@@ -55,6 +55,7 @@ from haute._parser_submodels import (
 from haute._parser_submodels import merge_submodels as _merge_submodels
 from haute._parser_submodels import parse_submodel_source as _parse_submodel_source
 from haute._project import get_project_root
+from haute._source_layout import python_lines
 from haute._submodel_paths import resolve_submodel_reference, submodel_source_key
 from haute._support_code_names import UtilityReader, support_code_violations, utility_reader
 from haute._types import GLOBAL_CONSTANTS_FILE, GlobalConstant
@@ -301,7 +302,7 @@ def parse_pipeline_source_with_name_violations(
     rf_nodes = _build_rf_nodes(raw_nodes)
     preamble = _extract_preamble(source, tree=tree)
     preserved_blocks = _extract_preserved_blocks(source)
-    preserved = _module_preserve_spans(source.splitlines())
+    preserved = _module_preserve_spans(python_lines(source))
     for statement in tree.body:
         if is_submodel_import(statement) and any(
             first <= statement.lineno - 1 <= last for first, last in preserved
