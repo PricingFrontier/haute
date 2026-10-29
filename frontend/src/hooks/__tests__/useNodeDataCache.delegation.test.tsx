@@ -45,6 +45,7 @@ import {
   getNodeDataPoint,
   runNodeData,
 } from "../../api/client"
+import { makeNodeDataPoint } from "../../test-utils/factories"
 
 const mockGetPoint = vi.mocked(getNodeDataPoint)
 const mockRun = vi.mocked(runNodeData)
@@ -76,7 +77,7 @@ function nodeById(id: string) {
 }
 
 function delegatedPoint(consumer: string, state: NodeDataPointResponse["state"]): NodeDataPointResponse {
-  return {
+  return makeNodeDataPoint({
     consumer_node_id: consumer,
     point: { producer_node_id: "source", port_label: null },
     slot_key: "source||live",
@@ -89,7 +90,7 @@ function delegatedPoint(consumer: string, state: NodeDataPointResponse["state"])
     reads_directly: false,
     build_endpoint: "/api/input-cache/build",
     clear_endpoint: "/api/input-cache/clear",
-  }
+  })
 }
 
 function renderConsumer(nodeId: string) {

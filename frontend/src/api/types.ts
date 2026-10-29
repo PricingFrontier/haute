@@ -12,7 +12,6 @@ import type {
 } from "../types/node"
 import type {
   EvaluationPreviewPayload as EvaluationPreview,
-  BandingStatsResponse as GeneratedBandingStatsResponse,
   ExplorePivotMemberOption as GeneratedExplorePivotMemberOption,
   ExplorePivotMembersResponse as GeneratedExplorePivotMembersResponse,
   ExplorePivotPath as GeneratedExplorePivotPath,
@@ -24,14 +23,13 @@ import type {
   GitWorkingBranchResponse as GeneratedGitWorkingBranchResponse,
   MlflowDestinationEntry as GeneratedMlflowDestinationEntry,
   MlflowTestConnectionResponse as GeneratedMlflowTestConnectionResponse,
-  NodeDataProfileResponse as GeneratedNodeDataProfileResponse,
+  NodeDataStatusResponse as GeneratedNodeDataStatusResponse,
   OptimiserFrontierAutoRangeStatusResponse as GeneratedOptimiserFrontierAutoRangeStatusResponse,
   OptimiserFrontierResponse as GeneratedOptimiserFrontierResponse,
   OptimiserFrontierStatusResponse as GeneratedOptimiserFrontierStatusResponse,
   OptimiserSolveResponse as GeneratedOptimiserSolveResponse,
   OptimiserSolveResult as GeneratedOptimiserSolveResult,
   OptimiserStatusResponse as GeneratedOptimiserStatusResponse,
-  RatingLevelsResponse as GeneratedRatingLevelsResponse,
   TrainEstimateResponse as GeneratedTrainEstimateResponse,
   TrainResponse as GeneratedTrainResponse,
   TrainStatusResponse as GeneratedTrainStatusResponse,
@@ -606,75 +604,14 @@ export type {
 // Cache-inventory contracts (/api/cache)
 // ---------------------------------------------------------------------------
 
-/**
- * One node of the graph. `state`/`row_count` describe the generation this node
- * would read for its own columns; `generations`/`size_bytes` are every
- * signature the store still holds for it, including data retained for active readers.
- */
-export interface CacheNodeEntry {
-  node_id: string
-  kind: "data_input" | "api_input_table" | "node_output" | null
-  state: "current" | "stale" | "partial" | "missing" | "building" | "corrupt" | null
-  reads_directly: boolean
-  /** The node this one reads from, when that is another node: its cache is
-   *  reported on that node's row, so this row carries no size. */
-  reads_from: string | null
-  /**
-   * Other nodes resolving to the same input snapshot. Every sharer names the
-   * others, and exactly one of them carries the bytes — the one with a size.
-   */
-  shares_snapshot_with: string[]
-  row_count: number | null
-  generations: number
-  size_bytes: number
-  newest_created_at: number | null
-  /** How long the newest generation took to cache; null when unrecorded. */
-  build_seconds: number | null
-  /** The store identities this row is responsible for; what clearing it clears. */
-  identity_digests: string[]
-  retention: "pinned" | "automatic" | null
-  /** Why this node has no data point at all — an unwired Banding, say. */
-  unavailable_reason: string | null
-}
-
-/** Cached data not attributable to any node of the graph as it stands. */
-export interface CacheOwnerEntry {
-  bucket: "node_output" | "input"
-  label: string
-  node_id: string | null
-  source: string | null
-  generations: number
-  row_count: number | null
-  size_bytes: number
-  newest_created_at: number | null
-  build_seconds: number | null
-  identity_digests: string[]
-}
-
-export interface CacheClearResponse {
-  schema_version: 1
-  cleared: string[]
-  freed_bytes: number
-}
-
-/** The snapshot store's size; only automatic captures count toward the budget. */
-export interface CacheUsageResponse {
-  schema_version: 1
-  total_bytes: number
-  automatic_bytes: number
-  automatic_budget_bytes: number
-}
-
-export interface CacheNodesResponse {
-  schema_version: 1
-  source: string
-  nodes: CacheNodeEntry[]
-  other: CacheOwnerEntry[]
-  unattributed_generations: number
-  unattributed_bytes: number
-  /** Identities whose provider marker is missing or unrecognised. */
-  unmarked_identities: number
-}
+// The cache-inventory responses are generated.
+export type {
+  CacheClearResponse,
+  CacheNodeEntry,
+  CacheNodesResponse,
+  CacheOwnerEntry,
+  CacheUsageResponse,
+} from "../generated/api-contracts.generated"
 
 // ---------------------------------------------------------------------------
 // Input-cache contracts (/api/input-cache)
@@ -1110,84 +1047,18 @@ export type TrainStatusResponse = Omit<GeneratedTrainStatusResponse, keyof Train
 /** Per-column statistics surfaced in the Schema overview card. */
 export type ExploreColumnKind = "Numeric" | "Text" | "Temporal" | "Boolean" | "Nested" | "Other"
 
-export interface ExploreHistogramBin {
-  start: number
-  end: number
-  count: number
-}
-
-/**
- * Equal-width bins over a numeric column's finite values: `ok` bins span the
- * finite minimum to maximum, `constant` has one bin, `empty` has no finite
- * values, and `skipped` is past the profile's histogram column limit or an
- * integer column too large for the browser to hold its boundaries exactly.
- */
-export interface ExploreHistogram {
-  status: "ok" | "constant" | "empty" | "skipped"
-  bins: ExploreHistogramBin[]
-  finite_count: number | null
-  non_finite_count: number | null
-  skipped_reason: "column_limit" | "integer_precision" | null
-}
-
-export interface ExploreColumnStat {
-  name: string
-  dtype: string
-  kind: ExploreColumnKind
-  null_count: number
-  /** Float NaN count — the invalid-numeric bucket, distinct from null. Null for non-float dtypes. */
-  nan_count?: number | null
-  distinct_count: number | null
-  min_value?: string | null
-  p25_value?: string | null
-  median_value?: string | null
-  mean_value?: string | null
-  p75_value?: string | null
-  max_value?: string | null
-  std_value?: string | null
-  zero_count?: number | null
-  negative_count?: number | null
-  unique_ratio: number | null
-  is_high_cardinality: boolean
-  is_identifier_candidate: boolean
-  text_min_length: number | null
-  text_mean_length: number | null
-  text_max_length: number | null
-  temporal_span: string | null
-  /** Server-binned distribution; null for non-numeric columns. */
-  histogram?: ExploreHistogram | null
-}
-
-export interface ExploreDataQualityIssue {
-  severity: "warning" | "danger"
-  label: string
-  detail: string
-}
-
-export interface ExploreDataQualitySummary {
-  issue_count: number
-  issues: ExploreDataQualityIssue[]
-  duplicate_row_count: number | null
-  duplicate_ratio: number | null
-}
-
-export interface ExploreDistinctValueCount {
-  value: string | null
-  count: number
-}
-
-export interface ExploreCategoricalColumnProfile {
-  field: string
-  distinct_count: number | null
-  expandable: boolean
-  values_truncated: boolean
-  values: ExploreDistinctValueCount[]
-}
-
-export interface ExploreOverviewSummary {
-  data_quality: ExploreDataQualitySummary
-  categorical_summary: ExploreCategoricalColumnProfile[]
-}
+// The profile's column and overview statistics are generated with the node-data
+// responses that carry them.
+export type {
+  ExploreCategoricalColumnProfile,
+  ExploreColumnStat,
+  ExploreDataQualityIssue,
+  ExploreDataQualitySummary,
+  ExploreDistinctValueCount,
+  ExploreHistogram,
+  ExploreHistogramBin,
+  ExploreOverviewSummary,
+} from "../generated/api-contracts.generated"
 
 /** Lightweight descriptor of a materialised Explore cache entry. */
 export const NODE_DATA_POINT_KINDS = ["data_input", "api_input_table", "node_output"] as const
@@ -1210,102 +1081,27 @@ export type NodeDataColumns = "all" | string[]
 
 export type NodeDataRetention = "pinned" | "automatic"
 
-export interface NodeDataPointRef {
-  producer_node_id: string
-  port_label?: string | null
-}
-
-export interface NodeDataGeneration {
-  generation_id: string
-  columns: NodeDataColumns
-  row_count: number
-  column_count: number
-  size_bytes: number
-  retention: NodeDataRetention
-  fresh: boolean
-  created_at: number
-}
-
-export interface NodeDataJob {
-  job_id: string
-  progress: number
-  message: string
-}
-
-export interface NodeDataPointResponse {
-  consumer_node_id: string
-  point: NodeDataPointRef
-  slot_key: string
-  kind: NodeDataPointKind
-  state: NodeDataPointState
-  demand: NodeDataColumns
-  data_version?: string | null
-  row_count?: number | null
-  size_bytes?: number | null
-  retention?: NodeDataRetention | null
-  generation?: NodeDataGeneration | null
-  job?: NodeDataJob | null
-  reads_directly: boolean
-  build_endpoint?: string | null
-  clear_endpoint?: string | null
-}
-
-export interface NodeDataRunResponse {
-  status: "started" | "joined" | "completed" | "delegated"
-  job_id?: string | null
-  cached: boolean
-  message: string
-  point: NodeDataPointResponse
-}
-
-export interface NodeDataProfile {
-  row_count: number
-  column_count: number
-  columns: ExploreColumnStat[]
-  overview_summary: ExploreOverviewSummary
-  data_version: string
-  generated_at: number
-}
-
-// The banding, rating-level and data-profile responses are generated. The
-// node-data point and profile keep their hand types until the node-data
-// responses are generated; the generated shapes are assignable to them.
+// The node-data responses are generated, and with them the point the banding,
+// rating-level and data-profile responses carry.
 export type {
   BandingHistogramBin,
+  BandingStatsResponse,
   BandingValueCount,
+  NodeDataClearResponse,
+  NodeDataGeneration,
+  NodeDataJob,
+  NodeDataPointRef,
+  NodeDataPointResponse,
+  NodeDataProfile,
+  NodeDataProfileResponse,
+  NodeDataRunResponse,
   RatingLevelColumn,
   RatingLevelValue,
+  RatingLevelsResponse,
 } from "../generated/api-contracts.generated"
 
-export type BandingStatsResponse = Omit<GeneratedBandingStatsResponse, "point"> & {
-  point: NodeDataPointResponse
-}
-
-export type RatingLevelsResponse = Omit<GeneratedRatingLevelsResponse, "point"> & {
-  point: NodeDataPointResponse
-}
-
-export type NodeDataProfileResponse = Omit<GeneratedNodeDataProfileResponse, "point" | "result"> & {
-  point: NodeDataPointResponse
-  result: NodeDataProfile | null
-}
-
-export interface NodeDataStatusResponse {
-  status: JobStatus
-  progress: number
-  message: string
-  terminal_reason?: string | null
-  error?: string | null
-  error_code?: string | null
-  execution_metrics?: ExecutionMetrics | null
-  generation_id?: string | null
-  outcome?: "published" | "superseded" | null
-  profile?: NodeDataProfile | null
-}
-
-export interface NodeDataClearResponse {
-  status: "cleared" | "delegated"
-  point: NodeDataPointResponse
+export type NodeDataStatusResponse = Omit<GeneratedNodeDataStatusResponse, "execution_metrics"> & {
+  execution_metrics: ExecutionMetrics | null
 }
 
 export type ExplorePivotMemberKind =

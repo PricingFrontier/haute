@@ -5,6 +5,7 @@ import type { ExploreColumnStat } from "../../../api/types"
 import type { ExploreDataView } from "../exploreDataView"
 import ExploreRelationshipsPane from "../ExploreRelationshipsPane"
 import { WHOLE_DATA_DEBOUNCE_MS } from "../../editors/shared/useWholeDataAnswer"
+import { makeExploreColumnStat } from "../../../test-utils/factories"
 
 const mocks = vi.hoisted(() => ({
   relationships: vi.fn(),
@@ -29,7 +30,7 @@ vi.mock("../../../stores/useSettingsStore", () => ({
 const node = { id: "explore", data: { label: "explore", description: "", nodeType: "explore", config: {} } }
 
 function column(name: string, kind: ExploreColumnStat["kind"]): ExploreColumnStat {
-  return {
+  return makeExploreColumnStat({
     name,
     dtype: kind === "Numeric" ? "Float64" : "String",
     kind,
@@ -42,7 +43,7 @@ function column(name: string, kind: ExploreColumnStat["kind"]): ExploreColumnSta
     text_mean_length: null,
     text_max_length: null,
     temporal_span: null,
-  }
+  })
 }
 
 const report = {

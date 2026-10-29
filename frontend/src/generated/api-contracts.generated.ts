@@ -181,6 +181,85 @@ export interface ChartValueEncoding {
   stack_normalize: boolean;
   value_id: string;
 }
+/**
+ * Every node of the graph, and everything else the store holds.
+ */
+export interface CacheNodesResponse {
+  nodes: CacheNodeEntry[];
+  other: CacheOwnerEntry[];
+  schema_version: 1;
+  source: string;
+  unattributed_bytes: number;
+  unattributed_generations: number;
+  unmarked_identities: number;
+}
+/**
+ * One node of the graph: what it reads now, and what it holds on disk.
+ *
+ * ``state`` and ``row_count`` describe the generation the node would read
+ * for its own column demand; ``generations`` and ``size_bytes`` are what the
+ * store holds for that node and source across every signature, which is what
+ * the node actually holds on disk.
+ */
+export interface CacheNodeEntry {
+  build_seconds: number | null;
+  generations: number;
+  identity_digests: string[];
+  kind: 'data_input' | 'api_input_table' | 'node_output' | null;
+  newest_created_at: number | null;
+  node_id: string;
+  reads_directly: boolean;
+  reads_from: string | null;
+  retention: 'pinned' | 'automatic' | null;
+  row_count: number | null;
+  shares_snapshot_with: string[];
+  size_bytes: number;
+  state: 'current' | 'stale' | 'partial' | 'missing' | 'building' | 'corrupt' | null;
+  unavailable_reason: string | null;
+}
+/**
+ * Cached data not attributed to any node of the graph as it stands.
+ *
+ * A node that was deleted or renamed, a node's data for another source, or
+ * an input snapshot whose Data Input no longer reads it. Each still occupies
+ * the budget, so each is named.
+ */
+export interface CacheOwnerEntry {
+  bucket: 'node_output' | 'input';
+  build_seconds: number | null;
+  generations: number;
+  identity_digests: string[];
+  label: string;
+  newest_created_at: number | null;
+  node_id: string | null;
+  row_count: number | null;
+  size_bytes: number;
+  source: string | null;
+}
+/**
+ * What the clear actually removed, which is never assumed from the request.
+ *
+ * A digest the store does not hold is reported as not cleared rather than
+ * failing the request: a row acted on from a report a moment out of date is
+ * an ordinary race, not an error.
+ */
+export interface CacheClearResponse {
+  cleared: string[];
+  freed_bytes: number;
+  schema_version: 1;
+}
+/**
+ * The snapshot store's size, and its automatic captures against their budget.
+ *
+ * Only node-output captures no pin protects count toward the budget; input
+ * snapshots and explicit builds are kept until the user clears them.
+ */
+export interface CacheUsageResponse {
+  automatic_budget_bytes: number;
+  automatic_bytes: number;
+  schema_version: 1;
+  total_bytes: number;
+}
 export interface WarehouseListResponse {
   warehouses: WarehouseItem[];
 }
@@ -859,6 +938,39 @@ export interface ExploreDataQualityIssue {
   label: string;
   severity: 'warning' | 'danger';
 }
+export interface ExploreRelationshipsResponse {
+  data_version: string | null;
+  key_check: ExploreKeyCheck | null;
+  point: NodeDataPointResponse;
+  relationships: ExploreRelationship[];
+  status: 'ok' | 'cache_required';
+  target: string | null;
+  total_rows: number;
+  used_rows: number;
+  weight: string | null;
+}
+export interface ExploreKeyCheck {
+  columns: string[];
+  distinct_keys: number;
+  duplicate_rows: number;
+  null_key_rows: number;
+  rows: number;
+  unique: boolean;
+}
+export interface ExploreRelationship {
+  feature: string;
+  kind: 'numeric' | 'categorical';
+  levels: ExploreRelationshipLevel[];
+  levels_truncated: boolean;
+  strength: number;
+}
+export interface ExploreRelationshipLevel {
+  kind: 'value' | 'bin' | 'missing' | 'other';
+  label: string;
+  rows: number;
+  target_mean: number | null;
+  weight: number;
+}
 /**
  * Whole-dataset statistics for one factor, or why there are none.
  */
@@ -1433,6 +1545,51 @@ export interface SaveModelResponse {
   path: string;
   status: 'ok';
 }
+export interface NodeDataRunResponse {
+  cached: boolean;
+  job_id: string | null;
+  message: string;
+  point: NodeDataPointResponse;
+  status: 'started' | 'joined' | 'completed' | 'delegated';
+}
+export interface NodeDataStatusResponse {
+  error: string | null;
+  error_code: string | null;
+  error_detail:
+    | ExecutionMemoryLimitErrorPayload
+    | {
+        [k: string]: unknown;
+      }
+    | string
+    | null;
+  execution_metrics: ExecutionMetricsPayload | null;
+  generation_id: string | null;
+  message: string;
+  outcome: 'published' | 'superseded' | null;
+  profile: NodeDataProfile | null;
+  progress: number;
+  status:
+    'running' | 'completed' | 'error' | 'cancelled' | 'superseded' | 'timed_out' | 'memory_limited' | 'contract_error';
+  terminal_reason: string | null;
+}
+export interface ExecutionMemoryLimitErrorPayload {
+  baseline_rss_bytes: number | null;
+  error_code: 'memory_limit';
+  headroom_bytes: number | null;
+  job_id: string | null;
+  memory_limit_bytes: number | null;
+  operation: string;
+  process_rss_limit_bytes: number | null;
+  profile: string | null;
+  reason: string;
+  rss_at_admission_bytes: number | null;
+  rss_bytes: number | null;
+  rss_limit_bytes: number | null;
+}
+export interface NodeDataClearResponse {
+  point: NodeDataPointResponse;
+  status: 'cleared' | 'delegated';
+}
 export interface OptimiserSolveResponse {
   error: string | null;
   job_id: string | null;
@@ -1864,20 +2021,6 @@ export interface OptimiserFrontierStatusResponse {
   status:
     'running' | 'completed' | 'error' | 'cancelled' | 'superseded' | 'timed_out' | 'memory_limited' | 'contract_error';
   terminal_reason: string | null;
-}
-export interface ExecutionMemoryLimitErrorPayload {
-  baseline_rss_bytes: number | null;
-  error_code: 'memory_limit';
-  headroom_bytes: number | null;
-  job_id: string | null;
-  memory_limit_bytes: number | null;
-  operation: string;
-  process_rss_limit_bytes: number | null;
-  profile: string | null;
-  reason: string;
-  rss_at_admission_bytes: number | null;
-  rss_bytes: number | null;
-  rss_limit_bytes: number | null;
 }
 export interface OptimiserFrontierAutoRangeStartResponse {
   error: string | null;

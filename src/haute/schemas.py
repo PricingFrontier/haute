@@ -103,6 +103,8 @@ RevisionToken = Annotated[str, Field(min_length=1, max_length=512, pattern=r"^\S
 # before a route acts on it, never failing as a 500 deep in a write.
 #: An id, a name or a token: a node, a source, a column, a job, a branch, a revision.
 BoundedName = Annotated[str, Field(max_length=512)]
+#: A name or identity a response hands the browser to show or act on: never blank.
+NonBlankStr = Annotated[str, Field(pattern=r"\S")]
 #: A path, relative to the project, or a URL.
 BoundedPath = Annotated[str, Field(max_length=4096)]
 #: Code or text a person writes: a preamble, a utility file, a description, a message.
@@ -2426,7 +2428,7 @@ class CacheNodeEntry(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    node_id: str
+    node_id: NonBlankStr
     kind: NodeDataPointKind | None = None
     state: NodeDataPointState | None = None
     reads_directly: bool = False
@@ -2438,7 +2440,7 @@ class CacheNodeEntry(BaseModel):
     # one configuration, or one submodel instantiated twice. Every sharer names
     # the others, and exactly one of them carries the bytes: the one with a
     # size. One identity, one set of bytes, whichever row you read first.
-    shares_snapshot_with: list[str] = Field(default_factory=list)
+    shares_snapshot_with: list[NonBlankStr] = Field(default_factory=list)
     row_count: int | None = None
     generations: int = Field(default=0, ge=0)
     size_bytes: int = Field(default=0, ge=0)
@@ -2448,7 +2450,7 @@ class CacheNodeEntry(BaseModel):
     build_seconds: float | None = None
     #: The store identities this row is responsible for, and therefore what
     #: clearing this row clears. Empty when the row carries nothing.
-    identity_digests: list[str] = Field(default_factory=list)
+    identity_digests: list[NonBlankStr] = Field(default_factory=list)
     retention: Literal["pinned", "automatic"] | None = None
     # Why this node has no point at all — unwired Banding, say. Never an
     # internal error: an unreportable node is a row, not a failed request.
@@ -2466,7 +2468,7 @@ class CacheOwnerEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     bucket: Literal["node_output", "input"]
-    label: str
+    label: NonBlankStr
     node_id: str | None = None
     source: str | None = None
     generations: int = Field(ge=0)
@@ -2474,7 +2476,7 @@ class CacheOwnerEntry(BaseModel):
     size_bytes: int = Field(ge=0)
     newest_created_at: float | None = None
     build_seconds: float | None = None
-    identity_digests: list[str] = Field(default_factory=list)
+    identity_digests: list[NonBlankStr] = Field(default_factory=list)
 
 
 class CacheClearRequest(BaseModel):
@@ -2496,7 +2498,7 @@ class CacheClearResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal[1] = 1
-    cleared: list[str]
+    cleared: list[NonBlankStr]
     freed_bytes: int = Field(ge=0)
 
 

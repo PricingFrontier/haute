@@ -215,6 +215,415 @@
       "title": "BrowseFilesResponse",
       "type": "object"
     },
+    "CacheClearResponse": {
+      "additionalProperties": false,
+      "description": "What the clear actually removed, which is never assumed from the request.\n\nA digest the store does not hold is reported as not cleared rather than\nfailing the request: a row acted on from a report a moment out of date is\nan ordinary race, not an error.",
+      "properties": {
+        "cleared": {
+          "items": {
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Cleared",
+          "type": "array"
+        },
+        "freed_bytes": {
+          "minimum": 0,
+          "title": "Freed Bytes",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "cleared",
+        "freed_bytes"
+      ],
+      "title": "CacheClearResponse",
+      "type": "object"
+    },
+    "CacheNodeEntry": {
+      "additionalProperties": false,
+      "description": "One node of the graph: what it reads now, and what it holds on disk.\n\n``state`` and ``row_count`` describe the generation the node would read\nfor its own column demand; ``generations`` and ``size_bytes`` are what the\nstore holds for that node and source across every signature, which is what\nthe node actually holds on disk.",
+      "properties": {
+        "build_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Build Seconds"
+        },
+        "generations": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Generations",
+          "type": "integer"
+        },
+        "identity_digests": {
+          "items": {
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Identity Digests",
+          "type": "array"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "enum": [
+                "data_input",
+                "api_input_table",
+                "node_output"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Kind"
+        },
+        "newest_created_at": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Newest Created At"
+        },
+        "node_id": {
+          "pattern": "\\S",
+          "title": "Node Id",
+          "type": "string"
+        },
+        "reads_directly": {
+          "default": false,
+          "title": "Reads Directly",
+          "type": "boolean"
+        },
+        "reads_from": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reads From"
+        },
+        "retention": {
+          "anyOf": [
+            {
+              "enum": [
+                "pinned",
+                "automatic"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retention"
+        },
+        "row_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Row Count"
+        },
+        "shares_snapshot_with": {
+          "items": {
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Shares Snapshot With",
+          "type": "array"
+        },
+        "size_bytes": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "state": {
+          "anyOf": [
+            {
+              "enum": [
+                "current",
+                "stale",
+                "partial",
+                "missing",
+                "building",
+                "corrupt"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "State"
+        },
+        "unavailable_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unavailable Reason"
+        }
+      },
+      "required": [
+        "node_id",
+        "kind",
+        "state",
+        "reads_directly",
+        "reads_from",
+        "shares_snapshot_with",
+        "row_count",
+        "generations",
+        "size_bytes",
+        "newest_created_at",
+        "build_seconds",
+        "identity_digests",
+        "retention",
+        "unavailable_reason"
+      ],
+      "title": "CacheNodeEntry",
+      "type": "object"
+    },
+    "CacheNodesResponse": {
+      "additionalProperties": false,
+      "description": "Every node of the graph, and everything else the store holds.",
+      "properties": {
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/CacheNodeEntry"
+          },
+          "title": "Nodes",
+          "type": "array"
+        },
+        "other": {
+          "items": {
+            "$ref": "#/$defs/CacheOwnerEntry"
+          },
+          "title": "Other",
+          "type": "array"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "unattributed_bytes": {
+          "minimum": 0,
+          "title": "Unattributed Bytes",
+          "type": "integer"
+        },
+        "unattributed_generations": {
+          "minimum": 0,
+          "title": "Unattributed Generations",
+          "type": "integer"
+        },
+        "unmarked_identities": {
+          "minimum": 0,
+          "title": "Unmarked Identities",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "source",
+        "nodes",
+        "other",
+        "unattributed_generations",
+        "unattributed_bytes",
+        "unmarked_identities"
+      ],
+      "title": "CacheNodesResponse",
+      "type": "object"
+    },
+    "CacheOwnerEntry": {
+      "additionalProperties": false,
+      "description": "Cached data not attributed to any node of the graph as it stands.\n\nA node that was deleted or renamed, a node's data for another source, or\nan input snapshot whose Data Input no longer reads it. Each still occupies\nthe budget, so each is named.",
+      "properties": {
+        "bucket": {
+          "enum": [
+            "node_output",
+            "input"
+          ],
+          "title": "Bucket",
+          "type": "string"
+        },
+        "build_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Build Seconds"
+        },
+        "generations": {
+          "minimum": 0,
+          "title": "Generations",
+          "type": "integer"
+        },
+        "identity_digests": {
+          "items": {
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Identity Digests",
+          "type": "array"
+        },
+        "label": {
+          "pattern": "\\S",
+          "title": "Label",
+          "type": "string"
+        },
+        "newest_created_at": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Newest Created At"
+        },
+        "node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Node Id"
+        },
+        "row_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Row Count"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source"
+        }
+      },
+      "required": [
+        "bucket",
+        "label",
+        "node_id",
+        "source",
+        "generations",
+        "row_count",
+        "size_bytes",
+        "newest_created_at",
+        "build_seconds",
+        "identity_digests"
+      ],
+      "title": "CacheOwnerEntry",
+      "type": "object"
+    },
+    "CacheUsageResponse": {
+      "additionalProperties": false,
+      "description": "The snapshot store's size, and its automatic captures against their budget.\n\nOnly node-output captures no pin protects count toward the budget; input\nsnapshots and explicit builds are kept until the user clears them.",
+      "properties": {
+        "automatic_budget_bytes": {
+          "minimum": 0,
+          "title": "Automatic Budget Bytes",
+          "type": "integer"
+        },
+        "automatic_bytes": {
+          "minimum": 0,
+          "title": "Automatic Bytes",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "total_bytes": {
+          "minimum": 0,
+          "title": "Total Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "total_bytes",
+        "automatic_bytes",
+        "automatic_budget_bytes"
+      ],
+      "title": "CacheUsageResponse",
+      "type": "object"
+    },
     "CatalogItem": {
       "properties": {
         "comment": {
@@ -5434,6 +5843,47 @@
       "title": "ExploreHistogramBin",
       "type": "object"
     },
+    "ExploreKeyCheck": {
+      "properties": {
+        "columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "distinct_keys": {
+          "title": "Distinct Keys",
+          "type": "integer"
+        },
+        "duplicate_rows": {
+          "title": "Duplicate Rows",
+          "type": "integer"
+        },
+        "null_key_rows": {
+          "title": "Null Key Rows",
+          "type": "integer"
+        },
+        "rows": {
+          "title": "Rows",
+          "type": "integer"
+        },
+        "unique": {
+          "title": "Unique",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "columns",
+        "rows",
+        "distinct_keys",
+        "duplicate_rows",
+        "null_key_rows",
+        "unique"
+      ],
+      "title": "ExploreKeyCheck",
+      "type": "object"
+    },
     "ExploreOverviewSummary": {
       "properties": {
         "categorical_summary": {
@@ -5978,6 +6428,184 @@
         "aggregation"
       ],
       "title": "ExplorePivotValueIdentity",
+      "type": "object"
+    },
+    "ExploreRelationship": {
+      "properties": {
+        "feature": {
+          "title": "Feature",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "numeric",
+            "categorical"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "levels": {
+          "items": {
+            "$ref": "#/$defs/ExploreRelationshipLevel"
+          },
+          "title": "Levels",
+          "type": "array"
+        },
+        "levels_truncated": {
+          "title": "Levels Truncated",
+          "type": "boolean"
+        },
+        "strength": {
+          "title": "Strength",
+          "type": "number"
+        }
+      },
+      "required": [
+        "feature",
+        "kind",
+        "strength",
+        "levels",
+        "levels_truncated"
+      ],
+      "title": "ExploreRelationship",
+      "type": "object"
+    },
+    "ExploreRelationshipLevel": {
+      "properties": {
+        "kind": {
+          "enum": [
+            "value",
+            "bin",
+            "missing",
+            "other"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "rows": {
+          "title": "Rows",
+          "type": "integer"
+        },
+        "target_mean": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Target Mean"
+        },
+        "weight": {
+          "title": "Weight",
+          "type": "number"
+        }
+      },
+      "required": [
+        "label",
+        "kind",
+        "rows",
+        "weight",
+        "target_mean"
+      ],
+      "title": "ExploreRelationshipLevel",
+      "type": "object"
+    },
+    "ExploreRelationshipsResponse": {
+      "properties": {
+        "data_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data Version"
+        },
+        "key_check": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExploreKeyCheck"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "point": {
+          "$ref": "#/$defs/NodeDataPointResponse"
+        },
+        "relationships": {
+          "items": {
+            "$ref": "#/$defs/ExploreRelationship"
+          },
+          "title": "Relationships",
+          "type": "array"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "cache_required"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target"
+        },
+        "total_rows": {
+          "default": 0,
+          "title": "Total Rows",
+          "type": "integer"
+        },
+        "used_rows": {
+          "default": 0,
+          "title": "Used Rows",
+          "type": "integer"
+        },
+        "weight": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Weight"
+        }
+      },
+      "required": [
+        "status",
+        "point",
+        "data_version",
+        "total_rows",
+        "target",
+        "weight",
+        "used_rows",
+        "relationships",
+        "key_check"
+      ],
+      "title": "ExploreRelationshipsResponse",
       "type": "object"
     },
     "ExportWidget": {
@@ -9377,6 +10005,27 @@
       "title": "ModellingGpuStatusResponse",
       "type": "object"
     },
+    "NodeDataClearResponse": {
+      "properties": {
+        "point": {
+          "$ref": "#/$defs/NodeDataPointResponse"
+        },
+        "status": {
+          "enum": [
+            "cleared",
+            "delegated"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "point"
+      ],
+      "title": "NodeDataClearResponse",
+      "type": "object"
+    },
     "NodeDataGeneration": {
       "description": "The node-output generation a slot currently holds for the consumer's signature.",
       "properties": {
@@ -9758,6 +10407,202 @@
         "point"
       ],
       "title": "NodeDataProfileResponse",
+      "type": "object"
+    },
+    "NodeDataRunResponse": {
+      "properties": {
+        "cached": {
+          "default": false,
+          "title": "Cached",
+          "type": "boolean"
+        },
+        "job_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Job Id"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "point": {
+          "$ref": "#/$defs/NodeDataPointResponse"
+        },
+        "status": {
+          "enum": [
+            "started",
+            "joined",
+            "completed",
+            "delegated"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "job_id",
+        "cached",
+        "message",
+        "point"
+      ],
+      "title": "NodeDataRunResponse",
+      "type": "object"
+    },
+    "NodeDataStatusResponse": {
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Code"
+        },
+        "error_detail": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionMemoryLimitErrorPayload"
+            },
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Detail"
+        },
+        "execution_metrics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionMetricsPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "generation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Generation Id"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "enum": [
+                "published",
+                "superseded"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outcome"
+        },
+        "profile": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NodeDataProfile"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "progress": {
+          "default": 0.0,
+          "title": "Progress",
+          "type": "number"
+        },
+        "status": {
+          "enum": [
+            "running",
+            "completed",
+            "error",
+            "cancelled",
+            "superseded",
+            "timed_out",
+            "memory_limited",
+            "contract_error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "terminal_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Terminal Reason"
+        }
+      },
+      "required": [
+        "status",
+        "progress",
+        "message",
+        "terminal_reason",
+        "error",
+        "error_code",
+        "error_detail",
+        "execution_metrics",
+        "generation_id",
+        "outcome",
+        "profile"
+      ],
+      "title": "NodeDataStatusResponse",
       "type": "object"
     },
     "OptimiserAdjustmentBar": {
@@ -17957,6 +18802,15 @@
     "BrowseFilesResponse": {
       "$ref": "#/$defs/BrowseFilesResponse"
     },
+    "CacheClearResponse": {
+      "$ref": "#/$defs/CacheClearResponse"
+    },
+    "CacheNodesResponse": {
+      "$ref": "#/$defs/CacheNodesResponse"
+    },
+    "CacheUsageResponse": {
+      "$ref": "#/$defs/CacheUsageResponse"
+    },
     "CatalogListResponse": {
       "$ref": "#/$defs/CatalogListResponse"
     },
@@ -17977,6 +18831,9 @@
     },
     "ExplorePivotStatusResponse": {
       "$ref": "#/$defs/ExplorePivotStatusResponse"
+    },
+    "ExploreRelationshipsResponse": {
+      "$ref": "#/$defs/ExploreRelationshipsResponse"
     },
     "GitArchiveResponse": {
       "$ref": "#/$defs/GitArchiveResponse"
@@ -18095,8 +18952,20 @@
     "ModellingGpuStatusResponse": {
       "$ref": "#/$defs/ModellingGpuStatusResponse"
     },
+    "NodeDataClearResponse": {
+      "$ref": "#/$defs/NodeDataClearResponse"
+    },
+    "NodeDataPointResponse": {
+      "$ref": "#/$defs/NodeDataPointResponse"
+    },
     "NodeDataProfileResponse": {
       "$ref": "#/$defs/NodeDataProfileResponse"
+    },
+    "NodeDataRunResponse": {
+      "$ref": "#/$defs/NodeDataRunResponse"
+    },
+    "NodeDataStatusResponse": {
+      "$ref": "#/$defs/NodeDataStatusResponse"
     },
     "OptimiserApplyResponse": {
       "$ref": "#/$defs/OptimiserApplyResponse"
@@ -18334,8 +19203,16 @@
     "ExplorePivotStatusResponse",
     "ExplorePivotMembersResponse",
     "NodeDataProfileResponse",
+    "ExploreRelationshipsResponse",
     "BandingStatsResponse",
     "RatingLevelsResponse",
+    "NodeDataPointResponse",
+    "NodeDataRunResponse",
+    "NodeDataStatusResponse",
+    "NodeDataClearResponse",
+    "CacheNodesResponse",
+    "CacheClearResponse",
+    "CacheUsageResponse",
     "IoCapabilitiesResponse",
     "WorkbenchStatusResponse",
     "WorkbenchTablesResponse",
@@ -18389,6 +19266,11 @@
     ]
   },
   "x-haute-response-groups": {
+    "cache": [
+      "CacheNodesResponse",
+      "CacheClearResponse",
+      "CacheUsageResponse"
+    ],
     "databricks": [
       "WarehouseListResponse",
       "CatalogListResponse",
@@ -18405,7 +19287,8 @@
       "ExplorePivotRunResponse",
       "ExplorePivotStatusResponse",
       "ExplorePivotMembersResponse",
-      "NodeDataProfileResponse"
+      "NodeDataProfileResponse",
+      "ExploreRelationshipsResponse"
     ],
     "factors": [
       "BandingStatsResponse",
@@ -18461,6 +19344,12 @@
       "LogExperimentResponse",
       "ModelSaveDestinationResponse",
       "SaveModelResponse"
+    ],
+    "node-data": [
+      "NodeDataPointResponse",
+      "NodeDataRunResponse",
+      "NodeDataStatusResponse",
+      "NodeDataClearResponse"
     ],
     "optimiser": [
       "OptimiserSolveResponse",

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest"
 
 import type { NodeDataPointResponse, NodeDataProfile } from "../../api/types"
 import useNodeDataStore, { columnsCoverDemand, ANNOUNCED_CAPTURES_CAP } from "../useNodeDataStore"
+import { makeNodeDataStatus } from "../../test-utils/factories"
 
 function point(overrides: Partial<NodeDataPointResponse> = {}): NodeDataPointResponse {
   return {
@@ -123,12 +124,12 @@ describe("useNodeDataStore", () => {
     })
     expect(useNodeDataStore.getState().slots["join||live"].reportedState).toBe("building")
 
-    store.updateJobProgress("join||live", { status: "running", progress: 0.5, message: "Half way" })
+    store.updateJobProgress("join||live", makeNodeDataStatus({ status: "running", progress: 0.5, message: "Half way" }))
     expect(useNodeDataStore.getState().jobs["join||live"].progress).toBe(0.5)
     expect(useNodeDataStore.getState().slots["join||live"].job?.message).toBe("Half way")
 
     const beforeFinish = useNodeDataStore.getState().epoch
-    store.finishJob("join||live", { status: "completed", progress: 1, message: "Data is cached" })
+    store.finishJob("join||live", makeNodeDataStatus({ status: "completed", progress: 1, message: "Data is cached" }))
 
     expect(useNodeDataStore.getState().jobs).toEqual({})
     expect(useNodeDataStore.getState().slots["join||live"].job).toBeNull()
@@ -162,7 +163,7 @@ describe("useNodeDataStore", () => {
     store.startJob("join||live", { jobId: "job-1", message: "Caching", startedByLabel: "Explore" })
     const before = useNodeDataStore.getState().epoch
 
-    store.finishJob("join||live", { status: "memory_limited", progress: 1, message: "Out of memory" })
+    store.finishJob("join||live", makeNodeDataStatus({ status: "memory_limited", progress: 1, message: "Out of memory" }))
 
     // A failed build leaves the point as it was, which consumers must see: a
     // job that stays behind would show a Cancel button with nothing to cancel.
@@ -391,8 +392,8 @@ describe("useNodeDataStore noteAnnouncedCaptures", () => {
       message: "Caching data",
       startedByLabel: "Explore",
     })
-    store.updateJobProgress("gone||live", { status: "running", progress: 0.5, message: "Half way" })
-    store.finishJob("gone||live", { status: "completed", progress: 1, message: "Data is cached" })
+    store.updateJobProgress("gone||live", makeNodeDataStatus({ status: "running", progress: 0.5, message: "Half way" }))
+    store.finishJob("gone||live", makeNodeDataStatus({ status: "completed", progress: 1, message: "Data is cached" }))
     store.startDelegatedBuild("gone||live", {
       token: "token-1",
       message: "Building",
@@ -413,7 +414,7 @@ describe("useNodeDataStore noteAnnouncedCaptures", () => {
     store.observePoint(point(), "live", IDENTITY)
     const before = useNodeDataStore.getState().slots["join||live"]
 
-    store.updateJobProgress("join||live", { status: "running", progress: 0.5, message: "Half way" })
+    store.updateJobProgress("join||live", makeNodeDataStatus({ status: "running", progress: 0.5, message: "Half way" }))
 
     // The very same slot object: nothing was rewritten, so no consumer re-renders.
     expect(useNodeDataStore.getState().slots["join||live"]).toBe(before)
@@ -433,7 +434,7 @@ describe("useNodeDataStore noteAnnouncedCaptures", () => {
       startedByLabel: "Explore",
     })
 
-    store.updateJobProgress("join||live", { status: "running", progress: 0.4, message: "" })
+    store.updateJobProgress("join||live", makeNodeDataStatus({ status: "running", progress: 0.4, message: "" }))
 
     const job = useNodeDataStore.getState().jobs["join||live"]
     expect(job.progress).toBe(0.4)
@@ -480,17 +481,17 @@ describe("useNodeDataStore noteAnnouncedCaptures", () => {
       dataVersion: "gen-1",
     })
 
-    store.updateProfileProgress("join||live", {
+    store.updateProfileProgress("join||live", makeNodeDataStatus({
       status: "running",
       progress: 0.6,
       message: "Scanning columns",
-    })
+    }))
     expect(useNodeDataStore.getState().profileJobs["join||live"]).toMatchObject({
       progress: 0.6,
       message: "Scanning columns",
     })
 
-    store.updateProfileProgress("join||live", { status: "running", progress: 0.8, message: "" })
+    store.updateProfileProgress("join||live", makeNodeDataStatus({ status: "running", progress: 0.8, message: "" }))
     expect(useNodeDataStore.getState().profileJobs["join||live"]).toMatchObject({
       progress: 0.8,
       message: "Scanning columns",
@@ -502,17 +503,17 @@ describe("useNodeDataStore noteAnnouncedCaptures", () => {
     store.observePoint(point(), "live", IDENTITY)
     const beforeEpoch = useNodeDataStore.getState().epoch
 
-    store.updateProfileProgress("join||live", {
+    store.updateProfileProgress("join||live", makeNodeDataStatus({
       status: "running",
       progress: 0.5,
       message: "Scanning columns",
-    })
-    store.finishProfileJob("join||live", {
+    }))
+    store.finishProfileJob("join||live", makeNodeDataStatus({
       status: "completed",
       progress: 1,
       message: "Profiled",
       profile: profile(),
-    })
+    }))
 
     const after = useNodeDataStore.getState()
     expect(after.profileJobs).toEqual({})
@@ -534,7 +535,7 @@ describe("useNodeDataStore noteAnnouncedCaptures", () => {
 
     // A terminal status carrying no profile, no error and no message — the
     // shape a cancelled or evicted job reports.
-    store.finishProfileJob("join||live", { status: "error", progress: 1, message: "" })
+    store.finishProfileJob("join||live", makeNodeDataStatus({ status: "error", progress: 1, message: "" }))
 
     expect(useNodeDataStore.getState().profileJobs).toEqual({})
     expect(useNodeDataStore.getState().profileFailures["join||live"]).toEqual({

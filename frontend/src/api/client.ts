@@ -127,9 +127,6 @@ import type {
   SessionStatusResponse,
 } from "./types"
 import {
-  parseCacheClearResponse,
-  parseCacheNodesResponse,
-  parseCacheUsageResponse,
   parseDissolveSubmodelResponse,
   explorePivotMembersFromContract,
   frontierAutoRangeStatusFromContract,
@@ -137,10 +134,7 @@ import {
   optimiserStatusFromContract,
   explorePivotRunFromContract,
   explorePivotStatusFromContract,
-  parseNodeDataClearResponse,
-  parseNodeDataPointResponse,
-  parseNodeDataRunResponse,
-  parseNodeDataStatusResponse,
+  nodeDataStatusFromContract,
   parseInputCacheBuildResponse,
   parseInputCacheCancelResponse,
   parseInputCacheJobStatusResponse,
@@ -164,6 +158,7 @@ import { expectGeneratedContract } from "../types/generatedContractValidation"
 
 // Generated response validators load with their first response, so none of
 // them reaches the initial bundle.
+const cacheValidators = () => import("../generated/api-contracts.cache.validators.mjs")
 const databricksValidators = () => import("../generated/api-contracts.databricks.validators.mjs")
 const editorValidators = () => import("../generated/api-contracts.editor.validators.mjs")
 const exploreValidators = () => import("../generated/api-contracts.explore.validators.mjs")
@@ -172,6 +167,7 @@ const gitValidators = () => import("../generated/api-contracts.git.validators.mj
 const ioValidators = () => import("../generated/api-contracts.io.validators.mjs")
 const mlflowValidators = () => import("../generated/api-contracts.mlflow.validators.mjs")
 const modellingValidators = () => import("../generated/api-contracts.modelling.validators.mjs")
+const nodeDataValidators = () => import("../generated/api-contracts.node-data.validators.mjs")
 const optimiserValidators = () => import("../generated/api-contracts.optimiser.validators.mjs")
 const sessionValidators = () => import("../generated/api-contracts.session.validators.mjs")
 const utilityValidators = () => import("../generated/api-contracts.utility.validators.mjs")
@@ -1243,7 +1239,9 @@ export function clearCacheIdentities(
   digests: string[],
   options?: { signal?: AbortSignal },
 ): Promise<CacheClearResponse> {
-  return post<unknown>("/api/cache/clear", { digests }, options).then(parseCacheClearResponse)
+  return post<unknown>("/api/cache/clear", { digests }, options).then(async (data) =>
+    expectGeneratedContract("CacheClearResponse", (await cacheValidators()).validateCacheClearResponse, data),
+  )
 }
 
 /**
@@ -1255,14 +1253,18 @@ export function clearCacheIdentities(
 export function fetchCacheUsage(
   options?: { signal?: AbortSignal },
 ): Promise<CacheUsageResponse> {
-  return request<unknown>("/api/cache/usage", options).then(parseCacheUsageResponse)
+  return request<unknown>("/api/cache/usage", options).then(async (data) =>
+    expectGeneratedContract("CacheUsageResponse", (await cacheValidators()).validateCacheUsageResponse, data),
+  )
 }
 
 export function fetchCacheNodes(
   payload: { graph: unknown; source: string },
   options?: { signal?: AbortSignal },
 ): Promise<CacheNodesResponse> {
-  return post<unknown>("/api/cache/nodes", payload, options).then(parseCacheNodesResponse)
+  return post<unknown>("/api/cache/nodes", payload, options).then(async (data) =>
+    expectGeneratedContract("CacheNodesResponse", (await cacheValidators()).validateCacheNodesResponse, data),
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -1324,7 +1326,7 @@ export function getNodeDataPoint(args: NodeDataArgs): Promise<NodeDataPointRespo
       source: payload.source ?? "live",
     },
     { signal },
-  ).then(parseNodeDataPointResponse)
+  ).then(async (data) => expectGeneratedContract("NodeDataPointResponse", (await nodeDataValidators()).validateNodeDataPointResponse, data))
 }
 
 export function runNodeData(
@@ -1338,7 +1340,7 @@ export function runNodeData(
       source: payload.source ?? "live",
     },
     { signal, timeout },
-  ).then(parseNodeDataRunResponse)
+  ).then(async (data) => expectGeneratedContract("NodeDataRunResponse", (await nodeDataValidators()).validateNodeDataRunResponse, data))
 }
 
 export function getNodeDataStatus(
@@ -1346,10 +1348,12 @@ export function getNodeDataStatus(
   options?: { signal?: AbortSignal },
 ): Promise<NodeDataStatusResponse> {
   return request<unknown>(`/api/node-data/status/${encodeURIComponent(jobId)}`, options).then(
-    (data) =>
-      validateApiResponse("Could not read node data status", () =>
-        parseNodeDataStatusResponse(data),
-      ),
+    async (data) => {
+      const { validateNodeDataStatusResponse } = await nodeDataValidators()
+      return validateApiResponse("Could not read node data status", () => nodeDataStatusFromContract(
+        expectGeneratedContract("NodeDataStatusResponse", validateNodeDataStatusResponse, data),
+      ))
+    },
   )
 }
 
@@ -1361,7 +1365,9 @@ export function cancelNodeData(
     `/api/node-data/cancel/${encodeURIComponent(jobId)}`,
     {},
     options,
-  ).then(parseNodeDataStatusResponse)
+  ).then(async (data) => nodeDataStatusFromContract(
+    expectGeneratedContract("NodeDataStatusResponse", (await nodeDataValidators()).validateNodeDataStatusResponse, data),
+  ))
 }
 
 export function getNodeDataProfile(args: NodeDataArgs): Promise<NodeDataProfileResponse> {
@@ -1430,7 +1436,7 @@ export function clearNodeData(args: NodeDataArgs): Promise<NodeDataClearResponse
       source: payload.source ?? "live",
     },
     { signal },
-  ).then(parseNodeDataClearResponse)
+  ).then(async (data) => expectGeneratedContract("NodeDataClearResponse", (await nodeDataValidators()).validateNodeDataClearResponse, data))
 }
 
 // ---------------------------------------------------------------------------
