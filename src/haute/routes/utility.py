@@ -15,8 +15,10 @@ import keyword
 import re
 from collections.abc import Callable
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
+from fastapi import Path as PathParam
 
 from haute._config_io import is_windows_reserved_filename
 from haute._file_ops import atomic_create_text, atomic_write_text, file_revision
@@ -26,6 +28,7 @@ from haute._sandbox import contained_path
 from haute.routes._helpers import discover_pipelines, pipeline_dir, project_write
 from haute.routes._save_pipeline import capture_save_in_ledger
 from haute.schemas import (
+    UTILITY_MODULE_NAME_MAX,
     UtilityCreateRequest,
     UtilityDeleteResponse,
     UtilityFileItem,
@@ -40,6 +43,9 @@ logger = get_logger(component="server.utility")
 router = APIRouter(prefix="/api/utility", tags=["utility"])
 
 _VALID_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+# A module named in the path is bounded as one named in a body: an over-long name is a
+# 422, never a write that fails for the file name's length.
+_Module = Annotated[str, PathParam(max_length=UTILITY_MODULE_NAME_MAX)]
 
 
 def _project_root() -> Path:
@@ -274,7 +280,7 @@ async def list_utility_files() -> UtilityListResponse:
 
 
 @router.get("/{module}", response_model=UtilityReadResponse)
-async def read_utility_file(module: str) -> UtilityReadResponse:
+async def read_utility_file(module: _Module) -> UtilityReadResponse:
     """Read the content of a utility file, with the revision a write must send."""
     _validate_module_name(module)
     target = _module_path(_project_root(), module)
@@ -343,7 +349,7 @@ def _update(project_root: Path, module: str, body: UtilityWriteRequest) -> Utili
 
 
 @router.put("/{module}", response_model=UtilityWriteResponse)
-async def update_utility_file(module: str, body: UtilityWriteRequest) -> UtilityWriteResponse:
+async def update_utility_file(module: _Module, body: UtilityWriteRequest) -> UtilityWriteResponse:
     """Update an existing utility file, if it is still the revision the editor read."""
     _validate_module_name(module)
     project_root = _project_root()
@@ -362,7 +368,9 @@ def _delete(project_root: Path, module: str, revision: str) -> UtilityDeleteResp
 
 
 @router.delete("/{module}", response_model=UtilityDeleteResponse)
-async def delete_utility_file(module: str, revision: str) -> UtilityDeleteResponse:
+async def delete_utility_file(
+    module: _Module, revision: Annotated[str, Query(max_length=512)]
+) -> UtilityDeleteResponse:
     """Delete a utility file, if it is still the revision the editor read."""
     _validate_module_name(module)
     project_root = _project_root()

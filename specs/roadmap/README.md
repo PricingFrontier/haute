@@ -46,7 +46,7 @@ records corrections to that audit's claims and proposed remedies.
 | [Polars 2](polars-2.md) | Remaining RAM-estimate calibration, large-scale operator measurements and worker baselines; Map columns and quantile/rank binning (deferred) | `PL2-17` |
 | [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
 | [Sandbox security](sandbox-security.md) | Every containment comparison through the one check; restricted joblib loading without a fallback | `SBX-R01` |
-| [Server API](server-api.md) | One copy of each route mechanism, bounded requests; domain errors, generated browser contract | `API-R10` |
+| [Server API](server-api.md) | One copy of each route mechanism; domain errors, generated browser contract | `API-R09` |
 | [Submodels](submodels.md) | One reuse mechanism | `SUB-R01` |
 | [t-boost](t-boost.md) | What rating-table models make possible: cell-level holdout A/E, unfolding into rating steps, model comparison with premium attribution, measured analyst adjustments (all awaiting a decision) | `TBOOST-02` |
 | [Tracing](tracing.md) | Proven matches kept strict | `TRACE-R03` |

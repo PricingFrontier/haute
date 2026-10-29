@@ -15,7 +15,6 @@ come from the [23 September 2026 codebase review](codebase-review-2026-09-23.md)
 | API-R02 | Planned | P3 | Domain services raise domain errors; only routes speak HTTP. |
 | API-R03 | Planned | P2 | Every browser type and response parser is generated from the Pydantic models. |
 | API-R09 | Planned | P3 | The repair routes, the admit-run-translate pattern, the path-resolution preludes and the two point-analysis services exist once each, and a save loads the pipeline once. |
-| API-R10 | Planned | P3 | Every free string and list in a request is bounded; the dead response fields and helpers are gone; the repair message and the `file` field say what is true. |
 
 ## Planned improvements
 
@@ -143,35 +142,3 @@ a save parses the pipeline file once (a counting test).
 **Evidence:** `src/haute/routes/pipeline.py`; `src/haute/routes/_save_pipeline.py`;
 `src/haute/routes/submodel.py`; `src/haute/routes/_banding_stats.py`;
 `src/haute/routes/_rating_levels.py`; `src/haute/routes/output_assemble.py`.
-
-### API-R10 — Bounded requests, honest fields
-**Why:** Apart from `EditorIdentitiesRequest`, no request bounds its strings or lists:
-no length on names, paths, sources, module names or contents, no size on `row_values` or
-`factor`; a utility name of a few thousand characters passes the identifier check and
-fails in the write as a 500. `UtilityWriteResponse` carries `error` and `error_line`
-fields no route sets, yet the generated contract requires them and the client parses
-them. `raise_validation_error` has no production caller, and the path-less cooldown mode
-of the self-write tracker is written by the save and read by nothing but tests while the
-specification still describes it. The repair routes' `OSError` answer states that the
-original artifacts were restored, but rollback is best-effort and a failed restore is only
-logged. `SavePipelineResponse.file` and `PipelineSummary.file` use OS-native separators
-while every other project-relative path on the wire is POSIX. This package comes from the
-[25 October 2026 codebase review](codebase-review-2026-10-25.md).
-
-**Plan:** `max_length` on every free string that names a file, module, source or node and
-a size cap on contents and value lists; remove the two dead fields and regenerate the
-contract; delete `raise_validation_error`, the bare cooldown mode, its constant and the
-specification sentence; word the repair detail as an attempt or thread the failed paths
-into it; `.as_posix()` for the two `file` fields.
-
-**Acceptance:** An over-long utility name is answered 422; the contract has no
-`error_line`; the dead helpers are gone; a failed rollback is named in the repair
-response; `file` is POSIX on Windows.
-
-**Dependencies:** `API-R03` regenerates the contract.
-
-**Evidence:** `src/haute/schemas.py::UtilityWriteResponse`;
-`src/haute/schemas.py::EditorIdentitiesRequest`;
-`src/haute/routes/_helpers.py::raise_validation_error`;
-`src/haute/routes/_save_pipeline.py::_rollback_artifacts`;
-`src/haute/routes/pipeline.py`; `src/haute/routes/utility.py`.

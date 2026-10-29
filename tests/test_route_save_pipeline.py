@@ -1513,6 +1513,38 @@ class TestSaveEndpointIntegration:
         assert data["status"] == "saved"
         assert "saved_test.py" in data["file"]
 
+    def test_a_pipeline_in_a_folder_is_named_with_forward_slashes(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """Every project-relative path on the wire is POSIX, a Windows server's too."""
+        (tmp_path / "haute.toml").write_text('[project]\npipeline = "rating/main.py"\n')
+        (tmp_path / "rating").mkdir()
+        node = {
+            "id": "src",
+            "type": "pipelineNode",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "label": "Source",
+                "nodeType": "dataInput",
+                "config": _file_input_config("data.parquet"),
+            },
+        }
+
+        saved = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "main",
+                "graph": {"nodes": [node], "edges": []},
+                "source_file": "rating/main.py",
+                "base_revision": None,
+            },
+        )
+
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["file"] == "rating/main.py"
+        listed = client.get("/api/pipelines")
+        assert [summary["file"] for summary in listed.json()] == ["rating/main.py"]
+
     def test_save_duplicate_api_input_returns_400(self, client: TestClient) -> None:
         """Two API Input nodes should fail validation at 400."""
         graph = {

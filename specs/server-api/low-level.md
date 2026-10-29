@@ -283,7 +283,7 @@ when a path/query/body fails model validation):
 | `GET /api/input-cache/jobs/{job_id}` / `DELETE /api/input-cache/jobs/{job_id}` | Job id | Polls or requests cancellation of a cache build |
 | `GET /api/utility` | No body | `UtilityListResponse {files:[{name,module}]}`; 403 when `utility/` resolves outside the project, as for every utility route |
 | `GET /api/utility/{module}` | Python-identifier module path | `UtilityReadResponse {name,module,content,revision}`; 404 when the file is missing |
-| `POST /api/utility` | `UtilityCreateRequest {name, content=""}` | `UtilityWriteResponse {status="ok", name, module, import_line, revision, error=null, error_line=null, git_sha, identity_required, warnings, uncaptured}`; 409 `file_exists` for a file that appeared since the name check |
+| `POST /api/utility` | `UtilityCreateRequest {name, content=""}` | `UtilityWriteResponse {status="ok", name, module, import_line, revision, git_sha, identity_required, warnings, uncaptured}`; 409 `file_exists` for a file that appeared since the name check |
 | `PUT /api/utility/{module}` | `UtilityWriteRequest {content, revision}` | `UtilityWriteResponse`; 404 when the file is missing, 412 `file_changed` when its revision is not the request's (nothing written) |
 | `DELETE /api/utility/{module}` | Module path, query `revision` | `UtilityDeleteResponse {status="ok", module, git_sha, identity_required, warnings, uncaptured}`; 404 when the file is missing, 412 `file_changed` when its revision is not the request's (nothing deleted) |
 | `POST /api/output-assemble/dry-run` | Route-local `OutputAssembleDryRunRequest {graph, node_id, output_mapping=[], output_format="json", row_limit=100 (1..10000), source="live"}` | Route-local `OutputAssembleDryRunResponse {status, document=[], row_count=0, error=null}` |
@@ -987,9 +987,9 @@ later write and cleanup checks still compare against the captured identities.
 - **Windows `.js` MIME type.** The Windows registry commonly maps `.js` to `text/plain`,
   which browsers reject as a script; `mimetypes.add_type` is patched at module import, before
   any `StaticFiles`/`FileResponse` construction.
-- **Self-write cooldown vs. per-path content tracking.** `is_self_write()` supports two modes: a
-  bare cooldown check (`now - _last_self_write < 2.0s`) for callers with no specific path, and
-  a per-path content match for the file watcher's per-event check. A path marker records the
+- **Self-writes are tracked per path, by content.** `mark_self_write(path, ...)` and
+  `is_self_write(path)` always name a path: the file watcher checks each event against the
+  marker for its own path. A path marker records the
   SHA-256 of the bytes the server committed, or a deletion flag; it matches only while the
   current file bytes (or absence) still equal that identity, and `consume=True` removes the
   entry on match. A marker whose identity no longer matches is discarded so a later external
@@ -1091,7 +1091,7 @@ later write and cleanup checks still compare against the captured identities.
 | `DataOutputDestinationExistsError` | `POST /api/pipeline/write-output` | 409 | `overwrite=false` refuses an existing file/table before publication and returns the destination in the detail. |
 | `SupersededRequestError` | preview, trace, free-code columns | 409 | Raised by `SupersessionCoordinator`; the worker never runs for a superseded generation. |
 | `IsolatedWorkerTimeoutError`, `BlockingWorkTimeoutError`, `TimeoutError` | preview, trace, input-snapshot and API Input table builds, output write, output-assemble, Explore | 504 / timed-out job | Production process mode kills and joins the exact worker before returning or transitioning the job. Explicit thread compatibility mode is opt-in and retains cooperative/deferred cleanup; it is never selected after a process-start failure. |
-| `HTTPException` (raised directly) | path validation, node lookup, syntax checks | 400 / 403 / 404 / 409 | `raise_node_not_found`, `raise_node_type_error`, `raise_pipeline_not_found`, `raise_validation_error` centralise the structured-log + raise pattern. |
+| `HTTPException` (raised directly) | path validation, node lookup, syntax checks | 400 / 403 / 404 / 409 | `raise_node_not_found`, `raise_node_type_error`, `raise_pipeline_not_found` centralise the structured-log + raise pattern. |
 | Any other remote exception (`InteractiveWorkerRemoteError`) | preview, trace, output-assemble dry-run | 500 | `_raise_interactive_remote_http_error` logs `interactive_worker_remote_failure` with the operation, the remote type and module, and the worker's message and traceback; the client gets only `_INTERNAL_ERROR_DETAIL`. |
 | Any other `Exception` | `_RequestIdMiddleware` | 500 | Logged as `unhandled_exception` with `error_class` and traceback; detail `_INTERNAL_ERROR_DETAIL`. |
 
@@ -1127,7 +1127,14 @@ new ones. Both are the same 422 the frontend already handles.
 
 Except for handlers that return a `JSONResponse` directly, `HTTPException` responses use
 FastAPI's `{"detail": <string-or-object>}` envelope; this includes structured 507 memory
-payloads nested under `detail`. Pydantic request/query validation uses
+payloads nested under `detail`. Every request model bounds its free strings and its
+lists and mappings through `schemas.py`'s `BoundedName` (512 characters: an id, a name, a
+token), `BoundedPath` (4096: a path or URL), `BoundedText` (16 MiB: code or text) and
+`MAX_REQUEST_ITEMS` (10,000 items), a revision token through `RevisionToken` (512), and a
+utility module's name through `UTILITY_MODULE_NAME_MAX` (200), in a body and in the
+utility routes' path alike, so an over-long value is a 422 before a route acts on it;
+other path and query parameters are bounded by the request line the server accepts.
+Pydantic request/query validation uses
 `{"detail": [validation-error...]}`. `_RequestIdMiddleware` constructs its 500 JSON directly.
 The JSON-cache router's `ApiInputSchemaError` is another deliberate direct-response exception:
 `{"detail": str, "type": "ApiInputSchemaError"}`. Any load failure for a discovered file
@@ -1405,7 +1412,11 @@ each forward and rollback write participates in self-write suppression. After
 staging, recovery parsing must conserve the remaining source and the selected
 identity must be absent. Strict parse success is recorded by the returned
 editor document; an independent authored error may validly remain degraded.
-Any verification or write failure rolls back all touched artifacts.
+Any verification or write failure rolls back all touched artifacts. Rollback is
+best-effort, so a restore that fails is named: the apply answers 500
+`repair_rollback_failed` with the project-relative `paths` it could not put back. Any
+other read or write failure, raised before anything was written or after every artifact
+was restored, answers 409 `repair_artifact_unavailable`: the repair changed nothing.
 
 The additional `/api/pipeline/repair/recover/apply` route accepts
 `PipelineRepairRecoverRequest`, replacing the removal-only `delete_config` option with

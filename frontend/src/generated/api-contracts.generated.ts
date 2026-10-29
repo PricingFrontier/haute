@@ -2461,8 +2461,6 @@ export interface UtilityReadResponse {
  * A written utility file, with its new revision and its save-ledger capture.
  */
 export interface UtilityWriteResponse {
-  error: string | null;
-  error_line: number | null;
   git_sha: string | null;
   identity_required: boolean;
   import_line: string;

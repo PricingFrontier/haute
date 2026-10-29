@@ -567,10 +567,6 @@ class SavePipelineService:
         # remain on disk and will be cleaned up on the next successful save.
         removed = self._remove_stale_config_files(graph)
 
-        # Final save-level self-write marker covers save-wide notifications.
-        # The watcher uses per-path Writer callbacks above.
-        mark_self_write()
-
         # The file-watcher skips self-written paths before invalidating the
         # pipeline index, so a save that renames a pipeline (or adds/removes
         # one) would leave ``_pipeline_index`` mapping the stale name → path.
@@ -584,7 +580,7 @@ class SavePipelineService:
             py_path, committed_payload, pipeline_document_fingerprint(committed_payload)
         )
         return SavePipelineResponse(
-            file=str(py_path.relative_to(self._root)),
+            file=py_path.relative_to(self._root).as_posix(),
             pipeline_name=body.name,
             source_revision=source_revision,
             document_fingerprint=self.committed.fingerprint,

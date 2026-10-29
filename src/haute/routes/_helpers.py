@@ -149,12 +149,6 @@ def raise_pipeline_not_found(name: str) -> NoReturn:
     raise HTTPException(status_code=404, detail=f"Pipeline '{name}' not found")
 
 
-def raise_validation_error(detail: str) -> NoReturn:
-    """Raise 400 for a validation failure, with structured logging."""
-    logger.warning("validation_error", detail=detail)
-    raise HTTPException(status_code=400, detail=detail)
-
-
 def find_typed_node(
     graph: PipelineGraph,
     node_id: str,
@@ -189,8 +183,6 @@ def find_typed_node(
 # ---------------------------------------------------------------------------
 # Self-write tracking (avoid file-watcher feedback loops)
 # ---------------------------------------------------------------------------
-_last_self_write: float = 0.0
-_SELF_WRITE_COOLDOWN = 2.0  # seconds (must exceed save duration + watcher debounce)
 _SELF_WRITE_RETENTION = 60.0
 
 
@@ -264,7 +256,7 @@ def _current_content_digest(path: Path) -> str | None:
 
 
 def mark_self_write(
-    path: str | Path | None = None,
+    path: str | Path,
     *,
     content: bytes | None = None,
     deleted: bool = False,
@@ -274,28 +266,18 @@ def mark_self_write(
     A path marker carries the identity of what the server commits: the
     SHA-256 of ``content`` or a deletion marker, so the watcher can tell
     the server's own write apart from a later external write to the same
-    path. A path needs exactly one of ``content`` and ``deleted``. The bare
-    form only refreshes the process-wide cooldown used by callers with no
-    specific path.
+    path. A path needs exactly one of ``content`` and ``deleted``.
     """
-    global _last_self_write
-    digest: str | None = None
-    if path is not None:
-        if deleted == (content is not None):
-            raise ValueError("a self-write path marker needs exactly one of content or deleted")
-        if content is not None:
-            digest = hashlib.sha256(content).hexdigest()
-    elif content is not None or deleted:
-        raise ValueError("content and deleted require a path")
+    if deleted == (content is not None):
+        raise ValueError("a self-write path marker needs exactly one of content or deleted")
+    digest = None if content is None else hashlib.sha256(content).hexdigest()
     now = time.monotonic()
     with _self_write_lock:
-        _last_self_write = now
-        if path is not None:
-            _prune_self_write_paths(now)
-            _self_write_paths[_self_write_key(path)] = _SelfWriteMark(now, digest)
+        _prune_self_write_paths(now)
+        _self_write_paths[_self_write_key(path)] = _SelfWriteMark(now, digest)
 
 
-def is_self_write(path: str | Path | None = None, *, consume: bool = False) -> bool:
+def is_self_write(path: str | Path, *, consume: bool = False) -> bool:
     """Return True when a watcher event belongs to a server-originated write.
 
     A path matches only while the file's current bytes (or its absence, for
@@ -305,9 +287,6 @@ def is_self_write(path: str | Path | None = None, *, consume: bool = False) -> b
     """
     now = time.monotonic()
     with _self_write_lock:
-        if path is None:
-            return (now - _last_self_write) < _SELF_WRITE_COOLDOWN
-
         _prune_self_write_paths(now)
         key = _self_write_key(path)
         mark = _self_write_paths.get(key)

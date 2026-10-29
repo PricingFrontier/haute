@@ -2251,29 +2251,6 @@ class TestEventBusBroadcastBridge:
 # ---------------------------------------------------------------------------
 
 
-class TestSelfWriteTracking:
-    def test_mark_and_check(self):
-        from haute.routes._helpers import is_self_write, mark_self_write
-
-        mark_self_write()
-        assert is_self_write() is True
-
-    def test_expires_after_cooldown(self, monkeypatch: pytest.MonkeyPatch):
-        import time as _time
-
-        import haute.routes._helpers as helpers
-
-        # Freeze time, mark, then advance past cooldown
-        fake_time = [100.0]
-        monkeypatch.setattr(_time, "monotonic", lambda: fake_time[0])
-
-        helpers.mark_self_write()
-        assert helpers.is_self_write() is True
-
-        fake_time[0] = 102.5  # 2.5s later, past the 2.0s cooldown
-        assert helpers.is_self_write() is False
-
-
 # ---------------------------------------------------------------------------
 # File watcher logic (unit test with mocked awatch)
 # ---------------------------------------------------------------------------
@@ -5246,40 +5223,6 @@ class TestLoadSidecar:
 # ---------------------------------------------------------------------------
 # mark_self_write and is_self_write timing
 # ---------------------------------------------------------------------------
-
-
-class TestSelfWriteTiming:
-    def test_is_self_write_false_before_mark(self, monkeypatch: pytest.MonkeyPatch):
-        import time as _time
-
-        import haute.routes._helpers as helpers
-
-        fake_time = [1000.0]
-        monkeypatch.setattr(_time, "monotonic", lambda: fake_time[0])
-        helpers._last_self_write = 0.0
-        assert helpers.is_self_write() is False
-
-    def test_is_self_write_true_within_cooldown(self, monkeypatch: pytest.MonkeyPatch):
-        import time as _time
-
-        import haute.routes._helpers as helpers
-
-        fake_time = [100.0]
-        monkeypatch.setattr(_time, "monotonic", lambda: fake_time[0])
-        helpers.mark_self_write()
-        fake_time[0] = 101.5  # 1.5s < 2.0s cooldown
-        assert helpers.is_self_write() is True
-
-    def test_is_self_write_false_after_cooldown(self, monkeypatch: pytest.MonkeyPatch):
-        import time as _time
-
-        import haute.routes._helpers as helpers
-
-        fake_time = [100.0]
-        monkeypatch.setattr(_time, "monotonic", lambda: fake_time[0])
-        helpers.mark_self_write()
-        fake_time[0] = 103.0  # 3.0s > 2.0s cooldown
-        assert helpers.is_self_write() is False
 
 
 class TestGetSubmodelSidecarPositions:

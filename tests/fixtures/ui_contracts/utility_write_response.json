@@ -7,7 +7,5 @@
   "name": "helpers",
   "module": "helpers",
   "import_line": "from utility.helpers import *",
-  "revision": "29-1761750000000000000",
-  "error": null,
-  "error_line": null
+  "revision": "29-1761750000000000000"
 }

@@ -374,8 +374,8 @@ class TestNoManualInvalidation:
             after a git action that rewrote the files: the route paused the
             watcher, so no watcher batch rebuilds the index for it, and
           - ``haute.routes._save_pipeline`` at the end of a successful
-            save — self-writes early-return from the file-watcher on the
-            ``is_self_write()`` cooldown, so the save path must
+            save — the watcher skips the save's self-written paths, so
+            the save path must
             explicitly invalidate the index to keep the rename → new-name
             lookup consistent.  Pin this exception by filename so any
             OTHER module adding an invalidate call (a regression) still

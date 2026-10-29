@@ -58,7 +58,7 @@ from haute.routes.pipeline import (
     _raise_interactive_worker_crash_http_error,
     _validate_runtime_input_paths,
 )
-from haute.schemas import Graph
+from haute.schemas import MAX_REQUEST_ITEMS, BoundedName, Graph
 
 logger = get_logger(component="server.output_assemble")
 
@@ -72,13 +72,13 @@ def _dry_run_timeout() -> float:
 
 class OutputAssembleDryRunRequest(BaseModel):
     graph: Graph
-    node_id: str
+    node_id: BoundedName
     #: The in-progress (volatile, unsaved) outputMapping to preview.
-    output_mapping: list[dict[str, Any]] = Field(default_factory=list)
-    output_format: str = "json"
+    output_mapping: list[dict[str, Any]] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
+    output_format: BoundedName = "json"
     #: Cap upstream source rows so the preview stays cheap.
     row_limit: int = Field(default=100, ge=1, le=10000)
-    source: str = "live"
+    source: BoundedName = "live"
 
 
 class OutputAssembleDryRunResponse(BaseModel):

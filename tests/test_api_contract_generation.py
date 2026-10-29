@@ -213,8 +213,6 @@ def test_response_contracts_require_every_field_the_server_sends() -> None:
         "module",
         "import_line",
         "revision",
-        "error",
-        "error_line",
         "warnings",
         "git_sha",
         "identity_required",

@@ -905,7 +905,7 @@ async def list_pipelines() -> list[PipelineSummary]:
 
     def _wire_file(f: Path) -> str:
         try:
-            return str(f.relative_to(cwd))
+            return f.relative_to(cwd).as_posix()
         except ValueError:
             return f.name
 
@@ -1059,7 +1059,7 @@ async def apply_remove_unavailable_node(
             {
                 "code": "repair_artifact_unavailable",
                 "message": (
-                    "A repair artifact could not be written; original artifacts were restored."
+                    "A repair artifact could not be read or written, so the repair changed nothing."
                 ),
             },
         )
@@ -1086,7 +1086,7 @@ async def scoped_node_save(
             {
                 "code": "repair_artifact_unavailable",
                 "message": (
-                    "A save artifact could not be written; original artifacts were restored."
+                    "A save artifact could not be read or written, so the save changed nothing."
                 ),
             },
         )
@@ -1113,7 +1113,7 @@ async def apply_remove_broken_connection(
             {
                 "code": "repair_artifact_unavailable",
                 "message": (
-                    "A repair artifact could not be written; original artifacts were restored."
+                    "A repair artifact could not be read or written, so the repair changed nothing."
                 ),
             },
         )
@@ -1140,7 +1140,7 @@ async def apply_recover_unavailable_node(
             {
                 "code": "repair_artifact_unavailable",
                 "message": (
-                    "A repair artifact could not be written; original artifacts were restored."
+                    "A repair artifact could not be read or written, so the repair changed nothing."
                 ),
             },
         )

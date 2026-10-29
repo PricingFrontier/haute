@@ -16383,30 +16383,6 @@
     "UtilityWriteResponse": {
       "description": "A written utility file, with its new revision and its save-ledger capture.",
       "properties": {
-        "error": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Error"
-        },
-        "error_line": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Error Line"
-        },
         "git_sha": {
           "anyOf": [
             {
@@ -16472,9 +16448,7 @@
         "name",
         "module",
         "import_line",
-        "revision",
-        "error",
-        "error_line"
+        "revision"
       ],
       "title": "UtilityWriteResponse",
       "type": "object"
@@ -16612,10 +16586,12 @@
       "description": "A quote typed into the app's sheets, with the form revision and the release the page\nwas drawn from.",
       "properties": {
         "form_revision": {
+          "maxLength": 512,
           "title": "Form Revision",
           "type": "string"
         },
         "release": {
+          "maxLength": 512,
           "title": "Release",
           "type": "string"
         },
@@ -16636,6 +16612,7 @@
             },
             "type": "array"
           },
+          "maxProperties": 10000,
           "title": "Values",
           "type": "object"
         }
@@ -17049,6 +17026,7 @@
       "description": "A new quote, and the quote it is made from when it is. It is made unpriced, ``shown``\nnull, and priced as it opens. ``reference`` is the reference the underwriter keyed,\nwhich every creation but an alternative's names; an alternative takes its source's.",
       "properties": {
         "form_revision": {
+          "maxLength": 512,
           "title": "Form Revision",
           "type": "string"
         },
@@ -17072,6 +17050,7 @@
           "title": "Reference"
         },
         "release": {
+          "maxLength": 512,
           "title": "Release",
           "type": "string"
         },
@@ -17085,6 +17064,7 @@
                 },
                 "type": "array"
               },
+              "maxProperties": 10000,
               "type": "object"
             },
             {
@@ -17122,6 +17102,7 @@
             },
             "type": "array"
           },
+          "maxProperties": 10000,
           "title": "Values",
           "type": "object"
         }
@@ -17336,6 +17317,7 @@
       "description": "A quote's next revision, saved over ``version`` of it.",
       "properties": {
         "form_revision": {
+          "maxLength": 512,
           "title": "Form Revision",
           "type": "string"
         },
@@ -17346,6 +17328,7 @@
           "type": "string"
         },
         "release": {
+          "maxLength": 512,
           "title": "Release",
           "type": "string"
         },
@@ -17359,6 +17342,7 @@
                 },
                 "type": "array"
               },
+              "maxProperties": 10000,
               "type": "object"
             },
             {
@@ -17385,6 +17369,7 @@
             },
             "type": "array"
           },
+          "maxProperties": 10000,
           "title": "Values",
           "type": "object"
         },

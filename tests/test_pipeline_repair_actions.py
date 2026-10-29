@@ -428,11 +428,44 @@ def test_apply_recover_rollback_on_second_staged_write_restores_artifacts(
     payload = response.json()
     assert payload["detail"]["code"] == "repair_artifact_unavailable"
     assert payload["detail"]["message"] == (
-        "A repair artifact could not be written; original artifacts were restored."
+        "A repair artifact could not be read or written, so the repair changed nothing."
     )
     assert staged_writes_successful == 1
     assert (tmp_path / "main.py").read_bytes() == before_parent
     assert (tmp_path / "custom.json").read_bytes() == before_config
+
+
+def test_a_restore_that_fails_is_named_in_the_repair_response(
+    tmp_path: Path, client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rollback is best-effort: an artifact it could not put back is named, never
+    reported as restored."""
+    import haute.routes._save_pipeline as save_pipeline
+
+    _broken_constant(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    request = _request(tmp_path, "source", "reset").model_dump()
+    real_stage_write = save_pipeline._stage_artifact_write_bytes
+    staged: list[Path] = []
+
+    def fail_second_stage_write(path: Path, payload: bytes, touched: list) -> None:
+        if staged:
+            raise PermissionError("permission denied on second artifact")
+        real_stage_write(path, payload, touched)
+        staged.append(path)
+
+    def refuse_restore(path: Path, data: bytes) -> None:
+        raise PermissionError(f"{path.name} is locked")
+
+    monkeypatch.setattr(save_pipeline, "_stage_artifact_write_bytes", fail_second_stage_write)
+    monkeypatch.setattr(save_pipeline, "atomic_write_bytes", refuse_restore)
+
+    response = client.post("/api/pipeline/repair/recover/apply", json=request)
+
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert detail["code"] == "repair_rollback_failed"
+    assert detail["paths"] == [staged[0].relative_to(tmp_path).as_posix()]
 
 
 def test_recover_retains_valid_settings_and_reports_outcomes(tmp_path):

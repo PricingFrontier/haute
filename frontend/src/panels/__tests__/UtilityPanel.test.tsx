@@ -206,8 +206,6 @@ describe("UtilityPanel", () => {
       status: "ok", name: "helpers.py", module: "helpers",
       import_line: "from utility.helpers import *",
       revision: "1-1",
-      error: null,
-      error_line: null,
     })
 
     render(<UtilityPanel {...defaultProps} />)
@@ -256,7 +254,7 @@ describe("UtilityPanel auto-save", () => {
   })
 
   it("auto-saves after debounce when code changes", async () => {
-    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", revision: "2-2", error: null, error_line: null })
+    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", revision: "2-2" })
 
     render(<UtilityPanel {...defaultProps} />)
     await waitFor(() => expect(screen.getByTestId("code-editor")).toBeInTheDocument())
@@ -273,7 +271,7 @@ describe("UtilityPanel auto-save", () => {
   })
 
   it("debounces rapid edits (only saves last value)", async () => {
-    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", revision: "2-2", error: null, error_line: null })
+    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", revision: "2-2" })
 
     render(<UtilityPanel {...defaultProps} />)
     await waitFor(() => expect(screen.getByTestId("code-editor")).toBeInTheDocument())
@@ -304,7 +302,7 @@ describe("UtilityPanel auto-save", () => {
     mockReadFile.mockImplementation((module: string) =>
       Promise.resolve({ name: `${module}.py`, module, content: `# ${module}\n`, revision: "1-1" }),
     )
-    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", revision: "2-2", error: null, error_line: null })
+    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", revision: "2-2" })
 
     render(<UtilityPanel {...defaultProps} />)
     await waitFor(() => expect(screen.getByTestId("code-editor")).toHaveValue("# features\n"))
@@ -325,7 +323,7 @@ describe("UtilityPanel auto-save", () => {
   })
 
   it("persists a pending edit when the panel unmounts", async () => {
-    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", revision: "2-2", error: null, error_line: null })
+    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", revision: "2-2" })
 
     const { unmount } = render(<UtilityPanel {...defaultProps} />)
     await waitFor(() => expect(screen.getByTestId("code-editor")).toBeInTheDocument())

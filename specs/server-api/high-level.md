@@ -644,6 +644,12 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
   workers are terminated and joined before the terminal response or job transition. Parent
   cleanup then removes the exact private staging artifact, and admission is released only after
   both worker termination and cleanup have completed.
+- **Requests are bounded.** Every free string a request body carries (a name, an id, a
+  path, code), and every list and mapping in it, has a size limit, as does a utility
+  module named in a path, so an over-long value is refused with HTTP 422 before anything
+  acts on it, never failing later as a server error. Every project-relative path a
+  response names, a save's `file` and each pipeline summary's included, uses forward
+  slashes on every platform.
 - **Path-safety violations** (`contained_path`, the save-time output-path allowlist,
   runtime-input-path validation) return 400 for malformed input (null bytes, empty codegen
   paths, traversal segments) and 403 for a resolved path that escapes its allowed root —

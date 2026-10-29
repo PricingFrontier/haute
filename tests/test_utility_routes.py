@@ -603,3 +603,26 @@ class TestLedgerCapture:
         assert self._ledger(repository) == (deleted.json()["git_sha"], ["utility/helpers.py"])
         tracked = git_run(repository, "ls-tree", "-r", "--name-only", f"{_WORKING}-save")
         assert "utility/helpers.py" not in tracked.splitlines()
+
+
+class TestBoundedNames:
+    def test_an_over_long_module_name_is_refused_before_anything_is_written(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        res = client.post("/api/utility", json={"name": "a" * 3000})
+
+        assert res.status_code == 422
+        assert not (tmp_path / "utility").exists()
+
+    @pytest.mark.parametrize("method", ["get", "put", "delete"])
+    def test_an_over_long_module_in_the_path_is_refused(
+        self, client: TestClient, method: str
+    ) -> None:
+        url = f"/api/utility/{'a' * 3000}"
+        res = (
+            client.put(url, json={"content": "x = 1\n", "revision": "0-0"})
+            if method == "put"
+            else getattr(client, method)(url, params={"revision": "0-0"})
+        )
+
+        assert res.status_code == 422
