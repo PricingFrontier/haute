@@ -29,7 +29,6 @@ evidence to `ENGQ-R01` and `ENGQ-R05`.
 | ENGQ-R09 | Planned | P3 | The write-sandbox ratchet moves: the observe census is recorded and may not grow, modules with an empty census become strict, the system temp directory is a stated gap or no longer allowed, and the lint allowlist is keyed by site. |
 | ENGQ-R10 | Planned | P3 | Repository-health hygiene: file-reading tests carry the `meta` marker, the specification's bundle and lint numbers are read from their files, `mypy` covers `scripts/`, the package smoke derives its version prefixes, the Windows preflight is held in step, the dependency alarm fires on schedule only, and the e2e server stops its Node child on Windows. |
 | ENGQ-R11 | Decision | P2 | Mutation witnesses cover the rating step and deploy scoring, the modules whose silent failure changes a price, or the specification says why the three JSON-boundary targets suffice. |
-| ENGQ-R12 | Planned | P2 | The UC create-only release gate requires competing creates and distinguishes conflict refusals from transport/auth failures. |
 
 ## Planned improvements
 
@@ -441,26 +440,3 @@ use, or state in the specification why the three targets suffice.
 
 **Evidence:** `mutation/targets.json`, `pyproject.toml`, `src/haute/_rating.py`,
 `src/haute/deploy/_scorer.py`, `specs/engineering-quality/high-level.md`.
-
-### ENGQ-R12 — Storage qualification proves actual contention
-
-**Why:** The qualification script accepts exactly one upload success regardless of how other
-writers failed, discards their detailed errors, and reports QUALIFIED. The real threaded script
-with an offline transport witness returns success for one stored object plus three
-PermissionErrors before upload. Zero rounds also qualifies. This gate therefore cannot
-establish the create-only guarantee required by hosted storage.
-
-**Plan:** Require at least two writers and one round; require every losing create to have the
-documented already-exists outcome. Treat permission, timeout and other transport failures as
-failed/inconclusive qualification with visible writer diagnostics. Keep winner-byte
-verification and make cleanup ownership explicit.
-
-**Acceptance:** A transport with one winner and conflict refusals qualifies after all
-configured rounds. One winner plus any permission/timeout failure does not qualify and returns
-nonzero with the error. Zero rounds, fewer than two writers, multiple winners and mismatched
-stored bytes cannot pass. These offline cases test gate logic; actual UC qualification still
-requires the separate live run.
-
-**Dependencies:** None.
-
-**Evidence:** `scripts/uc_create_only_qualification.py::run_round.worker`; `scripts/uc_create_only_qualification.py::run_round`; `scripts/uc_create_only_qualification.py::qualify`; `specs/hosted-project-storage/high-level.md` create-only qualification boundary.

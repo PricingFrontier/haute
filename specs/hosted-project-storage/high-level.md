@@ -176,7 +176,15 @@ the lock; the slow part — the upload — runs outside it.
   hosted publication: it must pass against an isolated volume path with
   the workspace's own credentials, and its result be recorded in
   `databricks_app/LEARNINGS.md`, before the guarantee is claimed for
-  production. Until then the runtime already behaves as if the provider
+  production. It passes only on actual contention: every round races at
+  least two writers to one create, exactly one stores its bytes, every
+  other is refused with the Files API's already-exists conflict, and the
+  object then holds the winner's bytes. A writer that fails any other way
+  (permission, timeout, transport) never contended at the create, so the
+  run is not qualified and names that writer's error; fewer than two
+  writers or no round is refused before any upload. The run deletes only
+  the objects its own rounds created, starting each round on an empty
+  path, and a delete that fails fails the run. Until then the runtime already behaves as if the provider
   could be ambiguous (an unclear create is retried, a lost race stops
   loudly) and the guarantee is design intent, not a proven property.
 - **A claim makes the location behave like a locally-owned file.** The

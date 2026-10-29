@@ -106,7 +106,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P2 | Unary parentheses disappear and regex value substitution rewrites a matching string literal. | [TRACE-R02](tracing.md#trace-r02--expression-facts-from-the-located-expression), extended | Real expression evaluator: `-(x+z)` displayed as `-x+z`; concat literal `"x"` is replaced. Numerical execution remains correct in these two cases. The actual browser formatter also rewrites quoted `a/b` and `a*b` into different literal text. |
 | P2 | Deployment proves a literal-only select preserves request order, then fails a three-quote request with one row. | [EXEC-R09](execution-engine.md#exec-r09--column-free-selects-are-not-row-local), extended | Actual row proof and score_graph. Existing chunk row-count corruption stays P1; this added deployment failure is loud. |
 | P2 | Late GLM dispersion estimate for A overwrites manually chosen theta 7 in newer target B with 3. | [FMOU-R06](frontend-modelling-optimiser-ui.md#fmou-r06--dispersion-estimates-belong-to-the-initiating-training-draft) | Actual GLMTargetConfig, only the estimate promise substituted. |
-| P2 | UC release qualification passes one success plus three permission errors, and also zero rounds. | [ENGQ-R12](engineering-quality.md#engq-r12--storage-qualification-proves-actual-contention) | Actual threaded gate with offline transport. Does not establish that a live UC backend lacks atomicity. |
 | P2 | JSON omits an all-null nested pricing object while NDJSON returns pricing:null for the same quote. | [DEP-R17](deploy.md#dep-r17--json-and-ndjson-preserve-the-same-output-document) | Real generated FastAPI app, request shredder, scorer, assembler and materializer; no scorer mock. Batch variant is source-supported. |
 | P2 | From project root, rating/modules edits are skipped even when rating/main.py is the configured importer. | [API-R11](server-api.md#api-r11--module-watching-follows-the-configured-pipeline-directory) | Real discovery/parser/dependency index and watcher event handling; event transport/publish capture substituted. No subsequent save-overwrite claim. |
 | P2 | A utility file load replaces a newer selection and can discard the old file's draft typed after its initial flush when autosave later fails. | [FGC-R08](frontend-graph-canvas.md#fgc-r08--utility-navigation-preserves-drafts-across-pending-reads) | Actual UtilityPanel/debounce, textarea editor and transport seams; two controlled interleavings independently reproduced. |
@@ -319,7 +318,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | edge ID collisions | **NAME-10**. |
 | failed new solve identity | **FSH-R12**. |
 | quoted literal formatting | **TRACE-R02**. |
-| UC losers treated as valid contention | **ENGQ-R12**. |
 | malformed connect extraction | **PCFG-R20**. |
 | keyword-only defaults | **PCFG-R21**. |
 | local app Host boundary | **WB-39**. |
