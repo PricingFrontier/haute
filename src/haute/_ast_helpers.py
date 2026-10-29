@@ -487,19 +487,33 @@ def _chained_receiver_calls(
     not lost. Links are returned in authored (source) order; an empty list
     means the statement contributes nothing.
     """
-    if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
+    chain = _receiver_call_chain(statement)
+    if chain is None:
         return []
+    base, links = chain
+    calls = [
+        link for link in links if isinstance(link.func, ast.Attribute) and link.func.attr == method
+    ]
+    if not calls or not (isinstance(base, ast.Name) and base.id == receiver):
+        return []
+    return calls
+
+
+def _receiver_call_chain(statement: ast.stmt) -> tuple[ast.expr, list[ast.Call]] | None:
+    """The base and the calls of a statement's ``<base>.<a>(...).<b>(...)`` chain.
+
+    The calls are in source order; ``None`` when the statement is not a call
+    expression. The one walk of a receiver's call chain the parser does.
+    """
+    if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
+        return None
     links: list[ast.Call] = []
     current: ast.expr = statement.value
     while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
-        if current.func.attr == method:
-            links.append(current)
+        links.append(current)
         current = current.func.value
-    if not links or not (isinstance(current, ast.Name) and current.id == receiver):
-        return []
-    # Links were collected outermost-first; reverse for source order.
     links.reverse()
-    return links
+    return current, links
 
 
 # ---------------------------------------------------------------------------
@@ -533,31 +547,20 @@ def _extract_meta(
     """Find ``<var_name> = haute.<Class>("name", description="...")`` at module level."""
     name = default_name
     description = ""
+    call = _constructor_call(tree, var_name)
+    if call is None:
+        return name, description
 
-    for node in ast.iter_child_nodes(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        if len(node.targets) != 1:
-            continue
-        target = node.targets[0]
-        if not isinstance(target, ast.Name) or target.id != var_name:
-            continue
-        call = node.value
-        if not isinstance(call, ast.Call):
-            continue
+    if call.args:
+        val = _eval_meta_value(var_name, "name", call.args[0])
+        if isinstance(val, str):
+            name = val
 
-        if call.args:
-            val = _eval_meta_value(var_name, "name", call.args[0])
+    for kw in call.keywords:
+        if kw.arg == "description":
+            val = _eval_meta_value(var_name, "description", kw.value)
             if isinstance(val, str):
-                name = val
-
-        for kw in call.keywords:
-            if kw.arg == "description":
-                val = _eval_meta_value(var_name, "description", kw.value)
-                if isinstance(val, str):
-                    description = val
-
-        break
+                description = val
 
     return name, description
 
@@ -573,7 +576,7 @@ def _extract_submodel_meta(tree: ast.Module) -> tuple[str, str]:
 
 
 def _constructor_call(tree: ast.Module, var_name: str) -> ast.Call | None:
-    """The first ``<var_name> = <call>`` at module level, as ``_extract_meta`` finds it."""
+    """The first module-level ``<var_name> = <call>``: the constructor every reader uses."""
     for node in ast.iter_child_nodes(tree):
         if (
             isinstance(node, ast.Assign)
@@ -865,14 +868,12 @@ def _extract_preamble_from_ast(
 
 def _is_generated_call(statement: ast.stmt, receiver: str) -> bool:
     """``<receiver>.connect(...)`` chains, and ``pipeline.submodel(...)`` registrations."""
-    if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
+    chain = _receiver_call_chain(statement)
+    if chain is None:
         return False
-    methods: list[str] = []
-    expr: ast.expr = statement.value
-    while isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute):
-        methods.append(expr.func.attr)
-        expr = expr.func.value
-    if not isinstance(expr, ast.Name) or expr.id != receiver or not methods:
+    base, links = chain
+    methods = [link.func.attr for link in links if isinstance(link.func, ast.Attribute)]
+    if not isinstance(base, ast.Name) or base.id != receiver or not methods:
         return False
     if receiver == "pipeline" and all(method == "submodel" for method in methods):
         # Registrations, chained or not: codegen writes each one, a statement apiece.
@@ -1014,25 +1015,14 @@ def _extract_preserved_blocks(source: str) -> list[str]:
     marker-free string per completed module block, in source order. Unmatched
     starts are ignored.
     """
-    blocks: list[str] = []
     lines = python_lines(source)
-    i = 0
-    while i < len(lines):
-        if lines[i].rstrip() == _PRESERVE_START:
-            # Collect lines until the matching end marker
-            block_lines: list[str] = []
-            i += 1
-            while i < len(lines) and lines[i].rstrip() != _PRESERVE_END:
-                block_lines.append(lines[i])
-                i += 1
-            if i < len(lines):
-                # Found the end marker — store the block
-                # Strip leading/trailing blank lines but keep internal structure
-                while block_lines and not block_lines[0].strip():
-                    block_lines.pop(0)
-                while block_lines and not block_lines[-1].strip():
-                    block_lines.pop()
-                blocks.append("\n".join(block_lines))
-            # else: unmatched start marker — skip
-        i += 1
+    blocks: list[str] = []
+    for start, end in _module_preserve_spans(lines):
+        block_lines = lines[start + 1 : end]
+        # Strip leading/trailing blank lines but keep internal structure
+        while block_lines and not block_lines[0].strip():
+            block_lines.pop(0)
+        while block_lines and not block_lines[-1].strip():
+            block_lines.pop()
+        blocks.append("\n".join(block_lines))
     return blocks

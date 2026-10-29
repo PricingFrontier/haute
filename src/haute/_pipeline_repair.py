@@ -672,6 +672,34 @@ def _bounded_diff(edit: RepairArtifactEdit) -> tuple[str, bool]:
     return rendered[: _MAX_PUBLIC_DIFF - len(marker)] + marker, True
 
 
+_STALE_RECOVERY_MESSAGE = (
+    "The pipeline changed after this recovery document loaded; reload before repairing."
+)
+
+
+def _document_at_revision(
+    root: Path,
+    source_file: str,
+    source_revision: str,
+    *,
+    stale_message: str = _STALE_RECOVERY_MESSAGE,
+) -> tuple[Path, PipelineEditorDocument]:
+    """The pipeline file a request names and its editor document, at the request's revision.
+
+    A document whose revision has moved on since the request was made is refused, naming
+    the current revision, so nothing is planned against bytes the user has not seen.
+    """
+    root_path = _resolve_project_file(root, source_file, suffix=".py")
+    document = load_pipeline_editor_document(root_path, project_root=root)
+    if document.source_revision != source_revision:
+        raise PipelineRepairError(
+            "repair_revision_conflict",
+            stale_message,
+            current_revision=document.source_revision,
+        )
+    return root_path, document
+
+
 def build_remove_unavailable_node_plan(
     *,
     project_root: Path,
@@ -680,14 +708,7 @@ def build_remove_unavailable_node_plan(
     """Reload current recovery state and build a deterministic no-write plan."""
 
     root = project_root.resolve()
-    root_path = _resolve_project_file(root, request.source_file, suffix=".py")
-    document = load_pipeline_editor_document(root_path, project_root=root)
-    if document.source_revision != request.source_revision:
-        raise PipelineRepairError(
-            "repair_revision_conflict",
-            "The pipeline changed after this recovery document loaded; reload before repairing.",
-            current_revision=document.source_revision,
-        )
+    root_path, document = _document_at_revision(root, request.source_file, request.source_revision)
     target_path = _resolve_project_file(root, request.target_source_file, suffix=".py")
     target_wire_path = _wire_path(target_path, root)
     target = _find_target(
@@ -878,14 +899,7 @@ def build_remove_connection_plan(
 ) -> PipelineRepairPlan:
     """Plan deleting one broken ``connect()`` statement; the nodes it joined stay."""
     root = project_root.resolve()
-    root_path = _resolve_project_file(root, request.source_file, suffix=".py")
-    document = load_pipeline_editor_document(root_path, project_root=root)
-    if document.source_revision != request.source_revision:
-        raise PipelineRepairError(
-            "repair_revision_conflict",
-            "The pipeline changed after this recovery document loaded; reload before repairing.",
-            current_revision=document.source_revision,
-        )
+    root_path, document = _document_at_revision(root, request.source_file, request.source_revision)
     target_path = _resolve_project_file(root, request.target_source_file, suffix=".py")
     target_wire_path = _wire_path(target_path, root)
     connection = _find_connection(

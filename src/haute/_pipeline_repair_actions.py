@@ -23,6 +23,7 @@ from haute._pipeline_repair import (
     RepairArtifactEdit,
     _bounded_diff,
     _decode_utf8_artifact,
+    _document_at_revision,
     _find_target,
     _iter_recovery_nodes,
     _recovery_structure,
@@ -504,13 +505,7 @@ def build_recovery_action_plan(
     *, project_root: Path, request: PipelineRepairRecoverRequest
 ) -> PipelineRepairPlan:
     root = project_root.resolve()
-    root_path = _resolve_project_file(root, request.source_file, suffix=".py")
-    document = load_pipeline_editor_document(root_path, project_root=root)
-    if document.source_revision != request.source_revision:
-        raise PipelineRepairError(
-            "repair_revision_conflict",
-            "The pipeline changed after this recovery document loaded; reload before repairing.",
-        )
+    root_path, document = _document_at_revision(root, request.source_file, request.source_revision)
     path = _resolve_project_file(root, request.target_source_file, suffix=".py")
     target = _find_target(
         document,
@@ -632,13 +627,12 @@ def apply_scoped_node_save(
     from haute._pipeline_repair import _commit_repair_plan
 
     root = project_root.resolve()
-    root_path = _resolve_project_file(root, request.source_file, suffix=".py")
-    document = load_pipeline_editor_document(root_path, project_root=root)
-    if document.source_revision != request.source_revision:
-        raise PipelineRepairError(
-            "repair_revision_conflict",
-            "The pipeline changed after this document loaded; reload before saving.",
-        )
+    root_path, document = _document_at_revision(
+        root,
+        request.source_file,
+        request.source_revision,
+        stale_message="The pipeline changed after this document loaded; reload before saving.",
+    )
     path = _resolve_project_file(root, request.target_source_file, suffix=".py")
     target = _find_target(
         document,

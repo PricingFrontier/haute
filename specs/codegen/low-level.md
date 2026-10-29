@@ -168,11 +168,11 @@ that has inputs and moves each input-less node that feeds another to just before
 its first consumer, emitting the sources of one consumer in that consumer's edge
 order; an input-less node without consumers keeps its topological position.
 
-Preserved-block extraction is intentionally structural rather than byte-for-byte. The shared
-`haute._ast_helpers._extract_preserved_blocks` scan claims only completed column-zero marker
-pairs, removes marker lines and leading/trailing blank lines inside each block, ignores an
-unmatched start, and returns blocks in source order. `_extract_preamble` excludes those completed
-module spans, so the two stores are disjoint. Indented marker text remains in its enclosing
+Preserved-block extraction is intentionally structural rather than byte-for-byte. One scan,
+`haute._ast_helpers._module_preserve_spans`, finds the completed column-zero marker pairs and
+ignores an unmatched start. `_extract_preserved_blocks` returns each span's lines in source
+order without the marker lines and the blank lines at either end, and `_extract_preamble`
+excludes the same spans, so the two stores are disjoint. Indented marker text remains in its enclosing
 function or construct and is not separately extracted. `_render_module` emits each
 pipeline or submodel block once after object construction and before node functions, restoring
 fresh markers.
