@@ -18,7 +18,7 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 | PCFG-R12 | Planned | P2 | A save keeps every authored comment, or reports the ones it would drop before it proceeds. |
 | PCFG-R15 | Planned | P3 | The unreachable config branches, the empty `_load_error` mechanism, the other dead symbols, the five duplicated mechanisms and the stale comments are gone. |
 | PCFG-R16 | Decision | P3 | The `earlier` step spelling is either dropped or named as the one allowed recogniser of old generated code. |
-| PCFG-R19 | Planned | P3 | Recovery ids are minted once so a diagnostic's "go to" finds its element, the revision captures cover sidecars and configs, a preamble `match` binds names the naming rule sees, and three duplicated recovery mechanisms exist once. |
+| PCFG-R19 | Planned | P3 | The file-to-recovery-graph pass is written once, for a pipeline file and a submodel file alike. |
 | PCFG-R21 | Planned | P1 | A parse/save round trip preserves supported keyword-only bindings or refuses an unsupported signature before losing it. |
 
 `PCFG-R04` to `PCFG-R09` come from the
@@ -271,42 +271,26 @@ matches them.
 `src/haute/_polars_steps.py::StepSpelling`; `specs/README.md`;
 `specs/pipeline-config/low-level.md`.
 
-### PCFG-R19 — Recovery ids, captures, `match` bindings and clones
-**Why:** Node and occurrence diagnostics are created with a `recovery_id` minted over
-their own subset and `_build_recovery_graph` then re-mints every id over the combined
-set, so when a node and a submodel occurrence share an authored name the diagnostic's
-`element_id` names an element that no longer exists and the banner's "go to" selects
-nothing (probed). `_SourceCaptures` promises that every later consumer, the revision
-included, reuses the first read, but it covers only the `.py` sources and the
-constants file: the editor sidecar is read twice and every node config on its own,
-and the revision re-reads from disk anything absent from `known_bytes`, so the
-`source_revision` can authenticate sidecar bytes that differ from the ones the
-document shows. `_support_code_names` never recurses into a preamble `match`
-statement (its children are `match_case` nodes, not statements), so a node named
-after a helper bound in a `case` body is not refused and the standalone run rebinds
-it; a 3.12 `type` alias is missed the same way. Three mechanisms are written twice:
-the file-to-recovery-graph pass for a child file and the root, the step-kind to
-input-field table, and the editor-sidecar read with its diagnostic.
+### PCFG-R19 — One file-to-recovery-graph pass
+**Why:** Editor recovery turns one file into recovery candidates and connections twice: for
+a submodel file in `_recover_submodel_snapshot` and for the pipeline file in
+`_load_readable_pipeline_editor_document`. Both discover the decorated nodes, mint their
+recovery ids, resolve each node, recover the connect calls and attribute the strict parse's
+binding refusal, in a different order, so a fix to one pass can miss the other. (The ids,
+the captures, the `match` bindings, the step-kind input table and the editor-sidecar read
+this package also covered were delivered.)
 
-**Plan:** Mint the recovery ids once over the combined candidate set before resolving
-candidates; route the sidecar and node-config reads through the captures; recurse
-into `match_case` bodies and yield their capture names (and `TypeAlias.name`), and
-say `match` in the specification; one `_recover_file_graph`, one input-field table,
-one `_read_editor_sidecar`.
+**Plan:** One `_recover_file_graph` that both call, the pipeline file adding its submodel
+occurrences and instance refusals; fix the order of the diagnostics it emits and say it in
+the server-api specification.
 
-**Acceptance:** The probe's "go to" selects the node; a sidecar changed between the
-capture and the revision is caught by the revision; a node named after a
-`match`-bound helper is refused by name; jscpd reports none of the three pairs.
+**Acceptance:** jscpd reports no clone between the two passes; the recovery tests pass
+unchanged apart from a stated diagnostic order.
 
 **Dependencies:** `PCFG-R15` owns the first pass's clones.
 
-**Evidence:** `src/haute/_pipeline_recovery.py::_build_recovery_graph`;
-`src/haute/_pipeline_recovery.py::_SourceCaptures`;
-`src/haute/_pipeline_revision.py::pipeline_recovery_revision`;
-`src/haute/_support_code_names.py::support_code_inventory`;
-`src/haute/_polars_steps.py::rename_step_inputs`;
-`src/haute/_polars_steps.py::step_input_references`.
-
+**Evidence:** `src/haute/_pipeline_recovery.py::_recover_submodel_snapshot`;
+`src/haute/_pipeline_recovery.py::_load_readable_pipeline_editor_document`.
 ### PCFG-R21 — Node signatures retain their configuration bindings
 
 **Why:** The parser retains keyword-only names temporarily but drops defaults and the canonical

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json as _json
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -74,17 +75,20 @@ class SidecarReadResult:
     error_type: str | None = None
 
 
-def _read_sidecar_json(sidecar: Path) -> tuple[SidecarReadState, dict[str, Any] | None, str | None]:
+def _read_sidecar_json(
+    sidecar: Path, read_bytes: Callable[[Path], bytes] = Path.read_bytes
+) -> tuple[SidecarReadState, dict[str, Any] | None, str | None]:
     """Read and JSON-decode one sidecar object without model validation.
 
     Returns ``(state, payload, error_type)``; ``payload`` is set only for
     ``valid``. Shared by the permissive :func:`load_sidecar` and the typed
     :func:`read_sidecar_state` so IO and JSON tolerance live in one place.
+    *read_bytes* reads the file; editor recovery passes its load's capture.
     """
-    if not sidecar.exists():
-        return "absent", None, None
     try:
-        raw = sidecar.read_bytes()
+        raw = read_bytes(sidecar)
+    except FileNotFoundError:
+        return "absent", None, None
     except OSError as exc:
         logger.warning("unreadable_sidecar", file=sidecar.name, error=str(exc))
         return "unreadable", None, type(exc).__name__
@@ -100,10 +104,12 @@ def _read_sidecar_json(sidecar: Path) -> tuple[SidecarReadState, dict[str, Any] 
     return "valid", payload, None
 
 
-def read_sidecar_state(py_path: Path) -> SidecarReadResult:
+def read_sidecar_state(
+    py_path: Path, *, read_bytes: Callable[[Path], bytes] = Path.read_bytes
+) -> SidecarReadResult:
     """Read a sidecar without collapsing absent and invalid content together."""
     sidecar = py_path.with_suffix(".haute.json")
-    state, payload, error_type = _read_sidecar_json(sidecar)
+    state, payload, error_type = _read_sidecar_json(sidecar, read_bytes)
     if state != "valid" or payload is None:
         return SidecarReadResult(path=sidecar, state=state, error_type=error_type)
     try:

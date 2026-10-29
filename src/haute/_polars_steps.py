@@ -592,11 +592,10 @@ def rename_step_inputs(steps: object, renames: Mapping[str, str]) -> list[dict[s
     out: list[dict[str, Any]] = []
     for step in validated:
         copy = dict(step)
-        kind = step["kind"]
-        if kind in ("source", "join"):
-            copy["input"] = renamed[step["input"]]
-        elif kind == "concat":
-            copy["inputs"] = [renamed[name] for name in step["inputs"]]
+        input_field = _STEP_INPUT_FIELDS.get(step["kind"])
+        if input_field is not None:
+            name, many = input_field
+            copy[name] = [renamed[item] for item in step[name]] if many else renamed[step[name]]
         out.append(copy)
     return out
 
@@ -871,14 +870,20 @@ def _empty_frame(columns: ColumnList, owner: str) -> pl.LazyFrame:
 # ---------------------------------------------------------------------------
 
 
+#: The field each step kind that reads inputs names them in, and whether it
+#: holds a list of names: the one table input references and renames read.
+_STEP_INPUT_FIELDS: Mapping[str, tuple[str, bool]] = MappingProxyType(
+    {"source": ("input", False), "join": ("input", False), "concat": ("inputs", True)}
+)
+
+
 def step_input_references(step: Mapping[str, Any]) -> list[str]:
     """The input names one validated step reads (a source, join or concat)."""
-    kind = step["kind"]
-    if kind in ("source", "join"):
-        return [step["input"]]
-    if kind == "concat":
-        return list(step["inputs"])
-    return []
+    input_field = _STEP_INPUT_FIELDS.get(step["kind"])
+    if input_field is None:
+        return []
+    name, many = input_field
+    return list(step[name]) if many else [step[name]]
 
 
 def _needs_parentheses(child_op: object, parent: tuple[str, str] | None) -> bool:

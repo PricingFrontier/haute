@@ -16,7 +16,9 @@ This module provides:
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from functools import cache
 from pathlib import Path
@@ -97,6 +99,24 @@ def reject_duplicate_keys_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+#: The reader node configs are read through while one is installed: editor
+#: recovery installs its load's byte capture, so the revision authenticates the
+#: config bytes the document was built from.
+_NODE_CONFIG_READER: ContextVar[Callable[[Path], bytes] | None] = ContextVar(
+    "haute_node_config_reader", default=None
+)
+
+
+@contextmanager
+def node_configs_read_through(read_bytes: Callable[[Path], bytes]) -> Iterator[None]:
+    """Read every node config through *read_bytes* for the length of the block."""
+    token = _NODE_CONFIG_READER.set(read_bytes)
+    try:
+        yield
+    finally:
+        _NODE_CONFIG_READER.reset(token)
+
+
 def _load_json_object(path: Path) -> dict[str, Any]:
     """Load a config JSON object, rejecting duplicate keys.
 
@@ -105,7 +125,8 @@ def _load_json_object(path: Path) -> dict[str, Any]:
     would be written over the author's bytes by the next save. Unlike Python
     source, a leading BOM is invalid JSON and surfaces as authored corruption.
     """
-    raw = path.read_bytes()
+    reader = _NODE_CONFIG_READER.get()
+    raw = reader(path) if reader is not None else path.read_bytes()
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:

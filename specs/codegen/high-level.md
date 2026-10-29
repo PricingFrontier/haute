@@ -133,8 +133,10 @@ Out of scope (owned by neighbouring components):
   names without a leading underscore. Support code includes each submodel definition's
   preserved blocks, and the pipeline file's submodel imports: each definition module's name
   (`from modules import <name>`, derived from the definition's file) is a binding of "the
-  submodel imports". A preamble block (`if`, `try`, `for`, `with`) contributes whatever its
-  branches bind, a loop's target and a `with` item's name included. Refused, with the rest of the naming rule's violations:
+  submodel imports". A preamble block (`if`, `try`, `for`, `with`, `match`) contributes
+  whatever its branches bind, a loop's target, a `with` item's name and a `match` pattern's
+  captures (`case x`, `[*x]`, `{**x}`, `... as x`) included, and Python 3.12's `type X = ...`
+  binds `X`. Refused, with the rest of the naming rule's violations:
   - a node function name or input binding equal to a support-code binding (an input named
     after a node is that node's collision), with two exceptions for a submodel module's
     name: a root occurrence named after a module takes nothing from the import, since an

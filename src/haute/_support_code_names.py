@@ -112,6 +112,15 @@ def _target_names(target: ast.expr) -> Iterator[str]:
         yield from _target_names(target.value)
 
 
+def _pattern_names(pattern: ast.pattern) -> Iterator[str]:
+    """The names a ``match`` pattern captures: ``case x``, ``[*x]``, ``{**x}``, ``... as x``."""
+    for node in ast.walk(pattern):
+        if isinstance(node, ast.MatchAs | ast.MatchStar) and node.name:
+            yield node.name
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            yield node.rest
+
+
 def _binds_anything(stmt: ast.stmt) -> bool:
     """Whether a compound statement binds a name at module level."""
     for node in ast.walk(stmt):
@@ -123,17 +132,38 @@ def _binds_anything(stmt: ast.stmt) -> bool:
             return True
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
             return True
+        if isinstance(node, ast.pattern) and next(_pattern_names(node), None) is not None:
+            return True
     return False
 
 
 def _block_target_names(stmt: ast.stmt) -> Iterator[str]:
-    """Names a block statement itself binds: a loop's target, a ``with`` item's ``as``."""
+    """Names a block statement itself binds: a loop's target, a ``with`` item's ``as``,
+    the captures of a ``match`` statement's patterns."""
     if isinstance(stmt, ast.For | ast.AsyncFor):
         yield from _target_names(stmt.target)
     elif isinstance(stmt, ast.With | ast.AsyncWith):
         for item in stmt.items:
             if item.optional_vars is not None:
                 yield from _target_names(item.optional_vars)
+    elif isinstance(stmt, ast.Match):
+        for case in stmt.cases:
+            yield from _pattern_names(case.pattern)
+
+
+def _block_bodies(stmt: ast.stmt) -> Iterator[ast.stmt]:
+    """The statements a block runs at module level: its branches, handlers and cases."""
+    for inner in ast.iter_child_nodes(stmt):
+        if isinstance(inner, ast.stmt):
+            yield inner
+    for handler in getattr(stmt, "handlers", []):
+        yield from handler.body
+    for case in getattr(stmt, "cases", []):
+        yield from case.body
+
+
+#: Python 3.12's ``type X = ...`` statement, absent from earlier versions' ``ast``.
+_TYPE_ALIAS: type[ast.stmt] | None = getattr(ast, "TypeAlias", None)
 
 
 def _module_level_nodes(stmt: ast.stmt) -> Iterator[ast.AST]:
@@ -220,6 +250,10 @@ class _Inventory:
                 yield bound(name, provenance)
         elif isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             yield bound(stmt.name, ("define", ast.dump(stmt)))
+        elif _TYPE_ALIAS is not None and isinstance(stmt, _TYPE_ALIAS):
+            alias_name: ast.expr = getattr(stmt, "name")  # noqa: B009 - absent before 3.12
+            for name in _target_names(alias_name):
+                yield bound(name, ("define", ast.dump(stmt)))
         elif utility and _mutates_all(stmt):
             self.result.unsupported.append(
                 f"{label} line {line} changes `__all__` after defining it; write it as one "
@@ -246,16 +280,12 @@ class _Inventory:
                     "cannot be checked; define them at the top level."
                 )
             else:
-                # A preamble's block binds whatever either branch binds,
-                # loop and ``with`` targets included.
+                # A preamble's block binds whatever any branch binds, loop,
+                # ``with`` and ``match`` targets included.
                 for name in _block_target_names(stmt):
                     yield bound(name, ("define", ast.dump(stmt)))
-                for inner in ast.iter_child_nodes(stmt):
-                    if isinstance(inner, ast.stmt):
-                        yield from self._statement(inner, label, utility=utility)
-                for handler in getattr(stmt, "handlers", []):
-                    for inner in handler.body:
-                        yield from self._statement(inner, label, utility=utility)
+                for inner in _block_bodies(stmt):
+                    yield from self._statement(inner, label, utility=utility)
 
     def _star_import(self, stmt: ast.ImportFrom, label: str) -> list[SupportBinding]:
         module = "." * stmt.level + (stmt.module or "")

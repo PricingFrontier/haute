@@ -305,7 +305,7 @@ production:
 | Pipeline config | PCF-3 | `PCFG-R12` |
 | Pipeline config | PCF-4, PCF-9, PCF-10, PCF-12 | `PCFG-R15` |
 | Pipeline config | PCF-13 | `PCFG-R16` (Decision) |
-| Pipeline config | PCR-5, PCR-6, PCR-7, PCR-8 | `PCFG-R19` |
+| Pipeline config | PCR-8 | `PCFG-R19` |
 | Optimiser | OPR-1, OPR-8, OPR-12 | `OPT-R01` |
 | Optimiser | OPR-3 | `OPT-R02` |
 | Optimiser | OPR-4, OPR-5, OPR-6, OPR-7 | `OPT-R03` |
@@ -400,7 +400,7 @@ panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`),
 chart theme observer written twice (`EDA-R03`), the params-folder listing in the
 Allowed field (`FNED-R05`), knip's export-only symbols (`ENGQ-R01`), browser-locale dates (`FSH-R08`), the bootstrap without
 a deadline (`FSH-R05`), Ctrl+S inside a code box (`FSH-R07`), editor state inside
-node data (`PCFG-R08`), the recovery banner's re-minted id (`PCFG-R19`) and the
+node data (`PCFG-R08`) and the
 modelling pane badges (`FMOU-R03`); in the tests, scripts and CI, the floating
 action tags in the generated workflows (`CLI-R06`), the campaign-named test modules
 (`ENGQ-R05`), the test-only reset hooks in production code (`ENGQ-R01`), and the
@@ -442,7 +442,6 @@ All probes live outside the repository and wrote nothing into it.
 | dropped comments | Five comment kinds (a section, decorator-to-`def`, trailing, between functions, on `connect`) are absent after parse → `graph_to_code`; `unkept_module_statements` reports none. |
 | corrupt parquet scan | `pl.scan_parquet` on a corrupt file returns a lazy frame; `collect_schema()` raises `ComputeError` (Polars 2.0.0). |
 | evaluation plan size | 2,000,000 rows, five folds: a 71 MB plan; the parent's reload takes 13.3 s with a 0.65 GB peak. |
-| `match` bindings | `support_code_inventory` on a preamble `match` lists only `os`; the equivalent `if`/`else` lists `helper` twice. |
 | trace input sources | A left join of A `(policy, x=10)` with B `(policy, x=1000)` and `y = x * 2`: `calc.x` is 10.0 while `input_sources["x"]` names B with 1000.0; declaring B first names A with 10.0; `derivations[].reads` names A both ways. |
 | parser display | `with_columns(rank=pl.col('x').rank().over('g'), y=pl.col('a') * 2)` evaluated for `y`: `expression_type: window`, `substituted_text: rank of x over g`, `result_value: 42.0`; a `replace({'A': 'premium'})` beside a `rename` labels the step a rename of `A`. |
 | typed branch names | Seven names git refuses (`my branch`, `feat..x`, `feat.lock`, `.hidden`, `a//b`, `trail/`, `x@{1}`) pass `_validate_ref_name` and fail in `set_working_branch` with a plain `GitError`. |

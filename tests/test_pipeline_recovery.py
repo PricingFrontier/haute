@@ -1214,6 +1214,83 @@ def test_recovery_revision_authenticates_the_bytes_the_document_presents(
     assert document.source_revision != changed_on_disk
 
 
+def test_recovery_revision_authenticates_the_sidecars_and_configs_the_document_presents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Editor sidecar and node config bytes are read once, through the load's capture, so
+    an edit landing before the revision is hashed cannot pair old content with a new
+    revision; a sidecar absent when read stays absent to the revision."""
+    from haute import _pipeline_recovery
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute._pipeline_revision import pipeline_recovery_revision
+
+    (tmp_path / "config" / "constant").mkdir(parents=True)
+    config = _write(
+        tmp_path / "config" / "constant" / "rates.json",
+        '{"values": [{"name": "base", "value": "1"}]}',
+    )
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+
+        pipeline = haute.Pipeline("captured")
+
+        @pipeline.constant(config="config/constant/rates.json")
+        def rates():
+            ...
+        """,
+    )
+    sidecar = pipeline_file.with_suffix(".haute.json")
+    sidecar.write_text('{"positions": {"rates": {"x": 5, "y": 7}}}', encoding="utf-8")
+    originals = {path: path.read_bytes() for path in (pipeline_file, sidecar, config)}
+    real_artifacts = _pipeline_recovery._recovery_artifacts
+
+    def edit_after_discovery(*args: object, **kwargs: object):
+        artifacts = real_artifacts(*args, **kwargs)  # type: ignore[arg-type]
+        sidecar.write_text('{"positions": {"rates": {"x": 9, "y": 9}}}', encoding="utf-8")
+        config.write_text('{"values": [{"name": "base", "value": "2"}]}', encoding="utf-8")
+        return artifacts
+
+    monkeypatch.setattr(_pipeline_recovery, "_recovery_artifacts", edit_after_discovery)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    [node] = document.nodes
+    assert node.display_position == {"x": 5.0, "y": 7.0}
+    assert node.config == {"values": [{"name": "base", "value": "1"}]}
+    artifacts = [
+        ("parent_source", pipeline_file),
+        ("parent_sidecar", sidecar),
+        ("node_config", config),
+    ]
+    assert document.source_revision == pipeline_recovery_revision(
+        project_root=tmp_path, artifacts=artifacts, known_bytes=originals
+    )
+    assert document.source_revision != pipeline_recovery_revision(
+        project_root=tmp_path, artifacts=artifacts
+    )
+
+    sidecar.unlink()
+
+    def create_after_discovery(*args: object, **kwargs: object):
+        artifacts = real_artifacts(*args, **kwargs)  # type: ignore[arg-type]
+        sidecar.write_text('{"positions": {}}', encoding="utf-8")
+        return artifacts
+
+    monkeypatch.setattr(_pipeline_recovery, "_recovery_artifacts", create_after_discovery)
+    absent = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    assert absent.source_revision == pipeline_recovery_revision(
+        project_root=tmp_path,
+        artifacts=artifacts,
+        known_bytes={
+            pipeline_file: originals[pipeline_file],
+            sidecar: None,
+            config: config.read_bytes(),
+        },
+    )
+
+
 def test_ready_document_revision_authenticates_strictly_parsed_child_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1860,6 +1937,55 @@ def _submodel_modules(project: Path, *names: str) -> None:
             f'submodel = haute.Submodel("{name}", definition_id="{name}", input_ports=[], '
             'output_ports=[], pipeline_dir="..")\n',
         )
+
+
+def test_a_diagnostic_names_its_element_when_a_node_and_an_occurrence_share_a_name(
+    tmp_path: Path,
+) -> None:
+    """Ids are minted once over nodes and occurrences together, so each element's own
+    diagnostics name it and the banner's "go to" finds it."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    _submodel_modules(tmp_path, "pricing")
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+
+        from modules import pricing
+
+        pipeline = haute.Pipeline("names")
+
+        @pipeline.constant(config="config/constant/missing.json")
+        def priced():
+            ...
+
+        @pipeline.unknown_kind
+        def rated():
+            return None
+
+        pipeline.submodel(pricing.submodel, "priced")
+        pipeline.submodel(pricing.submodel, "rated")
+        """,
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    by_id = {diagnostic.diagnostic_id: diagnostic for diagnostic in document.diagnostics}
+    elements = {node.recovery_id for node in document.nodes}
+    assert len(elements) == len(document.nodes) == 4
+    for node in document.nodes:
+        for diagnostic_id in node.diagnostic_ids:
+            element_id = by_id[diagnostic_id].element_id
+            assert element_id is None or element_id == node.recovery_id, (
+                node.recovery_id,
+                by_id[diagnostic_id].code,
+            )
+    assert all(
+        diagnostic.element_id in elements
+        for diagnostic in document.diagnostics
+        if diagnostic.scope == "node" and diagnostic.element_id is not None
+    )
 
 
 def test_a_registration_of_a_module_never_imported_is_an_unavailable_occurrence(
