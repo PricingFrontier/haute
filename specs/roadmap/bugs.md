@@ -11,8 +11,7 @@ files `haute init` generates: as generated, those files fail before a first cont
 succeeds. The guides give the manual step that works today, and drop it when the package
 lands. `BUG-40` and `BUG-42`
 come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md): the hosted
-Databricks app's boot and build script and the storage binding's unknown keys; `BUG-45`, from
-the same review, is the non-atomic first append.
+Databricks app's boot and build script and the storage binding's unknown keys.
 
 ## Priorities
 
@@ -22,7 +21,6 @@ the same review, is the non-atomic first append.
 | BUG-24 | Decision | P1 | Container targets log in to their registry before `haute deploy` pushes, and GitLab container deploys run where Docker is available. |
 | BUG-40 | Planned | P2 | The hosted Databricks app installs the wheel and its pinned dependencies from a lock at boot, and its build script takes the app name as a parameter. The build selects its current wheel rather than a stale lexicographic match. |
 | BUG-42 | Decision | P3 | The storage binding record either rejects unknown keys or is named as the exception to the canonical-only policy. |
-| BUG-45 | Planned | P2 | A first `append` to a Databricks table that does not yet exist either creates and fills it in one statement or leaves nothing behind when the insert fails. |
 | BUG-46 | Planned | P2 | Rating a source column named value is either faithfully represented or refused before the editor overwrites its levels. |
 | BUG-47 | Planned | P2 | The initial storage binding and restart marker name the branch actually published under the Git transaction. |
 
@@ -120,26 +118,6 @@ by name.
 
 **Evidence:** `src/haute/_project_storage.py::StorageBinding`; `specs/README.md`;
 `specs/hosted-project-storage/high-level.md`.
-
-### BUG-45 — An atomic first append
-**Why:** `load_statements` returns two statements for `append`, `CREATE TABLE IF NOT
-EXISTS ... LIMIT 0` then `INSERT INTO ... BY NAME`, executed in a plain loop with no
-transaction, so a failing insert leaves an empty table behind; only `overwrite` has the
-"previous table left in place" guarantee the specification states. Beside it, `CREATE
-VOLUME` hand-quotes the catalog and schema while `_quoted_table_name` exists, and
-`_connection_settings` duplicates `_resolve_connection` with `_sql_auth_kwargs`.
-
-**Plan:** Test existence first and use one `CREATE TABLE ... AS SELECT` when the table
-is new, otherwise `INSERT` alone; state the append guarantee in the specification; quote
-the volume with the table-name parts and delete `_connection_settings`.
-
-**Acceptance:** A failing first append leaves no table; a failing later append leaves
-the table unchanged.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_databricks_output.py::load_statements`;
-`src/haute/_databricks_io.py`.
 
 ### BUG-46 — A rating factor cannot collide with its rate field
 

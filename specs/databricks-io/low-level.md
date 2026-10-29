@@ -55,8 +55,9 @@ format lookup.
 
 1. Registry validation requires `http_path` and `table`, allows an optional
    `write_mode` of `overwrite` (the default) or `append`, and refuses arguments.
-2. The writer re-checks `_TABLE_NAME_RE`, builds the load SQL, and resolves
-   credentials with `_resolve_connection(http_path, node_label="Data Output")`;
+2. The writer re-checks `_TABLE_NAME_RE` and the write mode (`_require_write_mode`),
+   and resolves credentials with
+   `_resolve_connection(http_path, node_label="Data Output")`;
    one `DatabricksCredentials` authenticates both the SQL connection
    (`_sql_auth_kwargs`) and the Files API client
    (`_databricks_credentials.databricks_workspace_client`, which the browsing
@@ -68,13 +69,20 @@ format lookup.
    cast (`recipe.then(_spark_compatible)`), so it still describes the frame
    written and passes `check_recipe_equivalence`.
 4. One SQL connection runs `CREATE VOLUME IF NOT EXISTS` for `haute_staging` in
-   the target schema. The file is uploaded under a fresh UUID name with the
+   the target schema, the volume quoted part by part as a table name is
+   (`_quoted_table_name`). The file is uploaded under a fresh UUID name with the
    Files API's `upload_from`, in parts of `UPLOAD_PART_BYTES` (16 MiB) on at
    most `UPLOAD_PARALLELISM` (4) threads, which bounds the upload's memory; the
    connector's `PUT` reads the whole file into memory and is not used. The load
-   follows: `CREATE OR REPLACE TABLE ... AS SELECT` for overwrite, or `CREATE
-   TABLE IF NOT EXISTS ... LIMIT 0` followed by `INSERT INTO ... BY NAME` for
-   append.
+   follows in one statement (`load_statement`), a single Delta transaction:
+   `CREATE OR REPLACE TABLE ... AS SELECT` for overwrite; for append, the Tables
+   API's exact-name `tables.exists` (`_table_exists`) chooses `CREATE TABLE ... AS
+   SELECT` for a table that does not exist yet and `INSERT INTO ... BY NAME` for
+   one that does. A failed load therefore leaves the table as it was: no table
+   after a failed first append, no added rows after a failed later one. An
+   existence answer that is not a plain yes reads as no, since the `CREATE TABLE`
+   that follows refuses a table that exists, as it does one another writer
+   created after the check: the append fails and replaces nothing.
 5. The upload and the load share one `finally` that deletes the staged file
    (`_remove_staged`), so an upload whose response failed after the bytes landed
    is cleaned up too. `NotFound` (the upload never created the file) is
@@ -109,11 +117,12 @@ MLflow never uses these variables: its Databricks credentials are the dedicated
 ([modelling](../modelling/low-level.md)), so a data token and an MLflow token
 can carry different scopes.
 
-`_connection_settings(http_path)` (`_resolve_connection` then
-`_sql_auth_kwargs`) passes the mandatory node `http_path` as such an additional
-requirement; there is no `DATABRICKS_HTTP_PATH` fallback. It adapts the resolved
-credentials into either `access_token` or the SDK OAuth M2M callback built by
-`_service_principal_credentials()`. The browsing route calls the same resolver
+`_resolve_connection(http_path, node_label=...)` passes the mandatory node
+`http_path` as such an additional requirement; there is no `DATABRICKS_HTTP_PATH`
+fallback. `_sql_auth_kwargs` adapts the resolved credentials into either
+`access_token` or the SDK OAuth M2M callback built by
+`_service_principal_credentials()`; the Data Input's batch reader and the Data
+Output's writer both connect through the two. The browsing route calls the same resolver
 and adapts the selected form into `WorkspaceClient` through
 `databricks_workspace_client`. Returned
 secrets and providers stay in connector-call scope.
@@ -169,7 +178,9 @@ the token and client secret scrubbed (`redact_sensitive_text`).
   cancellation before execute, batch streaming, retries, empty-schema behaviour, row-loss
   detection, identity-independent batch sizing, and builder-through-store publication.
 - `tests/test_databricks_output.py` covers output config validation, the load SQL,
-  dtype casts, the staged write over a fake connector and Files API (the bounded
+  the append's one statement over a fake warehouse that keeps its tables (no table after a
+  failed first append, the table unchanged after a failed later one, a table created after
+  the existence check refused, not replaced), dtype casts, the staged write over a fake connector and Files API (the bounded
   part size and parallelism, cleanup after a failed load and after an upload that
   failed once its bytes may have landed, a missing staged file not logged as a
   cleanup failure), redaction of a signed-URL query and the token in errors and in

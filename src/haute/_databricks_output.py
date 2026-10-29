@@ -6,9 +6,10 @@ The result streams to a local Parquet file, which is staged and loaded:
 2. Upload the file into it through the Files API in parts of a fixed size, so
    the upload holds a bounded number of parts in memory however large the
    output is. (The SQL connector's ``PUT`` reads the whole file into memory.)
-3. Load it into the table in one statement: ``CREATE OR REPLACE TABLE`` for
-   ``overwrite``, ``INSERT INTO ... BY NAME`` for ``append`` (creating the
-   table first when it does not exist).
+3. Load it into the table in one statement, so a load that fails leaves the
+   table as it was: ``CREATE OR REPLACE TABLE`` for ``overwrite``; for
+   ``append``, ``CREATE TABLE ... AS SELECT`` when the table does not exist
+   yet and ``INSERT INTO ... BY NAME`` when it does.
 4. Delete the staged file, whether or not the upload or the load succeeded.
 
 One bulk load lets the warehouse map Parquet types to table types, rather
@@ -87,20 +88,40 @@ def _spark_compatible(lf: pl.LazyFrame) -> pl.LazyFrame:
     return lf.with_columns(casts) if casts else lf
 
 
-def load_statements(table: str, staged_path: str, write_mode: str) -> list[str]:
-    """The SQL that loads *staged_path* into *table* under *write_mode*."""
+def _require_write_mode(write_mode: str) -> None:
+    if write_mode not in DATABRICKS_WRITE_MODES:
+        raise DatabricksConfigError(
+            f"Databricks output 'write_mode' must be one of {list(DATABRICKS_WRITE_MODES)}."
+        )
+
+
+def load_statement(table: str, staged_path: str, write_mode: str, *, table_exists: bool) -> str:
+    """The one statement that loads *staged_path* into *table* under *write_mode*.
+
+    Each is a single Delta transaction, so a load that fails leaves the table as
+    it was: an ``overwrite`` keeps the previous table, a first ``append`` creates
+    none, and a later one adds no rows. *table_exists* decides an ``append``: it
+    creates a table that does not exist from the file, and inserts into one that
+    does. A table created between the check and the load fails the create, which
+    never replaces it.
+    """
+    _require_write_mode(write_mode)
     target = _quoted_table_name(table)
     source = f"parquet.`{staged_path}`"
     if write_mode == "overwrite":
-        return [f"CREATE OR REPLACE TABLE {target} AS SELECT * FROM {source}"]
-    if write_mode == "append":
-        return [
-            f"CREATE TABLE IF NOT EXISTS {target} AS SELECT * FROM {source} LIMIT 0",
-            f"INSERT INTO {target} BY NAME SELECT * FROM {source}",
-        ]
-    raise DatabricksConfigError(
-        f"Databricks output 'write_mode' must be one of {list(DATABRICKS_WRITE_MODES)}."
-    )
+        return f"CREATE OR REPLACE TABLE {target} AS SELECT * FROM {source}"
+    if table_exists:
+        return f"INSERT INTO {target} BY NAME SELECT * FROM {source}"
+    return f"CREATE TABLE {target} AS SELECT * FROM {source}"
+
+
+def _table_exists(tables: Any, table: str) -> bool:
+    """Whether *table* exists, by the Tables API's exact-name check.
+
+    An answer that is not a plain yes is read as no: the ``CREATE TABLE`` that
+    follows refuses a table that does exist, so it fails loudly and replaces nothing.
+    """
+    return tables.exists(".".join(_table_parts(table))).table_exists is True
 
 
 def _warehouse_message(exc: BaseException, credentials: DatabricksCredentials) -> str:
@@ -144,16 +165,19 @@ def write_databricks_output(
             "Expected fully-qualified name like 'catalog.schema.table'."
         )
     write_mode = str(config.get("write_mode") or DEFAULT_WRITE_MODE)
+    _require_write_mode(write_mode)
     catalog, schema, _name = _table_parts(table)
     staged_path = f"/Volumes/{catalog}/{schema}/{STAGING_VOLUME}/{uuid.uuid4().hex}.parquet"
-    statements = load_statements(table, staged_path, write_mode)
+    # A volume is named as a table is: catalog.schema.name.
+    staging_volume = _quoted_table_name(f"{catalog}.{schema}.{STAGING_VOLUME}")
     credentials, http_path = _resolve_connection(
         str(config.get("http_path") or ""), node_label="Data Output"
     )
     try:
         from databricks import sql as dbsql
 
-        files = databricks_workspace_client(credentials).files
+        workspace = databricks_workspace_client(credentials)
+        files = workspace.files
     except ImportError as exc:
         raise DatabricksConfigError(
             "Writing to Databricks requires the databricks-sql-connector and databricks-sdk "
@@ -194,7 +218,7 @@ def write_databricks_output(
                 connection.cursor() as cursor,
             ):
                 cursor.execute(
-                    f"CREATE VOLUME IF NOT EXISTS `{catalog}`.`{schema}`.`{STAGING_VOLUME}` "
+                    f"CREATE VOLUME IF NOT EXISTS {staging_volume} "
                     "COMMENT 'Staging for Haute Data Output writes'"
                 )
                 try:
@@ -205,8 +229,10 @@ def write_databricks_output(
                         part_size=UPLOAD_PART_BYTES,
                         parallelism=UPLOAD_PARALLELISM,
                     )
-                    for statement in statements:
-                        cursor.execute(statement)
+                    table_exists = write_mode == "append" and _table_exists(workspace.tables, table)
+                    cursor.execute(
+                        load_statement(table, staged_path, write_mode, table_exists=table_exists)
+                    )
                 finally:
                     _remove_staged(files, staged_path, credentials)
         except DatabricksConfigError:

@@ -90,4 +90,8 @@ A table write refuses an invalid table name or write mode before connecting
 (`DatabricksConfigError`). A warehouse or storage failure raises `DatabricksWriteError`
 carrying the warehouse's message with credentials redacted (a failed upload's error can
 hold a signed storage URL); a failed staging cleanup is logged, redacted, and never masks
-the write's outcome. A failed `overwrite` load leaves the previous table in place.
+the write's outcome. Every load is one statement, a single Delta transaction, so a
+failed load leaves the table as it was: a failed `overwrite` leaves the previous table
+in place, a failed first `append` leaves no table, and a failed later `append` adds no
+rows. An `append` to a table another writer creates after the existence check fails
+rather than replacing that table.

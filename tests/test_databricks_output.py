@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, time
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,7 +21,7 @@ from haute._databricks_output import (
     UPLOAD_PART_BYTES,
     DatabricksWriteError,
     _spark_compatible,
-    load_statements,
+    load_statement,
     write_databricks_output,
 )
 from haute._executable_names import executable_name_violations
@@ -66,14 +67,38 @@ _SIGNED = [
 ]
 
 
+# A load statement and the table it writes; ``LIMIT 0`` moves no rows.
+_LOAD = re.compile(
+    r"(?P<kind>CREATE OR REPLACE TABLE|CREATE TABLE IF NOT EXISTS|CREATE TABLE|INSERT INTO)"
+    r" (?P<table>\S+) "
+)
+
+
 class _Cursor:
     def __init__(self, connection: _Connection) -> None:
         self._connection = connection
 
     def execute(self, statement: str) -> None:
-        self._connection.executed.append(statement)
-        if self._connection.fail_on and statement.startswith(self._connection.fail_on):
+        """Run *statement* as a Delta transaction would: all of it, or none of it."""
+        connection = self._connection
+        connection.executed.append(statement)
+        if connection.fail_on and statement.startswith(connection.fail_on):
             raise RuntimeError("[TABLE_OR_VIEW_NOT_FOUND]\n  The table cannot be found.")
+        load = _LOAD.match(statement)
+        if load is None:
+            return
+        moves_rows = not statement.endswith("LIMIT 0")
+        if connection.fail_rows and moves_rows:
+            raise RuntimeError("[CAST_OVERFLOW] A staged value does not fit its column.")
+        table, loads = load["table"].replace("`", ""), connection.tables
+        if load["kind"] == "INSERT INTO":
+            loads[table] += 1
+        elif load["kind"] == "CREATE TABLE IF NOT EXISTS":
+            loads.setdefault(table, 0)
+        else:
+            if load["kind"] == "CREATE TABLE" and table in loads:
+                raise RuntimeError(f"[TABLE_OR_VIEW_ALREADY_EXISTS] {table} already exists.")
+            loads[table] = 1
 
     def __enter__(self) -> _Cursor:
         return self
@@ -83,9 +108,19 @@ class _Cursor:
 
 
 class _Connection:
-    def __init__(self, fail_on: str | None = None) -> None:
+    def __init__(
+        self,
+        fail_on: str | None = None,
+        *,
+        fail_rows: bool = False,
+        tables: dict[str, int] | None = None,
+    ) -> None:
         self.executed: list[str] = []
         self.fail_on = fail_on
+        #: Fail any load that moves rows, as a value the table cannot take does.
+        self.fail_rows = fail_rows
+        #: The warehouse's tables by name, each with the loads it holds.
+        self.tables: dict[str, int] = {} if tables is None else tables
         self.connect_kwargs: dict[str, Any] = {}
 
     def cursor(self) -> _Cursor:
@@ -106,10 +141,25 @@ def _connect(connection: _Connection) -> Any:
     return connect
 
 
+class _Tables:
+    """The Tables API's existence check, over the warehouse's tables."""
+
+    def __init__(self, tables: dict[str, int]) -> None:
+        self.tables = tables
+        self.asked: list[str] = []
+
+    def exists(self, full_name: str) -> SimpleNamespace:
+        self.asked.append(full_name)
+        return SimpleNamespace(table_exists=full_name in self.tables)
+
+
 class _Files:
     """The Files API: records calls, and reads the staged Parquet as uploaded."""
 
     def __init__(self) -> None:
+        #: The warehouse's tables, shared with a ``_Connection`` that writes them.
+        self.tables: dict[str, int] = {}
+        self.tables_api = _Tables(self.tables)
         self.calls: list[tuple[str, str]] = []
         self.upload_kwargs: dict[str, Any] = {}
         self.local: str | None = None
@@ -149,7 +199,7 @@ def files():
         ),
         patch(
             "haute._databricks_output.databricks_workspace_client",
-            return_value=SimpleNamespace(files=fake),
+            return_value=SimpleNamespace(files=fake, tables=fake.tables_api),
         ),
     ):
         yield fake
@@ -201,24 +251,35 @@ def test_structural_errors_raise(overrides: dict[str, Any], message: str) -> Non
 
 
 def test_overwrite_replaces_the_table_from_the_staged_file() -> None:
-    assert load_statements(_TABLE, "/Volumes/c/s/v/f.parquet", "overwrite") == [
+    assert load_statement(_TABLE, "/Volumes/c/s/v/f.parquet", "overwrite", table_exists=True) == (
         "CREATE OR REPLACE TABLE `workspace`.`pricing-dev`.`scored` "
         "AS SELECT * FROM parquet.`/Volumes/c/s/v/f.parquet`"
-    ]
+    )
 
 
-def test_append_creates_a_missing_table_then_inserts_by_name() -> None:
-    assert load_statements(_TABLE, "/Volumes/c/s/v/f.parquet", "append") == [
-        "CREATE TABLE IF NOT EXISTS `workspace`.`pricing-dev`.`scored` "
-        "AS SELECT * FROM parquet.`/Volumes/c/s/v/f.parquet` LIMIT 0",
+def test_an_append_to_a_new_table_creates_it_from_the_staged_file() -> None:
+    """BUG-45: a first append created the table empty, then inserted into it."""
+    assert load_statement(_TABLE, "/Volumes/c/s/v/f.parquet", "append", table_exists=False) == (
+        "CREATE TABLE `workspace`.`pricing-dev`.`scored` "
+        "AS SELECT * FROM parquet.`/Volumes/c/s/v/f.parquet`"
+    )
+
+
+def test_an_append_to_an_existing_table_inserts_by_name() -> None:
+    assert load_statement(_TABLE, "/Volumes/c/s/v/f.parquet", "append", table_exists=True) == (
         "INSERT INTO `workspace`.`pricing-dev`.`scored` BY NAME "
-        "SELECT * FROM parquet.`/Volumes/c/s/v/f.parquet`",
-    ]
+        "SELECT * FROM parquet.`/Volumes/c/s/v/f.parquet`"
+    )
 
 
 def test_unknown_write_mode_is_refused() -> None:
     with pytest.raises(DatabricksConfigError, match="write_mode"):
-        load_statements(_TABLE, "/Volumes/c/s/v/f.parquet", "merge")
+        load_statement(_TABLE, "/Volumes/c/s/v/f.parquet", "merge", table_exists=False)
+
+
+def test_unknown_write_mode_is_refused_before_connecting() -> None:
+    with pytest.raises(DatabricksConfigError, match="write_mode"):
+        write_databricks_output(pl.LazyFrame({"x": [1]}), _config(write_mode="merge"))
 
 
 def test_dtypes_databricks_cannot_read_are_cast() -> None:
@@ -265,7 +326,8 @@ def test_write_stages_uploads_in_bounded_parts_loads_and_removes(files: _Files) 
     (_, staged), removed = files.calls
     assert staged.startswith(f"/Volumes/workspace/pricing-dev/{STAGING_VOLUME}/")
     assert removed == ("delete", staged)
-    assert load == load_statements(_TABLE, staged, "overwrite")[0]
+    assert load == load_statement(_TABLE, staged, "overwrite", table_exists=False)
+    assert files.tables_api.asked == []  # an overwrite needs no existence check
     assert files.upload_kwargs == {
         "overwrite": True,
         "part_size": UPLOAD_PART_BYTES,
@@ -282,18 +344,74 @@ def test_write_stages_uploads_in_bounded_parts_loads_and_removes(files: _Files) 
     }
 
 
-def test_append_runs_both_load_statements(files: _Files) -> None:
-    connection = _Connection()
+def test_a_first_append_creates_the_table_from_the_file_in_one_statement(files: _Files) -> None:
+    connection = _Connection(tables=files.tables)
 
     with patch("databricks.sql.connect", _connect(connection)):
         write_databricks_output(pl.LazyFrame({"x": [1]}), _config(write_mode="append"))
 
-    assert [statement.split(" ")[0] for statement in connection.executed] == [
-        "CREATE",
-        "CREATE",
-        "INSERT",
-    ]
+    _volume, load = connection.executed
+    assert load.startswith("CREATE TABLE `workspace`.`pricing-dev`.`scored` AS SELECT")
+    assert files.tables_api.asked == ["workspace.pricing-dev.scored"]
+    assert files.tables == {"workspace.pricing-dev.scored": 1}
     assert [call for call, _path in files.calls] == ["upload", "delete"]
+
+
+def test_a_later_append_inserts_alone(files: _Files) -> None:
+    files.tables["workspace.pricing-dev.scored"] = 1
+    connection = _Connection(tables=files.tables)
+
+    with patch("databricks.sql.connect", _connect(connection)):
+        write_databricks_output(pl.LazyFrame({"x": [1]}), _config(write_mode="append"))
+
+    _volume, load = connection.executed
+    assert load.startswith("INSERT INTO `workspace`.`pricing-dev`.`scored` BY NAME")
+    assert files.tables == {"workspace.pricing-dev.scored": 2}
+
+
+def test_a_failing_first_append_leaves_no_table(files: _Files) -> None:
+    connection = _Connection(fail_rows=True, tables=files.tables)
+
+    with (
+        patch("databricks.sql.connect", _connect(connection)),
+        pytest.raises(DatabricksWriteError, match="CAST_OVERFLOW"),
+    ):
+        write_databricks_output(pl.LazyFrame({"x": [1]}), _config(write_mode="append"))
+
+    assert files.tables == {}
+    assert files.calls[-1][0] == "delete"
+
+
+def test_a_failing_later_append_leaves_the_table_unchanged(files: _Files) -> None:
+    files.tables["workspace.pricing-dev.scored"] = 1
+    connection = _Connection(fail_rows=True, tables=files.tables)
+
+    with (
+        patch("databricks.sql.connect", _connect(connection)),
+        pytest.raises(DatabricksWriteError, match="CAST_OVERFLOW"),
+    ):
+        write_databricks_output(pl.LazyFrame({"x": [1]}), _config(write_mode="append"))
+
+    assert files.tables == {"workspace.pricing-dev.scored": 1}
+
+
+def test_a_table_another_writer_creates_first_fails_the_append_loudly(files: _Files) -> None:
+    # Between the existence check and the load: the create refuses, nothing is replaced.
+    connection = _Connection(tables=files.tables)
+
+    def created_meanwhile(full_name: str) -> SimpleNamespace:
+        files.tables[full_name] = 5
+        return SimpleNamespace(table_exists=False)
+
+    files.tables_api.exists = created_meanwhile  # type: ignore[method-assign]
+
+    with (
+        patch("databricks.sql.connect", _connect(connection)),
+        pytest.raises(DatabricksWriteError, match="TABLE_OR_VIEW_ALREADY_EXISTS"),
+    ):
+        write_databricks_output(pl.LazyFrame({"x": [1]}), _config(write_mode="append"))
+
+    assert files.tables == {"workspace.pricing-dev.scored": 5}
 
 
 def test_a_failed_load_still_removes_the_staged_file_and_reports_the_warehouse_error(

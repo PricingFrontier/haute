@@ -7,9 +7,8 @@ delete, catch-up, spin-off and push, the unborn-repo seed, the history views and
 the remote handling, and the git panel that drives them. Current behaviour is
 specified in [the git-integration specification](../git-integration/high-level.md)
 and [the git UI](../frontend-git-ui/high-level.md). These
-packages come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md);
-the Databricks IO defect the same review found is `BUG-45` in
-[bugs](bugs.md). `GIT-R16` comes from a review on 27 October 2026 of going
+packages come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md).
+`GIT-R16` comes from a review on 27 October 2026 of going
 back to an earlier version (one Codex and two Fable reviews, every finding checked at
 its source), after an analyst restoring a version on the test project took six Move
 and return cycles and made and deleted two branches between 13:14 and 13:36.
