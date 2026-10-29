@@ -1806,6 +1806,13 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
   its explicit-regression-metrics pass, and the wiring test proving the gate precedes
   `_launch_background`). Its `TestWorkerBoundaryUserMessage` covers both supervisor
   sides of the curated-message contract.
+- `test_training_memory_safety.py` also holds the release threshold: freed data below
+  `EXPLICIT_RELEASE_MIN_BYTES` is left to the interpreter and data at it is collected
+  and trimmed. Each stage of a CatBoost and a LightGBM training job releases the data
+  it freed, sized as it is: the input frame, the split, the training and validation
+  partitions (CatBoost's dropped pools free both), and each pool's frame after its
+  data is prepared and after it is built. A 200-row job collects nothing, and with the
+  threshold at the input frame's size only the stages that free that much collect.
 - Narrow, remediation-pinned regression suites: `test_training_memory_safety.py`,
   `test_training_temp_cleanup.py`, `test_training_split_streaming.py`,
   `test_training_null_target_fused_split.py`, `test_training_catboost_projection.py`,

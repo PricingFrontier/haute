@@ -418,8 +418,8 @@ files (`BUG-19`); the test-only config helpers and event-bus hooks (`ENGQ-R01`);
 the optimiser's unshown solve-memory forecast (`OPT-W02`) and its frontier
 points without convergence traces (`OPT-PC04`); the optimiser's job registries
 not cancelled at shutdown (`ROAD-WORKER-06`); the test-only
-`_compute_schema_hash` and the training facade (`ENGQ-R01`); the cost of the
-training test modules (`ENGQ-CI03`); fits that exceed their budget
+`_compute_schema_hash` and the training facade (`ENGQ-R01`); fits that exceed
+their budget
 (`MOD-M01`, `MOD-M02`); the trace route's status by message prefix and its
 sanitized 500 for a node failure (`API-R06`); two trace inconsistencies that
 vanish with node-level instances (`SUB-R01`); the git routes' and the
@@ -460,9 +460,7 @@ a deadline (`FSH-R05`), Ctrl+S inside a code box (`FSH-R07`), editor state insid
 node data (`PCFG-R08`), the recovery banner's re-minted id (`PCFG-R19`) and the
 modelling pane badges (`FMOU-R03`); in the tests, scripts and CI, the floating
 action tags in the generated workflows (`CLI-R06`), the campaign-named test modules
-(`ENGQ-R05`), the test-only reset hooks in production code (`ENGQ-R01`), the
-training-test cost
-(`ENGQ-CI03`), the 189 test modules that change directory
+(`ENGQ-R05`), the test-only reset hooks in production code (`ENGQ-R01`), the 189 test modules that change directory
 because production resolves the project root from it (`PCFG-R04`), and the
 generated scaffold workflows (`BUG-21`, `BUG-24`, `BUG-26`).
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import os
+import sys
 import threading
 import time
 import weakref
@@ -1022,3 +1023,161 @@ def test_diagnostic_prediction_wrong_row_count_closes_reader(monkeypatch):
             algo, object(), pl.DataFrame({"x": [1, 2]}), ["x"], execution_context=None
         )
     assert closed == [True]
+
+
+def _counted_releases(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record each explicit collection and heap trim the training path makes."""
+    import haute._polars_utils as polars_utils
+
+    calls: list[str] = []
+    real_collect = gc.collect
+    monkeypatch.setattr(
+        polars_utils.gc, "collect", lambda *a, **k: (calls.append("collect"), real_collect())[1]
+    )
+    monkeypatch.setattr(polars_utils, "_malloc_trim", lambda: calls.append("trim"))
+    return calls
+
+
+def test_freed_data_below_the_threshold_is_left_to_the_interpreter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._polars_utils as polars_utils
+
+    calls = _counted_releases(monkeypatch)
+
+    polars_utils.release_freed_memory(polars_utils.EXPLICIT_RELEASE_MIN_BYTES - 1)
+    assert calls == []
+
+    polars_utils.release_freed_memory(polars_utils.EXPLICIT_RELEASE_MIN_BYTES)
+    assert calls == ["collect", "trim"]
+
+
+def _small_training_frame() -> pl.DataFrame:
+    rng = np.random.default_rng(3)
+    n = 200
+    return pl.DataFrame(
+        {
+            "region": rng.choice(["east", "north", "south"], n).tolist(),
+            "age": rng.uniform(18, 80, n),
+            "claims": rng.poisson(0.3, n).astype(float),
+        }
+    )
+
+
+def _small_training_job(
+    tmp_path: Path, algorithm: str, params: dict[str, Any], data: pl.DataFrame
+) -> TrainingJob:
+    return TrainingJob(
+        name=algorithm,
+        data=data,
+        target="claims",
+        algorithm=algorithm,
+        loss_function="Poisson",
+        params=params,
+        metrics=["poisson_deviance"],
+        output_dir=str(tmp_path),
+        evaluation={
+            "schema_version": 1,
+            "strategy": "random",
+            "seed": 5,
+            "validation": {"method": "single", "size": 0.2},
+        },
+        feature_columns=["region", "age"],
+    )
+
+
+def _recorded_releases(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, float]]:
+    """Each release the training path asks for: the function asking, and what it freed."""
+    import haute._polars_utils as polars_utils
+    import haute.modelling._algorithms as algorithms
+
+    releases: list[tuple[str, float]] = []
+    release = polars_utils.release_freed_memory
+
+    def record(freed_bytes: float) -> None:
+        releases.append((sys._getframe(1).f_code.co_name, freed_bytes))
+        release(freed_bytes)
+
+    for module in (training_job, algorithms):
+        monkeypatch.setattr(module, "release_freed_memory", record)
+    return releases
+
+
+_CATBOOST = ("catboost", {"iterations": 5, "depth": 2})
+_LIGHTGBM = ("lightgbm", {"num_iterations": 5, "num_leaves": 3, "min_data_in_leaf": 5})
+
+
+def test_catboost_training_releases_what_each_stage_freed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    releases = _recorded_releases(monkeypatch)
+    collections = _counted_releases(monkeypatch)
+    data = _small_training_frame()
+
+    _small_training_job(tmp_path, *_CATBOOST, data).run()
+
+    names = [name for name, _ in releases]
+    assert all(freed > 0 for _, freed in releases), releases
+    assert releases[0] == ("_prepare_data", data.estimated_size())
+    assert names[1] == "_split_data"
+    # The selection fit, with its validation pool: the labels taken from the
+    # training partition, its pool built, the same for the validation partition,
+    # then both pools dropped.
+    selection = names.index("_split_data", 2)
+    train, _, validation, _, both = [
+        freed for name, freed in releases[2:selection] if name == "_train_model"
+    ]
+    assert [freed for name, freed in releases[2:selection] if name == "_train_model"] == [
+        train,
+        train,
+        validation,
+        validation,
+        train + validation,
+    ]
+    assert train > validation
+    # Each pool releases twice, after preparing its data and after building, the
+    # frame it was built from both times.
+    pools = [freed for name, freed in releases if name == "_build_pool"]
+    assert pools and pools[0::2] == pools[1::2]
+    assert "_compute_metrics" in names
+    # A 200-row job frees far less than the threshold: nothing was collected.
+    assert collections == []
+
+
+def test_lightgbm_training_releases_what_each_stage_freed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    releases = _recorded_releases(monkeypatch)
+    collections = _counted_releases(monkeypatch)
+    data = _small_training_frame()
+
+    _small_training_job(tmp_path, *_LIGHTGBM, data).run()
+
+    names = [name for name, _ in releases]
+    assert all(freed > 0 for _, freed in releases), releases
+    assert releases[0] == ("_prepare_data", data.estimated_size())
+    # A frame-based fit frees its training and validation frames together.
+    assert names[1:3] == ["_split_data", "_train_model"]
+    assert names[-1] == "_compute_metrics"
+    assert collections == []
+
+
+@pytest.mark.parametrize(("algorithm", "params"), [_CATBOOST, _LIGHTGBM])
+def test_only_a_stage_freeing_the_threshold_or_more_collects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, algorithm: str, params: dict[str, Any]
+) -> None:
+    """With the threshold at the input frame's size, the stages that free the
+    whole frame collect and trim, and those that free a partition of it do not."""
+    import haute._polars_utils as polars_utils
+
+    releases = _recorded_releases(monkeypatch)
+    collections = _counted_releases(monkeypatch)
+    data = _small_training_frame()
+    threshold = data.estimated_size()
+    monkeypatch.setattr(polars_utils, "EXPLICIT_RELEASE_MIN_BYTES", threshold)
+
+    _small_training_job(tmp_path, algorithm, params, data).run()
+
+    collected = sum(1 for _, freed in releases if freed >= threshold)
+    assert 0 < collected < len(releases)
+    assert collections == ["collect", "trim"] * collected

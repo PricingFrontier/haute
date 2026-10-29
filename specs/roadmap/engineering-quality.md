@@ -18,7 +18,6 @@ evidence to `ENGQ-R01` and `ENGQ-R05`.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ENGQ-CI03 | Planned | P2 | The 21 model-training, export and scoring test modules take at most half their recorded coverage-lane time, with no assertion weakened and no training code newly uncovered. |
 | ENGQ-R01 | Planned | P3 | Production code that nothing calls, or only tests call, is removed. |
 | ENGQ-R05 | Planned | P3 | Tests are organised by component and behaviour, not by coverage campaign. |
 | ENGQ-R09 | Planned | P3 | The write-sandbox ratchet moves: the observe census is recorded and may not grow, modules with an empty census become strict, the system temp directory is a stated gap or no longer allowed, and the lint allowlist is keyed by site. |
@@ -26,77 +25,10 @@ evidence to `ENGQ-R01` and `ENGQ-R05`.
 
 ## Planned improvements
 
-`ENGQ-CI03` is the largest further cut in CI time and is independent of the
-other packages.
 `ENGQ-R01` is an independent clean-up, cheapest after the larger refactors
 have deleted what they replace. `ENGQ-R05` reorganises the suite under the
 coverage rule the [engineering-quality specification](../engineering-quality/high-level.md)
 states.
-
-### ENGQ-CI03 — Make the model-training tests cheaper
-**Why:** The CI study's per-test timings put most of the backend suite's
-cost in a few tests. The slowest 1% (221 tests) take 52% of test time, and
-the tests that take a second or more (772 of 22,196) take 79%. The largest
-group is model training, export and scoring. The 21 modules listed under
-Evidence (the cohort) took:
-- 1,878 s of the study's 3,728 s compatibility lane (50%);
-- 1,128.1 s of 3,113.5 s (36%) in the coverage lane, as recorded in
-  `scripts/test_file_durations.json` at `02f2d0ed2`, from PR #280's run
-  36778804735.
-
-`tests/test_model_family_acceptance.py` is the largest of them. Its CatBoost
-lifecycle test took 59 s, and a profile of it shows repeated real native
-fits, with 36% of its samples in CatBoost's training, plus evaluation
-metrics and SHAP. The backend lanes' pytest time tripled between August and
-September while the test count grew by 49%. Every lane pays for it: the four
-coverage shards and the six compatibility shards.
-
-**Plan:** Measure each cohort test from the coverage shards' JUnit reports,
-starting with the most expensive module. Then:
-- Where a test needs a trained model rather than exercising training, share
-  one fitted model through a module- or session-scoped fixture.
-- Where the asserted property does not depend on data size or fit count,
-  shrink the frame and the number of fits.
-- Keep one end-to-end training path per model family.
-
-No assertion is removed or weakened. The mutation targets in
-`mutation/targets.json` do not cover training, so coverage and seeded faults
-stand in for them, as the acceptance below states. Refresh the durations file
-in the same change.
-
-**Acceptance:** The measure is the cohort's summed coverage-lane time in a
-durations file refreshed from one green coverage-lane run. It is at most
-half the 1,128.1 s baseline. In addition:
-- The coverage gate's `--show-missing` report shows no statement or branch
-  newly missed, compared with the baseline run. This covers
-  `src/haute/modelling/` and the training routes: `src/haute/routes/_train_service.py`,
-  `src/haute/routes/_training_artifacts.py`,
-  `src/haute/routes/_training_evaluation.py`,
-  `src/haute/routes/_training_lifecycle.py`,
-  `src/haute/routes/_training_preparation.py` and
-  `src/haute/routes/_training_worker.py`.
-- For each module converted to a shared fitted model, one deliberately
-  broken training step that its tests caught before is still caught.
-
-**Dependencies:** None. `ENGQ-R05` moves some of the same modules
-(`tests/test_algorithms_coverage.py`); whichever lands second rebases onto the
-other and keeps the cohort's measure comparable.
-
-**Evidence:**
-`tests/test_model_family_acceptance.py::test_native_training_lifecycle_keeps_the_last_good_model`;
-`tests/test_modelling.py`; `tests/test_ebm_family.py`;
-`tests/test_algorithms_coverage.py`; `tests/test_xgboost_family.py`;
-`tests/test_lightgbm_family.py`; `tests/test_modelling_train_score_contract.py`;
-`tests/test_training_evaluation.py`; `tests/test_training_seeding.py`;
-`tests/test_modelling_export.py`; `tests/test_glm_integration.py`;
-`tests/test_modelling_routes.py`; `tests/test_model_family_review_fixes.py`;
-`tests/test_offset_scoring.py`; `tests/test_training_temp_cleanup.py`;
-`tests/test_train_param_routing.py`;
-`tests/test_binary_classification_contract.py`;
-`tests/test_rustystats_algorithm.py`; `tests/test_target_task_gate.py`;
-`tests/test_mlflow_log_button_roundtrip.py`;
-`tests/test_training_contract_per_model.py`;
-`scripts/test_file_durations.json`; `mutation/targets.json`.
 
 ### ENGQ-R01 — Remove unreferenced and test-only production code
 **Why:** Several production functions have no caller at all:
