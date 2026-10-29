@@ -156,8 +156,8 @@ def source() -> pl.LazyFrame:
     return pl.LazyFrame({"policy": [1, 2, 3]})
 
 @pipeline.polars
-def sink(premium: pl.LazyFrame) -> pl.LazyFrame:
-    return premium
+def sink(secondary_pricing: pl.LazyFrame) -> pl.LazyFrame:
+    return secondary_pricing
 
 pipeline.connect("source", "primary_pricing", target_port="policy")
 pipeline.connect(
@@ -248,8 +248,8 @@ def source() -> pl.LazyFrame:
     return pl.LazyFrame({"policy": [1, 2, 3]})
 
 @pipeline.polars
-def sink(premium: pl.LazyFrame) -> pl.LazyFrame:
-    return premium
+def sink(pricing_b: pl.LazyFrame) -> pl.LazyFrame:
+    return pricing_b
 
 pipeline.connect("source", "pricing_a", target_port="policy")
 pipeline.connect("pricing_a", "pricing_b", source_port="premium", target_port="policy")

@@ -2342,10 +2342,13 @@ fixture for route tests). The implemented coverage is:
   later apply's rename and ends at an apply's deletion, so a node a later apply renames
   onto the deleted read node's id is `config_unread`, and an apply that commits but
   fails verification drops every read; a submodel occurrence's schema part
-  names its `factored` output and `vehicles` input ports, its consumer's input is named
-  by the port, its config part and an inner node stay `submodel_boundary`, and the turn
+  names its `factored` output and `vehicles` input ports, its owner's consumer input is named
+  by the port, an instance's consumer input is named after the instance (qualified by
+  the port when several outputs are declared, including unconnected outputs), its
+  config part and an inner node stay `submodel_boundary`, and the turn
   context lists the occurrence's input and output port (selected by `out__factored`, read
-  as `factored`) and the consumer's input from the occurrence; a parser refusal is located
+  as `factored` for the owner and by the instance output name for an instance) and
+  the consumer's input from the occurrence; a parser refusal is located
   at the
   node and operation that wrote it (`invalid_config` for a rating row without its factor,
   `schema_unresolvable` with the parser's fix for number breakpoints on a Date column),

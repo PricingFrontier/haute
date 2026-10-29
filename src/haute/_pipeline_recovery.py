@@ -1030,6 +1030,9 @@ def _build_recovery_graph(
                     source_handles=source_handles,
                     config_reference_override=candidate.config_reference,
                     alias=(candidate.config or {}).get("alias") if candidate.config else None,
+                    instance_of=(candidate.config or {}).get("instanceOf")
+                    if candidate.node_type == NodeType.SUBMODEL
+                    else None,
                 )
             except (HauteError, ValueError):
                 resolved_identity = None
@@ -1076,6 +1079,12 @@ def _build_recovery_graph(
                     node_type=source_candidate.node_type,
                     label=source_candidate.authored_id,
                     source_handle=edge.source_handle,
+                    instance_of=(source_candidate.config or {}).get("instanceOf")
+                    if source_candidate.node_type == NodeType.SUBMODEL
+                    else None,
+                    source_handles=[
+                        f"out__{name}" for name in source_candidate.submodel_output_ports
+                    ],
                 )
             except ValueError:
                 input_name = None
@@ -1184,6 +1193,9 @@ def _canonical_snapshot(
             node_type=node.data.nodeType,
             label=node.data.label,
             source_handles=source_handles,
+            instance_of=node.data.config.get("instanceOf")
+            if node.data.nodeType == NodeType.SUBMODEL
+            else None,
             alias=(
                 (node.data.config or {}).get("alias")
                 if node.data.nodeType == NodeType.SUBMODEL

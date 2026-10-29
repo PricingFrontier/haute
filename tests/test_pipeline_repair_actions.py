@@ -238,6 +238,47 @@ def test_reset_rebinds_a_consumer_of_a_submodel_port(tmp_path):
     assert (tmp_path / "modules/Inputs.py").read_bytes() == child_before
 
 
+@pytest.mark.parametrize("extra_output", [False, True])
+def test_reset_derives_uncached_instance_input_from_its_definition(tmp_path, extra_output):
+    from haute._pipeline_repair_actions import _reset_node
+
+    _canonical_demo(tmp_path)
+    parent = tmp_path / "main.py"
+    source = parent.read_text(encoding="utf-8").replace(
+        'pipeline.connect("Inputs", "Polars_3", source_port="output_1")',
+        'pipeline.submodel(Inputs.submodel, "copy", instance_of="Inputs")\n'
+        'pipeline.connect("copy", "Polars_3", source_port="output_1")',
+    )
+    parent.write_text(source, encoding="utf-8", newline="\n")
+    if extra_output:
+        child = tmp_path / "modules/Inputs.py"
+        child.write_text(
+            child.read_text(encoding="utf-8").replace(
+                "output_ports=[",
+                'output_ports=[{"name": "audit", '
+                '"source": {"nodeId": "live_switch", "handleId": None}}, ',
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+    nodes = {node.authored_id: node for node in document.nodes}
+    # Recovery documents may have no cached edge/node input names. The reset
+    # must derive them from the occurrence and every declared output instead.
+    nodes["copy"].source_handle_input_names = {}
+    for edge in document.edges:
+        edge.input_name = None
+    edits = _reset_node(tmp_path, parent, parent, nodes["Polars_3"], document)
+    assert edits[0].after is not None
+    input_name = "copy_output_1" if extra_output else "copy"
+    assert f"def Polars_3({input_name}: pl.LazyFrame)" in edits[0].after.decode("utf-8")
+    assert parent.read_text(encoding="utf-8") == source
+
+    document.submodels = {}
+    with pytest.raises(ValueError, match="definition.*repair"):
+        _reset_node(tmp_path, parent, parent, nodes["Polars_3"], document)
+
+
 def test_a_legacy_submodel_registration_has_no_migration_action(tmp_path, client, monkeypatch):
     from pydantic import ValidationError
 

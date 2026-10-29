@@ -246,6 +246,20 @@ def _reset_node(
             raise _unsupported(
                 "The upstream node's identity is unknown; repair it before changing this node."
             )
+        instance_of = None
+        source_handles = None
+        if source.node_type == NodeType.SUBMODEL:
+            source_config = source.config or {}
+            definition_id = source_config.get("definitionId")
+            definitions = graph.submodels or {}
+            if not isinstance(definition_id, str) or definition_id not in definitions:
+                raise _unsupported(
+                    f"The upstream submodel {source.label!r} has no definition; "
+                    "repair it before changing this node."
+                )
+            definition = definitions[definition_id]
+            instance_of = source_config.get("instanceOf")
+            source_handles = [f"out__{port['name']}" for port in definition.output_ports]
         named_inputs.append(
             (
                 edge.target_handle,
@@ -253,6 +267,8 @@ def _reset_node(
                     node_type=source.node_type,
                     label=source.label,
                     source_handle=edge.source_handle,
+                    instance_of=instance_of,
+                    source_handles=source_handles,
                 ),
             )
         )

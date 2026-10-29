@@ -4,11 +4,112 @@ import { describe, expect, it } from "vitest"
 import { NODE_TYPES } from "../nodeTypes"
 import {
   prepareNodeUpdate,
+  reconcileGraphInputBindings,
   type NodeUpdatePlanFailure,
   type PreparedNodeUpdate,
 } from "../nodeUpdatePlan"
+import useGraphStore from "../../stores/useGraphStore"
 
 const RESERVED = new Set(["class", "for"])
+
+describe("occurrence output identities", () => {
+  it.each([0, 1])("renames response mappings with a disabled duplicate in position %s", (disabledIndex) => {
+    const source = makeNode("source", "old", NODE_TYPES.POLARS)
+    const outputMapping = [
+      { source_port: "old", source_column: "x", output_path: "$.x", enabled: disabledIndex !== 0 },
+      { source_port: "new", source_column: "y", output_path: "$.x", enabled: disabledIndex !== 1 },
+    ]
+    const response = makeNode("response", "response", NODE_TYPES.OUTPUT, { outputMapping })
+    const input = {
+      nodeId: source.id, data: renamedData(source, "new"), refreshSourceIdentity: true, readOnly: false,
+      graph: { nodes: [source, response], edges: [makeEdge("e", source.id, response.id, null, "old")] },
+      submodels: {}, reservedApiInputFrameLabels: RESERVED,
+    }
+    const before = structuredClone(input)
+    const result = prepareNodeUpdate(input)
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error(result.error)
+    expect(result.nodes[1].data.config).toEqual({
+      outputMapping: outputMapping.map((entry) => ({ ...entry, source_port: "new" })),
+    })
+    expect(input).toEqual(before)
+  })
+
+  it.each(["rename", "add output", "remove output"])("reconciles %s and all consumers in one undoable edit", (edit) => {
+    const from = edit === "remove output" ? "copy_premium" : "copy"
+    const to = edit === "rename" ? "renamed" : edit === "add output" ? "copy_premium" : "copy"
+    const source = makeNode("copy", "copy", NODE_TYPES.SUBMODEL, { definitionId: "pricing", alias: "copy", instanceOf: "owner" })
+    source.data._sourceHandleInputNames = { out__premium: from }
+    const response = makeNode("response", "response", NODE_TYPES.OUTPUT, {
+      outputMapping: [{ source_port: from, source_column: "premium", output_path: "$.premium" }],
+    })
+    const coded = makeNode("coded", "coded", NODE_TYPES.POLARS, { code: `df = ${from}` })
+    const stepped = makeNode("stepped", "stepped", NODE_TYPES.POLARS, { steps: [{ kind: "source", input: from }] })
+    const previous = { nodes: [source, response, coded, stepped], edges: [response, coded, stepped].map((n) => makeEdge(n.id, "copy", n.id, "out__premium", from)), submodels: {} }
+    const data = { ...source.data, label: edit === "rename" ? "renamed" : "copy", _sourceHandleInputNames: { out__premium: to } }
+    const next: typeof previous = { ...previous, nodes: previous.nodes.map((n) => n.id === "copy" ? { ...n, data } : n), edges: previous.edges.map((e) => ({ ...e, data: { _inputName: to } })) }
+    const result = edit === "rename" ? prepareNodeUpdate({
+      nodeId: "copy", data, refreshSourceIdentity: true, readOnly: false,
+      graph: previous, submodels: {}, reservedApiInputFrameLabels: RESERVED,
+    }) : reconcileGraphInputBindings(previous, next)
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error(result.error)
+    expect(result.nodes.find((n) => n.id === "response")?.data.config).toEqual({
+      outputMapping: [{ source_port: to, source_column: "premium", output_path: "$.premium" }],
+    })
+    expect(result.nodes.find((n) => n.id === "coded")?.data.config).toMatchObject({ inputMapping: { [from]: to } })
+    expect(result.nodes.find((n) => n.id === "stepped")?.data.config).toEqual({ steps: [{ kind: "source", input: to }] })
+    useGraphStore.setState({ ...previous, undoStack: [], redoStack: [] })
+    useGraphStore.getState().setNodesAndEdgesAndSubmodels(result.nodes, result.edges, result.submodels)
+    expect(useGraphStore.getState().undoStack).toHaveLength(1)
+    useGraphStore.getState().undo()
+    expect(useGraphStore.getState().nodes).toEqual(previous.nodes)
+    expect(useGraphStore.getState().edges).toEqual(previous.edges)
+    useGraphStore.getState().redo()
+    expect(useGraphStore.getState().nodes).toEqual(result.nodes)
+    expect(useGraphStore.getState().edges).toEqual(result.edges)
+
+    const collision = structuredClone(next)
+    collision.nodes.find((node) => node.id === "response")!.data.config = {
+      outputMapping: [
+        { source_port: from, source_column: "premium", output_path: "$.premium" },
+        { source_port: to, source_column: "other", output_path: "$.premium" },
+      ],
+    }
+    const beforeCollision = structuredClone(collision)
+    expect(reconcileGraphInputBindings(previous, collision)).toMatchObject({ ok: false, error: expect.stringMatching(/mapping.*collid/i) })
+    expect(collision).toEqual(beforeCollision)
+
+    const competing = makeNode("competing", to, NODE_TYPES.POLARS)
+    const duplicateInput = { ...next, nodes: [...next.nodes, competing], edges: [...next.edges, makeEdge("compete", competing.id, "coded", null, to)] }
+    expect(reconcileGraphInputBindings(previous, duplicateInput)).toMatchObject({ ok: false, error: expect.stringContaining(to) })
+  })
+
+  it.each([NODE_TYPES.POLARS, NODE_TYPES.API_INPUT])("reconciles a %s rename in response mappings and refuses a collision", (type) => {
+    const source = makeNode("source", "old", type, type === NODE_TYPES.API_INPUT ? { tables: [table("old", true)] } : {})
+    source.data._sourceHandleInputNames = { old: "old" }
+    const response = makeNode("response", "response", NODE_TYPES.OUTPUT, {
+      outputMapping: [{ source_port: "old", source_column: "x", output_path: "$.x" }],
+    })
+    const nextData = type === NODE_TYPES.API_INPUT
+      ? { ...source.data, config: { tables: [{ ...table("new", true), path: "$[:].old" }] }, _sourceHandleInputNames: { new: "new" } }
+      : renamedData(source, "new")
+    const input = { nodeId: source.id, data: nextData, refreshSourceIdentity: true, readOnly: false,
+      graph: { nodes: [source, response], edges: [makeEdge("e", source.id, response.id, type === NODE_TYPES.API_INPUT ? "old" : null, "old")] },
+      submodels: {}, reservedApiInputFrameLabels: RESERVED }
+    const result = prepareNodeUpdate(input)
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error(result.error)
+    expect(result.nodes[1].data.config).toEqual({ outputMapping: [{ source_port: "new", source_column: "x", output_path: "$.x" }] })
+    response.data.config = { outputMapping: [
+      { source_port: "old", source_column: "x", output_path: "$.x" },
+      { source_port: "new", source_column: "y", output_path: "$.x" },
+    ] }
+    const before = structuredClone(input)
+    expect(prepareNodeUpdate(input)).toMatchObject({ ok: false, error: expect.stringMatching(/mapping.*collid/i) })
+    expect(input).toEqual(before)
+  })
+})
 
 function sanitizeIdentifier(label: string): string {
   return label.trim().replace(/[\s-]+/g, "_")

@@ -1642,6 +1642,7 @@ function FlowEditor() {
     onConnectStart, onConnectEnd, onConnectionPointerMove, clearEdgeJoinCandidate,
     edgeJoinCandidateEdgeId, onNodeContextMenu, onDragOver, onDrop,
     connectionDropMenu, closeConnectionDropMenu, createNodeFromConnectionDrop,
+    submodelInputMenu, selectSubmodelInput,
   } = useEdgeHandlers({
     selectedNode, graphRef, submodels, nodeIdCounter, lastSelectedNodeRef,
     setNodes, setEdges, setNodesRaw, setEdgesRaw, pushSnapshot,
@@ -2139,6 +2140,17 @@ function FlowEditor() {
                     x={connectionDropMenu.x}
                     y={connectionDropMenu.y}
                     onSelect={createNodeFromConnectionDrop}
+                    onClose={closeConnectionDropMenu}
+                  />
+                </Suspense>
+              )}
+              {submodelInputMenu && !editingReadOnly && (
+                <Suspense fallback={null}>
+                  <ConnectionDropMenu
+                    x={submodelInputMenu.x}
+                    y={submodelInputMenu.y}
+                    inputChoices={submodelInputMenu.choices}
+                    onSelect={selectSubmodelInput}
                     onClose={closeConnectionDropMenu}
                   />
                 </Suspense>

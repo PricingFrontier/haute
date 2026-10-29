@@ -73,7 +73,8 @@ INPUT_NAMING_RULE = (
     "An input is named after its incoming edge: the upstream node's name, except that "
     "an edge from a Quote Input or Workbench Input frame, which `add_edge`'s "
     "`source_handle` selects, is named by that frame, and an edge from a submodel output "
-    "by its port."
+    "by its port on the owner and, on an instance, by the instance's name, or "
+    "`<instance>_<port>` when its submodel has several outputs."
 )
 
 

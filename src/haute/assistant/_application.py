@@ -692,7 +692,9 @@ def _prove_switches_route_their_scenarios(graph: PipelineGraph, node_ids: Collec
             if edge.target != node_id or edge.source not in nodes:
                 continue
             try:
-                provided[edge_input_name(edge, nodes[edge.source])] = edge
+                provided[edge_input_name(edge, nodes[edge.source], submodels=graph.submodels)] = (
+                    edge
+                )
             except ValueError:
                 continue  # a malformed edge is save validation's verdict, not this one's
         for scenario in sorted({value for value in routing.values() if isinstance(value, str)}):

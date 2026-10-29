@@ -169,18 +169,32 @@ def edge_input_name(
     """Return the one input name contributed by an incoming edge.
 
     API-input edges use their persisted frame handle verbatim. Submodel
-    outputs use their public port name. Every ordinary edge uses the
+    owners use their public port name; instances use their occurrence name,
+    qualified by the port when the definition declares several outputs. Every ordinary edge uses the
     sanitised source-node label; source handles on ordinary nodes identify
     an output port and are not input names.
     """
     node_type = str(source_node.data.nodeType)
     if node_type in REQUEST_INPUT_KINDS and edge.sourceHandle is None:
         raise ValueError(f"{node_type} edge {edge.id!r} has no sourceHandle/frame label")
-    del submodels  # the port name needs no definition lookup
+    instance_of = source_node.data.config.get("instanceOf") if node_type == "submodel" else None
+    source_handles: list[str] | None = None
+    if instance_of is not None:
+        definition_id = source_node.data.config.get("definitionId")
+        if not isinstance(definition_id, str):
+            raise ValueError(f"Submodel instance {source_node.id!r} requires a definitionId.")
+        definition = (submodels or {}).get(definition_id)
+        if definition is None:
+            raise ValueError(
+                f"Submodel instance {source_node.id!r} has no definition {definition_id!r}."
+            )
+        source_handles = [f"out__{port.name}" for port in definition.output_ports]
     return executable_input_name(
         node_type=source_node.data.nodeType,
         label=source_node.data.label,
         source_handle=edge.sourceHandle,
+        instance_of=instance_of,
+        source_handles=source_handles,
     )
 
 
@@ -265,15 +279,15 @@ def executable_input_name(
     node_type: object,
     label: str,
     source_handle: str | None,
+    instance_of: str | None = None,
+    source_handles: Sequence[str] | None = None,
 ) -> str:
     """Derive one executable input identity without mutating graph data.
 
     A frame is named the way the canvas shows it: an API input by its frame
-    handle, a submodel output by its public port name (the ``out__<name>``
-    handle's ``<name>``, sanitised), a public submodel input port by its
-    sanitised port name, and an ordinary node by its sanitised label. The
-    occurrence alias never takes part, so the code a user reads names the
-    same frames the canvas does.
+    handle, an owner's output by its public port name, and an instance's by
+    its name (qualified by the port when several outputs are declared).
+    A public submodel input uses its port name, and an ordinary node its label.
     """
     kind = str(node_type)
     if kind in REQUEST_INPUT_KINDS:
@@ -288,7 +302,16 @@ def executable_input_name(
             or len(source_handle) == len(prefix)
         ):
             raise ValueError("Submodel output handles must use the canonical 'out__<name>' form.")
-        return _sanitize_func_name(source_handle[len(prefix) :])
+        port_name = _sanitize_func_name(source_handle[len(prefix) :])
+        if instance_of is None:
+            return port_name
+        if source_handles is None or source_handle not in source_handles:
+            raise ValueError(
+                f"Submodel instance {label!r} requires every declared output handle, "
+                f"including {source_handle!r}."
+            )
+        instance_name = _sanitize_func_name(label)
+        return instance_name if len(source_handles) == 1 else f"{instance_name}_{port_name}"
     if kind == "submodelPort":
         if source_handle is None or not isinstance(source_handle, str) or not source_handle:
             raise ValueError("Submodel input identities require a source handle.")

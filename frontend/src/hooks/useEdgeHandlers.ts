@@ -199,7 +199,13 @@ export default function useEdgeHandlers({
   const structuralCreationSerialRef = useRef(0)
   const [edgeJoinCandidateEdgeId, setEdgeJoinCandidateEdgeId] = useState<string | null>(null)
   const [connectionDropMenu, setConnectionDropMenu] = useState<ConnectionDropMenuState | null>(null)
-  const closeConnectionDropMenu = useCallback(() => setConnectionDropMenu(null), [])
+  const [submodelInputMenu, setSubmodelInputMenu] = useState<{
+    x: number; y: number; choices: string[]; connection: Connection
+  } | null>(null)
+  const closeConnectionDropMenu = useCallback(() => {
+    setConnectionDropMenu(null)
+    setSubmodelInputMenu(null)
+  }, [])
 
   const clearEdgeJoinCandidate = useCallback(() => {
     edgeJoinCandidateEdgeIdRef.current = null
@@ -322,8 +328,22 @@ export default function useEdgeHandlers({
     // available and can be interpreted into either a normal edge or edge-join.
   }, [])
 
+  const selectSubmodelInput = useCallback((name: string) => {
+    if (!submodelInputMenu) return
+    setSubmodelInputMenu(null)
+    if (!submodelInputMenu.choices.includes(name)) throw new Error(`Input ${name} was not offered by the picker`)
+    const connection = { ...submodelInputMenu.connection, targetHandle: `in__${name}` }
+    const validation = validateConnection?.(connection)
+    if (validation && !validation.ok) {
+      reportConnectionValidationFailure(validation)
+      return
+    }
+    commitConnection(connection)
+  }, [submodelInputMenu, validateConnection, reportConnectionValidationFailure, commitConnection])
+
   const onConnectEnd: OnConnectEnd = useCallback(
     (event, connectionState) => {
+      closeConnectionDropMenu()
       const edgeJoinCandidateId = edgeJoinCandidateEdgeIdRef.current
       activeEdgeJoinSourceRef.current = null
       clearEdgeJoinCandidate()
@@ -419,6 +439,10 @@ export default function useEdgeHandlers({
             if (!validation.ok) return
           }
           if (!connectionState.isValid) return
+          if (validation?.ok && validation.inputChoices) {
+            setSubmodelInputMenu({ ...connectionEndPoint(event), choices: validation.inputChoices, connection })
+            return
+          }
           commitConnection(connection)
           return
         }
@@ -435,6 +459,10 @@ export default function useEdgeHandlers({
             if (!validation.ok) return
           }
           if (!connectionState.isValid) return
+          if (validation?.ok && validation.inputChoices) {
+            setSubmodelInputMenu({ ...connectionEndPoint(event), choices: validation.inputChoices, connection })
+            return
+          }
           commitConnection(connection)
         }
         return
@@ -484,6 +512,7 @@ export default function useEdgeHandlers({
       nodeIdCounterRef,
       pushSnapshot,
       reportConnectionValidationFailure,
+      closeConnectionDropMenu,
       screenToFlowPosition,
       setEdgesRaw,
       setLastSelectedId,
@@ -728,6 +757,8 @@ export default function useEdgeHandlers({
     edgeJoinCandidateEdgeId,
     connectionDropMenu,
     closeConnectionDropMenu,
+    submodelInputMenu,
+    selectSubmodelInput,
     createNodeFromConnectionDrop,
     onSelectionChange,
     openNode,

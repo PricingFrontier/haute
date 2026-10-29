@@ -20,6 +20,15 @@ function renderMenu() {
 describe("ConnectionDropMenu", () => {
   afterEach(cleanup)
 
+  it("lists only the unbound input choices and selects one", () => {
+    const select = vi.fn()
+    render(<ConnectionDropMenu x={40} y={50} inputChoices={["policy", "rates"]} onSelect={select} onClose={vi.fn()} />)
+    expect(screen.getByRole("menu", { name: "Inputs" })).toBeVisible()
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["policy", "rates"])
+    fireEvent.click(screen.getByRole("menuitem", { name: "rates" }))
+    expect(select).toHaveBeenCalledWith("rates")
+  })
+
   it("lists Edge Join first, then the data-taking palette types in palette order", () => {
     renderMenu()
 

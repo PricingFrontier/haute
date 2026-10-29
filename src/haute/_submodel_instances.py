@@ -586,7 +586,11 @@ def _clone_definition(
                     "y": node.position.get("y", 0.0) + instance.node.position.get("y", 0.0),
                 },
                 "data": NodeData(
-                    label=node.data.label,
+                    label=(
+                        node.data.label
+                        if instance.config.instance_of is None
+                        else f"{instance.config.alias}__{node.data.label}"
+                    ),
                     description=node.data.description,
                     nodeType=node.data.nodeType,
                     config=_rewrite_config_references(
@@ -816,6 +820,18 @@ def expand_submodel_instances(
                     expanded_input_name=new_name,
                 )
         target_map[old_name] = new_name
+
+    for instance in selected:
+        local_map = instance.definition.graph.node_map
+        for edge in instance.definition.graph.edges:
+            source = id_maps[instance.node.id][edge.source]
+            expanded_edge = edge.model_copy(update={"source": source})
+            add_input_name_rename(
+                target_id=id_maps[instance.node.id][edge.target],
+                old_name=edge_input_name(edge, local_map[edge.source]),
+                new_name=edge_input_name(expanded_edge, expanded_node_map[source]),
+                edge_id=edge.id,
+            )
 
     expanded_parent_edges: list[GraphEdge] = []
     for edge in graph.edges:

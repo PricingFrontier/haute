@@ -84,6 +84,22 @@ function connectionEndState({
 
 const mouseUpEvent = { clientX: 200, clientY: 150 } as MouseEvent
 
+it("offers unbound instance inputs at the drop and commits only the picked binding", () => {
+  const params = makeParams()
+  params.graphRef.current.nodes = [identifiedNode("source"), identifiedNode("copy", NODE_TYPES.SUBMODEL)]
+  params.validateConnection = vi.fn((connection) => connection.targetHandle === SUBMODEL_INPUT_HANDLE
+    ? { ok: true as const, inputChoices: ["policy", "rates"] } : { ok: true as const })
+  const { result } = renderHook(() => useEdgeHandlers(params))
+  act(() => result.current.onConnectEnd(mouseUpEvent, connectionEndState({ from: "source", to: "copy", toHandleId: SUBMODEL_INPUT_HANDLE })))
+  expect(params.setEdges).not.toHaveBeenCalled()
+  expect(result.current.submodelInputMenu).toMatchObject({ x: 200, y: 150, choices: ["policy", "rates"] })
+  act(() => result.current.selectSubmodelInput("rates"))
+  expect(params.setEdges).toHaveBeenCalledOnce()
+  const committed = params.setEdges.mock.results[0].value
+  expect(committed).toEqual([expect.objectContaining({ source: "source", target: "copy", targetHandle: "in__rates" })])
+  expect(result.current.submodelInputMenu).toBeNull()
+})
+
 function identifiedNode(
   id: string,
   nodeType: string = NODE_TYPES.POLARS,

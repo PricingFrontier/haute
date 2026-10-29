@@ -1047,7 +1047,9 @@ def _reconcile_rename(
                 if edge.target != target_id or edge.source == node.id:
                     continue
                 try:
-                    name = edge_input_name(edge, nodes_by_id[edge.source])
+                    name = edge_input_name(
+                        edge, nodes_by_id[edge.source], submodels=graph.submodels
+                    )
                 except (KeyError, ValueError):
                     # A malformed edge is the save validator's verdict, not this one's.
                     continue

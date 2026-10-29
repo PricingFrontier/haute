@@ -4,6 +4,87 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
+
+@pytest.mark.parametrize("outputs", [["premium"], ["premium", "audit"]])
+def test_editor_identity_names_every_instance_output(outputs: list[str]) -> None:
+    from fastapi.testclient import TestClient
+
+    from haute.server import app
+
+    response = TestClient(app).post(
+        "/api/pipeline/editor-identities",
+        json={
+            "nodes": [
+                {
+                    "node_id": "rating_ie",
+                    "label": "rating_ie",
+                    "node_type": "submodel",
+                    "alias": "rating_ie",
+                    "instance_of": "rating",
+                    "source_handles": [f"out__{name}" for name in outputs],
+                }
+            ]
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["identities"][0]["source_handle_input_names"] == {
+        f"out__{name}": "rating_ie" if len(outputs) == 1 else f"rating_ie_{name}"
+        for name in outputs
+    }
+
+
+@pytest.mark.parametrize("field,value", [("instance_of", None), ("source_handles", [])])
+def test_editor_identity_refuses_occurrence_facts_different_from_context(
+    field: str, value: Any
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from haute.server import app
+    from tests.test_submodel_instances import _reuse_graph
+
+    node = {
+        "node_id": "rating_ie",
+        "label": "rating_ie",
+        "node_type": "submodel",
+        "alias": "rating_ie",
+        "instance_of": "rating",
+        "source_handles": ["out__premium"],
+    }
+    node[field] = value
+    response = TestClient(app).post(
+        "/api/pipeline/editor-identities",
+        json={
+            "nodes": [node],
+            "graph": _reuse_graph().model_dump(by_alias=True),
+        },
+    )
+    assert response.status_code == 422, response.text
+    assert field in response.text
+
+
+def test_editor_identity_refuses_instance_of_on_ordinary_node() -> None:
+    from fastapi.testclient import TestClient
+
+    from haute.server import app
+
+    response = TestClient(app).post(
+        "/api/pipeline/editor-identities",
+        json={
+            "nodes": [
+                {
+                    "node_id": "copy",
+                    "label": "copy",
+                    "node_type": "polars",
+                    "instance_of": "owner",
+                }
+            ]
+        },
+    )
+    assert response.status_code == 422
+    assert "instance_of is only valid for a submodel identity" in response.text
+
 
 def _normalise_schema(schema: dict[str, Any] | None) -> Any:
     if schema is None:

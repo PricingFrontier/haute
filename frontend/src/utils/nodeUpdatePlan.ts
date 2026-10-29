@@ -402,6 +402,32 @@ function collectMappingChanges(
   const changes: MappingChanges = new Map()
   for (const targets of affectedByScope.values()) {
     for (const affected of targets.values()) {
+      if (affected.target.data.nodeType === NODE_TYPES.OUTPUT) {
+        const scopeChanges = changes.get(affected.scope) ?? new Map<string, Record<string, unknown>>()
+        const config = (affected.target.data.config ?? {}) as Record<string, unknown>
+        if (config.outputMapping !== undefined) {
+          if (!Array.isArray(config.outputMapping)) return { ok: false, error: "Quote Response outputMapping must be a list." }
+          const renames = new Map(affected.pairs.map(({ from, to }) => [from, to]))
+          const destinations = new Set<string>()
+          const mapping = []
+          for (const entry of config.outputMapping) {
+            if (!isPlainObject(entry) || typeof entry.source_port !== "string" || !entry.source_port) {
+              return { ok: false, error: "Quote Response outputMapping entry requires source_port." }
+            }
+            const source_port = renames.get(entry.source_port) ?? entry.source_port
+            const destination = JSON.stringify([entry.output_path, source_port])
+            if (entry.enabled !== false) {
+              if (destinations.has(destination)) {
+                return { ok: false, error: `Quote Response "${String(affected.target.data.label)}" output mapping collides on "${source_port}".` }
+              }
+              destinations.add(destination)
+            }
+            mapping.push({ ...entry, source_port })
+          }
+          scopeChanges.set(affected.target.id, { ...config, outputMapping: mapping })
+          changes.set(affected.scope, scopeChanges)
+        }
+      }
       if (affected.target.data.nodeType === NODE_TYPES.LIVE_SWITCH) {
         const failure = applyConfigMapping(
           changes,

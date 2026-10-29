@@ -48,7 +48,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/hooks/useWebSocketSync.ts` | The `/ws/sync` WebSocket client: connect/reconnect with exponential backoff, document-fingerprint resync, applying accepted `pipeline_document_update` frames through one atomic clean-snapshot transition with the authoritative status fence (including preserved-block/revision refs and graph-scoped dirty blocking), treating `parse_error` as a document system failure, counting each `workbench_form_changed`, and each connection (a change while disconnected went unannounced), on the workbench store's `formChanges`, and session expiry. After an applied frame it fits the whole graph, except that a frame with an assistant `origin` instead calls `setChangeFocus` with the origin's node ids present in the new graph (nothing when none is), and a frame without one clears that focus. |
 | `frontend/src/components/ChangeFocusFit.tsx` | Renderless child of the editor's `<ReactFlow>` that centres the nodes `useUIStore.changeFocus` names once per focus, fitting them with padding and never above the current zoom. |
 | `frontend/src/hooks/useSubmodelNavigation.ts` | `handleCreateSubmodel`/`handleDrillIntoSubmodel`/`handleBreadcrumbNavigate`/`handleDissolveSubmodel` — definition/occurrence-aware view-stack state machine, local embedded-definition drill/project, recursive authoritative identity resolution for canonical transform responses, layout, revision-preconditioned transform requests, and one atomic dirty history entry per create/dissolve. |
-| `frontend/src/utils/submodelViewGraph.ts` | Pure projection from one definition plus its occurrence bindings into collision-safe composite Input/Output nodes and definition-port boundary edges. Input rows retain the definition-wide binding slice so history restoration can restore parent connections atomically while active-occurrence external-node presentation remains local. |
+| `frontend/src/utils/submodelViewGraph.ts` | Pure projection from one definition plus its occurrence bindings into collision-safe composite Input/Output nodes and definition-port boundary edges. Input rows retain the definition-wide binding slice so history restoration can restore parent connections atomically while active-occurrence external-node presentation remains local. `captureParentOutputState` and `restoreParentOutputState` retain output identities and affected parent consumer configs with output-boundary history. |
 | `frontend/src/utils/submodelDeletionPolicy.ts` | `withNativeDeletePolicy` applies the owner-aware React Flow deletion gate while preserving unchanged node identity. |
 | `frontend/src/utils/submodelRuntimeTarget.ts` | `encodeRuntimeIdPart`, `qualifiedRuntimeNodeId`, `resolveDrilledOccurrenceIdentity`, and `runtimeNodeIdForVisibleNode` validate drilled occurrence identity and derive backend runtime targets. |
 | `frontend/src/utils/canonicalSubmodelBoundaryEditing.ts` | Pure definition-aware boundary transform. It validates canonical identity, maps the collapsed generic input gesture to an existing or newly allocated named public port, edits structured endpoints and opaque public-port ids, preserves boundary positions and authoritative projected identities, reattaches rebuilt edge identities, restores the definition-wide parent-input slice from history projections, preflights incidental interface changes against every bound occurrence, and gives the explicit Input-inspector removal path one coherent cascade across the public port, internal routes, identity map, and all occurrence bindings. |
@@ -85,7 +85,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/components/ComparisonInspector.tsx` | Read-only comparison-view config panel: renders the real node editor `inert` for the available side(s), with a Historical/Current switcher. |
 | `frontend/src/components/ComparisonView.tsx` | The historical-vs-current comparison canvas pair: fetches the historical pipeline, diffs it, and renders two non-interactive `ReactFlow` instances (`ReadonlyCanvas`) with diff-ring highlighting, a draggable split, and orientation toggle. |
 | `frontend/src/utils/canvasHitTest.ts` | `isEmptyCanvasAtPoint`: whether the uppermost element under a client point is the React Flow pane itself. |
-| `frontend/src/components/ConnectionDropMenu.tsx` | Add node menu opened by releasing a source-handle connection on empty canvas: Edge Join plus the palette types that take a data input (not Load File), none of them a singleton, viewport-clamped, arrow-key focus, Escape/outside-click close. |
+| `frontend/src/components/ConnectionDropMenu.tsx` | Drop menu: Edge Join plus the palette types that take a data input (not Load File) on empty canvas; unbound public input choices on an instance. Viewport-clamped, arrow-key focus, Escape/outside-click close. |
 | `frontend/src/components/EdgeJoinInsertionFeedback.tsx` | Renders the conditional polite live-region status for a compatible edge-join insertion candidate. |
 | `frontend/src/components/PolarsIcon.tsx` | Memoized SVG icon for the Polars node type. |
 | `frontend/src/components/RenameDialog.tsx` | Node-rename modal with the shared name-shape validation; shows the rename's refusal (including the server's collision) inline. |
@@ -930,10 +930,13 @@ reconciliation rather than dropping them or committing a second mutation.
     generic target. A drop derives the frame name from the source node's
     server-owned identity and looks it up in the definition's declared input ports
     (`definition.inputPorts.find(p => p.name === inputName)`). A matching name
-    binds that declared port on an owner or copy. A previously unseen name is
-    allowed only on the owner: it mints the port name from `inputName` (adding `_2`,
+    binds that declared port on an owner or copy, refusing an already bound match.
+    For an instance with no matching name, the sole unbound input is chosen;
+    otherwise the drop picker lists the unbound inputs, and commits after selection.
+    With no unbound inputs it refuses with `Every input of <name> is connected`.
+    The owner mints a previously unseen port name from `inputName` (adding `_2`,
     `_3` on collision across both directions) and appends an initially empty target
-    list. Both paths commit the parent edge already retargeted to `in__<name>`
+    list. All paths commit the parent edge already retargeted to `in__<name>`
     in the same history entry. The generic handle is interaction-only and is never
     accepted as a persisted or synchronised edge endpoint; invisible non-interactive
     named anchors at the same row provide React Flow geometry for canonical edges.

@@ -47,6 +47,7 @@ describe("editor identity resolution", () => {
     const occurrence = node("pricing", "Tarif café", "submodel", {
       definitionId: "pricing-definition",
       alias: "pricing_secondary",
+      instanceOf: "pricing_owner",
     })
     const definition: SubmodelDefinition = {
       definitionId: "pricing-definition",
@@ -55,6 +56,9 @@ describe("editor identity resolution", () => {
       inputPorts: [],
       outputPorts: [{
         name: "written-premium",
+        source: { nodeId: "result", handleId: null },
+      }, {
+        name: "audit",
         source: { nodeId: "result", handleId: null },
       }],
     }
@@ -81,8 +85,9 @@ describe("editor identity resolution", () => {
           node_id: "pricing",
           label: "Tarif café",
           node_type: "submodel",
-          source_handles: ["out__written-premium"],
+          source_handles: ["out__written-premium", "out__audit"],
           alias: "pricing_secondary",
+          instance_of: "pricing_owner",
         },
       ],
     })

@@ -2480,8 +2480,8 @@ describe("NodePanel", () => {
     expect(screen.getByTestId("ConstantEditor")).toBeInTheDocument()
   })
 
-  it("renders SubmodelEditor for submodel nodes", () => {
-    renderPanel({ node: makeNode({ data: { label: "SM", description: "", nodeType: "submodel", config: {} } }) })
+  it.each([{}, { instanceOf: "owner" }])("renders SubmodelEditor for submodel nodes", (config) => {
+    renderPanel({ node: makeNode({ data: { label: "SM", description: "", nodeType: "submodel", config } }) })
     expect(screen.getByTestId("SubmodelEditor")).toBeInTheDocument()
   })
 

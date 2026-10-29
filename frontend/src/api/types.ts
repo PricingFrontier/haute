@@ -53,6 +53,7 @@ export interface EditorIdentityRequestNode {
   node_type: NodeTypeValue
   source_handles: string[]
   alias?: string
+  instance_of?: string
   /** The submodel definition the node belongs to in the naming context; absent at the root. */
   submodel?: string
 }

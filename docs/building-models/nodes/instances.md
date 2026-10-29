@@ -15,6 +15,8 @@ Select exactly one node on the canvas and click **Instance** in the toolbar. Hau
 
 ## The panel
 
+Submodel instances use the occurrence panel described in [Submodel](submodel.md): **INPUTS** lists every public input and lets you re-target an incoming connection. Their output frames are named after the instance, with `_<port>` appended when the definition has several outputs. The node-instance panel below applies to ordinary nodes.
+
 An instance's panel has no tabs, because its settings belong to the original:
 
 - **INSTANCE OF** names the original node. The panel reminds you: **This node uses the same logic as the original. To edit the code or config, select the original node. Changes will automatically apply to all instances.**

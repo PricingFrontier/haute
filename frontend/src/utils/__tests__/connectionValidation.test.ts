@@ -73,6 +73,18 @@ const occurrence = (copy = false) => {
 }
 
 describe("connection validation", () => {
+  it("offers only unbound inputs for a differently named frame and accepts the picked unrouted port", () => {
+    const source = apiInput("api", "quotes")
+    const copy = occurrence(true)
+    const submodels = { definition_pricing: { ...definition(node("prepare", "Prepare")), inputPorts: [
+      { name: "policy", targets: [] }, { name: "rates", targets: [] }, { name: "claims", targets: [] },
+    ] } }
+    const edges = [{ id: "filled", source: "upstream", target: copy.id, targetHandle: "in__rates" }]
+    const connection = { source: source.id, sourceHandle: "quotes", target: copy.id, targetHandle: SUBMODEL_INPUT_HANDLE }
+    expect(validatePipelineConnection(connection, [source, copy], edges, submodels)).toEqual({ ok: true, inputChoices: ["policy", "claims"] })
+    expect(validatePipelineConnection({ ...connection, targetHandle: "in__claims" }, [source, copy], edges, submodels)).toEqual({ ok: true })
+    expect(validatePipelineConnection(connection, [source, copy], ["policy", "rates", "claims"].map((name) => ({ id: name, source: "upstream", target: copy.id, targetHandle: `in__${name}` })), submodels)).toMatchObject({ ok: false, reason: { message: "Every input of pricing_copy is connected" } })
+  })
   it("rejects self loops", () => {
     const item = node("one", "One")
     expect(isPipelineConnectionValid({
@@ -118,7 +130,7 @@ describe("connection validation", () => {
     }, [api, copy], [], submodels)).toEqual({ ok: true })
   })
 
-  it("allows a new authoritative frame only on the owner generic socket", () => {
+  it("mints an owner input and binds a differently named frame to an existing copy input", () => {
     const api = apiInput("api", "quotes")
     const owner = occurrence()
     const copy = occurrence(true)
@@ -137,7 +149,7 @@ describe("connection validation", () => {
     expect(validatePipelineConnection({
       ...connection,
       target: copy.id,
-    }, [api, copy], [], submodels)).toMatchObject({ ok: false })
+    }, [api, copy], [], submodels)).toEqual({ ok: true })
   })
 
   it("rejects a second generic binding to the same declared frame", () => {

@@ -279,6 +279,39 @@ async def resolve_pipeline_editor_identities(
     # files the graph's support code star-imports, as save and the executor do.
     read_utility = utility_reader(pipeline_dir(), Path.cwd().resolve())
     try:
+        if body.graph is not None:
+            for node in body.nodes:
+                if node.node_type != NodeType.SUBMODEL:
+                    continue
+                if node.submodel is not None and node.submodel not in (body.graph.submodels or {}):
+                    raise ValueError(f"Submodel {node.submodel!r} is not in the naming context.")
+                scoped = (
+                    body.graph
+                    if node.submodel is None
+                    else (body.graph.submodels or {})[node.submodel].graph
+                )
+                occurrence = scoped.node_map.get(node.node_id)
+                if occurrence is None:
+                    # Creation candidates have no existing occurrence facts to compare.
+                    continue
+                if node.instance_of != occurrence.data.config.get("instanceOf"):
+                    raise ValueError(
+                        f"Submodel {node.node_id!r} instance_of differs from the naming context."
+                    )
+                definition_id = occurrence.data.config.get("definitionId")
+                if not isinstance(definition_id, str):
+                    raise ValueError(f"Submodel {node.node_id!r} requires a definitionId.")
+                definition = (body.graph.submodels or {}).get(definition_id)
+                if definition is None:
+                    raise ValueError(
+                        f"Submodel {node.node_id!r} has no definition in the naming context."
+                    )
+                if set(node.source_handles) != {
+                    f"out__{port.name}" for port in definition.output_ports
+                }:
+                    raise ValueError(
+                        f"Submodel {node.node_id!r} source_handles differ from the naming context."
+                    )
         candidates = [
             NamingCandidate(
                 node_id=node.node_id,
@@ -303,6 +336,7 @@ async def resolve_pipeline_editor_identities(
                 label=name.label,
                 source_handles=node.source_handles,
                 alias=name.alias,
+                instance_of=node.instance_of,
             )
             identities.append(
                 EditorIdentityResponseNode(

@@ -3,10 +3,16 @@ import { EditorLabel } from "../../components/form"
 import useGraphStore from "../../stores/useGraphStore"
 import { isSubmodelDefinition, isSubmodelInstanceConfig } from "../../types/node"
 import { withAlpha } from "../../utils/color"
+import { retargetSubmodelInput } from "../../utils/canonicalSubmodelBoundaryEditing"
+import { edgeInputName } from "../../utils/apiInputPorts"
+import type { SimpleNode } from "./_shared"
+import useToastStore from "../../stores/useToastStore"
 
 interface SubmodelEditorProps {
+  nodeId: string
   config: Record<string, unknown>
   accentColor: string
+  readOnly?: boolean
 }
 
 interface PortBadgeProps {
@@ -25,10 +31,23 @@ function PortBadge({ name, accentColor }: PortBadgeProps) {
   )
 }
 
-export default function SubmodelEditor({ config, accentColor }: SubmodelEditorProps) {
+export default function SubmodelEditor({ nodeId, config, accentColor, readOnly = false }: SubmodelEditorProps) {
+  const nodes = useGraphStore((state) => state.nodes)
+  const edges = useGraphStore((state) => state.edges)
   const definition = useGraphStore((state) =>
     isSubmodelInstanceConfig(config) ? state.submodels[config.definitionId] : undefined,
   )
+  const incoming = edges.filter((edge) => edge.target === nodeId)
+  const retarget = (port: string, edgeId: string) => {
+    if (readOnly) return
+    try {
+      const state = useGraphStore.getState()
+      const next = retargetSubmodelInput(state, nodeId, port, edgeId || null)
+      state.setNodesAndEdgesAndSubmodels(next.nodes, next.edges, next.submodels)
+    } catch (error: unknown) {
+      useToastStore.getState().addToast("error", error instanceof Error ? error.message : String(error))
+    }
+  }
   if (!isSubmodelInstanceConfig(config) || !isSubmodelDefinition(definition, config.definitionId)) {
     return (
       <div role="alert" className="px-4 py-3 text-xs" style={{ color: "var(--danger)" }}>
@@ -70,9 +89,26 @@ export default function SubmodelEditor({ config, accentColor }: SubmodelEditorPr
       {definition.inputPorts.length > 0 && (
         <div>
           <EditorLabel>Inputs</EditorLabel>
-          <div className="mt-1 flex flex-wrap gap-1.5">
+          <div className="mt-1 space-y-2">
             {definition.inputPorts.map((port) => (
-              <PortBadge key={port.name} {...port} accentColor={accentColor} />
+              <label key={port.name} className="flex items-center justify-between gap-2 text-xs">
+                <span>{port.name}</span>
+                <select
+                  aria-label={port.name}
+                  disabled={readOnly}
+                  value={incoming.find((edge) => edge.targetHandle === `in__${port.name}`)?.id ?? ""}
+                  onChange={(event) => retarget(port.name, event.target.value)}
+                  className="min-w-0 rounded px-2 py-1"
+                  style={{ background: "var(--bg-input)", color: "var(--text-primary)", border: "1px solid var(--border)" }}
+                >
+                  <option value="">not connected</option>
+                  {incoming.map((edge) => {
+                    const source = nodes.find((node) => node.id === edge.source)
+                    if (!source) throw new Error(`Connection ${edge.id} has no source ${edge.source}`)
+                    return <option key={edge.id} value={edge.id}>{edgeInputName(edge, source as unknown as SimpleNode)}</option>
+                  })}
+                </select>
+              </label>
             ))}
           </div>
         </div>
@@ -89,9 +125,6 @@ export default function SubmodelEditor({ config, accentColor }: SubmodelEditorPr
         </div>
       )}
 
-      <div className="pt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
-        Double-click to view internal nodes
-      </div>
     </div>
   )
 }

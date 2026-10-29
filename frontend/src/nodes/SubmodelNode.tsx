@@ -7,7 +7,6 @@ import {
   isSubmodelDefinition,
   isSubmodelInstanceConfig,
   type SubmodelFlowNode,
-  type SubmodelOutputPort,
 } from "../types/node"
 import { SUBMODEL_INPUT_HANDLE } from "../utils/flowHandles"
 import FramePortRows, { DefaultInputPortRow } from "./FramePortRows"
@@ -45,7 +44,12 @@ function SubmodelNode({
   const inputAnchorIds = canonicalDefinition?.inputPorts.map(
     (port) => `in__${port.name}`,
   ) ?? []
-  const outputFrames = canonicalDefinition?.outputPorts.map(toOutputFrame) ?? []
+  const outputFrames = canonicalDefinition?.outputPorts.map((port) => {
+    const handle = `out__${port.name}`
+    const label = nodeData._sourceHandleInputNames?.[handle]
+    if (typeof label !== "string" || !label) throw new Error(`Submodel ${id} output ${port.name} has no authoritative identity`)
+    return { id: handle, label, parentEdges: [] }
+  }) ?? []
   const loadAvailability = nodeData._loadAvailability ?? "ready"
   const showRecoveryHandles = definitionInvalid && loadAvailability !== "ready"
   const childCount = canonicalDefinition?.graph.nodes.length ?? 0
@@ -213,10 +217,6 @@ function RecoveryHandles({ id, data: nodeData }: Pick<NodeProps<SubmodelFlowNode
       ))}
     </div>
   )
-}
-
-function toOutputFrame(port: SubmodelOutputPort) {
-  return { id: `out__${port.name}`, label: port.name, parentEdges: [] }
 }
 
 export default memo(SubmodelNode)

@@ -275,6 +275,11 @@ export type SubmodelBoundaryEdgeData = {
   }
 }
 
+export interface ParentOutputState {
+  nodes: Array<{ id: string; data: Record<string, unknown> }>
+  edges: Array<{ id: string; inputName: unknown }>
+}
+
 export interface SubmodelPortData extends Record<string, unknown> {
   label: string
   instanceId: string
@@ -285,6 +290,8 @@ export interface SubmodelPortData extends Record<string, unknown> {
   _parentBindingScope?: "definition"
   /** Parent edge ids in their authoritative order, so a restored binding returns to its own position. */
   _parentEdgeOrder?: string[]
+  /** Output identities and consumer configs changed by public output-count edits. */
+  _parentOutputState?: ParentOutputState
   externalNodeIds: string[]
   _traceActive?: boolean
   _traceDimmed?: boolean

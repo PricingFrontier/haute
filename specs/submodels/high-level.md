@@ -132,7 +132,8 @@ by one shared **definition** and any number of parent-graph **instances**:
   Parent edges may address only `in__<name>` and `out__<name>` handles;
   internal child ids are never a parent-graph interface. After backend
   sanitisation, the public input port name is the child-side frame name.
-  Occurrence names (or `<alias>__<name>`) name submodel outputs downstream;
+  The owner's public port names, and an instance's name (or `<instance>_<port>`
+  when several outputs are declared), name submodel outputs downstream;
   a public port has exactly one name, and it is a canonical identifier.
 - Referential integrity is checked on load, mutation, flatten, and save:
   instance definitions must exist, public port names must be unique, endpoints

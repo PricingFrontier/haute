@@ -17,20 +17,28 @@ A submodel's panel has no tabs. It shows:
 
 - **Submodel** and the number of nodes inside it.
 - **FILE**: the definition's file, `modules/<name>.py`.
-- **INPUTS** and **OUTPUTS**: the submodel's ports.
-- **Double-click to view internal nodes**: double-click the node on the canvas to step inside.
+- **INPUTS**: every public input, with a selector of this occurrence's incoming connections or **not connected**. Choosing a connection moves it to that input. If another connection already feeds the input, that connection is removed. The edit takes one Undo.
+- **OUTPUTS**: the definition's public output ports.
+
+Double-click the node on the canvas to step inside. The input selectors remain editable on an instance; its internal definition is read-only.
 
 ## Ports
 
-Input ports define what data flows into the submodel from the parent pipeline. Output ports define what flows back out: a node connected to an output reads its data under the output's port name, whatever you name the submodel node. When you create a submodel from selected nodes, ports are created automatically based on the existing connections.
+Input ports define what data flows into the submodel from the parent pipeline. An owner's outputs keep their public port names. An instance with one declared output names its frame after the instance, such as `rating_ie`. With several declared outputs, each frame is named `<instance>_<port>`, such as `rating_ie_premium`. Unconnected outputs count too. The card shows these executable names.
+
+Renaming an instance, adding a second output or removing all but one updates its consumers' input names, including Quote Response mappings, in the same undoable edit. Code keeps its logical input names. A rename that would give a consumer duplicate names is refused.
 
 You can add ports afterwards on the occurrence that owns the definition. A collapsed submodel has a single `inputs` socket: dropping a new connection on it adds an input port. Inside the submodel, wiring a node to the Output boundary adds an output port. To remove an input, select the Input boundary inside the submodel: its panel lists the **INPUTS**, and each input's **×** removes that public input, with its internal routes and every occurrence's connection.
 
 An instance opens as a read-only view of the shared definition, and it can only use the ports the definition already has. Edit the definition through the occurrence that owns it.
 
+Drop a connection on an instance's `inputs` socket to bind the public input with the same name as the incoming frame. If that input is already connected, the drop is refused. Otherwise, when no name matches, Haute binds the sole unbound input or shows a picker of the unbound inputs at the drop. When every input is connected, the drop is refused. An instance never creates a new public input.
+
 ## Dissolving a submodel
 
 To ungroup a submodel and expand its nodes back into the parent pipeline, select the submodel node on its own and click **Dissolve** in the toolbar (the **Submodel** button reads **Dissolve** while a single submodel is selected), or right-click the submodel node and choose **Dissolve Submodel**. The occurrence that owns the definition cannot be dissolved while instances still reference it: delete or dissolve the instances first.
+
+Dissolving an instance names its children `<instance>__<child>` and preserves the input names their code reads. Dissolving the owner keeps its children's names. A name collision must be resolved before saving.
 
 ## Reuse across pipelines
 
@@ -61,7 +69,7 @@ Grouping the scoring steps:
     | Setting in the editor | Stored as |
     |---|---|
     | **Submodel name** | the definition module's name (`modules/<name>.py`, imported as `from modules import <name>`), and the occurrence's first name |
-    | Renaming the node | `alias`: the occurrence's name, which the pipeline file's connections use (a node downstream reads each output under its port name); the second argument of `pipeline.submodel(...)` |
+    | Renaming the node | `alias`: the occurrence's name, used in connections and in its instance output names; the second argument of `pipeline.submodel(...)` |
     | **INPUTS**, **OUTPUTS** | the `input_ports` and `output_ports` of the definition file's `haute.Submodel(...)` header |
     | **Create Instance** | `instanceOf`: the owning occurrence's name, written as `instance_of="…"` in the instance's `pipeline.submodel(...)` |
 

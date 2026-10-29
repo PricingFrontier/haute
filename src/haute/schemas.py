@@ -1243,6 +1243,7 @@ class EditorIdentityRequestNode(BaseModel):
     label: str = Field(min_length=1, max_length=2048)
     node_type: NodeType
     alias: Annotated[str, Field(min_length=1, max_length=512)] | None = Field(default=None)
+    instance_of: Annotated[str, Field(min_length=1, max_length=512)] | None = None
     # The submodel definition the node belongs to in the naming context, or
     # ``None`` for the pipeline itself. Ids are unique only within one graph.
     submodel: Annotated[str, Field(min_length=1, max_length=512)] | None = None
@@ -1260,6 +1261,8 @@ class EditorIdentityRequestNode(BaseModel):
 
     @model_validator(mode="after")
     def _identity_inputs_match_node_type(self) -> EditorIdentityRequestNode:
+        if self.instance_of is not None and self.node_type != NodeType.SUBMODEL:
+            raise ValueError("instance_of is only valid for a submodel identity.")
         if self.node_type == NodeType.SUBMODEL:
             for handle in self.source_handles:
                 port_name = handle[len("out__") :] if handle.startswith("out__") else ""

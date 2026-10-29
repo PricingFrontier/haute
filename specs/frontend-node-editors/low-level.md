@@ -636,7 +636,9 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   rename's atomic commit updates every name-referencing config in the same pass that rebinds
   the edges: `input_scenario_map` keys on downstream live-switches, `inputMapping` values
   on downstream Transform and Load File nodes, and `outputMapping[].source_port` on a
-  downstream Quote Response, whose entries must stay distinct. An instance's input mapping is its edges'
+  downstream Quote Response, whose enabled entries must stay distinct. Disabled entries
+  follow the rename but do not participate in collision checks, matching save and flattening.
+  An instance's input mapping is its edges'
   `in__<name>` handles, which a frame rename does not change. The commit is **preflighted**: before anything mutates, every affected target's
   post-rename input-name set is checked for duplicates (the new name colliding with another
   input already on that target), and a collision rejects the entire rename with an inline

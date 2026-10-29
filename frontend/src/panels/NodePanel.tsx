@@ -1759,7 +1759,7 @@ function NodePanelContent({
   const accentColor = NODE_TYPE_META[nodeType as NodeTypeValue]?.color ?? "var(--accent)"
   const configEditor = !isKnownNodeType ? (
     <UnknownNodeTypeDiagnostic nodeType={nodeType} config={config} />
-  ) : isInstance ? (
+  ) : isInstance && nodeType !== NODE_TYPES.SUBMODEL ? (
     <InstancePanel
       node={node}
       config={config}
@@ -1769,6 +1769,7 @@ function NodePanelContent({
   ) : (
     <NodeConfigEditor
       nodeType={nodeType as NodeTypeValue}
+      readOnly={nodeType === NODE_TYPES.SUBMODEL && (effectiveReadOnly || documentReadOnly)}
       config={config}
       configWithNodeId={configWithNodeId}
       node={node}

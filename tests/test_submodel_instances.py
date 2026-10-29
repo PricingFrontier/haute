@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from haute._flatten import flatten_graph
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
+from haute._graph_utils import edge_input_name
 from haute._parser_submodels import extract_submodel_registrations, parse_submodel_source
 from haute._polars_io_registry import validate_data_input_config
 from haute._submodel_instances import (
@@ -120,6 +121,198 @@ def _instance(
         x=x,
         y=y,
     )
+
+
+def _reuse_graph() -> PipelineGraph:
+    definition = _definition(
+        graph=PipelineGraph(
+            nodes=[
+                _node(
+                    "scale",
+                    config={"code": "df = policy.with_columns((pl.col('x') * 10).alias('x'))"},
+                ),
+                _node(
+                    "finish",
+                    config={"code": "df = scale.with_columns((pl.col('x') + 1).alias('x'))"},
+                ),
+            ],
+            edges=[GraphEdge(id="inner", source="scale", target="finish")],
+        ),
+        input_ports=[SubmodelInputPort(name="policy", targets=[SubmodelEndpoint(node_id="scale")])],
+        output_ports=[
+            SubmodelOutputPort(name="premium", source=SubmodelEndpoint(node_id="finish"))
+        ],
+    )
+    nodes = []
+    edges = []
+    for index, name in enumerate(("rating", "rating_ie", "rating_fr"), 1):
+        source = f"source_{index}"
+        nodes.extend(
+            [
+                _node(source, config={"code": f"df = pl.DataFrame({{'x': [{index}]}}).lazy()"}),
+                _instance(name, instance_of=None if index == 1 else "rating"),
+            ]
+        )
+        edges.extend(
+            [
+                GraphEdge(
+                    id=f"input_{index}", source=source, target=name, targetHandle="in__policy"
+                ),
+                GraphEdge(
+                    id=f"output_{index}",
+                    source=name,
+                    target="consumer",
+                    sourceHandle="out__premium",
+                ),
+            ]
+        )
+    nodes.append(
+        _node("consumer", config={"code": "df = pl.concat([premium, rating_ie, rating_fr])"})
+    )
+    return PipelineGraph(nodes=nodes, edges=edges, submodels={"definition_scoring": definition})
+
+
+def test_instance_output_names_include_unconnected_declarations() -> None:
+    graph = _reuse_graph()
+    edge = graph.edges[3]
+    assert (
+        edge_input_name(edge, graph.node_map[edge.source], submodels=graph.submodels) == "rating_ie"
+    )
+    assert graph.submodels is not None
+    graph.submodels["definition_scoring"].output_ports.append(
+        SubmodelOutputPort(name="audit", source=SubmodelEndpoint(node_id="scale"))
+    )
+    assert (
+        edge_input_name(edge, graph.node_map[edge.source], submodels=graph.submodels)
+        == "rating_ie_premium"
+    )
+    owner_edge = graph.edges[1]
+    assert (
+        edge_input_name(owner_edge, graph.node_map["rating"], submodels=graph.submodels)
+        == "premium"
+    )
+
+
+@pytest.mark.parametrize("target", [None, "rating_ie"])
+def test_instance_clones_and_their_consumers_keep_input_names(target: str | None) -> None:
+    graph = _reuse_graph()
+    flat = flatten_graph(graph, target_instance_id=target)
+    scale = flat.node_map[qualified_runtime_node_id("rating_ie", "scale")]
+    finish = flat.node_map[qualified_runtime_node_id("rating_ie", "finish")]
+    assert scale.data.label == "rating_ie__scale"
+    assert finish.data.label == "rating_ie__finish"
+    assert finish.data.config["inputMapping"] == {"scale": "rating_ie__scale"}
+    assert flat.node_map["consumer"].data.config["inputMapping"]["rating_ie"] == "rating_ie__finish"
+    if target is None:
+        assert flat.node_map[qualified_runtime_node_id("rating", "scale")].data.label == "scale"
+
+
+@pytest.mark.parametrize("multiple_outputs", [False, True])
+def test_owner_and_two_instances_deliver_distinct_rows_through_round_trip(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    multiple_outputs: bool,
+) -> None:
+    import subprocess
+    import sys
+
+    from click.testing import CliRunner
+    from fastapi.testclient import TestClient
+
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute.cli import cli
+    from haute.executor import execute_graph
+    from haute.server import app
+
+    graph = _reuse_graph()
+    if multiple_outputs:
+        assert graph.submodels is not None
+        graph.submodels["definition_scoring"].output_ports.append(
+            SubmodelOutputPort(name="audit", source=SubmodelEndpoint(node_id="scale"))
+        )
+        graph.node_map["consumer"].data.config["code"] = (
+            "df = pl.concat([premium, rating_ie_premium, rating_fr_premium])"
+        )
+    expected = [{"x": 11}, {"x": 21}, {"x": 31}]
+    result = execute_graph(flatten_graph(graph))["consumer"]
+    assert result.status == "ok", result.error
+    assert result.preview == expected
+    response = TestClient(app).post(
+        "/api/pipeline/preview",
+        json={"graph": graph.model_dump(mode="json", by_alias=True), "node_id": "consumer"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["preview"] == expected
+    files = graph_to_code_multi(graph, pipeline_name="reuse", source_file="main.py")
+    for relative_path, source in files.items():
+        destination = tmp_path / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(source, encoding="utf-8", newline="\n")
+    reparsed = parse_pipeline_source(
+        files["main.py"], source_file=str(tmp_path / "main.py"), _base_dir=tmp_path
+    )
+    reloaded = execute_graph(flatten_graph(reparsed))["consumer"]
+    assert reloaded.status == "ok", reloaded.error
+    assert reloaded.preview == expected
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    assert document.load_status == "ready"
+    for occurrence_name in ("rating_ie", "rating_fr"):
+        occurrence = next(node for node in document.nodes if node.authored_id == occurrence_name)
+        expected_name = f"{occurrence_name}_premium" if multiple_outputs else occurrence_name
+        assert occurrence.source_handle_input_names["out__premium"] == expected_name
+        assert (
+            next(
+                edge for edge in document.edges if edge.source_authored_id == occurrence_name
+            ).input_name
+            == expected_name
+        )
+    monkeypatch.chdir(tmp_path)
+    dissolved = TestClient(app).post(
+        "/api/submodel/dissolve",
+        json={
+            "graph": reparsed.model_dump(mode="json", by_alias=True),
+            "source_file": "main.py",
+            "base_revision": document.source_revision,
+            "instance_id": "rating_ie",
+        },
+    )
+    assert dissolved.status_code == 200, dissolved.text
+    dissolved_graph = PipelineGraph.model_validate(dissolved.json()["graph"])
+    assert (
+        dissolved_graph.node_map[qualified_runtime_node_id("rating_ie", "finish")].data.label
+        == "rating_ie__finish"
+    )
+    assert execute_graph(flatten_graph(dissolved_graph))["consumer"].preview == expected
+    run = CliRunner().invoke(cli, ["run", "main.py"], catch_exceptions=False)
+    assert run.exit_code == 0, run.output
+    for value in (11, 21, 31):
+        assert str(value) in run.output
+    standalone = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json; from main import pipeline; "
+            "print(json.dumps(pipeline.run(source='live').to_dicts()))",
+        ],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert json.loads(standalone.stdout) == expected
+
+
+def test_owner_output_named_like_instance_is_refused_at_consumer() -> None:
+    graph = _reuse_graph()
+    assert graph.submodels is not None
+    graph.submodels["definition_scoring"].output_ports[0].name = "rating_ie"
+    for edge in graph.edges:
+        if edge.sourceHandle:
+            edge.sourceHandle = "out__rating_ie"
+    with pytest.raises(ParseError, match="ambiguously") as error:
+        flatten_graph(graph)
+    assert error.value.context["target_id"] == "consumer"
+    assert error.value.context["input_name"] == "rating_ie"
 
 
 def test_definition_rejects_duplicate_public_port_ids() -> None:

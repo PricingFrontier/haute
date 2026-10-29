@@ -10,6 +10,8 @@
 | `src/haute/_flatten.py` | Public flatten/dissolve entry point: validates and expands canonical occurrences through `_submodel_instances.py`. `flatten_executable_graph` is the entry every route running a browser graph uses: it refuses a graph with an executable-name violation (codegen naming rule) before flattening, while internal flattening (a staged dissolve, save) uses `flatten_graph`, since a partly dissolved graph repeats a shared definition's child names. |
 | `src/haute/routes/_submodel_ops.py` | Pure (no I/O) graph transforms: extract selected nodes out of a `PipelineGraph` into a new submodel, and, for a plain node's Create Instance, wrap one node in place in a one-node definition and place an unbound instance beside it; each produces the updated parent graph and submodel metadata. |
 | `src/haute/routes/submodel.py` | FastAPI router (`/api/submodel/*`): transform-only `POST /create`, `POST /instance` and `POST /dissolve`, plus read-only persisted `GET /{definition_id}`. It validates the current parent revision and maps failures without writing files. |
+| `frontend/src/utils/canonicalSubmodelBoundaryEditing.ts` | Owned by [frontend-graph-canvas](../frontend-graph-canvas/low-level.md). `chooseInstanceInput` applies the instance binding rule; `retargetSubmodelInput` moves or removes an occurrence binding without changing its definition. Boundary transforms preserve the shared public interface. |
+| `frontend/src/components/ConnectionDropMenu.tsx` | Owned by [frontend-graph-canvas](../frontend-graph-canvas/low-level.md). The keyboard-accessible drop picker lists only unbound public inputs when an instance binding needs a choice. |
 
 Related but external to this component:
 - `src/haute/_parser_submodels.py` ([expression-parsing](../expression-parsing/low-level.md)) — reads
@@ -189,6 +191,13 @@ restore the interface, its parent connections, and their original positions
 together. Parent edge order is persisted state — the dirty fingerprint
 compares it and codegen emits `connect` calls in it — so a restored binding
 returns to its own position rather than to the end of the parent edge list.
+Output boundary history projections retain the occurrence output identities,
+outgoing edge names, and affected parent consumer configs. After prospective
+identities and consumer mappings are reconciled, the same commit replaces that
+projection, so Undo and Redo restore output-count names and Quote Response
+source mappings together without changing unrelated parent state. When an edge
+connects two occurrences of that definition, restore its binding before its
+output name: the input projection must not overwrite the resolved output identity.
 
 ### Instance bindings, output names and previews (normative)
 
@@ -763,15 +772,33 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
 - `tests/test_api_contracts.py` — an editor identity request naming an
   instance's outputs after it, and refusing a `submodel` node whose
   `instance_of` or handles differ from its naming context.
+- `tests/test_assistant_tools.py` — an instance-fed consumer's schema inputs and
+  the assistant's context summary use the instance's output names, counting an
+  added unconnected output when qualifying every public output name.
+- `tests/test_pipeline_repair_actions.py` — resetting a consumer with uncached
+  input identities derives an instance's name from its declared outputs and
+  refuses a missing upstream definition.
 - `frontend/src/utils/__tests__/nodeUpdatePlan.test.ts` — an instance rename
   and a definition edit crossing between one and several outputs renaming the
   instance's frames for their consumers (input mappings, step references and
   a Quote Response's `outputMapping[].source_port`), undone and redone as one
-  step, and refused whole on a collision.
+  step, and refused whole on a collision between enabled response mappings;
+  disabled duplicate mappings follow the rename without blocking it.
 - `frontend/src/utils/__tests__/submodelBoundaryEditing.test.ts` — boundary
   connection editing, input-port removal, parent-binding cleanup, and an
   instance's binding rule (by name, the one unbound input, the user's pick, the
   refusal when every input is bound) and re-targeting from the panel.
+- `frontend/src/__tests__/editors/SubmodelEditor.test.tsx` — every declared input
+  in the live occurrence panel, moving a connection onto a bound input, Undo and Redo.
+- `frontend/src/__tests__/nodes/SubmodelNode.test.tsx` — authoritative instance output labels,
+  including an occurrence committed by Create Instance after identity resolution,
+  with one or several declared outputs and no outgoing connections.
+- `frontend/src/hooks/__tests__/useSubmodelBoundaryEditing.test.ts` — output-count
+  edits and Undo/Redo restore every occurrence's cached names and parent consumer
+  mappings, including Quote Response and an edge between two occurrences.
+- `frontend/src/components/__tests__/ConnectionDropMenu.test.tsx` and
+  `frontend/src/hooks/__tests__/useEdgeHandlers.test.ts` — input choices at the drop,
+  selection before commit and the resulting canonical target handle.
 - `frontend/src/utils/__tests__/submodelDeletionPolicy.test.ts` — deletion
   policy guarding definition owners and instance copies.
 - `frontend/src/utils/__tests__/submodelViewGraph.test.ts` — submodel view graph
