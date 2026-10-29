@@ -4138,6 +4138,7 @@ def test_free_code_trailing_whitespace_survives_ruff_format_with_its_steps(
     snippet = (
         "# keep two rows   \n"
         'note = """first  \n'
+        "   \n"
         'second"""   \n'
         "if True:   \n"
         "    df = df.head(2)  # inside   \n"
@@ -4149,6 +4150,7 @@ def test_free_code_trailing_whitespace_survives_ruff_format_with_its_steps(
         "df = quotes\n"
         "# keep two rows\n"
         'note = """first  \n'
+        "   \n"
         'second"""\n'
         "if True:\n"
         "    df = df.head(2)  # inside\n"
@@ -4171,7 +4173,22 @@ def test_free_code_trailing_whitespace_survives_ruff_format_with_its_steps(
         assert "_steps_discarded" not in node.data.config
     result = execute_graph(parsed, target_node_id="t", execution_context=_capped_context())["t"]
     assert result.status == "ok", result.error
-    assert [row["note"] for row in result.preview] == ["first  \nsecond"] * 2
+    assert [row["note"] for row in result.preview] == ["first  \n   \nsecond"] * 2
+    # The generated function holds the same string: no line of it was indented.
+    (tmp_path / "haute.toml").write_text("", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    module = _write_and_import(graph, tmp_path)
+    frame = _collect(module.pipeline.run(source="live"))
+    assert frame["note"].to_list() == ["first  \n   \nsecond"] * 2
+
+
+def test_a_hand_written_string_continuing_at_column_zero_extracts_as_written() -> None:
+    """Dedenting a body leaves a multiline string's lines as they are, so a string that
+    continues at column 0, as a hand-written file holds it, keeps its value."""
+    body = '    note = """first\n  second\n"""\n    df = up.with_columns(note=pl.lit(note))\n'
+    assert extract_user_code(body, kind="polars", param_names=("up",)) == (
+        'note = """first\n  second\n"""\ndf = up.with_columns(note=pl.lit(note))'
+    )
 
 
 def test_floats_with_an_exponent_render_as_ruff_writes_them() -> None:

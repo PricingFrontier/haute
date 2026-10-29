@@ -48,15 +48,20 @@ def constant_frame(values: list[Mapping[str, Any]]) -> pl.LazyFrame:
 
     Each named value becomes a column, as a number when it reads as one and as
     the raw value otherwise; an entry without a name is skipped, and a node
-    with no named values yields the single column ``constant``. Two entries
-    with one name are refused rather than the later value replacing the
-    earlier.
+    with no named values yields the single column ``constant``. A name that is
+    not text, and two entries with one name, are refused rather than the frame
+    failing to build or the later value replacing the earlier.
     """
     from haute.errors import NodeConfigError
 
     data: dict[str, list[Any]] = {}
     for entry in values:
         name = entry.get("name", "")
+        if not isinstance(name, str):
+            raise NodeConfigError(
+                f"Constant name {name!r} is not text; give each value a name.",
+                setting="values",
+            )
         if not name:
             continue
         if name in data:

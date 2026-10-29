@@ -24,11 +24,9 @@ from __future__ import annotations
 
 import ast
 import datetime as _dt
-import io
 import keyword
 import math
 import re
-import tokenize
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -41,7 +39,7 @@ import polars as pl
 
 from haute._polars_dtypes import parse_rendered_dtype
 from haute._polars_steps_layout import layout_statement
-from haute._source_layout import float_literal, python_lines
+from haute._source_layout import float_literal, lines_inside_literals, python_lines
 from haute._types import GLOBAL_CONSTANTS_NAME, GlobalConstant, NodeType
 from haute._user_exec import _exec_user_code
 from haute.errors import SchemaMismatchError
@@ -907,28 +905,17 @@ def _needs_parentheses(child_op: object, parent: tuple[str, str] | None) -> bool
     return _PRECEDENCE[child_op] < _PRECEDENCE[parent_op]
 
 
-#: Tokens whose text is a string literal's own characters: a line ending inside
-#: one keeps its whitespace.
-_LITERAL_TOKENS = frozenset(
-    getattr(tokenize, name)
-    for name in ("STRING", "FSTRING_MIDDLE", "TSTRING_MIDDLE")
-    if hasattr(tokenize, name)
-)
-
-
 def _without_line_end_whitespace(code: str) -> str:
     """*code* without the whitespace ending its lines outside string literals.
 
     ``ruff format`` removes it, so a rendering that kept it would not be the fixed
-    point its function body promises. A line ending inside a multiline string keeps
-    its whitespace, which is the string's own; indentation is never touched.
+    point its function body promises. A line ending inside a multiline string (the
+    line before one that begins inside it) keeps its whitespace, which is the
+    string's own; indentation is never touched.
     """
-    inside_literal: set[int] = set()
-    for token in tokenize.generate_tokens(io.StringIO(code).readline):
-        if token.type in _LITERAL_TOKENS and token.end[0] > token.start[0]:
-            inside_literal.update(range(token.start[0], token.end[0]))
+    ends_inside = {number - 1 for number in lines_inside_literals(code)}
     return "\n".join(
-        line if number in inside_literal else line.rstrip(" \t\f")
+        line if number in ends_inside else line.rstrip(" \t\f")
         for number, line in enumerate(python_lines(code), start=1)
     )
 

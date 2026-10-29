@@ -135,7 +135,9 @@ def pipeline_recovery_revision(
     changes concurrently.
     """
     root = project_root.resolve()
-    captured = {str(path.resolve()).casefold(): raw for path, raw in (known_bytes or {}).items()}
+    # Paths are compared exactly as they resolve: case-folding them would merge two
+    # files that differ only in case on a case-sensitive filesystem.
+    captured = {str(path.resolve()): raw for path, raw in (known_bytes or {}).items()}
     unique: dict[tuple[str, str], tuple[str, Path]] = {}
     for role, raw_path in artifacts:
         if not role or not role.strip():
@@ -145,7 +147,7 @@ def pipeline_recovery_revision(
             raise ValueError(
                 f"Recovery artifact escapes the project root: {_project_relative(path, root)}"
             )
-        key = (role, str(path).casefold())
+        key = (role, str(path))
         unique[key] = (role, path)
 
     manifest: list[dict[str, str]] = []
@@ -155,7 +157,7 @@ def pipeline_recovery_revision(
     )
     for role, path in ordered:
         entry = {"role": role, "path": _project_relative(path, root)}
-        key_path = str(path).casefold()
+        key_path = str(path)
         try:
             if key_path in captured:
                 known = captured[key_path]

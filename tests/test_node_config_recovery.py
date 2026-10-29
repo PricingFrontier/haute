@@ -168,6 +168,24 @@ def test_an_issue_is_the_engines_own_refusal_at_the_setting_it_names(
     ] == [(path, code, message)]
 
 
+@pytest.mark.parametrize("name", [["rate"], 3, None])
+def test_a_constant_name_that_is_not_text_is_an_issue_not_a_crash(name: object) -> None:
+    """The engine refuses the name with its node-config error, which Recover reports at
+    the setting; neither validation nor reconciliation raises."""
+    from haute.errors import NodeConfigError
+
+    config = {"values": [{"name": name, "value": "1"}]}
+    with pytest.raises(NodeConfigError, match="is not text"):
+        constant_frame(config["values"])
+
+    issues = validate_recovery_config(NodeType.CONSTANT, config)
+    assert [(issue.path, issue.code) for issue in issues if issue.severity == "error"] == [
+        ("/values", "invalid_value")
+    ]
+    recovered = reconcile_config(NodeType.CONSTANT, config)
+    assert any(issue.path == "/values" for issue in recovered.issues)
+
+
 @pytest.mark.parametrize(
     ("node_type", "config"),
     [

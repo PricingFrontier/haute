@@ -70,7 +70,15 @@ from haute._registry import (
 from haute._registry import (
     set_codegen as _set_codegen_in_registry,
 )
-from haute._source_layout import INDENT, Doc, arguments, literal, print_doc, python_lines
+from haute._source_layout import (
+    INDENT,
+    Doc,
+    arguments,
+    indent_code,
+    literal,
+    print_doc,
+    python_lines,
+)
 from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import (
     COLUMN_CONFIG_KEYS,
@@ -227,9 +235,7 @@ def render_node_source(
         if not source.description and _starts_with_string(source.body):
             # Keep a leading string in the code: an empty docstring comes first.
             lines.append(f'{INDENT}""""""')
-        lines.extend(
-            f"{INDENT}{line}" if line.strip() else "" for line in python_lines(source.body)
-        )
+        lines.extend(indent_code(source.body, INDENT))
     return "\n".join(lines) + "\n"
 
 

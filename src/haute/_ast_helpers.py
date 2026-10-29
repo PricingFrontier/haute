@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from haute._global_constants import module_binding_lines
-from haute._source_layout import python_lines
+from haute._source_layout import lines_inside_literals, python_lines
 from haute._submodel_paths import SUBMODEL_PACKAGE
 from haute._types import (
     DECORATOR_TO_NODE_TYPE,
@@ -294,15 +294,27 @@ def _strip_docstring(lines: list[str]) -> list[str]:
 
 
 def _dedent(code: str) -> str:
-    """Remove common leading whitespace."""
+    """Remove common leading whitespace, outside string literals.
+
+    A line that begins inside a multiline string keeps its text: its leading
+    whitespace is the string's own, and it takes no part in the common indent.
+    """
     code_lines = python_lines(code)
     if not code_lines:
         return code
-    indents = [len(line) - len(line.lstrip()) for line in code_lines if line.strip()]
+    inside = lines_inside_literals(code)
+    indents = [
+        len(line) - len(line.lstrip())
+        for number, line in enumerate(code_lines, start=1)
+        if line.strip() and number not in inside
+    ]
     if not indents:
         return code
     m = min(indents)
-    return "\n".join(line[m:] if len(line) >= m else line for line in code_lines)
+    return "\n".join(
+        line if number in inside else line[m:] if len(line) >= m else line
+        for number, line in enumerate(code_lines, start=1)
+    )
 
 
 # ---------------------------------------------------------------------------

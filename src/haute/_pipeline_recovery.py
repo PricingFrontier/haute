@@ -120,7 +120,9 @@ class _SourceCaptures:
 
     @staticmethod
     def _key(path: Path) -> str:
-        return str(path.resolve()).casefold()
+        # The exact resolved path: case-folding it would let two files that differ
+        # only in case on a case-sensitive filesystem share one file's bytes.
+        return str(path.resolve())
 
     def read_bytes(self, path: Path) -> bytes:
         key = self._key(path)

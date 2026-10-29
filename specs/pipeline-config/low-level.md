@@ -809,8 +809,9 @@ it on the reading node instead of aborting the walk, and every other run propaga
   Explore-node topology violations (`_graph_shape.py`); a pipeline or submodel source that is
   not UTF-8, naming the file and the byte with its line and column.
 - **`NodeConfigError`** (`haute.errors`, setting `values`) — a Constant node with two
-  entries of one non-empty name, raised by `_node_apply.constant_frame` (canvas builder and
-  standalone run alike) before any frame is built.
+  entries of one non-empty name, or an entry whose name is not text, raised by
+  `_node_apply.constant_frame` (canvas builder and standalone run alike) before any frame is
+  built.
 - **`ContractMismatchError`** (`haute.errors`) — a user-declared `contract=` disagrees with
   the config-derived contract on the inputs and/or outputs side; the message lists which
   columns are missing from, or extra in, the builder-derived side.

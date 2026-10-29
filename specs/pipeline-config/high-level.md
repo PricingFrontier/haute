@@ -695,7 +695,8 @@ already-defined `f` registers it. A
 Constant node whose `values` hold two entries with one non-empty name is refused with a
 node-config error naming the name, wherever its frame is built (`constant_frame`, which
 canvas execution and a standalone run share), rather than keeping the second value; an
-entry without a name is skipped, as before. An
+entry whose name is not text is refused the same way, and an entry without a name is
+skipped, as before. An
 `async def` node body is rejected at parse time. A user-declared `contract=` that disagrees
 with the contract derived from the rest of the node's config raises, naming which side
 (inputs/outputs) mismatched and what was missing or extra on each. Ambiguous or absent

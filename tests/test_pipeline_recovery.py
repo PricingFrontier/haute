@@ -1291,6 +1291,50 @@ def test_recovery_revision_authenticates_the_sidecars_and_configs_the_document_p
     )
 
 
+def test_two_configs_differing_only_in_case_never_share_bytes(tmp_path: Path) -> None:
+    """The load's capture keys files by their exact path: where the filesystem keeps
+    ``Rates.json`` and ``rates.json`` apart, each node shows its own file, as the strict
+    parse reads it; where it does not, both name the one file and show it."""
+    import json
+
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    folder = tmp_path / "config" / "constant"
+    folder.mkdir(parents=True)
+    upper, lower = folder / "Rates.json", folder / "rates.json"
+    upper.write_text('{"values": [{"name": "base", "value": "1"}]}', encoding="utf-8")
+    lower.write_text('{"values": [{"name": "base", "value": "2"}]}', encoding="utf-8")
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+
+        pipeline = haute.Pipeline("cases")
+
+        @pipeline.constant(config="config/constant/Rates.json")
+        def upper():
+            ...
+
+        @pipeline.constant(config="config/constant/rates.json")
+        def lower():
+            ...
+        """,
+    )
+    on_disk = {
+        "upper": json.loads(upper.read_text(encoding="utf-8")),
+        "lower": json.loads(lower.read_text(encoding="utf-8")),
+    }
+
+    strict = {node.id: node.data.config for node in parse_pipeline_file(pipeline_file).nodes}
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "ready"
+    assert {node.authored_id: node.config for node in document.nodes} == on_disk
+    assert {node_id: config["values"] for node_id, config in strict.items()} == {
+        node_id: config["values"] for node_id, config in on_disk.items()
+    }
+
+
 def test_ready_document_revision_authenticates_strictly_parsed_child_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

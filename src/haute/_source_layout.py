@@ -22,8 +22,10 @@ values and names they control, never parsed source.
 
 from __future__ import annotations
 
+import io
 import math
 import re
+import tokenize
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -235,6 +237,56 @@ def python_lines(text: str, *, keepends: bool = False) -> list[str]:
     """
     lines = _PYTHON_LINE.findall(text)
     return lines if keepends else [line.rstrip("\r\n") for line in lines]
+
+
+#: Tokens that open and close a template string (an f-string from Python 3.12,
+#: a t-string from 3.14), whose text spans every line between them.
+_TEMPLATE_STARTS = frozenset(
+    getattr(tokenize, name)
+    for name in ("FSTRING_START", "TSTRING_START")
+    if hasattr(tokenize, name)
+)
+_TEMPLATE_ENDS = frozenset(
+    getattr(tokenize, name) for name in ("FSTRING_END", "TSTRING_END") if hasattr(tokenize, name)
+)
+
+
+def lines_inside_literals(code: str) -> frozenset[int]:
+    """The 1-based numbers of the lines of *code* that begin inside a string literal.
+
+    Such a line's text, its leading whitespace included, belongs to a multiline
+    string, so code that is indented, dedented or stripped of trailing
+    whitespace must leave it as it is. A whole f-string counts, its replacement
+    fields included, which leaves them as written too. Code that does not
+    tokenize does not parse either: what was found before the failure is
+    returned, and the parse reports the failure.
+    """
+    inside: set[int] = set()
+    template_starts: list[int] = []
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(code).readline):
+            if token.type == tokenize.STRING:
+                inside.update(range(token.start[0] + 1, token.end[0] + 1))
+            elif token.type in _TEMPLATE_STARTS:
+                template_starts.append(token.start[0])
+            elif token.type in _TEMPLATE_ENDS and template_starts:
+                inside.update(range(template_starts.pop() + 1, token.end[0] + 1))
+    except (tokenize.TokenError, SyntaxError):
+        pass
+    return frozenset(inside)
+
+
+def indent_code(code: str, indent: str) -> list[str]:
+    """*code*'s lines indented by *indent*, as a function body holds them.
+
+    A line that begins inside a string literal keeps its text, and a blank line
+    outside one becomes empty, so the body's strings hold what *code*'s held.
+    """
+    inside = lines_inside_literals(code)
+    return [
+        line if number in inside else f"{indent}{line}" if line.strip() else ""
+        for number, line in enumerate(python_lines(code), start=1)
+    ]
 
 
 def literal(value: object) -> Doc:
