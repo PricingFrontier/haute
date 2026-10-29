@@ -62,6 +62,19 @@ def is_identifier_name(name: str) -> bool:
     return isinstance(name, str) and _IDENTIFIER_NAME.fullmatch(name) is not None
 
 
+class PathNoun(NamedTuple):
+    """What a rejection calls the path: in prose, before "selector", and as its context key."""
+
+    prose: str
+    selector: str
+    key: str
+
+
+OUTPUT_PATH = PathNoun("output path", "output-path", "output_path")
+TABLE_PATH = PathNoun("table path", "table-path", "table_path")
+COLUMN_PATH = PathNoun("column path", "column-path", "column_path")
+
+
 class _Seg(NamedTuple):
     """One output-path segment: a JSON key, and whether it iterates an array."""
 
@@ -81,7 +94,7 @@ class _ParsedPath:
     segments: tuple[_Seg, ...]
 
 
-def parse_path(raw: str, error: _PathError, *, noun: str = "output path") -> _ParsedPath:
+def parse_path(raw: str, error: _PathError, *, noun: PathNoun = OUTPUT_PATH) -> _ParsedPath:
     """Parse a path, rejecting every selector outside the accepted subset (§2/§3).
 
     Accepts the root ``$[:]``, dot name selectors (``.name``), and the
@@ -91,12 +104,12 @@ def parse_path(raw: str, error: _PathError, *, noun: str = "output path") -> _Pa
     (``['a.b']``), and non-array wildcard (``.*``, ``[*]``) selectors — the
     dropped ``.:`` dot form included. Raises the injected ``error`` (a
     ``HauteError`` subclass) on anything else. *noun* names the path in the
-    message and the context key that carries it (``output path`` →
-    ``output_path``; INPUT passes ``table path`` or ``column path``).
+    message and the context key that carries it (:data:`OUTPUT_PATH` by default;
+    INPUT passes :data:`TABLE_PATH` or :data:`COLUMN_PATH`).
     """
-    context = {noun.replace(" ", "_"): raw}
+    context = {noun.key: raw}
     if not raw.startswith(_ROOT_ARRAY):
-        raise error(f"{noun} must start with '$[:]'", **context)
+        raise error(f"{noun.prose} must start with '$[:]'", **context)
 
     i = len(_ROOT_ARRAY)
 
@@ -107,14 +120,14 @@ def parse_path(raw: str, error: _PathError, *, noun: str = "output path") -> _Pa
             m = _DOT_NAME.match(raw, i)
             if m is None:
                 raise error(
-                    f"unsupported {noun.replace(' ', '-')} selector "
+                    f"unsupported {noun.selector} selector "
                     "(only '.name' and whole-array '[:]' are accepted)",
                     **context,
                 )
             name = m.group(1)
             i = m.end()
         else:
-            raise error(f"malformed {noun}", **context)
+            raise error(f"malformed {noun.prose}", **context)
 
         is_array = raw[i : i + len(_ARRAY)] == _ARRAY
         if is_array:
@@ -122,7 +135,7 @@ def parse_path(raw: str, error: _PathError, *, noun: str = "output path") -> _Pa
         segments.append(_Seg(name, is_array))
 
     if not segments:
-        raise error(f"{noun} must name a leaf field, not the bare root array", **context)
+        raise error(f"{noun.prose} must name a leaf field, not the bare root array", **context)
     return _ParsedPath(raw, tuple(segments))
 
 
@@ -130,7 +143,7 @@ def parse_data_path(
     raw: str,
     error: _PathError,
     *,  # pragma: no mutate
-    noun: str,
+    noun: PathNoun,
     allow_root: bool = False,
     reserved_leaf: str | None = None,  # pragma: no mutate (annotation '|' is a no-op)
 ) -> _ParsedPath:
@@ -162,7 +175,7 @@ def parse_data_path(
     (``[*]``, index/range/filter, ``..``, ``.:``, whitespace, non-identifier
     dot keys) — is delegated to :func:`parse_path`, so INPUT and OUTPUT share
     one acceptance grammar. Raises the injected *error* on any rejection, the
-    path named by *noun* (``table path`` or ``column path``).
+    path named by *noun* (:data:`TABLE_PATH` or :data:`COLUMN_PATH`).
     """
     # Reserved-leaf sentinel: peel a trailing ``.<reserved_leaf>`` BEFORE the
     # identifier-pure parse (the sentinel is not an identifier), then re-append
@@ -187,7 +200,7 @@ def parse_data_path(
     if sentinel_seg and not parsed.segments[-1].is_array:
         raise error(
             f"'{reserved_leaf}' names an array element itself, so it must follow '[:]'",
-            **{noun.replace(" ", "_"): raw},
+            **{noun.key: raw},
         )
     return _ParsedPath(raw, (*parsed.segments, *sentinel_seg))
 

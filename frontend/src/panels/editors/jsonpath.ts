@@ -63,6 +63,17 @@ export interface ParsedPath {
   segments: Seg[]
 }
 
+/** What a rejection calls the path: in prose, and before "selector". Mirror of
+ * backend `PathNoun` (the frontend's `PathError` carries no context key). */
+export interface PathNoun {
+  prose: string
+  selector: string
+}
+
+export const OUTPUT_PATH: PathNoun = { prose: "output path", selector: "output-path" }
+export const TABLE_PATH: PathNoun = { prose: "table path", selector: "table-path" }
+export const COLUMN_PATH: PathNoun = { prose: "column path", selector: "column-path" }
+
 /** The rejection thrown by {@link parsePath} — mirrors the backend's injected
  * `_PathError`, carrying the offending path under `path`. The editor wrappers
  * surface `.message` as the validator's error string. */
@@ -84,11 +95,11 @@ export class PathError extends Error {
  * descendant (`..`), bracket-quoted name (`['a.b']`), and non-array wildcard
  * (`.*`, `[*]`) selectors — the dropped `.:` dot form included. Throws
  * {@link PathError} on anything else; `noun` names the path in the message (INPUT
- * passes `table path` or `column path`).
+ * passes {@link TABLE_PATH} or {@link COLUMN_PATH}).
  */
-export function parsePath(raw: string, noun = "output path"): ParsedPath {
+export function parsePath(raw: string, noun: PathNoun = OUTPUT_PATH): ParsedPath {
   if (!raw.startsWith(ROOT_ARRAY)) {
-    throw new PathError(`${noun} must start with '$[:]'`, raw)
+    throw new PathError(`${noun.prose} must start with '$[:]'`, raw)
   }
 
   let i = ROOT_ARRAY.length
@@ -101,7 +112,7 @@ export function parsePath(raw: string, noun = "output path"): ParsedPath {
       const m = DOT_NAME.exec(raw.slice(i))
       if (m === null) {
         throw new PathError(
-          `unsupported ${noun.replace(" ", "-")} selector ` +
+          `unsupported ${noun.selector} selector ` +
             "(only '.name' and whole-array '[:]' are accepted)",
           raw,
         )
@@ -109,7 +120,7 @@ export function parsePath(raw: string, noun = "output path"): ParsedPath {
       name = m[1]
       i += m[0].length
     } else {
-      throw new PathError(`malformed ${noun}`, raw)
+      throw new PathError(`malformed ${noun.prose}`, raw)
     }
 
     const isArray = raw.slice(i, i + ARRAY.length) === ARRAY
@@ -120,14 +131,14 @@ export function parsePath(raw: string, noun = "output path"): ParsedPath {
   }
 
   if (segments.length === 0) {
-    throw new PathError(`${noun} must name a leaf field, not the bare root array`, raw)
+    throw new PathError(`${noun.prose} must name a leaf field, not the bare root array`, raw)
   }
   return { raw, segments }
 }
 
 export interface ParseDataPathOptions {
-  /** What a rejection calls the path: `table path` or `column path`. */
-  noun: string
+  /** What a rejection calls the path: {@link TABLE_PATH} or {@link COLUMN_PATH}. */
+  noun: PathNoun
   /** With `allowRoot`, `$[:]` parses to zero segments — the
    * spelling an INPUT *table path* uses for the outermost level. */
   allowRoot?: boolean
@@ -243,7 +254,7 @@ export const RESERVED_LEAF = "$value"
  */
 export function validateInputTablePath(path: string): string | null {
   return asError(() => {
-    const parsed = parseDataPath(path, { noun: "table path", allowRoot: true, reservedLeaf: RESERVED_LEAF })
+    const parsed = parseDataPath(path, { noun: TABLE_PATH, allowRoot: true, reservedLeaf: RESERVED_LEAF })
     const last = parsed.segments[parsed.segments.length - 1]
     if (parsed.segments.length > 0 && last && !last.isArray) {
       throw new PathError(
@@ -264,7 +275,7 @@ export function validateInputTablePath(path: string): string | null {
  */
 export function validateInputColumnPath(path: string): string | null {
   return asError(() => {
-    const parsed = parseDataPath(path, { noun: "column path", allowRoot: false, reservedLeaf: RESERVED_LEAF })
+    const parsed = parseDataPath(path, { noun: COLUMN_PATH, allowRoot: false, reservedLeaf: RESERVED_LEAF })
     // The leaf is the maximal trailing run of object (non-array) hops; reject a
     // path whose deepest segment is an array (it names no leaf field).
     const last = parsed.segments[parsed.segments.length - 1]
@@ -286,7 +297,7 @@ export function validateInputColumnPath(path: string): string | null {
  * inherit/cascade comparisons. The root array `$[:]` yields `[]`. Throws
  * {@link PathError} on a malformed path. */
 export function frameSegments(framePath: string): Seg[] {
-  return parseDataPath(framePath, { noun: "table path", allowRoot: true, reservedLeaf: RESERVED_LEAF })
+  return parseDataPath(framePath, { noun: TABLE_PATH, allowRoot: true, reservedLeaf: RESERVED_LEAF })
     .segments
 }
 
@@ -303,7 +314,7 @@ export function arrayDepth(path: string): number {
  * string `"$value"`. Mirror of backend `parse_column_path_full`. Throws
  * {@link PathError} on a path that names no leaf. */
 export function parseColumnPathFull(path: string): { locating: Seg[]; leaf: string } {
-  const { segments } = parseDataPath(path, { noun: "column path", allowRoot: false, reservedLeaf: RESERVED_LEAF })
+  const { segments } = parseDataPath(path, { noun: COLUMN_PATH, allowRoot: false, reservedLeaf: RESERVED_LEAF })
   let lastArray = -1
   for (let i = 0; i < segments.length; i++) {
     if (segments[i].isArray) lastArray = i

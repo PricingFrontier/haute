@@ -19,6 +19,7 @@ import {
   validateInputColumnPath,
   PathError,
   RESERVED_LEAF,
+  COLUMN_PATH,
   type Seg,
 } from "../../panels/editors/jsonpath"
 
@@ -83,37 +84,37 @@ describe("parsePath - §3 forbidden set rejected (mirror of backend probe)", () 
 
 describe("parseDataPath - INPUT mode", () => {
   it("bare root with allowRoot → zero segments (table root level)", () => {
-    const r = parseDataPath("$[:]", { noun: "column path", allowRoot: true })
+    const r = parseDataPath("$[:]", { noun: COLUMN_PATH, allowRoot: true })
     expect(r.segments).toEqual([])
   })
 
   it("bare root WITHOUT allowRoot is rejected (a column path must name a leaf)", () => {
-    expect(() => parseDataPath("$[:]", { noun: "column path", allowRoot: false })).toThrow(PathError)
+    expect(() => parseDataPath("$[:]", { noun: COLUMN_PATH, allowRoot: false })).toThrow(PathError)
   })
 
   it("rejects a bare-$ object root", () => {
-    expect(() => parseDataPath("$.a", { noun: "column path" })).toThrow(/must start with '\$\[:\]'/)
+    expect(() => parseDataPath("$.a", { noun: COLUMN_PATH })).toThrow(/must start with '\$\[:\]'/)
   })
 
   it("accepts the $value reserved leaf as a trailing hop after an array", () => {
-    expect(parseDataPath("$[:].xs[:].$value", { noun: "column path", reservedLeaf: RESERVED_LEAF }).segments).toEqual<Seg[]>([
+    expect(parseDataPath("$[:].xs[:].$value", { noun: COLUMN_PATH, reservedLeaf: RESERVED_LEAF }).segments).toEqual<Seg[]>([
       { name: "xs", isArray: true },
       { name: "$value", isArray: false },
     ])
   })
 
   it.each(["$[:].xs.$value", "$[:].xs[:].a.$value"])("refuses $value after an object hop (%s)", (raw) => {
-    expect(() => parseDataPath(raw, { noun: "column path", reservedLeaf: RESERVED_LEAF })).toThrow(/must follow '\[:\]'/)
+    expect(() => parseDataPath(raw, { noun: COLUMN_PATH, reservedLeaf: RESERVED_LEAF })).toThrow(/must follow '\[:\]'/)
   })
 
   it("accepts $value sitting directly on the root array", () => {
-    expect(parseDataPath("$[:].$value", { noun: "column path", reservedLeaf: RESERVED_LEAF }).segments).toEqual<Seg[]>([
+    expect(parseDataPath("$[:].$value", { noun: COLUMN_PATH, reservedLeaf: RESERVED_LEAF }).segments).toEqual<Seg[]>([
       { name: "$value", isArray: false },
     ])
   })
 
   it("$value is NOT an identifier, so it is rejected without the reservedLeaf seam", () => {
-    expect(() => parseDataPath("$[:].$value", { noun: "column path" })).toThrow(PathError)
+    expect(() => parseDataPath("$[:].$value", { noun: COLUMN_PATH })).toThrow(PathError)
   })
 })
 

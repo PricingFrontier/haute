@@ -63,7 +63,14 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Literal, TypedDict
 
 from haute._graph_utils import _sanitize_identifier_characters, is_frame_label
-from haute._jsonpath import _Seg, make_output_path, parse_data_path
+from haute._jsonpath import (
+    COLUMN_PATH,
+    TABLE_PATH,
+    PathNoun,
+    _Seg,
+    make_output_path,
+    parse_data_path,
+)
 from haute.errors import HauteError
 
 _V2_TABLES_KEY = "tables"
@@ -221,7 +228,7 @@ def _to_pathsegs(segments: tuple[_Seg, ...]) -> tuple[PathSeg, ...]:
     return tuple((seg.name, seg.is_array) for seg in segments)
 
 
-def _parse_dollar_path(path: str, *, noun: str, allow_root: bool = False) -> list[PathSeg]:
+def _parse_dollar_path(path: str, *, noun: PathNoun, allow_root: bool = False) -> list[PathSeg]:
     """Parse a ``$``-rooted dotted path into ``(key, is_array)`` segments.
 
     Delegates the whole acceptance grammar to the shared lynchpin
@@ -232,7 +239,7 @@ def _parse_dollar_path(path: str, *, noun: str, allow_root: bool = False) -> lis
     index/range/filter, ``..``, ``.:``, whitespace, non-identifier dot keys).
     With *allow_root* ``$[:]`` parses to ``[]`` (a table
     path's outermost level); without it a leaf is required (a column path).
-    *noun* names the path in a rejection: ``table path`` or ``column path``.
+    *noun* names the path in a rejection: a table path or a column path.
     """
     parsed = parse_data_path(
         path,
@@ -280,7 +287,7 @@ def parse_table_path(path: str) -> tuple[PathSeg, ...]:
     key — that key's leaves are columns of the enclosing array level).
     """
     # A table path may sit at the bare root array (``$[:]`` -> ``()``).
-    segments = _parse_dollar_path(path, noun="table path", allow_root=True)
+    segments = _parse_dollar_path(path, noun=TABLE_PATH, allow_root=True)
     if segments and not segments[-1][1]:
         raise ApiInputSchemaError(
             "v2 table path must end at an array '[:]' — a bare object key is not a "
@@ -311,7 +318,7 @@ def parse_column_path_full(column_path: str) -> tuple[tuple[PathSeg, ...], str]:
     """
     # A column path must name a leaf — the bare root iterator (``$`` / ``$[:]``)
     # is rejected by the shared parser (``allow_root`` left False).
-    segments = _parse_dollar_path(column_path, noun="column path")
+    segments = _parse_dollar_path(column_path, noun=COLUMN_PATH)
     # The leaf is the maximal trailing run of object (non-array) hops; the
     # locating segments are everything up to and including the deepest array.
     last_array = -1
