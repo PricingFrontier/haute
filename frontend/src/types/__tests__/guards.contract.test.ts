@@ -2991,8 +2991,8 @@ describe("API response guards", () => {
 
     expect(created.submodel_file).toBe("modules/pricing.py")
     expect(created.source_revision).toBe("revision-create-1")
-    expect(created.graph.edges[0].targetPort).toBe("base")
-    expect(created.graph.edges[1].sourcePort).toBe("quotes")
+    expect(created.graph.edges[0].targetHandle).toBe("in__base")
+    expect(created.graph.edges[1].sourceHandle).toBe("out__quotes")
     expect(loaded.submodel_name).toBe("pricing")
     expect(loaded.definition_id).toBe("pricing-definition")
     expect(loaded.submodel_file).toBe("modules/pricing.py")

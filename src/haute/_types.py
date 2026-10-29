@@ -1069,29 +1069,13 @@ class GraphEdge(BaseModel):
     id: str
     source: str
     target: str
+    # A submodel occurrence's handles are ``in__<public-port>`` and
+    # ``out__<public-port>``; its definition resolves each public port to an
+    # internal endpoint.
     sourceHandle: str | None = None  # noqa: N815 — matches React Flow frontend convention
     targetHandle: str | None = None  # noqa: N815 — matches React Flow frontend convention
-    # A submodel occurrence consumes one handle per boundary side to encode
-    # ``in__<public-port>`` / ``out__<public-port>``. Its definition resolves
-    # that public port to an internal endpoint. Preserve the authored connect
-    # port separately until flattening or codegen restores it. Ordinary edges
-    # omit these fields from serialized payloads.
-    sourcePort: str | None = Field(  # noqa: N815 — serialized graph convention
-        default=None,
-        exclude_if=lambda value: value is None,
-    )
-    targetPort: str | None = Field(  # noqa: N815 — serialized graph convention
-        default=None,
-        exclude_if=lambda value: value is None,
-    )
 
-    @field_validator(
-        "sourceHandle",
-        "targetHandle",
-        "sourcePort",
-        "targetPort",
-        mode="before",
-    )
+    @field_validator("sourceHandle", "targetHandle", mode="before")
     @classmethod
     def _reject_empty_handle(cls, v: object) -> object:
         """An edge handle is either a non-empty port name OR ``None``.

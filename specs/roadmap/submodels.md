@@ -6,15 +6,12 @@ Submodel definitions and occurrences, and the other mechanisms for reusing
 logic in a pipeline. Current behaviour is specified in
 [the submodels specification](../submodels/high-level.md). `SUB-R01`
 comes from the [23 September 2026 codebase review](codebase-review-2026-09-23.md).
-`SUB-R05` comes from the
-[25 October 2026 codebase review](codebase-review-2026-10-25.md).
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | SUB-R01 | Planned | P3 | One mechanism reuses a node or group of nodes. |
-| SUB-R05 | Planned | P3 | The no-op alias rewrite, the hidden-port fields nothing produces, the parse that create and dissolve never read, and the second validation per flatten are gone. |
 
 ## Planned improvements
 
@@ -74,36 +71,3 @@ is in the [specification README](../README.md#canonical-only-format-policy).
 `docs/building-models/nodes/instances.md`;
 `docs/building-models/nodes/submodel.md`;
 `frontend/src/utils/canonicalSubmodelBoundaryEditing.ts`.
-
-### SUB-R05 — Dead rewrites, hidden ports and double work
-**Why:** `rewrite_submodel_alias_references` is a no-op: its only caller passes
-the identity map, so every occurrence is copied through `with_config` for
-nothing, and `rewrite_node_references` exists only to serve it. The "hidden
-authored port" fields `sourcePort` and `targetPort` are a format nothing
-produces: the parser always writes `None`, the browser and the recovery document
-only pass a value through, yet every boundary edge identity, the dedupe key, two
-port fallbacks and every clone thread them. Create and dissolve parse the whole
-on-disk pipeline (hashing every source and sidecar for its revision) and use
-nothing from it, since both transform the request graph and take the editor
-document's revision. Every flatten validates the graph twice, in `flatten_graph`
-and again in `expand_submodel_instances`.
-
-**Plan:** Delete the two rewriters and the parser call; remove the two fields,
-the hidden-port branch of the edge identity, the fallbacks and the dedupe
-columns, so a boundary edge's identity is the ordinary four-field form; parse the
-strict graph only for drill-down; pass the resolved occurrence map into
-`expand_submodel_instances`.
-
-**Acceptance:** The named symbols and fields are gone; create and dissolve
-perform no pipeline parse (a counting test); one validation per flatten; the
-submodel tests pass unchanged.
-
-**Dependencies:** `SUB-R01` removes node-level instances, not these.
-
-**Evidence:** `src/haute/_submodel_instances.py::rewrite_submodel_alias_references`;
-`src/haute/_submodel_instances.py::rewrite_node_references`;
-`src/haute/_types.py::GraphEdge`; `src/haute/_graph_utils.py::_edge_id`;
-`src/haute/routes/submodel.py::_load_parent_document`;
-`src/haute/_flatten.py::flatten_graph`;
-`src/haute/_submodel_instances.py::expand_submodel_instances`.
-

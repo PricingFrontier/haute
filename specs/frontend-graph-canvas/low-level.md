@@ -204,10 +204,9 @@ reconciliation rather than dropping them or committing a second mutation.
   frontend-shared) — the 19 persisted node strings accepted by guards and
   consumed by canvas metadata. It includes `dataInput`/`dataOutput` and no
   historical Data Source/Data Sink aliases.
-- **`PipelineEdge`** (`types/node.ts`) — React Flow's `Edge` plus optional
-  `sourcePort`/`targetPort`. Those fields retain an authored connect port while a submodel
-  boundary temporarily consumes `sourceHandle`/`targetHandle`; API response types and outgoing
-  `GraphPayload` use this shape explicitly.
+- **`PipelineEdge`** (`types/node.ts`) — React Flow's `Edge`. A submodel boundary edge names
+  its public port in `sourceHandle`/`targetHandle` (`out__<name>`/`in__<name>`); API response
+  types and outgoing `GraphPayload` use this shape explicitly.
 - **Request-facing document refs** — `sourceFileRef`, `sourceRevisionRef`, and
   `preservedBlocksRef` mirror non-editable persisted metadata outside the
   four-field undoable graph store. Load replaces all three; an accepted
@@ -817,8 +816,8 @@ reconciliation rather than dropping them or committing a second mutation.
     Captures an exact live graph/preamble/submodel snapshot for the successful
     saved baseline, then projects a separate immutable canonical request graph.
     That request recursively strips React Flow presentation and every
-    underscore-prefixed node/edge field, while retaining canonical `PipelineEdge.sourcePort`/
-    `targetPort`; the live snapshot keeps its authoritative identities. The
+    underscore-prefixed node/edge field; the live snapshot keeps its authoritative
+    identities. The
     request also sends `preservedBlocksRef.current` unchanged.
     It then stamps the attempt with
     `++saveRequestSeq.current`. On a successful `savePipeline()` response,
@@ -1756,8 +1755,8 @@ again through the editor and save paths.
   - `frontend/src/utils/__tests__/graphHelpers.test.ts` — `computeNextNodeId` (empty array, single/
     multiple suffixes, non-numeric-suffix nodes ignored, single- and
     multi-digit and zero suffixes); `normalizeEdges` (empty input, type/
-    animated normalisation, authored `sourcePort`/`targetPort` and other
-    fields preserved, no source-array mutation, multiple edges).
+    animated normalisation, submodel boundary handles and other fields
+    preserved, no source-array mutation, multiple edges).
   - `frontend/src/utils/__tests__/graphPerformance.test.ts` — below/at-threshold behaviour for the
     shared lite-effects size limit.
   - `frontend/src/utils/__tests__/makePreviewData.test.ts` — defaults, overrides, nodeId/nodeLabel

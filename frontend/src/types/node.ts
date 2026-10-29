@@ -127,15 +127,10 @@ export type PipelineFlowNode = Node<PipelineNodeData>
 /**
  * Persisted pipeline edge shape.
  *
- * A submodel boundary consumes sourceHandle/targetHandle to identify the
- * child node represented by the placeholder. These supplemental fields keep
- * the authored connect ports alive until the backend flattens or regenerates
- * the graph.
+ * A submodel boundary edge names its public port in its handle,
+ * `out__<port>` or `in__<port>`.
  */
-export type PipelineEdge = Edge<Record<string, unknown>> & {
-  sourcePort?: string | null
-  targetPort?: string | null
-}
+export type PipelineEdge = Edge<Record<string, unknown>>
 
 /** Complete persisted graph envelope returned by the pipeline API. */
 export interface PipelineGraph {

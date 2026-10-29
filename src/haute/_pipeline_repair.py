@@ -979,8 +979,8 @@ def _connection_identity(
     return (
         connection.source_authored_id,
         connection.target_authored_id,
-        connection.source_port,
-        connection.target_port,
+        connection.source_handle,
+        connection.target_handle,
     )
 
 
@@ -998,8 +998,8 @@ def _removes_only(
         return counts
 
     def without_unresolved(snapshot: dict[str, Any]) -> dict[str, Any]:
-        # Edges compare by their ends: an edge from a submodel's output carries
-        # its port only while the definition fails to load.
+        # Edges compare by their ends: a removal is judged on which nodes it
+        # leaves connected.
         return {
             "nodes": sorted(snapshot["nodes"]),
             "edges": sorted((edge[0], edge[1]) for edge in snapshot["edges"]),
@@ -1189,8 +1189,8 @@ def _recovery_snapshot(document: PipelineEditorDocument) -> dict[str, Any]:
                 (
                     edge.source_authored_id,
                     edge.target_authored_id,
-                    edge.source_port,
-                    edge.target_port,
+                    edge.source_handle,
+                    edge.target_handle,
                 )
                 for edge in graph.edges
             ],
@@ -1198,8 +1198,8 @@ def _recovery_snapshot(document: PipelineEditorDocument) -> dict[str, Any]:
                 (
                     edge.source_authored_id,
                     edge.target_authored_id,
-                    edge.source_port,
-                    edge.target_port,
+                    edge.source_handle,
+                    edge.target_handle,
                 )
                 for edge in graph.unresolved_connections
             ],

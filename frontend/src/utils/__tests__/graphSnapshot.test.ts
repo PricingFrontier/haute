@@ -91,10 +91,9 @@ const NODE2 = {
 const EDGE = {
   id: "e1",
   source: "n1",
-  sourceHandle: "out",
+  sourceHandle: null,
   target: "n0",
   targetHandle: "in",
-  sourcePort: null,
   selected: true,
 } as PipelineEdge
 
@@ -123,7 +122,7 @@ const SUBMODELS: Record<string, unknown> = {
  * `null` values preserved.
  */
 const EXPECTED_FINGERPRINT =
-  '{"edges":[{"id":"e1","source":"n1","sourceHandle":"out","sourcePort":null,"target":"n0","targetHandle":"in"}],' +
+  '{"edges":[{"id":"e1","source":"n1","sourceHandle":null,"target":"n0","targetHandle":"in"}],' +
   '"globalConstants":[],' +
   '"nodes":[{"data":{"alpha":1,"label":"price"},"id":"n1","position":{"x":10,"y":20},"type":"expression"},' +
   '{"data":{"config":{"_kept":true},"label":"src"},"id":"n0","position":{"x":0,"y":0},"type":"dataInput"}],' +
@@ -209,10 +208,9 @@ describe("persisted-fingerprint serialized format", () => {
 
     const reorderedEdge = {
       targetHandle: "in",
-      sourcePort: null,
       target: "n0",
       selected: true,
-      sourceHandle: "out",
+      sourceHandle: null,
       source: "n1",
       id: "e1",
     } as PipelineEdge

@@ -1106,8 +1106,6 @@ class RecoveryPipelineEdge(BaseModel):
     target_authored_id: str = Field(min_length=1)
     source_handle: str | None = None
     target_handle: str | None = None
-    source_port: str | None = None
-    target_port: str | None = None
     input_name: str | None
     availability: PipelineElementAvailability
     source_span: RecoverySourceSpan | None = None
@@ -1127,8 +1125,6 @@ class RecoveryUnresolvedConnection(BaseModel):
     target_authored_id: str = Field(min_length=1)
     source_handle: str | None = None
     target_handle: str | None = None
-    source_port: str | None = None
-    target_port: str | None = None
     source_span: RecoverySourceSpan | None = None
     diagnostic_ids: list[str] = Field(min_length=1)
 

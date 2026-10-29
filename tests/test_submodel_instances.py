@@ -16,7 +16,6 @@ from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._parser_submodels import extract_submodel_registrations, parse_submodel_source
 from haute._polars_io_registry import validate_data_input_config
 from haute._submodel_instances import (
-    expand_submodel_instances,
     qualified_runtime_node_id,
     rewrite_boundary_input_names,
     validate_submodel_instances,
@@ -160,7 +159,7 @@ def test_unrouted_input_port_round_trips_and_is_legal_when_unbound() -> None:
     restored = SubmodelDefinition.model_validate(definition.model_dump(by_alias=True))
 
     assert restored.input_ports == [port]
-    expanded = expand_submodel_instances(
+    expanded = flatten_graph(
         PipelineGraph(
             nodes=[_instance("instance_a", "scoring")],
             edges=[],
@@ -189,7 +188,7 @@ def test_expand_rejects_parent_binding_to_unrouted_input_port() -> None:
     )
 
     with pytest.raises(ParseError, match="no internal targets") as exc_info:
-        expand_submodel_instances(graph)
+        flatten_graph(graph)
 
     assert exc_info.value.context == {
         "edge_id": "source_to_scoring",
@@ -197,6 +196,34 @@ def test_expand_rejects_parent_binding_to_unrouted_input_port() -> None:
         "definition_id": "definition_scoring",
         "port_name": "policy",
     }
+
+
+@pytest.mark.parametrize("target_instance_id", [None, "instance_a"])
+def test_flatten_validates_the_graph_once(
+    monkeypatch: pytest.MonkeyPatch, target_instance_id: str | None
+) -> None:
+    import haute._flatten
+    import haute._submodel_instances
+
+    resolve = haute._submodel_instances.resolve_submodel_instances
+    validated: list[PipelineGraph] = []
+
+    def counting_resolve(graph: PipelineGraph) -> object:
+        validated.append(graph)
+        return resolve(graph)
+
+    monkeypatch.setattr(haute._flatten, "resolve_submodel_instances", counting_resolve)
+    monkeypatch.setattr(haute._submodel_instances, "resolve_submodel_instances", counting_resolve)
+    graph = PipelineGraph(
+        nodes=[_instance("instance_a", "scoring")],
+        edges=[],
+        submodels={"definition_scoring": _definition()},
+    )
+
+    flattened = flatten_graph(graph, target_instance_id=target_instance_id)
+
+    assert flattened.submodels is None
+    assert len(validated) == 1
 
 
 def test_instance_validation_rejects_unknown_definition_and_duplicate_alias() -> None:

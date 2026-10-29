@@ -53,16 +53,12 @@ test.describe("data input/output nodes", () => {
             target_recovery_id: string
             source_handle: string | null
             target_handle: string | null
-            source_port: string | null
-            target_port: string | null
           }) => ({
             id: edge.recovery_id,
             source: edge.source_recovery_id,
             target: edge.target_recovery_id,
             sourceHandle: edge.source_handle,
             targetHandle: edge.target_handle,
-            ...(edge.source_port === null ? {} : { sourcePort: edge.source_port }),
-            ...(edge.target_port === null ? {} : { targetPort: edge.target_port }),
           }),
         ),
       }
