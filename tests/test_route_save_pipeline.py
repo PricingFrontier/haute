@@ -12,14 +12,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from haute._pipeline_recovery import empty_pipeline_editor_document
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
-from haute.routes._save_pipeline import SavePipelineService
+from haute.routes._save_pipeline import SavePipelineService, _OnDisk
 from haute.schemas import SavePipelineRequest
 from tests.conftest import current_source_revision, make_output_config
 from tests.conftest import make_edge as _make_edge
@@ -1276,29 +1278,27 @@ class TestWriteConfigFiles:
     def test_prev_config_baseline_includes_submodel_child_configs(self, tmp_path: Path) -> None:
         """The on-disk ownership baseline uses the same recursive collector."""
         svc = SavePipelineService(tmp_path)
-        py_path = tmp_path / "pipeline.py"
-        py_path.write_text("# parsed by patched helper\n")
         child = _make_node("banding", "child_banding", "banding", {"factors": []})
         disk_graph = _make_graph()
         disk_graph.submodels = {"pricing": _submodel_definition("pricing", child)}
 
-        with patch("haute.routes._helpers.parse_pipeline_to_graph", return_value=disk_graph):
-            prev = svc._compute_disk_prev_config_files(py_path)
+        prev = svc._compute_disk_prev_config_files(
+            _OnDisk(empty_pipeline_editor_document(), disk_graph, None)
+        )
 
         assert "config/banding/child_banding.json" in prev
 
     def test_duplicate_disk_baseline_disables_stale_cleanup(self, tmp_path: Path) -> None:
         """Old duplicate on-disk graphs should not block saving a corrected graph."""
         svc = SavePipelineService(tmp_path)
-        py_path = tmp_path / "pipeline.py"
-        py_path.write_text("# parsed by patched helper\n")
         parent = _make_node("parent", "Shared", "dataInput", {"path": "parent.csv"})
         child = _make_node("child", "Shared", "dataInput", {"path": "child.csv"})
         disk_graph = _make_graph(parent)
         disk_graph.submodels = {"pricing": _submodel_definition("pricing", child)}
 
-        with patch("haute.routes._helpers.parse_pipeline_to_graph", return_value=disk_graph):
-            prev = svc._compute_disk_prev_config_files(py_path)
+        prev = svc._compute_disk_prev_config_files(
+            _OnDisk(empty_pipeline_editor_document(), disk_graph, None)
+        )
 
         assert prev == {}
 
@@ -1512,6 +1512,61 @@ class TestSaveEndpointIntegration:
         data = resp.json()
         assert data["status"] == "saved"
         assert "saved_test.py" in data["file"]
+
+    def test_a_save_reads_the_file_it_replaces_once(
+        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One strict parse and one editor load of the file on disk serve every step of the
+        save; one more of each verifies what it wrote."""
+        import haute.parser as parser
+        import haute.routes._helpers as helpers
+        import haute.routes._save_pipeline as save_pipeline
+
+        def node(node_id: str, label: str) -> dict[str, Any]:
+            return {
+                "id": node_id,
+                "type": "pipelineNode",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "label": label,
+                    "nodeType": "dataInput",
+                    "config": _file_input_config("data.parquet"),
+                },
+            }
+
+        def save(nodes: list[dict[str, Any]], base_revision: str | None) -> dict[str, Any]:
+            response = client.post(
+                "/api/pipeline/save",
+                json={
+                    "name": "main",
+                    "graph": {"nodes": nodes, "edges": []},
+                    "source_file": "main.py",
+                    "base_revision": base_revision,
+                },
+            )
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        first = save([node("a", "rates"), node("b", "claims")], None)
+        reads: list[str] = []
+        parse = parser.parse_pipeline_file
+        load = helpers.load_pipeline_editor_document
+
+        def counting_parse(path: Path, *args: Any, **kwargs: Any) -> Any:
+            reads.append("parse")
+            return parse(path, *args, **kwargs)
+
+        def counting_load(path: Path, *args: Any, **kwargs: Any) -> Any:
+            reads.append("load")
+            return load(path, *args, **kwargs)
+
+        monkeypatch.setattr(parser, "parse_pipeline_file", counting_parse)
+        monkeypatch.setattr(helpers, "load_pipeline_editor_document", counting_load)
+        monkeypatch.setattr(save_pipeline, "load_pipeline_editor_document", counting_load)
+
+        save([node("a", "rates")], first["source_revision"])
+
+        assert sorted(reads) == ["load", "load", "parse", "parse"]
 
     def test_a_pipeline_in_a_folder_is_named_with_forward_slashes(
         self, client: TestClient, tmp_path: Path
@@ -2635,12 +2690,12 @@ class TestStaleSavePrecondition:
         py_file = tmp_path / "mid_tx_pipeline.py"
         original_compute = SavePipelineService._compute_disk_prev_config_files
 
-        def _compute_wrapper(service_self: SavePipelineService, p_path: Path) -> dict[str, str]:
+        def _compute_wrapper(service_self: SavePipelineService, on_disk: _OnDisk) -> dict[str, str]:
             py_file.write_text(
                 py_file.read_text(encoding="utf-8") + "\n# external mid-transaction\n",
                 encoding="utf-8",
             )
-            return original_compute(service_self, p_path)
+            return original_compute(service_self, on_disk)
 
         monkeypatch.setattr(
             SavePipelineService,

@@ -313,7 +313,7 @@ def test_omitted_revision_comparison_is_detected(
                 m.setattr(
                     SavePipelineService,
                     "_require_base_revision",
-                    lambda self, py_path, base_revision: None,
+                    lambda self, document, base_revision: None,
                 )
                 client = TestClient(app)
 

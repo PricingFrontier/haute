@@ -11,8 +11,6 @@ from haute._logging import get_logger
 from haute._sandbox import contained_path
 from haute._submodel_paths import (
     MalformedSubmodelPathError,
-    SubmodelPathOutsideProjectError,
-    resolve_submodel_reference,
     validate_submodel_definition_id,
 )
 from haute._types import NodeType, PipelineGraph, SubmodelInstanceConfig
@@ -23,6 +21,7 @@ from haute.routes._helpers import (
     parse_pipeline_to_graph,
     pipeline_dir,
 )
+from haute.routes._save_pipeline import resolve_definition_file
 from haute.schemas import (
     CreateSubmodelRequest,
     CreateSubmodelResponse,
@@ -91,19 +90,9 @@ def _resolve_recorded_child(
             status_code=400,
             detail="Submodel metadata has no valid source file path.",
         )
-    try:
-        child_path, config_base = resolve_submodel_reference(
-            recorded_path,
-            pipeline_dir=parent_path.parent,
-            project_root=project_root,
-        )
-    except MalformedSubmodelPathError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
-    except SubmodelPathOutsideProjectError:
-        raise HTTPException(
-            status_code=403,
-            detail="Cannot access paths outside the project root",
-        ) from None
+    child_path, config_base = resolve_definition_file(
+        recorded_path, parent_path=parent_path, project_root=project_root
+    )
     return recorded_path, child_path, config_base
 
 

@@ -14,7 +14,6 @@ come from the [23 September 2026 codebase review](codebase-review-2026-09-23.md)
 |---|---|---:|---|
 | API-R02 | Planned | P3 | Domain services raise domain errors; only routes speak HTTP. |
 | API-R03 | Planned | P2 | Every browser type and response parser is generated from the Pydantic models. |
-| API-R09 | Planned | P3 | The repair routes, the admit-run-translate pattern, the path-resolution preludes and the two point-analysis services exist once each, and a save loads the pipeline once. |
 
 ## Planned improvements
 
@@ -111,34 +110,3 @@ models to the generated set.
 `frontend/src/api/types.ts`; `frontend/src/api/client.ts`;
 `src/haute/schemas.py`; `tests/fixtures/ui_contracts`;
 `frontend/src/types/__tests__/guards.contract.test.ts`.
-
-### API-R09 — One copy of each route mechanism
-**Why:** The four repair-apply routes are near-identical (save lock, thread pool,
-`PipelineRepairError` → structured JSON, `OSError` → 409), differing in a log event name
-and one word; the admit → run-in-worker-or-thread → translate pattern with its thirty-line
-exception ladder is copied for preview, trace, free-code columns and the OUTPUT dry run;
-the submodel path-resolution call with its 400/403 pair appears three times and the
-"normalise separators, refuse empty, absolute, `~` or `..`" prelude three times with three
-message sets; the banding-statistics and rating-levels services duplicate their whole
-skeleton (cache, consumer resolution, demand widening, missing-column handling) and
-differ only in `_compute`, and both collect the whole grouped frame eagerly before taking
-`.head(value_limit)`, so a high-cardinality text column materialises every distinct value
-to answer a 500-row list. One save loads or parses the on-disk pipeline at least five
-times, and removing a definition parses every other pipeline in the project. This package
-comes from the [25 October 2026 codebase review](codebase-review-2026-10-25.md).
-
-**Plan:** One `_apply_repair(fn, body, *, io_event, io_message)` helper; one
-`run_interactive(...)` coroutine returning the result or raising one typed route error a
-single ladder maps; one child-reference resolver and one relative-path prelude; a small
-base for the two point-analysis services that pushes the sort and head into the lazy plan
-and takes `distinct_count` from `n_unique()`; load the editor document and the strict
-graph once at the top of `save()` and hand both to the steps.
-
-**Acceptance:** jscpd reports none of the pairs; the route status tests pass unchanged;
-a save parses the pipeline file once (a counting test).
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/routes/pipeline.py`; `src/haute/routes/_save_pipeline.py`;
-`src/haute/routes/submodel.py`; `src/haute/routes/_banding_stats.py`;
-`src/haute/routes/_rating_levels.py`; `src/haute/routes/output_assemble.py`.

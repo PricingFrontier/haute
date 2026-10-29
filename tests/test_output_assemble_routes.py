@@ -187,7 +187,7 @@ def test_dry_run_admission_refusal_returns_structured_507(project) -> None:
     )
 
     with patch(
-        "haute.routes.output_assemble.create_admitted_execution_context",
+        "haute.routes.pipeline.create_admitted_execution_context",
         side_effect=error,
     ):
         resp = client.post(
@@ -213,12 +213,10 @@ def test_dry_run_releases_admission_after_success(project) -> None:
 
     with (
         patch(
-            "haute.routes.output_assemble.create_admitted_execution_context",
+            "haute.routes.pipeline.create_admitted_execution_context",
             return_value=_Context(),
         ),
-        patch(
-            "haute.routes.output_assemble.resolve_interactive_execution_mode", return_value="thread"
-        ),
+        patch("haute.routes.pipeline.resolve_interactive_execution_mode", return_value="thread"),
         patch(
             "haute.routes.output_assemble.execute_graph",
             return_value={"out": NodeResult(status="ok", preview=[], row_count=0)},
@@ -269,15 +267,13 @@ async def test_dry_run_timeout_defers_admission_release_until_worker_finishes(pr
 
     with (
         patch(
-            "haute.routes.output_assemble.create_admitted_execution_context",
+            "haute.routes.pipeline.create_admitted_execution_context",
             return_value=context,
         ),
-        patch(
-            "haute.routes.output_assemble.resolve_interactive_execution_mode", return_value="thread"
-        ),
+        patch("haute.routes.pipeline.resolve_interactive_execution_mode", return_value="thread"),
         patch("haute.routes.output_assemble.execute_graph", _execute_graph),
         patch(
-            "haute.routes.output_assemble.run_blocking_with_response_timeout",
+            "haute.routes.pipeline.run_blocking_with_response_timeout",
             _raise_timeout,
         ),
     ):
@@ -329,19 +325,19 @@ def test_dry_run_process_dispatch_uses_admitted_budget_and_required_policy(proje
 
     with (
         patch(
-            "haute.routes.output_assemble.create_admitted_execution_context",
+            "haute.routes.pipeline.create_admitted_execution_context",
             return_value=_Context(),
         ),
-        patch("haute.routes.output_assemble.isolated_execution_budget", return_value=budget),
+        patch("haute.routes.pipeline.isolated_execution_budget", return_value=budget),
         patch(
-            "haute.routes.output_assemble.resolve_interactive_execution_mode",
+            "haute.routes.pipeline.resolve_interactive_execution_mode",
             return_value="process",
         ),
         patch(
-            "haute.routes.output_assemble.resolve_worker_memory_enforcement",
+            "haute.routes.pipeline.resolve_worker_memory_enforcement",
             return_value="required",
         ),
-        patch("haute.routes.output_assemble.run_in_interactive_worker", _run_worker),
+        patch("haute.routes.pipeline.run_in_interactive_worker", _run_worker),
     ):
         resp = client.post(
             "/api/output-assemble/dry-run",
@@ -485,15 +481,15 @@ def test_dry_run_process_worker_failures_are_mapped_and_parent_admission_is_rele
 
     with (
         patch(
-            "haute.routes.output_assemble.create_admitted_execution_context",
+            "haute.routes.pipeline.create_admitted_execution_context",
             return_value=_Context(),
         ),
-        patch("haute.routes.output_assemble.isolated_execution_budget", return_value=budget),
+        patch("haute.routes.pipeline.isolated_execution_budget", return_value=budget),
         patch(
-            "haute.routes.output_assemble.resolve_interactive_execution_mode",
+            "haute.routes.pipeline.resolve_interactive_execution_mode",
             return_value="process",
         ),
-        patch("haute.routes.output_assemble.run_in_interactive_worker", _fail),
+        patch("haute.routes.pipeline.run_in_interactive_worker", _fail),
     ):
         response = client.post(
             "/api/output-assemble/dry-run",
@@ -543,16 +539,16 @@ def test_dry_run_process_timeout_releases_parent_admission_immediately(project) 
 
     with (
         patch(
-            "haute.routes.output_assemble.create_admitted_execution_context",
+            "haute.routes.pipeline.create_admitted_execution_context",
             return_value=_Context(),
         ),
-        patch("haute.routes.output_assemble.isolated_execution_budget", return_value=budget),
+        patch("haute.routes.pipeline.isolated_execution_budget", return_value=budget),
         patch(
-            "haute.routes.output_assemble.resolve_interactive_execution_mode",
+            "haute.routes.pipeline.resolve_interactive_execution_mode",
             return_value="process",
         ),
-        patch("haute.routes.output_assemble.run_in_interactive_worker", _timeout),
-        patch("haute.routes.output_assemble.run_blocking_with_response_timeout") as thread_run,
+        patch("haute.routes.pipeline.run_in_interactive_worker", _timeout),
+        patch("haute.routes.pipeline.run_blocking_with_response_timeout") as thread_run,
     ):
         resp = client.post(
             "/api/output-assemble/dry-run",
@@ -589,16 +585,16 @@ def test_dry_run_process_failure_does_not_fall_back_to_thread(project) -> None:
 
     with (
         patch(
-            "haute.routes.output_assemble.create_admitted_execution_context",
+            "haute.routes.pipeline.create_admitted_execution_context",
             return_value=_Context(),
         ),
-        patch("haute.routes.output_assemble.isolated_execution_budget", return_value=budget),
+        patch("haute.routes.pipeline.isolated_execution_budget", return_value=budget),
         patch(
-            "haute.routes.output_assemble.resolve_interactive_execution_mode",
+            "haute.routes.pipeline.resolve_interactive_execution_mode",
             return_value="process",
         ),
-        patch("haute.routes.output_assemble.run_in_interactive_worker", _fail),
-        patch("haute.routes.output_assemble.run_blocking_with_response_timeout") as thread_run,
+        patch("haute.routes.pipeline.run_in_interactive_worker", _fail),
+        patch("haute.routes.pipeline.run_blocking_with_response_timeout") as thread_run,
     ):
         resp = client.post(
             "/api/output-assemble/dry-run",
