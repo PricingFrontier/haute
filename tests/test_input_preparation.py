@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -328,7 +329,17 @@ def test_reuse_refresh_and_rebuild_follow_the_source_signature(
     assert resolve_data_input(config, store=store, base_dir=tmp_path).collect().height == 4
 
     store.clear(store_identity(config, tmp_path))
-    assert prepare().action == "built"
+    built = prepare()
+    assert built.action == "built"
+
+    # A generation whose directory is gone (evicted by another process, deleted
+    # by hand) is missing, so it is built again rather than refused as corrupt.
+    vanished = store.open_generation(store_identity(config, tmp_path)).directory
+    shutil.rmtree(tmp_path / vanished.relative_to(tmp_path))
+    rebuilt = prepare()
+    assert rebuilt.action == "built"
+    assert rebuilt.generation_id != built.generation_id
+    assert resolve_data_input(config, store=store, base_dir=tmp_path).collect().height == 4
 
 
 # --------------------------------------------------- (5) concurrent execution

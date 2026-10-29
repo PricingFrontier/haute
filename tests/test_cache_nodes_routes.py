@@ -6,6 +6,7 @@ Per `specs/server-api/low-level.md` ("Cache usage").
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -625,6 +626,28 @@ def test_a_corrupt_point_is_a_row_with_a_state_not_a_reason(
     assert join["unavailable_reason"] is None
     # The budget charges a corrupt generation like any other, so the row carries it.
     assert join["size_bytes"] > 0
+
+
+def test_a_generation_deleted_by_hand_is_missing_and_built_again(
+    client: TestClient, project: Path
+) -> None:
+    """Gone is not damaged: the row offers a build, never a corruption to clear."""
+    csv_path = project / "quotes.csv"
+    pl.DataFrame({"premium": [1.0, 2.0, 3.0]}).write_csv(csv_path)
+    config = _csv_config(csv_path)
+    _build_input_via_route(client, config)
+    graph = _graph_of(project, [_data_input_node("quotes", config)])
+    [generation_dir] = (project / ".haute_cache" / "inputs").glob("*/generations/*")
+    shutil.rmtree(generation_dir)
+
+    row = _entry(client.post("/api/cache/nodes", json=_body(graph)).json(), "quotes")
+    assert (row["state"], row["size_bytes"]) == ("missing", 0)
+
+    _build_input_via_route(client, config)
+
+    row = _entry(client.post("/api/cache/nodes", json=_body(graph)).json(), "quotes")
+    assert row["state"] == "current"
+    assert row["size_bytes"] > 0
 
 
 def test_a_generation_whose_metadata_is_unreadable_is_reported_as_unattributed(

@@ -64,7 +64,6 @@ from haute._source_cache import (
     SourceCacheGeneration,
     SourceCacheGenerationMissingError,
     SourceCacheIdentity,
-    SourceCacheLegacyLayoutError,
     SourceCacheMetadata,
     SourceCacheStore,
     _ensure_identity_marker,
@@ -85,7 +84,6 @@ NODE_SNAPSHOT_EXECUTION_SEMANTICS_VERSION = "node-snapshot:v1"
 BOUNDED_SEMANTICS_CLASS = "bounded"
 _SLOT_INDEX_SCHEMA_VERSION = 1
 _LAST_USED_UPDATE_INTERVAL_SECONDS = 60.0
-_RETIRED_PREFIX = ".retired-"
 
 Retention = Literal["pinned", "automatic"]
 SlotState = Literal["current", "stale", "missing", "corrupt"]
@@ -790,11 +788,6 @@ class NodeSnapshotStore(SourceCacheStore):
     ) -> None:
         super().__init__(root, retire_grace_seconds=retire_grace_seconds)
         self._slots_dir = self.inputs_root / ".node-slots"
-        with self._coordination.guard:
-            already_cleaned = self._coordination.retired_cleaned
-            self._coordination.retired_cleaned = True
-        if not already_cleaned:
-            self._cleanup_retired()
 
     def clear_identity(self, identity_digest: str) -> int:
         """Clear one identity by its digest, returning the bytes it held.
@@ -1112,9 +1105,6 @@ class NodeSnapshotStore(SourceCacheStore):
                 coordination.publication_locks[identity.digest] = lock
             return lock
 
-    def _generation_dir(self, identity_digest: str, generation_id: str) -> Path:
-        return self.inputs_root / identity_digest / "generations" / generation_id
-
     def _slot_index_path(self, slot: NodeSnapshotSlot) -> Path:
         return self._slots_dir / f"{slot.digest}.json"
 
@@ -1122,11 +1112,6 @@ class NodeSnapshotStore(SourceCacheStore):
     def _require_node_output(identity: SourceCacheIdentity) -> None:
         if identity.provider != NODE_OUTPUT_PROVIDER:
             raise ValueError("identity is not a node-output snapshot identity")
-
-    def _cleanup_retired(self) -> None:
-        for retired in self.inputs_root.glob(f"*/{_RETIRED_PREFIX}*"):
-            if retired.is_dir() and not retired.is_symlink():
-                shutil.rmtree(retired, ignore_errors=True)
 
     # ------------------------------------------------------------- pointers
 
@@ -1303,8 +1288,10 @@ class NodeSnapshotStore(SourceCacheStore):
             return None
         try:
             generation = self._metadata_from_path(identity, generation_id)
-        except SourceCacheLegacyLayoutError:
-            # The retired single-file layout reads as absent, so it is rebuilt.
+        except SourceCacheGenerationMissingError:
+            # A retired layout, or a generation whose directory is gone (evicted
+            # by another process, deleted by hand), reads as absent: the node's
+            # data is missing and is computed again, never reported corrupt.
             return None
         slot, _signature = NodeSnapshotSlot.from_identity(identity)
         pinned = self._read_slot_index(slot)["pinned_identity"]
@@ -1418,15 +1405,16 @@ class NodeSnapshotStore(SourceCacheStore):
             try:
                 if self._acquire_node_lease(identity, generation_id, require_current=True):
                     break
-            except SourceCacheGenerationMissingError:
+            except SourceCacheGenerationMissingError as exc:
                 # Superseded and retired between reading the pointer and
-                # leasing: select again, unless the pointer itself is dangling.
+                # leasing: select again. A pointer that still names it is
+                # dangling, and its generation is absent.
                 if self._current_generation_id(identity.digest) == generation_id:
-                    raise
+                    raise FileNotFoundError(self._pointer_path(identity)) from exc
         try:
             try:
                 generation = self._metadata_from_path(identity, generation_id)
-            except SourceCacheLegacyLayoutError as exc:
+            except SourceCacheGenerationMissingError as exc:
                 raise FileNotFoundError(self._pointer_path(identity)) from exc
             self._touch_last_used(generation)
             yield generation
@@ -1450,34 +1438,6 @@ class NodeSnapshotStore(SourceCacheStore):
             self._release_node_lease(identity, generation_id)
 
     # --------------------------------------------------------- retirement
-
-    def _retire_generation_locked(self, identity_digest: str, generation_id: str) -> Path | None:
-        """Rename one generation out of selection. Caller holds the lease lock."""
-        generation_dir = self._generation_dir(identity_digest, generation_id)
-        retired = generation_dir.parent.parent / f"{_RETIRED_PREFIX}{uuid.uuid4().hex}"
-        try:
-            generation_dir.rename(retired)
-        except FileNotFoundError:
-            return None
-        except PermissionError as exc:
-            # A Windows handle still open inside the generation blocks the
-            # rename; the generation stays selectable-by-id and is retried later.
-            logger.warning(
-                "node_snapshot_retirement_deferred",
-                identity_digest=identity_digest,
-                generation_id=generation_id,
-                error=str(exc),
-            )
-            return None
-        self._forget_verified(identity_digest, generation_id)
-        return retired
-
-    @staticmethod
-    def _delete_retired(paths: list[Path]) -> None:
-        for path in paths:
-            shutil.rmtree(path, ignore_errors=True)
-            if path.exists():
-                logger.warning("node_snapshot_retired_delete_failed", path=str(path))
 
     def retire_unleased(self, identity: SourceCacheIdentity) -> None:
         if identity.provider != NODE_OUTPUT_PROVIDER:

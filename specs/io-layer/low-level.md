@@ -55,18 +55,24 @@ relationship is recorded in `specs/ownership.toml`.
   (`data_paths`, `part-00000.parquet`, `part-00001.parquet`, …; `lazy_frame` scans exactly
   that list). A generation written in layout 1 or 2 reads as absent
   (`SourceCacheLegacyLayoutError`, a `SourceCacheGenerationMissingError`), never as
-  corruption, so a build replaces it. Before a generation is trusted, its directory must be
-  a plain directory inside its identity and every artifact a plain, single-link file inside
-  the generation; each part's size, xxh64 `digest`, footer row count, and schema must match
-  its record; `SourceCacheGenerationMissingError` (a `SourceCacheCorruptError`) reports a
-  named generation that does not exist.
+  corruption, so a build replaces it. So does a generation the current pointer names whose
+  directory is gone (evicted by another process, deleted by hand): `open_generation` and a
+  current lease raise `FileNotFoundError` for both, `status` reports `missing`, and
+  preparation or an explicit build builds it again. Before a generation is trusted, its
+  directory must be a plain directory inside its identity and every artifact a plain,
+  single-link file inside the generation; each part's size, xxh64 `digest`, footer row
+  count, and schema must match its record; `SourceCacheGenerationMissingError` (a
+  `SourceCacheCorruptError`) reports a named generation that does not exist.
 - `SourceCacheStore` coordinates same-root handles in-process, publishes generations, tracks
   local leases and verified-generation memos, reclaims provably stale
   staging, and exposes `build`, `lease`, `lease_generation`, `clear`, and `status`. Leases
   protected across processes by lease markers and a shared lock. A
   superseded generation is normally retired after `HAUTE_INPUT_CACHE_RETIRE_GRACE_SECONDS`
   (default 1800) have elapsed since the current generation was published; explicit clear
-  bypasses the grace period while preserving live readers. A reconcile removal that leaves
+  bypasses the grace period while preserving live readers. Retirement is the node outputs'
+  (*Retirement* under Node-output snapshots): a generation is renamed to `.retired-<hex>`
+  under the lease lock and its files are deleted after the lock is released, never removed
+  with a bare `rmtree` under it. A reconcile removal that leaves
   its directory behind is logged (`source_cache_reconcile_removal_failed`) and reported as
   `unremovable`.
 - `source_signature` is the shared content signature
@@ -322,8 +328,11 @@ inventory and consume physical disk space.
    retains any locally leased generation.
 4. The idempotent callback exits the lease once. The count is decremented under
    the identity lock, and when the final holder releases, every non-current
-   unleased generation is retired. Thus refresh/clear affect future selection
-   immediately without invalidating an already-derived scan.
+   unleased generation is retired (renamed out of selection under the lease lock,
+   its files deleted after it). Thus refresh/clear affect future selection
+   immediately without invalidating an already-derived scan. A pointer that names
+   a generation whose directory is gone leases nothing: the lease raises
+   `FileNotFoundError`, which resolution reports as `input_snapshot_missing`.
 
 ### Node-output snapshots
 
@@ -465,7 +474,9 @@ generations to their owners when readable. Inventory takes no lock and mutates n
   deepest path inside the traditional Windows limit beneath long temporary roots.
 - **Status.** `latest_generation(identity)` validates the pointer's generation through the
   store's metadata/digest/verified-memo path and reports its columns, dependencies,
-  freshness, retention, and last use. `slot_status(slot, signature)` is `current` or
+  freshness, retention, and last use; a pointer naming a generation whose directory is gone
+  has no latest generation (`None`, as a retired layout has), so the node's data is missing
+  and the next capture publishes over it. `slot_status(slot, signature)` is `current` or
   `stale` from that generation, `stale` when another indexed identity has a current
   generation, `missing` otherwise, and `corrupt` when validation fails. Because a slot holds
   one signature, the "another indexed identity" case is now the window in which a reader
@@ -520,10 +531,15 @@ generations to their owners when readable. Inventory takes no lock and mutates n
 - **Clear and pin.** `clear_slot(slot)` removes every indexed identity's pointer, retires
   each unheld generation, and deletes the index; `clear(identity)` does the same for one
   identity. `pin(identity)` pins a slot to an identity that has a current generation.
-- **Retirement.** Under the lease lock a generation directory is renamed to
-  `.retired-<hex>` beside `generations/`; the files are deleted after the lock is released,
-  and store construction removes any leftover retired directory. A rename refused by an open
-  Windows handle is logged (`node_snapshot_retirement_deferred`) and left selectable.
+- **Retirement.** Every retirement in the store, an input snapshot's included
+  (`SourceCacheStore._retire_generation_locked`), renames the generation directory under
+  the lease lock to `.retired-<hex>` beside `generations/`; the files are deleted after the
+  lock is released (`_delete_retired`, logging `source_cache_retired_delete_failed` for one
+  that survives), and the first store a process opens on a root removes any leftover
+  retired directory. A rename refused by an open Windows handle is logged
+  (`source_cache_retirement_deferred`) and the generation is left whole, unpointed and
+  selectable by id; the next retirement of its identity (a release, refresh, clear or
+  publication) renames it.
 
 ### Staging reclamation and publication
 
@@ -951,7 +967,12 @@ failure sections above are the maintained answers.
 - `tests/test_source_cache.py` covers canonical/redacted identity, atomic refresh,
   immutable generations, leases, corruption, no-budget retention, same-identity single flight,
   age-gated staging reclamation, digest memoization, non-destructive
-  generation startup, and transient OS failures.
+  generation startup, and transient OS failures. A generation whose directory was deleted
+  reads as missing, a current lease raises `FileNotFoundError` and holds nothing, and a build
+  replaces it. A refresh or clear while a reader holds a part open (Windows' refusals of the
+  rename and the delete, simulated) leaves the superseded generation whole and raises nothing,
+  and the next retirement removes it; a retired directory left behind is swept when a process
+  opens the store.
 - `tests/test_input_providers.py` covers direct-Parquet and offline snapshot reads,
   provider identities, execution-lifetime leases, SQLite empty/mixed storage classes,
   typed conversion failures, missing database rejection, and the inferred schema tier:
@@ -1071,7 +1092,11 @@ failure sections above are the maintained answers.
   staged-artifact handover on supersession, pin inheritance and explicit pinning, no rehash
   on a second lease, named-generation leases through refresh and clear, validation only
   after the lease marker exists, malformed generation ids, the publisher's lease released
-  when its handoff fails, lease markers, and recorded metadata.
+  when its handoff fails, lease markers, and recorded metadata; a generation whose directory
+  was deleted is `missing`, never `corrupt`, and an automatic capture replaces it.
+  `tests/test_seed_plans.py` resolves such a node as recomputed rather than raising
+  `SnapshotCorruptError`, `tests/test_input_preparation.py` builds such an input again, and
+  `tests/test_cache_nodes_routes.py` reports its row `missing` and `current` after a build.
   `test_the_budget_never_evicts_a_pinned_leased_or_input_generation` and the source-store
   `test_input_cache_keeps_datasets_without_byte_or_entry_budgets` prove that input
   snapshots and explicit builds are never evicted or refused for size.
@@ -1122,7 +1147,7 @@ generation markers as node outputs. Both `SourceCacheStore` and
 `NodeSnapshotStore` handles participate. Acquisition records the marker before
 metadata/content validation, and nested local readers retain it until the last
 reader releases. Clear, replacement and reconciliation check
-live holders under the shared lock before deleting a generation.
+live holders under the shared lock before retiring or discarding a generation.
 Dead owner markers can be reclaimed; age alone never overrides a live marker.
 
 A current-generation lease preserves the ordinary open contract for retired

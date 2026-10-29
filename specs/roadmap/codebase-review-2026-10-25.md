@@ -197,9 +197,8 @@ these are the Majors still open.
 - **The RAM estimate reads widths from the nearest source and matches dtype
   tokens** (two Majors, `EXEC-R10`): a widened graph estimates 48,000 bytes
   against 4,016,000 actual.
-- **A vanished generation is reported corrupt; a generation is removed with a
-  bare `rmtree` under the lock; the registry and the engine anchor relative
-  paths differently** (three Majors, `IO-R04`, `IO-R05`).
+- **The registry and the engine anchor relative paths differently** (Major,
+  `IO-R05`).
 - **The one-shot and protocol watchdogs measure a bare interpreter** (Major,
   `EXEC-R13`): 51 MiB tighter than the native cap under a 256 MiB budget.
 - **A graceful server exit joins every in-flight worker** (Major,
@@ -297,7 +296,6 @@ production:
 | Execution engine | STA-4, STA-5, STA-8 | `EXEC-R15` |
 | Execution engine | EXE-3 | `EXEC-R16` (Decision) |
 | Execution engine | EXE-4, EXE-5, EXE-6, EXE-7, EXE-8, EXE-9, EXE-15, STA-6, STA-7, the preamble `sys.path` edit | `EXEC-R17` |
-| IO layer | CIO-2, CIO-3 | `IO-R04` |
 | IO layer | CIO-4 | `IO-R05` |
 | IO layer | CIO-5, CIO-11 | `IO-R06` |
 | IO layer | CIO-8, CIO-9, CIO-10 | `IO-R07` |

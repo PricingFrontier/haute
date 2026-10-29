@@ -291,6 +291,27 @@ def test_corrupt_current_generation_fails_without_fallback(tmp_path: Path) -> No
     assert store.status(identity).state == "corrupt"
 
 
+def test_a_generation_whose_directory_is_gone_is_missing_and_built_again(tmp_path: Path) -> None:
+    """Evicted by another process or deleted by hand, a generation is absent, not corrupt."""
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="data/vanished.parquet", format="parquet")
+    builder = _LazyBuilder(pl.DataFrame({"id": [1, 2]}).lazy())
+    vanished = store.build(identity, builder, context=_context())
+    shutil.rmtree(tmp_path / vanished.directory.relative_to(tmp_path))
+
+    assert store.status(identity).state == "missing"
+    with pytest.raises(FileNotFoundError), store.lease(identity):
+        pass
+    assert store.leased_generation_ids(identity) == frozenset()
+
+    rebuilt = store.build(identity, builder, context=_context())
+
+    assert builder.calls == 2
+    assert rebuilt.generation_id != vanished.generation_id
+    with store.lease(identity) as leased:
+        assert leased.lazy_frame.collect()["id"].to_list() == [1, 2]
+
+
 def test_open_generation_does_not_rehash_published_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1004,6 +1025,98 @@ def test_clear_reclaims_a_graced_generation(tmp_path: Path) -> None:
     store.clear(identity)
 
     assert not any((store.identity_path(identity) / "generations").glob("*"))
+
+
+@contextlib.contextmanager
+def _held_open(monkeypatch: pytest.MonkeyPatch, part: Path) -> Iterator[None]:
+    """Hold *part* open as a reader on Windows does.
+
+    Windows refuses to delete a file another handle has open, and to rename a
+    directory that holds one. POSIX allows both, so both refusals are simulated.
+    """
+    held = part.resolve()
+    real_rename, real_unlink = os.rename, os.unlink
+
+    def in_use(path: object) -> PermissionError:
+        return PermissionError(errno.EACCES, "the file is open in another process", str(path))
+
+    def rename(source: str | Path, target: str | Path) -> None:
+        if held.is_relative_to(Path(source).resolve()):
+            raise in_use(source)
+        real_rename(source, target)
+
+    def unlink(path: str | Path, *, dir_fd: int | None = None) -> None:
+        if dir_fd is None:
+            refused = Path(path).resolve() == held
+        else:
+            # shutil.rmtree deletes through a descriptor of the parent directory.
+            refused = Path(path).name == held.name and os.path.samestat(
+                os.fstat(dir_fd), held.parent.stat()
+            )
+        if refused:
+            raise in_use(path)
+        real_unlink(path, dir_fd=dir_fd)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(os, "rename", rename)
+        patched.setattr(os, "unlink", unlink)
+        yield
+
+
+@pytest.mark.parametrize("retirement", ["refresh", "clear"])
+def test_a_part_a_reader_holds_open_defers_retirement_to_the_next_sweep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, retirement: str
+) -> None:
+    """A retirement never leaves a half-deleted generation, whatever a reader holds open.
+
+    The generation is renamed out of selection under the lease lock and deleted
+    after it. A reader's open part refuses the rename, so the generation stays
+    whole and unpointed, and the next retirement completes it.
+    """
+    store = SourceCacheStore(tmp_path, retire_grace_seconds=0)
+    identity = _identity(path="held.parquet")
+    first = store.build(
+        identity, _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()), context=_context()
+    )
+    files = sorted(path.name for path in first.directory.iterdir())
+
+    def retire() -> None:
+        if retirement == "refresh":
+            store.build(
+                identity,
+                _LazyBuilder(pl.DataFrame({"id": [2]}).lazy()),
+                context=_context(),
+                refresh=True,
+            )
+        else:
+            store.clear(identity)
+
+    with _held_open(monkeypatch, first.data_paths[0]):
+        retire()
+        assert sorted(path.name for path in first.directory.iterdir()) == files
+
+    retire()
+
+    assert not first.directory.exists()
+    assert not list(store.identity_path(identity).glob(".retired-*"))
+    assert store.status(identity).state == ("ready" if retirement == "refresh" else "missing")
+
+
+def test_a_retired_directory_left_behind_is_swept_when_a_process_opens_the_store(
+    tmp_path: Path,
+) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="swept.parquet")
+    store.build(identity, _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()), context=_context())
+    leftover = tmp_path / store.identity_path(identity).relative_to(tmp_path) / ".retired-0123abcd"
+    leftover.mkdir()
+    (leftover / "part-00000.parquet").write_bytes(b"its delete failed")
+    SourceCacheStore._coordination_by_root.clear()  # a new process
+
+    SourceCacheStore(tmp_path)
+
+    assert not leftover.exists()
+    assert store.status(identity).state == "ready"
 
 
 def test_reconcile_keeps_a_generation_this_process_leases(tmp_path: Path) -> None:

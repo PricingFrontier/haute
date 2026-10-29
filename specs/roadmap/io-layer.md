@@ -14,36 +14,12 @@ continues from the September 2026 review's packages, which are retired.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| IO-R04 | Planned | P2 | A generation whose directory is gone is reported missing, not corrupt, and a generation is retired by rename-and-defer instead of a bare `rmtree` under the lock. |
 | IO-R05 | Planned | P2 | The registry and the engine anchor a relative config path the same way, and the specification states one rule. |
 | IO-R06 | Planned | P3 | A snapshot build validates its generation outside the store-wide lease lock, and the cache-usage endpoint stops walking every generation per preview. |
 | IO-R07 | Planned | P3 | A clear keeps a deferred generation indexed, the POSIX revision applies the settle rule on coarse clocks, and `catalog` is excluded from config by decision. |
 | IO-R08 | Planned | P3 | The supervised-build mechanism exists once, and the IO layer's write-only fields are gone. |
 
 ## Planned improvements
-
-### IO-R04 — Missing is not corrupt, and retirement defers
-**Why:** `_metadata_from_path` raises `SourceCacheGenerationMissingError` when a
-generation's directory has vanished (evicted by another process, cleared by hand), and
-`slot_status` maps every `SourceCacheCorruptError` subclass to `corrupt`, so the editor
-tells the analyst to clear a corrupt cache that is merely gone. Generation retirement
-calls `shutil.rmtree(candidate)` under the lease lock; on Windows a reader holding a part
-open makes the removal fail midway and leaves a half-deleted generation that later reads
-as corrupt, while node outputs rename the generation aside and defer the delete.
-
-**Plan:** Map the missing subclass to `missing` in `slot_status` (and the inventory);
-retire a source-cache generation by renaming it to a tombstone under the lock and
-deleting it outside the lock, retrying on the next sweep as node outputs do.
-
-**Acceptance:** Deleting a generation directory by hand shows `missing` in the inventory
-and a rebuild, not a corruption message; a retirement with one part held open leaves no
-half-deleted directory in the store and completes on the next sweep.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_source_cache.py::_metadata_from_path`;
-`src/haute/_node_snapshots.py::slot_status`;
-`src/haute/_source_cache.py::SourceCacheStore` (the retirement under `_lease_lock`).
 
 ### IO-R05 — One anchoring rule for config paths
 **Why:** `anchor_config_source_path` resolves a relative path with `prefer="pipeline"`

@@ -72,6 +72,9 @@ KNOWN_INPUT_PROVIDERS = frozenset(
     {"file", "lakehouse", "database", "databricks", "inline", "api_input"}
 )
 _LEASE_PREFIX = ".lease-"
+# A retired generation is renamed to this prefix beside ``generations/`` under
+# the lease lock, and its files are deleted once the lock is released.
+_RETIRED_PREFIX = ".retired-"
 _TOKEN_LENGTH = 12
 
 logger = get_logger(component="source_cache")
@@ -592,6 +595,13 @@ class SourceCacheStore:
         self._leases = coordination.leases
         self._verified_generations = coordination.verified_generations
         self._cleanup_stale_staging()
+        # The sweep globs the whole store, and a preview builds several stores
+        # for one root, so it runs once per process.
+        with coordination.guard:
+            already_cleaned = coordination.retired_cleaned
+            coordination.retired_cleaned = True
+        if not already_cleaned:
+            self._cleanup_retired()
 
     @staticmethod
     def _tree_latest_activity(path: Path) -> float | None:
@@ -955,10 +965,12 @@ class SourceCacheStore:
                 raise
             try:
                 return self._metadata_from_path(identity, generation_id)
-            except SourceCacheLegacyLayoutError as exc:
-                # Read as absent, so status reports it missing and a build replaces it.
+            except SourceCacheGenerationMissingError as exc:
+                # A generation in a retired layout, or one whose directory is
+                # gone (evicted by another process, deleted by hand), reads as
+                # absent, so status reports it missing and a build replaces it.
                 raise FileNotFoundError(
-                    f"source-cache generation {generation_id} uses the retired layout"
+                    f"source-cache generation {generation_id} is not available: {exc}"
                 ) from exc
             except _MapPartsNeedReencoding:
                 # None when another build published meanwhile: open that one.
@@ -1087,11 +1099,11 @@ class SourceCacheStore:
                 atomic_write_text(metadata_path, canonical_json(metadata.to_dict()))
                 context.checkpoint()
                 # Self-validate the staged directory using the same strict validator after rename.
-                with self._lease_lock:
+                with self._retiring() as retired:
                     if replacing is not None and self._pointed_generation_id(identity) != replacing:
                         raise _Superseded(replacing)
                     if not context.defer_retirement:
-                        self._retire_unleased_locked(identity)
+                        retired.extend(self._retire_unleased_locked(identity))
                     final_dir = generations_dir / generation_id
                     staging.replace(final_dir)
                     with self._lock:
@@ -1129,8 +1141,14 @@ class SourceCacheStore:
         with self._identity_lock(identity):
             while True:
                 generation_id = self._read_pointer(identity)
-                if not self._acquire_input_lease(identity, generation_id, require_current=True):
-                    continue
+                try:
+                    if not self._acquire_input_lease(identity, generation_id, require_current=True):
+                        continue
+                except SourceCacheGenerationMissingError as exc:
+                    # The pointer still names a generation whose directory is gone.
+                    raise FileNotFoundError(
+                        f"source-cache generation {generation_id} is not available: {exc}"
+                    ) from exc
                 try:
                     generation = self._metadata_from_path(identity, generation_id)
                 except _MapPartsNeedReencoding:
@@ -1142,9 +1160,9 @@ class SourceCacheStore:
                     continue
                 except BaseException as exc:
                     self._release_input_lease(identity, generation_id)
-                    if isinstance(exc, SourceCacheLegacyLayoutError):
+                    if isinstance(exc, SourceCacheGenerationMissingError):
                         raise FileNotFoundError(
-                            f"source-cache generation {generation_id} uses the retired layout"
+                            f"source-cache generation {generation_id} is not available: {exc}"
                         ) from exc
                     raise
                 break
@@ -1223,7 +1241,7 @@ class SourceCacheStore:
             return True
 
     def _release_input_lease(self, identity: SourceCacheIdentity, generation_id: str) -> None:
-        with self._lease_lock:
+        with self._retiring() as retired:
             key = (identity.digest, generation_id)
             with self._lock:
                 remaining = self._leases[key] - 1
@@ -1235,7 +1253,7 @@ class SourceCacheStore:
             token = self._coordination.token
             if token is not None:
                 (generation_dir / f"{_LEASE_PREFIX}{token}").unlink(missing_ok=True)
-            self._retire_unleased_locked(identity)
+            retired.extend(self._retire_unleased_locked(identity))
 
     def retire_unleased(self, identity: SourceCacheIdentity) -> None:
         """Delete every generation of *identity* that is neither current nor leased.
@@ -1244,9 +1262,8 @@ class SourceCacheStore:
         the child deferred retirement because only this process knows which
         generations its own executions still lease.
         """
-        with self._identity_lock(identity):
-            with self._lease_lock:
-                self._retire_unleased_locked(identity)
+        with self._identity_lock(identity), self._retiring() as retired:
+            retired.extend(self._retire_unleased_locked(identity))
 
     def _retire_grace_elapsed(self, identity: SourceCacheIdentity) -> bool:
         """Whether the current generation has been published long enough.
@@ -1264,22 +1281,82 @@ class SourceCacheStore:
 
     def _retire_unleased_locked(
         self, identity: SourceCacheIdentity, *, force: bool = False
-    ) -> None:
-        """Retire unpointed, unheld generations. Caller holds the lease lock."""
+    ) -> list[Path]:
+        """Retire unpointed, unheld generations. Caller holds the lease lock.
+
+        Returns the renamed directories, for the caller to delete once the lock
+        is released (:meth:`_delete_retired`).
+        """
         generations_dir = self.identity_path(identity) / "generations"
         if not generations_dir.exists():
-            return
+            return []
         try:
             current = self._read_pointer(identity)
         except FileNotFoundError:
             current = None
-        grace_elapsed = force or self._retire_grace_elapsed(identity)
+        if not (force or self._retire_grace_elapsed(identity)):
+            return []
+        retired: list[Path] = []
         for candidate in generations_dir.iterdir():
             if not candidate.is_dir() or candidate.name == current:
                 continue
-            if grace_elapsed and not self._has_live_holders_locked(candidate):
-                self._forget_verified(identity.digest, candidate.name)
-                shutil.rmtree(candidate)
+            if self._has_live_holders_locked(candidate):
+                continue
+            path = self._retire_generation_locked(identity.digest, candidate.name)
+            if path is not None:
+                retired.append(path)
+        return retired
+
+    def _generation_dir(self, identity_digest: str, generation_id: str) -> Path:
+        return self.inputs_root / identity_digest / "generations" / generation_id
+
+    def _retire_generation_locked(self, identity_digest: str, generation_id: str) -> Path | None:
+        """Rename one generation out of selection. Caller holds the lease lock.
+
+        Its files are deleted after the lock is released, so a reader's open
+        handle can never leave a half-deleted generation behind: on Windows such
+        a handle refuses the rename, and the generation stays whole, unpointed
+        and selectable by id until a later retirement renames it.
+        """
+        generation_dir = self._generation_dir(identity_digest, generation_id)
+        retired = generation_dir.parent.parent / f"{_RETIRED_PREFIX}{uuid.uuid4().hex}"
+        try:
+            generation_dir.rename(retired)
+        except FileNotFoundError:
+            return None
+        except PermissionError as exc:
+            logger.warning(
+                "source_cache_retirement_deferred",
+                identity_digest=identity_digest,
+                generation_id=generation_id,
+                error=str(exc),
+            )
+            return None
+        self._forget_verified(identity_digest, generation_id)
+        return retired
+
+    @contextlib.contextmanager
+    def _retiring(self) -> Iterator[list[Path]]:
+        """Hold the lease lock, then delete what was retired under it once it is released."""
+        retired: list[Path] = []
+        try:
+            with self._lease_lock:
+                yield retired
+        finally:
+            self._delete_retired(retired)
+
+    @staticmethod
+    def _delete_retired(paths: list[Path]) -> None:
+        """Delete retired directories; one that survives is swept at the next start."""
+        for path in paths:
+            shutil.rmtree(path, ignore_errors=True)
+            if path.exists():
+                logger.warning("source_cache_retired_delete_failed", path=str(path))
+
+    def _cleanup_retired(self) -> None:
+        for retired in self.inputs_root.glob(f"*/{_RETIRED_PREFIX}*"):
+            if retired.is_dir() and not retired.is_symlink():
+                shutil.rmtree(retired, ignore_errors=True)
 
     def _forget_verified(self, identity_digest: str, generation_id: str) -> None:
         with self._lock:
@@ -1360,10 +1437,9 @@ class SourceCacheStore:
         return generation_id
 
     def clear(self, identity: SourceCacheIdentity) -> None:
-        with self._identity_lock(identity):
-            with self._lease_lock:
-                self._pointer_path(identity).unlink(missing_ok=True)
-                self._retire_unleased_locked(identity, force=True)
+        with self._identity_lock(identity), self._retiring() as retired:
+            self._pointer_path(identity).unlink(missing_ok=True)
+            retired.extend(self._retire_unleased_locked(identity, force=True))
 
     def status(
         self, identity: SourceCacheIdentity, *, source_signature: str | None = None
