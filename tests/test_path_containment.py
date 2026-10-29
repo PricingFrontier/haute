@@ -1197,6 +1197,7 @@ def other(root, path):
     assert _unmarked_comparisons(source) == [6, 9, 14, 15, 16]
 
 
+@pytest.mark.meta
 def test_every_other_path_comparison_is_marked() -> None:
     sandbox = REPO_ROOT / "src" / "haute" / "_sandbox.py"
     unmarked = [
