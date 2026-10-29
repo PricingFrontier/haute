@@ -801,7 +801,7 @@ class _ExprConverter:
 
                 # Check if then value contains a nested conditional
                 if self._has_nested_when(clause["then"]):
-                    sub_converter = _ExprConverter(self._symbol_table)
+                    sub_converter = self._nested_converter()
                     then_text = sub_converter.convert(clause["then"])
                     sub_expr = ParsedExpression(
                         target_column="",
@@ -825,6 +825,10 @@ class _ExprConverter:
                 parts.append(f"otherwise {otherwise_text}")
 
         return " ".join(parts)
+
+    def _nested_converter(self) -> _ExprConverter:
+        """The converter a nested conditional's branch is written by."""
+        return _ExprConverter(self._symbol_table)
 
     def _has_nested_when(self, node: ast.AST) -> bool:
         """Check if node contains a pl.when() call."""
@@ -1282,9 +1286,34 @@ class _Definition:
     unprovable: frozenset[str]
     bound_name: str | None
 
+    def unknown_name(self, unknown: Collection[str]) -> str | None:
+        """The first name the expression reads whose value is not known, if any.
+
+        A binding that captured an unknown value is unknown itself, so reading
+        it counts even after the captured name is bound again.
+        """
+        if self.bound_name is not None and self.bound_name in unknown:
+            return self.bound_name
+        return next(
+            (
+                sub.id
+                for sub in ast.walk(self.node)
+                if isinstance(sub, ast.Name) and sub.id in unknown
+            ),
+            None,
+        )
+
     def reads_unknown(self, unknown: Collection[str]) -> bool:
         """Whether the expression reads a name whose value is not known."""
-        return self.bound_name in unknown or _expr_references_vars(self.node, set(unknown))
+        return self.unknown_name(unknown) is not None
+
+
+def _root_expression(definition: _Definition) -> ast.AST:
+    """The expression *definition*'s node stands for: a variable's binding when it names one."""
+    node = definition.node
+    if isinstance(node, ast.Name) and node.id in definition.symbol_table:
+        node = _strip_alias(definition.symbol_table[node.id])[0]
+    return node
 
 
 def _find_definition(code: str, target_column: str) -> _Definition | None:
@@ -1360,20 +1389,6 @@ def _parse_expression_impl(code: str, target_column: str) -> ParsedExpression | 
         sub_expressions=converter.sub_expressions,
         source_line=definition.source_line,
     )
-
-
-def _expr_references_vars(node: ast.AST, var_names: set[str]) -> bool:
-    """Check if the expression references any control-flow-reassigned variable.
-
-    A variable assigned inside control flow has an ambiguous value at the point
-    of use, so the expression must be treated as opaque *even if* the same name
-    also has a top-level binding — the top-level binding does not disambiguate
-    which branch actually ran.
-    """
-    for child in ast.walk(node):
-        if isinstance(child, ast.Name) and child.id in var_names:
-            return True
-    return False
 
 
 def _substitute_names_in_ast(node: ast.AST, table: dict[str, ast.AST]) -> ast.AST:
@@ -1548,13 +1563,15 @@ def _evaluate_expression_impl(
     if parsed is None:
         parsed = _opaque(target_column, "")
     definition = _definition_in(code, target_column)
+    resolved = None if definition is None else _resolve_names(definition)
 
     # A window is the located expression's own: another column's window in the
-    # same node says nothing about this one.
-    is_window = definition is not None and _is_window(definition.node)
+    # same node says nothing about this one. A variable it reads counts as
+    # what the variable is bound to.
+    is_window = resolved is not None and _is_window(resolved)
     referenced_columns = list(parsed.referenced_columns)
-    if definition is not None and is_window:
-        for column in _window_partition_columns(definition.node):
+    if resolved is not None and is_window:
+        for column in _window_partition_columns(resolved):
             if column not in referenced_columns:
                 referenced_columns.append(column)
 
@@ -1566,29 +1583,30 @@ def _evaluate_expression_impl(
         substituted_text = parsed.expression_text
     else:
         substituted_text = _ValueRenderer(
-            definition,
+            definition.symbol_table,
             columns=_display_values(input_values, row),
             names={name: value for name, value in literals.items() if name not in unprovable},
             constants=constant_values,
-        ).render()
+            root=_root_expression(definition),
+        ).convert(definition.node)
 
-    # A name the code rebound out of sight before the call has no value to
-    # compute with, whatever the preamble binds it to.
+    # A name the code rebound out of sight before the call, or a binding that
+    # captured one, has no value to compute with, whatever the preamble binds
+    # the name to.
+    unknown = None if definition is None else definition.unknown_name(unprovable)
     evaluation_ns = {name: value for name, value in namespace.items() if name not in unprovable}
     traced_row = _native_row(row_values) if row is None else row
-    node = (
-        None
-        if definition is None
-        else _inline_global_constants(_resolve_names(definition), constant_values)
-    )
+    node = None if resolved is None else _inline_global_constants(resolved, constant_values)
     computed = (
         _RowValue(reason="expression_not_located")
         if node is None
+        else _RowValue(reason=f"unresolved_name: {unknown}")
+        if unknown is not None
         else _row_value(node, traced_row, evaluation_ns)
     )
 
     branches: dict[str, Any] = {}
-    if node is not None and parsed.expression_type == "conditional":
+    if node is not None and unknown is None and parsed.expression_type == "conditional":
         branches = _branch_selection(node, traced_row, evaluation_ns) or {}
 
     return EvaluatedExpression(
@@ -1711,20 +1729,28 @@ class _ValueRenderer(_ExprConverter):
 
     def __init__(
         self,
-        definition: _Definition,
+        symbol_table: dict[str, ast.AST],
         *,
         columns: Mapping[str, Any],
         names: Mapping[str, Any],
         constants: Mapping[str, Any],
+        root: ast.AST | None = None,
     ) -> None:
-        super().__init__(definition.symbol_table)
-        self._root = definition.node
+        super().__init__(symbol_table)
+        # The expression the rendering stands for: a window there is the whole
+        # formula, anywhere else a part of it.
+        self._root = root
         self._column_values = columns
         self._name_values = names
         self._constant_values = constants
 
-    def render(self) -> str:
-        return self.convert(self._root)
+    def _nested_converter(self) -> _ExprConverter:
+        return _ValueRenderer(
+            self._symbol_table,
+            columns=self._column_values,
+            names=self._name_values,
+            constants=self._constant_values,
+        )
 
     def _column_text(self, name: str) -> str:
         if name in self._column_values:

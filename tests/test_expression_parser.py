@@ -1718,3 +1718,55 @@ class TestTheLocatedExpressionAlone:
 
         assert result.substituted_text == "1.26.round(1)"
         assert result.result_value == 1.3
+
+    def test_a_binding_captured_from_an_unknown_value_is_reported_not_guessed(self) -> None:
+        # ``expr`` captured ``factor`` while its value was unknown; rebinding
+        # ``factor`` afterwards does not make ``expr`` known.
+        code = (
+            "factor = 2\n"
+            "factor *= 3\n"
+            'expr = pl.col("x") * factor\n'
+            "factor = 4\n"
+            "df = df.with_columns(y=expr)"
+        )
+
+        result = evaluate_expression(code, "y", {"x": 10}, preamble_ns={"factor": 5})
+
+        assert result.result_value is None
+        assert result.not_computable_reason == "unresolved_name: expr"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            'expr = pl.col("x").rank().over("g")\ndf = df.with_columns(y=expr)',
+            'expr = pl.col("x").rank().over("g").alias("y")\ndf = df.with_columns(expr)',
+        ],
+        ids=["keyword", "aliased-positional"],
+    )
+    def test_a_window_bound_to_a_variable_is_typed_from_its_binding(self, code: str) -> None:
+        result = evaluate_expression(code, "y", {"x": 3, "g": "A"})
+
+        assert result.expression_type == "window"
+        assert result.referenced_columns == ["x", "g"]
+        assert result.substituted_text == "rank of x over g"
+        assert result.not_computable_reason == "not_row_local: rank"
+
+    def test_a_nested_conditional_substitutes_values_in_every_branch(self) -> None:
+        code = (
+            "df = df.with_columns(\n"
+            '    pl.when(pl.col("a") > 1)\n'
+            '    .then(pl.when(pl.col("b") > 2).then(pl.col("c")).otherwise(0))\n'
+            '    .otherwise(pl.col("d"))\n'
+            '    .alias("r")\n'
+            ")"
+        )
+
+        result = evaluate_expression(code, "r", {"a": 2, "b": 3, "c": 10, "d": 20})
+
+        assert result.expression_text == (
+            "when a > 1 then when b > 2 then c otherwise 0 otherwise d"
+        )
+        assert result.substituted_text == (
+            "when 2 > 1 then when 3 > 2 then 10 otherwise 0 otherwise 20"
+        )
+        assert result.result_value == 10

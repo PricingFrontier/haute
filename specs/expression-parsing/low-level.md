@@ -173,9 +173,11 @@ no alias or migration shim; direct test callers use the same current contract.
   `if`/`for`/`while`/`try`/`with`/`match` has an ambiguous value at any point of use; `parse_expression`
   treats the whole target expression as opaque if it references such a name, even when the same
   name also happens to have an (irrelevant) top-level binding elsewhere. A name unprovable where
-  the expression runs (assigned before it in a way the table cannot follow) makes it opaque too,
-  and `evaluate_expression` drops it from the evaluation namespace, so the value reports
-  `unresolved_name: <name>` instead of a stale binding or a preamble value of the same name.
+  the expression runs (assigned before it in a way the table cannot follow, or a binding that
+  captured such a name, which stays unknown when the captured name is bound again) makes it
+  opaque too, and `evaluate_expression` reports `unresolved_name: <name>` for the first such
+  name the expression reads instead of computing with a stale binding or a preamble value of
+  the same name.
 - **Values are Polars' own**: integer overflow wraps as the column's dtype does, division and
   modulo by zero, Kleene `&`/`|`, rounding and NaN handling are whatever Polars computes on the
   row, because Polars computes them. A typed null propagates through every operation; a native
@@ -200,7 +202,10 @@ no alias or migration shim; direct test callers use the same current contract.
   scalar — so nothing outside those nodes changes: a quoted literal spelled like a column, a
   method named like one and a keyword argument stay as written, and a value is never re-scanned.
   A window renders as `_window_description`'s words from column names (`sum of premium over
-  region`), parenthesised when it is not the whole expression. Given the traced row's typed frame,
+  region`), parenthesised when it is not the whole expression (the expression a variable the
+  call names is bound to counts as the whole one). A nested conditional's branches are rendered
+  with values like the rest. Window type and partition columns come from the expression with
+  its variables resolved, so `y=expr` with `expr` a window is typed a window. Given the traced row's typed frame,
   a Float32 column's value is shown with its float32 digits (`528.09`, not the widened
   `528.0900268554688`) by `_display_values`; only the text changes, and the values computed on
   stay exact.
