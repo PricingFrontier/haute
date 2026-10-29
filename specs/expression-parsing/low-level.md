@@ -94,33 +94,45 @@ preserving the one-level nesting contract.
 bail to `_opaque(...)` on empty input or `SyntaxError` → `_has_control_flow_wrapping_target`: if
 the `with_columns()` producing `target_column` sits inside `if`/`for`/`while`/`try`/`with`/`match`,
 bail to opaque (the value is branch-dependent and cannot be statically resolved) →
-`_build_safe_symbol_table` collects only *top-level* simple `Name = expr` assignments (control-flow
-bodies are excluded) → `_find_control_flow_assigned_vars` separately records names assigned
-*inside* control flow, so an expression referencing one of those is poisoned even if the same name
-also has an unrelated top-level binding → `_resolve_reassignment_chains` folds sequential
-reassignment patterns (`expr = pl.col("base"); expr = expr * pl.col("f")`) into the symbol table by
-substituting known names into each new value's AST as it's processed, in statement order →
-`_find_with_columns_calls` locates every `with_columns()`/`select()` call, ordered by (line, col,
-end_line, end_col) source span so a chained `df.with_columns(A).with_columns(B)` — which
-`ast.walk`'s breadth-first parent-before-child order would otherwise visit outer-call-first —
-comes back in true execution order → scan all calls, "last alias match wins", with two fallback
-scans (dynamic alias resolved through the symbol table; then no-alias expressions matched by
-`_infer_auto_name`) if the direct alias scan finds nothing → convert the winning expression AST
-with `_ExprConverter`.
+`_find_definition` scans every call `_calls_with_bindings` returns, "last alias match wins", an
+unaliased expression named after its leftmost column by `_infer_auto_name` →
+`_find_control_flow_assigned_vars` records names assigned *inside* control flow, so an expression
+referencing one of those, or one unprovable where it runs, is opaque even if the same name also
+has a top-level binding → convert the winning expression AST with `_ExprConverter` over the
+bindings in force at its statement.
+
+**`_calls_with_bindings`** (`_expression_parser.py`, memoised per code string): one pass over the
+top-level statements gives every `with_columns()`/`select()` call (`_find_with_columns_calls`,
+ordered by (line, col, end_line, end_col) source span so a chained
+`df.with_columns(A).with_columns(B)` — which `ast.walk`'s breadth-first parent-before-child order
+would otherwise visit outer-call-first — comes back in true execution order) the names bound
+before its own statement (`_statement_index`, by source position, so `a = 1; df = ...` on one line
+counts). `_bind_statement` folds each statement in order: a simple `name = value` or
+`name: type = value` binds the value with the names it reads resolved as they stand
+(`_substitute_names_in_ast`, every loaded name in any node), so a later rebinding never changes it
+(`expr = pl.col("base"); expr = expr * pl.col("f")` folds as it runs), and a binding that reads an
+unprovable name is unprovable; a frame assignment (`df = df.filter(...)`) binds nothing; any other
+statement that assigns a name (control flow, an augmented or unpacking assignment, a `with` or
+`for` target, a walrus) drops it from the table and marks it unprovable. An import binds a module
+and a definition a callable, and neither changes the table. An argument naming a bound variable
+yields that variable's binding, already resolved where it was bound, and no later table resolves
+the names left in it (`bound_name` on `_Definition`, and the converter renders a binding's value
+with no table).
 
 **`evaluate_expression`** (`_expression_parser.py`): wrap bare dot-chain code (`.method(...)`),
 including snippets with leading indentation, or a naked expression into a synthetic `df = (...)`
-statement through the same wrapper used by `parse_expression_chain` so both APIs parse the same
-source shape → merge
-`preamble_ns` constants under `row_values` (column values win on key collision) → detect a window
-function via the substring `".over("` → `parse_expression` for the text/columns/type → for windows,
-`_add_window_partition_cols` regex-extracts `.over('col')` partition columns and
-`_build_window_description` regex-extracts the aggregation function/column/partition names into a
-canned `"{agg} of {col} over {partition}"` string → `_substitute_values` builds the substituted
-formula text (see Edge cases) → resolve any still-unresolved preamble constant names by literal
-text replacement (literal constants only) → `_locate_defining_expression` reparses the code,
-finds the last expression assigning `target_column` (falling back to an unaliased expression named
-after the column), and resolves same-node names through the symbol table → `_row_value` inlines
+statement through `wrap_node_code`, after stripping a leading BOM — the one wrapper
+`parse_expression_chain`, `assignment_phases` and trace enrichment use too, so every reader
+parses the same source shape → merge
+`preamble_ns` constants under `row_values` (column values win on key collision) →
+`parse_expression` for the text/columns/type → `_definition_in` locates the expression assigning
+`target_column` as `parse_expression` does → the expression is a window when it contains an
+`.over()` call (`_is_window`), and then its string partition arguments (positional or
+`partition_by`, a list spread) join its referenced columns (`_window_partition_columns`) →
+`_ValueRenderer` writes the substituted text (see Edge cases) → the evaluation namespace drops the
+names unprovable where the expression runs → `_resolve_names` resolves same-node names through the
+bindings in force at its statement and `_inline_global_constants` inlines each scalar global
+constant it reads → `_row_value` inlines
 literal preamble constants, reports an unresolved free name, classifies the expression with
 `chunking.classify_row_local_expression` (not row-local → `not_row_local: <operator>`), validates it
 with `_sandbox.validate_user_code`, evaluates its source under `safe_globals(pl=pl, <preamble names>)`
@@ -160,7 +172,13 @@ no alias or migration shim; direct test callers use the same current contract.
 - **Control-flow-conditional variables poison downstream use**: a variable assigned inside
   `if`/`for`/`while`/`try`/`with`/`match` has an ambiguous value at any point of use; `parse_expression`
   treats the whole target expression as opaque if it references such a name, even when the same
-  name also happens to have an (irrelevant) top-level binding elsewhere.
+  name also happens to have an (irrelevant) top-level binding elsewhere. A name unprovable where
+  the expression runs (assigned before it in a way the table cannot follow, or a binding that
+  read such a name, directly or through another binding, and stays unknown when that name is
+  bound again) makes it opaque too, and `evaluate_expression` reports `unresolved_name: <name>`
+  for the first such name the expression reads instead of computing with a stale binding or a
+  preamble value of the same name. A value changed in place (`d["k"] = v`, `d.update(...)`) is
+  not followed: the table keeps the value as bound.
 - **Values are Polars' own**: integer overflow wraps as the column's dtype does, division and
   modulo by zero, Kleene `&`/`|`, rounding and NaN handling are whatever Polars computes on the
   row, because Polars computes them. A typed null propagates through every operation; a native
@@ -178,17 +196,27 @@ no alias or migration shim; direct test callers use the same current contract.
 - **A bare string in `then`/`otherwise` is a column**: Polars reads `.then("high")` as
   `pl.col("high")`, so an arm written that way reports `column_unavailable: high` unless the row
   has such a column.
-- **Single-pass value substitution**: `_substitute_values` builds one combined word-boundary regex
-  over all identifier-like column names, longest-first, and substitutes in one left-to-right pass —
-  so a value inserted for one column can never be re-scanned and corrupted by a shorter column
-  name's pattern matching inside the inserted text. Non-identifier column names (spaces/special
-  characters) fall back to literal (non-regex) replacement. Given the traced row's typed frame,
+- **Substitution renders the syntax tree**: `_ValueRenderer` is the converter with three hooks
+  that take a value — a column reference (`pl.col`, a `pl.format` argument, a horizontal
+  function's listed column) the row's value, a free name bound to a literal preamble constant (not
+  one unprovable where the expression runs) its value, and a `global_constants.<name>` read its
+  scalar — so nothing outside those nodes changes: a quoted literal spelled like a column, a
+  method named like one and a keyword argument stay as written, and a value is never re-scanned.
+  A window renders as `_window_description`'s words from column names (`sum of premium over
+  region`), parenthesised when it is not the whole expression (the expression a variable the
+  call names is bound to counts as the whole one). A nested conditional's branches are rendered
+  with values like the rest. Window type and partition columns come from the expression with
+  its variables resolved, so `y=expr` with `expr` a window is typed a window. Given the traced row's typed frame,
   a Float32 column's value is shown with its float32 digits (`528.09`, not the widened
   `528.0900268554688`) by `_display_values`; only the text changes, and the values computed on
   stay exact.
-- **BOM handling**: `parse_expression`, `parse_expression_chain`, and
-  `_locate_defining_expression` all strip a leading `﻿` before parsing (`evaluate_expression`
-  inherits this only transitively, by calling into `parse_expression`/`_locate_defining_expression`).
+- **Unary operators keep their grouping**: `_operand_prec` gives `-`, `+` and `~` the precedence
+  `_PREC_USUB` (below `**`, above `*`) and `not` `_PREC_NOT` (below a comparison, above `and`);
+  `_unaryop` parenthesises a looser operand, so `-(x + z)` and `~(a & b)` keep their parentheses
+  while `-x ** 2` stays `-(x ** 2)` as Python reads it.
+- **BOM handling**: `wrap_node_code` strips a leading `﻿`, and `parse_expression`
+  and `_locate_defining_expression` strip it from code given to them unwrapped, so every
+  reader parses the same source.
 - **No text recovery of syntax-invalid source**: a file that is not valid Python is never
   scanned for fragments. The strict parser turns its `SyntaxError` into a contextual
   `ParseError`, and editor recovery presents it as a source-only document carrying the located
@@ -360,7 +388,13 @@ Tests live under `tests/`, split by concern:
   chaining, alias handling, multi-expression code blocks, opaque-pattern detection, syntax
   errors, special column names, and `EvaluatedExpression` value coverage across floats, ints,
   strings, nulls, NaN, infinities, dates, booleans, extreme numbers, conditionals, and horizontal
-  functions.
+  functions. `TestTheLocatedExpressionAlone` pins a row-local column beside a window keeping its
+  own type, text and columns, a window described from its own tree (alone and inside
+  arithmetic), a scalar rebound after the formula read as the formula saw it (on separate lines
+  and on one line), a binding keeping the preamble name it read when it ran, an augmented
+  rebinding reported as `unresolved_name` rather than guessed, unary grouping (`-(x + z)`,
+  nested, `-x ** 2`, `(-x) ** 2`, `~(a & b)`), a literal spelled like a column left unsubstituted,
+  and a method named like a column keeping its name.
 - **`test_expression_parser_advanced.py`** (~1100 lines) — real-world actuarial rating-formula
   scenarios (loss ratio, burn cost, frequency-severity, earned premium, NCD discount, IPT,
   reinsurance, age-band pricing, multi-line pricing, etc.), broader Polars method coverage

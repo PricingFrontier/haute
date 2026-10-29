@@ -8,14 +8,19 @@
  * only components. Helpers that build or reshape trace data live here.
  */
 
-import { formatDisplayExpression } from "./traceFormatting"
+import { displayOperators, formatDisplayExpression } from "./traceFormatting"
 
 // ---------------------------------------------------------------------------
 // Waterfall
 // ---------------------------------------------------------------------------
 
+/** How a waterfall row changed the running value: its first value, a factor, or a delta. */
+export type WaterfallOperation = "base" | "multiply" | "add"
+
 export interface WaterfallStep {
   name: string
+  operation: WaterfallOperation
+  /** The first row's value, a multiplying row's factor, or an adding row's delta. */
   factor: number
   runningValue: number
   prevValue: number
@@ -25,7 +30,7 @@ export interface WaterfallStep {
 
 export interface WaterfallEntryProp {
   label: string
-  operation: string
+  operation: WaterfallOperation
   value: number
   delta: number
   cumulative: number
@@ -66,6 +71,7 @@ export function buildWaterfallSteps(
 
   steps.push({
     name: names[0],
+    operation: "base",
     factor: running,
     runningValue: running,
     prevValue: 0,
@@ -79,6 +85,7 @@ export function buildWaterfallSteps(
     const dir = factor > 1 ? "positive" : factor < 1 ? "negative" : "neutral"
     steps.push({
       name: names[i],
+      operation: "multiply",
       factor,
       runningValue: running,
       prevValue: prev,
@@ -109,6 +116,7 @@ export function resolveWaterfallProp(
     const prevCumulative = i > 0 ? waterfallProp[i - 1].cumulative : 0
     return {
       name: entry.label,
+      operation: entry.operation,
       factor: entry.value,
       runningValue: entry.cumulative,
       prevValue: prevCumulative,
@@ -221,9 +229,7 @@ export function buildChainEntries(
     const formulaText = entry.expression_text
       ? formatDisplayExpression(entry.expression_text).text
       : null
-    const substitutedText = entry.substituted_text
-      ? entry.substituted_text.replace(/\*/g, "\u00d7").replace(/\//g, "\u00f7")
-      : null
+    const substitutedText = entry.substituted_text ? displayOperators(entry.substituted_text) : null
     out.push({
       column: entry.target_column,
       formulaText,
@@ -272,9 +278,7 @@ export function buildInputSourceEntries(
     const formulaText = src.expression_text
       ? formatDisplayExpression(src.expression_text).text
       : null
-    const substitutedText = src.substituted_text
-      ? src.substituted_text.replace(/\*/g, "\u00d7").replace(/\//g, "\u00f7")
-      : null
+    const substitutedText = src.substituted_text ? displayOperators(src.substituted_text) : null
     out.push({
       column,
       formulaText,

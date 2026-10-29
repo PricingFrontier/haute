@@ -793,9 +793,8 @@ class TestSymbolTableAndControlFlow:
         assert expr.expression_type == "opaque"
 
     def test_augassign_in_control_flow(self):
-        """AugAssign inside control flow (line 862–863).
-        Even though x is assigned in control flow, the top-level x=1 is in the
-        symbol table so _expr_references_vars returns False — expression is still resolved."""
+        """AugAssign inside control flow leaves the name's value unknown where the
+        expression runs, so the expression is opaque."""
         code = (
             "if True:\n"
             "    y = 1\n"
@@ -1820,7 +1819,7 @@ class TestParseExpressionChainEdges:
 
 
 # ###########################################################################
-# 27. _expr_references_vars (lines 1171–1181)
+# 27. Expressions reading a name whose value is unknown
 # ###########################################################################
 
 

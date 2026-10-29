@@ -2,7 +2,7 @@ import { useContext, useState } from "react"
 import { ChevronDown, ChevronRight } from "lucide-react"
 import type { TraceColumnDerivation } from "../types/trace"
 import { ExpressionChainRowContentView } from "./ExpressionChain"
-import { formatDisplayExpression } from "./traceFormatting"
+import { displayOperators, formatDisplayExpression } from "./traceFormatting"
 import { evaluatedValue, notComputableNote } from "./traceHelpers"
 import { TraceNavigationContext } from "./traceContext"
 import { derivationSourceLabel, substitutionRestatesValue, type DerivationTreeNode } from "./derivationTreeHelpers"
@@ -13,10 +13,6 @@ import { derivationSourceLabel, substitutionRestatesValue, type DerivationTreeNo
 // or a rule (a model, an optimiser), with the values it read nested beneath.
 // Pure tree building lives in ./derivationTreeHelpers.
 // ---------------------------------------------------------------------------
-
-function displaySubstituted(text: string | null): string | null {
-  return text ? text.replace(/\*/g, "×").replace(/\//g, "÷") : null
-}
 
 function DerivationRowContent({ node }: { node: DerivationTreeNode }) {
   const navigation = useContext(TraceNavigationContext)
@@ -31,7 +27,7 @@ function DerivationRowContent({ node }: { node: DerivationTreeNode }) {
       <ExpressionChainRowContentView
         column={node.column}
         formulaText={node.expressionText ? formatDisplayExpression(node.expressionText).text : null}
-        substitutedText={substitutionRestatesValue(node.substitutedText, node.value) ? null : displaySubstituted(node.substitutedText)}
+        substitutedText={substitutionRestatesValue(node.substitutedText, node.value) ? null : (node.substitutedText ? displayOperators(node.substitutedText) : null)}
         value={valueKnown ? node.value : "?"}
         source={derivationSourceLabel(node)}
         note={node.note}
@@ -101,7 +97,7 @@ export function ComputedHere({ derivations }: { derivations: TraceColumnDerivati
           <ExpressionChainRowContentView
             column={derivation.column}
             formulaText={derivation.expression_text ? formatDisplayExpression(derivation.expression_text).text : null}
-            substitutedText={substitutionRestatesValue(derivation.substituted_text, value) ? null : displaySubstituted(derivation.substituted_text)}
+            substitutedText={substitutionRestatesValue(derivation.substituted_text, value) ? null : (derivation.substituted_text ? displayOperators(derivation.substituted_text) : null)}
             value={value}
             source={null}
             note={derivation.error ?? notComputableNote(derivation)}

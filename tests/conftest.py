@@ -906,6 +906,51 @@ def current_source_revision(path: str | Path, project_root: str | Path) -> str |
     return load_pipeline_editor_document(target, project_root=Path(project_root)).source_revision
 
 
+def head_frame_resolver(
+    frames: dict[str, Any],
+    parents_of: Mapping[str, list[str]],
+    target_node_id: str,
+    node_map: Mapping[str, Any],
+    edge_metadata: Mapping[tuple[str, str], list[tuple[str | None, str | None]]] | None = None,
+) -> Any:
+    """A correlation resolver that matches every parent in the frame given for it.
+
+    Every edge is aligned and every node head-framed, so each port is matched by
+    ``_match_parent_row`` in its frame (a multi-frame parent's, in each frame its
+    edges name) and no uncapped plan is read: correlation over materialised frames.
+    Without *edge_metadata* each parent feeds its child through one unnamed edge.
+    """
+    from haute._trace_correlation import RowScopeResolver, TraceEdgeAlignment
+
+    edges = (
+        dict(edge_metadata)
+        if edge_metadata is not None
+        else {
+            (parent, child): [(None, None)]
+            for child, parents in parents_of.items()
+            for parent in parents
+        }
+    )
+    return RowScopeResolver(
+        node_map=node_map,
+        prefixes={
+            node_id: frame.height if isinstance(frame, pl.DataFrame) else 0
+            for node_id, frame in frames.items()
+        },
+        alignments={
+            (parent, child, handle, role): TraceEdgeAlignment(True)
+            for (parent, child), pairs in edges.items()
+            for handle, role in pairs
+        },
+        edge_metadata=edges,
+        input_names={},
+        child_input_names={},
+        plans=dict,
+        frames=frames,
+        head_resolved={target_node_id},
+    )
+
+
 def make_edge(
     src: str,
     tgt: str,

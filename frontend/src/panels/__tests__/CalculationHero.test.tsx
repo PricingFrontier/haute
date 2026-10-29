@@ -99,6 +99,55 @@ describe("CalculationHero \u2014 Basic Rendering", () => {
     expect(screen.getByText(/base_premium \u00d7 age_factor/)).toBeInTheDocument()
   })
 
+  it("shows each backend waterfall step with its own operation", () => {
+    render(
+      <CalculationHero
+        {...makeProps({
+          waterfall: [
+            { label: "base", operation: "base", value: 100, delta: 0, cumulative: 100 },
+            { label: "area", operation: "multiply", value: 1.1, delta: 10, cumulative: 110 },
+            { label: "fee", operation: "add", value: 30, delta: 30, cumulative: 140 },
+            { label: "discount", operation: "add", value: -30, delta: -30, cumulative: 110 },
+          ],
+          calculation: makeCalculation({ result_value: 110 }),
+        })}
+      />,
+    )
+    const changes = screen.getAllByTestId("waterfall-bar").map(
+      (bar) => bar.querySelector(".waterfall-factor")?.textContent,
+    )
+    expect(changes).toEqual(["100", "\u00d71.1", "+30", "\u221230"])
+  })
+
+  it.each([
+    ["conditional", "when age > 25 then 100 otherwise 200"],
+    ["opaque", "custom(age)"],
+  ])("shows a %s calculation's value on the card that mounts it without a frame", (type, text) => {
+    render(
+      <CalculationHero
+        {...makeProps({
+          frame: false,
+          expression: makeExpression({ expression_type: type, expression_text: text }),
+          calculation: makeCalculation({ substituted_text: "", result_value: 150 }),
+        })}
+      />,
+    )
+    expect(screen.getByTestId("trace-calculation-value")).toHaveTextContent("= premium150")
+  })
+
+  it("keeps quoted operators in the formula and its values as written", () => {
+    render(
+      <CalculationHero
+        {...makeProps({
+          expression: makeExpression({ expression_text: "replace(band, 'a/b', 'a*b') * rate" }),
+          calculation: makeCalculation({ substituted_text: "replace(\"x\", 'a/b', 'a*b') * 2" }),
+        })}
+      />,
+    )
+    expect(screen.getByText("replace(band, 'a/b', 'a*b') × rate")).toBeInTheDocument()
+    expect(screen.getByText("replace(\"x\", 'a/b', 'a*b') × 2")).toBeInTheDocument()
+  })
+
   it("renders substituted_text showing actual values", () => {
     render(<CalculationHero {...makeProps()} />)
     expect(screen.getByText(/528/)).toBeInTheDocument()

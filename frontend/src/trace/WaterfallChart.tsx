@@ -13,6 +13,15 @@ export interface WaterfallChartProps {
   resultValue: unknown
 }
 
+/** A row's change as the response states it: ×factor, or +delta / −delta. */
+function waterfallChange(step: WaterfallStep): string {
+  if (step.operation === "base") return formatSmartValue(step.factor)
+  if (step.operation === "multiply") return `\u00d7${formatSmartValue(step.factor)}`
+  return step.factor < 0
+    ? `\u2212${formatSmartValue(-step.factor)}`
+    : `+${formatSmartValue(step.factor)}`
+}
+
 /**
  * Visual waterfall chart: one animated horizontal bar per factor plus a
  * prominent total row at the bottom. Extracted from CalculationHero as part
@@ -83,9 +92,7 @@ const WaterfallChart: React.FC<WaterfallChartProps> = ({ steps, resultValue }) =
               title={formatResultValueFull(step.factor)}
               style={{ minWidth: 50, fontSize: 12, ...tabularNums }}
             >
-              {idx === 0
-                ? formatSmartValue(step.factor)
-                : `\u00d7${formatSmartValue(step.factor)}`}
+              {waterfallChange(step)}
             </span>
             <div
               style={{
