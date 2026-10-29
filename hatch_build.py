@@ -37,6 +37,9 @@ _SOURCE_TEST_ONLY_DIRS = frozenset({"__tests__", "test-utils", "testSupport"})
 # mirrored in tests/test_docs_accuracy.py's frontend-source classification.
 _SOURCE_VITEST_SETUP_FILES = frozenset({"setupTests.ts", "setupStorageCanary.ts"})
 _SOURCE_TEST_FILE = re.compile(r"[.](?:test|spec)[.][^.]+$")
+# The hint the CLI's ``_node_env`` and ``_npm`` fail with
+# (src/haute/cli/_helpers.py); the hook cannot import the package it builds.
+_NODE_INSTALL_HINT = "Install Node.js from https://nodejs.org and restart your terminal."
 
 
 class _LocalAssetParser(HTMLParser):
@@ -597,28 +600,19 @@ class FrontendBuildHook(BuildHookInterface):
 
     @staticmethod
     def _npm() -> str:
-        """Return npm, resolving the common Windows installation path."""
-        found = shutil.which("npm")
-        if found:
-            return found
-        if sys.platform == "win32":
-            candidate = Path(r"C:\Program Files\nodejs\npm.cmd")
-            if candidate.exists():
-                return str(candidate)
-        raise RuntimeError("npm not found on PATH. Install Node.js from https://nodejs.org")
+        """Return npm from PATH, failing with the CLI's install hint when Node is absent.
 
-    @staticmethod
-    def _node_env() -> dict[str, str] | None:
-        """Return an environment with Node.js on PATH when necessary."""
-        if shutil.which("node"):
-            return None
-        if sys.platform == "win32":
-            nodejs_dir = Path(r"C:\Program Files\nodejs")
-            if (nodejs_dir / "node.exe").exists():
-                env = os.environ.copy()
-                env["PATH"] = f"{nodejs_dir};{env.get('PATH', '')}"
-                return env
-        return None
+        No machine-layout fallback, as in the CLI: a guessed install path hides
+        the real problem, that Node is not on PATH.
+        """
+        if shutil.which("node") is None:
+            raise RuntimeError(
+                f"Node.js is required but was not found on PATH. {_NODE_INSTALL_HINT}"
+            )
+        found = shutil.which("npm")
+        if found is None:
+            raise RuntimeError(f"npm not found on PATH. {_NODE_INSTALL_HINT}")
+        return found
 
     def _run(self, cmd: list[str], cwd: Path) -> None:
         try:
@@ -630,7 +624,6 @@ class FrontendBuildHook(BuildHookInterface):
                 encoding="utf-8",
                 errors="replace",
                 timeout=_COMMAND_TIMEOUT_SECONDS,
-                env=self._node_env(),
             )
         except subprocess.TimeoutExpired as exc:
             msg = f"Command timed out after {_COMMAND_TIMEOUT_SECONDS} seconds: {' '.join(cmd)}"

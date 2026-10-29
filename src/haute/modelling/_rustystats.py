@@ -8,7 +8,6 @@ config validation lives in :mod:`haute.modelling._train_config`.
 
 from __future__ import annotations
 
-import gc
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -19,12 +18,12 @@ import numpy as np
 import polars as pl
 
 from haute._logging import get_logger
+from haute._polars_utils import release_freed_memory
 from haute.errors import HauteValidationError
 from haute.modelling._algorithms import (
     BaseAlgorithm,
     FitResult,
     IterationCallback,
-    _malloc_trim,
     _mem_checkpoint,
 )
 from haute.modelling._glm_terms import (
@@ -644,9 +643,9 @@ class GLMAlgorithm(BaseAlgorithm):
         if on_iteration:
             on_iteration(1, 1, {"deviance": float(result.deviance)}, loss_history[0])
 
+        freed_bytes = train_df.estimated_size()
         del train_df
-        gc.collect()
-        _malloc_trim()
+        release_freed_memory(freed_bytes)
 
         return FitResult(
             model=result,

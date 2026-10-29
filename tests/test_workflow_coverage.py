@@ -39,6 +39,9 @@ _WORKFLOW_ID_PATTERN = re.compile(r"^W\d{2}$")
 _SCENARIO_ID_PATTERN = re.compile(r"^W\d{2}-S\d{2}$")
 _FINDING_PATTERN = re.compile(r"^F\d+$")
 _COMMIT_PATTERN = re.compile(r"^[0-9a-f]{7,40}$")
+# ``-p no:warnings`` unloads pytest's warnings plugin, so the configured
+# ``error::RuntimeWarning`` filter does not hold for the run it records.
+_WARNINGS_PLUGIN_DISABLED = re.compile(r"(?<!\S)-p\s*no:warnings(?!\S)")
 # A module-level ``pytestmark`` naming the perf marker (or a file under
 # tests/performance/) is deselected by the ordinary lane's ``-m 'not perf'``
 # addopts, so it can never witness a covered scenario (ENG-T12 step 1).
@@ -861,6 +864,11 @@ def ledger_violations(
                 cmd = evidence.get("command")
                 if not isinstance(cmd, str) or not cmd.strip():
                     violations.append(f"scenario {sc_id}: evidence command must be non-empty")
+                elif _WARNINGS_PLUGIN_DISABLED.search(cmd):
+                    violations.append(
+                        f"scenario {sc_id}: evidence command disables pytest's warnings "
+                        "plugin (-p no:warnings), so the suite's warning filters did not hold"
+                    )
                 res = evidence.get("result")
                 if not isinstance(res, str) or not res.strip():
                     violations.append(f"scenario {sc_id}: evidence result must be non-empty")
@@ -993,7 +1001,7 @@ def _valid_ledger(root: Path) -> dict[str, Any]:
                 "tests": ["tests/test_alpha.py::test_ok"],
                 "evidence": {
                     "commit": "0123456789abcdef",
-                    "command": "uv run pytest tests/test_alpha.py::test_ok -q -p no:warnings",
+                    "command": "uv run pytest tests/test_alpha.py::test_ok -q",
                     "result": "1 passed",
                 },
             }
@@ -1086,6 +1094,20 @@ def test_gap_without_active_package_is_reported(tmp_path: Path) -> None:
         (
             lambda sc: sc["evidence"].__setitem__("result", ""),
             "scenario W01-S01: evidence result must be non-empty",
+        ),
+        (
+            lambda sc: sc["evidence"].__setitem__(
+                "command", "uv run pytest tests/test_alpha.py::test_ok -q -p no:warnings"
+            ),
+            "scenario W01-S01: evidence command disables pytest's warnings plugin "
+            "(-p no:warnings), so the suite's warning filters did not hold",
+        ),
+        (
+            lambda sc: sc["evidence"].__setitem__(
+                "command", "cd frontend && npx vitest run; cd .. && uv run pytest -pno:warnings"
+            ),
+            "scenario W01-S01: evidence command disables pytest's warnings plugin "
+            "(-p no:warnings), so the suite's warning filters did not hold",
         ),
     ],
 )

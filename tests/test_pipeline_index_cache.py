@@ -362,6 +362,7 @@ class TestNoManualInvalidation:
     absence-check below succeeds trivially in that case.
     """
 
+    @pytest.mark.meta
     def test_no_production_call_to_invalidate_pipeline_index(self) -> None:
         """AST-walk every ``.py`` in ``src/haute/`` — collect Call nodes.
 

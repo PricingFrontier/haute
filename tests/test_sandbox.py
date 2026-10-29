@@ -325,6 +325,7 @@ class TestSafeUnpickle:
 class TestSafeJoblibLoad:
     """Verify joblib loading goes through the restricted unpickler."""
 
+    @pytest.mark.meta
     def test_supported_joblib_floor_is_a_direct_dependency(self) -> None:
         """The private restricted-loader contract must be installable from Haute alone."""
         pyproject_path = Path(__file__).parents[1] / "pyproject.toml"

@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from haute._estimate_calibration import CALIBRATION_MAX_BASIS_POINTS
 from haute._execution_schemas import MAX_JSON_SAFE_INTEGER
 from haute.schemas import TrainEstimateResponse, UtilityWriteResponse
@@ -302,6 +304,7 @@ def test_responses_share_one_serialized_execution_metrics_definition() -> None:
     )
 
 
+@pytest.mark.meta
 def test_frontend_contract_generators_are_direct_exact_pins() -> None:
     package = json.loads((REPO_ROOT / "frontend" / "package.json").read_text(encoding="utf-8"))
 

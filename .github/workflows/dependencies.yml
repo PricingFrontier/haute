@@ -102,17 +102,17 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # uv is pinned exactly, like the rest of the development tooling; this
       # value is repeated in every workflow and must move together (grep
       # `setup-uv` across .github/workflows/).
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           version: "0.8.22"
           python-version: "3.12"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22.14.0
 
@@ -190,8 +190,11 @@ jobs:
           .unlocked/bin/python -m pytest $(grep -v '^#' scripts/core_test_files.txt)
           -q -n 4 --timeout=60 --timeout-method=signal
 
+      # As in the other monitoring lanes: the schedule, or a dispatch that asks
+      # to prove the alarm rings. A manual dispatch run to check a fix does not
+      # page anyone when it fails.
       - name: Raise the alarm (find-or-create dependency-watch issue)
-        if: failure()
+        if: failure() && (github.event_name == 'schedule' || inputs.force_fail)
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -230,14 +233,14 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           version: "0.8.22"
           python-version: "3.12"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22.14.0
 
@@ -255,7 +258,7 @@ jobs:
 
       - name: Upload advisory reports
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dependency-advisory-reports
           path: dependency-audit-reports

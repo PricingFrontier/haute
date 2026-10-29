@@ -170,6 +170,8 @@ Out of scope:
 - If Node/npm cannot be found, dependency installation fails, Vite fails, the
   dependency manifest is malformed/dangling/escaping, an input cannot be read,
   or the input proof cannot be written, the build hook raises `RuntimeError`.
+  A missing Node or npm stops the build with the install hint the CLI gives;
+  the hook looks on `PATH` only and never guesses a machine install path.
   Subprocess output is forwarded to stderr with replacement decoding for
   malformed bytes, and every build subprocess has a finite timeout whose expiry
   is reported as a `RuntimeError`.

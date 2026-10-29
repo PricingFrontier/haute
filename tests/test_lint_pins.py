@@ -426,6 +426,100 @@ def test_substring_of_a_longer_word_is_not_an_npx_call(tmp_path):
     assert lint_pins.check_npx(tmp_path) == []
 
 
+# ── Workflow actions pinned by commit ──────────────────────────────────────
+
+_SHA = "11d5960a326750d5838078e36cf38b85af677262"
+
+
+def write_workflow(root: Path, steps: str, *, name: str = "ci.yml") -> Path:
+    workflows = root / ".github" / "workflows"
+    workflows.mkdir(parents=True, exist_ok=True)
+    path = workflows / name
+    path.write_text(f"jobs:\n  a:\n    steps:\n{steps}", "utf-8")
+    return path
+
+
+def test_an_action_on_a_tag_is_caught(tmp_path):
+    write_workflow(tmp_path, "      - uses: actions/checkout@v4\n")
+
+    violations = lint_pins.check_action_pins(tmp_path)
+
+    assert len(violations) == 1
+    assert violations[0].path == ".github/workflows/ci.yml"
+    assert violations[0].line == 4
+    assert "a ref its owner can move" in violations[0].message
+
+
+def test_an_action_on_a_branch_is_caught(tmp_path):
+    write_workflow(tmp_path, "      - uses: pypa/gh-action-pypi-publish@release/v1\n")
+
+    violations = lint_pins.check_action_pins(tmp_path)
+
+    assert len(violations) == 1
+    assert "pypa/gh-action-pypi-publish@<commit>" in violations[0].message
+
+
+def test_a_short_commit_is_not_a_pin(tmp_path):
+    write_workflow(tmp_path, f"      - uses: actions/checkout@{_SHA[:7]} # v4.4.0\n")
+
+    assert len(lint_pins.check_action_pins(tmp_path)) == 1
+
+
+def test_a_commit_without_its_tag_is_caught(tmp_path):
+    write_workflow(tmp_path, f"      - uses: actions/checkout@{_SHA}\n")
+
+    violations = lint_pins.check_action_pins(tmp_path)
+
+    assert len(violations) == 1
+    assert "without naming its tag" in violations[0].message
+
+
+def test_a_commit_with_its_tag_passes_in_every_position(tmp_path):
+    # A step's first key, a later key, a quoted value and a job's reusable workflow.
+    write_workflow(
+        tmp_path,
+        f"      - uses: actions/checkout@{_SHA} # v4.4.0\n"
+        "      - name: Cache\n"
+        f"        uses: actions/cache/restore@{_SHA} # v4.3.0\n"
+        f'      - uses: "actions/setup-node@{_SHA}" # v4.4.0\n'
+        "  b:\n"
+        f"    uses: example/shared/.github/workflows/build.yml@{_SHA} # v1.2.0\n",
+    )
+
+    assert lint_pins.check_action_pins(tmp_path) == []
+
+
+def test_local_actions_and_container_images_are_exempt(tmp_path):
+    write_workflow(
+        tmp_path,
+        "      - uses: ./.github/actions/setup\n      - uses: docker://alpine:3.20\n",
+    )
+
+    assert lint_pins.check_action_pins(tmp_path) == []
+
+
+def test_a_mentioned_action_is_not_a_use(tmp_path):
+    write_workflow(
+        tmp_path,
+        "      # uses: actions/checkout@v4 was the old form\n"
+        "      - run: echo 'uses: actions/checkout@v4'\n",
+    )
+
+    assert lint_pins.check_action_pins(tmp_path) == []
+
+
+def test_composite_actions_are_scanned(tmp_path):
+    action = tmp_path / ".github" / "actions" / "setup"
+    action.mkdir(parents=True)
+    (action / "action.yml").write_text(
+        "runs:\n  using: composite\n  steps:\n    - uses: astral-sh/setup-uv@v5\n", "utf-8"
+    )
+
+    violations = lint_pins.check_action_pins(tmp_path)
+
+    assert [(v.path, v.line) for v in violations] == [(".github/actions/setup/action.yml", 4)]
+
+
 # ── The standing ratchet ───────────────────────────────────────────────────
 
 
@@ -513,6 +607,26 @@ def test_relaxing_a_real_npm_pin_is_caught(tmp_path):
     assert len(violations) == 1
     assert name in violations[0].message
     assert "not an exact version" in violations[0].message
+
+
+def test_unpinning_a_real_action_is_caught(tmp_path):
+    """The same ratchet for the workflows: move one real action back to its tag."""
+    _real_tree(tmp_path)
+    live = (_SCRIPT.parent.parent / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    match = re.search(r"uses: (actions/checkout)@[0-9a-f]{40} # (v[\d.]+)", live)
+    assert match, "fixture assumption broken: ci.yml no longer checks out at a pinned commit"
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    unpinned = f"uses: {match.group(1)}@{match.group(2)}"
+    (workflows / "ci.yml").write_text(
+        live[: match.start()] + unpinned + live[match.end() :], encoding="utf-8"
+    )
+
+    violations = lint_pins.collect(tmp_path)
+
+    assert len(violations) == 1
+    assert violations[0].path == ".github/workflows/ci.yml"
+    assert "actions/checkout" in violations[0].message
 
 
 def test_self_reference_with_a_specifier_is_not_exempt(tmp_path):

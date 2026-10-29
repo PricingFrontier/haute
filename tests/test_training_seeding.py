@@ -978,14 +978,16 @@ def test_completed_training_job_keeps_preparation_evidence(project: Path) -> Non
 
 
 def test_concurrent_training_workers_publish_each_capture_once(
-    project: Path, store: NodeSnapshotStore
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Two preparation workers in their own processes, both planned before either
     publishes, publish each captured identity once; the later one is superseded
     and continues from its own data."""
     import threading
 
+    from haute import _execution_admission
     from haute._execution_admission import (
+        WorkEstimate,
         create_admitted_execution_context,
         isolated_execution_budget,
     )
@@ -1018,6 +1020,18 @@ def test_concurrent_training_workers_publish_each_capture_once(
     pipeline = PipelineGraph.model_validate(graph)
     config = dict(pipeline.node_map["train"].data.config)
     required = _training_required_columns_by_node("train", config)
+    # Both admissions are held at once. Reserving the whole pinned budget each
+    # (4 GiB) needs a host with more than 8 GiB to spare, which a runner busy
+    # with eight test workers did not have: the second was refused before any
+    # worker started. Each worker here is small, so each reservation is its
+    # estimate (the worker keeps the whole budget as its memory limit), and the
+    # host reports such a runner's free memory so the race never depends on it.
+    monkeypatch.setattr(_execution_admission, "available_ram_bytes", lambda: 6 * 1024**3)
+    estimate = WorkEstimate(
+        estimated_bytes=256 * 1024**2,
+        subject="A racing training preparation",
+        remedy="Free memory on the test host.",
+    )
     contexts = []
     plans = []
     requests = []
@@ -1029,6 +1043,7 @@ def test_concurrent_training_workers_publish_each_capture_once(
                 operation="training_pipeline",
                 profile=ExecutionProfile.TRAINING_PREP,
                 job_id=f"race-{index}",
+                estimate=estimate,
             )
             contexts.append(context)
             plan = open_seed_plan(

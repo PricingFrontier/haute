@@ -30,6 +30,7 @@ def _targets():
     )
 
 
+@pytest.mark.meta
 def test_threshold_config_owns_all_default_mutation_targets() -> None:
     """The default target set pins every module guarded by the mutation gate.
 

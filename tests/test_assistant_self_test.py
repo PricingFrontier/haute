@@ -237,6 +237,7 @@ class TestPortfolio:
                     phrase in words for phrase in ("polars code", "python code", "code mode")
                 ), case.id
 
+    @pytest.mark.meta
     def test_cases_and_fixtures_are_separate_from_the_teaching_assets(self) -> None:
         from haute.assistant._assets import example_index
 

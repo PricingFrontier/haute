@@ -30,6 +30,7 @@ from tests.job_store_support import seed_job
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.meta
 def test_optimiser_service_never_reads_job_store_backing_mapping() -> None:
     source_path = ROOT / "src" / "haute" / "routes" / "_optimiser_service.py"
     tree = ast.parse(source_path.read_text(encoding="utf-8"))
@@ -827,6 +828,7 @@ def test_ratebook_factor_source_sinks_without_final_collect_under_low_memory_lim
     assert factors_handle["row_count"] == 2
 
 
+@pytest.mark.meta
 def test_optimiser_projection_rule_is_not_hard_coded_in_lazy_executor() -> None:
     source = (ROOT / "src/haute/_execute_lazy.py").read_text(encoding="utf-8")
 

@@ -25,6 +25,7 @@ BOUNDED_WRITE_CALLERS: dict[Path, tuple[str, ...]] = {
 }
 
 
+@pytest.mark.meta
 @pytest.mark.parametrize(
     "relative_path, writers",
     BOUNDED_WRITE_CALLERS.items(),

@@ -104,6 +104,13 @@ optimiser and assistant work also touch (`executor`, `_cache`,
 `src/haute/modelling/_mlflow_settings.py::_project_root_default`;
 `src/haute/assistant/_config.py::_normalise_project_root`;
 `src/haute/executor.py::_pipeline_dir`; `src/haute/_cache.py::_pipeline_dir`.
+The interactive pool's targets carry no root at all
+(`src/haute/routes/pipeline.py::_execute_preview_worker`,
+`_execute_trace_worker`,
+`src/haute/routes/_optimiser_worker.py::optimiser_estimate_worker`): a worker
+resolves it from its own working directory, which differs from the server's
+whenever the root was set without changing directory. The process-mode CI lane
+(`backend-process-mode`) shows it: a test whose root is set that way fails there.
 
 ### PCFG-R07 — Typed config models per node type
 **Why:** `NodeData.config` is `dict[str, Any]`. The shared validator is strict

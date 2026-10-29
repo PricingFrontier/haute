@@ -4,14 +4,20 @@ Layers 1 and 3 of the test write-sandbox (layer 2, the static AST gate, is
 ``tests/test_write_sandbox_lint.py``). The autouse fixture in
 ``tests/conftest.py`` drives this module for every test:
 
-* **strict** (converted modules, listed in :data:`STRICT_FILES`, or tests
+* **strict** (converted modules, listed under ``strict`` in
+  ``tests/write_sandbox.toml`` and loaded as :data:`STRICT_FILES`, or tests
   marked ``sandbox_strict``): the test runs chdir'd into its ``tmp_path``,
   with ``TMPDIR``/``TEMP``/``TMP`` and ``HOME``/``USERPROFILE`` pointed at
   subdirectories of it, and any *write-intent* ``open``/``os.open`` whose
-  resolved path escapes the sandbox raises :class:`OutOfSandboxWriteError`.
+  resolved path escapes the sandbox (its ``tmp_path`` and the stores the
+  harness keeps for it, see :meth:`Guard.allow`) raises
+  :class:`OutOfSandboxWriteError`.
 * **observe** (everything else): the same interception, but escapes are
   recorded and reported in the terminal summary instead of failing — the
-  violation census that drives the conversion ratchet.
+  violation census that drives the conversion ratchet. With
+  ``HAUTE_TEST_WRITE_SANDBOX_CENSUS_OUT`` set, the run's census is also written
+  there, and the coverage gate fails when it grows
+  (``scripts/check_write_sandbox_census.py``).
 * **off**: escape hatch (``HAUTE_TEST_WRITE_SANDBOX=off``) and the mode for
   perf-marked tests, whose wall-clock budgets must not pay for interception.
 
@@ -25,8 +31,10 @@ artifact dumps) do not pass through Python ``open`` — in strict mode they are
 still *contained* by the chdir + temp-dir redirect, but not intercepted.
 ``os.rename``/``os.mkdir``/fd-inheritance tricks are likewise not
 intercepted, and file descriptors passed as integers cannot be resolved to
-paths. The static gate and the census exist to shrink those corners over
-time; deliberately obfuscated escapes are out of scope (review's job).
+paths. Observe mode allows the whole system temp directory, so an observe
+test's write there is never recorded. The static gate and the census exist to
+shrink those corners over time; deliberately obfuscated escapes are out of
+scope (review's job).
 """
 
 from __future__ import annotations
@@ -35,24 +43,41 @@ import builtins
 import io
 import json
 import os
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 ENV_ROOT = "HAUTE_TEST_SANDBOX_ROOT"
 ENV_MODE = "HAUTE_TEST_WRITE_SANDBOX"  # "off" | "observe" | "strict" (override)
 ENV_CENSUS_DIR = "HAUTE_TEST_WRITE_SANDBOX_CENSUS_DIR"
+# Where the controller writes the run's merged census, for the coverage gate.
+ENV_CENSUS_OUT = "HAUTE_TEST_WRITE_SANDBOX_CENSUS_OUT"
+CENSUS_VERSION = 1
 
-# Test files that run in strict mode: the converted pilot slice. Grows as the
-# conversion ratchet advances; a file listed here must also be absent from the
-# layer-2 allowlist in tests/test_write_sandbox_lint.py.
-STRICT_FILES = frozenset(
-    {
-        "test_write_sandbox_guard.py",
-        "test_optimiser_apply.py",
-        "test_bugfixes.py",
-        "test_partial_failure.py",
-    }
-)
+#: The ratchet's state, one file: the modules that run strict, the unconverted
+#: files the layer-2 lint allows and at which sites, and the classes of write the
+#: observe-mode census may still record. Each list only moves one way.
+RATCHET_PATH = Path(__file__).with_name("write_sandbox.toml")
+
+
+def load_ratchet(path: Path = RATCHET_PATH) -> dict[str, Any]:
+    with path.open("rb") as handle:
+        return tomllib.load(handle)
+
+
+_RATCHET = load_ratchet()
+
+# Test files that run in strict mode. Grows as the conversion ratchet advances
+# (the monthly write-sandbox survey names the files that can join); a file
+# listed here must also be absent from the layer-2 allowlist.
+STRICT_FILES: frozenset[str] = frozenset(_RATCHET["strict"])
+
+#: Layer 2's allowlist: each not-yet-converted test file and the fingerprints of
+#: the write sites tests/test_write_sandbox_lint.py flags in it.
+LINT_ALLOWLIST: dict[str, tuple[str, ...]] = {
+    file: tuple(sites) for file, sites in _RATCHET["lint"].items()
+}
 
 _WRITE_MODE_CHARS = frozenset("wax+")
 
@@ -98,6 +123,14 @@ def _realpath(target: object) -> str | None:
         return None
 
 
+def _is_multiprocessing_arena(real: str) -> bool:
+    """A backing file of multiprocessing's shared memory: ``multiprocessing.heap``
+    creates each arena under ``/dev/shm`` and unlinks it at once. It is the
+    interpreter's own infrastructure, not anything a test writes."""
+    directory, name = os.path.split(real)
+    return directory == "/dev/shm" and name.startswith("pym-")
+
+
 def _is_within(child_real: str, root_real: str) -> bool:
     child = os.path.normcase(child_real)
     root = os.path.normcase(root_real)
@@ -126,7 +159,8 @@ class Guard:
 
     ``allowed_roots`` are pre-resolved real paths; a write-intent call whose
     resolved target is inside none of them is blocked (strict) or recorded
-    (observe). ``os.devnull`` is always allowed.
+    (observe). ``os.devnull`` and multiprocessing's shared-memory arenas are
+    always allowed.
     """
 
     mode: str  # "strict" | "observe"
@@ -136,11 +170,20 @@ class Guard:
     _orig_open: object = field(default=None, repr=False)
     _orig_os_open: object = field(default=None, repr=False)
 
+    def allow(self, root: str | os.PathLike[str]) -> None:
+        """Let the test write under *root* too: a store the harness keeps for it
+        outside its ``tmp_path``."""
+        real = os.path.realpath(os.fspath(root))
+        if real not in self.allowed_roots:
+            self.allowed_roots = (*self.allowed_roots, real)
+
     def _check(self, api: str, target: object, detail: str) -> None:
         real = _realpath(target)
         if real is None:
             return
         if os.path.normcase(real) == os.path.normcase(os.path.realpath(os.devnull)):
+            return
+        if _is_multiprocessing_arena(real):
             return
         if any(_is_within(real, root) for root in self.allowed_roots):
             return
@@ -207,6 +250,34 @@ def dump_census(census_dir: str, worker_id: str, violations: list[Violation] | N
     out.parent.mkdir(parents=True, exist_ok=True)
     rows = VIOLATIONS if violations is None else violations
     payload = [violation.__dict__ for violation in rows]
+    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def census_roots(repo_root: Path) -> dict[str, str]:
+    """The directories the coverage gate classes a recorded write against."""
+    roots = {
+        "repo": os.path.realpath(repo_root),
+        "home": os.path.realpath(Path.home()),
+    }
+    runner_temp = os.environ.get("RUNNER_TEMP")
+    if runner_temp:
+        roots["runner-temp"] = os.path.realpath(runner_temp)
+    return roots
+
+
+def write_census(path: str, violations: list[Violation], roots: dict[str, str]) -> None:
+    """Write a run's merged census to *path*, the record the coverage gate reads.
+
+    Written whatever the census holds, so a run that recorded nothing still
+    leaves a record saying so.
+    """
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": CENSUS_VERSION,
+        "roots": roots,
+        "writes": [violation.__dict__ for violation in violations],
+    }
     out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 

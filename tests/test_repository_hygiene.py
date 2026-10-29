@@ -27,6 +27,7 @@ def _tracked_files() -> set[str]:
     return {line.strip().replace("\\", "/") for line in result.stdout.splitlines() if line.strip()}
 
 
+@pytest.mark.meta
 def test_generated_and_local_agent_artifacts_are_not_tracked() -> None:
     tracked = _tracked_files()
     offenders = sorted(
@@ -46,6 +47,7 @@ def test_generated_and_local_agent_artifacts_are_not_tracked() -> None:
     assert offenders == []
 
 
+@pytest.mark.meta
 def test_example_pipeline_config_lives_only_under_the_reference_example() -> None:
     tracked = _tracked_files()
     root_config = sorted(path for path in tracked if path == "config" or path.startswith("config/"))
@@ -54,6 +56,7 @@ def test_example_pipeline_config_lives_only_under_the_reference_example() -> Non
     assert any(path.startswith("examples/reference/config/") for path in tracked)
 
 
+@pytest.mark.meta
 def test_no_local_mlflow_store_is_tracked() -> None:
     tracked = _tracked_files()
 
@@ -321,6 +324,7 @@ def test_raw_repository_walk_detection_follows_names_to_the_repository() -> None
     assert _raw_repository_walks(sample) == [15, 16, 17, 18, 26, 34]
 
 
+@pytest.mark.meta
 def test_tests_walk_repository_trees_through_the_shared_helper() -> None:
     offenders = [
         f"{path.relative_to(_REPO_ROOT).as_posix()}:{line}"
@@ -409,6 +413,7 @@ def test_the_guard_does_nothing_on_an_xdist_worker(tmp_path: Path) -> None:
     assert session.exitstatus == pytest.ExitCode.OK
 
 
+@pytest.mark.meta
 def test_the_roadmap_holds_reports_not_probes_or_benchmark_output() -> None:
     """Executable probes and raw results live in scripts/benchmarks/; the roadmap
     keeps only Markdown."""
@@ -419,6 +424,7 @@ def test_the_roadmap_holds_reports_not_probes_or_benchmark_output() -> None:
     assert [path for path in roadmap if not path.endswith(".md")] == []
 
 
+@pytest.mark.meta
 def test_graphify_is_not_a_runtime_dependency() -> None:
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     dependencies = project["project"]["dependencies"]
@@ -506,6 +512,7 @@ def _imports_module(tree: ast.AST, module: str) -> bool:
     return False
 
 
+@pytest.mark.meta
 def test_subprocess_imported_only_in_chokepoint_modules() -> None:
     importing = {
         _rel_posix(path)
@@ -529,6 +536,7 @@ def test_subprocess_imported_only_in_chokepoint_modules() -> None:
     )
 
 
+@pytest.mark.meta
 def test_libcst_is_imported_only_by_the_structured_syntax_boundary() -> None:
     """``haute._python_syntax`` is the one module that uses LibCST (ENGQ-R03).
 
@@ -546,6 +554,7 @@ def test_libcst_is_imported_only_by_the_structured_syntax_boundary() -> None:
     assert importing == {"src/haute/_python_syntax.py"}
 
 
+@pytest.mark.meta
 def test_only_the_git_command_core_starts_git() -> None:
     """Every git subprocess goes through ``_git_core.py`` (DEP-R04).
 
@@ -571,6 +580,7 @@ def test_only_the_git_command_core_starts_git() -> None:
     )
 
 
+@pytest.mark.meta
 def test_no_subprocess_backdoors_in_package() -> None:
     """``os.system`` / ``os.popen`` / ``pty`` are banned outright in src/haute/.
 
@@ -626,6 +636,7 @@ def _subprocess_bindings(tree: ast.AST) -> tuple[set[str], set[str]]:
     return module_aliases, member_names
 
 
+@pytest.mark.meta
 def test_text_mode_subprocess_calls_pin_utf8_in_caller_chokepoints() -> None:
     """Every text-mode subprocess call in the caller chokepoints pins utf-8.
 
@@ -827,6 +838,7 @@ _FRONTEND_MINT_RES = (
 )
 
 
+@pytest.mark.meta
 def test_backend_name_mints_confined_to_blessed_sanitizers_and_allowlist() -> None:
     minting = {
         _rel_posix(path)
@@ -850,6 +862,7 @@ def test_backend_name_mints_confined_to_blessed_sanitizers_and_allowlist() -> No
     )
 
 
+@pytest.mark.meta
 def test_frontend_name_mints_confined_to_blessed_sanitizers_and_allowlist() -> None:
     minting = {
         rel
@@ -893,6 +906,7 @@ _FRONTEND_PERSIST_SINK_ALLOWLIST: set[str] = {
 }
 
 
+@pytest.mark.meta
 def test_frontend_persistence_path_builders_import_a_blessed_sanitizer() -> None:
     sinks = {
         rel

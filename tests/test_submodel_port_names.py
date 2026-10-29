@@ -319,6 +319,7 @@ def test_deleted_schema_fields():
     assert "input_port_input_names" not in RecoverySubmodelDefinition.model_fields
 
 
+@pytest.mark.meta
 def test_no_forbidden_tokens_in_src():
     """Assert no forbidden names or identifiers appear anywhere in src/haute/**/*.py."""
     forbidden = {

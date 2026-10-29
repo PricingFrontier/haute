@@ -7,6 +7,10 @@ import sys
 import tomllib
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.meta
+
 ROOT = Path(__file__).resolve().parents[1]
 DOC_PATH = ROOT / "docs" / "PERFORMANCE_CHECKS.md"
 PERFORMANCE_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "performance.yml"
@@ -126,8 +130,8 @@ def test_performance_workflow_certifies_scales_and_execution_platforms() -> None
     assert 'cron: "43 2 1 * *"' in workflow
     assert "options: [ci, 1m, 10m]" in workflow
     assert '--polars-scale "$HAUTE_POLARS_PERF_SCALE"' in workflow
-    assert "actions/cache/restore@v4" in workflow
-    assert "actions/cache/save@v4" in workflow
+    assert "actions/cache/restore@" in workflow
+    assert "actions/cache/save@" in workflow
     assert "--baseline-report .perf-baseline/perf-report.json" in workflow
     assert "perf-baseline-${{ runner.os }}-${{ env.HAUTE_POLARS_PERF_SCALE }}-" in workflow
     assert "actions: read" in workflow
