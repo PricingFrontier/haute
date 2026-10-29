@@ -19,8 +19,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from fastapi import HTTPException
-
 from haute._artifact_housekeeping import (
     create_owned_artifact_directory,
     reap_stale_artifact_directories,
@@ -32,6 +30,7 @@ from haute._worker_protocol import (
     WorkerProtocolError,
     WorkerResultManifest,
 )
+from haute.errors import GoneError
 from haute.modelling._evaluation import (
     EvaluationPlan,
 )
@@ -497,12 +496,12 @@ def require_training_artifacts(job: Mapping[str, Any]) -> TrainingArtifactSet:
     handles = job.get("artifact_handles")
     handle = handles.get(TRAINING_ARTIFACTS_HANDLE_KEY) if isinstance(handles, Mapping) else None
     if not isinstance(handle, Mapping):
-        raise HTTPException(status_code=410, detail=_UNAVAILABLE_DETAIL)
+        raise GoneError(_UNAVAILABLE_DETAIL)
     try:
         artifacts = training_artifact_set_from_handle(handle)
     except ValueError as exc:
         logger.warning("training_artifact_handle_invalid", error=str(exc))
-        raise HTTPException(status_code=410, detail=_UNAVAILABLE_DETAIL) from None
+        raise GoneError(_UNAVAILABLE_DETAIL) from None
     if not all(path.is_file() for path in artifacts.all_paths()):
-        raise HTTPException(status_code=410, detail=_UNAVAILABLE_DETAIL)
+        raise GoneError(_UNAVAILABLE_DETAIL)
     return artifacts

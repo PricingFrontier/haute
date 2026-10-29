@@ -19,7 +19,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from haute._sandbox import contained_path, validate_project_path
-from haute.errors import InvalidPathError, PathOutsideProjectError
+from haute.errors import InvalidPathError, PathOutsideProjectError, RequestRefusedError
 from tests.job_store_support import seed_job
 from tests.optimiser_fixtures import make_solved_result
 
@@ -257,7 +257,7 @@ class TestSaveOutputPaths:
 
     def test_a_dotdot_output_is_refused(self, layout: tuple[Path, Path]) -> None:
         project, _ = layout
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             self._service(project)._validate_output_rel_path("../outside/main.py", "main.py")
         assert exc_info.value.status_code == 400
 

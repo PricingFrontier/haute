@@ -12,42 +12,14 @@ come from the [23 September 2026 codebase review](codebase-review-2026-09-23.md)
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| API-R02 | Planned | P3 | Domain services raise domain errors; only routes speak HTTP. |
 | API-R03 | Planned | P2 | Every browser type and response parser is generated from the Pydantic models. |
 
 ## Planned improvements
 
 `API-R03` has the largest payoff: the hand-maintained contract files are the
 most-changed files in the repository. Every route, the optimiser's included,
-now leaves unexpected exceptions to the application handlers; `API-R02`
-moves the services onto domain errors.
-
-### API-R02 — Services raise domain errors
-**Why:** Service modules raise FastAPI's `HTTPException` directly: the
-optimiser service 67 times, the save service 40, the training lifecycle 35,
-training preparation 15, and the job store's `require_job`. Background
-threads raise it too; the optimiser's pipeline execution both records a job
-failure and raises an HTTP 500. The assistant, a non-HTTP caller of the save
-service, unwraps `HTTPException.detail` to recover messages.
-
-**Plan:** Replace `HTTPException` in services with typed domain errors from
-the `HauteError` hierarchy, mapped by the application exception handlers in
-`routes/_error_handlers.py`. Background jobs record failures in the job store
-and never raise HTTP types, which also removes the two conversions of an
-`HTTPException` detail into a job failure record
-(`_optimiser_service._http_error_job_update` and
-`_training_preparation._http_failure_job_parts`).
-
-**Acceptance:** No module outside `routes/` route handlers and the application
-handlers imports `HTTPException`; the assistant catches domain errors, not
-HTTP ones; route status-code tests pass unchanged.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/routes/_optimiser_service.py::_execute_pipeline`;
-`src/haute/routes/_save_pipeline.py`; `src/haute/routes/_training_lifecycle.py`;
-`src/haute/routes/_training_preparation.py`; `src/haute/routes/_job_store.py`;
-`src/haute/assistant/_tools.py::_error_message`.
+leaves unexpected exceptions to the application handlers, and the services
+raise domain errors those handlers answer.
 
 ### API-R03 — Generate the browser contract
 **Why:** Three mechanisms keep the browser in step with the server. A

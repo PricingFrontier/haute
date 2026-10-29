@@ -18,7 +18,7 @@ from haute._file_ops import atomic_copy_files
 from haute._logging import get_logger
 from haute._path_resolution import RuntimePathError
 from haute._sandbox import _get_project_root
-from haute.errors import HauteValidationError
+from haute.errors import HauteValidationError, RequestRefusedError
 from haute.modelling._model_export import (
     MODEL_FILE_SUFFIXES,
     resolve_model_export_destination,
@@ -508,7 +508,7 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
             )
             record_receipt(_store, body.job_id, "mlflow", receipt.model_dump(mode="json"))
             return _log_response_from_receipt(receipt.model_dump(mode="json"))
-        except HTTPException:
+        except (HTTPException, RequestRefusedError):
             raise
         except HauteValidationError as exc:
             # Haute's own artifact checks (an unloadable model, an incomplete

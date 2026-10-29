@@ -12,7 +12,6 @@ from typing import Any
 
 import polars as pl
 import pytest
-from fastapi import HTTPException
 
 from haute._executable_names import (
     RESERVED_NAMES,
@@ -23,7 +22,7 @@ from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, Submodel
 from haute._user_exec import _exec_user_code
 from haute.assistant._ops import OpValidationError, apply_ops, parse_ops
 from haute.codegen import graph_to_code
-from haute.errors import ExecutionError, ParseError
+from haute.errors import ExecutionError, ParseError, RequestRefusedError
 from haute.parser import parse_pipeline_source
 from haute.routes._save_pipeline import SavePipelineService
 
@@ -215,7 +214,7 @@ def test_a_case_collision_names_every_node_and_its_module() -> None:
 def test_save_refuses_a_violation_naming_the_node(
     tmp_path: Path, graph: PipelineGraph, message: str
 ) -> None:
-    with pytest.raises(HTTPException) as excinfo:
+    with pytest.raises(RequestRefusedError) as excinfo:
         SavePipelineService(tmp_path).validate_graph(graph, source_file="main.py")
 
     assert excinfo.value.status_code == 400

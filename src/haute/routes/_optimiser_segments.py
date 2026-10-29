@@ -22,8 +22,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
-from fastapi import HTTPException
-
+from haute.errors import ConflictError, RequestRefusedError, UnprocessableError
 from haute.routes._optimiser_adjustments import (
     BASE_PRICE,
     QUOTES_WEIGHT,
@@ -727,8 +726,8 @@ def _refusal_detail(error_code: str, message: str) -> dict[str, str]:
     return {"error_code": error_code, "message": message}
 
 
-def _unprocessable(error_code: str, message: str) -> HTTPException:
-    return HTTPException(status_code=422, detail=_refusal_detail(error_code, message))
+def _unprocessable(error_code: str, message: str) -> RequestRefusedError:
+    return UnprocessableError(_refusal_detail(error_code, message))
 
 
 def _catalogue(job: Mapping[str, Any]) -> list[OptimiserSegmentKey]:
@@ -869,5 +868,5 @@ class SegmentQueries:
 
         latest = self._store.require_completed_job(job_id)
         if _frontier_generation_or_raise(latest) != generation:
-            raise HTTPException(status_code=409, detail=_FRONTIER_CHANGED_DETAIL)
+            raise ConflictError(_FRONTIER_CHANGED_DETAIL)
         return latest

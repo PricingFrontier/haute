@@ -17,6 +17,7 @@ from haute.errors import (
     GroupByExecutionUnsupportedError,
     HauteError,
     InputPreparationError,
+    InsufficientMemoryError,
     LiveSwitchScenarioError,
     NodeConfigError,
     PreambleError,
@@ -25,6 +26,7 @@ from haute.errors import (
     RatingExtremaUndefinedError,
     RatingFactorDtypeContractError,
     RatingFactorMissingError,
+    RequestRefusedError,
     SeedPlanExpiredError,
     SnapshotCorruptError,
     SnapshotPlanInputsChangedError,
@@ -98,11 +100,19 @@ def contract_error_payload(exc: BaseException) -> dict[str, Any]:
     return payload
 
 
+def contract_error_refusal(exc: BaseException) -> RequestRefusedError:
+    """A public contract error as a service refuses with it: its status and stable payload."""
+
+    return RequestRefusedError(
+        contract_error_payload(exc), status_code=_contract_error_http_status(exc)
+    )
+
+
 def contract_error_http_exception(exc: BaseException) -> HTTPException:
     """Map a public contract error to its synchronous-route response."""
 
-    payload = contract_error_payload(exc)
-    return HTTPException(status_code=_contract_error_http_status(exc), detail=payload)
+    refusal = contract_error_refusal(exc)
+    return HTTPException(status_code=refusal.status_code, detail=refusal.detail)
 
 
 def _contract_error_http_status(exc: BaseException) -> int:
@@ -113,12 +123,12 @@ def _contract_error_http_status(exc: BaseException) -> int:
     return CONTRACT_ERROR_HTTP_STATUS
 
 
-def memory_limit_http_exception(
+def memory_limit_refusal(
     exc: ExecutionAdmissionError | ExecutionMemoryLimitExceededError,
     *,
     operation_noun: str | None = None,
-) -> HTTPException:
-    """Map a memory refusal or overrun to its 507 response.
+) -> InsufficientMemoryError:
+    """A memory refusal or overrun as a service refuses with it (507).
 
     The detail is the exception's structured payload. A job-backed surface
     passes its *operation_noun* so the detail also carries the curated user
@@ -128,7 +138,17 @@ def memory_limit_http_exception(
     detail = exc.to_payload()
     if operation_noun is not None:
         detail["message"] = memory_limit_user_message(exc, operation_noun=operation_noun)
-    return HTTPException(status_code=MEMORY_LIMITED_HTTP_STATUS, detail=detail)
+    return InsufficientMemoryError(detail)
+
+
+def memory_limit_http_exception(
+    exc: ExecutionAdmissionError | ExecutionMemoryLimitExceededError,
+    *,
+    operation_noun: str | None = None,
+) -> HTTPException:
+    """Map a memory refusal or overrun to its 507 response (see :func:`memory_limit_refusal`)."""
+    refusal = memory_limit_refusal(exc, operation_noun=operation_noun)
+    return HTTPException(status_code=refusal.status_code, detail=refusal.detail)
 
 
 def contract_error_job_fields(exc: BaseException) -> dict[str, Any]:

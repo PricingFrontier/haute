@@ -20,6 +20,7 @@ import polars as pl
 import pytest
 
 from haute._types import PipelineGraph
+from haute.errors import RequestRefusedError
 from haute.routes import _optimiser_artifacts, _optimiser_input, _optimiser_service
 from haute.routes._optimiser_input import (
     OptimiserSetupError,
@@ -494,7 +495,6 @@ class TestOwnership:
         assert not Path(handle["directory"]).exists()
 
     def test_collect_reads_inside_a_lease_and_a_gone_job_is_410(self, client, tmp_path):
-        from fastapi import HTTPException
 
         job_id, _status = _solved(
             client, _data_graph(_scored(tmp_path), analysis_columns=["region"])
@@ -507,7 +507,7 @@ class TestOwnership:
         assert dict(counts.iter_rows()) == {"North": 3, "South": 3, "Île": 3}
 
         _store.delete_job(job_id)
-        with pytest.raises(HTTPException) as caught:
+        with pytest.raises(RequestRefusedError) as caught:
             collect_quote_analysis(_store, job_id, lambda frame: frame)
         assert caught.value.status_code == 410
 
@@ -1052,12 +1052,11 @@ class TestChoiceQueries:
         ]
 
     def test_a_segment_breakdown_needs_configured_analysis_columns(self, client, tmp_path):
-        from fastapi import HTTPException
 
         from haute.routes._optimiser_outcomes import SegmentGroupBy
 
         job_id, _status = _solved(client, _data_graph(_scored(tmp_path)))
-        with pytest.raises(HTTPException) as caught:
+        with pytest.raises(RequestRefusedError) as caught:
             _choices(job_id, SegmentGroupBy(("region",), limit=10))
         assert caught.value.status_code == 400
         assert "region" in str(caught.value.detail)
@@ -1133,7 +1132,6 @@ class TestChoiceQueries:
         ],
     )
     def test_an_unbounded_or_invalid_reducer_is_refused(self, client, tmp_path, invalid):
-        from fastapi import HTTPException
 
         from haute.routes._optimiser_outcomes import (
             MAX_CHOICE_ROWS,
@@ -1154,12 +1152,11 @@ class TestChoiceQueries:
         job_id, _status = _solved(
             client, _data_graph(_scored(tmp_path), analysis_columns=["region"])
         )
-        with pytest.raises(HTTPException) as caught:
+        with pytest.raises(RequestRefusedError) as caught:
             _choices(job_id, reducers[invalid]())
         assert caught.value.status_code == 400
 
     def test_an_over_budget_query_is_refused_before_it_runs(self, client, tmp_path, monkeypatch):
-        from fastapi import HTTPException
 
         from haute._polars_utils import streaming_collect
         from haute.routes import _optimiser_outcomes
@@ -1176,7 +1173,7 @@ class TestChoiceQueries:
 
         monkeypatch.setattr(_optimiser_outcomes, "streaming_collect", recording_collect)
         monkeypatch.setenv("HAUTE_EXPLORE_MEMORY_LIMIT_BYTES", str(32 * 1024 * 1024))
-        with pytest.raises(HTTPException) as caught:
+        with pytest.raises(RequestRefusedError) as caught:
             _choices(job_id, ScenarioHistogram())
 
         assert caught.value.status_code == 507
@@ -1240,7 +1237,6 @@ class TestChoiceQueries:
         assert all(h.rows.equals(histograms[0].rows) for h in histograms)
 
     def test_an_analysis_column_named_like_a_choice_column_is_refused(self, client, tmp_path):
-        from fastapi import HTTPException
 
         from haute.routes._optimiser_outcomes import ScenarioHistogram
 
@@ -1251,7 +1247,7 @@ class TestChoiceQueries:
         job_id, _status = _solved(
             client, _data_graph(scored, analysis_columns=["optimal_objective"])
         )
-        with pytest.raises(HTTPException) as caught:
+        with pytest.raises(RequestRefusedError) as caught:
             _choices(job_id, ScenarioHistogram())
         assert caught.value.status_code == 400
         assert "optimal_objective" in str(caught.value.detail)

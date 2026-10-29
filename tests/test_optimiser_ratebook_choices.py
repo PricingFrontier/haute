@@ -18,8 +18,8 @@ from typing import Any
 import numpy as np
 import polars as pl
 import pytest
-from fastapi import HTTPException
 
+from haute.errors import RequestRefusedError
 from haute.routes._optimiser_adjustments import adjustment_report
 from haute.routes._optimiser_outcomes import (
     ChoiceFrameSpec,
@@ -432,7 +432,7 @@ class TestAsSolvedRatebookChoices:
             "over_cap": FactorSegments("region", limit=MAX_CHOICE_ROWS + 1),
         }[invalid]
 
-        with pytest.raises(HTTPException) as caught:
+        with pytest.raises(RequestRefusedError) as caught:
             _choices(job_id, reducer)
         assert caught.value.status_code == 400
         if invalid == "unknown_factor":
@@ -469,7 +469,7 @@ class TestAsSolvedRatebookChoices:
         from tests.test_optimiser_outcomes import _data_graph, _scored, _solved
 
         job_id, _status = _solved(client, _data_graph(_scored(tmp_path)))
-        with pytest.raises(HTTPException) as caught:
+        with pytest.raises(RequestRefusedError) as caught:
             _choices(job_id, FactorSegments("region", limit=5))
         assert caught.value.status_code == 400
         assert "ratebook" in str(caught.value.detail).lower()
@@ -560,7 +560,7 @@ class TestRatebookFrontierPointChoices:
 
         clean_job_store.clear_result_data(job_id)
 
-        with pytest.raises(HTTPException) as caught:
+        with pytest.raises(RequestRefusedError) as caught:
             _choices(job_id, ScenarioHistogram(), point_index=1)
         assert caught.value.status_code == 410
         assert caught.value.detail["error_code"] == "frontier_point_unavailable"

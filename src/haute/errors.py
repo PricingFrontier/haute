@@ -25,7 +25,7 @@ module are the ones the ``HauteError`` promise applies to.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar, TypeGuard
 
 from haute._validation_error import ConfigSettingError as ConfigSettingError
@@ -110,6 +110,74 @@ def is_public_contract_error(exc: BaseException) -> TypeGuard[HauteError]:
     """
 
     return isinstance(exc, HauteError) and exc.error_code is not None
+
+
+class RequestRefusedError(HauteError):
+    """A service's refusal of a request, said as its caller is to hear it.
+
+    Services raise this, never an HTTP exception: the application handler answers it
+    with ``status_code`` and ``detail`` (a message, or a structured detail the client
+    reads), a background job records the same two on its failed state, and the
+    assistant shows the message. A subclass names the reason and so the status, as
+    ``PipelineRepairError`` and ``SubmodelValidationError`` carry theirs; the base
+    takes the status of a refusal another failure decided.
+    """
+
+    status: ClassVar[int] = 400
+
+    def __init__(self, detail: str | Mapping[str, Any], *, status_code: int | None = None) -> None:
+        self.detail = detail
+        self.status_code = self.status if status_code is None else status_code
+        message = detail if isinstance(detail, str) else detail.get("message")
+        super().__init__(message if isinstance(message, str) else str(detail))
+
+
+class InvalidRequestError(RequestRefusedError):
+    """The request cannot be acted on as it is asked (400)."""
+
+    status = 400
+
+
+class ForbiddenError(RequestRefusedError):
+    """The request asks for what it may not have, such as a path outside the project (403)."""
+
+    status = 403
+
+
+class NotFoundError(RequestRefusedError):
+    """What the request names does not exist (404)."""
+
+    status = 404
+
+
+class ConflictError(RequestRefusedError):
+    """The request conflicts with the current state of what it acts on (409)."""
+
+    status = 409
+
+
+class GoneError(RequestRefusedError):
+    """What the request names existed, and has expired (410)."""
+
+    status = 410
+
+
+class UnprocessableError(RequestRefusedError):
+    """The request is well formed, but what it acts on cannot answer it (422)."""
+
+    status = 422
+
+
+class ServiceFailedError(RequestRefusedError):
+    """The service failed, in words it can safely say (500)."""
+
+    status = 500
+
+
+class InsufficientMemoryError(RequestRefusedError):
+    """There is not enough memory to do what the request asks now (507)."""
+
+    status = 507
 
 
 class PathOutsideProjectError(HauteError):

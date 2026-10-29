@@ -1,10 +1,12 @@
-"""Structural contracts for the ENG-CX09 service decompositions."""
+"""Structural contracts for the ENG-CX09 service decompositions, and the HTTP edge."""
 
 from __future__ import annotations
 
 import ast
 import importlib
 from pathlib import Path
+
+from tests._source_files import source_files
 
 ROOT = Path(__file__).parents[1]
 
@@ -296,3 +298,39 @@ def test_training_domain_imports_are_acyclic_and_leaves_do_not_own_job_state() -
         assert not any(
             isinstance(node, ast.ClassDef) and node.name == "TrainService" for node in tree.body
         )
+
+
+# The HTTP edge: besides the route modules themselves, the application handlers, the
+# adapters that turn a typed error into a route's HTTP answer, and the underwriter
+# app's own routes.
+HTTP_EDGE_MODULES = frozenset(
+    {
+        "haute._workbench_app",
+        "haute._workbench_app_quotes",
+        "haute.routes._contract_errors",
+        "haute.routes._error_handlers",
+        "haute.routes._mlflow_log_errors",
+        "haute.routes._runtime_path_errors",
+    }
+)
+
+
+def test_only_the_http_edge_imports_http_exceptions() -> None:
+    """Services raise refusals (``haute.errors.RequestRefusedError``), never HTTP types:
+    only a route module and the edge above import ``HTTPException``."""
+    importers: set[str] = set()
+    for path in source_files(ROOT / "src" / "haute"):
+        parts = path.relative_to(ROOT / "src").with_suffix("").parts
+        module = ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
+        if parts[:2] == ("haute", "routes") and len(parts) == 3 and not parts[2].startswith("_"):
+            continue  # a route module
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.ImportFrom)
+                and (node.module or "").split(".")[0] in {"fastapi", "starlette"}
+                and any(alias.name == "HTTPException" for alias in node.names)
+            ):
+                importers.add(module)
+
+    assert importers - HTTP_EDGE_MODULES == set()

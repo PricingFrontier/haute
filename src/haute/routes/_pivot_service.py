@@ -16,7 +16,6 @@ from operator import or_
 from typing import Any, Literal, cast
 
 import polars as pl
-from fastapi import HTTPException
 
 from haute._analysis_results import SynchronousAnalysisCache
 from haute._cache import canonical_json
@@ -51,6 +50,7 @@ from haute._types import (
     ExplorePivotRowPlacement,
     ExplorePivotValuePlacement,
 )
+from haute.errors import InvalidRequestError, NotFoundError
 from haute.routes._background_jobs import CancellableJobRegistry, JobCancellation
 from haute.routes._job_lifecycle import JobLifecycle, bind_running_execution_metrics_publisher
 from haute.routes._job_store import JobStore, RunningJobFields
@@ -564,7 +564,7 @@ class PivotService:
         try:
             consumer = consumer_point(body.graph, body.node_id)
         except NodeDataPointInvalidError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise InvalidRequestError(str(exc)) from exc
         resolver = DataPointResolver(
             body.graph,
             source=body.source,
@@ -743,7 +743,7 @@ class PivotService:
     def status(self, job_id: str) -> ExplorePivotStatusResponse:
         job = self._store.require_job(job_id)
         if job.get("kind") != "pivot":
-            raise HTTPException(status_code=404, detail="Pivot job not found")
+            raise NotFoundError("Pivot job not found")
         return ExplorePivotStatusResponse(
             status=job["status"],
             progress=job.get("progress", 0),

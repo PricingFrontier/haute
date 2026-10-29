@@ -11,14 +11,13 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from haute._file_ops import file_revision
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._support_code_names import support_code_violations
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
-from haute.errors import ParseError
+from haute.errors import ParseError, RequestRefusedError
 from haute.parser import parse_pipeline_file
 from haute.routes._save_pipeline import SavePipelineService
 
@@ -421,7 +420,7 @@ def test_a_strict_parse_and_the_editor_load_report_a_submodel_module_collision(
 def test_save_refuses_a_node_named_like_a_preamble_helper(tmp_path: Path) -> None:
     graph = PipelineGraph(nodes=[_node("rate_lookup")], edges=[], preamble=_RATE_LOOKUP)
 
-    with pytest.raises(HTTPException) as excinfo:
+    with pytest.raises(RequestRefusedError) as excinfo:
         SavePipelineService(tmp_path).validate_graph(graph, source_file="main.py")
 
     assert "takes the name `rate_lookup`, which the preamble (line 1) binds" in excinfo.value.detail

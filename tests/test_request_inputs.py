@@ -25,7 +25,6 @@ from unittest.mock import patch
 
 import polars as pl
 import pytest
-from fastapi import HTTPException
 from polars.testing import assert_frame_equal
 from pydantic import ValidationError
 
@@ -69,6 +68,7 @@ from haute.deploy._schema import _read_sample_row, infer_input_schema
 from haute.deploy._scorer import DeployInput, QuoteRequest, score_graph
 from haute.deploy._utils import shipped_graph
 from haute.deploy._validators import score_test_quotes
+from haute.errors import RequestRefusedError
 from haute.execution import ExecutionProfile, execute_lazy_graph
 from haute.parser import parse_pipeline_file
 from haute.routes._save_pipeline import SavePipelineService
@@ -1362,7 +1362,7 @@ def _two_request_inputs(case: str) -> PipelineGraph:
 def test_a_pipeline_has_one_request_input(project: Path, case: str) -> None:
     graph = _two_request_inputs(case)
 
-    with pytest.raises(HTTPException) as refused:
+    with pytest.raises(RequestRefusedError) as refused:
         SavePipelineService(project).validate_graph(graph, source_file="main.py")
     assert refused.value.status_code == 400
     assert refused.value.detail == ONE_REQUEST_INPUT

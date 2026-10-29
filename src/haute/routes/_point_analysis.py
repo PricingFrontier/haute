@@ -14,7 +14,6 @@ from collections.abc import Callable, Collection, Mapping
 from typing import Any, Protocol, TypeVar
 
 import polars as pl
-from fastapi import HTTPException
 
 from haute._analysis_results import SynchronousAnalysisCache
 from haute._data_points import (
@@ -30,6 +29,7 @@ from haute._data_points import (
 from haute._execution_context import ExecutionCancellationToken, ExecutionContext
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
 from haute._polars_utils import cancellable_streaming_collect
+from haute.errors import InvalidRequestError, UnprocessableError
 from haute.routes._node_data_service import NodeDataService, node_data_project_root
 from haute.routes._synchronous_analysis import run_synchronous_analysis
 from haute.schemas import Graph, NodeDataPointResponse
@@ -50,16 +50,16 @@ class PointRequest(Protocol):
     def source(self) -> str: ...
 
 
-def unprocessable(message: str) -> HTTPException:
+def unprocessable(message: str) -> UnprocessableError:
     """A question this data cannot answer.
 
-    The repository keeps ``HTTPException.detail`` a plain string (issue #76), so each
+    The repository keeps a refusal's detail a plain string (issue #76), so each
     condition is told apart by its own message rather than by a code in the body.
     """
-    return HTTPException(status_code=422, detail=message)
+    return UnprocessableError(message)
 
 
-def columns_missing(columns: Collection[str]) -> HTTPException:
+def columns_missing(columns: Collection[str]) -> UnprocessableError:
     """The data the node reads has none of *columns*."""
     names = ", ".join(repr(column) for column in columns)
     if len(columns) == 1:
@@ -130,7 +130,7 @@ class PointAnalysisService:
         try:
             consumer = consumer_point(body.graph, body.node_id)
         except NodeDataPointInvalidError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise InvalidRequestError(str(exc)) from exc
         resolver = DataPointResolver(
             body.graph, source=body.source, store=NodeSnapshotStore(node_data_project_root())
         )

@@ -26,9 +26,8 @@ from math import isfinite
 from types import MappingProxyType
 from typing import Any, Literal, NotRequired, Protocol, TypedDict, cast, runtime_checkable
 
-from fastapi import HTTPException
-
 from haute._logging import get_logger
+from haute.errors import InvalidRequestError, NotFoundError
 from haute.schemas import JobStatus
 
 _DEFAULT_TTL_SECONDS = 24 * 60 * 60  # 24 hours
@@ -879,12 +878,12 @@ class JobStore:
         """Return a detached snapshot, or raise HTTP 404 if not found.
 
         Convenience wrapper around :meth:`get_job` that eliminates the
-        repetitive ``if job is None: raise HTTPException(...)`` guard at
+        repetitive ``if job is None: raise NotFoundError(...)`` guard at
         every call site.
         """
         job = self.get_job(job_id)
         if job is None:
-            raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+            raise NotFoundError(f"Job '{job_id}' not found")
         return job
 
     def detach_artifact_handle(self, job_id: str, key: str) -> bool:
@@ -967,9 +966,8 @@ class JobStore:
         """
         job = self.require_job(job_id)
         if job.get("status") != "completed":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Job '{job_id}' is not completed (status: {job.get('status')})",
+            raise InvalidRequestError(
+                f"Job '{job_id}' is not completed (status: {job.get('status')})"
             )
         return job
 

@@ -16,8 +16,8 @@ from typing import Any
 import numpy as np
 import polars as pl
 import pytest
-from fastapi import HTTPException
 
+from haute.errors import RequestRefusedError
 from haute.routes._optimiser_limits import APPLY_PREVIEW_ROW_LIMIT, QUOTE_PAGE_DEPTH_LIMIT
 from haute.routes._optimiser_outcomes import (
     ANALYSIS_ROW_PRESENT_COLUMN,
@@ -179,7 +179,7 @@ class TestSortWithTies:
         self, mode: str, sort_by: str
     ) -> None:
         spec = _spec(mode=mode)
-        with pytest.raises(HTTPException) as refused:
+        with pytest.raises(RequestRefusedError) as refused:
             quote_page(spec, sort_by=sort_by).validate(spec)
         assert refused.value.status_code == 400
         assert "optimal_scenario_value" in refused.value.detail
@@ -223,14 +223,14 @@ class TestFilters:
         [("region", 1), ("tier", "1"), ("tier", True), ("region", True)],
     )
     def test_an_equality_value_of_the_wrong_type_is_refused(self, column: str, value: Any) -> None:
-        with pytest.raises(HTTPException) as refused:
+        with pytest.raises(RequestRefusedError) as refused:
             _page(filters=QuoteFilters(analysis_equals=((column, value),)))
         assert refused.value.status_code == 400
         assert column in refused.value.detail
 
     def test_an_unknown_analysis_column_is_refused(self) -> None:
         spec = _spec(analysis=("region", "tier"))
-        with pytest.raises(HTTPException) as refused:
+        with pytest.raises(RequestRefusedError) as refused:
             quote_page(spec, filters=QuoteFilters(analysis_equals=(("noise", 1),))).validate(spec)
         assert refused.value.status_code == 400
         assert "noise" in refused.value.detail
@@ -243,14 +243,14 @@ class TestFilters:
 
     def test_deployed_factor_differs_is_refused_online(self) -> None:
         spec = _spec()
-        with pytest.raises(HTTPException) as refused:
+        with pytest.raises(RequestRefusedError) as refused:
             quote_page(spec, filters=QuoteFilters(deployed_factor_differs=True)).validate(spec)
         assert refused.value.status_code == 400
         assert "ratebook" in refused.value.detail
 
     def test_a_minimum_above_the_maximum_is_refused(self) -> None:
         spec = _spec()
-        with pytest.raises(HTTPException) as refused:
+        with pytest.raises(RequestRefusedError) as refused:
             quote_page(
                 spec, filters=QuoteFilters(scenario_value_min=1.2, scenario_value_max=1.0)
             ).validate(spec)
@@ -283,7 +283,7 @@ class TestSearchAndPaging:
         quote_page(
             spec, offset=QUOTE_PAGE_DEPTH_LIMIT - APPLY_PREVIEW_ROW_LIMIT, limit=100
         ).validate(spec)
-        with pytest.raises(HTTPException) as refused:
+        with pytest.raises(RequestRefusedError) as refused:
             quote_page(
                 spec, offset=QUOTE_PAGE_DEPTH_LIMIT - APPLY_PREVIEW_ROW_LIMIT + 1, limit=100
             ).validate(spec)
@@ -302,7 +302,7 @@ class TestSearchAndPaging:
     @pytest.mark.parametrize("limit", [0, APPLY_PREVIEW_ROW_LIMIT + 1])
     def test_a_limit_outside_the_cap_is_refused(self, limit: int) -> None:
         spec = _spec()
-        with pytest.raises(HTTPException) as refused:
+        with pytest.raises(RequestRefusedError) as refused:
             quote_page(spec, limit=limit).validate(spec)
         assert refused.value.status_code == 400
 

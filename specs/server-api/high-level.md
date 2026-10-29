@@ -603,7 +603,11 @@ describes. Stale, changed or already-applied plans fail before
 ## Failure model
 
 This codebase prefers loud failure over silent fallbacks, and the server layer's job is to
-turn that loudness into a well-typed HTTP response rather than a raw traceback.
+turn that loudness into a well-typed HTTP response rather than a raw traceback. Services
+speak no HTTP: they refuse a request with a domain error naming the reason (a conflict,
+something not found or expired, data that cannot answer), and the application handlers
+answer it, the same way for every route; a background job records the same status and
+detail, and the assistant shows the same message.
 
 - **Explicitly mapped domain errors** carry a hand-authored message (and, for
   `HauteError`, optional structured `**context`) that the relevant route treats as safe to

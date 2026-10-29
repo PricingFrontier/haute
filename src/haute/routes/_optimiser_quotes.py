@@ -16,8 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from fastapi import HTTPException
-
+from haute.errors import ConflictError, InvalidRequestError, RequestRefusedError, ServiceFailedError
 from haute.routes._optimiser_limits import APPLY_PREVIEW_ROW_LIMIT, QUOTE_PAGE_DEPTH_LIMIT
 from haute.routes._optimiser_outcomes import (
     CHOICE_QUOTE_ID,
@@ -57,8 +56,8 @@ _SCENARIO = "optimal_scenario_value"
 _FACTOR_PRODUCT = "factor_product"
 
 
-def _bad_request(message: str) -> HTTPException:
-    return HTTPException(status_code=400, detail=message)
+def _bad_request(message: str) -> RequestRefusedError:
+    return InvalidRequestError(message)
 
 
 def equality_filter_supported(dtype_name: str) -> bool:
@@ -378,9 +377,8 @@ def _anchor_totals(job: Mapping[str, Any]) -> tuple[float, dict[str, float]]:
     )
 
     if not isinstance(_artifact_handles_or_raise(job).get(_APPLY_RESULT_HANDLE_KEY), dict):
-        raise HTTPException(
-            status_code=400,
-            detail="Job has no apply artifact handle. Re-run the solve to regenerate it.",
+        raise InvalidRequestError(
+            "Job has no apply artifact handle. Re-run the solve to regenerate it."
         )
     summary = _base_result_for_frontier(job)
     total_objective = summary.get("total_objective")
@@ -390,7 +388,7 @@ def _anchor_totals(job: Mapping[str, Any]) -> tuple[float, dict[str, float]]:
         or not isinstance(total_objective, int | float)
         or not isinstance(constraints, dict)
     ):
-        raise HTTPException(status_code=500, detail="Job summary is incomplete")
+        raise ServiceFailedError("Job summary is incomplete")
     return float(total_objective), constraints
 
 
@@ -459,7 +457,7 @@ class QuoteQueries:
             )
             latest = self._store.require_completed_job(body.job_id)
             if _frontier_generation_or_raise(latest) != ticket.generation:
-                raise HTTPException(status_code=409, detail=_FRONTIER_CHANGED_DETAIL)
+                raise ConflictError(_FRONTIER_CHANGED_DETAIL)
             total_objective = float(selected["total_objective"])
             constraints = selected["constraints"]
             from_artifact = ticket.from_artifact

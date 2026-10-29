@@ -17,6 +17,7 @@ from typing import Any, cast
 import pytest
 from fastapi import HTTPException, Request
 
+from haute.errors import RequestRefusedError
 from haute.routes import pipeline as pipeline_routes
 from haute.schemas import PreviewNodeRequest
 from tests.conftest import make_ready_file_input_config
@@ -88,7 +89,7 @@ async def test_thread_mode_preview_stops_at_a_checkpoint_when_its_client_leaves(
     await _wait_for(running)
     client.leave.set()
 
-    with pytest.raises(HTTPException) as raised:
+    with pytest.raises(RequestRefusedError) as raised:
         await preview
 
     assert raised.value.status_code == 499
@@ -119,7 +120,7 @@ async def test_process_mode_preview_tells_its_worker_to_stop_when_its_client_lea
     await _wait_for(running)
     client.leave.set()
 
-    with pytest.raises(HTTPException) as raised:
+    with pytest.raises(RequestRefusedError) as raised:
         await preview
 
     assert raised.value.status_code == 499
@@ -143,7 +144,7 @@ async def test_a_preview_still_queued_for_a_slot_never_runs_once_its_client_leav
     client.leave.set()
 
     started_at = time.monotonic()
-    with pytest.raises(HTTPException) as raised:
+    with pytest.raises(RequestRefusedError) as raised:
         await asyncio.wait_for(
             pipeline_routes._preview_canonical_graph(_body(), cast(Request, client)),
             timeout=30,

@@ -5613,3 +5613,22 @@ class TestBriefBoundaries:
         assert len(_tools._BRIEF_CACHE) == _tools._BRIEF_CACHE_SIZE
         assert "revision-0" not in _tools._BRIEF_CACHE
         assert f"revision-{_tools._BRIEF_CACHE_SIZE}" in _tools._BRIEF_CACHE
+
+
+def test_a_service_refusal_reaches_the_analyst_as_its_message() -> None:
+    """The assistant reads a service's refusal as the domain error it is, a plain
+    message or a structured detail's own message, never an HTTP exception's detail."""
+    from haute.assistant._tools import _error_message
+    from haute.errors import ConflictError, InsufficientMemoryError
+
+    conflict = ConflictError("The pipeline changed on disk. Reload it, then save again.")
+    memory = InsufficientMemoryError(
+        {"error_code": "memory_limit", "message": "There is not enough free memory to train now."}
+    )
+
+    assert _error_message(conflict, operation="save") == (
+        "The pipeline changed on disk. Reload it, then save again."
+    )
+    assert _error_message(memory, operation="train") == (
+        "There is not enough free memory to train now."
+    )

@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any, Literal
 
 import polars as pl
-from fastapi import HTTPException
 
 from haute._execution_admission import (
     ExecutionAdmissionError,
@@ -45,7 +44,11 @@ from haute._types import GraphNode, PipelineGraph
 from haute.errors import (
     BoundedMemoryUnsupportedError,
     HauteValidationError,
+    InsufficientMemoryError,
+    RequestRefusedError,
     SchemaMismatchError,
+    ServiceFailedError,
+    UnprocessableError,
 )
 from haute.execution import (
     AllExceptColumns,
@@ -67,10 +70,10 @@ from haute.modelling._train_config import (
 )
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
-    contract_error_http_exception,
     contract_error_job_fields,
+    contract_error_refusal,
     contract_error_terminal_reason,
-    memory_limit_http_exception,
+    memory_limit_refusal,
 )
 from haute.routes._helpers import find_typed_node
 from haute.routes._synchronous_analysis import CLIENT_CLOSED_REQUEST_STATUS
@@ -102,18 +105,18 @@ def _seeded_training_sample(lf: pl.LazyFrame, row_limit: int) -> pl.LazyFrame:
     )
 
 
-def _memory_limit_http_exception(
+def _memory_limit_refusal(
     exc: ExecutionAdmissionError | ExecutionMemoryLimitExceededError,
-) -> HTTPException:
-    return memory_limit_http_exception(exc, operation_noun="Training")
+) -> RequestRefusedError:
+    return memory_limit_refusal(exc, operation_noun="Training")
 
 
-def _http_failure_job_parts(
-    exc: HTTPException,
+def _refusal_job_parts(
+    exc: RequestRefusedError,
     *,
     job_id: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """Preserve an HTTP failure's public shape on a terminal background job."""
+    """Preserve a refusal's public shape, its status and detail, on a terminal background job."""
     detail = exc.detail
     if isinstance(detail, dict):
         detail = dict(detail)
@@ -129,13 +132,13 @@ def _http_failure_job_parts(
     }
 
 
-def _gpu_vram_http_exception(
+def _gpu_vram_refusal(
     *,
     warning: str,
     estimated_mb: float | None,
     available_mb: float | None,
     job_id: str,
-) -> HTTPException:
+) -> RequestRefusedError:
     payload = {
         "error_code": "gpu_vram_limit",
         "operation": "training_job",
@@ -145,7 +148,7 @@ def _gpu_vram_http_exception(
         "gpu_vram_available_mb": available_mb,
         "reason": "gpu_vram_limit_exceeded",
     }
-    return HTTPException(status_code=507, detail=payload)
+    return InsufficientMemoryError(payload)
 
 
 class _VramCheck:
@@ -605,13 +608,13 @@ def _finalise_preparation_failure(
     )
 
 
-def _preparation_failure_from_http(
-    exc: HTTPException,
+def _preparation_failure_from_refusal(
+    exc: RequestRefusedError,
     *,
     job_id: str,
     terminal_reason: TrainingPreparationTerminalReason | None = None,
 ) -> TrainingPreparationFailure:
-    message, fields = _http_failure_job_parts(exc, job_id=job_id)
+    message, fields = _refusal_job_parts(exc, job_id=job_id)
     if terminal_reason is None:
         if exc.status_code == 507:
             terminal_reason = "memory_limited"
@@ -661,7 +664,7 @@ def _validate_target_task_pairing(
         metrics = effective_metrics(config)
     except TrainingConfigError as exc:
         _remove_prepared_parquet(tmp_parquet)
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise UnprocessableError(str(exc)) from exc
     try:
         issue = training_target_task_issue(
             pl.scan_parquet(tmp_parquet),
@@ -677,7 +680,7 @@ def _validate_target_task_pairing(
         raise
     if issue is not None:
         _remove_prepared_parquet(tmp_parquet)
-        raise HTTPException(status_code=422, detail=issue)
+        raise UnprocessableError(issue)
 
 
 def _execute_and_sink_training_frame(
@@ -769,7 +772,7 @@ def _execute_and_sink_training_frame(
                 {name: str(dtype) for name, dtype in target_schema.items()},
             )
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from None
+            raise UnprocessableError(str(exc)) from None
 
         required_training_columns = set(request.keep_columns or [])
         node_demand = (
@@ -783,12 +786,9 @@ def _execute_and_sink_training_frame(
             required_training_columns.update(str(column) for column in node_demand)
         missing_training_columns = sorted(required_training_columns - schema_set)
         if missing_training_columns:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "Training input is missing required column(s): "
-                    f"{missing_training_columns}. Available columns: {schema_cols}"
-                ),
+            raise UnprocessableError(
+                "Training input is missing required column(s): "
+                f"{missing_training_columns}. Available columns: {schema_cols}"
             )
 
         # Project down to only the columns needed for training.
@@ -812,7 +812,7 @@ def _execute_and_sink_training_frame(
         # file the job reads if one is written into it: refuse it by name first.
         wide = wide_integer_column(target_lf.collect_schema())
         if wide is not None:
-            raise HTTPException(status_code=422, detail=wide_integer_message(*wide))
+            raise UnprocessableError(wide_integer_message(*wide))
 
         _mem_checkpoint("before sink_parquet")
         execution_context.checkpoint(label="before_training_sink_write", node_id=node_id)
@@ -893,18 +893,18 @@ def preparation_failure_outcome(
             error=str(exc),
             node_id=request.node_id,
         )
-        failure = _preparation_failure_from_http(
-            _memory_limit_http_exception(exc),
+        failure = _preparation_failure_from_refusal(
+            _memory_limit_refusal(exc),
             job_id=job_id,
             terminal_reason="memory_limited",
         )
     elif isinstance(exc, PUBLIC_CONTRACT_ERROR_TYPES):
-        http_exc = contract_error_http_exception(exc)
+        refusal = contract_error_refusal(exc)
         failure = TrainingPreparationFailure(
             terminal_reason=contract_error_terminal_reason(exc),
             message=str(exc),
-            http_status_code=http_exc.status_code,
-            http_detail=http_exc.detail,
+            http_status_code=refusal.status_code,
+            http_detail=refusal.detail,
             fields=contract_error_job_fields(exc),
         )
     elif isinstance(exc, SchemaMismatchError):
@@ -919,8 +919,8 @@ def preparation_failure_outcome(
             if missing
             else f"Training input schema does not match: {exc.message}"
         )
-        failure = _preparation_failure_from_http(
-            HTTPException(status_code=422, detail=detail),
+        failure = _preparation_failure_from_refusal(
+            UnprocessableError(detail),
             job_id=job_id,
             terminal_reason="contract_error",
         )
@@ -930,23 +930,17 @@ def preparation_failure_outcome(
             error=str(exc),
             node_id=request.node_id,
         )
-        failure = _preparation_failure_from_http(
-            HTTPException(
-                status_code=422,
-                detail=f"Pipeline cannot run in bounded streaming mode: {exc}",
-            ),
+        failure = _preparation_failure_from_refusal(
+            UnprocessableError(f"Pipeline cannot run in bounded streaming mode: {exc}"),
             job_id=job_id,
             terminal_reason="contract_error",
         )
-    elif isinstance(exc, HTTPException):
-        failure = _preparation_failure_from_http(exc, job_id=job_id)
+    elif isinstance(exc, RequestRefusedError):
+        failure = _preparation_failure_from_refusal(exc, job_id=job_id)
     else:
         logger.error("pipeline_exec_failed", error=str(exc), node_id=request.node_id)
-        failure = _preparation_failure_from_http(
-            HTTPException(
-                status_code=500,
-                detail="Pipeline execution failed. Check the server logs for details.",
-            ),
+        failure = _preparation_failure_from_refusal(
+            ServiceFailedError("Pipeline execution failed. Check the server logs for details."),
             job_id=job_id,
             terminal_reason="error",
         )
@@ -1018,8 +1012,8 @@ def prepare_training_data_worker(
         return prepare_training_data(request, execution_context=context)
     except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
         return _finalise_preparation_failure(
-            _preparation_failure_from_http(
-                _memory_limit_http_exception(exc),
+            _preparation_failure_from_refusal(
+                _memory_limit_refusal(exc),
                 job_id=request.job_id,
                 terminal_reason="memory_limited",
             ),
@@ -1047,11 +1041,8 @@ def prepare_training_data_worker(
             node_id=request.node_id,
         )
         return _finalise_preparation_failure(
-            _preparation_failure_from_http(
-                HTTPException(
-                    status_code=500,
-                    detail="Pipeline execution failed. Check the server logs for details.",
-                ),
+            _preparation_failure_from_refusal(
+                ServiceFailedError("Pipeline execution failed. Check the server logs for details."),
                 job_id=request.job_id,
                 terminal_reason="error",
             ),

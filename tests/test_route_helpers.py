@@ -19,11 +19,10 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from fastapi import HTTPException
 
 from haute._sandbox import contained_path
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
-from haute.errors import PathOutsideProjectError
+from haute.errors import PathOutsideProjectError, RequestRefusedError
 from haute.routes._helpers import (
     _WATCHER_PAUSE_SETTLE_SECONDS,
     broadcast,
@@ -106,7 +105,7 @@ class TestContainedPath:
 
 class TestRaiseNodeNotFound:
     def test_raises_404(self):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             raise_node_not_found("node_123")
         assert exc_info.value.status_code == 404
         assert "node_123" in exc_info.value.detail
@@ -114,7 +113,7 @@ class TestRaiseNodeNotFound:
 
 class TestRaiseNodeTypeError:
     def test_raises_400(self):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             raise_node_type_error("n1", "dataInput", "polars")
         assert exc_info.value.status_code == 400
         assert "dataInput" in exc_info.value.detail
@@ -123,7 +122,7 @@ class TestRaiseNodeTypeError:
 
 class TestRaisePipelineNotFound:
     def test_raises_404(self):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             raise_pipeline_not_found("my_pipeline")
         assert exc_info.value.status_code == 404
         assert "my_pipeline" in exc_info.value.detail
@@ -1125,7 +1124,7 @@ class TestFindTypedNode:
         from haute.routes._helpers import find_typed_node
 
         graph = PipelineGraph(nodes=[])
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             find_typed_node(graph, "missing", NodeType.MODELLING, "modelling")
         assert exc_info.value.status_code == 404
 
@@ -1140,7 +1139,7 @@ class TestFindTypedNode:
                 ),
             ],
         )
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             find_typed_node(graph, "s1", NodeType.MODELLING, "modelling")
         assert exc_info.value.status_code == 400
         assert "modelling" in exc_info.value.detail

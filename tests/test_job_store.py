@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
+from haute.errors import RequestRefusedError
 from haute.routes._job_lifecycle import JobLifecycle, TerminalReason
 from haute.routes._job_store import (
     _DEFAULT_HEAVY_OBJECT_TTL_SECONDS,
@@ -1208,20 +1209,18 @@ class TestRequireJob:
         assert job["progress"] == 0.5
 
     def test_raises_404_for_missing_job(self) -> None:
-        from fastapi import HTTPException
 
         store = JobStore()
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             store.require_job("nonexistent_id")
         assert exc_info.value.status_code == 404
         assert "nonexistent_id" in exc_info.value.detail
 
     def test_raises_404_for_evicted_job(self) -> None:
-        from fastapi import HTTPException
 
         store = JobStore(ttl_seconds=1)
         job_id = _create_job(store, {"status": "completed", "created_at": time.time() - 10})
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             store.require_job(job_id)
         assert exc_info.value.status_code == 404
 
@@ -1242,42 +1241,38 @@ class TestRequireCompletedJob:
         assert job["result"] == {"score": 0.95}
 
     def test_raises_404_for_missing_job(self) -> None:
-        from fastapi import HTTPException
 
         store = JobStore()
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             store.require_completed_job("nonexistent_id")
         assert exc_info.value.status_code == 404
         assert "nonexistent_id" in exc_info.value.detail
 
     def test_raises_400_for_running_job(self) -> None:
-        from fastapi import HTTPException
 
         store = JobStore()
         job_id = _create_job(store, {"status": "running"})
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             store.require_completed_job(job_id)
         assert exc_info.value.status_code == 400
         assert "not completed" in exc_info.value.detail
         assert "running" in exc_info.value.detail
 
     def test_raises_400_for_cancelled_job(self) -> None:
-        from fastapi import HTTPException
 
         store = JobStore()
         job_id = _create_job(store, {"status": "cancelled"})
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             store.require_completed_job(job_id)
         assert exc_info.value.status_code == 400
         assert "not completed" in exc_info.value.detail
         assert "cancelled" in exc_info.value.detail
 
     def test_raises_400_for_error_job(self) -> None:
-        from fastapi import HTTPException
 
         store = JobStore()
         job_id = _create_job(store, {"status": "error", "message": "boom"})
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             store.require_completed_job(job_id)
         assert exc_info.value.status_code == 400
         assert "not completed" in exc_info.value.detail
@@ -1291,21 +1286,19 @@ class TestRequireCompletedJob:
 
     def test_detail_includes_job_id(self) -> None:
         """Error messages should include the job ID for debuggability."""
-        from fastapi import HTTPException
 
         store = JobStore()
         job_id = _create_job(store, {"status": "running"})
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             store.require_completed_job(job_id)
         assert job_id in exc_info.value.detail
 
     def test_raises_404_for_evicted_job(self) -> None:
         """An evicted (stale) job should raise 404, not 400."""
-        from fastapi import HTTPException
 
         store = JobStore(ttl_seconds=1)
         job_id = _create_job(store, {"status": "completed", "created_at": time.time() - 10})
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             store.require_completed_job(job_id)
         # Should be 404 (not found due to eviction), not 400 (not completed)
         assert exc_info.value.status_code == 404
@@ -3150,15 +3143,14 @@ class TestRequireCompletedJobErrorVsRunning:
 
     def test_running_and_error_both_return_400(self) -> None:
         """Both non-completed statuses produce the same HTTP status code."""
-        from fastapi import HTTPException
 
         store = JobStore()
         running_id = _create_job(store, {"status": "running"})
         error_id = _create_job(store, {"status": "error", "message": "OOM"})
 
-        with pytest.raises(HTTPException) as running_exc:
+        with pytest.raises(RequestRefusedError) as running_exc:
             store.require_completed_job(running_id)
-        with pytest.raises(HTTPException) as error_exc:
+        with pytest.raises(RequestRefusedError) as error_exc:
             store.require_completed_job(error_id)
 
         # Same status code — client cannot distinguish via HTTP alone
@@ -3168,15 +3160,14 @@ class TestRequireCompletedJobErrorVsRunning:
         """The detail message does include the status, so a client parsing
         the message body CAN distinguish — but this is fragile.
         """
-        from fastapi import HTTPException
 
         store = JobStore()
         running_id = _create_job(store, {"status": "running"})
         error_id = _create_job(store, {"status": "error", "message": "OOM"})
 
-        with pytest.raises(HTTPException) as running_exc:
+        with pytest.raises(RequestRefusedError) as running_exc:
             store.require_completed_job(running_id)
-        with pytest.raises(HTTPException) as error_exc:
+        with pytest.raises(RequestRefusedError) as error_exc:
             store.require_completed_job(error_id)
 
         assert "running" in running_exc.value.detail
@@ -3193,29 +3184,27 @@ class TestRequireCompletedJobErrorVsRunning:
         - 202 Accepted / 409 Conflict for "running" (retriable)
         - 400 / 422 for "error" (terminal)
         """
-        from fastapi import HTTPException
 
         store = JobStore()
 
         # Running job — semantically retriable
         running_id = _create_job(store, {"status": "running", "progress": 0.5})
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             store.require_completed_job(running_id)
         assert exc_info.value.status_code == 400  # should arguably be 409
 
         # Errored job — semantically terminal
         error_id = _create_job(store, {"status": "error", "message": "CUDA OOM"})
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             store.require_completed_job(error_id)
         assert exc_info.value.status_code == 400  # same code, different semantics
 
     def test_detail_format_is_consistent(self) -> None:
         """Verify the exact detail format for regression testing."""
-        from fastapi import HTTPException
 
         store = JobStore()
         job_id = _create_job(store, {"status": "error"})
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             store.require_completed_job(job_id)
         detail = exc_info.value.detail
         assert detail == f"Job '{job_id}' is not completed (status: error)"

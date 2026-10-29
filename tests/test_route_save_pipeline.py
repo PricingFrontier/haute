@@ -16,11 +16,11 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from haute._pipeline_recovery import empty_pipeline_editor_document
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
+from haute.errors import RequestRefusedError
 from haute.routes._save_pipeline import SavePipelineService, _OnDisk
 from haute.schemas import SavePipelineRequest
 from tests.conftest import current_source_revision, make_output_config
@@ -170,7 +170,7 @@ class TestValidateSingletons:
             _make_node("a1", "Api 1", "apiInput", {"path": "d1.parquet"}),
             _make_node("a2", "Api 2", "apiInput", {"path": "d2.parquet"}),
         )
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             SavePipelineService._validate_singletons(graph)
         assert exc_info.value.status_code == 400
         assert "Quote Input or Workbench Input" in exc_info.value.detail
@@ -182,7 +182,7 @@ class TestValidateSingletons:
             _make_node("child_api", "Child API", "apiInput", {"path": "child.parquet"}),
             root_nodes=(_make_node("root_api", "Root API", "apiInput", {"path": "root.parquet"}),),
         )
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             SavePipelineService(tmp_path).validate_graph(graph, source_file="main.py")
         assert exc_info.value.status_code == 400
         assert "Quote Input or Workbench Input" in exc_info.value.detail
@@ -206,7 +206,7 @@ class TestValidateSingletons:
                 },
             )
         )
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             SavePipelineService(tmp_path).validate_graph(graph, source_file="main.py")
         assert exc_info.value.status_code == 400
         assert "Quote Input or Workbench Input" in exc_info.value.detail
@@ -218,7 +218,7 @@ class TestValidateSingletons:
             _make_node("o1", "Out 1", "output", make_output_config([])),
             _make_node("o2", "Out 2", "output", make_output_config([])),
         )
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             SavePipelineService._validate_singletons(graph)
         assert exc_info.value.status_code == 400
         assert "Output" in exc_info.value.detail
@@ -237,7 +237,7 @@ class TestValidateSingletons:
             _make_node("ls1", "Switch 1", "liveSwitch", {"input_scenario_map": {"a": "live"}}),
             _make_node("ls2", "Switch 2", "liveSwitch", {"instanceOf": "ls1"}),
         )
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             SavePipelineService(tmp_path).validate_graph(graph, source_file="main.py")
         assert exc_info.value.status_code == 400
         assert "'Switch 2' cannot be an instance of the Source Switch 'Switch 1'" in (
@@ -278,7 +278,7 @@ class TestValidateUniqueSanitizedNames:
             _make_node("a", "my-node", "polars"),
             _make_node("b", "my_node", "polars"),
         )
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "my_node" in exc_info.value.detail
@@ -289,7 +289,7 @@ class TestValidateUniqueSanitizedNames:
             _make_node("a", "Transform", "polars"),
             _make_node("b", "Transform", "polars"),
         )
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "Transform" in exc_info.value.detail
@@ -300,7 +300,7 @@ class TestValidateUniqueSanitizedNames:
             _make_node("a", "my node", "polars"),
             _make_node("b", "my_node", "polars"),
         )
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "my_node" in exc_info.value.detail
@@ -312,7 +312,7 @@ class TestValidateUniqueSanitizedNames:
             _make_node("b", "my_node", "polars"),
             _make_node("c", "my node", "polars"),
         )
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "my_node" in exc_info.value.detail
@@ -336,7 +336,7 @@ class TestValidateUniqueSanitizedNames:
             _make_node("a", "", "polars"),
             _make_node("b", "", "polars"),
         )
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "unnamed_node" in exc_info.value.detail
@@ -347,7 +347,7 @@ class TestValidateUniqueSanitizedNames:
             _make_node("a", "transform", "polars"),
             _make_node("b", "transform", "dataInput"),
         )
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
 
@@ -405,7 +405,7 @@ class TestValidateOptimiserInputSelectors:
         )
         service = SavePipelineService(tmp_path)
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             service.validate_graph(graph, source_file="pipeline.py")
 
         assert exc_info.value.status_code == 400
@@ -479,7 +479,7 @@ class TestValidateScenarioExpanderGridSize:
         if step_count is not None:
             invalid["stepCount"] = step_count
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             save(invalid)
 
         assert exc_info.value.status_code == 400
@@ -548,7 +548,7 @@ class TestValidateModellingValues:
     def test_a_malformed_value_is_refused_naming_the_node(
         self, tmp_path: Path, config: dict, message: str
     ) -> None:
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             SavePipelineService(tmp_path).validate_graph(
                 self._graph(config), source_file="pipeline.py"
             )
@@ -583,7 +583,7 @@ class TestValidateDeclaredConfigKeys:
         )
         service = SavePipelineService(tmp_path)
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             service.validate_graph(graph, source_file="pipeline.py")
 
         assert exc_info.value.status_code == 400
@@ -617,7 +617,7 @@ class TestValidateDeclaredConfigKeys:
 
         assert tmp_path / config_path_for_node(NodeType.OUTPUT, "quote_response") in before
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             save({**make_output_config(["premium"]), "legacyFlag": True})
 
         assert exc_info.value.status_code == 400
@@ -630,7 +630,7 @@ class TestValidateDeclaredConfigKeys:
             _make_node("child", "child_transform", "polars", {"code": "df = df", "stale": 1}),
         )
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             SavePipelineService(tmp_path).validate_graph(graph, source_file="main.py")
 
         assert exc_info.value.status_code == 400
@@ -670,7 +670,7 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             _make_node("child", "Foo-Bar", "polars", {"code": "df"}),
             root_nodes=(_make_node("root", "Foo Bar", "polars", {"code": "df"}),),
         )
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "Foo_Bar" in exc_info.value.detail
@@ -682,7 +682,7 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             _make_node("child", "Foo", "polars", {"code": "df"}),
             root_nodes=(_make_node("root", "Foo", "polars", {"code": "df"}),),
         )
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "Foo" in exc_info.value.detail
@@ -695,7 +695,7 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             _make_node("c1", "my-node", "polars", {"code": "df"}),
             _make_node("c2", "my_node", "polars", {"code": "df"}),
         )
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "my_node" in exc_info.value.detail
@@ -707,7 +707,7 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             _make_node("pricing", "pricing", "polars", {"code": "df"}),
             sm_name="pricing",
         )
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             SavePipelineService._validate_executable_names(graph)
         assert "take one name, `pricing`" in exc_info.value.detail
 
@@ -719,7 +719,7 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             sm_name="pricing",
             root_nodes=(_make_node("root", "pricing", "polars", {"code": "df"}),),
         )
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
 
@@ -733,7 +733,7 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             root_nodes=(child,),
             include_placeholder=False,
         )
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
 
@@ -761,7 +761,7 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             source_file="main.py",
             base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
         )
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             svc.save(req)
         assert exc_info.value.status_code == 400
         assert "Foo_Bar" in exc_info.value.detail
@@ -781,7 +781,7 @@ class TestValidateQuoteInputTablesDoNotShadowNodes:
             root_nodes=(_make_node("quote", "Quote", "apiInput", _quote_input_config("quotes")),),
         )
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             SavePipelineService._validate_quote_input_tables_do_not_shadow_nodes(graph)
 
         assert exc_info.value.status_code == 400
@@ -807,7 +807,7 @@ class TestResolveSourceFile:
     def test_empty_source_file_raises_400(self, tmp_path: Path) -> None:
         """An empty source_file string should raise 400."""
         svc = SavePipelineService(tmp_path)
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             svc._resolve_source_file("")
         assert exc_info.value.status_code == 400
         assert "source_file" in exc_info.value.detail
@@ -1061,7 +1061,7 @@ class TestSaveSimpleGraph:
             base_revision=current_source_revision(tmp_path / "broken.py", tmp_path),
         )
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             svc.save(body)
 
         assert exc_info.value.status_code == 400
@@ -1164,7 +1164,7 @@ class TestWriteCodeMultiFile:
         )
 
         with patch("haute.codegen.graph_to_code_multi", return_value=fake_files):
-            with pytest.raises(HTTPException) as exc_info:
+            with pytest.raises(RequestRefusedError) as exc_info:
                 svc._write_code(body, graph, tmp_path / "main.py")
         assert exc_info.value.status_code == 400
         # The traversal path must not have been written anywhere.
@@ -1211,7 +1211,7 @@ class TestWriteConfigFiles:
         child = _make_node("child", "Shared", "dataInput", {"path": "child.csv"})
         graph.submodels = {"pricing": _submodel_definition("pricing", child)}
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             svc._write_config_files(graph)
 
         assert exc_info.value.status_code == 400
@@ -1228,7 +1228,7 @@ class TestWriteConfigFiles:
         child_b = _make_node("child_b", "Shared", "dataInput", {"path": "b.csv"})
         graph.submodels = {"pricing": _submodel_definition("pricing", child_a, child_b)}
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             svc._write_config_files(graph)
 
         assert exc_info.value.status_code == 400
@@ -1249,7 +1249,7 @@ class TestWriteConfigFiles:
         child = _make_node("child", "Shared", "dataInput", {"_load_error": "duplicate key"})
         graph.submodels = {"pricing": _submodel_definition("pricing", child)}
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             svc._write_config_files(graph)
 
         assert exc_info.value.status_code == 400
@@ -2333,7 +2333,7 @@ class TestSaveWithPipelineRoot:
                 "modules/pricing.py": "# submodel\n",
             },
         ):
-            with pytest.raises(HTTPException) as exc_info:
+            with pytest.raises(RequestRefusedError) as exc_info:
                 svc._write_code(body, graph, other_root / "main.py")
 
         assert exc_info.value.status_code == 400
@@ -2911,7 +2911,7 @@ class TestSaveGlobalConstants:
         constants_path.write_bytes(b"{")
         graph = _with_constants(parse_pipeline_file(main), self.RATE)
 
-        with pytest.raises(HTTPException) as excinfo:
+        with pytest.raises(RequestRefusedError) as excinfo:
             _save_constants_graph(tmp_path, graph)
 
         assert excinfo.value.status_code == 400
@@ -2977,7 +2977,7 @@ class TestSaveGlobalConstants:
         main = _constants_project(tmp_path)
         before = main.read_bytes()
 
-        with pytest.raises(HTTPException) as excinfo:
+        with pytest.raises(RequestRefusedError) as excinfo:
             _save_constants_graph(tmp_path, mutate(parse_pipeline_file(main)))
 
         assert excinfo.value.status_code == 400
@@ -2989,7 +2989,7 @@ class TestSaveGlobalConstants:
 
         main = _constants_project(tmp_path)
 
-        with pytest.raises(HTTPException) as excinfo:
+        with pytest.raises(RequestRefusedError) as excinfo:
             _save_constants_graph(
                 tmp_path, parse_pipeline_file(main), preamble="global_constants = {}"
             )

@@ -10,6 +10,7 @@ import pytest
 
 from haute.assistant._ops import AssistantOperationError, PlanStore
 from haute.assistant._wire_ops import OpValidationError
+from haute.errors import RequestRefusedError
 from haute.schemas import ASSISTANT_RECEIPT_TEXT_LIMIT, AssistantChangeRecord
 
 PIPELINE_SOURCE = """\
@@ -247,14 +248,13 @@ class TestDryRun:
         assert len(service.plan_store) == 0
 
     def test_an_edge_out_of_model_training_is_rejected_at_dry_run(self, tmp_path: Path):
-        from fastapi import HTTPException
 
         from haute.assistant._assets import materialize_example_bundle
 
         materialize_example_bundle("model_lifecycle", tmp_path / "b")
         service = _service(tmp_path / "b")
 
-        with pytest.raises(HTTPException, match="'train'.*has no output") as raised:
+        with pytest.raises(RequestRefusedError, match="'train'.*has no output") as raised:
             service.dry_run(
                 "pipeline.py",
                 [
@@ -1538,11 +1538,10 @@ class TestWrittenNodesAreReady:
     def test_a_malformed_value_fails_save_validation_at_dry_run(
         self, modelling_project: Path, config: dict, message: str
     ):
-        from fastapi import HTTPException
 
         service = _service(modelling_project)
 
-        with pytest.raises(HTTPException) as raised:
+        with pytest.raises(RequestRefusedError) as raised:
             service.dry_run(
                 "main.py",
                 [{"op": "update_node", "node": "train", "config": config}],
@@ -1946,7 +1945,6 @@ class TestDeclaredQuoteInputSchemas:
         Dry-run passed and apply then failed reparsing its own file, so save
         validation, which dry-run runs, refuses it before anything is written.
         """
-        from fastapi import HTTPException
 
         config = {
             "path": "quote.json",
@@ -1958,7 +1956,7 @@ class TestDeclaredQuoteInputSchemas:
         source = project_root / "main.py"
         service = _service(project_root)
 
-        with pytest.raises(HTTPException) as raised:
+        with pytest.raises(RequestRefusedError) as raised:
             service.dry_run("main.py", ops, summary="Test plan.").plan
 
         assert raised.value.status_code == 400

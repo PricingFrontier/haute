@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import polars as pl
-from fastapi import HTTPException
 
 from haute._code_extraction import INCOMPLETE_STEPS_MESSAGE, INCOMPLETE_TRANSFORM_MESSAGE
 from haute._column_summary import (
@@ -212,9 +211,8 @@ def _error_message(exc: Exception, *, operation: str) -> str:
         # which can quote data the preamble read at import.
         return _execution_error_message(exc, operation=operation, site=None)
     if isinstance(exc, (HauteError, SourceCacheError, PolarsIoConfigError)):
+        # A service's refusal (RequestRefusedError) is one too: its message.
         return str(exc)
-    if isinstance(exc, HTTPException):
-        return str(exc.detail)
     logger.error(
         "assistant_tool_failed",
         operation=operation,

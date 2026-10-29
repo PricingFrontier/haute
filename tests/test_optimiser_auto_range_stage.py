@@ -13,13 +13,13 @@ from typing import Any
 
 import polars as pl
 import pytest
-from fastapi import HTTPException
 
 from haute import _execution_admission
 from haute._execution_admission import ExecutionAdmissionError, create_admitted_execution_context
 from haute._execution_context import ExecutionProfile
 from haute._polars_utils import set_streaming_chunk_size
 from haute._sandbox import set_project_root
+from haute.errors import RequestRefusedError
 from haute.routes import _optimiser_service
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_service import OptimiserSolveService
@@ -179,7 +179,7 @@ def test_an_auto_range_admission_refusal_ends_the_job_memory_limited(
     monkeypatch.setattr(OptimiserSolveService, "_run_optimiser_input_stage", never)
     service = OptimiserSolveService(JobStore())
 
-    with pytest.raises(HTTPException) as raised:
+    with pytest.raises(RequestRefusedError) as raised:
         _run(service, _body(scored))
 
     assert raised.value.status_code == 507

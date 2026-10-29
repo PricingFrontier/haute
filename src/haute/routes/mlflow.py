@@ -37,7 +37,7 @@ from haute._mlflow_utils import (
 )
 from haute._model_flavors import model_file_suffixes
 from haute._sandbox import _get_project_root
-from haute.errors import MlflowConfigError
+from haute.errors import MlflowConfigError, RequestRefusedError
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.schemas import (
     MlflowDestinationEntry,
@@ -194,7 +194,7 @@ def _ensure_tracking(destination: str = "") -> tuple[_types.ModuleType, MlflowCl
         registry_uri = registry_uri_for_tracking(tracking_uri)
         client = MlflowClient(tracking_uri=tracking_uri, registry_uri=registry_uri)
         return mlflow, client
-    except HTTPException:
+    except (HTTPException, RequestRefusedError):
         raise
     except MlflowConfigError as exc:
         # Our own configuration messages are actionable and never secret.

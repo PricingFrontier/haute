@@ -17,7 +17,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, NoReturn, TypeVar
 
-from fastapi import HTTPException, WebSocket
+from fastapi import WebSocket
 from starlette.concurrency import run_in_threadpool
 
 from haute._file_ops import atomic_write_text
@@ -36,7 +36,7 @@ from haute._sidecar import (
     read_sidecar_state,
 )
 from haute._submodel_paths import resolve_submodel_reference
-from haute.errors import ConfigError, ParseError
+from haute.errors import ConfigError, InvalidRequestError, NotFoundError, ParseError
 from haute.graph_utils import GraphNode, NodeType, PipelineGraph, _sanitize_func_name
 from haute.hosted import FORWARDED_USER_SCOPE_KEY
 
@@ -124,29 +124,26 @@ def pipeline_dir() -> Path:
 _INTERNAL_ERROR_DETAIL = "Operation failed. Check the server logs for details."
 
 # ---------------------------------------------------------------------------
-# HTTP error helpers (DRY structured-logging + HTTPException raising)
+# Refusal helpers (structured logging + the refusal, written once)
 # ---------------------------------------------------------------------------
 
 
 def raise_node_not_found(node_id: str) -> NoReturn:
     """Raise 404 for a missing node, with structured logging."""
     logger.warning("node_not_found", node_id=node_id)
-    raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
+    raise NotFoundError(f"Node '{node_id}' not found")
 
 
 def raise_node_type_error(node_id: str, expected: str, got: str) -> NoReturn:
     """Raise 400 for a node type mismatch, with structured logging."""
     logger.warning("node_type_mismatch", node_id=node_id, expected=expected, got=got)
-    raise HTTPException(
-        status_code=400,
-        detail=f"Node '{node_id}' is not a {expected} node (got {got})",
-    )
+    raise InvalidRequestError(f"Node '{node_id}' is not a {expected} node (got {got})")
 
 
 def raise_pipeline_not_found(name: str) -> NoReturn:
     """Raise 404 for a missing pipeline, with structured logging."""
     logger.warning("pipeline_not_found", name=name)
-    raise HTTPException(status_code=404, detail=f"Pipeline '{name}' not found")
+    raise NotFoundError(f"Pipeline '{name}' not found")
 
 
 def find_typed_node(
@@ -157,8 +154,8 @@ def find_typed_node(
 ) -> GraphNode:
     """Find a node by ID and verify its ``nodeType``.
 
-    Raises ``HTTPException(404)`` if the node is missing, or
-    ``HTTPException(400)`` if it has the wrong type.
+    Raises ``NotFoundError`` (404) if the node is missing, or
+    ``InvalidRequestError`` (400) if it has the wrong type.
 
     Parameters
     ----------

@@ -23,7 +23,12 @@ from haute._git import GitError
 from haute._logging import get_logger
 from haute._pipeline_settings import PipelineSettingsError
 from haute._workbench_config import WorkbenchError
-from haute.errors import InvalidPathError, ParseError, PathOutsideProjectError
+from haute.errors import (
+    InvalidPathError,
+    ParseError,
+    PathOutsideProjectError,
+    RequestRefusedError,
+)
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_http_exception,
@@ -83,6 +88,14 @@ async def _parse_error_handler(request: Request, exc: Exception) -> Response:
     return await _respond(request, exc, HTTPException(status_code=400, detail=str(exc)))
 
 
+async def _request_refused_handler(request: Request, exc: Exception) -> Response:
+    # A service's refusal says its own status and detail; services never raise HTTP types.
+    refused = cast(RequestRefusedError, exc)
+    return await _respond(
+        request, exc, HTTPException(status_code=refused.status_code, detail=refused.detail)
+    )
+
+
 async def _path_error_handler(request: Request, exc: Exception) -> Response:
     # The detail is the bare message: the refused path stays in the log context.
     status_code = 400 if isinstance(exc, InvalidPathError) else 403
@@ -101,5 +114,6 @@ def install_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(PipelineSettingsError, _pipeline_settings_error_handler)
     app.add_exception_handler(WorkbenchError, _workbench_error_handler)
     app.add_exception_handler(ParseError, _parse_error_handler)
+    app.add_exception_handler(RequestRefusedError, _request_refused_handler)
     for path_error_type in (PathOutsideProjectError, InvalidPathError):
         app.add_exception_handler(path_error_type, _path_error_handler)

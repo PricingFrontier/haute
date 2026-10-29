@@ -358,7 +358,7 @@ root used by the deploy modules, the underwriter app and the server
 (`PCFG-R04`); the SPA path containment and the build hook's asset containment
 (`SBX-R01`); the
 three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`);
-`HTTPException` raised from service modules (`API-R02`) and the hand-maintained
+the hand-maintained
 browser contract (`API-R03`); the cwd-dependent resolvers in the routes and the
 parser (`PCFG-R04`), editor state inside the config (`PCFG-R08`), the per-type
 validators and branches (`PCFG-R07`, `PCFG-R09`); name-violation reporting
@@ -370,8 +370,7 @@ not cancelled at shutdown (`ROAD-WORKER-06`); the test-only
 their budget
 (`MOD-M01`, `MOD-M02`); two trace inconsistencies that
 vanish with node-level instances (`SUB-R01`); the git routes' and the
-assistant's current-directory project root (`PCFG-R04`); the Databricks client
-factory's and the save service's `HTTPException`s (`API-R02`); the assistant's
+assistant's current-directory project root (`PCFG-R04`); the assistant's
 own containment comparisons (`SBX-R01`); the assistant catalog's hand tables and
 key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
 (`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the API

@@ -16,9 +16,9 @@ from unittest.mock import patch
 
 import polars as pl
 import pytest
-from fastapi import HTTPException
 
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from haute.errors import RequestRefusedError
 from haute.routes._optimiser_artifacts import (
     _APPLY_ARTIFACT_DIR_PREFIX,
     _APPLY_RESULT_FILENAME,
@@ -190,7 +190,7 @@ def test_load_rejects_corrupt_parquet() -> None:
         # Corrupt the artifact in place — it remains under the owned root so
         # validation passes and the read_parquet failure arm is exercised.
         Path(str(handle["path"])).write_bytes(b"not a parquet file")
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             _scan_apply_result_artifact(handle)
         assert exc_info.value.status_code == 500
         assert "corrupt" in str(exc_info.value.detail)
@@ -205,7 +205,7 @@ def test_load_reports_missing_artifact() -> None:
     assert handle is not None
     try:
         Path(str(handle["path"])).unlink()
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             _scan_apply_result_artifact(handle)
         assert exc_info.value.status_code == 410
         assert exc_info.value.detail == (
@@ -412,7 +412,7 @@ def test_validate_ratebook_factors_rejects_wrong_filename() -> None:
 def test_load_ratebook_factors_rejects_invalid_handle() -> None:
     """An invalid (relative-path) handle surfaces as a 500, not a raw ValueError."""
     bad = _factors_handle(directory="relative", path="relative/factors.parquet")
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         _load_ratebook_factors_artifact(bad)
     assert exc_info.value.status_code == 500
     assert exc_info.value.detail == (
@@ -427,7 +427,7 @@ def test_load_ratebook_factors_reports_missing_artifact() -> None:
     assert handle is not None
     try:
         Path(str(handle["path"])).unlink()
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             _load_ratebook_factors_artifact(handle)
         assert exc_info.value.status_code == 410
         assert exc_info.value.detail == (
@@ -444,7 +444,7 @@ def test_load_ratebook_factors_rejects_corrupt_parquet() -> None:
     assert handle is not None
     try:
         Path(str(handle["path"])).write_bytes(b"not a parquet file")
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             _load_ratebook_factors_artifact(handle)
         assert exc_info.value.status_code == 500
         assert "corrupt" in str(exc_info.value.detail)
@@ -455,7 +455,7 @@ def test_load_ratebook_factors_rejects_corrupt_parquet() -> None:
 def test_scan_ratebook_factors_rejects_invalid_handle() -> None:
     """The lazy-scan helper also maps a bad handle to a 500."""
     bad = _factors_handle(directory="relative", path="relative/factors.parquet")
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         _scan_ratebook_factors_artifact(bad)
     assert exc_info.value.status_code == 500
     assert exc_info.value.detail == (
@@ -470,7 +470,7 @@ def test_scan_ratebook_factors_reports_missing_artifact() -> None:
     assert handle is not None
     try:
         Path(str(handle["path"])).unlink()
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             _scan_ratebook_factors_artifact(handle)
         assert exc_info.value.status_code == 410
         assert exc_info.value.detail == (

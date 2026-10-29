@@ -17,9 +17,9 @@ from typing import Any
 import numpy as np
 import polars as pl
 import pytest
-from fastapi import HTTPException
 from pydantic import ValidationError
 
+from haute.errors import RequestRefusedError
 from haute.routes._optimiser_outcomes import (
     ANALYSIS_ROW_PRESENT_COLUMN,
     DEPLOYED_FACTOR_DIFFERS,
@@ -281,7 +281,7 @@ class TestRefusedWeightings:
 
     def test_an_unknown_weight_is_refused(self) -> None:
         reducer = AnalysisSegments(column="region", binning="categorical", weight="optimal_price")
-        with pytest.raises(HTTPException) as refused:
+        with pytest.raises(RequestRefusedError) as refused:
             reducer.validate(_spec())
         assert refused.value.status_code == 400
 

@@ -45,6 +45,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
+from haute.errors import RequestRefusedError
 from tests.conftest import current_source_revision, make_file_input_config
 
 
@@ -419,7 +420,6 @@ class TestGraphToCodeMultiPathTraversal:
         """A crafted file path coming from graph_to_code_multi must cause
         the save to fail loudly — not silently skip the file.
         """
-        from fastapi import HTTPException
 
         from haute.routes._save_pipeline import SavePipelineService
         from haute.schemas import SavePipelineRequest
@@ -446,7 +446,7 @@ class TestGraphToCodeMultiPathTraversal:
             "haute.codegen.graph_to_code_multi",
             return_value=malicious_files,
         ):
-            with pytest.raises(HTTPException) as exc_info:
+            with pytest.raises(RequestRefusedError) as exc_info:
                 svc.save(req)
 
         # After fix: the response must be a 4xx with a clear message.

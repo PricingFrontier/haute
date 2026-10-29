@@ -15,8 +15,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from fastapi import HTTPException
-
+from haute.errors import ConflictError
 from haute.routes._job_store import JobStore
 
 MAX_RECEIPTS_PER_KIND = 20
@@ -73,7 +72,7 @@ def single_flight_mlflow_log(job_id: str) -> Iterator[None]:
     """Run at most one MLflow log of a training job at a time.
 
     Raises:
-        HTTPException: ``409`` with ``error_code`` ``mlflow_log_in_progress`` when
+        ConflictError: ``409`` with ``error_code`` ``mlflow_log_in_progress`` when
             another log of the same job is still running.
     """
     with _LOGS_IN_FLIGHT_LOCK:
@@ -85,7 +84,7 @@ def single_flight_mlflow_log(job_id: str) -> Iterator[None]:
                     "log to finish before logging it again."
                 ),
             }
-            raise HTTPException(status_code=409, detail=in_progress)
+            raise ConflictError(in_progress)
         _LOGS_IN_FLIGHT.add(job_id)
     try:
         yield

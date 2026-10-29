@@ -11,13 +11,12 @@ from __future__ import annotations
 import inspect
 
 import pytest
-from fastapi import HTTPException
 from mlflow.exceptions import MlflowException
 
 from haute._config_builder import _build_node_config
 from haute._contracts import Contract
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
-from haute.errors import ConfigError
+from haute.errors import ConfigError, RequestRefusedError
 
 _EVALUATION = {
     "schema_version": 1,
@@ -115,7 +114,7 @@ def test_the_removed_split_fields_are_rejected_by_one_check_for_training_and_the
 
     with pytest.raises(TrainingConfigError) as built:
         build_training_job_kwargs(config, data="data.parquet")
-    with pytest.raises(HTTPException) as routed:
+    with pytest.raises(RequestRefusedError) as routed:
         TrainService._validate_config(config)
 
     assert str(built.value) == message

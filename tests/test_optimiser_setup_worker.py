@@ -31,6 +31,7 @@ from haute._worker_isolation import (
     IsolatedWorkerStoppedError,
     IsolatedWorkerTimeoutError,
 )
+from haute.errors import InvalidRequestError, RequestRefusedError, UnprocessableError
 from haute.routes import _optimiser_artifacts, _optimiser_service, _optimiser_worker
 from haute.routes._background_jobs import BackgroundJobStoppedError
 from haute.routes._job_store import JobStore, get_job_store
@@ -578,7 +579,7 @@ class TestWorkerOutcomes:
         thread_job = thread_service._store.create_job(
             {"status": "running", "job_type": "frontier_auto_range"}
         )
-        with pytest.raises(HTTPException):
+        with pytest.raises(RequestRefusedError):
             thread_service._run_frontier_auto_range_job(body, thread_job, **prepared)
         expected = thread_service._store.require_job(thread_job)
 
@@ -731,7 +732,7 @@ class TestWorkerOutcomes:
             return handle
 
         def failing_write(self, *args: Any, **kwargs: Any) -> tuple[str, bool]:
-            raise HTTPException(status_code=422, detail="solver input could not be written")
+            raise UnprocessableError("solver input could not be written")
 
         monkeypatch.setattr(
             _optimiser_artifacts, "_persist_ratebook_factors_lazy_artifact", recording_persist
@@ -753,7 +754,7 @@ class TestWorkerOutcomes:
         monkeypatch.setattr(_optimiser_service, "run_isolated_worker", worker)
 
         def failing_write(self, *args: Any, **kwargs: Any) -> tuple[str, bool]:
-            raise HTTPException(status_code=422, detail="solver input could not be written")
+            raise UnprocessableError("solver input could not be written")
 
         monkeypatch.setattr(OptimiserSolveService, "_write_solver_input", failing_write)
 
@@ -1012,11 +1013,11 @@ class TestFailureRecords:
                 "memory_limited",
                 507,
             ),
-            (HTTPException(status_code=400, detail="bad config"), "contract_error", 400),
-            (HTTPException(status_code=503, detail="unavailable"), "error", 503),
+            (InvalidRequestError("bad config"), "contract_error", 400),
+            (RequestRefusedError("unavailable", status_code=503), "error", 503),
             (RuntimeError("plan changed"), "error", 500),
         ],
-        ids=["admission", "http_4xx", "http_5xx", "unexpected"],
+        ids=["admission", "refused_4xx", "refused_5xx", "unexpected"],
     )
     def test_a_failure_before_any_job_mapping_is_classified_in_the_child(
         self, exc: BaseException, terminal_reason: str, status_code: int
@@ -1066,7 +1067,7 @@ class TestPrivateRecords:
         service._store.atomic_update(job_id, {"start_time": time.monotonic()})
 
         if fails:
-            with pytest.raises(HTTPException):
+            with pytest.raises(RequestRefusedError):
                 service._run_frontier_auto_range_job(body, job_id, **prepared)
         else:
             service._run_frontier_auto_range_job(body, job_id, **prepared)
@@ -1107,7 +1108,7 @@ def test_a_self_admitted_auto_range_job_returns_its_admission_when_it_fails(
     assert held() == []
     gc.disable()
     try:
-        with pytest.raises(HTTPException) as raised:
+        with pytest.raises(RequestRefusedError) as raised:
             service._run_frontier_auto_range_job(body, job_id, **prepared)
         assert raised.value.status_code == 400
         assert held() == []
