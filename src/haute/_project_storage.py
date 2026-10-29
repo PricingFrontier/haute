@@ -534,7 +534,12 @@ def _classify_push_failure(exc: Exception) -> tuple[FailureClass, str, bool]:
     Messages name the object and the action, never raw git stderr — which
     routinely carries the remote URL and any credential inside it.
     """
-    from haute._git import GitBootstrapIncompleteError, GitDomainError, GitPushRejectedError
+    from haute._git import (
+        GitBootstrapIncompleteError,
+        GitDomainError,
+        GitPushRejectedError,
+        GitRemoteUnavailableError,
+    )
 
     if isinstance(exc, StorageSupersededError):
         # The uc:// analogue of a rejected push: someone else moved the
@@ -560,9 +565,11 @@ def _classify_push_failure(exc: Exception) -> tuple[FailureClass, str, bool]:
         # Hand-authored and resumable: the remote now holds only this project's
         # default, so the next publish completes it as an established push.
         return "transport", str(exc), False
-    if isinstance(exc, GitDomainError):
+    if isinstance(exc, GitDomainError) and not isinstance(exc, GitRemoteUnavailableError):
         # Hand-authored, already user-facing (guardrail and validation text).
         return "config", str(exc), True
+    # An unreachable remote or refused credentials, like any raw transport failure,
+    # is retried on the next save.
     return (
         "transport",
         "Could not reach the project's remote. Saves are kept locally and will "

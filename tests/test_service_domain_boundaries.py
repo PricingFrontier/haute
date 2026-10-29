@@ -153,6 +153,7 @@ def test_git_facade_is_declaration_only_and_public_imports_stay_stable() -> None
         "GitMilestoneForkError",
         "GitPrefs",
         "GitPushRejectedError",
+        "GitRemoteUnavailableError",
         "GitTransactionError",
         "adopt_cloned_lineage",
         "archive_commit",

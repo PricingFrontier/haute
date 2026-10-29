@@ -399,6 +399,27 @@ class TestHistoricalPipelineReads:
         with pytest.raises(GitHistoryReadError, match="could not be parsed"):
             commit_pipeline_graph("HEAD", "rating.py")
 
+    def test_an_unreadable_history_is_an_error_not_an_empty_branch(self, repo: Path) -> None:
+        """A first-parent walk git cannot finish returned an empty, successful list, so a
+        damaged repository read as a branch with no milestones and no saves."""
+        set_working_branch(WORKING, repo, cwd=repo)
+        for version in ("v2", "v3"):
+            (repo / "rating.py").write_text(f"# {version}\n")
+            assert commit_save(["rating.py"], WORKING, cwd=repo, message=version)
+            git_mod.commit_milestone(version, repo, cwd=repo)
+        (repo / "rating.py").write_text("# v4\n")
+        assert commit_save(["rating.py"], WORKING, cwd=repo, message="v4")
+        git_core._clear_content_caches()
+        # The milestone before the tip, and the save before the pending one.
+        for missing in (f"{WORKING}~1", f"{WORKING}-save~1"):
+            sha = _git(repo, "rev-parse", missing)
+            (repo / ".git" / "objects" / sha[:2] / sha[2:]).unlink()
+
+        with pytest.raises(GitHistoryReadError, match="history could not be read"):
+            git_mod.working_milestones(repo, cwd=repo)
+        with pytest.raises(GitHistoryReadError, match="history could not be read"):
+            git_mod.pending_ledger_saves(repo, cwd=repo)
+
     def test_malformed_archive_is_a_typed_history_failure(
         self,
         tmp_path: Path,

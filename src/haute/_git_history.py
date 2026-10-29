@@ -51,6 +51,10 @@ logger = get_logger(component="git")
 _HISTORY_ARCHIVE_MAX_MEMBERS = 10_000
 _HISTORY_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024
 _SAVE_RECORD_SEP = "\x1e"
+_HISTORY_UNREADABLE = (
+    "This branch's history could not be read. The repository may be damaged; "
+    "the Haute server log has git's reason."
+)
 
 
 __all__ = [
@@ -95,8 +99,8 @@ def working_milestones(
     # commits, which hang off each merge's second parent).
     try:
         rows = _graph_log_cached(tip, limit, str(cwd) if cwd else "")
-    except GitError:
-        return GitMilestonesResponse(working_branch=working, entries=[])
+    except GitError as exc:
+        raise GitHistoryReadError(_HISTORY_UNREADABLE) from exc
 
     # ONE batched tag read for the whole page instead of a per-row
     # ``tag --points-at`` (the N+1 that dominated this endpoint).
@@ -328,17 +332,20 @@ def _parse_ledger_saves(range_spec: str, cwd: Path | None = None) -> list[GitLed
     # (e.g. a unicode config filename), which would surface as a mangled path in
     # the history view. haute-owned paths never contain spaces/tabs/newlines
     # (sanitized identifiers), which git would still quote regardless.
-    ok, raw = _run_git_ok(
-        "-c",
-        "core.quotepath=false",
-        "log",
-        "-M",
-        "--name-status",
-        f"--format={_SAVE_RECORD_SEP}%H%x00%h%x00%aI%x00%s",
-        range_spec,
-        cwd=cwd,
-    )
-    if not ok or not raw:
+    try:
+        raw = _run_git(
+            "-c",
+            "core.quotepath=false",
+            "log",
+            "-M",
+            "--name-status",
+            f"--format={_SAVE_RECORD_SEP}%H%x00%h%x00%aI%x00%s",
+            range_spec,
+            cwd=cwd,
+        )
+    except GitError as exc:
+        raise GitHistoryReadError(_HISTORY_UNREADABLE) from exc
+    if not raw:
         return []
 
     saves: list[GitLedgerSave] = []

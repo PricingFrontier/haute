@@ -118,21 +118,24 @@ class TestMilestoneLabels:
         assert res.working_branch == "pricing-ghost"
         assert res.entries == []
 
-    def test_unreadable_log_degrades_empty_and_is_not_cached(
+    def test_unreadable_log_is_an_error_and_is_not_cached(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        from haute._git import GitError, GitHistoryReadError
+
         _save(repo, WORKING, "m1")
         _milestone(repo, "Milestone 1")
 
-        real_ok = git_core._run_git_ok
+        real_run = git_core._run_git
 
         def failing_log(*args, **kwargs):
             if args and args[0] == "log":
-                return (False, "")
-            return real_ok(*args, **kwargs)
+                raise GitError("fatal: unable to read history")
+            return real_run(*args, **kwargs)
 
-        monkeypatch.setattr(git_core, "_run_git_ok", failing_log)
-        assert working_milestones(repo, cwd=repo).entries == []
+        monkeypatch.setattr(git_core, "_run_git", failing_log)
+        with pytest.raises(GitHistoryReadError):
+            working_milestones(repo, cwd=repo)
         # The failure was never memoised: with git healthy again, the same
         # (tip, limit) key serves the real page.
         monkeypatch.undo()

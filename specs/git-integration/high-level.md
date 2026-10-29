@@ -100,7 +100,13 @@ directly — any attempt raises a guardrail error, distinguished from an ordinar
 error so the HTTP layer can return 403. Save ledgers cannot be chosen as a working branch.
 Any user-supplied ref name (branch name, SHA, tag label) is validated against a
 denylist of characters that could be interpreted as a CLI flag or contain control
-characters, closing an argument-injection path from user input into the `git` CLI.
+characters, closing an argument-injection path from user input into the `git` CLI. A
+branch name the analyst types is refused before any ref is made when git could not use
+it, naming the rule it breaks (a space, `..`, a part starting with `.` or ending in
+`.lock`, `//`, a trailing `/`, `@{`); git's own `check-ref-format --branch` decides.
+While a merge, rebase, cherry-pick or revert started outside Haute is in progress, a save's
+capture, a milestone, a restore, Catch up and Spin off each refuse with that reason rather
+than git's own; the save itself still lands on disk, its capture warning saying why.
 
 **Deliberate remote interaction.** No remote mutation or publication happens during `haute
 init`, `haute serve`, or working-branch creation. Those stages may scaffold files, establish
@@ -112,12 +118,22 @@ Push that first publishes a project to a GitHub repository sets the ones it lack
 Push only reports them, and the push panel's Set from .env is the other explicit action that
 sets them ([cli](../cli/high-level.md)).
 
-Before that push, Haute strictly inspects the selected remote with terminal and SSH prompts
-disabled and a hard timeout. Only a successful advertisement containing zero object refs
-means "empty"; an unborn symbolic `HEAD` alone is still empty, while any branch or tag makes
-the remote non-empty. Timeout, authentication/network failure, or an unreadable
-advertisement is an inspection failure and refuses the push rather than being treated as an
-empty remote. An empty remote first receives the resolved default branch on its own, then
+Every deliberate remote command runs its transport noninteractively and against a deadline:
+no stdin, no terminal (POSIX), no OpenSSH askpass or Git terminal prompt, and at the deadline
+the whole process tree it started is ended, the transport's children included, on Windows
+too. A transport the analyst configured (`GIT_SSH_COMMAND`, `core.sshCommand` or `GIT_SSH`,
+in Git's order) runs exactly as configured, so an ssh remote that works in the shell works
+in Haute; Haute's batch-mode OpenSSH command applies only when none is configured, and it
+never appends OpenSSH options to another command, which OpenSSH would ignore (the first value
+of an option wins) and a wrapper or Plink may not understand.
+
+Before that push, Haute strictly inspects the selected remote. Only a successful
+advertisement containing zero object refs means "empty"; an unborn symbolic `HEAD` alone is
+still empty, while any branch or tag makes the remote non-empty. Timeout, authentication or
+network failure, or an unreadable advertisement is an inspection failure and refuses the
+push rather than being treated as an empty remote. A remote that cannot be reached answers
+as Catch up and Spin off do: "Could not refresh '<remote>'. Check your connection or
+credentials and try again." An empty remote first receives the resolved default branch on its own, then
 the working branch and the save ledger when it exists in one atomic push, so the merge
 target is created as the work is shared. The first push carries the default alone because
 GitHub never triggers workflows in a repository whose first push created several branches. A
@@ -133,7 +149,9 @@ branch. A non-empty remote missing the expected default, an unrelated default hi
 an inspection/fetch failure refuses before publication; the atomic push guarantees that a
 later ref rejection cannot leave only part of the submitted set behind. The push subprocess
 itself is prompt-proof and time-bounded, so a wedged transport cannot retain the repository
-mutation lock indefinitely; timeout or launch failure becomes a sanitized Git error. A
+mutation lock indefinitely; a timeout, launch failure or transport error answers "Could not
+push to '<remote>'. Check your connection or credentials and try again.", and a remote that
+refuses the refs (a branch rule, missing write access) says it refused the push. A
 working/ledger non-fast-forward rejection still surfaces as a structured "fork" the UI can
 explain (which leg diverged, by how much) rather than a dead-end error. No path force-pushes.
 
@@ -355,9 +373,13 @@ subclass of the project-wide `HauteError`):
 - **`GitTransactionError`** — a `GitDomainError` subtype used when a mutation failed and
   one or more compensating steps also failed. Its safe message tells the user that repository
   repair may be required; the original and rollback failures remain server-side.
-- **`GitHistoryReadError`** — a `GitDomainError` subtype for a malformed archive or a
-  historical tree that cannot produce a pipeline graph. It is a failed read, never an empty
-  successful graph.
+- **`GitHistoryReadError`** — a `GitDomainError` subtype for a history git cannot read, a
+  malformed archive, or a historical tree that cannot produce a pipeline graph. It is a
+  failed read, never an empty successful list or graph.
+- **`GitRemoteUnavailableError`** — a `GitDomainError` subtype for a deliberate remote read
+  or push that could not reach the remote: a timeout, an authentication or network failure,
+  or a transport that would not start. Its message names the remote and the remedy; git's
+  stderr stays in the log. Hosted publishing retries it like any transport failure.
 - **`GitFilesInUseError`** — a `GitDomainError` subtype carrying the files a tree-rewriting
   command could not write because another program holds them open. HTTP 400 with its
   message, which names at most five of them.
@@ -378,7 +400,9 @@ detail constant, logged with a stack trace.
 
 This codebase prefers loud failure over silent fallbacks. Consistent with that: an
 unreadable object never populates a cache (every cached helper raises rather than memoizing
-a failure); a `_wipe_volatile_artefacts` failure is logged but not fatal, because volatile
+a failure); a milestone list or a set of saves git cannot read is a `GitHistoryReadError`,
+never an empty, successful branch; a save whose status check fails is an error, never "nothing
+changed"; a `_wipe_volatile_artefacts` failure is logged but not fatal, because volatile
 caches are reconstructable by definition; and no routine read starts a network operation.
 Deliberate remote operations abort on a required refresh/inspection failure and never
 degrade to an assumed-empty, assumed-related, or successfully-updated remote.

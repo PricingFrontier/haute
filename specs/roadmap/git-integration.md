@@ -18,7 +18,6 @@ and return cycles and made and deleted two branches between 13:14 and 13:36.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| GIT-R02 | Planned | P2 | Every git failure the analyst can act on is answered with its reason: an invalid typed branch name, a push or fetch that times out or fails authentication, an unreadable history, a save during an in-progress git operation, and an SSH command of the user's own. |
 | GIT-R03 | Planned | P2 | Deleting the active pair without confirmation keeps a dirty tree, and the first commit never seeds a virtual environment. |
 | GIT-R04 | Planned | P3 | Commit context and historical extraction pass their SHAs and paths through stdin, so a long branch or a large commit does not fail on Windows' command-line limit. |
 | GIT-R05 | Planned | P3 | The git modules carry no dead symbols, one free-name finder and one compensation helper. |
@@ -29,64 +28,6 @@ and return cycles and made and deleted two branches between 13:14 and 13:36.
 | GIT-R18 | Planned | P2 | A rejected push's Catch up and Spin off actions stay bound to that rejection's remote. |
 
 ## Planned improvements
-
-### GIT-R02 — Git failures the analyst can act on
-**Why:** A typed branch name git refuses but `_validate_ref_name` admits (a
-space, `..`, `.lock`, a leading `.`, `//`, a trailing `/`, `@{`) is answered
-"Operation failed. Check the server logs for details." (probed with seven such
-names), while the stricter `check-ref-format --branch` validation exists and is
-used only by push. A push whose remote inspection or default-branch fetch times
-out, fails authentication or cannot launch is answered the same sanitized text,
-while Catch up and Spin off report the identical failure as "Could not refresh
-'origin'. Check your connection or credentials and try again." `_remote_env`
-sets `GIT_SSH_COMMAND` unconditionally, so a user's `core.sshCommand`, `GIT_SSH`
-or `GIT_SSH_COMMAND` (a specific key, a jump host) is discarded and an SSH remote
-that works in the shell fails in Haute with the sanitized message. An unreadable
-history (`git log` failing for a resolved tip) is returned as an empty,
-successful milestone list. Saves and milestones do not check for an in-progress
-merge, rebase or cherry-pick, so every canvas save then fails with the sanitized
-"cannot do a partial commit during a merge" while restore, catch-up and spin-off
-refuse with the hand-written reason. `commit_save` reads a failed `git status` as
-"nothing changed" and returns no save, so a failing status check skips the capture
-without a word.
-
-**Plan:** Validate typed names with `git check-ref-format --branch` and raise
-`GitDomainError` naming the rule; raise `GitDomainError` with the refresh
-message for inspection, fetch and push timeouts, launch failures and non-zero
-exits, keeping stderr in the log. Preserve the configured `core.sshCommand`, `GIT_SSH`
-or `GIT_SSH_COMMAND` and Git's precedence; set Haute's default OpenSSH command only
-when none is configured. Do not append OpenSSH flags to arbitrary commands: the first
-OpenSSH option wins, and a wrapper or Plink can use different syntax. Prevent prompts
-at the process boundary with closed stdin (`DEVNULL`), no controlling terminal where
-supported, `GIT_TERMINAL_PROMPT=0` and disabled OpenSSH askpass. Apply an outer deadline
-to inspection, fetch and push, and clean up the launched transport process tree on
-timeout, including on Windows. A custom transport must obey the noninteractive
-contract; an outer deadline bounds a transport that hangs rather than proving it
-honours OpenSSH environment settings. Let the history error propagate; call
-`_assert_no_git_op_in_progress` at the top of
-`commit_save` and `commit_milestone`, and let a failed status check in `commit_save`
-raise rather than return no save.
-
-**Acceptance:** `my branch` is refused naming the rule; a push against an
-unreachable remote answers the refresh message. Behavioural subprocess tests show a
-configured command reaches Git unchanged, including conflicting OpenSSH options and
-a non-OpenSSH wrapper; the wrapper receives no injected OpenSSH flags. A prompting or
-hanging fake transport is terminated with its children within the deadline and reports
-the refresh message. A corrupt object store
-answers an error, not an empty list; a save during a merge answers the
-in-progress message; a save whose status check fails answers an error.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_git_core.py::_validate_ref_name`;
-`src/haute/_git_core.py::_validate_managed_working_branch`;
-`src/haute/_git_core.py::_remote_env`;
-`src/haute/_git_core.py::_assert_no_git_op_in_progress`;
-`src/haute/_git_remote.py::_inspect_remote`;
-`src/haute/_git_remote.py::_fetch_expected_default`;
-`src/haute/_git_remote.py::push_working_pair`;
-`src/haute/_git_history.py::working_milestones`;
-`src/haute/_git_transactions.py::commit_save`.
 
 ### GIT-R03 — A dirty tree and a virtual environment
 **Why:** `delete_working_pair` passes `discard=True` to the switch-away whenever

@@ -169,8 +169,8 @@ class TestGitUndelete:
         res = client.post("/api/git/undelete", json={"id": entry_id, "as_name": "feat old"})
         assert res.status_code == 400
         assert res.json()["detail"] == (
-            "'feat old' can't be used as a branch name. "
-            "Use letters, numbers, dashes and slashes, with no spaces."
+            "'feat old' can't be used as a branch name: it contains a space. "
+            "Use letters, numbers, dashes and slashes."
         )
 
         res = client.post(
@@ -337,6 +337,17 @@ class TestGitCreateWorkingBranch:
             json={"name": "pricing/test-user/x", "move": True, "switch": True},
         )
         assert res.status_code == 400
+
+    def test_a_typed_name_git_cannot_use_is_refused_naming_the_rule(
+        self, client: TestClient
+    ) -> None:
+        self._adopt(client)
+        res = client.post("/api/git/working-branches", json={"name": "my branch"})
+        assert res.status_code == 400
+        assert res.json()["detail"] == (
+            "'my branch' can't be used as a branch name: it contains a space. "
+            "Use letters, numbers, dashes and slashes."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -707,6 +718,21 @@ class TestGitRemotesAndPush:
         assert response.status_code == 400
         assert response.json()["detail"] == _INTERNAL_ERROR_DETAIL
         assert "token-secret" not in response.text
+
+    def test_push_against_an_unreachable_remote_answers_the_refresh_message(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """Push reported a remote it could not reach as "Operation failed", while Catch up
+        and Spin off said why; it now says the same as they do."""
+        self._adopt(client)
+        _git(tmp_path, "remote", "add", "origin", str(tmp_path / "missing.git"))
+
+        res = client.post("/api/git/push", json={"remote": "origin"})
+
+        assert res.status_code == 400
+        assert res.json()["detail"] == (
+            "Could not refresh 'origin'. Check your connection or credentials and try again."
+        )
 
     def test_push_to_unknown_remote_returns_400(self, client: TestClient, tmp_path: Path) -> None:
         self._adopt(client)

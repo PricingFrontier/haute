@@ -13,6 +13,7 @@ from haute._git_core import (
     GitTransactionError,
     _assert_eligible_working,
     _assert_git_repo,
+    _assert_new_branch_name,
     _clear_content_caches,
     _get_current_branch,
     _is_ancestor,
@@ -220,6 +221,8 @@ def set_working_branch(
     )
 
     _assert_git_repo(cwd)
+    if create:
+        _assert_new_branch_name(branch, cwd=cwd)
     _validate_ref_name(branch)
     _assert_eligible_working(branch)
 
