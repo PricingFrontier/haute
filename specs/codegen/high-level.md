@@ -334,7 +334,10 @@ Out of scope (owned by neighbouring components):
   the regenerated `import haute` does not bind its names. `_ast_helpers.unkept_module_statements` finds each one, and the editor document
   reports it as an `unkept_module_statement` diagnostic naming its lines and the two fixes (move
   it between the imports and the constructor, or wrap it in preserve markers), which degrades
-  the document, so the file is never regenerated without it.
+  the document, so the file is never regenerated without it. A save regenerates each
+  registered submodel file the same way, from `submodel = haute.Submodel(...)` on, so the
+  same check runs over every submodel file the pipeline's parse reads, and its diagnostics
+  name that file and the submodel constructor.
 
   A pipeline file's imports from `modules` are neither kept nor preamble: codegen writes them
   from the registrations (`_ast_helpers.is_submodel_import` recognises every spelling,
