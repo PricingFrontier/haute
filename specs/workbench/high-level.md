@@ -2231,10 +2231,11 @@ Out of scope:
   after its table or remove it"), or holds no rows; a layout file places a section or
   component its sheet does not hold, or leaves one out; `version` is not 1; the folder
   changed each of three times it was read ("<folder> changed while it was being read: try
-  again"). Nor is a section that a component reaches below (its `y` plus its
-  `h` above the section's `height`) a form: the message names the section and the
-  component; nor a sheet a component reaches past (its `x` plus its `w` above the sheet's
-  `width`): the message names the sheet and the component. A fetch of the tables that fails shows one
+  again"). A section that a component reaches below (its `y` plus its `h` above the
+  section's `height`), or a sheet one reaches past (its `x` plus its `w` above the
+  sheet's `width`), as a merge or an edit by hand can leave them, is grown to hold it
+  as the folder is read, nothing moved, and the editor says what grew; a save of a form
+  laid out so is refused, naming the section or the sheet and the component. A fetch of the tables that fails shows one
   error toast and changes no Workbench Input or Workbench Output; a fetch made for an
   earlier document never changes the current one, and an update it started that is still
   waiting on identity resolution is dropped with the commit controller's usual message. A

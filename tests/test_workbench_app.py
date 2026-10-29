@@ -30,11 +30,12 @@ from haute._workbench_form import (
     QUOTE_DETAILS_COLUMNS,
     FormSpec,
     OptionsSource,
+    WorkbenchFormError,
     form_revision,
-    render_form,
 )
 from haute.deploy._utils import shipped_graph
 from haute.execution import ExecutionProfile
+from tests._workbench_helpers import form_files, write_files
 from tests.test_workbench_routes import POLICY, PRICING, form
 
 FORM = form(POLICY, PRICING, sample={"t1": [{"c_state": "NY", "c_exposure": "1000"}]})
@@ -556,7 +557,6 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         encoding="utf-8",
     )
     _write(with_details_copy(_priced()), tmp_path, "main")
-    (tmp_path / "forms").mkdir()
     write_sheets(tmp_path, PROJECT_TABLES)
     yield tmp_path
     set_project_root(original)
@@ -586,8 +586,14 @@ def with_details_copy(graph: PipelineGraph) -> PipelineGraph:
 
 
 def write_sheets(project: Path, tables: list[dict[str, Any]]) -> None:
+    """The project's form folder, the root pipeline's ``workbench/``, holding *tables*."""
+    import shutil
+
     spec = FormSpec.model_validate({**form(), "name": "motor", "schema": {"tables": tables}})
-    (project / "forms" / "form.json").write_bytes(render_form(spec).encode("utf-8"))
+    folder = project / "workbench"
+    if folder.exists():
+        shutil.rmtree(folder)
+    write_files(folder, form_files(spec, folder))
 
 
 def test_a_project_builds_a_release_that_prices_as_its_pipeline(project: Path) -> None:
@@ -641,7 +647,7 @@ def test_the_same_project_checked_out_twice_builds_the_same_release(
     import shutil
 
     other = tmp_path_factory.mktemp("checkout")
-    for name in ("haute.toml", "main.py", "forms", "config"):
+    for name in ("haute.toml", "main.py", "workbench", "config"):
         source = project / name
         if source.is_dir():
             shutil.copytree(source, other / name)
@@ -753,7 +759,7 @@ def test_a_release_allows_what_its_params_files_hold_when_it_is_built(
     with pytest.raises(WorkbenchAppError) as caught:
         build_release(project, project / "build" / "app")
     assert str(caught.value) == (
-        "forms/form.json: The allowed values of policy.state could not be read again: "
+        "workbench: The allowed values of policy.state could not be read again: "
         "rating/files/params/states.csv doesn't exist."
     )
     assert read_release(project / "build" / "app")[1].data_schema.tables[1].columns[2] == shipped
@@ -778,8 +784,12 @@ def test_a_release_is_refused_for_what_the_project_cannot_ship(project: Path) ->
     assert "The pipeline did not validate" in refused()
     assert "tax" in refused()
 
-    (project / "forms" / "form.json").unlink()
-    assert "has never been saved" in refused()
+    # A folder gone is restored from version history, never built from a blank form.
+    import shutil
+
+    shutil.rmtree(project / "workbench")
+    with pytest.raises(WorkbenchFormError, match="^workbench does not exist: restore it"):
+        build_release(project, project / "build" / "app")
 
     (project / "haute.toml").write_text("[workbench]\nenabled = false\n", encoding="utf-8")
     assert "has no workbench" in refused()

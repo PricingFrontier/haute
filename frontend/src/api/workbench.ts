@@ -69,7 +69,7 @@ export async function fetchWorkbenchForm(): Promise<WorkbenchFormResponse> {
  * left as it is. A save that lands answers the form with its new revision and what its
  * capture on the save ledger gave, as the pipeline's save does.
  */
-export async function saveWorkbenchForm(form: FormSpec, baseRevision: string | null): Promise<WorkbenchFormSaveResponse> {
+export async function saveWorkbenchForm(form: FormSpec, baseRevision: string): Promise<WorkbenchFormSaveResponse> {
   const data = await request<unknown>("/api/workbench/form", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },

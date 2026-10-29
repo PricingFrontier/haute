@@ -800,15 +800,15 @@ async def _watcher_forever() -> None:
             await asyncio.sleep(_WATCHER_RESTART_DELAY_SECONDS)
 
 
-def _workbench_form_file(project_root: Path) -> tuple[str, str] | None:
-    """The workbench's form file as ``haute.toml`` names it, with its resolved path, while
+def _workbench_form_file(project_root: Path) -> tuple[str, Path] | None:
+    """The workbench's form folder as the status names it, with its resolved path, while
     the workbench is enabled: None while it is not, or while ``haute.toml`` cannot be read,
     which the workbench's own routes report."""
     try:
         config = read_workbench_config(project_root)
     except WorkbenchConfigError:
         return None
-    return (config.form, str(config.form_path.resolve())) if config.enabled else None
+    return (config.form, config.form_folder.resolve()) if config.enabled else None
 
 
 def _publish_pipeline_document(path: Path, *, skip_unchanged: bool) -> None:
@@ -983,6 +983,14 @@ async def _file_watcher() -> None:
             for change_type, changed_path in to_process:
                 p = Path(changed_path)
                 key = str(p.resolve())
+                if form_file is not None and Path(key).is_relative_to(form_file[1]):
+                    # Every change to the form's files is announced, the server's own saves
+                    # included: another window learns of a save, and the view that made it
+                    # finds its own revision.
+                    is_self_write(p, consume=True)
+                    if change_type in (Change.modified, Change.added, Change.deleted):
+                        form_changed = True
+                    continue
                 if key in self_write_keys or is_self_write(p, consume=True):
                     self_write_keys.add(key)
                     # The server's own write changed the bytes the last
@@ -993,9 +1001,6 @@ async def _file_watcher() -> None:
                     logger.debug("file_watcher_skipped_self_write", file=str(p))
                     continue
                 if change_type not in (Change.modified, Change.added, Change.deleted):
-                    continue
-                if form_file is not None and key == form_file[1]:
-                    form_changed = True
                     continue
                 # Recovery sidecars are dependencies of their owning document,
                 # not global configuration changes.  This must precede the

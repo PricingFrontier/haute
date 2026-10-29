@@ -248,7 +248,7 @@ Every job installs with `uv sync --frozen`, which needs the project's `uv.lock`:
       impact-analysis: # haute impact --endpoint-suffix "-staging"
     ```
 
-    A push to main triggers it only when relevant files change (the `rating/` pipeline package, config, data, models, test quotes, and the dependency files `pyproject.toml` and `uv.lock`; a project set up with `haute init --workbench` adds `forms/**`, so a change to the form deploys too); you can also run it by hand from the **Actions** tab. Jobs run in sequence - if staging fails, smoke test doesn’t run.
+    A push to main triggers it only when relevant files change (the `rating/` pipeline package, config, data, models, test quotes, and the dependency files `pyproject.toml` and `uv.lock`; a workbench's files are in the pipeline package, so a change to them deploys too); you can also run it by hand from the **Actions** tab. Jobs run in sequence - if staging fails, smoke test doesn’t run.
 
 ??? info "`deploy-production.yml` - Manual production deploy"
 

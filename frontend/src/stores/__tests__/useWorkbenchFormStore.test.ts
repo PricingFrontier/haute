@@ -95,7 +95,7 @@ function reset(): void {
     saving: false,
     reads: 0,
   })
-  useWorkbenchStore.setState({ enabled: true, formPath: "forms/form.json", formDirty: false, refreshTables: vi.fn(() => 1) })
+  useWorkbenchStore.setState({ enabled: true, formPath: "rating/workbench", formDirty: false, refreshTables: vi.fn(() => 1) })
   useGitStore.setState({ status: makeGitWorkingBranch({ state: "ready", last_save_sha: null }), modal: null, historyNonce: 0, uncaptured: [] })
   useToastStore.setState({ toasts: [], _toastCounter: 0 })
   resetIdentityPromptForTests()
@@ -132,7 +132,7 @@ describe("useWorkbenchFormStore", () => {
     await store().load()
 
     expect(store()).toMatchObject({ form: named("grown"), revision: "rev-0", status: "ready", dirty: true, stale: false })
-    expect(useToastStore.getState().toasts).toMatchObject([{ type: "warning", text: `forms/form.json opened with its layout fixed, unsaved: ${grew[0]}` }])
+    expect(useToastStore.getState().toasts).toMatchObject([{ type: "warning", text: `rating/workbench opened with its layout fixed, unsaved: ${grew[0]}` }])
     // An undo has nothing to go back to, and Save writes the form as read.
     expect(store().undoStack).toEqual([])
     expect(await store().flush()).toBe(true)
@@ -164,14 +164,14 @@ describe("useWorkbenchFormStore", () => {
   })
 
   it("keeps a form that could not be read out, saying why", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(json({ detail: "forms/form.json is not JSON: bad" }, 409))
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(json({ detail: "rating/workbench/form.json is not JSON: bad" }, 409))
 
     await useWorkbenchFormStore.getState().load()
 
     expect(useWorkbenchFormStore.getState()).toMatchObject({
       form: null,
       status: "failed",
-      loadError: "forms/form.json is not JSON: bad",
+      loadError: "rating/workbench/form.json is not JSON: bad",
     })
     expect(toasts()).toEqual([])
   })
@@ -329,7 +329,7 @@ describe("useWorkbenchFormStore", () => {
 
     expect(api.puts).toEqual([{ form: named("home"), base_revision: "rev-0" }])
     expect(store()).toMatchObject({ revision: "rev-1", dirty: false, saving: false, stale: false })
-    expect(toasts()).toEqual([["success", "Saved → forms/form.json"]])
+    expect(toasts()).toEqual([["success", "Saved → rating/workbench"]])
     // The schema may have changed, but the save fetches no tables itself: the project
     // save it is the form step of fetches them afresh next, and a second fetch would
     // publish a second update of each workbench node.
@@ -375,18 +375,18 @@ describe("useWorkbenchFormStore", () => {
     expect(useGitStore.getState().status?.last_save_sha).toBe("ledger-1")
     expect(useGitStore.getState().historyNonce).toBe(1)
     expect(toasts()).toEqual([
-      ["success", "Saved → forms/form.json"],
+      ["success", "Saved → rating/workbench"],
       ["warning", "Changes saved; version capture failed: no such branch"],
     ])
     expect(useGitStore.getState().uncaptured).toEqual([])
 
     // Skipped for want of a git identity: the prompt opens, and the file is kept for a
     // capture to take; the form itself is saved, so a flush saves nothing again.
-    api.captureWith({ identity_required: true, uncaptured: ["forms/form.json"] })
+    api.captureWith({ identity_required: true, uncaptured: ["rating/workbench/form.json"] })
     store().change((form) => ({ ...form, name: "boat" }))
     await store().save()
     expect(useGitStore.getState().modal).toBe("identity")
-    expect(useGitStore.getState().uncaptured).toEqual(["forms/form.json"])
+    expect(useGitStore.getState().uncaptured).toEqual(["rating/workbench/form.json"])
     expect(store().dirty).toBe(false)
     await expect(store().flush()).resolves.toBe(true)
     expect(api.puts).toHaveLength(2)
@@ -595,12 +595,12 @@ describe("useWorkbenchFormStore", () => {
     server({ form: blank, revision: "rev-0" })
     const store = useWorkbenchFormStore.getState
     await store().load()
-    vi.mocked(fetch).mockResolvedValue(json({ detail: "forms/form.json is not JSON: bad" }, 409))
+    vi.mocked(fetch).mockResolvedValue(json({ detail: "rating/workbench/form.json is not JSON: bad" }, 409))
 
     await store().sync()
 
     expect(store()).toMatchObject({ form: blank, revision: "rev-0", status: "ready", stale: false })
-    expect(toasts()).toEqual([["error", "Could not read forms/form.json again: forms/form.json is not JSON: bad"]])
+    expect(toasts()).toEqual([["error", "Could not read rating/workbench again: rating/workbench/form.json is not JSON: bad"]])
   })
 
   it("refuses to overwrite a form that changed on disk, keeping the edits until a reload", async () => {
@@ -615,7 +615,7 @@ describe("useWorkbenchFormStore", () => {
     await expect(store().save()).resolves.toBe(false)
 
     expect(store()).toMatchObject({ stale: true, dirty: true, revision: "rev-0", form: named("home") })
-    expect(toasts()).toEqual([["error", "Save rejected: forms/form.json changed on disk. Reload the workbench first."]])
+    expect(toasts()).toEqual([["error", "Save rejected: rating/workbench changed on disk. Reload the workbench first."]])
     expect(useWorkbenchStore.getState().refreshTables).not.toHaveBeenCalled()
 
     vi.mocked(fetch).mockResolvedValue(json({ form: named("renamed on disk"), revision: "rev-9", repairs: [] }))
@@ -640,7 +640,7 @@ describe("useWorkbenchFormStore", () => {
       const body = JSON.parse(String(init.body)) as { form: FormSpec; base_revision: string | null }
       puts.push(body.base_revision)
       if (body.base_revision !== file.revision) {
-        return json({ detail: "stale_document_revision: forms/form.json changed on disk after the workbench read it." }, 409)
+        return json({ detail: "stale_document_revision: rating/workbench changed on disk after the workbench read it." }, 409)
       }
       file = { form: body.form, revision: `rev-${puts.length}` }
       if (loseTheAnswer) {
@@ -676,7 +676,7 @@ describe("useWorkbenchFormStore", () => {
 
     // The file changed by hand instead.
     api.writeFile(named("by hand"), "rev-7")
-    api.refusePut(() => json({ detail: "stale_document_revision: forms/form.json changed on disk." }, 409))
+    api.refusePut(() => json({ detail: "stale_document_revision: rating/workbench changed on disk." }, 409))
     await expect(store().save()).resolves.toBe(false)
 
     expect(store()).toMatchObject({ stale: true, revision: "rev-0", form: named("home") })
@@ -694,7 +694,7 @@ describe("useWorkbenchFormStore", () => {
 
     await expect(saving).resolves.toBe(false)
     await reading
-    expect(toasts()).toContainEqual(["error", "Not saved: forms/form.json is being read again."])
+    expect(toasts()).toContainEqual(["error", "Not saved: rating/workbench is being read again."])
   })
 
   it("counts each read anew, and no save or undo as one", async () => {
@@ -725,7 +725,7 @@ describe("useWorkbenchFormStore", () => {
     await expect(store().save()).resolves.toBe(false)
 
     expect(store().stale).toBe(false)
-    expect(toasts()).toEqual([["error", "Could not save forms/form.json: [workbench].enabled must be true or false"]])
+    expect(toasts()).toEqual([["error", "Could not save rating/workbench: [workbench].enabled must be true or false"]])
   })
 
   it("saves nothing before the form is read", async () => {
@@ -751,7 +751,7 @@ describe("useWorkbenchFormStore", () => {
     expect(store()).toMatchObject({ form: blank, dirty: false, undoStack: [], redoStack: [] })
   })
 
-  it("names forms/form.json until the workbench's status says where the form is", async () => {
+  it("names the workbench's form until the status says where its folder is", async () => {
     server({ form: blank, revision: "rev-0" })
     const store = useWorkbenchFormStore.getState
     await store().load()
@@ -763,8 +763,17 @@ describe("useWorkbenchFormStore", () => {
     await expect(store().save()).resolves.toBe(false)
 
     expect(toasts()).toEqual([
-      ["error", "Could not read forms/form.json again: gone"],
-      ["error", "Could not save forms/form.json: gone"],
+      ["error", "Could not read the workbench's form again: gone"],
+      ["error", "Could not save the workbench's form: gone"],
     ])
+  })
+
+  it("saves nothing before a form, and so its folder's revision, has been read", async () => {
+    server({ form: blank, revision: "rev-0" })
+    const store = useWorkbenchFormStore.getState
+
+    await expect(store().save()).resolves.toBe(false)
+
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "PUT")).toEqual([])
   })
 })

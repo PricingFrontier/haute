@@ -2,38 +2,51 @@
 them now or as an unsaved form the view holds would, the form itself, read and saved, and
 the params files a column's allowed values are read from.
 
-Every route reads ``haute.toml``, and those that serve the saved form read it too, from the
-working directory on every request, off the event loop, so an edit to either reaches the
-next request. A bad table or form answers 409 with what to fix
+Every route reads ``haute.toml``, and those that serve the saved form read its folder too,
+from the working directory on every request, off the event loop, so an edit to either
+reaches the next request. A bad table or form answers 409 with what to fix
 (``haute.routes._error_handlers``) while the pipeline editor goes on working. A save quotes
-the revision the form was read at and is refused, writing nothing, when the file has
-changed since; a save that lands is captured on the clone's save ledger as the pipeline's
-saves are, and answers what the capture gave. A save runs under the pipeline save's lock,
-as every write to the project does.
+the revision the form was read at and is refused, writing nothing, when the folder has
+changed since; it writes the files that changed and deletes those the form no longer has,
+all put back when one fails, and a save that lands is captured on the clone's save ledger as
+the pipeline's saves are, answering what the capture gave. A save runs under the pipeline
+save's lock, as every write to the project does, and holds the form folder's lock while it
+checks and writes, as every read of the folder does.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import NoReturn
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
 from haute._artifact_paths import PATH_PROBLEMS, ordinary_path_problem
+from haute._git_lock import repository_mutation
 from haute._logging import get_logger
 from haute._workbench_config import WorkbenchConfig, read_workbench_config
-from haute._workbench_form import (
-    FormSpec,
-    form_file_revision,
+from haute._workbench_folder import (
+    FormFolderNameError,
+    folder_files,
+    folder_revision,
+    form_folder_lock,
+    read_folder_unlocked,
     read_form_document,
-    with_quote_details,
-    write_form,
 )
+from haute._workbench_form import FormDocument, FormSpec, with_quote_details
 from haute._workbench_params import read_param_file
 from haute._workbench_tables import WorkbenchTablesError, workbench_tables
 from haute.routes._contract_errors import contract_error_http_exception
 from haute.routes._helpers import project_write
-from haute.routes._save_pipeline import StaleDocumentRevisionError, capture_save_in_ledger
+from haute.routes._save_pipeline import (
+    StaleDocumentRevisionError,
+    _rollback_artifacts,
+    _stage_artifact_delete,
+    _stage_artifact_write_bytes,
+    _TouchedFile,
+    capture_save_in_ledger,
+)
 from haute.schemas import (
     WorkbenchFormResponse,
     WorkbenchFormSaveRequest,
@@ -80,47 +93,88 @@ def _tables_response(spec: FormSpec) -> WorkbenchTablesResponse:
     )
 
 
+def _read_document(config: WorkbenchConfig) -> FormDocument:
+    """The form the folder holds now, read under the repository's lock, which a branch
+    switch holds, as well as the form folder's, which every save holds."""
+    with repository_mutation(config.project_root):
+        return read_form_document(config)
+
+
 def _saved_tables_response(config: WorkbenchConfig) -> WorkbenchTablesResponse:
-    return _tables_response(read_form_document(config).spec)
+    return _tables_response(_read_document(config).spec)
+
+
+def _stale(
+    config: WorkbenchConfig, body: WorkbenchFormSaveRequest, current: str | None
+) -> NoReturn:
+    raise StaleDocumentRevisionError(
+        expected_revision=current,
+        provided_revision=body.base_revision,
+        message=f"{config.form} changed on disk after the workbench read it. "
+        "Reload the workbench before saving.",
+    )
 
 
 def _save_form(
     config: WorkbenchConfig, body: WorkbenchFormSaveRequest
 ) -> WorkbenchFormSaveResponse:
-    """Write the form unless the file changed since the view read it, or its path is no
-    ordinary file of the project's (a link or junction on the way), and capture the write:
-    one `project_write`."""
-    _, problem = ordinary_path_problem(config.project_root, config.form)
-    if problem is not None:
-        raise HTTPException(
-            status_code=409,
-            detail=f"{config.form} {PATH_PROBLEMS[problem]}: [workbench].form must name a "
-            "file of the project's own.",
-        )
-    current = form_file_revision(config)
-    if current != body.base_revision:
-        raise StaleDocumentRevisionError(
-            expected_revision=current,
-            provided_revision=body.base_revision,
-            message=f"{config.form} changed on disk after the workbench read it. "
-            "Reload the workbench before saving.",
-        )
+    """Write the form's files that changed and delete those it no longer has, unless the
+    folder changed since the view read it or a path on the way is no ordinary one of the
+    project's (a link, a junction, a reserved name), and capture the writes: one
+    `project_write`."""
     form = with_quote_details(body.form)
-    revision = write_form(config.form_path, form)
-    # The written file is one save on the ledger, as the pipeline's written files are,
-    # so a milestone's sweep takes it from then on: a file this save created included.
-    # The path is an ordinary one inside the project (checked above), where the ledger is.
+    try:
+        files = folder_files(form, config.form_folder)
+    except FormFolderNameError as exc:
+        raise HTTPException(status_code=422, detail=exc.message) from None
+    with form_folder_lock(config.project_root):
+        if not config.form_folder.is_dir():
+            _stale(config, body, None)
+        snapshot = read_folder_unlocked(config)
+        if snapshot.revision != body.base_revision:
+            _stale(config, body, snapshot.revision)
+        writes = {path: data for path, data in files.items() if snapshot.files.get(path) != data}
+        deletes = sorted(path for path in snapshot.files if path not in files)
+        for path in [*writes, *deletes]:
+            _, problem = ordinary_path_problem(config.project_root, f"{config.form}/{path}")
+            if problem is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{config.form}/{path} {PATH_PROBLEMS[problem]}: the form folder "
+                    "holds files of its own.",
+                )
+        touched: list[_TouchedFile] = []
+        try:
+            for path, data in writes.items():
+                _stage_artifact_write_bytes(config.form_folder / path, data, touched)
+            for path in deletes:
+                _stage_artifact_delete(config.form_folder / path, touched)
+        except OSError as exc:
+            failed = _rollback_artifacts(touched)
+            detail = f"{config.form} could not be written: {exc}"
+            if failed:
+                # By its path in the folder: schema/ and sample/ hold files of one name.
+                kept = ", ".join(
+                    f"{config.form}/{path.relative_to(config.form_folder).as_posix()}"
+                    for path in failed
+                )
+                detail += f"; {kept} could not be put back: restore them from version history"
+            logger.warning("workbench_form_write_failed", form=config.form, error=str(exc))
+            raise HTTPException(status_code=409, detail=detail) from None
+    # The written and deleted files are one save on the ledger, as the pipeline's written
+    # files are, so a milestone's sweep takes them from then on. Each path is an ordinary
+    # one inside the project (checked above), where the ledger is.
     warnings: list[str] = []
-    form_path = config.form_path.resolve().relative_to(config.project_root.resolve()).as_posix()
-    captured = capture_save_in_ledger(config.project_root, [form_path], warnings)
+    changed = [f"{config.form}/{path}" for path in [*writes, *deletes]]
+    captured = capture_save_in_ledger(config.project_root, changed, warnings)
     return WorkbenchFormSaveResponse(
-        form=form, revision=revision, warnings=warnings, **captured._asdict()
+        form=form, revision=folder_revision(files), warnings=warnings, **captured._asdict()
     )
 
 
 @router.get("", response_model=WorkbenchStatusResponse)
 async def workbench_status() -> WorkbenchStatusResponse:
-    """Whether the project's workbench is enabled, and where its form is."""
+    """Whether the project's workbench is enabled, and where its form folder is."""
     config = await run_in_threadpool(_config)
     return WorkbenchStatusResponse(
         enabled=config.enabled, form=config.form if config.enabled else None
@@ -143,9 +197,9 @@ async def post_workbench_tables(body: WorkbenchFormTablesRequest) -> WorkbenchTa
 
 @router.get("/form", response_model=WorkbenchFormResponse)
 async def get_workbench_form() -> WorkbenchFormResponse:
-    """The form as its file holds it now, with the file's revision."""
+    """The form as its folder holds it now, with the folder's revision."""
     config = await _enabled_config()
-    document = await run_in_threadpool(read_form_document, config)
+    document = await run_in_threadpool(_read_document, config)
     return WorkbenchFormResponse(
         form=document.spec, revision=document.revision, repairs=list(document.repairs)
     )
@@ -153,7 +207,7 @@ async def get_workbench_form() -> WorkbenchFormResponse:
 
 @router.put("/form", response_model=WorkbenchFormSaveResponse)
 async def put_workbench_form(body: WorkbenchFormSaveRequest) -> WorkbenchFormSaveResponse:
-    """Write the form, unless its file changed since the view read it, and capture the write."""
+    """Write the form, unless its folder changed since the view read it, and capture it."""
     config = await _enabled_config()
     try:
         # In turn with every other save, the pipeline's too: two saves never pass the
@@ -168,13 +222,6 @@ async def put_workbench_form(body: WorkbenchFormSaveRequest) -> WorkbenchFormSav
             provided_revision=exc.provided_revision,
         )
         raise HTTPException(status_code=409, detail=f"{exc.code}: {exc}") from None
-    except OSError as exc:
-        # The file or its folder could not be written (a permission, a file where the
-        # folder should be): the pipeline's writes answer the same way.
-        logger.warning("workbench_form_write_failed", form=config.form, error=str(exc))
-        raise HTTPException(
-            status_code=409, detail=f"{config.form} could not be written: {exc}"
-        ) from None
 
 
 @router.get("/params", response_model=WorkbenchParamFileResponse)

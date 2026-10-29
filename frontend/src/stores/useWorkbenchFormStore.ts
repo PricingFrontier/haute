@@ -22,6 +22,9 @@ import useToastStore from "./useToastStore"
 import useWorkbenchStore from "./useWorkbenchStore"
 import { serial } from "../utils/serial"
 
+/** What a message calls the form before the status names its folder. */
+const FORM_FALLBACK = "the workbench's form"
+
 export type FormLoadStatus = "idle" | "loading" | "ready" | "failed"
 
 interface WorkbenchFormState {
@@ -160,7 +163,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
    */
   const readAnew = (form: FormSpec, revision: string | null, repairs: readonly string[]) => {
     if (repairs.length > 0) {
-      const path = useWorkbenchStore.getState().formPath ?? "forms/form.json"
+      const path = useWorkbenchStore.getState().formPath ?? FORM_FALLBACK
       useToastStore.getState().addToast("warning", `${path} opened with its layout fixed, unsaved: ${repairs.join(" ")}`)
     }
     return {
@@ -215,7 +218,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
     sync: () =>
       takeTurn(async () => {
         if (get().status !== "ready") return
-        const path = useWorkbenchStore.getState().formPath ?? "forms/form.json"
+        const path = useWorkbenchStore.getState().formPath ?? FORM_FALLBACK
         try {
           const { form, revision, repairs } = await fetchWorkbenchForm()
           if (revision === get().revision) return
@@ -285,8 +288,9 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
       takeTurn(async () => {
         const { form, revision, status } = get()
         const { addToast } = useToastStore.getState()
-        const path = useWorkbenchStore.getState().formPath ?? "forms/form.json"
-        if (form === null) return false
+        const path = useWorkbenchStore.getState().formPath ?? FORM_FALLBACK
+        // A form is read with its folder's revision; before one is read there is nothing to save.
+        if (form === null || revision === null) return false
         // A reload asked for after this save drops the edits it would have saved.
         if (status !== "ready") {
           addToast("error", `Not saved: ${path} is being read again.`)

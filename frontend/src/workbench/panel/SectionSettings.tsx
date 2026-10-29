@@ -5,7 +5,7 @@ import { CommittedTextField, FIELD_CLASS, INPUT_STYLE, LabelledRow, QuietAction,
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { leastSectionHeight } from "../../utils/sheetGeometry"
-import { addSection, createSection, fitSection, renameSection, setSectionHeight, setSectionShowWhen } from "../../utils/workbenchForm"
+import { addSection, createSection, fitSection, formPartIds, renameSection, setSectionHeight, setSectionShowWhen } from "../../utils/workbenchForm"
 import { deleteSection } from "../sheetInteractions"
 import { ShowWhenEditor } from "../ShowWhenEditor"
 import { Section } from "./Section"
@@ -22,7 +22,8 @@ export function SectionSettings({ form, page, section, index }: { form: FormSpec
   const least = leastSectionHeight(section.widgets)
   const height = wholeNumber({ min: least, unit: "pixels" })
   const addBelow = () => {
-    const added = createSection(page)
+    const form = useWorkbenchFormStore.getState().form
+    const added = createSection(page, undefined, form === null ? [] : formPartIds(form))
     change((spec) => addSection(spec, page.id, added, index + 1))
     selectSection(added.id)
   }

@@ -177,8 +177,8 @@ class WorkbenchStatusResponse(BaseModel):
     """Whether the project's workbench is enabled (``[workbench]`` in ``haute.toml``)."""
 
     enabled: bool
-    # The form's path as haute.toml names it, relative to the project root; null while
-    # the workbench is not enabled.
+    # The form folder's path from the project root (``rating/workbench`` in a new project);
+    # null while the workbench is not enabled.
     form: str | None = None
 
 
@@ -196,33 +196,33 @@ class WorkbenchTablesResponse(BaseModel):
 
 
 class WorkbenchFormFile(BaseModel):
-    """The workbench's form as its file holds it, with the file's revision.
+    """The workbench's form as its folder holds it, with the folder's revision.
 
-    ``revision`` is the file's content hash, which a save quotes as its ``base_revision``;
-    null while the form has never been saved, when ``form`` is the blank form.
+    ``revision`` is the hash of every file in the folder, its path and its bytes, which a
+    save quotes as its ``base_revision``.
     """
 
     form: FormSpec
-    revision: str | None = None
+    revision: str
 
 
 class WorkbenchFormResponse(WorkbenchFormFile):
-    """The workbench's form as its file holds it now, with the file's revision."""
+    """The workbench's form as its folder holds it now, with the folder's revision."""
 
-    #: What reading the file grew to open it: each section or sheet too small for a
-    #: component in it, said. The form holds them; the file, until it is saved.
+    #: What reading the folder grew to open it: each section or sheet too small for a
+    #: component in it, said. The form holds them; the files, until it is saved.
     repairs: list[str] = []
 
 
 class WorkbenchFormSaveRequest(BaseModel):
-    """The whole form to write, with the revision of the file it was read from.
+    """The whole form to write, with the revision of the folder it was read from.
 
-    ``base_revision`` must still be the file's revision (null: the file did not exist), or
-    the save is refused as stale and nothing is written.
+    ``base_revision`` must still be the folder's revision, or the save is refused as stale
+    and nothing is written.
     """
 
     form: FormSpec
-    base_revision: str | None = None
+    base_revision: str
 
 
 class WorkbenchFormSaveResponse(WorkbenchFormFile, SaveCapture):

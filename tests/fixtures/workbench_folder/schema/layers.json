@@ -1,0 +1,24 @@
+{
+  "id": "t_layers",
+  "role": "input",
+  "rows": "many",
+  "columns": [
+    {
+      "id": "c_layer",
+      "name": "layer",
+      "type": "int",
+      "key": true,
+      "index": true
+    },
+    {
+      "id": "c_limit",
+      "name": "limit",
+      "type": "float"
+    },
+    {
+      "id": "c_layer_name",
+      "name": "layer_name",
+      "type": "str"
+    }
+  ]
+}

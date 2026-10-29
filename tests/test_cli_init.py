@@ -7,11 +7,11 @@ import stat
 import sys
 import tomllib
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from haute._workbench_form import quote_details_table
+from haute._workbench_form import blank_form
 from haute.cli import cli
 from haute.cli._init_cmd import _ensure_haute_dependency, _toml_basic_string
 
@@ -797,11 +797,15 @@ class TestInitForceReinit:
 class TestInitWorkbench:
     """``haute init --workbench`` switches the project's workbench on (specs/workbench)."""
 
-    def test_writes_the_table_and_a_blank_form_and_reports_both(
+    def _form(self, project_dir: Path) -> Any:
+        from haute._workbench_config import read_workbench_config
+        from haute._workbench_folder import read_form_document
+
+        return read_form_document(read_workbench_config(project_dir))
+
+    def test_writes_the_table_and_a_blank_form_folder_and_reports_both(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        import json
-
         project_dir = tmp_path / "motor"
         project_dir.mkdir()
         monkeypatch.chdir(project_dir)
@@ -810,52 +814,30 @@ class TestInitWorkbench:
 
         with open(project_dir / "haute.toml", "rb") as fh:
             doc = tomllib.load(fh)
-        assert doc["workbench"] == {"enabled": True, "form": "forms/form.json"}
-        form = json.loads((project_dir / "forms" / "form.json").read_text(encoding="utf-8"))
-        assert form == {
-            "version": 1,
-            "name": "motor",
-            "theme": dict.fromkeys(
-                (
-                    "sheet_color",
-                    "background_color",
-                    "border_color",
-                    "font_color",
-                    "input_cell_color",
-                    "output_cell_color",
-                )
-            ),
-            "schema": {"tables": [quote_details_table().model_dump(mode="json")]},
-            "pages": [
-                {
-                    "id": "page_1",
-                    "title": "Sheet 1",
-                    "width": 1280,
-                    "show_when": {"match": "all", "conditions": []},
-                    "sections": [
-                        {
-                            "id": "section_1",
-                            "title": "Section 1",
-                            "height": 560,
-                            "show_when": {"match": "all", "conditions": []},
-                            "widgets": [],
-                        }
-                    ],
-                }
-            ],
-            "sample": {},
-        }
-        assert "forms/form.json" in result.output
+        assert doc["workbench"] == {"enabled": True}
+        folder = project_dir / "rating" / "workbench"
+        assert sorted(
+            path.relative_to(folder).as_posix() for path in folder.rglob("*") if path.is_file()
+        ) == [
+            "form.json",
+            "schema/quote_details.json",
+            "sheets/sheet_1.json",
+            "sheets/sheet_1.layout.json",
+        ]
+        # Written as the folder's own saves write them: LF, so a first save rewrites nothing.
+        assert b"\r\n" not in (folder / "form.json").read_bytes()
+        assert self._form(project_dir).spec == blank_form("motor")
+        assert "rating/workbench/" in result.output
         assert "workbench config" in result.output
 
     @pytest.mark.parametrize(
         ("ci", "workflow", "entry"),
         [
-            ("github", ".github/workflows/deploy-staging.yml", '- "forms/**"'),
-            ("azure-devops", "azure-pipelines.yml", "- forms/"),
+            ("github", ".github/workflows/deploy-staging.yml", '- "rating/**"'),
+            ("azure-devops", "azure-pipelines.yml", "- rating/"),
         ],
     )
-    def test_a_form_change_starts_the_generated_deploy(
+    def test_a_form_change_starts_the_generated_deploy_through_the_pipeline_folder(
         self,
         runner: CliRunner,
         tmp_path: Path,
@@ -864,12 +846,12 @@ class TestInitWorkbench:
         workflow: str,
         entry: str,
     ):
+        # The form folder is in the pipeline folder, whose trigger the workflow always has.
         monkeypatch.chdir(tmp_path)
         runner.invoke(cli, ["init", "--workbench", "--ci", ci], catch_exceptions=False)
-        assert entry in (tmp_path / workflow).read_text(encoding="utf-8")
-
-        runner.invoke(cli, ["init", "--force", "--ci", ci], catch_exceptions=False)
-        assert entry not in (tmp_path / workflow).read_text(encoding="utf-8")
+        text = (tmp_path / workflow).read_text(encoding="utf-8")
+        assert entry in text
+        assert "forms" not in text
 
     def test_a_plain_init_writes_neither(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -880,27 +862,134 @@ class TestInitWorkbench:
 
         with open(tmp_path / "haute.toml", "rb") as fh:
             assert "workbench" not in tomllib.load(fh)
-        assert not (tmp_path / "forms").exists()
-        assert "forms/form.json" not in result.output
+        assert not (tmp_path / "rating" / "workbench").exists()
+        assert "rating/workbench/" not in result.output
 
-    def test_force_reinit_keeps_the_table_only_when_asked_again(
+    def test_force_reinit_keeps_the_table_only_when_asked_again_and_the_form_always(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.chdir(tmp_path)
         runner.invoke(cli, ["init", "--workbench"], catch_exceptions=False)
-        (tmp_path / "forms" / "form.json").write_text("edited", encoding="utf-8")
+        index = tmp_path / "rating" / "workbench" / "form.json"
+        index.write_bytes(index.read_bytes().replace(b'"name": "', b'"name": "edited '))
+        edited = index.read_bytes()
 
         # haute.toml is rewritten wholesale, so the table goes unless --workbench is repeated;
-        # the form folder is left as data/ is.
+        # the form folder is the analyst's form and is never replaced by a blank one.
         runner.invoke(cli, ["init", "--force"], catch_exceptions=False)
         with open(tmp_path / "haute.toml", "rb") as fh:
             assert "workbench" not in tomllib.load(fh)
-        assert (tmp_path / "forms" / "form.json").read_text(encoding="utf-8") == "edited"
+        assert index.read_bytes() == edited
 
         runner.invoke(cli, ["init", "--force", "--workbench"], catch_exceptions=False)
         with open(tmp_path / "haute.toml", "rb") as fh:
             assert tomllib.load(fh)["workbench"]["enabled"] is True
-        assert (tmp_path / "forms" / "form.json").read_text(encoding="utf-8") != "edited"
+        assert index.read_bytes() == edited
+
+    def _existing(self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """A project initialised without a workbench, its haute.toml as init wrote it."""
+        tmp_path.mkdir(exist_ok=True)
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(cli, ["init"], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        return tmp_path
+
+    def test_workbench_in_an_existing_project_adds_the_table_and_the_folder_alone(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        project_dir = self._existing(runner, tmp_path, monkeypatch)
+        toml_before = (project_dir / "haute.toml").read_bytes()
+        others = {
+            path: path.read_bytes()
+            for path in project_dir.rglob("*")
+            if path.is_file() and path.name != "haute.toml"
+        }
+
+        result = runner.invoke(cli, ["init", "--workbench"], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        toml_after = (project_dir / "haute.toml").read_bytes()
+        assert toml_after.startswith(toml_before.rstrip())
+        assert tomllib.loads(toml_after.decode("utf-8"))["workbench"] == {"enabled": True}
+        assert self._form(project_dir).revision
+        # Nothing else of the project was touched.
+        assert {
+            path: path.read_bytes()
+            for path in project_dir.rglob("*")
+            if path.is_file()
+            and path.name != "haute.toml"
+            and "workbench" not in path.relative_to(project_dir).parts
+        } == others
+
+        again = runner.invoke(cli, ["init", "--workbench"])
+        assert again.exit_code == 1
+        assert "already has a [workbench] table" in again.output
+
+    def test_workbench_in_an_existing_project_refuses_a_folder_already_there(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        project_dir = self._existing(runner, tmp_path, monkeypatch)
+        (project_dir / "rating" / "workbench").mkdir()
+        toml_before = (project_dir / "haute.toml").read_bytes()
+
+        refused = runner.invoke(cli, ["init", "--workbench"])
+
+        assert refused.exit_code == 1
+        assert "rating/workbench is already there" in refused.output
+        assert (project_dir / "haute.toml").read_bytes() == toml_before
+        assert list((project_dir / "rating" / "workbench").iterdir()) == []
+
+    def test_workbench_in_an_existing_project_refuses_a_pipeline_folder_outside_it(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import os
+
+        project_dir = self._existing(runner, tmp_path / "p", monkeypatch)
+        # The pipeline folder reached through a junction to somewhere outside the project:
+        # its form folder would be outside it too.
+        outside = tmp_path / "outside"
+        (project_dir / "rating").rename(outside)
+        if os.name == "nt":
+            import _winapi
+
+            _winapi.CreateJunction(str(outside), str(project_dir / "rating"))
+        else:
+            os.symlink(outside, project_dir / "rating", target_is_directory=True)
+        toml_before = (project_dir / "haute.toml").read_bytes()
+
+        refused = runner.invoke(cli, ["init", "--workbench"])
+
+        assert refused.exit_code == 1
+        assert "the pipeline folder is outside the project" in refused.output
+        assert (project_dir / "haute.toml").read_bytes() == toml_before
+        assert not (outside / "workbench").exists()
+
+    def test_workbench_in_an_existing_project_undoes_what_it_made_when_it_fails(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import haute._file_ops
+
+        project_dir = self._existing(runner, tmp_path, monkeypatch)
+        toml_before = (project_dir / "haute.toml").read_bytes()
+
+        def failing_write(path: Path, data: bytes) -> None:
+            raise PermissionError(f"[Errno 13] Permission denied: {path.name}")
+
+        # The folder is written first; haute.toml, last, cannot be.
+        monkeypatch.setattr(haute._file_ops, "atomic_write_bytes", failing_write)
+        failed = runner.invoke(cli, ["init", "--workbench"])
+        monkeypatch.undo()
+        monkeypatch.chdir(project_dir)
+
+        assert failed.exit_code == 1
+        assert "the workbench could not be added" in failed.output
+        assert (project_dir / "haute.toml").read_bytes() == toml_before
+        assert not (project_dir / "rating" / "workbench").exists()
+
+        # A second run starts from where the first did.
+        retried = runner.invoke(cli, ["init", "--workbench"], catch_exceptions=False)
+        assert retried.exit_code == 0, retried.output
+        assert self._form(project_dir).revision
 
 
 class TestInitCiRunsTheProjectsPython:

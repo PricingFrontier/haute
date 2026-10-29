@@ -11,6 +11,7 @@ the pipeline. The local folders at the project root stay on your machine.
 | `rating/files/data/` | Tables and data the pipeline ships with, such as a postcode lookup | Yes |
 | `rating/files/models/` | Model files with their feature contracts, and optimiser results | Yes |
 | `rating/files/params/` | Parameter files the pipeline reads; a Workbench column's allowed values can come from one | Yes |
+| `rating/workbench/` | The workbench's schema, sheets and sample, a file for each table and each sheet ([Workbench](workbench.md#the-workbenchs-files)) | Yes |
 | `data/` | Local data: portfolios, extracts, anything large or personal | No |
 | `outputs/` | What runs write: Data Output files and exported data | No |
 

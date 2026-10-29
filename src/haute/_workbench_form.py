@@ -1,18 +1,13 @@
-"""The workbench's form file: its canonical shape, read whole and written atomically
-(specs/workbench).
+"""The workbench's form: its canonical shape (specs/workbench).
 
-``forms/form.json`` is the file the workbench edits: the schema of typed tables the quote is
-keyed into, the sheets, each a stack of sections holding Tables and Collections that show
-those tables' columns, Charts that plot them, Headings that name them and the Imports and
-Exports that will fill them and take them out, and the sample quote typed into them while
-building. It is one JSON
-document with one spelling: every field is written, defaults included, and an unknown
-field is refused by name. Nothing migrates an older spelling: a sheet holding its
-components itself, as sheets did before sections, is refused with what replaced it.
-
-A file that does not exist is the blank form that has never been saved. A file's revision
-is its content hash, which a save quotes so a form that changed on disk since it was read
-is never overwritten.
+The form is what the workbench edits: the schema of typed tables the quote is keyed into,
+the sheets, each a stack of sections holding Tables and Collections that show those tables'
+columns, Charts that plot them, Headings that name them and the Imports and Exports that
+will fill them and take them out, and the sample quote typed into them while building. A
+project keeps it as the files of its pipeline folder's ``workbench/`` folder, which
+`_workbench_folder` reads and writes. A release ships it, and the quote store keeps it, as
+one document (`render_form`) with one spelling: every field is written, defaults included.
+An unknown field is refused by name.
 
 Every form holds Haute's own input table, ``quote_details``, first: the details of a quote
 (its reference, name, insured, broker, dates and currency, its stage, who it is with and
@@ -29,7 +24,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -39,14 +33,12 @@ from pydantic import (
     Field,
     Strict,
     Tag,
-    ValidationError,
     model_validator,
 )
 
 from haute._explore_pivots import PIVOT_DECIMAL_PLACES_MAX
-from haute._file_ops import atomic_write_bytes
 from haute._hashing import content_hash_bytes
-from haute._workbench_config import WorkbenchConfig, WorkbenchError
+from haute._workbench_config import WorkbenchError
 
 #: The column types of the Quote Input's tables (``haute._api_input_schema.ColumnType``).
 ColumnType = Literal["int", "float", "str", "bool", "date"]
@@ -796,7 +788,7 @@ class Theme(_Strict):
 
 
 class FormSpec(_Strict):
-    """The form: what the workbench edits and ``forms/form.json`` stores."""
+    """The form: what the workbench edits and its ``workbench/`` folder stores."""
 
     model_config = ConfigDict(extra="forbid", serialize_by_alias=True)
 
@@ -908,7 +900,18 @@ class FormSpec(_Strict):
         _check_ids("tables", [table.id for table in self.data_schema.tables])
         for table in self.data_schema.tables:
             _check_ids(f"columns of {table.name}", [column.id for column in table.columns])
+            for given in [table.id, *(column.id for column in table.columns)]:
+                if given.startswith(UNRESOLVED_MARK):
+                    raise ValueError(
+                        f"The id {given!r} starts with {UNRESOLVED_MARK!r}, which marks a name the "
+                        "schema does not hold: a table or a column needs an id of its own"
+                    )
         return self
+
+
+#: What starts a reference's unresolved id in the form folder (``haute._workbench_folder``):
+#: a name the schema does not hold, as written, which no table or column id may start with.
+UNRESOLVED_MARK = "?"
 
 
 def _check_ids(things: str, ids: list[str]) -> None:
@@ -1084,76 +1087,34 @@ def with_quote_details(spec: FormSpec) -> FormSpec:
 
 @dataclass(frozen=True, slots=True)
 class FormDocument:
-    """The form as its file holds it now, with the file's revision."""
+    """The form as its folder holds it now, with the folder's revision."""
 
     spec: FormSpec
-    #: The file's content hash, or None while the form has never been saved: the file
-    #: does not exist and ``spec`` is the blank form.
-    revision: str | None
-    #: What reading the file grew to open it (`_grown_to_hold`), each said; the file is as
-    #: it was until the form is saved.
+    #: The folder's revision: the hash of every file's path and bytes as the read took them.
+    revision: str
+    #: What reading the folder grew to open it (`_grown_to_hold`), each said; the files are
+    #: as they were until the form is saved.
     repairs: tuple[str, ...] = ()
 
 
 def blank_form(name: str) -> FormSpec:
     """The form a project starts with: one blank sheet holding one section, Haute's
     ``quote_details`` table alone, no sample."""
-    section = Section(id="section_1", title="Section 1", height=BLANK_SECTION_HEIGHT)
-    page = Page(id="page_1", title="Sheet 1", width=BLANK_SHEET_WIDTH, sections=[section])
+    section = Section(id="section_0001", title="Section 1", height=BLANK_SECTION_HEIGHT)
+    page = Page(id="sheet_0001", title="Sheet 1", width=BLANK_SHEET_WIDTH, sections=[section])
     return with_quote_details(FormSpec(name=name, pages=[page]))
 
 
 def render_form(spec: FormSpec) -> str:
-    """The file's text: every field, defaults included, indented, ending in a newline."""
+    """The form as one document's text, as a release ships it and the quote store keeps
+    it: every field, defaults included, indented, ending in a newline."""
     # Non-ASCII text as typed, a label or an allowed value, as the node configs keep it.
     return json.dumps(spec.model_dump(mode="json"), indent=2, ensure_ascii=False) + "\n"
 
 
 def form_revision(data: bytes) -> str:
-    """The revision of a form file holding *data*: its content hash."""
+    """The revision of a form document holding *data*: its content hash."""
     return content_hash_bytes(data)
-
-
-def write_form(path: Path, spec: FormSpec) -> str:
-    """Write *spec* to *path* atomically, making its folder, and return the file's revision."""
-    data = render_form(spec).encode("utf-8")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_bytes(path, data)
-    return form_revision(data)
-
-
-def _read_form_bytes(config: WorkbenchConfig) -> bytes | None:
-    """The form file's bytes, or None when it does not exist."""
-    try:
-        return config.form_path.read_bytes()
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        raise WorkbenchFormError(
-            f"{config.form} could not be read: {exc}", path=str(config.form_path)
-        ) from exc
-
-
-def form_file_revision(config: WorkbenchConfig) -> str | None:
-    """The form file's revision as it is now, or None when the file does not exist.
-
-    Raises :class:`WorkbenchFormError` when the file cannot be read.
-    """
-    data = _read_form_bytes(config)
-    return None if data is None else form_revision(data)
-
-
-def _refuse_page_widgets(config: WorkbenchConfig, parsed: object) -> None:
-    """Refuse a sheet holding widgets of its own, as sheets did before sections, naming
-    what replaced them rather than reporting an unknown field."""
-    pages = parsed.get("pages") if isinstance(parsed, dict) else None
-    for index, page in enumerate(pages if isinstance(pages, list) else []):
-        if isinstance(page, dict) and "widgets" in page:
-            raise WorkbenchFormError(
-                f"{config.form} is not a workbench form: pages.{index}.widgets was removed; "
-                f"a sheet's components now sit in its sections (pages.{index}.sections[].widgets)",
-                path=str(config.form_path),
-            )
 
 
 #: Each kind of component as the editor names it.
@@ -1224,39 +1185,3 @@ def _grown_to_hold(parsed: object) -> list[str]:
                 f"hold {_component_named(widest[1])}."
             )
     return repairs
-
-
-def read_form_document(config: WorkbenchConfig) -> FormDocument:
-    """The form at ``config.form_path``, read whole and checked, with the file's revision.
-
-    A file that does not exist is the blank form, named after the project, with no
-    revision. A section or sheet too small for a component in it is grown to hold it, and
-    said in ``repairs`` (`_grown_to_hold`). Raises :class:`WorkbenchFormError`, naming the
-    file as ``haute.toml`` names it and what is wrong, when the file cannot be read, is not
-    UTF-8 text, is not JSON or does not fit the shape, a sheet holding widgets of its own
-    named with what replaced them.
-    """
-    path = config.form_path
-    data = _read_form_bytes(config)
-    if data is None:
-        return FormDocument(blank_form(config.project_root.name), None)
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise WorkbenchFormError(f"{config.form} is not UTF-8 text: {exc}", path=str(path)) from exc
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise WorkbenchFormError(f"{config.form} is not JSON: {exc}", path=str(path)) from exc
-    _refuse_page_widgets(config, parsed)
-    repairs = _grown_to_hold(parsed)
-    try:
-        spec = FormSpec.model_validate(parsed)
-    except ValidationError as exc:
-        # The first error is enough to find the file's problem; the rest usually follow it.
-        first = exc.errors()[0]
-        where = ".".join(str(part) for part in first["loc"]) or "the document"
-        raise WorkbenchFormError(
-            f"{config.form} is not a workbench form: {where}: {first['msg']}", path=str(path)
-        ) from exc
-    return FormDocument(with_quote_details(spec), form_revision(data), tuple(repairs))

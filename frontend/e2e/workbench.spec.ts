@@ -3,68 +3,54 @@
  * into the schema's pane, a Collection dragged onto a sheet and given its fields, drawn
  * while building as a new quote, the sample typed in Preview and priced live on the
  * pipeline open in the editor, with no Price or Clear, a column added to the schema, and
- * the project saved in one Save: the sheets and the sample to forms/form.json and the
- * pipeline after them, its Workbench Input's copy carrying the column, both on the
- * project's ledger.
+ * the project saved in one Save: the schema, the sheets and the sample to the files of the
+ * pipeline folder's workbench/ folder and the pipeline after them, its Workbench Input's
+ * copy carrying the column, both on the project's ledger.
  */
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { resolve } from "node:path"
+import { dirname, resolve } from "node:path"
 import { expect, test, type Locator, type Page } from "@playwright/test"
 
 import { e2eProjectRoot, resetE2eProject } from "./projectIsolation"
 
-const column = (id: string, name: string, type: string, overrides: Record<string, unknown> = {}) => ({
-  id,
-  name,
-  type,
-  label: "",
-  key: false,
-  required: false,
-  min: null,
-  max: null,
-  options: [],
-  index: false,
-  ...overrides,
-})
+/** The form's folder: the pipeline folder's workbench/. */
+const FORM_FOLDER = resolve(e2eProjectRoot, "rating", "workbench")
 
-/** The sheets as a pricing team would start them: a policy table in, a pricing table out. */
-const FORM = {
-  version: 1,
-  name: "haute-e2e",
-  schema: {
-    tables: [
-      {
-        id: "t_policy",
-        name: "policy",
-        role: "input",
-        rows: "one",
-        columns: [
-          column("c_limit", "limit", "int", { required: true }),
-          column("c_region", "region", "str", { options: ["north", "south"] }),
-        ],
-      },
-      {
-        id: "t_pricing",
-        name: "pricing",
-        role: "output",
-        rows: "one",
-        columns: [column("c_premium", "premium", "float")],
-      },
+/**
+ * The form as a pricing team would start it, file by file, each saying only what is set: a
+ * policy table in, a pricing table out, and one blank sheet.
+ */
+const FORM_FILES: Record<string, unknown> = {
+  "form.json": { version: 1, name: "haute-e2e", schema: ["quote_details", "policy", "pricing"], sheets: ["sheet_1"] },
+  "schema/quote_details.json": { columns: [] },
+  "schema/policy.json": {
+    id: "t_policy",
+    role: "input",
+    rows: "one",
+    columns: [
+      { id: "c_limit", name: "limit", type: "int", required: true },
+      { id: "c_region", name: "region", type: "str", options: ["north", "south"] },
     ],
   },
-  pages: [{ id: "page_1", title: "Sheet 1", width: 1280, sections: [{ id: "section_1", title: "Section 1", height: 560, widgets: [] }] }],
-  sample: {},
+  "schema/pricing.json": { id: "t_pricing", role: "output", rows: "one", columns: [{ id: "c_premium", name: "premium", type: "float" }] },
+  "sheets/sheet_1.json": { id: "page_1", title: "Sheet 1", sections: [{ id: "section_1", title: "Section 1", components: [] }] },
+  "sheets/sheet_1.layout.json": { width: 1280, sections: { section_1: { height: 560, components: {} } } },
 }
+
+const readFormFile = (path: string) => JSON.parse(readFileSync(resolve(FORM_FOLDER, path), "utf8"))
 
 /** The pipeline's copies of the schema's tables, as the editor keeps them. */
 const INPUT_TABLES = [{ name: "policy", rows: "one", columns: [{ name: "limit", type: "int" }, { name: "region", type: "str" }] }]
 const OUTPUT_TABLES = [{ name: "pricing", rows: "one", columns: [{ name: "premium", type: "float" }] }]
 
-/** Switch the project's workbench on and write the sheets, as `haute init --workbench` and a save would. */
+/** Switch the project's workbench on and write its form's files, as `haute init --workbench` and a save would. */
 function enableWorkbench(): void {
-  appendFileSync(resolve(e2eProjectRoot, "haute.toml"), '\n[workbench]\nenabled = true\nform = "forms/form.json"\n')
-  mkdirSync(resolve(e2eProjectRoot, "forms"), { recursive: true })
-  writeFileSync(resolve(e2eProjectRoot, "forms", "form.json"), JSON.stringify(FORM, null, 2) + "\n")
+  appendFileSync(resolve(e2eProjectRoot, "haute.toml"), "\n[workbench]\nenabled = true\n")
+  for (const [path, content] of Object.entries(FORM_FILES)) {
+    const file = resolve(FORM_FOLDER, path)
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, JSON.stringify(content, null, 2) + "\n")
+  }
 }
 
 /**
@@ -246,14 +232,15 @@ test.describe("workbench", () => {
     await added.fill("excess")
     await added.press("Tab")
 
-    // Saved, the project in one Save: the sheet, the sample and the schema in the file the
-    // workbench reads, then the pipeline, its Workbench Input's copy carrying the column.
+    // Saved, the project in one Save: the schema, the sheet and the sample in the files of
+    // the folder the workbench reads, then the pipeline, its Workbench Input's copy carrying
+    // the column.
     await page.getByRole("button", { name: "Save", exact: true }).click()
-    await expect(page.getByTestId("toast-notification").filter({ hasText: "Saved → forms/form.json" })).toBeVisible()
+    await expect(page.getByTestId("toast-notification").filter({ hasText: "Saved → rating/workbench" })).toBeVisible()
     await expect(page.getByTestId("toast-notification").filter({ hasText: /Saved → rating[\\/]main\.py/ })).toBeVisible()
-    const saved = JSON.parse(readFileSync(resolve(e2eProjectRoot, "forms", "form.json"), "utf8"))
-    expect(saved.schema.tables.map((table: { name: string }) => table.name)).toEqual(["quote_details", "policy", "pricing"])
-    expect(saved.schema.tables[1].columns.map((column: { name: string }) => column.name)).toEqual(["quote_reference", "quote_option", "limit", "region", "excess"])
+    expect(readFormFile("form.json").schema).toEqual(["quote_details", "policy", "pricing"])
+    // The quote's reference and option lead the table without being written in its file.
+    expect(readFormFile("schema/policy.json").columns.map((column: { name: string }) => column.name)).toEqual(["limit", "region", "excess"])
     const copy = JSON.parse(readFileSync(resolve(e2eProjectRoot, "rating", "config", "workbench_input", "quote.json"), "utf8"))
     expect(copy.tables.map((table: { name: string }) => table.name)).toEqual(["quote_details", "policy"])
     expect(copy.tables[1]).toEqual({
@@ -267,15 +254,15 @@ test.describe("workbench", () => {
         { name: "excess", type: "str" },
       ],
     })
-    expect(saved.pages[0].sections[0].widgets).toHaveLength(1)
-    expect(saved.pages[0].sections[0].widgets[0]).toMatchObject({
+    // The Collection in the sheet's file, its fields by name, and its place in the sheet's layout.
+    const savedSheet = readFormFile("sheets/sheet_1.json")
+    expect(savedSheet.sections[0].components).toHaveLength(1)
+    expect(savedSheet.sections[0].components[0]).toMatchObject({
       type: "collection",
-      fields: [
-        { table: "t_policy", column: "c_limit" },
-        { table: "t_policy", column: "c_region" },
-        { table: "t_pricing", column: "c_premium" },
-      ],
+      fields: ["policy.limit", "policy.region", "pricing.premium"],
     })
-    expect(saved.sample).toEqual({ t_policy: [{ c_limit: "1000", c_region: "north" }] })
+    const savedLayout = readFormFile("sheets/sheet_1.layout.json")
+    expect(Object.keys(savedLayout.sections.section_1.components)).toEqual([savedSheet.sections[0].components[0].id])
+    expect(readFormFile("sample/policy.json")).toEqual([{ limit: "1000", region: "north" }])
   })
 })

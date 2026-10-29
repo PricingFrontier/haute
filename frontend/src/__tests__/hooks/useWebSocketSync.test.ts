@@ -1062,7 +1062,7 @@ describe("useWebSocketSync", () => {
 
       await act(async () => {
         latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({ type: "workbench_form_changed", form: "forms/form.json" }),
+          data: JSON.stringify({ type: "workbench_form_changed", form: "rating/workbench" }),
         }))
       })
 

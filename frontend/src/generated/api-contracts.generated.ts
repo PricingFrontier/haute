@@ -2495,15 +2495,15 @@ export interface WorkbenchColumn {
   type: 'int' | 'float' | 'str' | 'bool' | 'date';
 }
 /**
- * The workbench's form as its file holds it now, with the file's revision.
+ * The workbench's form as its folder holds it now, with the folder's revision.
  */
 export interface WorkbenchFormResponse {
   form: FormSpec;
   repairs: string[];
-  revision: string | null;
+  revision: string;
 }
 /**
- * The form: what the workbench edits and ``forms/form.json`` stores.
+ * The form: what the workbench edits and its ``workbench/`` folder stores.
  */
 export interface FormSpec {
   name: string;
@@ -2967,7 +2967,7 @@ export interface WorkbenchFormSaveResponse {
   form: FormSpec;
   git_sha: string | null;
   identity_required: boolean;
-  revision: string | null;
+  revision: string;
   uncaptured: string[];
   warnings: string[];
 }

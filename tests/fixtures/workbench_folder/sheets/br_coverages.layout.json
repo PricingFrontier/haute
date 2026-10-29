@@ -1,0 +1,22 @@
+{
+  "width": 1280,
+  "sections": {
+    "section_cv01": {
+      "height": 400,
+      "components": {
+        "collection_k3f9": {"x": 16, "y": 16, "w": 720, "h": 120},
+        "table_l4y5": {"x": 16, "y": 152, "w": 720, "h": 200},
+        "chart_c6h7": {"x": 760, "y": 16, "w": 480, "h": 280}
+      }
+    },
+    "section_pr01": {
+      "height": 240,
+      "components": {
+        "heading_h8d9": {"x": 16, "y": 8, "w": 480, "h": 40},
+        "table_p2r3": {"x": 16, "y": 56, "w": 720, "h": 160},
+        "import_i1m2": {"x": 760, "y": 56, "w": 160, "h": 32},
+        "export_e3x4": {"x": 760, "y": 104, "w": 160, "h": 32}
+      }
+    }
+  }
+}

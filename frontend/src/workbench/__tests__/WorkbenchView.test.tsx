@@ -59,7 +59,7 @@ describe("WorkbenchView", () => {
     useWorkbenchFormStore.setState({ status: "ready", loadError: null, stale: false, form: null, ...actions })
     useWorkbenchPricingStore.setState({ ...pricing, error: null, price: null })
     useWorkbenchViewStore.setState({ mode: "build", schemaOpen: false, selectedId: null })
-    useWorkbenchStore.setState({ enabled: true, activeView: "workbench", formPath: "forms/form.json" })
+    useWorkbenchStore.setState({ enabled: true, activeView: "workbench", formPath: "rating/workbench" })
     useUIStore.setState({ gitOpen: false, assistantOpen: false, paletteOpen: true })
   })
 
@@ -158,12 +158,12 @@ describe("WorkbenchView", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Loading the workbench…")
 
     act(() => {
-      useWorkbenchFormStore.setState({ status: "failed", loadError: "forms/form.json is not JSON: bad" })
+      useWorkbenchFormStore.setState({ status: "failed", loadError: "rating/workbench/form.json is not JSON: bad" })
     })
     rerender(
       <WorkbenchView onSave={onSave} onSaveShortcut={onSaveShortcut} isInsideSubmodel={false} readOnly={false} resolveGraph={resolveGraph} />,
     )
-    expect(screen.getByRole("alert")).toHaveTextContent("Could not read the workbench: forms/form.json is not JSON: bad")
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not read the workbench: rating/workbench/form.json is not JSON: bad")
     fireEvent.click(screen.getByRole("button", { name: "Try again" }))
     expect(actions.reload).toHaveBeenCalledTimes(1)
   })
@@ -173,7 +173,7 @@ describe("WorkbenchView", () => {
     renderView()
 
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "forms/form.json changed on disk since the workbench read it. Reload it to go on; unsaved edits will be lost.",
+      "rating/workbench changed on disk since the workbench read it. Reload it to go on; unsaved edits will be lost.",
     )
     fireEvent.click(screen.getByRole("button", { name: "Reload" }))
     expect(actions.reload).toHaveBeenCalledTimes(1)

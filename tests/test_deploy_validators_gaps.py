@@ -367,13 +367,12 @@ def _output_copy() -> list[dict[str, Any]]:
 
 
 def _workbench_project(root: Path, *, enabled: bool = True, form: bool = True) -> None:
-    from haute._workbench_form import FormSpec, render_form
+    from tests._workbench_helpers import enable, write_form
 
-    (root / "haute.toml").write_text(
-        f"[workbench]\nenabled = {str(enabled).lower()}\n", encoding="utf-8"
-    )
+    enable(root, f"[workbench]\nenabled = {str(enabled).lower()}\n")
     if form:
-        spec = FormSpec.model_validate(
+        write_form(
+            root,
             {
                 "name": "motor",
                 "schema": {"tables": _FORM_TABLES},
@@ -385,10 +384,8 @@ def _workbench_project(root: Path, *, enabled: bool = True, form: bool = True) -
                         "sections": [{"id": "s", "title": "s", "height": 120, "widgets": []}],
                     }
                 ],
-            }
+            },
         )
-        (root / "forms").mkdir()
-        (root / "forms" / "form.json").write_text(render_form(spec), encoding="utf-8")
 
 
 def _details_copy() -> dict[str, Any]:
@@ -514,7 +511,7 @@ class TestValidateDeployWorkbenchForm:
         [error] = _form_check_errors(tmp_path, input_copy, output_copy)
 
         owner = "Workbench Input 'quote'" if node == "input" else "Workbench Output 'priced'"
-        assert error.startswith(f"{owner} does not match forms/form.json: ")
+        assert error.startswith(f"{owner} does not match rating/workbench: ")
         assert named in error
         assert "Save the project in Haute's editor" in error
 
@@ -530,7 +527,7 @@ class TestValidateDeployWorkbenchForm:
         input_copy[1]["columns"] = [_column("value", "float"), _column("quote_option", "str")]
 
         assert _form_check_errors(tmp_path, input_copy, _output_copy()) == [
-            "forms/form.json: items.quote_option has a name Haute keeps for the quote's "
+            "rating/workbench: items.quote_option has a name Haute keeps for the quote's "
             "identity in every table: rename it, and the table takes quote_reference and "
             "quote_option at the next save."
         ]
@@ -545,12 +542,42 @@ class TestValidateDeployWorkbenchForm:
         assert "table 'quote_details' is in the form but not in the copy" in error
         assert "Save the project in Haute's editor" in error
 
-    def test_a_form_file_that_does_not_exist_is_refused(self, tmp_path: Path) -> None:
+    def test_a_form_folder_that_does_not_exist_is_refused(self, tmp_path: Path) -> None:
         _workbench_project(tmp_path, form=False)
 
         [error] = _form_check_errors(tmp_path, _input_copy(), _output_copy())
 
-        assert "forms/form.json does not exist" in error
+        assert error.startswith("rating/workbench does not exist: restore it from version history")
+
+    def test_a_sheet_naming_a_column_the_schema_does_not_hold_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        import json
+
+        _workbench_project(tmp_path)
+        # A field on a column one branch dropped, which another's merge kept showing.
+        sheet = tmp_path / "rating" / "workbench" / "sheets" / "sheet_1.json"
+        layout = tmp_path / "rating" / "workbench" / "sheets" / "sheet_1.layout.json"
+        held = json.loads(sheet.read_bytes())
+        held["sections"][0]["components"] = [
+            {
+                "id": "collection_kept",
+                "type": "collection",
+                "title": "Cover",
+                "fields": ["policy.gone"],
+            }
+        ]
+        sheet.write_bytes((json.dumps(held) + "\n").encode())
+        placed = json.loads(layout.read_bytes())
+        placed["sections"]["s"]["components"] = {
+            "collection_kept": {"x": 0, "y": 0, "w": 200, "h": 100}
+        }
+        layout.write_bytes((json.dumps(placed) + "\n").encode())
+
+        assert _form_check_errors(tmp_path, _input_copy(), _output_copy()) == [
+            'rating/workbench/sheets/sheet_1.json, the Collection "Cover" names policy.gone, '
+            "which the schema does not hold."
+        ]
 
     def test_a_project_whose_workbench_is_off_is_not_checked_against_a_form(
         self, tmp_path: Path
@@ -563,11 +590,11 @@ class TestValidateDeployWorkbenchForm:
 
     def test_a_form_that_cannot_be_read_is_reported(self, tmp_path: Path) -> None:
         _workbench_project(tmp_path)
-        (tmp_path / "forms" / "form.json").write_text("not json", encoding="utf-8")
+        (tmp_path / "rating" / "workbench" / "form.json").write_text("not json", encoding="utf-8")
 
         [error] = _form_check_errors(tmp_path, _input_copy(), _output_copy())
 
-        assert "forms/form.json is not JSON" in error
+        assert "rating/workbench/form.json is not JSON" in error
 
     def test_a_copy_not_as_the_workbench_writes_it_is_reported(self, tmp_path: Path) -> None:
         _workbench_project(tmp_path)

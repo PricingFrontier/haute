@@ -66,7 +66,7 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
   const setPricer = useWorkbenchPricingStore((s) => s.setPricer)
   const schedule = useWorkbenchPricingStore((s) => s.schedule)
   const cancel = useWorkbenchPricingStore((s) => s.cancel)
-  const formPath = useWorkbenchStore((s) => s.formPath) ?? "forms/form.json"
+  const formPath = useWorkbenchStore((s) => s.formPath) ?? "the workbench's form"
   const gitOpen = useUIStore((s) => s.gitOpen)
   const setGitOpen = useUIStore((s) => s.setGitOpen)
   const assistantOpen = useUIStore((s) => s.assistantOpen)

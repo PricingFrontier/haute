@@ -6206,7 +6206,7 @@
     },
     "FormSpec": {
       "additionalProperties": false,
-      "description": "The form: what the workbench edits and ``forms/form.json`` stores.",
+      "description": "The form: what the workbench edits and its ``workbench/`` folder stores.",
       "properties": {
         "name": {
           "title": "Name",
@@ -17583,7 +17583,7 @@
       "type": "object"
     },
     "WorkbenchFormResponse": {
-      "description": "The workbench's form as its file holds it now, with the file's revision.",
+      "description": "The workbench's form as its folder holds it now, with the folder's revision.",
       "properties": {
         "form": {
           "$ref": "#/$defs/FormSpec"
@@ -17597,16 +17597,8 @@
           "type": "array"
         },
         "revision": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Revision"
+          "title": "Revision",
+          "type": "string"
         }
       },
       "required": [
@@ -17641,16 +17633,8 @@
           "type": "boolean"
         },
         "revision": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Revision"
+          "title": "Revision",
+          "type": "string"
         },
         "uncaptured": {
           "items": {

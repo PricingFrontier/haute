@@ -405,7 +405,7 @@ minutes and any other 15 (`_deploy_timeout_minutes`), longer than a Databricks d
 for its endpoint. The release inputs that start a deploy are listed once
 too (`_RELEASE_INPUT_DIRS`, the pipeline folder of `PIPELINE_FILE`, the file the
 scaffolded `haute.toml` names, which holds the form folder too, and the test quotes'
-folder, and `_RELEASE_INPUT_FILES`, through `_release_input_dirs`) and rendered by
+folder, and `_RELEASE_INPUT_FILES`) and rendered by
 `_github_trigger_paths` and `_azure_devops_trigger_paths`, the same with or without a
 workbench.
 Every CI generator also takes `python_version`

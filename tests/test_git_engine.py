@@ -256,6 +256,20 @@ class TestCommitSave:
         assert sha is not None
         assert _git(repo, "log", "-1", "--format=%s", sha) == "Updated rating"
 
+    def test_a_form_folder_save_names_the_tables_and_sheets_it_changed(self, repo: Path) -> None:
+        sha = _write_and_save(
+            repo,
+            WORKING,
+            {
+                "rating/workbench/schema/perils.json": "{}\n",
+                "rating/workbench/sheets/br_coverages.layout.json": "{}\n",
+            },
+        )
+        assert sha is not None
+        assert _git(repo, "log", "-1", "--format=%s", sha) == (
+            "Updated workbench/schema/perils, workbench/sheets/br_coverages layout"
+        )
+
 
 class TestMilestoneMerge:
     def test_first_milestone_is_real_merge_with_user_message(self, repo: Path) -> None:
@@ -1234,6 +1248,13 @@ class TestSeedGitignoreGuards:
             "rating/main.haute.json",
             "rating/utility/helpers.py",
             "rating/config/data_input/quotes.json",
+            # The workbench's form folder, in the pipeline folder or, for a root pipeline,
+            # at the root.
+            "rating/workbench/form.json",
+            "rating/workbench/schema/quote_details.json",
+            "rating/workbench/sheets/sheet_1.json",
+            "rating/workbench/sheets/sheet_1.layout.json",
+            "workbench/sample/perils.json",
             "prompts/starter.md",
             "tests/test_pipeline.py",
             ".githooks/pre-commit",

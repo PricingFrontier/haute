@@ -115,7 +115,7 @@ class TestHauteToml:
         assert "[workbench]" not in haute_toml("motor", "databricks", "github")
 
         doc = tomllib.loads(haute_toml("motor", "databricks", "github", workbench=True))
-        assert doc["workbench"] == {"enabled": True, "form": "forms/form.json"}
+        assert doc["workbench"] == {"enabled": True}
         assert doc["project"]["name"] == "motor"
 
 
@@ -622,12 +622,12 @@ def _github_trigger(document: dict[object, object]) -> dict[str, object]:
     return trigger
 
 
-def _deploy_trigger_paths(provider: str, *, workbench: bool) -> list[str]:
+def _deploy_trigger_paths(provider: str) -> list[str]:
     if provider == "github":
-        push = _github_trigger(yaml.safe_load(github_deploy_yml("databricks", workbench=workbench)))
+        push = _github_trigger(yaml.safe_load(github_deploy_yml("databricks")))
         paths = push["push"]["paths"]  # type: ignore[index]
     else:
-        document = yaml.safe_load(azure_devops_yml("databricks", workbench=workbench))
+        document = yaml.safe_load(azure_devops_yml("databricks"))
         paths = document["trigger"]["paths"]["include"]
     assert isinstance(paths, list)
     return paths
@@ -638,23 +638,17 @@ class TestDeployTriggers:
     """A push to main that changes a release input starts the deploy; GitLab filters no paths."""
 
     def test_only_folders_a_scaffolded_project_has_start_a_deploy(self, provider: str) -> None:
-        # The pipeline folder (its code, config and versioned files) and the test quotes;
-        # the root's ignored data/ and a root pipeline's models/ never change a release.
-        paths = _deploy_trigger_paths(provider, workbench=False)
+        # The pipeline folder (its code, config, versioned files and a workbench's form
+        # folder) and the test quotes; the root's ignored data/ and a root pipeline's models/
+        # never change a release.
+        paths = _deploy_trigger_paths(provider)
         folders = [path for path in paths if "." not in path]
         suffix = "/**" if provider == "github" else "/"
         assert folders == [f"rating{suffix}", f"tests/quotes{suffix}"]
 
     def test_a_dependency_change_starts_a_deploy(self, provider: str) -> None:
-        paths = _deploy_trigger_paths(provider, workbench=False)
+        paths = _deploy_trigger_paths(provider)
         assert {"pyproject.toml", "uv.lock"} <= set(paths)
-
-    def test_a_form_change_starts_a_workbench_projects_deploy(self, provider: str) -> None:
-        workbench = _deploy_trigger_paths(provider, workbench=True)
-        plain = _deploy_trigger_paths(provider, workbench=False)
-        assert [path for path in workbench if path not in plain] == [
-            "forms/**" if provider == "github" else "forms/"
-        ]
 
 
 class TestCompleteYamlParity:
@@ -910,18 +904,27 @@ class TestStarterFiles:
         assert isinstance(parsed, list)
         assert len(parsed) == 1
 
-    def test_starter_form_is_a_blank_workbench_form(self) -> None:
-        import json
+    def test_starter_form_is_the_blank_form_s_folder(self, tmp_path: Path) -> None:
+        from haute._workbench_config import WorkbenchConfig
+        from haute._workbench_folder import form_from_files
+        from haute._workbench_form import blank_form, quote_details_table
 
-        from haute._workbench_form import FormSpec, quote_details_table
-
-        text = starter_form("motor")
-        spec = FormSpec.model_validate(json.loads(text))
-        assert spec.name == "motor"
+        folder = tmp_path / "rating" / "workbench"
+        files = starter_form("motor", folder)
+        assert sorted(files) == [
+            "form.json",
+            "schema/quote_details.json",
+            "sheets/sheet_1.json",
+            "sheets/sheet_1.layout.json",
+        ]
+        config = WorkbenchConfig(enabled=True, project_root=tmp_path, form="rating/workbench")
+        spec, repairs = form_from_files(
+            config, {path: text.encode("utf-8") for path, text in files.items()}
+        )
+        assert (spec, repairs) == (blank_form("motor"), ())
         # Haute's quote_details table alone, which every form holds.
         assert spec.data_schema.tables == [quote_details_table()]
-        assert [page.title for page in spec.pages] == ["Sheet 1"]
-        assert text.endswith("\n")
+        assert all(text.endswith("\n") for text in files.values())
 
 
 class TestPreCommitHook:

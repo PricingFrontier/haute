@@ -2420,18 +2420,21 @@ class TestFileWatcher:
         assert len(broadcast_calls) == 0
 
     @pytest.mark.parametrize(
-        ("workbench", "changed", "announced"),
+        ("workbench", "changed", "announced", "own"),
         [
-            ("enabled = true", ["forms/form.json"], ["workbench_form_changed"]),
-            # Once for a batch, however many events the write made.
-            ("enabled = true", ["forms/form.json", "forms/form.json"], ["workbench_form_changed"]),
+            ("enabled = true", ["workbench/form.json"], ["workbench_form_changed"], False),
+            # Once for a batch, however many files the save wrote or deleted.
             (
-                'enabled = true\nform = "sheets/quote.json"',
-                ["sheets/quote.json"],
+                "enabled = true",
+                ["workbench/schema/policy.json", "workbench/sheets/sheet_1.layout.json"],
                 ["workbench_form_changed"],
+                False,
             ),
-            ("enabled = true", ["forms/other.json"], []),
-            ("enabled = false", ["forms/form.json"], []),
+            # The server's own save is announced too: another window learns of it.
+            ("enabled = true", ["workbench/sheets/sheet_1.json"], ["workbench_form_changed"], True),
+            # Where the form's one file used to be is no part of the form.
+            ("enabled = true", ["forms/form.json"], [], False),
+            ("enabled = false", ["workbench/form.json"], [], False),
         ],
     )
     def test_the_workbench_form_changed_on_disk_is_announced(
@@ -2441,9 +2444,10 @@ class TestFileWatcher:
         workbench: str,
         changed: list[str],
         announced: list[str],
+        own: bool,
     ):
-        """A change to the form file haute.toml names, by hand or by git outside Haute, is
-        announced so the workbench can read it again; other JSON is not the form."""
+        """A change to a file in the form folder, by hand, by git outside Haute or by a save,
+        is announced so the workbench can read it again; other JSON is not the form."""
         import asyncio
         from unittest.mock import patch
 
@@ -2466,7 +2470,7 @@ class TestFileWatcher:
         with (
             patch("watchfiles.awatch", _fake_awatch),
             patch("haute.server.broadcast", _capture_broadcast),
-            patch("haute.server.is_self_write", return_value=False),
+            patch("haute.server.is_self_write", return_value=own),
             patch("haute.server._DEBOUNCE_SECONDS", 0),
         ):
             loop = asyncio.new_event_loop()
@@ -2477,7 +2481,8 @@ class TestFileWatcher:
 
         assert [call["type"] for call in broadcast_calls] == announced
         for call in broadcast_calls:
-            assert call["form"] == changed[0]
+            # The form folder as the status names it: the root pipeline's own.
+            assert call["form"] == "workbench"
 
     def test_self_write_skips_broadcast(self, pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch):
         """Changes during self-write cooldown should be skipped."""
@@ -5429,7 +5434,7 @@ class TestBroadcastTreeChange:
 
         monkeypatch.setattr(server, "load_pipeline_editor_document", load)
         monkeypatch.setattr(
-            server, "_workbench_form_file", lambda _root: ("forms/form.json", "form.json")
+            server, "_workbench_form_file", lambda _root: ("workbench", tmp_path / "workbench")
         )
         events: list[tuple[str, dict[str, object]]] = []
         unsubscribes = [
@@ -5447,7 +5452,7 @@ class TestBroadcastTreeChange:
             ("pipeline.document.update", "good.py"),
             ("workbench.form.changed", None),
         ]
-        assert ("workbench.form.changed", {"form": "forms/form.json"}) in events
+        assert ("workbench.form.changed", {"form": "workbench"}) in events
 
     def test_the_configured_pipeline_missing_from_the_version_is_announced(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

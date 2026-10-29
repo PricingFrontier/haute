@@ -1,5 +1,6 @@
 """The ``[workbench]`` table of ``haute.toml`` (specs/workbench): whether a project's workbench
-is enabled and where its form is, and what is refused."""
+is enabled, where its form folder is (the pipeline folder's ``workbench/``), and what is
+refused."""
 
 from __future__ import annotations
 
@@ -9,13 +10,10 @@ from pathlib import Path
 
 import pytest
 
-from haute._workbench_config import (
-    DEFAULT_FORM_PATH,
-    WorkbenchConfigError,
-    read_workbench_config,
-)
+from haute._workbench_config import WorkbenchConfigError, read_workbench_config
 from haute.deploy._config import _validate_toml_keys
 from haute.errors import ConfigError
+from tests._workbench_helpers import PIPELINE_SOURCE, enable
 
 
 def _write(project: Path, text: str) -> None:
@@ -29,26 +27,45 @@ def test_a_project_without_the_table_has_no_workbench(tmp_path: Path) -> None:
     config = read_workbench_config(tmp_path)
 
     assert config.enabled is False
-    assert config.form == DEFAULT_FORM_PATH
-    assert config.form_path == tmp_path / "forms" / "form.json"
+    with pytest.raises(WorkbenchConfigError, match="not enabled"):
+        _ = config.form_folder
 
 
-def test_the_table_enables_the_workbench_with_the_default_form(tmp_path: Path) -> None:
-    _write(tmp_path, '[project]\nname = "motor"\n\n[workbench]\nenabled = true\n')
+def test_the_table_enables_the_workbench_in_the_pipeline_folder(tmp_path: Path) -> None:
+    enable(tmp_path)
 
     config = read_workbench_config(tmp_path)
 
     assert config.enabled is True
-    assert config.form == "forms/form.json"
-    assert config.form_path == tmp_path / "forms" / "form.json"
+    assert config.form == "rating/workbench"
+    assert config.form_folder == tmp_path / "rating" / "workbench"
     assert config.project_root == tmp_path
 
 
+def test_a_pipeline_at_the_root_keeps_its_form_folder_at_the_root(tmp_path: Path) -> None:
+    (tmp_path / "main.py").write_text(PIPELINE_SOURCE, encoding="utf-8")
+    _write(tmp_path, '[project]\nname = "x"\npipeline = "main.py"\n\n[workbench]\nenabled = true\n')
+
+    assert read_workbench_config(tmp_path).form == "workbench"
+
+
+def test_an_enabled_workbench_needs_the_project_s_pipeline_file(tmp_path: Path) -> None:
+    named = '[project]\nname = "x"\npipeline = "rating/main.py"\n\n'
+    _write(tmp_path, named + "[workbench]\nenabled = true\n")
+
+    with pytest.raises(WorkbenchConfigError, match="needs the project's pipeline file"):
+        read_workbench_config(tmp_path)
+
+    # A disabled one does not look for it.
+    _write(tmp_path, named + "[workbench]\nenabled = false\n")
+    assert read_workbench_config(tmp_path).enabled is False
+
+
 def test_the_app_table_names_where_the_underwriter_app_runs(tmp_path: Path) -> None:
-    _write(tmp_path, "[workbench]\nenabled = true\n")
+    enable(tmp_path)
     assert read_workbench_config(tmp_path).app_host is None
 
-    _write(
+    enable(
         tmp_path, '[workbench]\nenabled = true\n\n[workbench.app]\nhost = "azure-container-apps"\n'
     )
     assert read_workbench_config(tmp_path).app_host == "azure-container-apps"
@@ -56,23 +73,13 @@ def test_the_app_table_names_where_the_underwriter_app_runs(tmp_path: Path) -> N
 
 
 def test_the_app_table_names_the_role_that_may_change_quotes(tmp_path: Path) -> None:
-    _write(
+    enable(
         tmp_path,
         '[workbench]\nenabled = true\n\n[workbench.app]\nhost = "azure-container-apps"\n'
         'edit_role = " Quotes.Edit "\n',
     )
 
     assert read_workbench_config(tmp_path).app_edit_role == "Quotes.Edit"
-
-
-def test_the_table_can_disable_the_workbench_and_name_its_form(tmp_path: Path) -> None:
-    _write(tmp_path, '[workbench]\nenabled = false\nform = "workbench/quote.json"\n')
-
-    config = read_workbench_config(tmp_path)
-
-    assert config.enabled is False
-    assert config.form == "workbench/quote.json"
-    assert config.form_path == tmp_path / "workbench" / "quote.json"
 
 
 @pytest.mark.parametrize(
@@ -83,13 +90,12 @@ def test_the_table_can_disable_the_workbench_and_name_its_form(tmp_path: Path) -
         ("workbench = true\n", "[workbench] must be a TOML table"),
         (
             "[workbench]\nenabled = true\nenable = true\nlabel = 'x'\n",
-            "[workbench] has unknown key(s): enable, label; the keys are enabled, form and app",
+            "[workbench] has unknown key(s): enable, label; the keys are enabled and app",
         ),
-        ("[workbench]\nenabled = true\nform = 3\n", "[workbench].form must be a path"),
-        ("[workbench]\nenabled = true\nform = '  '\n", "[workbench].form must be a path"),
         (
-            "[workbench]\nenabled = true\nform = '../elsewhere/form.json'\n",
-            "[workbench].form must stay inside the project",
+            "[workbench]\nenabled = true\nform = 'forms/form.json'\n",
+            "[workbench].form was removed: the form is the pipeline folder's workbench/ folder; "
+            "delete the key",
         ),
         ("[workbench]\nenabled = true\napp = 'azure'\n", "[workbench.app] must be a TOML table"),
         (
@@ -125,19 +131,10 @@ def test_the_table_can_disable_the_workbench_and_name_its_form(tmp_path: Path) -
 def test_a_bad_table_is_refused_naming_what_to_set(
     tmp_path: Path, table: str, message: str
 ) -> None:
+    # Each is refused before the pipeline file is looked for.
     _write(tmp_path, table)
 
     with pytest.raises(WorkbenchConfigError, match=re.escape(message)):
-        read_workbench_config(tmp_path)
-
-
-def test_an_absolute_form_path_is_refused(tmp_path: Path) -> None:
-    absolute = (tmp_path / "forms" / "form.json").resolve()
-    _write(
-        tmp_path, f"[workbench]\nenabled = true\nform = {str(absolute).replace(chr(92), '/')!r}\n"
-    )
-
-    with pytest.raises(WorkbenchConfigError, match="must be relative to the project root"):
         read_workbench_config(tmp_path)
 
 
@@ -167,23 +164,14 @@ def _link_directory(target: Path, link: Path) -> None:
         os.symlink(target, link, target_is_directory=True)
 
 
-def test_the_default_form_path_is_refused_when_forms_leads_outside_the_project(
-    tmp_path: Path,
-) -> None:
+def test_a_form_folder_leading_outside_the_project_is_refused(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
     outside = tmp_path / "outside"
     outside.mkdir()
-    (outside / "form.json").write_text("{}", encoding="utf-8")
-    _link_directory(outside, project / "forms")
+    enable(project)
+    _link_directory(outside, project / "rating" / "workbench")
 
-    # The default path resolves through the link to a file outside the project.
-    _write(project, "[workbench]\nenabled = true\n")
-    with pytest.raises(WorkbenchConfigError, match="must stay inside the project"):
-        read_workbench_config(project)
-
-    # A configured path through the same link is refused alike.
-    _write(project, '[workbench]\nenabled = true\nform = "forms/form.json"\n')
     with pytest.raises(WorkbenchConfigError, match="must stay inside the project"):
         read_workbench_config(project)
 
@@ -192,10 +180,12 @@ def test_deploy_s_whole_file_check_accepts_the_table_and_refuses_an_unknown_key(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "haute.toml"
-    _validate_toml_keys({"workbench": {"enabled": True, "form": "forms/form.json"}}, path)
+    _validate_toml_keys({"workbench": {"enabled": True}}, path)
     _validate_toml_keys(
         {"workbench": {"enabled": True, "app": {"host": "azure-container-apps"}}}, path
     )
 
     with pytest.raises(ValueError, match=r"\[workbench\] unknown key 'enable'"):
         _validate_toml_keys({"workbench": {"enable": True}}, path)
+    with pytest.raises(ValueError, match=r"\[workbench\] unknown key 'form'"):
+        _validate_toml_keys({"workbench": {"enabled": True, "form": "forms/form.json"}}, path)

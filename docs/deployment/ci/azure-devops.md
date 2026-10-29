@@ -236,7 +236,7 @@ Two more settings, if your code is in **Azure Repos Git**:
 
 ??? info "Key features"
 
-    - **Path filters** - the pipeline only triggers when relevant files change (the `rating/` pipeline package, config, data, models, test quotes, and the dependency files `pyproject.toml` and `uv.lock`; a project set up with `haute init --workbench` adds `forms/`), not on README changes
+    - **Path filters** - the pipeline only triggers when relevant files change (the `rating/` pipeline package, config, data, models, test quotes, and the dependency files `pyproject.toml` and `uv.lock`; a workbench's files are in the pipeline package, so a change to them deploys too), not on README changes
     - **PR validation** - the `Validate` stage runs on pull requests too (through a branch policy on Azure Repos), giving you feedback before merge
     - **Variable group** - credentials come from the `haute-credentials` variable group, not hardcoded
     - **Environment approvals** - configure approval checks on the `production` environment if you need manual approval before production deploy

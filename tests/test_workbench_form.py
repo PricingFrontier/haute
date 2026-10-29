@@ -1,18 +1,21 @@
-"""The workbench's form file (specs/workbench): one canonical shape, read whole with the
-file's revision and written atomically, with what is wrong named when it cannot be read."""
+"""The workbench's form (specs/workbench): one canonical shape, read whole as a save, a
+release and the quote store hold it, and grown where the folder it is read from leaves a
+component outside its section or sheet; the folder's own files are tested in
+``tests/test_workbench_folder.py``."""
 
 from __future__ import annotations
 
 import json
 import re
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
-from haute._explore_pivots import PIVOT_DECIMAL_PLACES_MAX, PIVOT_NUMBER_FORMATS
+from haute._explore_pivots import PIVOT_DECIMAL_PLACES_MAX
 from haute._workbench_config import WorkbenchConfig
+from haute._workbench_folder import read_form_document
 from haute._workbench_form import (
     BLANK_SECTION_HEIGHT,
     BLANK_SHEET_WIDTH,
@@ -22,22 +25,18 @@ from haute._workbench_form import (
     QUOTE_DETAILS_MANAGED,
     QUOTE_DETAILS_REFUSAL,
     TABLE_ROWS_MAX,
-    ColumnFormat,
     FormDocument,
     FormSpec,
     HeadingWidget,
     SchemaColumn,
-    WorkbenchFormError,
     blank_form,
-    form_file_revision,
     form_revision,
     identity_clashes,
     quote_details_table,
-    read_form_document,
     render_form,
     with_quote_details,
-    write_form,
 )
+from tests._workbench_helpers import form_files, write_files
 
 
 def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
@@ -355,8 +354,29 @@ def widgets(form: dict[str, Any]) -> list[dict[str, Any]]:
     return [widget for section in form["pages"][0]["sections"] for widget in section["widgets"]]
 
 
-def config(project: Path, form: str = "forms/form.json") -> WorkbenchConfig:
-    return WorkbenchConfig(enabled=True, form=form, project_root=project)
+def read_document(document: dict[str, Any]) -> FormSpec:
+    """*document* read as the form is wherever it is held whole (a save, a release, the
+    quote store): Haute's quote_details first."""
+    return with_quote_details(FormSpec.model_validate(document))
+
+
+#: The sheet the test form's folder files, by its title "Sheet 1".
+LAYOUT = "sheets/sheet_1.layout.json"
+
+
+def read_after_layout_edit(
+    project: Path, form: dict[str, Any], change: Any
+) -> tuple[FormDocument, bytes]:
+    """*form* saved as its folder, its one sheet's layout file then changed by *change*, as a
+    merge or a hand edit can, and the folder read back; with the layout file's bytes."""
+    folder = project / "rating" / "workbench"
+    files = form_files(form, folder)
+    layout = json.loads(files[LAYOUT])
+    change(layout)
+    files[LAYOUT] = (json.dumps(layout, indent=2) + "\n").encode("utf-8")
+    write_files(folder, files)
+    config = WorkbenchConfig(enabled=True, project_root=project, form="rating/workbench")
+    return read_form_document(config), files[LAYOUT]
 
 
 def test_the_editor_names_the_quote_details_columns_the_server_does() -> None:
@@ -402,7 +422,7 @@ def test_the_blank_form_is_one_empty_sheet_named_after_the_project() -> None:
 
     # The whole sheet is one section until another is added, as tall as the view's least
     # sheet height less the room it leaves below the sections, on a sheet 1280 wide.
-    section = {"id": "section_1", "title": "Section 1", "height": 560}
+    section = {"id": "section_0001", "title": "Section 1", "height": 560}
     assert json.loads(text) == {
         "version": 1,
         "name": "motor",
@@ -418,7 +438,7 @@ def test_the_blank_form_is_one_empty_sheet_named_after_the_project() -> None:
         "schema": {"tables": [quote_details_table().model_dump(mode="json")]},
         "pages": [
             {
-                "id": "page_1",
+                "id": "sheet_0001",
                 "title": "Sheet 1",
                 "width": 1280,
                 "show_when": ALWAYS,
@@ -430,32 +450,26 @@ def test_the_blank_form_is_one_empty_sheet_named_after_the_project() -> None:
     assert text.endswith("}\n")
 
 
-def test_a_form_round_trips_through_write_and_read_with_the_file_s_revision(
-    tmp_path: Path,
-) -> None:
+def test_a_form_round_trips_as_one_document_with_its_revision() -> None:
+    """As a release ships it and the quote store keeps it: every field, read back the same."""
     spec = FormSpec.model_validate(FORM)
 
-    revision = write_form(tmp_path / "forms" / "form.json", spec)
-    document = read_form_document(config(tmp_path))
+    data = render_form(spec).encode("utf-8")
 
-    # Read, it holds Haute's quote_details table first, which the file written without it
-    # takes on at its next save.
-    assert document == FormDocument(with_quote_details(spec), revision)
-    assert document.spec.data_schema.tables[0].id == "quote_details"
-    data = (tmp_path / "forms" / "form.json").read_bytes()
     assert json.loads(data) == FORM
-    # The revision is the file's content hash, so the same bytes read as the same revision.
-    assert revision == form_revision(data) == form_file_revision(config(tmp_path))
-    assert len(revision) == 16
+    # Read, it holds Haute's quote_details table first, as every form read whole does.
+    document = read_document(json.loads(data))
+    assert document == with_quote_details(spec)
+    assert document.data_schema.tables[0].id == "quote_details"
+    # The revision is the document's content hash: the same text, the same revision.
+    assert form_revision(data) == form_revision(render_form(spec).encode("utf-8"))
+    assert len(form_revision(data)) == 16
 
 
-def test_an_edit_to_the_file_changes_its_revision(tmp_path: Path) -> None:
-    path = tmp_path / "forms" / "form.json"
-    first = write_form(path, blank_form("motor"))
+def test_another_document_has_another_revision() -> None:
+    first = render_form(blank_form("motor")).encode("utf-8")
 
-    assert write_form(path, blank_form("motor")) == first
-    path.write_bytes(path.read_bytes().replace(b'"motor"', b'"home"'))
-    assert form_file_revision(config(tmp_path)) != first
+    assert form_revision(first.replace(b'"motor"', b'"home"')) != form_revision(first)
 
 
 def test_the_file_keeps_text_as_typed(tmp_path: Path) -> None:
@@ -470,15 +484,13 @@ def test_the_file_keeps_text_as_typed(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("text", ["", "   ", "  Cover  "])
-def test_a_heading_s_text_reads_and_writes_as_typed_blank_or_not(tmp_path: Path, text: str) -> None:
+def test_a_heading_s_text_reads_and_writes_as_typed_blank_or_not(text: str) -> None:
     # A Heading with no text is a problem the view names, never a refusal, and the spaces
-    # around its text and its description are the builder's: the file keeps what was typed.
+    # around its text and its description are the builder's: the form keeps what was typed.
     form = json.loads(json.dumps(FORM))
     widgets(form)[3].update(text=text, description=text)
-    (tmp_path / "forms").mkdir()
-    (tmp_path / "forms" / "form.json").write_text(json.dumps(form), encoding="utf-8")
 
-    spec = read_form_document(config(tmp_path)).spec
+    spec = read_document(form)
 
     heading = spec.pages[0].sections[1].widgets[0]
     assert isinstance(heading, HeadingWidget)
@@ -487,7 +499,7 @@ def test_a_heading_s_text_reads_and_writes_as_typed_blank_or_not(tmp_path: Path,
     assert (written["text"], written["description"]) == (text, text)
 
 
-def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> None:
+def test_every_field_is_written_so_the_document_has_one_spelling() -> None:
     # A file written without the index flags, the columns' display, the Table's and the
     # Chart's options, the Heading's text, description, size and alignment, the sheet's, the
     # Collection's and the Heading's show_when and the sample, as a builder that leaves
@@ -570,10 +582,8 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
     del sparse["pages"][0]["show_when"]
     del sparse["pages"][0]["sections"][0]["show_when"]
     del widgets(sparse)[0]["show_when"]
-    (tmp_path / "forms").mkdir()
-    (tmp_path / "forms" / "form.json").write_text(json.dumps(sparse), encoding="utf-8")
 
-    spec = read_form_document(config(tmp_path)).spec
+    spec = read_document(sparse)
 
     assert spec.sample == {}
     assert [c.index for c in spec.data_schema.tables[2].columns] == [
@@ -901,18 +911,12 @@ def test_every_field_is_written_so_the_file_has_one_spelling(tmp_path: Path) -> 
         ),
     ],
 )
-def test_an_unknown_field_or_a_value_outside_the_shape_is_refused(
-    tmp_path: Path, change: Any, where: str
-) -> None:
+def test_an_unknown_field_or_a_value_outside_the_shape_is_refused(change: Any, where: str) -> None:
     broken = json.loads(json.dumps(FORM))
     change(broken)
-    (tmp_path / "forms").mkdir()
-    (tmp_path / "forms" / "form.json").write_text(json.dumps(broken), encoding="utf-8")
 
-    with pytest.raises(
-        WorkbenchFormError, match="forms/form.json is not a workbench form"
-    ) as caught:
-        read_form_document(config(tmp_path))
+    with pytest.raises(ValidationError) as caught:
+        FormSpec.model_validate(broken)
     assert where in str(caught.value)
 
 
@@ -941,14 +945,12 @@ def test_a_section_or_sheet_too_small_for_a_component_is_grown_as_it_is_read_and
     """A merge or a hand edit can leave a component below its section or past its sheet's
     width: the form reads, each grown to hold it as a resize past the edge would, nothing
     moved, the file as it was."""
-    merged = json.loads(json.dumps(FORM))
-    merged["pages"][0]["sections"][1]["height"] = 40
-    merged["pages"][0]["width"] = 1000
-    (tmp_path / "forms").mkdir()
-    text = json.dumps(merged)
-    (tmp_path / "forms" / "form.json").write_text(text, encoding="utf-8")
 
-    document = read_form_document(config(tmp_path))
+    def shrink(layout: dict[str, Any]) -> None:
+        layout["sections"]["s_equipment"]["height"] = 40
+        layout["width"] = 1000
+
+    document, written = read_after_layout_edit(tmp_path, FORM, shrink)
 
     assert document.spec.pages[0].sections[1].height == 48
     assert document.spec.pages[0].width == 1240
@@ -957,8 +959,10 @@ def test_a_section_or_sheet_too_small_for_a_component_is_grown_as_it_is_read_and
         '"Équipement des entrepreneurs".',
         'Sheet "Sheet 1" grew from 1000px to 1240px wide to hold the Chart "Limits".',
     )
-    assert (tmp_path / "forms" / "form.json").read_text(encoding="utf-8") == text
+    assert (tmp_path / "rating" / "workbench" / LAYOUT).read_bytes() == written
     # The form's own checks still refuse such geometry, so a save of it is refused.
+    merged = json.loads(json.dumps(FORM))
+    merged["pages"][0]["sections"][1]["height"] = 40
     with pytest.raises(ValidationError, match="widget w_title reaches 48px down"):
         FormSpec.model_validate(merged)
     narrow = json.loads(json.dumps(FORM))
@@ -967,32 +971,26 @@ def test_a_section_or_sheet_too_small_for_a_component_is_grown_as_it_is_read_and
         FormSpec.model_validate(narrow)
 
 
-def test_a_section_as_tall_as_its_components_reach_holds_them(tmp_path: Path) -> None:
+def test_a_section_as_tall_as_its_components_reach_holds_them() -> None:
     exact = json.loads(json.dumps(FORM))
     exact["pages"][0]["sections"][1]["height"] = 48
-    (tmp_path / "forms").mkdir()
-    (tmp_path / "forms" / "form.json").write_text(json.dumps(exact), encoding="utf-8")
 
-    assert read_form_document(config(tmp_path)).spec.pages[0].sections[1].height == 48
+    assert read_document(exact).pages[0].sections[1].height == 48
 
 
-def test_a_sheet_as_wide_as_its_components_reach_holds_them(tmp_path: Path) -> None:
+def test_a_sheet_as_wide_as_its_components_reach_holds_them() -> None:
     exact = json.loads(json.dumps(FORM))
     exact["pages"][0]["width"] = 1240
-    (tmp_path / "forms").mkdir()
-    (tmp_path / "forms" / "form.json").write_text(json.dumps(exact), encoding="utf-8")
 
-    assert read_form_document(config(tmp_path)).spec.pages[0].width == 1240
+    assert read_document(exact).pages[0].width == 1240
 
 
-def test_a_collection_s_spacers_at_one_place_or_at_either_end_read(tmp_path: Path) -> None:
+def test_a_collection_s_spacers_at_one_place_or_at_either_end_read() -> None:
     # Two together are a wider gap; one before the first field or after the last, a gap there.
     spaced = json.loads(json.dumps(FORM))
     widgets(spaced)[0]["spacers"] = [0, 1, 1, 2]
-    (tmp_path / "forms").mkdir()
-    (tmp_path / "forms" / "form.json").write_text(json.dumps(spaced), encoding="utf-8")
 
-    spec = read_form_document(config(tmp_path)).spec
+    spec = read_document(spaced)
 
     assert widgets(json.loads(render_form(spec)))[0]["spacers"] == [0, 1, 1, 2]
 
@@ -1075,14 +1073,11 @@ def _export(target: dict[str, Any], **rest: Any) -> dict[str, Any]:
 
 @pytest.mark.parametrize("format_", ["csv", "excel", "sql"])
 def test_an_import_and_an_export_of_each_format_read_and_write_as_they_are(
-    tmp_path: Path, format_: str
+    format_: str,
 ) -> None:
     form = _with_buttons(_import(IMPORTS[format_]), _export(EXPORTS[format_]))
-    path = tmp_path / "form.json"
 
-    write_form(path, FormSpec.model_validate(form))
-
-    written = json.loads(path.read_text(encoding="utf-8"))
+    written = json.loads(render_form(FormSpec.model_validate(form)))
     assert (
         written["pages"][0]["sections"][2]["widgets"] == form["pages"][0]["sections"][2]["widgets"]
     )
@@ -1090,162 +1085,6 @@ def test_an_import_and_an_export_of_each_format_read_and_write_as_they_are(
 
 def _without(fields: dict[str, Any], key: str) -> dict[str, Any]:
     return {name: value for name, value in fields.items() if name != key}
-
-
-@pytest.mark.parametrize(
-    ("button", "missing"),
-    [
-        *[
-            (_without(_import(IMPORTS["csv"]), key), key)
-            for key in ("label", "table", "mode", "column_names")
-        ],
-        (_import(_without(IMPORTS["csv"], "delimiter")), "delimiter"),
-        (_import(_without(IMPORTS["excel"], "sheet")), "sheet"),
-        (_import(_without(IMPORTS["excel"], "header_row")), "header_row"),
-        (_import(_without(IMPORTS["sql"], "query")), "query"),
-        (_import(_without(IMPORTS["sql"], "parameters")), "parameters"),
-        *[(_without(_export(EXPORTS["csv"]), key), key) for key in ("label", "tables")],
-        *[
-            (_export(_without(EXPORTS["csv"], key)), key)
-            for key in ("file_name", "headers", "values", "delimiter")
-        ],
-        (_export(_without(EXPORTS["sql"], "connection")), "connection"),
-        (_export(_without(EXPORTS["sql"], "table_names")), "table_names"),
-    ],
-)
-def test_an_import_or_an_export_missing_a_setting_is_refused(
-    button: dict[str, Any], missing: str
-) -> None:
-    with pytest.raises(ValidationError) as caught:
-        FormSpec.model_validate(_with_buttons(button))
-    assert [(error["type"], error["loc"][-1]) for error in caught.value.errors()] == [
-        ("missing", missing)
-    ]
-
-
-@pytest.mark.parametrize(
-    ("button", "where"),
-    [
-        (_import({"format": "parquet"}), "parquet"),
-        (_import({"format": "csv", "delimiter": "pipe"}), "delimiter"),
-        (_import({"format": "csv", "sheet": "One"}), "sheet"),
-        (_import({"format": "excel", "header_row": 0}), "header_row"),
-        (_import({"format": "excel", "header_row": 101}), "header_row"),
-        (
-            _import(
-                {**IMPORTS["sql"], "parameters": [{"name": "1st", "table": "t", "column": "c"}]}
-            ),
-            "name",
-        ),
-        (
-            _import(
-                {
-                    **IMPORTS["sql"],
-                    "parameters": [{"name": "ref", "table": "t", "column": "c"}] * 2,
-                }
-            ),
-            "'ref' twice among its parameters",
-        ),
-        (_import(IMPORTS["csv"], table=None), "names columns but fills no table"),
-        (
-            _import(IMPORTS["csv"], column_names=[{"column": "c_limit", "name": "A"}] * 2),
-            "'c_limit' twice among its column names",
-        ),
-        (_import(IMPORTS["csv"], column_names=[{"column": "c_limit", "name": "  "}]), "name"),
-        (_import(IMPORTS["csv"], mode="merge"), "mode"),
-        (
-            _export(EXPORTS["csv"], tables=["t_layers", "t_layers"]),
-            "'t_layers' twice among its tables",
-        ),
-        (_export({**EXPORTS["csv"], "table_names": []}), "table_names"),
-        (_export({**EXPORTS["excel"], "headers": "both"}), "headers"),
-        (
-            _export(EXPORTS["sql"], tables=["t_policy"]),
-            "names a table 't_layers' it does not export",
-        ),
-        (
-            _export({**EXPORTS["sql"], "table_names": [{"table": "t_layers", "name": "a"}] * 2}),
-            "'t_layers' twice among its table names",
-        ),
-        (_export({**EXPORTS["sql"], "file_name": "x"}), "file_name"),
-    ],
-)
-def test_an_import_or_an_export_out_of_its_shape_is_refused(
-    button: dict[str, Any], where: str
-) -> None:
-    with pytest.raises(ValidationError) as caught:
-        FormSpec.model_validate(_with_buttons(button))
-    assert where in str(caught.value)
-
-
-def test_a_repair_names_an_import_or_an_export_by_its_label(tmp_path: Path) -> None:
-    merged = _with_buttons(_import(IMPORTS["csv"], label=""), _export(EXPORTS["csv"]))
-    merged["pages"][0]["sections"][2]["widgets"][1]["y"] = 24
-    merged["pages"][0]["sections"][2]["height"] = 40
-    (tmp_path / "forms").mkdir()
-    (tmp_path / "forms" / "form.json").write_text(json.dumps(merged), encoding="utf-8")
-
-    assert read_form_document(config(tmp_path)).repairs == (
-        'Section "Buttons" grew from 40px to 64px tall to hold the Export "Send to rating".',
-    )
-    merged["pages"][0]["sections"][2]["widgets"][0]["y"] = 32
-    (tmp_path / "forms" / "form.json").write_text(json.dumps(merged), encoding="utf-8")
-    assert read_form_document(config(tmp_path)).repairs == (
-        'Section "Buttons" grew from 40px to 72px tall to hold an Import.',
-    )
-
-
-def test_a_sheet_holding_its_own_components_is_refused_with_what_replaced_them(
-    tmp_path: Path,
-) -> None:
-    # As sheets were written before sections: refused by name, never read as one section.
-    old = json.loads(json.dumps(FORM))
-    old["pages"][0]["widgets"] = widgets(old)
-    del old["pages"][0]["sections"]
-    (tmp_path / "forms").mkdir()
-    (tmp_path / "forms" / "form.json").write_text(json.dumps(old), encoding="utf-8")
-
-    message = (
-        "forms/form.json is not a workbench form: pages.0.widgets was removed; a sheet's "
-        "components now sit in its sections (pages.0.sections[].widgets)"
-    )
-    with pytest.raises(WorkbenchFormError, match=f"^{re.escape(message)}"):
-        read_form_document(config(tmp_path))
-
-
-def test_a_column_takes_the_explore_pivot_s_number_formats() -> None:
-    """The sheets show a number as an Explore pivot does, and the Schema tab offers the
-    pivot's formats, so the file must accept exactly those."""
-    assert frozenset(get_args(ColumnFormat)) == PIVOT_NUMBER_FORMATS
-
-
-def test_a_form_that_is_not_utf8_names_the_file(tmp_path: Path) -> None:
-    (tmp_path / "forms").mkdir()
-    (tmp_path / "forms" / "form.json").write_bytes(b'{"name": "\xff\xfe"}')
-
-    with pytest.raises(WorkbenchFormError, match="forms/form.json is not UTF-8 text"):
-        read_form_document(config(tmp_path))
-
-
-def test_a_missing_form_is_the_blank_form_that_was_never_saved(tmp_path: Path) -> None:
-    project = tmp_path / "motor"
-    project.mkdir()
-
-    assert read_form_document(config(project)) == FormDocument(blank_form("motor"), None)
-    assert form_file_revision(config(project)) is None
-
-
-def test_a_form_that_is_not_json_or_cannot_be_read_names_the_file(tmp_path: Path) -> None:
-    (tmp_path / "forms").mkdir()
-    (tmp_path / "forms" / "form.json").write_text("{not json", encoding="utf-8")
-    with pytest.raises(WorkbenchFormError, match="forms/form.json is not JSON"):
-        read_form_document(config(tmp_path))
-
-    (tmp_path / "unreadable").mkdir()
-    with pytest.raises(WorkbenchFormError, match="unreadable could not be read"):
-        read_form_document(config(tmp_path, form="unreadable"))
-    with pytest.raises(WorkbenchFormError, match="unreadable could not be read"):
-        form_file_revision(config(tmp_path, form="unreadable"))
 
 
 # ── Haute's quote_details table ───────────────────────────────────────────
@@ -1260,7 +1099,7 @@ def _with_details_table(change: Any = None) -> dict[str, Any]:
     return form
 
 
-def test_a_form_holding_hautes_quote_details_reads_and_writes_as_it_is(tmp_path: Path) -> None:
+def test_a_form_holding_hautes_quote_details_reads_and_writes_as_it_is() -> None:
     held = _with_details_table(
         lambda table: table["columns"][2].update(label="Quote", help="As the broker calls it")
     )
@@ -1272,10 +1111,8 @@ def test_a_form_holding_hautes_quote_details_reads_and_writes_as_it_is(tmp_path:
     )
     held["schema"]["tables"][0]["columns"][0]["group"] = "Quote"
     held["schema"]["tables"][0]["columns"][10]["default_value"] = False
-    (tmp_path / "forms").mkdir()
-    (tmp_path / "forms" / "form.json").write_text(json.dumps(held), encoding="utf-8")
 
-    spec = read_form_document(config(tmp_path)).spec
+    spec = read_document(held)
 
     assert json.loads(render_form(spec)) == held
     assert [c.name for c in spec.data_schema.tables[0].columns] == [
@@ -1316,15 +1153,11 @@ def _earlier(count: int) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize("count", [11, 12, 13], ids=["before-is-renewal", "before-option", "wb30"])
-def test_a_form_saved_by_an_earlier_haute_takes_todays_quote_details_by_id(
-    tmp_path: Path, count: int
-) -> None:
+def test_a_form_saved_by_an_earlier_haute_takes_todays_quote_details_by_id(count: int) -> None:
     held = _earlier(count)
     as_saved = json.dumps(held)
-    (tmp_path / "forms").mkdir()
-    (tmp_path / "forms" / "form.json").write_text(as_saved, encoding="utf-8")
 
-    spec = read_form_document(config(tmp_path)).spec
+    spec = read_document(json.loads(as_saved))
 
     # Today's columns in today's order: the reference renamed, valid_until and currency
     # dropped, the missing ones added, what the project gave the kept ones kept.
