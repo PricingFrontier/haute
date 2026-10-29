@@ -181,7 +181,10 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
     navigation.guard(() => {
       if (dontAsk) {
         setSkipSwitchConfirm(true)
-        void setGitPrefs({ skip_switch_confirm: true }).catch(() => {})
+        // The switch goes ahead; a choice not saved is asked again next time, so say so.
+        void setGitPrefs({ skip_switch_confirm: true }).catch((err: unknown) => {
+          addToast("error", `Couldn't save "Don't ask again" on this machine: ${apiErrorMessage(err, "unknown error")}`)
+        })
       }
       setConfirmSwitch(null)
       setDontAskSwitch(false)
@@ -191,7 +194,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
         discardCanvasEdits()
         await discardFormEdits()
         addToast("success", `Switched to ${b.name}`)
-        if (from !== null) recordSwitch(from, b.name)
+        if (from !== null) recordSwitch(from, b.name, onSave)
       })
     })
   }
@@ -577,10 +580,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
               style={{ background: "var(--danger-soft-faint)", border: "1px solid var(--danger-soft-strong)" }}
             >
               <span className="text-[12px]" style={{ color: "var(--text-primary)" }}>
-                Permanently delete <span className="font-mono">{confirmDelete.name}</span> and its history?
-                {deleteLoss(confirmDelete) && (
-                  <> This also discards {deleteLoss(confirmDelete)}.</>
-                )}
+                Delete <span className="font-mono">{confirmDelete.name}</span>? {deleteOutcome(confirmDelete)}
                 {confirmDelete.is_current && <> You&apos;ll be returned to the branch chooser.</>}
               </span>
               <div className="flex justify-end gap-2">
@@ -676,12 +676,16 @@ function deletedWhen(iso: string): string {
   return when.toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
 }
 
-/** Human phrase for what a delete throws away beyond the lineage itself. */
-function deleteLoss(b: GitManagedBranch): string | null {
-  const parts: string[] = []
-  if (b.has_uncommitted_changes) parts.push("your uncommitted edits")
-  if (b.has_unmerged_saves) parts.push("saves not yet in a milestone")
-  return parts.length ? parts.join(" and ") : null
+/**
+ * What a delete does, as its dialog says it: the server keeps both of the branch's refs in
+ * the trash, so the branch and its saves can be restored, while the current branch's
+ * project changes since the last save are discarded with the checkout away.
+ */
+function deleteOutcome(b: GitManagedBranch): string {
+  const kept = b.has_unmerged_saves
+    ? "It goes to Deleted, with its saves not yet in a milestone, and can be restored from there."
+    : "It goes to Deleted and can be restored from there."
+  return b.has_uncommitted_changes ? `${kept} The project's changes since the last save are lost.` : kept
 }
 
 function BranchRow({

@@ -125,8 +125,8 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the twenty-two packages delivered or settled since (thirteen by 28
-October 2026, nine more on 29 October) have been removed from the sections below; the coverage table keeps the
+The findings of the twenty-three packages delivered or settled since (thirteen by 28
+October 2026, ten more on 29 October) have been removed from the sections below; the coverage table keeps the
 original counts.
 
 ## Validation — 25 October 2026
@@ -373,7 +373,6 @@ production:
 | Frontend optimiser | FOX-4, FOX-5, FOX-6, FOX-8, FOX-10 (optimiser part) | `FMOU-R05` |
 | Frontend Explore | FOX-7, FOX-9, FOX-10 (Explore part), FOX-11, FOX-12 | `EDA-R03` |
 | Trace UI | FTG-1, FTG-4, FTG-6, FTG-10, FTG-11, FTG-13, FTG-15, FTG-16, FTG-21 | `TRACE-R05` |
-| Git UI | FTG-2, FTG-3, FTG-7, FTG-8, FTG-14, FTG-17, FTG-19, FTG-22 | `GIT-R07` |
 | Assistant UI | FTG-5, FTG-18, FTG-20 | `ASSIST-60` |
 | Sandbox security | PM-42 | `SBX-R04` |
 | Workbench | PM-44 | `WB-33` |

@@ -20,7 +20,6 @@ and return cycles and made and deleted two branches between 13:14 and 13:36.
 |---|---|---:|---|
 | GIT-R05 | Planned | P3 | The git modules carry no dead symbols, one free-name finder and one compensation helper. |
 | GIT-R06 | Decision | P3 | Automatic ledger saves either skip the project's git hooks or the specification says they run them. |
-| GIT-R07 | Planned | P2 | Every tree-changing action in the git UI passes the dirty-project guard and names what changes, a failed history read shows an error rather than an empty branch, a failed preference save is reported, and the dialogs say what the server does. |
 | GIT-R16 | Planned | P3 | A working branch left without its ledger, or half archived, is reported at startup with a Repair that leaves a whole pair. |
 | GIT-R18 | Planned | P2 | A rejected push's Catch up and Spin off actions stay bound to that rejection's remote. |
 
@@ -71,35 +70,6 @@ save.
 `src/haute/_git_transactions.py::commit_milestone`;
 `src/haute/_scaffold.py::pre_commit_hook`.
 
-### GIT-R07 — The git UI guards and reports every tree change
-**Why:** Catch up and Spin off a copy update the working tree from one click
-with no confirmation and without the dirty-project guard every other tree-changing action has, so unsaved
-in-memory canvas and form edits meet the change unannounced (the server refuses
-a dirty tracked tree, so what is exposed is the in-memory state); the toolbar's
-undo and redo of a branch switch check out the other branch with no guard and
-without discarding the form's edits. After a history fetch fails the panel shows
-"No milestones yet" once the toast fades, so a transport failure reads as an
-empty branch. "Don't ask again on this machine" swallows a failed preference
-save, so the prompt returns next time with no explanation. The delete dialog
-says "Permanently delete" for a trash-preserving delete the toolbar can undo; an
-`invalid` readiness state shows only its first error.
-
-**Plan:** Route Catch up, Spin off and the undo legs through the dirty-navigation
-guard with a confirm naming what changes, then discard the form's edits on
-success; keep a load error in the history hook and render it with Retry; report
-the preference failure; word the delete as recoverable; list every error.
-
-**Acceptance:** Catch up with unsaved canvas edits asks first; a history fetch
-failure shows an error with Retry, not the empty state; a failed preference save
-toasts.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/components/RemotePushControl.tsx`;
-`frontend/src/utils/vcHistory.ts`; `frontend/src/panels/git/useGitHistory.ts`;
-`frontend/src/components/BranchManager.tsx`;
-`frontend/src/components/WorkingBranchModal.tsx`.
-
 ### GIT-R16 — Broken pairs reported with Repair
 **Why:** Delete and archive used to move a pair's two refs one step at a time, so a
 crash between the steps could leave an orphan ledger (`x-save` with no `x`) or a
@@ -139,7 +109,9 @@ mutable dropdown after confirmation.
 is submitted or the stale dialog is explicitly refused. The dialog and action always name the
 same remote. Existing dirty-document and branch protections still apply.
 
-**Dependencies:** `GIT-R07` owns dirty-document guards; it does not authenticate this remote identity.
+**Dependencies:** None. Catch up and Spin off ask about unsaved edits first, naming the remote
+the action submits, so that question must follow whichever remote this package binds the
+actions to.
 
 **Evidence:** `frontend/src/components/RemotePushControl.tsx::RemotePushControl.doCatchUp`;
 `frontend/src/components/RemotePushControl.tsx::RemotePushControl.doBranchAway`;

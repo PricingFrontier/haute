@@ -20,9 +20,12 @@ import {
   parseGitPushRejection,
 } from "../api/client"
 import type { GitCiSecrets, GitPushRejection, GitRemote, GitRemoteLeg } from "../api/types"
+import useDirtyNavigation, { type DirtyNavigationQuestion } from "../hooks/useDirtyNavigation"
+import { discardCanvasEdits, discardFormEdits } from "../hooks/useProjectDirty"
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 import { apiErrorMessage } from "../api/errors"
+import GitNavigationConfirm from "./GitNavigationConfirm"
 import ModalShell from "./ModalShell"
 import Tooltip from "./Tooltip"
 
@@ -32,6 +35,8 @@ interface RemotePushControlProps {
   pendingSaveCount: number
   /** Bumped by the panel after a save / commit so ahead/behind re-fetches. */
   refreshNonce?: number
+  /** The project's save, for Save first before Catch up or Spin off replaces unsaved edits. */
+  onSave?: () => Promise<boolean>
 }
 
 /**
@@ -71,8 +76,10 @@ function withoutRemote(
 export default function RemotePushControl({
   pendingSaveCount,
   refreshNonce = 0,
+  onSave,
 }: RemotePushControlProps) {
   const addToast = useToastStore((s) => s.addToast)
+  const navigation = useDirtyNavigation(onSave)
   const [remotes, setRemotes] = useState<GitRemote[]>([])
   const [selected, setSelected] = useState<string>("")
   const [loaded, setLoaded] = useState(false)
@@ -123,6 +130,14 @@ export default function RemotePushControl({
   }, [load, refreshNonce])
 
   const selectedRemote = remotes.find((r) => r.name === selected) ?? null
+
+  // Catch up and Spin off move the branch: the readiness is read with a request issued
+  // after them, the branch list and history refetch, and the remotes' divergence reloads.
+  const reloadAfterTreeChange = useCallback(async () => {
+    await useGitStore.getState().loadStatus({ refresh: true })
+    useGitStore.getState().notifyHistoryChanged()
+    await load()
+  }, [load])
 
   const doPush = useCallback(async () => {
     if (!selected) return
@@ -230,10 +245,13 @@ export default function RemotePushControl({
     setCatchingUp(true)
     try {
       const res = await gitFastForward(selected)
+      // The files are the remote's now: edits chosen over them go, as after a switch.
+      discardCanvasEdits()
+      await discardFormEdits()
       const n = res.fast_forwarded.length
       addToast("success", `Caught up - updated ${n} branch${n === 1 ? "" : "es"} from ${res.remote}`)
       setRejection(null)
-      await load()
+      await reloadAfterTreeChange()
     } catch (err) {
       const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Couldn't catch up: ${detail}`)
@@ -241,7 +259,7 @@ export default function RemotePushControl({
     } finally {
       setCatchingUp(false)
     }
-  }, [selected, addToast, load])
+  }, [selected, addToast, reloadAfterTreeChange])
 
   // A clean catch-up is offered only when a leg is behind and NO leg has local
   // work the remote lacks (ahead/diverged) — matches the engine's ff precondition.
@@ -258,12 +276,14 @@ export default function RemotePushControl({
     setBranchingAway(true)
     try {
       const res = await gitBranchAway(selected)
+      discardCanvasEdits()
+      await discardFormEdits()
       addToast(
         "success",
         `Set your version aside as ${res.set_aside_as} - you're now on the shared copy`,
       )
       setRejection(null)
-      await load()
+      await reloadAfterTreeChange()
     } catch (err) {
       const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Couldn't spin off a copy: ${detail}`)
@@ -271,7 +291,27 @@ export default function RemotePushControl({
     } finally {
       setBranchingAway(false)
     }
-  }, [selected, addToast, load])
+  }, [selected, addToast, reloadAfterTreeChange])
+
+  // Both rewrite the project's files from the remote, so unsaved edits in the canvas or
+  // the workbench's form are asked about first; each runs bound to the remote selected
+  // at the click, which its question names.
+  const catchUp = () =>
+    navigation.guard(
+      () => void doCatchUp(),
+      `Save them before catching up? Catching up replaces the project's files with ${selected}'s.`,
+    )
+  const branchAway = () =>
+    navigation.guard(
+      () => void doBranchAway(),
+      `Save them before spinning off a copy? Spinning off sets your version aside and replaces the project's files with ${selected}'s.`,
+    )
+
+  // Closing the rejection dialog drops a question open in it, so it never runs later.
+  const closeRejection = () => {
+    navigation.confirm?.onCancel()
+    setRejection(null)
+  }
 
   // Fully offline (no remotes): say so plainly rather than show an empty dropdown.
   if (loaded && loadError && remotes.length === 0 && !rejection) {
@@ -335,7 +375,7 @@ export default function RemotePushControl({
         <Tooltip label="Fast-forward your branch to the latest on the remote" side="bottom">
           <button
             data-testid="git-catch-up-button"
-            onClick={() => void doCatchUp()}
+            onClick={catchUp}
             disabled={catchingUp}
             className="shrink-0 inline-flex items-center gap-1 text-[11px] font-medium rounded-md px-2 py-1 transition-colors disabled:opacity-40"
             style={{ border: "1px solid var(--border)", color: "var(--text-secondary)" }}
@@ -360,6 +400,12 @@ export default function RemotePushControl({
         </button>
       </Tooltip>
 
+      {navigation.confirm && !rejection && (
+        <div className="basis-full">
+          <GitNavigationConfirm {...navigation.confirm} />
+        </div>
+      )}
+
       {confirming && (
         <PushConfirm
           count={pendingSaveCount}
@@ -374,9 +420,10 @@ export default function RemotePushControl({
           rejection={rejection}
           catchingUp={catchingUp}
           branchingAway={branchingAway}
-          onCatchUp={() => void doCatchUp()}
-          onBranchAway={() => void doBranchAway()}
-          onClose={() => setRejection(null)}
+          confirm={navigation.confirm}
+          onCatchUp={catchUp}
+          onBranchAway={branchAway}
+          onClose={closeRejection}
         />
       )}
 
@@ -541,11 +588,13 @@ function LedgerStatus({ remote }: { remote: GitRemote }) {
  *  the conflict-free resolution inline: "Catch up (fast-forward)" when the fork is
  *  behind-only, or "Spin off a copy" (branch-away) when it has genuinely diverged.
  *  No fork diagram — the visual lives in the future history tree view (per the U3
- *  ruling). */
+ *  ruling). The unsaved-edits question either action asks (`confirm`) takes the place
+ *  of the actions while it is open. */
 function PushRejectedModal({
   rejection,
   catchingUp,
   branchingAway,
+  confirm,
   onCatchUp,
   onBranchAway,
   onClose,
@@ -553,6 +602,7 @@ function PushRejectedModal({
   rejection: GitPushRejection
   catchingUp: boolean
   branchingAway: boolean
+  confirm: DirtyNavigationQuestion | null
   onCatchUp: () => void
   onBranchAway: () => void
   onClose: () => void
@@ -601,38 +651,42 @@ function PushRejectedModal({
             <RejectedLeg label="Save history" leg={rejection.ledger} remote={rejection.remote} />
           )}
         </div>
-        <div className="flex justify-end gap-2 pt-1">
-          <button
-            data-testid="git-push-rejected-dismiss"
-            onClick={onClose}
-            className="px-3 py-1.5 text-[12px] font-medium rounded-md transition-colors"
-            style={{ color: "var(--text-secondary)" }}
-          >
-            Not now
-          </button>
-          {canCatchUp ? (
+        {confirm ? (
+          <GitNavigationConfirm {...confirm} />
+        ) : (
+          <div className="flex justify-end gap-2 pt-1">
             <button
-              data-testid="git-push-rejected-catch-up"
-              onClick={onCatchUp}
-              disabled={catchingUp}
-              className="inline-flex items-center gap-1 px-3 py-1.5 text-[12px] font-semibold rounded-md transition-colors disabled:opacity-40"
-              style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
+              data-testid="git-push-rejected-dismiss"
+              onClick={onClose}
+              className="px-3 py-1.5 text-[12px] font-medium rounded-md transition-colors"
+              style={{ color: "var(--text-secondary)" }}
             >
-              <ArrowDownToLine size={12} />{" "}
-              {catchingUp ? "Catching up…" : "Catch up (fast-forward)"}
+              Not now
             </button>
-          ) : (
-            <button
-              data-testid="git-push-rejected-branch-away"
-              onClick={onBranchAway}
-              disabled={branchingAway}
-              className="inline-flex items-center gap-1 px-3 py-1.5 text-[12px] font-semibold rounded-md transition-colors disabled:opacity-40"
-              style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
-            >
-              <GitFork size={12} /> {branchingAway ? "Spinning off…" : "Spin off a copy"}
-            </button>
-          )}
-        </div>
+            {canCatchUp ? (
+              <button
+                data-testid="git-push-rejected-catch-up"
+                onClick={onCatchUp}
+                disabled={catchingUp}
+                className="inline-flex items-center gap-1 px-3 py-1.5 text-[12px] font-semibold rounded-md transition-colors disabled:opacity-40"
+                style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
+              >
+                <ArrowDownToLine size={12} />{" "}
+                {catchingUp ? "Catching up…" : "Catch up (fast-forward)"}
+              </button>
+            ) : (
+              <button
+                data-testid="git-push-rejected-branch-away"
+                onClick={onBranchAway}
+                disabled={branchingAway}
+                className="inline-flex items-center gap-1 px-3 py-1.5 text-[12px] font-semibold rounded-md transition-colors disabled:opacity-40"
+                style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
+              >
+                <GitFork size={12} /> {branchingAway ? "Spinning off…" : "Spin off a copy"}
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </ModalShell>
   )

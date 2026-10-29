@@ -25,6 +25,8 @@ type GitHistoryState = {
   pending: GitLedgerSave[]
   expanded: ExpandState
   loading: boolean
+  /** Why this scope's latest refresh failed, until the next one starts. */
+  loadError: string | null
   selectedSha: string | null
   graph: GitGraphResponse | null
   rowsBranch: string | null
@@ -35,6 +37,7 @@ type GitHistoryState = {
 
 type GitHistoryAction =
   | { type: "loading"; value: boolean }
+  | { type: "load-error"; message: string | null }
   | {
       type: "rows"
       branch: string | null
@@ -64,6 +67,7 @@ function initialState(branchKey: string | null): GitHistoryState {
     pending: history?.pending ?? [],
     expanded: {},
     loading: false,
+    loadError: null,
     selectedSha: null,
     graph: graph?.graph ?? null,
     rowsBranch: history === undefined ? null : branchKey,
@@ -77,6 +81,8 @@ function reducer(state: GitHistoryState, action: GitHistoryAction): GitHistorySt
   switch (action.type) {
     case "loading":
       return state.loading === action.value ? state : { ...state, loading: action.value }
+    case "load-error":
+      return state.loadError === action.message ? state : { ...state, loadError: action.message }
     case "graph":
       return state.graphJson === action.json
         ? state
@@ -160,6 +166,7 @@ export function useGitHistory({
       aliveRef.current && requestGeneration === generationRef.current
     )
     applyAction({ type: "loading", value: true })
+    applyAction({ type: "load-error", message: null })
     const wasCold = stateRef.current.milestones.length === 0
       || stateRef.current.rowsBranch !== scope
 
@@ -211,10 +218,10 @@ export function useGitHistory({
       }
     } catch (error) {
       if (!ownsRequest()) return null
-      addToast(
-        "error",
-        `Failed to load version history: ${apiErrorMessage(error, "unknown error")}`,
-      )
+      // Toasted, and kept for the panel, so the failure still shows once the toast fades.
+      const message = `Failed to load version history: ${apiErrorMessage(error, "unknown error")}`
+      addToast("error", message)
+      applyAction({ type: "load-error", message })
       return null
     } finally {
       if (ownsRequest()) applyAction({ type: "loading", value: false })

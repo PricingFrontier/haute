@@ -51,6 +51,22 @@ describe("WorkingBranchModal", () => {
   })
   afterEach(cleanup)
 
+  it("lists every reason an invalid project gives, not only the first", () => {
+    useGitStore.setState({
+      status: status({
+        state: "invalid",
+        errors: ["The working branch 'dev' no longer exists.", "Its save history 'dev-save' is missing."],
+      }),
+    })
+    render(<WorkingBranchModal onConfirmed={vi.fn()} onClose={vi.fn()} />)
+
+    const reasons = screen.getByTestId("working-branch-invalid").querySelectorAll("li")
+    expect([...reasons].map((reason) => reason.textContent)).toEqual([
+      "The working branch 'dev' no longer exists.",
+      "Its save history 'dev-save' is missing.",
+    ])
+  })
+
   it("on a project left on an earlier version, starts on a new branch and says why", () => {
     useGitStore.setState({
       status: status({ state: "detached", current_branch: "", head_sha: "a".repeat(40) }),

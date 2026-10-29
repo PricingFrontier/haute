@@ -122,6 +122,7 @@ function GitPanelBranchScope({
     pending,
     expanded,
     loading,
+    loadError,
     selectedSha,
     graph,
     rowsBranch,
@@ -241,7 +242,7 @@ function GitPanelBranchScope({
       discardCanvasEdits()
       await discardFormEdits()
       addToast("success", `Switched to ${branch}`)
-      if (from !== null) recordSwitch(from, branch)
+      if (from !== null) recordSwitch(from, branch, onSave)
       setViewBranch(null)
       await loadStatus({ refresh: true }) // not a read begun before the action
       await refresh()
@@ -460,6 +461,7 @@ function GitPanelBranchScope({
           <RemotePushControl
             pendingSaveCount={pending.length}
             refreshNonce={historyNonce + commitNonce}
+            onSave={onSave}
           />
         </div>
 
@@ -565,6 +567,22 @@ function GitPanelBranchScope({
               <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
                 Loading version history…
               </span>
+            </div>
+          ) : milestones.length === 0 && loadError !== null ? (
+            // A failed read stays said once its toast fades: never "No milestones yet".
+            <div data-testid="git-panel-load-error" role="alert" className="py-6 text-center">
+              <p className="text-[12px]" style={{ color: "var(--danger)" }}>
+                {loadError}
+              </p>
+              <button
+                type="button"
+                data-testid="git-panel-load-retry"
+                onClick={() => void refresh()}
+                className="text-[11px] mt-1 underline underline-offset-2"
+                style={{ color: "var(--text-secondary)" }}
+              >
+                Retry
+              </button>
             </div>
           ) : milestones.length === 0 ? (
             <div data-testid="git-panel-empty" className="py-6 text-center">

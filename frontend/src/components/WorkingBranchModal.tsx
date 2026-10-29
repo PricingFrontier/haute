@@ -73,7 +73,8 @@ export default function WorkingBranchModal({ onConfirmed, onClose }: WorkingBran
     }
   }
 
-  const invalidReason = status?.state === "invalid" ? status.errors[0] : null
+  // An invalid project can be so for more than one reason: each is said.
+  const invalidReasons = status?.state === "invalid" ? status.errors : []
 
   return (
     <ModalShell
@@ -93,13 +94,16 @@ export default function WorkingBranchModal({ onConfirmed, onClose }: WorkingBran
           void submit()
         }}
       >
-        {invalidReason && (
-          <p
-            className="text-[12px] px-2.5 py-1.5 rounded-md"
+        {invalidReasons.length > 0 && (
+          <ul
+            data-testid="working-branch-invalid"
+            className="text-[12px] px-2.5 py-1.5 rounded-md flex flex-col gap-1"
             style={{ background: "var(--bg-input)", color: "var(--danger)" }}
           >
-            {invalidReason}
-          </p>
+            {invalidReasons.map((reason, index) => (
+              <li key={index}>{reason}</li>
+            ))}
+          </ul>
         )}
 
         <div>

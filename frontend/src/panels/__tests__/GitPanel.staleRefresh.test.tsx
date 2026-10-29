@@ -3,6 +3,7 @@ import { render, screen, cleanup, waitFor, act } from "@testing-library/react"
 import GitPanel from "../GitPanel"
 import { clearGitPanelCaches, readBranchHistory } from "../gitPanelCache"
 import useGitStore, { resetGitStoreForTests } from "../../stores/useGitStore"
+import useToastStore from "../../stores/useToastStore"
 
 // Regression pin for the refresh() generation guard: a refresh captured for
 // the PREVIOUS branch (its fetches still in flight when a peek retargets the
@@ -160,6 +161,39 @@ describe("GitPanel stale refresh (generation guard)", () => {
     // only the refresh that applied wrote its branch's entry.
     expect(readBranchHistory("pricing-dev")).toBeUndefined()
     expect(readBranchHistory("pricing/nick/spur")).toBeDefined()
+  })
+
+  it("a superseded refresh's failure shows neither the load error nor a toast", async () => {
+    // The working branch's reads are held; a save then refreshes the same scope again,
+    // and that newer refresh lands an empty history before the older one fails.
+    const held: Array<{ reject: (reason: unknown) => void; resolve: (value: unknown) => void }> = []
+    mockGetMilestones.mockImplementation((_n: number, branch?: string | null) =>
+      branch === "pricing-dev"
+        ? new Promise((resolve, reject) => { held.push({ resolve, reject }) })
+        : Promise.resolve({ working_branch: "pricing-dev", entries: [] }),
+    )
+    mockGetPendingSaves.mockResolvedValue({ saves: [] })
+
+    render(<GitPanel onClose={vi.fn()} />)
+    await waitFor(() => expect(held).toHaveLength(1))
+    act(() => useGitStore.getState().notifyHistoryChanged())
+    await waitFor(() => expect(held).toHaveLength(2))
+
+    await act(async () => {
+      held[1].resolve({ working_branch: "pricing-dev", entries: [] })
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    await waitFor(() => expect(screen.getByTestId("git-panel-empty")).toBeInTheDocument())
+
+    await act(async () => {
+      held[0].reject(new Error("Request timed out"))
+      await new Promise((r) => setTimeout(r, 0))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+
+    expect(screen.queryByTestId("git-panel-load-error")).not.toBeInTheDocument()
+    expect(screen.getByTestId("git-panel-empty")).toBeInTheDocument()
+    expect(useToastStore.getState().toasts.filter((t) => t.type === "error")).toHaveLength(0)
   })
 
   it("a superseded refresh settling does not clear the newer refresh's loading state", async () => {

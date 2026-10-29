@@ -4,6 +4,7 @@ import BranchManager from "../BranchManager"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useGitStore from "../../stores/useGitStore"
 import useGraphStore from "../../stores/useGraphStore"
+import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
 
@@ -252,6 +253,23 @@ describe("BranchManager", () => {
     await waitFor(() => expect(mockSetPrefs).toHaveBeenCalledWith({ skip_switch_confirm: true }))
   })
 
+  it("reports a \"don't ask again\" it could not save, and still switches", async () => {
+    mockSetPrefs.mockRejectedValue(new Error("the preferences file is read-only"))
+    render(<BranchManager />)
+    await waitFor(() => expect(screen.getByTestId("branch-manager-switch")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("branch-manager-switch"))
+    fireEvent.click(await screen.findByTestId("branch-manager-dont-ask"))
+    fireEvent.click(screen.getByTestId("branch-manager-confirm-switch-go"))
+
+    await waitFor(() => expect(mockSetWorkingBranch).toHaveBeenCalledWith("experiment", false))
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.map((t) => [t.type, t.text])).toContainEqual([
+        "error",
+        "Couldn't save \"Don't ask again\" on this machine: the preferences file is read-only",
+      ]),
+    )
+  })
+
   it("switches in-app: no page reload, and records an undoable VC entry", async () => {
     // window.location.reload is a no-op in jsdom; replace it so we can assert
     // the switch flow does NOT take the reload branch any more.
@@ -299,14 +317,36 @@ describe("BranchManager", () => {
     expect(mockArchive).not.toHaveBeenCalled() // gated on a save
   })
 
-  it("deletes an unmerged branch with confirm=true after warning", async () => {
+  it("deletes an unmerged branch with confirm=true, saying it and its saves can be restored", async () => {
     render(<BranchManager />)
     await waitFor(() => expect(screen.getAllByTestId("branch-manager-delete").length).toBeGreaterThan(1))
     // delete order: current(demo)[0], experiment[1]
     fireEvent.click(screen.getAllByTestId("branch-manager-delete")[1])
-    await waitFor(() => expect(screen.getByTestId("branch-manager-confirm")).toHaveTextContent("not yet in a milestone"))
+    const dialog = await screen.findByTestId("branch-manager-confirm")
+    expect(dialog).toHaveTextContent(
+      "Delete experiment? It goes to Deleted, with its saves not yet in a milestone, and can be restored from there.",
+    )
+    expect(dialog).not.toHaveTextContent(/permanently|lost/i)
     fireEvent.click(screen.getByTestId("branch-manager-confirm-delete"))
     await waitFor(() => expect(mockDelete).toHaveBeenCalledWith("experiment", true))
+  })
+
+  it.each([
+    [
+      "a branch with nothing unsaved",
+      branch({ name: "demo", is_current: true }),
+      "Delete demo? It goes to Deleted and can be restored from there. You'll be returned to the branch chooser.",
+    ],
+    [
+      "the current branch with changes since its last save",
+      branch({ name: "demo", is_current: true, has_uncommitted_changes: true }),
+      "Delete demo? It goes to Deleted and can be restored from there. The project's changes since the last save are lost. You'll be returned to the branch chooser.",
+    ],
+  ])("the delete dialog for %s says what can be restored and what is lost", async (_name, current, said) => {
+    mockGetWorkingBranches.mockResolvedValue({ current: "demo", deleted: [], branches: [current] })
+    render(<BranchManager />)
+    fireEvent.click(await screen.findByTestId("branch-manager-delete"))
+    expect(await screen.findByTestId("branch-manager-confirm")).toHaveTextContent(said)
   })
 
   it("lists deleted branches collapsed and restores one from the trash", async () => {

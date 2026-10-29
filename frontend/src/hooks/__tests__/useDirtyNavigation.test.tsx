@@ -43,6 +43,30 @@ describe("useDirtyNavigation", () => {
     expect(proceed).not.toHaveBeenCalled()
   })
 
+  it.each([
+    ["Cancel", (hook: { result: { current: ReturnType<typeof useDirtyNavigation> }; unmount: () => void }) =>
+      act(() => hook.result.current.confirm!.onCancel())],
+    ["the surface going away", (hook: { unmount: () => void }) => hook.unmount()],
+  ])("runs nothing when %s ends the question while Save first is saving", async (_ending, end) => {
+    useGraphStore.setState({ dirty: true })
+    let finishSave: (saved: boolean) => void = () => {}
+    const onSave = vi.fn(() => new Promise<boolean>((resolve) => { finishSave = resolve }))
+    const proceed = vi.fn()
+    const hook = renderHook(() => useDirtyNavigation(onSave))
+    act(() => hook.result.current.guard(proceed))
+
+    let saving: Promise<void> = Promise.resolve()
+    act(() => { saving = hook.result.current.confirm!.onSave() })
+    end(hook)
+    await act(async () => {
+      finishSave(true)
+      await saving
+    })
+
+    expect(onSave).toHaveBeenCalledOnce()
+    expect(proceed).not.toHaveBeenCalled()
+  })
+
   it("Discard goes ahead without saving", () => {
     useGraphStore.setState({ dirty: true })
     const onSave = vi.fn()
