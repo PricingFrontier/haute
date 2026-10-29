@@ -348,8 +348,8 @@ the limited preview shows rather than independent source samples.
    lineage (`read` is false) and is not correlated: an optimiser apply reads its
    `ratebook_input` when its resolved `optimiser_mode` is `ratebook`, its first input when
    it is `online`, and both while the mode is unknown. Input names are keyed by physical
-   edge, so two ports of one source keep their own executable names. A Polars transform's
-   `inputMapping` (`logical name -> current edge name`) lets its code address an input by
+   edge, so two ports of one source keep their own executable names. A Transform's or Load
+   File's `inputMapping` (`logical name -> current edge name`) lets its code address an input by
    a stable logical name; the executor binds both names, so `_trace_lineage_alignments`
    returns each child's logical-name aliases and both edge alignment and the carried-column
    proof read the code under both names.
@@ -1057,8 +1057,9 @@ integration/regression suites:
   attributed positionally, a limited rating step validating only the rows it read,
   computed and positional selectors below an unordered join, a row-local `polars.selectors`
   program traced from head frames, a selector renamed mid-expression reported
-  `row_scope_unproven` instead of attributed to an unrelated row, and code that addresses
-  its input through an `inputMapping` alias traced through both upstream Edge Joins, a
+  `row_scope_unproven` instead of attributed to an unrelated row, and Transform and Load
+  File code that addresses its input through an `inputMapping` alias traced through both
+  upstream Edge Joins, a
   node its nearest child cannot prove traced through another child, and a left join's
   unmatched and null keys reported as `join_no_match`.
   `tests/test_column_lineage.py::test_carried_column_proof_skips_a_binding_no_frame_flows_into`

@@ -36,6 +36,7 @@ from haute._workbench_form import (
     CountTest,
     CsvExport,
     CsvImport,
+    Days,
     ExcelExport,
     ExcelImport,
     ExportWidget,
@@ -117,19 +118,25 @@ def _derived(
 
 
 class ConditionFile(_File):
-    """A condition on a one-row table's column, the column as ``table.column``."""
+    """A condition on a one-row table's column, the column, and the field it is tested
+    against, as ``table.column``."""
 
     column: Dotted
     op: ConditionTest
     values: list[_Text] = Field(default_factory=list)
+    field: Dotted | None = None
+    days: Days = 0
 
 
 class RowTestFile(_File):
-    """A test a row must pass, its column by its bare name in the condition's table."""
+    """A test a row must pass, its column, and the column of the same row it is tested
+    against, by their bare names in the condition's table."""
 
     column: Name
     op: ConditionTest
     values: list[_Text] = Field(default_factory=list)
+    field: Name | None = None
+    days: Days = 0
 
 
 class RowsConditionFile(_File):

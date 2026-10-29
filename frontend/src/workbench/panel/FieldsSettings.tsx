@@ -5,6 +5,7 @@ import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, LabelledR
 import useCollapsedSet from "../../hooks/useCollapsedSet"
 import PreviewPanelTabs, { type PreviewPanelTab } from "../../panels/PreviewPanelTabs"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import { takesNothingTyped } from "../../utils/sheetVisibility"
 import useWorkbenchViewStore, { type WidgetPane } from "../../stores/useWorkbenchViewStore"
 import { sheetColumns } from "../../utils/quoteIdentity"
 import { chartGrain, COLLECTION_COLUMNS_MAX, fieldColumn, readableName, rowsShown, setTableRows, TABLE_ROWS_MAX, tableGrain, updateWidget, type FieldsWidget } from "../../utils/workbenchForm"
@@ -90,6 +91,7 @@ export function FieldsSettings({ form, widget }: { form: FormSpec; widget: Field
             <ShowWhenEditor
               form={form}
               showWhen={widget.show_when}
+              priced={takesNothingTyped(form, widget)}
               onChange={(next) => change((spec) => updateWidget(spec, widget.id, { show_when: next }))}
             />
           </Section>

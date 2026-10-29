@@ -40,7 +40,7 @@ const table = (id: string, overrides: Partial<SchemaTable> = {}): SchemaTable =>
 const pounds = { type: "float", number_format: "currency_gbp" } as const
 
 const always: ShowWhen = { match: "all", conditions: [] }
-const whileCovered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "cover", op: "ticked", values: [] }] }
+const whileCovered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "cover", op: "ticked", values: [], field: null, days: 0 }] }
 
 const field = (tableId: string, columnId: string): FieldRef => ({ table: tableId, column: columnId })
 

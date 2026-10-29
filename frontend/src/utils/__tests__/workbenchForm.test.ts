@@ -113,7 +113,7 @@ import {
   type FieldsWidget,
   type Widget,
 } from "../workbenchForm"
-import { identityCount, QUOTE_DETAILS_ID } from "../quoteIdentity"
+import { identityCount, QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED } from "../quoteIdentity"
 import { columnKey, sheetVisibility, testableColumns } from "../sheetVisibility"
 
 /** A section `height` tall holding `widgets`, always shown unless `showWhen` says otherwise. */
@@ -178,6 +178,14 @@ const messages = (spec: FormSpec, reserved: ReadonlySet<string> = new Set()) =>
   schemaProblems(spec, reserved).map((problem) => problem.message)
 
 describe("Haute's own table", () => {
+  it("names each of its columns' ids by the column's name, so a name it no longer has does not compile", () => {
+    expect(Object.entries(QUOTE_DETAILS)).toEqual(QUOTE_DETAILS_COLUMNS.map(([id, name]) => [name, id]))
+    expect([QUOTE_DETAILS.quote_reference, QUOTE_DETAILS.quote_name, QUOTE_DETAILS.is_renewal]).toEqual(["qd_reference", "qd_quote_name", "qd_is_renewal"])
+    expect(QUOTE_DETAILS_MANAGED.has(QUOTE_DETAILS.stage)).toBe(true)
+    // @ts-expect-error quote_details has no column of this name
+    expect(QUOTE_DETAILS.renewal).toBeUndefined()
+  })
+
   it("names a table of the analyst's called quote_details in the server's own words, not as a repeated name", () => {
     const spec = addSchemaTable(blank(), table("t_mine", "quote_details"))
 
@@ -1016,8 +1024,8 @@ describe("what the sheets show", () => {
     let spec = addSchemaColumn(addSchemaColumn(sheet(), "policy", column("policy.year", "year", { type: "int" })), "policy", column("policy.region", "region"))
     spec = toggleField(toggleField(spec, "w_boxes", { table: "policy", column: "policy.year" }), "w_boxes", { table: "policy", column: "policy.region" })
     spec = moveInOrder(addSpacer(spec, "w_boxes"), "w_boxes", 3, 2)
-    const onYear: Condition = { table: "policy", column: "policy.year", op: "equals", values: ["2024"] }
-    const onState: Condition = { table: "policy", column: "policy.state", op: "equals", values: ["NY"] }
+    const onYear: Condition = { table: "policy", column: "policy.year", op: "equals", values: ["2024"], field: null, days: 0 }
+    const onState: Condition = { table: "policy", column: "policy.state", op: "equals", values: ["NY"], field: null, days: 0 }
     spec = updateWidget(spec, "w_boxes", { show_when: { match: "all", conditions: [onYear, onState] } })
     const copied = findWidget(spec, "w_boxes")!.widget
 
@@ -1042,9 +1050,9 @@ describe("what the sheets show", () => {
   })
 
   it("leaves out of a copy pasted what its conditions test of a column lost since, a group left with none, and a count of a table lost since", () => {
-    const onState: Condition = { table: "policy", column: "policy.state", op: "equals", values: ["NY"] }
-    const onValue: RowsCondition = { table: "equipment", rows: "every", where: [{ column: "equipment.value", op: "above", values: ["50"] }] }
-    const count: RowCount = { table: "equipment", where: [{ column: "equipment.value", op: "filled", values: [] }], op: "at_least", count: 1 }
+    const onState: Condition = { table: "policy", column: "policy.state", op: "equals", values: ["NY"], field: null, days: 0 }
+    const onValue: RowsCondition = { table: "equipment", rows: "every", where: [{ column: "equipment.value", op: "above", values: ["50"], field: null, days: 0 }] }
+    const count: RowCount = { table: "equipment", where: [{ column: "equipment.value", op: "filled", values: [], field: null, days: 0 }], op: "at_least", count: 1 }
     const spec = updateWidget(sheet(), "w_boxes", {
       show_when: { match: "any", conditions: [{ match: "all", conditions: [onState, onValue] }, { match: "all", conditions: [count] }] },
     })
@@ -1285,7 +1293,7 @@ describe("sections", () => {
 
   it("renames a section and sets when it shows, leaving its input untouched", () => {
     const spec = stacked()
-    const whileCovered: ShowWhen = { match: "any", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [] }] }
+    const whileCovered: ShowWhen = { match: "any", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [], field: null, days: 0 }] }
 
     expect(titles(renameSection(spec, "s_notes", "Endorsements"))).toEqual(["Policy", "Equipment", "Endorsements"])
     const next = setSectionShowWhen(spec, "s_equipment", whileCovered)
@@ -1706,7 +1714,7 @@ describe("sections", () => {
 
 describe("when sheets and components show", () => {
   const always = (): ShowWhen => ({ match: "all", conditions: [] })
-  const ticked: Condition = { table: "policy", column: "policy.bi", op: "ticked", values: [] }
+  const ticked: Condition = { table: "policy", column: "policy.bi", op: "ticked", values: [], field: null, days: 0 }
   const collection = (id: string, title: string, columns: [string, string][], showWhen: ShowWhen = always()) => ({
     id,
     type: "collection" as const,
@@ -1758,7 +1766,7 @@ describe("when sheets and components show", () => {
 
   it("sets when a sheet, a section or a component shows, leaving its input untouched", () => {
     const spec = covered()
-    const either: ShowWhen = { match: "any", conditions: [ticked, { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"] }] }
+    const either: ShowWhen = { match: "any", conditions: [ticked, { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"], field: null, days: 0 }] }
 
     const next = setPageShowWhen(spec, "p_bi", either)
     expect(next.pages[1].show_when).toEqual(either)
@@ -1770,7 +1778,7 @@ describe("when sheets and components show", () => {
   })
 
   it("takes the conditions testing a column or a table out with it, wherever they are, a section's among them", () => {
-    const onClass: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"] }
+    const onClass: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"], field: null, days: 0 }
     let spec = updateWidget(covered(), "w_bi", { show_when: { match: "all", conditions: [onClass] } })
     spec = setSectionShowWhen(spec, "s_bi", { match: "any", conditions: [ticked, onClass] })
     expect(conditionUses(spec, "policy", "policy.bi").map((holder) => holder.id)).toEqual(["p_bi", "s_bi"])
@@ -1790,10 +1798,28 @@ describe("when sheets and components show", () => {
     expect(findWidget(withoutPolicy, "w_bi")?.widget.show_when.conditions).toEqual([])
   })
 
+  it("counts a test against another field among that field's uses, and takes it out with the field or its table", () => {
+    const later: Condition = { table: "bi", column: "bi.limit", op: "above", values: [], field: null, days: 0 }
+    const againstExtra: Condition = { table: "policy", column: "policy.class", op: "contains", values: [], field: { table: "policy", column: "policy.extra" }, days: 0 }
+    const againstLimit: Condition = { ...later, field: { table: "bi", column: "bi.limit" } }
+    let spec = updateWidget(covered(), "w_bi", { show_when: { match: "all", conditions: [againstExtra] } })
+    spec = setSectionShowWhen(spec, "s_bi", { match: "all", conditions: [againstLimit] })
+    expect(conditionUses(spec, "policy", "policy.extra").map((holder) => holder.id)).toEqual(["w_bi"])
+    expect(conditionUses(spec, "policy").map((holder) => holder.id)).toEqual(["p_bi", "w_bi"])
+
+    const withoutExtra = removeSchemaColumn(spec, "policy", "policy.extra")
+    expect(findWidget(withoutExtra, "w_bi")?.widget.show_when.conditions).toEqual([])
+    expect(findSection(withoutExtra, "s_bi")?.section.show_when.conditions).toEqual([againstLimit])
+    // A condition whose field's table goes goes with it, though its own table stays.
+    const fieldOnBi: Condition = { ...againstExtra, field: { table: "bi", column: "bi.limit" } }
+    const withoutBi = removeSchemaTable(updateWidget(spec, "w_policy", { show_when: { match: "all", conditions: [fieldOnBi] } }), "bi")
+    expect(findWidget(withoutBi, "w_policy")?.widget.show_when.conditions).toEqual([])
+  })
+
   it("gives a field a Show when of its own in its look, which its uses count and its column takes out with it", () => {
     const bi = { table: "policy", column: "policy.bi" }
     const klass = { table: "policy", column: "policy.class" }
-    const onClass: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"] }
+    const onClass: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"], field: null, days: 0 }
     const policy = (form: FormSpec) => findWidget(form, "w_policy")?.widget as Extract<Widget, { type: "collection" }>
     const spec = setColumnLook(covered(), "w_policy", bi, { show_when: { match: "any", conditions: [onClass] } })
     expect(policy(spec).column_looks).toEqual([{ ...bi, ...PLAIN_COLUMN_LOOK, show_when: { match: "any", conditions: [onClass] } }])
@@ -1830,7 +1856,7 @@ describe("when sheets and components show", () => {
   })
 
   it("counts a Heading's conditions as any component's, and takes them out with their column or table", () => {
-    const onClass: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"] }
+    const onClass: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"], field: null, days: 0 }
     const heading = { ...createWidget("heading", { x: 0, y: 0, w: 480, h: 40 }), id: "w_head", text: "Fleet", show_when: { match: "all" as const, conditions: [onClass] } }
     const spec = addWidget(covered(), "s_main", heading)
     expect(conditionUses(spec, "policy", "policy.class").map((holder) => holder.id)).toEqual(["w_head"])
@@ -1849,15 +1875,15 @@ describe("when sheets and components show", () => {
       'Sheet "BI" tests bi with "is ticked", which a Text column cannot take',
     ])
     // A value no allowed value can match.
-    const property = updateWidget(spec, "w_bi", { show_when: { match: "all", conditions: [{ table: "policy", column: "policy.class", op: "one_of", values: ["Fleet", "Property"] }] } })
+    const property = updateWidget(spec, "w_bi", { show_when: { match: "all", conditions: [{ table: "policy", column: "policy.class", op: "one_of", values: ["Fleet", "Property"], field: null, days: 0 }] } })
     expect(widgetProblems(property).map((p) => p.message)).toEqual([
       'Collection "Limits" tests class against "Property", which isn\'t one of its allowed values',
     ])
     // Tested only on the sheet it shows, or on no component: nothing could show the sheet again.
-    expect(pageProblems(setPageShowWhen(spec, "p_bi", { match: "all", conditions: [{ table: "bi", column: "bi.limit", op: "filled", values: [] }] })).map((p) => p.message)).toEqual([
+    expect(pageProblems(setPageShowWhen(spec, "p_bi", { match: "all", conditions: [{ table: "bi", column: "bi.limit", op: "filled", values: [], field: null, days: 0 }] })).map((p) => p.message)).toEqual([
       'Sheet "BI" waits on limit, which is only on components that hide with it, so it could not show again once hidden',
     ])
-    expect(pageProblems(setPageShowWhen(spec, "p_bi", { match: "all", conditions: [{ table: "policy", column: "policy.extra", op: "filled", values: [] }] })).map((p) => p.message)).toEqual([
+    expect(pageProblems(setPageShowWhen(spec, "p_bi", { match: "all", conditions: [{ table: "policy", column: "policy.extra", op: "filled", values: [], field: null, days: 0 }] })).map((p) => p.message)).toEqual([
       'Sheet "BI" waits on extra, which is on no Table or Collection',
     ])
     // A Chart only plots, so a column only a Chart plots is on no Table or Collection either.
@@ -1865,16 +1891,32 @@ describe("when sheets and components show", () => {
       ...createWidget("chart", { x: 0, y: 240, w: 480, h: 280 }),
       fields: [{ table: "policy", column: "policy.extra" }],
     })
-    expect(pageProblems(setPageShowWhen(plotted, "p_bi", { match: "all", conditions: [{ table: "policy", column: "policy.extra", op: "filled", values: [] }] })).map((p) => p.message)).toEqual([
+    expect(pageProblems(setPageShowWhen(plotted, "p_bi", { match: "all", conditions: [{ table: "policy", column: "policy.extra", op: "filled", values: [], field: null, days: 0 }] })).map((p) => p.message)).toEqual([
       'Sheet "BI" waits on extra, which is on no Table or Collection',
     ])
     // A Heading's conditions are checked as any component's, and it is named by its text.
     const headed = addWidget(spec, "s_bi", {
       ...createWidget("heading", { x: 0, y: 160, w: 480, h: 40 }),
       text: "Business interruption",
-      show_when: { match: "all", conditions: [{ table: "policy", column: "policy.gone", op: "filled", values: [] }] },
+      show_when: { match: "all", conditions: [{ table: "policy", column: "policy.gone", op: "filled", values: [], field: null, days: 0 }] },
     })
     expect(widgetProblems(headed).map((p) => p.message)).toEqual(['Heading "Business interruption" tests a column that is no longer in the schema'])
+  })
+
+  it("names a condition on the price on what takes values typed, and never on what takes nothing typed", () => {
+    const base = covered()
+    const premium = table("premium", "premium", { role: "output", columns: [column("premium.count", "referral_count", { type: "int" })] })
+    const spec = { ...base, schema: { tables: [...base.schema.tables, premium] } }
+    const referred: Condition = { table: "premium", column: "premium.count", op: "above", values: ["0"], field: null, days: 0 }
+    const never = "tests referral_count, a part of the price, which hides only what takes nothing typed: here it is never applied"
+    // The section holds the policy's Collection, which takes values typed, and so do both.
+    expect(sectionProblems(setSectionShowWhen(spec, "s_main", { match: "all", conditions: [referred] }))).toEqual([{ sectionId: "s_main", message: `Section "Policy" ${never}` }])
+    expect(widgetProblems(updateWidget(spec, "w_policy", { show_when: { match: "all", conditions: [referred] } })).map((p) => p.message)).toEqual([`Collection "Policy" ${never}`])
+
+    // A Heading takes nothing typed: there it is no problem.
+    const note = { ...createWidget("heading", { x: 0, y: 0, w: 200, h: 40 }), id: "w_note", text: "Refer", show_when: { match: "all" as const, conditions: [referred] } }
+    const noted = addWidget(spec, "s_bi", note)
+    expect(widgetProblems(noted).filter((p) => p.widgetId === "w_note")).toEqual([])
   })
 
   it("says what stops a section's conditions doing what they say, naming the section by its title", () => {
@@ -1884,29 +1926,29 @@ describe("when sheets and components show", () => {
     expect(sectionProblems(spec)).toEqual([])
 
     // A test its column's type does not take.
-    expect(showing("s_main", { table: "policy", column: "policy.class", op: "ticked", values: [] })).toEqual([
+    expect(showing("s_main", { table: "policy", column: "policy.class", op: "ticked", values: [], field: null, days: 0 })).toEqual([
       { sectionId: "s_main", message: 'Section "Policy" tests class with "is ticked", which a Text column cannot take' },
     ])
     // A value no allowed value can match.
-    expect(showing("s_bi", { table: "policy", column: "policy.class", op: "equals", values: ["Property"] })).toEqual([
+    expect(showing("s_bi", { table: "policy", column: "policy.class", op: "equals", values: ["Property"], field: null, days: 0 })).toEqual([
       { sectionId: "s_bi", message: 'Section "Limits" tests class against "Property", which isn\'t one of its allowed values' },
     ])
     // Tested only inside the section it shows, or on no component: nothing could show the section again.
-    expect(showing("s_bi", { table: "bi", column: "bi.limit", op: "filled", values: [] })).toEqual([
+    expect(showing("s_bi", { table: "bi", column: "bi.limit", op: "filled", values: [], field: null, days: 0 })).toEqual([
       { sectionId: "s_bi", message: 'Section "Limits" waits on limit, which is only on components that hide with it, so it could not show again once hidden' },
     ])
-    expect(showing("s_main", { table: "policy", column: "policy.extra", op: "filled", values: [] })).toEqual([
+    expect(showing("s_main", { table: "policy", column: "policy.extra", op: "filled", values: [], field: null, days: 0 })).toEqual([
       { sectionId: "s_main", message: 'Section "Policy" waits on extra, which is on no Table or Collection' },
     ])
   })
 
   it("reads conditions as sentences by their columns' labels", () => {
     const spec = covered()
-    const onClass: Condition = { table: "policy", column: "policy.class", op: "one_of", values: ["Motor", "Fleet"] }
+    const onClass: Condition = { table: "policy", column: "policy.class", op: "one_of", values: ["Motor", "Fleet"], field: null, days: 0 }
     expect(conditionText(spec, ticked)).toBe("BI cover is ticked")
     expect(conditionText(spec, onClass)).toBe("Class is one of Motor, Fleet")
-    expect(conditionText(spec, { table: "policy", column: "policy.start", op: "above", values: ["2026-01-01"] })).toBe("Start is after 2026-01-01")
-    expect(conditionText(spec, { table: "policy", column: "policy.gone", op: "filled", values: [] })).toBe("A missing column is filled")
+    expect(conditionText(spec, { table: "policy", column: "policy.start", op: "above", values: ["2026-01-01"], field: null, days: 0 })).toBe("Start is after 2026-01-01")
+    expect(conditionText(spec, { table: "policy", column: "policy.gone", op: "filled", values: [], field: null, days: 0 })).toBe("A missing column is filled")
 
     expect(showWhenText(spec, always())).toBe("Always shows")
     expect(showWhenText(spec, { match: "all", conditions: [ticked] })).toBe("Shows when BI cover is ticked")
@@ -1934,13 +1976,13 @@ describe("when sheets and components show", () => {
       show_when: always(),
     })
   }
-  const young: RowsCondition = { table: "drivers", rows: "any", where: [{ column: "drivers.age", op: "below", values: ["25"] }] }
+  const young: RowsCondition = { table: "drivers", rows: "any", where: [{ column: "drivers.age", op: "below", values: ["25"], field: null, days: 0 }] }
   const twoDrivers: RowCount = { table: "drivers", where: [], op: "at_least", count: 2 }
-  const aged: RowCount = { table: "drivers", where: [{ column: "drivers.age", op: "filled", values: [] }], op: "at_least", count: 1 }
+  const aged: RowCount = { table: "drivers", where: [{ column: "drivers.age", op: "filled", values: [], field: null, days: 0 }], op: "at_least", count: 1 }
   const ageSum: RowTotal = { table: "drivers", total: "sum", column: "drivers.age", where: [], op: "above", value: "50" }
 
   it("takes what a group's conditions test of a column out with it, a group left with none with it, and a count out with its table alone", () => {
-    const onClass: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"] }
+    const onClass: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"], field: null, days: 0 }
     const spec = setSectionShowWhen(listed(), "s_bi", {
       match: "all",
       conditions: [onClass, { match: "any", conditions: [young, twoDrivers, aged, ageSum] }, { match: "any", conditions: [ticked] }],
@@ -1969,7 +2011,7 @@ describe("when sheets and components show", () => {
     const showing = (next: FormSpec, showWhen: ShowWhen) => pageProblems(setPageShowWhen(next, "p_bi", showWhen)).map((p) => p.message)
 
     // A condition in a group that cannot hold is named as any other.
-    const classTicked: Condition = { table: "policy", column: "policy.class", op: "ticked", values: [] }
+    const classTicked: Condition = { table: "policy", column: "policy.class", op: "ticked", values: [], field: null, days: 0 }
     expect(showing(spec, { match: "all", conditions: [{ match: "any", conditions: [ticked, classTicked] }] })).toEqual([
       'Sheet "BI" tests class with "is ticked", which a Text column cannot take',
     ])
@@ -1984,18 +2026,28 @@ describe("when sheets and components show", () => {
     ])
     expect(showing(removeWidget(spec, "w_drivers"), { match: "all", conditions: [young] })).toEqual(['Sheet "BI" waits on age, which is on no Table'])
     // A test of a row against a value no allowed value can match.
-    const uncovered: RowsCondition = { table: "drivers", rows: "any", where: [{ column: "drivers.cover", op: "equals", values: ["None"] }] }
+    const uncovered: RowsCondition = { table: "drivers", rows: "any", where: [{ column: "drivers.cover", op: "equals", values: ["None"], field: null, days: 0 }] }
     expect(showing(spec, { match: "all", conditions: [uncovered] })).toEqual([
       'Sheet "BI" tests cover against "None", which isn\'t one of its allowed values',
       'Sheet "BI" waits on cover, which is on no Table',
     ])
   })
 
+  it("reads a test against another field by that field's label, with its days", () => {
+    const spec = listed()
+    const field = (column: string) => ({ table: "drivers", column })
+    expect(conditionText(spec, { table: "drivers", column: "drivers.age", op: "above", values: [], field: field("drivers.cover"), days: 0 })).toBe("Age is greater than Cover")
+    const start: Condition = { table: "drivers", column: "drivers.age", op: "above", values: [], field: field("drivers.gone"), days: -1 }
+    expect(conditionText(spec, start)).toBe("Age is greater than A missing column - 1 day")
+    const rows: RowsCondition = { table: "drivers", rows: "any", where: [{ column: "drivers.age", op: "at_least", values: [], field: "drivers.cover", days: 30 }] }
+    expect(conditionText(spec, rows)).toBe("Age is at least Cover + 30 days in any row of drivers")
+  })
+
   it("reads a condition in any or every row, a count and a group as sentences", () => {
     const spec = listed()
     expect(conditionText(spec, young)).toBe("Age is less than 25 in any row of drivers")
-    expect(conditionText(spec, { ...young, rows: "every", where: [{ column: "drivers.age", op: "filled", values: [] }] })).toBe("Age is filled in every row of drivers")
-    const full = { column: "drivers.cover", op: "equals" as const, values: ["Full"] }
+    expect(conditionText(spec, { ...young, rows: "every", where: [{ column: "drivers.age", op: "filled", values: [], field: null, days: 0 }] })).toBe("Age is filled in every row of drivers")
+    const full = { column: "drivers.cover", op: "equals" as const, values: ["Full"], field: null, days: 0 }
     expect(conditionText(spec, { ...young, where: [...young.where, full] })).toBe("Age is less than 25 and Cover equals Full in any row of drivers")
     expect(conditionText(spec, twoDrivers)).toBe("Number of rows in drivers is at least 2")
     expect(conditionText(spec, { ...twoDrivers, where: young.where })).toBe("Number of rows in drivers where Age is less than 25 is at least 2")
@@ -2013,7 +2065,7 @@ describe("when sheets and components show", () => {
   it("says when at least a number asks for more conditions than its Show when or a group holds", () => {
     const spec = listed()
     const showing = (showWhen: ShowWhen) => pageProblems(setPageShowWhen(spec, "p_bi", showWhen)).map((p) => p.message)
-    const motor: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Motor"] }
+    const motor: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Motor"], field: null, days: 0 }
 
     expect(showing({ match: 2, conditions: [ticked, motor] })).toEqual([])
     expect(showing({ match: 3, conditions: [ticked, motor] })).toEqual(['Sheet "BI" needs at least 3 conditions to hold but has only 2, so it never shows'])
@@ -2041,7 +2093,7 @@ describe("when sheets and components show", () => {
     expect(pricingBasis(setPageShowWhen(spec, "p_bi", always()))).not.toBe(pricingBasis(spec))
     expect(pricingBasis(updateWidget(spec, "w_bi", { x: 100 }))).toBe(pricingBasis(spec))
     // A section's conditions hide its components' columns too, while its height changes nothing.
-    const onFleet: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "policy.class", op: "equals", values: ["Fleet"] }] }
+    const onFleet: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "policy.class", op: "equals", values: ["Fleet"], field: null, days: 0 }] }
     expect(pricingBasis(setSectionShowWhen(spec, "s_main", onFleet))).not.toBe(pricingBasis(spec))
     expect(pricingBasis(setSectionHeight(spec, "s_main", 400))).toBe(pricingBasis(spec))
     // A column the sheets hide is still declared to the pipeline, so one renamed or retyped

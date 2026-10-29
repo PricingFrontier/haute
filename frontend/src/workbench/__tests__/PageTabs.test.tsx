@@ -199,7 +199,7 @@ describe("PageTabs", () => {
   it("marks a sheet whose conditions have a problem, naming it", () => {
     const form = coverForm()
     // Tested on the sheet it shows alone: once hidden, nothing could show the sheet again.
-    form.pages[1].show_when.conditions = [{ table: "policy", column: "policy.year", op: "above", values: ["2020"] }]
+    form.pages[1].show_when.conditions = [{ table: "policy", column: "policy.year", op: "above", values: ["2020"], field: null, days: 0 }]
     loadForm(form)
     render(<PageTabs />)
 

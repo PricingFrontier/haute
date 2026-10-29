@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,8 @@ from tests.test_workbench_routes import POLICY, PRICING, form
 FORM = form(POLICY, PRICING, sample={"t1": [{"c_state": "NY", "c_exposure": "1000"}]})
 VALUES = {"t1": [{"c_state": "NY", "c_exposure": "$1,000"}]}
 SIGNED_IN = {EASY_AUTH_NAME: "uw@example.com"}
+#: Where ``haute app serve`` is reached: served so, the app takes a loopback host alone.
+LOOPBACK = "http://127.0.0.1:8001"
 
 
 #: The runtime a test release prices on, as a build reads it from the installed versions.
@@ -110,7 +113,8 @@ def release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 def _client(directory: Path, **options: Any) -> TestClient:
-    return TestClient(create_app(directory, **options))
+    base_url = LOOPBACK if "local_principal" in options else "http://testserver"
+    return TestClient(create_app(directory, **options), base_url=base_url)
 
 
 def _price(
@@ -291,6 +295,18 @@ def test_azure_signs_in_the_principal_its_authentication_sets(release: Any) -> N
     by_id = client.get("/api/app/form", headers={"x-ms-client-principal-id": "0b1d"})
     assert by_id.status_code == 200
 
+    # Azure's front passes each request on under the app's own name, forwarded.
+    fronted = client.get(
+        "/api/app/release",
+        headers={
+            **SIGNED_IN,
+            "host": "motor.example.azurecontainerapps.io",
+            "x-forwarded-for": "203.0.113.9",
+            "x-forwarded-proto": "https",
+        },
+    )
+    assert fronted.status_code == 200, fronted.text
+
 
 def test_a_release_with_no_host_refuses_everything_but_the_health_check(release: Any) -> None:
     client = _client(release(host=None))
@@ -424,6 +440,42 @@ def test_a_pricing_that_runs_too_long_answers_that_it_timed_out(
 
     assert answered.status_code == 504
     assert answered.json()["detail"] == "Pricing the quote took too long; try again."
+
+
+def test_pricings_holding_every_place_refuse_another_at_once_until_one_ends(
+    release: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(workbench_app.PRICING_WORKERS_ENV, "2")
+    end = threading.Event()
+    reached: list[int] = []
+    score = workbench_app.score_graph
+
+    def stuck(**options: Any) -> Any:
+        reached.append(1)
+        end.wait(10)
+        return score(**options)
+
+    monkeypatch.setattr(workbench_app, "score_graph", stuck)
+    client = _client(release())
+
+    # Two pricings outrun the timeout; neither can be stopped, so each keeps its place.
+    monkeypatch.setattr(workbench_app, "PRICE_TIMEOUT_SECONDS", 0.05)
+    assert [_price(client).status_code for _ in range(2)] == [504, 504]
+    monkeypatch.setattr(workbench_app, "PRICE_TIMEOUT_SECONDS", 60.0)
+    began = time.monotonic()
+    busy = _price(client)
+
+    assert busy.status_code == 503, busy.text
+    assert time.monotonic() - began < 5
+    assert busy.headers["retry-after"] == str(workbench_app.BUSY_RETRY_SECONDS)
+    assert "busy pricing other quotes" in busy.json()["detail"]
+    assert len(reached) == 2
+
+    end.set()
+    deadline = time.monotonic() + 10
+    while (served := _price(client)).status_code == 503 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert served.status_code == 200, served.text
 
 
 def test_a_pipeline_failing_on_the_quote_answers_why(
@@ -668,7 +720,10 @@ from fastapi.testclient import TestClient
 
 from haute._workbench_app import create_app
 
-client = TestClient(create_app(Path(sys.argv[1]), local_principal="analyst@example.com"))
+client = TestClient(
+    create_app(Path(sys.argv[1]), local_principal="analyst@example.com"),
+    base_url="http://127.0.0.1:8001",
+)
 revision = client.get("/api/app/form").json()["revision"]
 answered = client.post(
     "/api/app/price",
@@ -890,14 +945,14 @@ def test_haute_app_serve_serves_the_release_on_loopback_as_the_analyst(
     assert (project / ".haute" / "app" / "release" / "release.json").is_file()
     assert (project / ".haute" / "app" / "quotes.sqlite").is_file()
     assert "Quotes kept in .haute/app/quotes.sqlite" in result.output
-    with TestClient(served["app"]) as client:
+    with TestClient(served["app"], base_url=LOOPBACK) as client:
         signed_in = client.get("/api/app/release").json()
     assert (signed_in["principal"], signed_in["quotes"]) == ("ana@example.com", True)
 
     reading = CliRunner().invoke(cli, ["app", "serve", "--reader"])
     assert reading.exit_code == 0, reading.output
     assert "reading quotes only" in reading.output
-    with TestClient(served["app"]) as client:
+    with TestClient(served["app"], base_url=LOOPBACK) as client:
         assert client.get("/api/app/release").json()["can_edit"] is False
 
     monkeypatch.setattr(git_setup, "get_identity", lambda cwd=None: (None, None))
@@ -1112,7 +1167,8 @@ def test_a_release_without_a_quote_store_prices_without_its_packages(release: An
         "from pathlib import Path\n"
         "from fastapi.testclient import TestClient\n"
         "from haute._workbench_app import create_app\n"
-        "client = TestClient(create_app(Path(sys.argv[1]), local_principal='uw@example.com'))\n"
+        "client = TestClient(create_app(Path(sys.argv[1]), local_principal='uw@example.com'),\n"
+        "    base_url='http://127.0.0.1:8001')\n"
         "revision = client.get('/api/app/form').json()['revision']\n"
         "release = client.get('/api/app/release').json()['id']\n"
         "priced = client.post('/api/app/price', json={'form_revision': revision,\n"

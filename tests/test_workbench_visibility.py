@@ -112,6 +112,56 @@ def test_a_condition_fits_while_its_values_are_ones_its_column_could_hold(
     assert condition_fits(every_type_form(), condition) is fits
 
 
+def against(column: str, table: str = "t_in") -> dict[str, str]:
+    return {"table": table, "column": column}
+
+
+@pytest.mark.parametrize(
+    ("condition", "fits"),
+    [
+        ({"column": "c_text", "op": "contains", "field": against("c_choice")}, True),
+        ({"column": "c_day", "op": "above", "field": against("c_day"), "days": -30}, True),
+        ({"column": "c_num", "op": "at_most", "field": against("c_num")}, True),
+        # A field gives one value, in place of values typed, of the column's type.
+        ({"column": "c_text", "op": "one_of", "field": against("c_choice")}, False),
+        ({"column": "c_text", "op": "filled", "field": against("c_choice")}, False),
+        (
+            {"column": "c_text", "op": "equals", "values": ["A"], "field": against("c_choice")},
+            False,
+        ),
+        ({"column": "c_num", "op": "equals", "field": against("c_int")}, False),
+        # The field is a one-row input table's.
+        ({"column": "c_text", "op": "equals", "field": against("c_key", "t_many")}, False),
+        ({"column": "c_num", "op": "equals", "field": against("c_o", "t_out")}, False),
+        ({"column": "c_text", "op": "equals", "field": against("c_gone")}, False),
+        # Days go to another Date alone.
+        ({"column": "c_num", "op": "above", "field": against("c_num"), "days": 1}, False),
+        ({"column": "c_day", "op": "above", "values": ["2026-01-01"], "days": 1}, False),
+    ],
+)
+def test_a_condition_against_another_field_fits_while_that_field_can_give_its_value(
+    condition: dict[str, Any], fits: bool
+) -> None:
+    single = Condition.model_validate({"table": "t_in", **condition})
+
+    assert condition_fits(every_type_form(), single) is fits
+
+
+@pytest.mark.parametrize(
+    ("condition", "fits"),
+    [
+        # The price's columns are tested as typed values are, against values typed alone.
+        ({"table": "t_out", "column": "c_o", "op": "above", "values": ["1"]}, True),
+        ({"table": "t_out", "column": "c_o", "op": "ticked"}, False),
+        ({"table": "t_out", "column": "c_o", "op": "above", "field": against("c_num")}, False),
+    ],
+)
+def test_a_condition_on_the_price_fits_as_a_typed_value_s_does_against_values_typed_alone(
+    condition: dict[str, Any], fits: bool
+) -> None:
+    assert condition_fits(every_type_form(), Condition.model_validate(condition)) is fits
+
+
 FILLED_V = {"column": "c_v", "op": "filled"}
 
 
@@ -145,6 +195,31 @@ def total(**changed: Any) -> dict[str, Any]:
         (total(column="c_gone"), False),
         (total(value="lots"), False),
         (total(where=[{"column": "c_key", "op": "ticked"}]), False),
+        # A test of a row against another column of the same row, of its type.
+        (
+            {
+                "table": "t_many",
+                "rows": "any",
+                "where": [{**FILLED_V, "op": "above", "field": "c_v"}],
+            },
+            True,
+        ),
+        (
+            {
+                "table": "t_many",
+                "rows": "any",
+                "where": [{**FILLED_V, "op": "above", "field": "c_key"}],
+            },
+            False,
+        ),
+        (
+            {
+                "table": "t_many",
+                "rows": "any",
+                "where": [{**FILLED_V, "op": "above", "field": "c_gone"}],
+            },
+            False,
+        ),
     ],
 )
 def test_a_condition_fits_while_its_table_has_the_rows_it_tests(

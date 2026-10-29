@@ -45,7 +45,12 @@ def _require_parent_source_file(source_file: str) -> None:
         )
 
 
-def _load_parent_document(source_file: str) -> tuple[Path, Path, PipelineGraph]:
+def _load_parent_document(source_file: str) -> tuple[Path, Path, str]:
+    """The project root, the parent pipeline and its ready editor-document revision.
+
+    Editor clients retain the raw-artifact document revision returned by
+    ``GET /api/pipeline``, so submodel compare-and-swap uses that revision.
+    """
     _require_parent_source_file(source_file)
     project_root = Path.cwd().resolve()
     parent_path = contained_path(project_root, source_file)
@@ -65,17 +70,11 @@ def _load_parent_document(source_file: str) -> tuple[Path, Path, PipelineGraph]:
         )
     if editor_document.source_revision is None:
         raise RuntimeError("Ready parent pipeline did not produce a source revision.")
-
-    # Editor clients retain the raw-artifact document revision returned by
-    # GET /api/pipeline. Keep submodel compare-and-swap in that same revision
-    # domain while still using the strict graph for the transform itself.
-    graph = parse_pipeline_to_graph(parent_path, project_root=project_root)
-    graph = graph.model_copy(update={"source_revision": editor_document.source_revision})
-    return project_root, parent_path, graph
+    return project_root, parent_path, editor_document.source_revision
 
 
-def _require_current_revision(graph: PipelineGraph, base_revision: str) -> None:
-    if graph.source_revision != base_revision:
+def _require_current_revision(source_revision: str, base_revision: str) -> None:
+    if source_revision != base_revision:
         raise HTTPException(
             status_code=409,
             detail="The pipeline changed on disk. Reload it before editing submodels.",
@@ -172,8 +171,8 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
 
     def _run() -> CreateSubmodelResponse:
         _require_parent_source_file(body.source_file)
-        project_root, _parent_path, current_graph = _load_parent_document(body.source_file)
-        _require_current_revision(current_graph, body.base_revision)
+        project_root, _parent_path, source_revision = _load_parent_document(body.source_file)
+        _require_current_revision(source_revision, body.base_revision)
 
         # Reject reserved device names at creation, before the graph is
         # transformed: a submodel named ``NUL`` would mint ``modules/NUL.py``,
@@ -234,9 +233,6 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
             )
             raise HTTPException(status_code=400, detail=str(exc)) from None
 
-        source_revision = current_graph.source_revision
-        if source_revision is None:
-            raise RuntimeError("Current pipeline did not produce a source revision.")
         response_graph = result.graph.model_copy(update={"source_revision": source_revision})
 
         return CreateSubmodelResponse(
@@ -278,7 +274,10 @@ def _get_submodel_blocking(
     except MalformedSubmodelPathError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
 
-    project_root, parent_path, parent_graph = _load_parent_document(source_file)
+    project_root, parent_path, _source_revision = _load_parent_document(source_file)
+    # The definition registry, with each definition's recorded file, is the
+    # strict graph's: drill-down is the one submodel route that parses the parent.
+    parent_graph = parse_pipeline_to_graph(parent_path, project_root=project_root)
     metadata = (parent_graph.submodels or {}).get(definition_id)
     if metadata is None:
         raise HTTPException(
@@ -346,8 +345,8 @@ async def dissolve_submodel(body: DissolveSubmodelRequest) -> DissolveSubmodelRe
 
     def _run() -> DissolveSubmodelResponse:
         _require_parent_source_file(body.source_file)
-        project_root, parent_path, current_graph = _load_parent_document(body.source_file)
-        _require_current_revision(current_graph, body.base_revision)
+        project_root, parent_path, source_revision = _load_parent_document(body.source_file)
+        _require_current_revision(source_revision, body.base_revision)
 
         graph = body.graph.model_copy(
             update={
@@ -377,9 +376,6 @@ async def dissolve_submodel(body: DissolveSubmodelRequest) -> DissolveSubmodelRe
         except ParseError as exc:
             raise HTTPException(status_code=400, detail=exc.message) from None
 
-        source_revision = current_graph.source_revision
-        if source_revision is None:
-            raise RuntimeError("Current pipeline did not produce a source revision.")
         response_graph = flat.model_copy(update={"source_revision": source_revision})
 
         return DissolveSubmodelResponse(

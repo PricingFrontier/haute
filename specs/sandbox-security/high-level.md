@@ -92,6 +92,14 @@ Out of scope (owned elsewhere, linked where relevant):
   never through a link ([server-api](../server-api/high-level.md)).
 - **Environment exposure.** The process environment, including any credentials
   the deployment supplies to haute itself, is visible to project code.
+- **The locally served underwriter app.** `haute app serve` signs every request in as
+  the analyst ([workbench](../workbench/high-level.md)), so what bounds it is the request,
+  not a session: it binds loopback, and the editor's Host and forwarded-header gate, with
+  the canonical loopback hosts, refuses any other host and any forwarded header before
+  the request is signed in. That keeps out a page of a site whose name resolves to the
+  analyst's machine, whose requests the browser counts as the page's own; a page of
+  another site has its writes refused by the app's origin check and cannot read what
+  the app answers. The hosted app's identity is its host's, outside this gate.
 - **Hosted mode.** Node code runs with the app's identity in its own container;
   the platform proxy boundary adapts traffic and never contains code, and access
   to a project is governed by the workspace permissions on the app.
@@ -311,6 +319,9 @@ Out of scope (owned elsewhere, linked where relevant):
   `LocalSessionMiddleware` and `LocalTrustedHostMiddleware` ahead of every mounted
   router, and the `/ws/sync` WebSocket endpoint calls `websocket_rejection_reason`
   before `accept()`-ing a connection.
+- Depended on by [workbench](../workbench/high-level.md): the underwriter app served
+  with a local principal installs `LocalTrustedHostMiddleware` with
+  `DEFAULT_TRUSTED_HOSTS` ahead of its sign-in.
 - Depended on by `haute init` (project scaffolding, via `cli/_init_cmd.py`) and by
   `_git_setup.py`'s unborn-repo commit seed for `ensure_gitignore_guards`.
 - Supplies numeric parsing helpers to callers across the codebase, including

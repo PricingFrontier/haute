@@ -82,6 +82,7 @@ export function ButtonPanes({ form, widget, children }: { form: FormSpec; widget
               <ShowWhenEditor
                 form={form}
                 showWhen={widget.show_when}
+                priced={false}
                 onChange={(next) => change((spec) => updateWidget(spec, widget.id, { show_when: next }))}
               />
             </Section>

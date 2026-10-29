@@ -20,6 +20,7 @@ from haute._workbench_form import (
     BLANK_SECTION_HEIGHT,
     BLANK_SHEET_WIDTH,
     COLLECTION_COLUMNS_MAX,
+    DAYS_MAX,
     HEADER_ROW_MAX,
     QUOTE_DETAILS_COLUMNS,
     QUOTE_DETAILS_MANAGED,
@@ -212,6 +213,8 @@ FORM: dict[str, Any] = {
                                                 "column": "c_exposure",
                                                 "op": "filled",
                                                 "values": [],
+                                                "field": None,
+                                                "days": 0,
                                             }
                                         ],
                                     },
@@ -236,6 +239,8 @@ FORM: dict[str, Any] = {
                                         "column": "c_state",
                                         "op": "one_of",
                                         "values": ["CA", "NY"],
+                                        "field": None,
+                                        "days": 0,
                                     }
                                 ],
                             },
@@ -320,6 +325,8 @@ FORM: dict[str, Any] = {
                                 "column": "c_state",
                                 "op": "equals",
                                 "values": ["NY"],
+                                "field": None,
+                                "days": 0,
                             }
                         ],
                     },
@@ -381,15 +388,19 @@ def read_after_layout_edit(
 
 @pytest.mark.meta
 def test_the_editor_names_the_quote_details_columns_the_server_does() -> None:
+    """The view's columns of quote_details, whose `QUOTE_DETAILS` map is how the app names
+    each one it reads, and the columns the app sets, named through that map."""
     utils = Path(__file__).resolve().parents[1] / "frontend" / "src" / "utils"
-    source = (utils / "workbenchForm.ts").read_text(encoding="utf-8")
-    columns = re.findall(r'\["(qd_\w+)", "(\w+)", "(\w+)"\]', source)
     identity = (utils / "quoteIdentity.ts").read_text(encoding="utf-8")
+    columns = re.findall(r'\["(qd_\w+)", "(\w+)", "(\w+)"\]', identity)
     managed = re.search(r"QUOTE_DETAILS_MANAGED[^=]*= new Set\(\[([^\]]*)\]\)", identity)
 
     assert tuple(columns) == QUOTE_DETAILS_COLUMNS
     assert managed is not None
-    assert set(re.findall(r'"(\w+)"', managed.group(1))) == QUOTE_DETAILS_MANAGED
+    by_name = {name: column_id for column_id, name, _ in QUOTE_DETAILS_COLUMNS}
+    named = re.findall(r"QUOTE_DETAILS\.(\w+)", managed.group(1))
+    assert {by_name[name] for name in named} == QUOTE_DETAILS_MANAGED
+    assert len(named) == len(QUOTE_DETAILS_MANAGED)
 
 
 @pytest.mark.meta
@@ -417,6 +428,7 @@ def test_the_editor_mirrors_the_forms_limits_and_words() -> None:
         QUOTE_DETAILS_REFUSAL
     )
     assert int(constant("utils/workbenchForm.ts", "HEADER_ROW_MAX")) == HEADER_ROW_MAX
+    assert int(constant("utils/sheetVisibility.ts", "DAYS_MAX")) == DAYS_MAX
 
 
 def test_the_blank_form_is_one_empty_sheet_named_after_the_project() -> None:
@@ -884,6 +896,24 @@ def test_every_field_is_written_so_the_document_has_one_spelling() -> None:
             lambda f: widgets(f)[1]["show_when"]["conditions"][0].update(values=[1]),
             "values",
         ),
+        # Days added to another Date are a whole number, a hundred years either way at most,
+        # and the field a condition is tested against names a table and a column.
+        (
+            lambda f: widgets(f)[1]["show_when"]["conditions"][0].update(days=36_501),
+            "days",
+        ),
+        (
+            lambda f: widgets(f)[1]["show_when"]["conditions"][0].update(days=-36_501),
+            "days",
+        ),
+        (
+            lambda f: widgets(f)[1]["show_when"]["conditions"][0].update(days=1.5),
+            "days",
+        ),
+        (
+            lambda f: widgets(f)[1]["show_when"]["conditions"][0].update(field="t_policy.c_state"),
+            "field",
+        ),
         # A cell is held as typed, text or a tick: a number is another client's shape.
         (lambda f: f.update(sample={"t1": [{"c1": 1}]}), "sample"),
         (lambda f: f.update(sample={"t1": [{"c1": None}]}), "sample"),
@@ -927,7 +957,14 @@ def test_a_column_look_holding_only_a_show_when_is_kept() -> None:
     show_when = {
         "match": "any",
         "conditions": [
-            {"table": "t_policy", "column": "c_state", "op": "equals", "values": ["NY"]}
+            {
+                "table": "t_policy",
+                "column": "c_state",
+                "op": "equals",
+                "values": ["NY"],
+                "field": None,
+                "days": 0,
+            }
         ],
     }
     widgets(form)[1]["column_looks"] = [

@@ -12,12 +12,13 @@
  */
 import { create } from "zustand"
 import { carryAppQuote, createAppQuote, type QuoteSource } from "../api/app"
-import { apiErrorCode, apiErrorMessage, apiErrorStatus } from "../api/errors"
+import { apiErrorCode, apiErrorMessage, apiErrorRawDetail, apiErrorRefused } from "../api/errors"
 import type { FormSpec } from "../api/types"
 import useToastStore from "../stores/useToastStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import { cellKey, cellProblem, newQuoteValues } from "../utils/sheetValues"
-import { QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, type SampleRow, type SampleValue, type ShownField } from "../utils/workbenchForm"
+import { columnKey } from "../utils/sheetVisibility"
+import { QUOTE_DETAILS, QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, type SampleRow, type SampleValue, type ShownField } from "../utils/workbenchForm"
 import { latest } from "../utils/latest"
 import {
   asRenewal,
@@ -39,7 +40,7 @@ import useAppStore from "./useAppStore"
 import useOpenQuoteStore, { openDraftKey } from "./useOpenQuoteStore"
 
 /** The quote_details column of the quote's reference, keyed in the window alone. */
-export const REFERENCE_COLUMN = "qd_reference"
+export const REFERENCE_COLUMN = QUOTE_DETAILS.quote_reference
 
 /** A quote made from another's revision in the window: a duplicate or a renewal. */
 export interface WindowOrigin {
@@ -117,7 +118,7 @@ export function windowFields(form: FormSpec): ShownField[] {
   const reference = table.columns.find((column) => column.id === REFERENCE_COLUMN)
   const typed = table.columns.filter((column) => !QUOTE_DETAILS_MANAGED.has(column.id))
   const columns = [...(reference === undefined ? [] : [{ ...reference, required: true }]), ...typed]
-  return columns.map((column) => ({ key: `${table.id}:${column.id}`, found: { table, column } }))
+  return columns.map((column) => ({ key: columnKey(table.id, column.id), found: { table, column } }))
 }
 
 /**
@@ -148,16 +149,8 @@ function creationValues(base: Values, details: SampleRow): Values {
 
 /** The quote holding a reference, as a `reference_taken` refusal names it. */
 function takenBy(error: unknown): { quoteId: string; label: string } | null {
-  const raw = typeof error === "object" && error !== null && "rawDetail" in error ? (error as { rawDetail?: unknown }).rawDetail : null
-  if (typeof raw !== "object" || raw === null) return null
-  const { quote_id: quoteId, label } = raw as { quote_id?: unknown; label?: unknown }
+  const { quote_id: quoteId, label } = apiErrorRawDetail(error) ?? {}
   return typeof quoteId === "string" && typeof label === "string" ? { quoteId, label } : null
-}
-
-/** The server refused what was sent, a status below 500, so nothing of it was written. */
-const refused = (error: unknown): boolean => {
-  const status = apiErrorStatus(error)
-  return status !== null && status < 500
 }
 
 /** Where the creation is kept in this tab; null before the release is read. */
@@ -212,6 +205,7 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
       if (key !== null) forgetCreation(key)
       const done = get().shown
       set({ shown: null })
+      const savedAsNew = done?.savedFrom != null
       // Saved as new: the open quote's values kept in this browser are in the new quote now.
       if (done?.savedFrom != null) {
         const { draftKey, values: sheets } = done.savedFrom
@@ -219,10 +213,12 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
         if (draftKey !== null && draft !== null && valuesKey(draft.values) === valuesKey(sheets)) clearDraft(draftKey)
         useToastStore.getState().addToast("success", `Saved as ${answer.quote.label}`)
       }
-      // Answered once the page moved on, Back included, the quote is made and the page stays.
-      if (here() === sentFrom) await navigate(quotePath(answer.quote.id), { force: done?.savedFrom != null })
+      // Answered once the page moved on, Back included, the quote is made and the page stays,
+      // as it does when the leave guard keeps the quote behind the window: either says so.
+      const opened = here() === sentFrom && (await navigate(quotePath(answer.quote.id), { force: savedAsNew })) === "moved"
+      if (!opened && !savedAsNew) useToastStore.getState().addToast("success", `Made ${answer.quote.label}`)
     } catch (error: unknown) {
-      if (refused(error)) {
+      if (apiErrorRefused(error)) {
         // Refused, it was not made and never will be: the window takes typing again, saying why.
         if (key !== null) forgetCreation(key)
         const moved = releaseMoved(error)

@@ -16,7 +16,6 @@ from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._parser_submodels import extract_submodel_registrations, parse_submodel_source
 from haute._polars_io_registry import validate_data_input_config
 from haute._submodel_instances import (
-    expand_submodel_instances,
     qualified_runtime_node_id,
     rewrite_boundary_input_names,
     validate_submodel_instances,
@@ -37,6 +36,7 @@ from haute.codegen import graph_to_code_multi
 from haute.errors import ParseError
 from haute.parser import parse_pipeline_source
 from haute.routes._submodel_ops import create_submodel_graph
+from tests.conftest import make_file_input_config
 
 
 def _node(
@@ -159,7 +159,7 @@ def test_unrouted_input_port_round_trips_and_is_legal_when_unbound() -> None:
     restored = SubmodelDefinition.model_validate(definition.model_dump(by_alias=True))
 
     assert restored.input_ports == [port]
-    expanded = expand_submodel_instances(
+    expanded = flatten_graph(
         PipelineGraph(
             nodes=[_instance("instance_a", "scoring")],
             edges=[],
@@ -188,7 +188,7 @@ def test_expand_rejects_parent_binding_to_unrouted_input_port() -> None:
     )
 
     with pytest.raises(ParseError, match="no internal targets") as exc_info:
-        expand_submodel_instances(graph)
+        flatten_graph(graph)
 
     assert exc_info.value.context == {
         "edge_id": "source_to_scoring",
@@ -196,6 +196,34 @@ def test_expand_rejects_parent_binding_to_unrouted_input_port() -> None:
         "definition_id": "definition_scoring",
         "port_name": "policy",
     }
+
+
+@pytest.mark.parametrize("target_instance_id", [None, "instance_a"])
+def test_flatten_validates_the_graph_once(
+    monkeypatch: pytest.MonkeyPatch, target_instance_id: str | None
+) -> None:
+    import haute._flatten
+    import haute._submodel_instances
+
+    resolve = haute._submodel_instances.resolve_submodel_instances
+    validated: list[PipelineGraph] = []
+
+    def counting_resolve(graph: PipelineGraph) -> object:
+        validated.append(graph)
+        return resolve(graph)
+
+    monkeypatch.setattr(haute._flatten, "resolve_submodel_instances", counting_resolve)
+    monkeypatch.setattr(haute._submodel_instances, "resolve_submodel_instances", counting_resolve)
+    graph = PipelineGraph(
+        nodes=[_instance("instance_a", "scoring")],
+        edges=[],
+        submodels={"definition_scoring": _definition()},
+    )
+
+    flattened = flatten_graph(graph, target_instance_id=target_instance_id)
+
+    assert flattened.submodels is None
+    assert len(validated) == 1
 
 
 def test_instance_validation_rejects_unknown_definition_and_duplicate_alias() -> None:
@@ -879,6 +907,118 @@ def test_flatten_preserves_public_input_label_for_ordinary_polars_code() -> None
     generated = graph_to_code_multi(result, pipeline_name="main")["main.py"]
     assert "def Child_transform(policy: pl.LazyFrame)" in generated
     assert "df = policy" in generated
+
+
+@pytest.mark.usefixtures("_widen_sandbox_root")
+def test_flatten_keeps_the_input_names_a_load_file_childs_code_reads(tmp_path: Path) -> None:
+    """Free Load File code names its inputs as Polars code does, so it keeps those names."""
+    from haute.executor import execute_graph
+
+    lookup = tmp_path / "lookup.json"
+    lookup.write_text(json.dumps({"factor": 3}))
+    policies = tmp_path / "policies.parquet"
+    pl.DataFrame({"k": [1, 2], "x": [10, 20]}).write_parquet(policies)
+    rates = tmp_path / "rates.parquet"
+    pl.DataFrame({"k": [1, 2], "rate": [0.5, 2.0]}).write_parquet(rates)
+
+    def source(node_id: str, label: str, path: Path) -> GraphNode:
+        return _node(node_id, NodeType.DATA_INPUT, label=label, config=make_file_input_config(path))
+
+    loader = _node(
+        "loader",
+        NodeType.EXTERNAL_FILE,
+        label="Loader",
+        config={
+            "path": str(lookup),
+            "fileType": "json",
+            # The first input is df; the second is read by its name.
+            "code": "df = df.join(rates, on='k').with_columns("
+            "premium=pl.col('x') * pl.col('rate') * obj['factor'])",
+        },
+    )
+    before_grouping = PipelineGraph(
+        nodes=[
+            source("policies", "policies", policies),
+            source("rates", "rates", rates),
+            loader,
+        ],
+        edges=[
+            GraphEdge(id="p", source="policies", target="loader"),
+            GraphEdge(id="r", source="rates", target="loader"),
+        ],
+    )
+    # A node instance of the loader reads the original's names through it; its
+    # mapping is keyed by those names.
+    copy = _node(
+        "copy",
+        NodeType.EXTERNAL_FILE,
+        label="Copy",
+        config={"instanceOf": "loader", "inputMapping": {"policies": "policies", "rates": "rates"}},
+    )
+    definition = _definition(
+        graph=PipelineGraph(nodes=[loader, copy], edges=[]),
+        input_ports=[
+            SubmodelInputPort(
+                name="policies",
+                targets=[SubmodelEndpoint(node_id="loader"), SubmodelEndpoint(node_id="copy")],
+            ),
+            SubmodelInputPort(
+                name="rates",
+                targets=[SubmodelEndpoint(node_id="loader"), SubmodelEndpoint(node_id="copy")],
+            ),
+        ],
+        output_ports=[
+            SubmodelOutputPort(name="priced", source=SubmodelEndpoint(node_id="loader")),
+        ],
+    )
+    # The parent's sources are named otherwise, so expansion renames both inputs.
+    grouped = PipelineGraph(
+        nodes=[
+            source("policy_table", "Policy table", policies),
+            source("rate_table", "Rate table", rates),
+            _instance("pricing"),
+        ],
+        edges=[
+            GraphEdge(id="p", source="policy_table", target="pricing", targetHandle="in__policies"),
+            GraphEdge(id="r", source="rate_table", target="pricing", targetHandle="in__rates"),
+        ],
+        submodels={"definition_scoring": definition},
+    )
+
+    flattened = flatten_graph(grouped)
+    loader_id = qualified_runtime_node_id("pricing", "loader")
+
+    assert flattened.node_map[loader_id].data.config["inputMapping"] == {
+        "policies": "Policy_table",
+        "rates": "Rate_table",
+    }
+    before = execute_graph(before_grouping)["loader"]
+    results = execute_graph(flattened)
+    assert before.status == "ok", before.error
+    for child_id in ("loader", "copy"):
+        after = results[qualified_runtime_node_id("pricing", child_id)]
+        assert after.status == "ok", after.error
+        assert (
+            after.preview
+            == before.preview
+            == [
+                {"k": 1, "x": 10, "rate": 0.5, "premium": 15.0},
+                {"k": 2, "x": 20, "rate": 2.0, "premium": 120.0},
+            ]
+        )
+    # Dissolved and saved, the loader's function takes the names its code reads,
+    # and its instance maps those names to its own inputs.
+    generated = graph_to_code_multi(flattened, pipeline_name="main")["main.py"]
+    assert (
+        "def Loader(policies: pl.LazyFrame, rates: pl.LazyFrame, *, obj) -> pl.LazyFrame:\n"
+        "    df = policies\n"
+    ) in generated
+    assert (
+        "@pipeline.instance(\n"
+        '    of="Loader", inputMapping={"policies": "Policy_table", "rates": "Rate_table"}\n'
+        ")\n"
+        "def Copy(Policy_table, Rate_table): ...\n"
+    ) in generated
 
 
 def test_flatten_preserves_public_output_label_for_ordinary_polars_code() -> None:

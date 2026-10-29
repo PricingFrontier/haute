@@ -343,3 +343,61 @@ pipeline.submodel(
     assert "submodel_file_deleted" not in response.json()
     assert child.exists()
     assert sidecar.exists()
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected_parses"),
+    [("create", 0), ("dissolve", 0), ("drill_down", 1)],
+)
+def test_only_drill_down_parses_the_parent_pipeline(
+    client: TestClient,
+    tmp_path: Path,
+    operation: str,
+    expected_parses: int,
+) -> None:
+    """Create and dissolve transform the submitted graph under the editor's revision.
+
+    Drill-down reads the definition registry, so it alone parses the parent.
+    """
+    import haute.parser
+
+    if operation == "create":
+        parent = _write_flat_parent(tmp_path)
+        graph = _current_graph(parent, tmp_path)
+        request = {
+            "method": "POST",
+            "url": "/api/submodel/create",
+            "json": {
+                "name": "pricing",
+                "node_ids": ["first", "second"],
+                "graph": graph.model_dump(mode="json"),
+                "preamble": graph.preamble or "",
+                "preserved_blocks": graph.preserved_blocks,
+                "source_file": "main.py",
+                "base_revision": graph.source_revision,
+            },
+        }
+    else:
+        parent, _child, _sidecar = _write_parent_with_child(tmp_path)
+        graph = _current_graph(parent, tmp_path)
+        request = (
+            {"method": "POST", "url": "/api/submodel/dissolve", "json": _dissolve_body(graph)}
+            if operation == "dissolve"
+            else {
+                "method": "GET",
+                "url": f"/api/submodel/{DEFINITION_ID}",
+                "params": {"source_file": "main.py"},
+            }
+        )
+    parse_pipeline_file = haute.parser.parse_pipeline_file
+    parses: list[object] = []
+
+    def counting_parse(*args: object, **kwargs: object) -> object:
+        parses.append(args[0])
+        return parse_pipeline_file(*args, **kwargs)
+
+    with patch("haute.parser.parse_pipeline_file", counting_parse):
+        response = client.request(**request)
+
+    assert response.status_code == 200, response.text
+    assert len(parses) == expected_parses

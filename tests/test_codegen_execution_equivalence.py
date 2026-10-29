@@ -1020,6 +1020,55 @@ def test_generated_external_file_observes_sidecar_loader_edits_and_rejects_malfo
         module.pipeline.run(source="batch")
 
 
+def test_mapped_external_file_reparses_with_only_its_connected_inputs(
+    isolated_project: Path,
+) -> None:
+    """Its function names the logical inputs its code reads, which a node may share.
+
+    The reparse binds each parameter through the sidecar's ``inputMapping`` to
+    the edge it stands for, never to the same-named node beside it.
+    """
+    from haute.parser import parse_pipeline_file
+
+    (isolated_project / "lookup.json").write_text('{"factor": 3}', encoding="utf-8")
+    loader = _node(
+        "loader",
+        "loader",
+        NodeType.EXTERNAL_FILE,
+        {
+            "path": "lookup.json",
+            "fileType": "json",
+            "code": "df = df.join(rates, on='k').with_columns("
+            "premium=pl.col('x') * pl.col('rate') * obj['factor'])",
+            "inputMapping": {"rates": "current_rates"},
+        },
+    )
+    graph = PipelineGraph(
+        nodes=[
+            _const("policies", "policies", [{"name": "k", "value": 1}, {"name": "x", "value": 10}]),
+            _const(
+                "current",
+                "current_rates",
+                [{"name": "k", "value": 1}, {"name": "rate", "value": 0.5}],
+            ),
+            # Named after the loader's logical input and connected to nothing.
+            _const("decoy", "rates", [{"name": "k", "value": 1}, {"name": "rate", "value": 99.0}]),
+            loader,
+        ],
+        edges=[_edge("policies", "loader"), _edge("current", "loader")],
+    )
+    module = _write_and_import(graph, isolated_project)
+
+    reparsed = parse_pipeline_file(Path(module.__file__))
+
+    assert sorted((edge.source, edge.target) for edge in reparsed.edges) == [
+        ("current_rates", "loader"),
+        ("policies", "loader"),
+    ]
+    assert reparsed.node_map["loader"].data.config["inputMapping"] == {"rates": "current_rates"}
+    assert _executor_frame(reparsed, "loader", source="batch")["premium"].to_list() == [15.0]
+
+
 def test_generated_retained_input_fails_on_malformed_sidecar(
     isolated_project: Path,
 ) -> None:
