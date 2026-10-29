@@ -293,6 +293,7 @@ class TestPreviewNode:
         assert node_id in data["node_statuses"]
         assert data["node_statuses"][node_id] == "ok"
 
+    @pytest.mark.in_process
     def test_preview_reports_a_failed_input_preparation_as_a_contract_error(
         self,
         client: TestClient,
@@ -3106,6 +3107,7 @@ class TestPipelineTimeouts:
             "edges": [{"id": "e1", "source": "src", "target": "sink"}],
         }
 
+    @pytest.mark.in_process
     @pytest.mark.parametrize(
         ("endpoint", "use_parsed_graph"),
         [
@@ -3189,6 +3191,7 @@ class TestPipelineExceptions:
             "edges": [{"id": "e1", "source": "src", "target": "sink"}],
         }
 
+    @pytest.mark.in_process
     @pytest.mark.parametrize(
         ("endpoint", "patch_target", "error_msg", "use_parsed_graph"),
         [

@@ -281,6 +281,7 @@ def test_the_deploy_passthrough_guard_chains_the_parse_failure(source: dict[str,
     _same_error(caught.value.__cause__, expected)  # type: ignore[arg-type]
 
 
+@pytest.mark.meta
 def test_load_mlflow_model_is_called_only_through_the_source_seam() -> None:
     package = Path(__file__).resolve().parents[1] / "src" / "haute"
     callers: list[str] = []

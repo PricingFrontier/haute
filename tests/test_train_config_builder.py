@@ -1326,6 +1326,7 @@ class TestGlmValueContract:
     def test_quasibinomial_defaults_to_classification_metrics(self):
         assert default_metrics("regression", family="quasibinomial") == ["auc", "logloss"]
 
+    @pytest.mark.meta
     def test_family_link_table_matches_frontend_and_rustystats_default_links(self):
         import json
         import re

@@ -120,6 +120,7 @@ def _pipeline_file_keys(text: str) -> list[str]:
     return keys
 
 
+@pytest.mark.meta
 def test_every_node_type_is_documented_or_deliberately_not() -> None:
     pages = list(NODE_REFERENCE_PAGES.values())
 
@@ -130,6 +131,7 @@ def test_every_node_type_is_documented_or_deliberately_not() -> None:
     assert not set(pages) & FEATURE_PAGES
 
 
+@pytest.mark.meta
 def test_navigation_lists_one_page_per_node_type_and_nothing_else() -> None:
     nav = _nav_reference_pages(MKDOCS_CONFIG.read_text(encoding="utf-8"))
     duplicates = sorted({page for page in nav if nav.count(page) > 1})
@@ -139,6 +141,7 @@ def test_navigation_lists_one_page_per_node_type_and_nothing_else() -> None:
     assert {path.name for path in NODE_REFERENCE.glob("*.md")} == set(nav)
 
 
+@pytest.mark.meta
 def test_a_commented_out_navigation_entry_is_not_listed() -> None:
     config = MKDOCS_CONFIG.read_text(encoding="utf-8")
     entry = "        - Explore: building-models/nodes/explore.md\n"
@@ -150,6 +153,7 @@ def test_a_commented_out_navigation_entry_is_not_listed() -> None:
     assert "explore.md" not in _nav_reference_pages(commented)
 
 
+@pytest.mark.meta
 @pytest.mark.parametrize(
     ("node_type", "page"), sorted(NODE_REFERENCE_PAGES.items()), ids=lambda value: str(value)
 )
@@ -180,6 +184,7 @@ def test_the_table_parser_reads_nested_keys_and_escaped_pipes_and_skips_prose() 
     assert _pipeline_file_keys("| Config | Description |\n|---|---|\n| `path` | x |\n") == []
 
 
+@pytest.mark.meta
 def test_published_pages_use_no_retired_node_vocabulary() -> None:
     found = [
         f"{path.relative_to(ROOT).as_posix()}: {term}"

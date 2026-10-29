@@ -412,6 +412,7 @@ class TestNoRouteConstructsDictDetail:
     does not.
     """
 
+    @pytest.mark.meta
     def test_no_dict_detail_in_routes(self) -> None:
         import ast
 

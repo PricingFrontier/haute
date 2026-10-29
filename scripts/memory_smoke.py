@@ -68,6 +68,8 @@ class StdlibMemorySampler:
 
 
 def _windows_working_set_bytes(*, pid: int, peak: bool) -> int | None:
+    if sys.platform != "win32":
+        raise RuntimeError("Windows working-set counters exist only on Windows")
     try:
         import ctypes
         from ctypes import wintypes
@@ -141,7 +143,7 @@ def _proc_status_rss_bytes(pid: int) -> int | None:
 
 
 def _resource_peak_rss_bytes(who: str) -> int | None:
-    if resource is None:
+    if sys.platform == "win32" or resource is None:
         return None
     usage_target = resource.RUSAGE_SELF if who == "self" else resource.RUSAGE_CHILDREN
     peak = int(resource.getrusage(usage_target).ru_maxrss)
@@ -153,7 +155,7 @@ def _resource_peak_rss_bytes(who: str) -> int | None:
 
 
 def _stderr_binary_writer() -> ByteWriter:
-    buffer = getattr(sys.stderr, "buffer", None)
+    buffer: ByteWriter | None = getattr(sys.stderr, "buffer", None)
     if buffer is not None:
         return buffer
     return _TextByteWriter(sys.stderr)
@@ -336,7 +338,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     indent = 2 if args.pretty else None
     print(json.dumps(summary, indent=indent, sort_keys=True))
-    return int(summary["exit_code"])
+    exit_code = summary["exit_code"]
+    assert isinstance(exit_code, int)
+    return exit_code
 
 
 if __name__ == "__main__":

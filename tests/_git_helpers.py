@@ -6,14 +6,25 @@ import subprocess
 from pathlib import Path
 
 
-def git_run(cwd: Path, *args: str) -> str:
-    """Run a raw git command for test setup."""
+def git_run(cwd: Path, *args: str, check: bool = True) -> str:
+    """Run a raw git command for test setup and return its stripped stdout.
+
+    A failure raises at the call with git's stderr, so a broken ``init`` or
+    ``commit`` in fixture setup is not first seen as an unrelated assertion.
+    ``check=False`` is for a query whose non-zero exit is its answer, such as
+    ``rev-parse --verify`` of a missing ref.
+    """
     result = subprocess.run(
         ["git", *args],
         cwd=cwd,
         capture_output=True,
         text=True,
     )
+    if check and result.returncode != 0:
+        raise RuntimeError(
+            f"git {' '.join(args)} failed in {cwd} (exit {result.returncode}): "
+            f"{result.stderr.strip() or result.stdout.strip()}"
+        )
     return result.stdout.strip()
 
 

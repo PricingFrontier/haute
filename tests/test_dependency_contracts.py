@@ -71,6 +71,7 @@ def test_pandas_floor_and_cap_cover_the_pyfunc_conversion_boundary() -> None:
     assert _cap(requirement) <= Version("3"), "pandas cap must exclude pandas 3"
 
 
+@pytest.mark.meta
 def test_polars_requirement_is_polars_2() -> None:
     """Haute is built for Polars 2: every collect names its engine, every join it
     builds states its row order, and the I/O catalogue, the compatibility corpus and
@@ -98,6 +99,7 @@ def test_openai_floor_constructs_a_client_with_current_httpx() -> None:
     assert _cap(_project_requirement("openai")) == Version("3")
 
 
+@pytest.mark.meta
 def test_price_contour_guard_specifier_is_the_declared_dependency() -> None:
     """The runtime guard enforces exactly the range the package metadata declares.
 
@@ -143,6 +145,7 @@ def _setup_uv_pins(workflow_text: str) -> list[str | None]:
     return pins
 
 
+@pytest.mark.meta
 def test_every_workflow_pins_the_same_uv_version() -> None:
     """``uv`` is the tool every other pin runs through, so it is pinned exactly.
 
@@ -346,6 +349,17 @@ def _canonical(name: str) -> str:
     return str(canonicalize_name(name))
 
 
+def _group_requirements(groups: dict[str, list[str | dict[str, str]]], name: str) -> list[str]:
+    """A dependency group's requirement strings, with the groups it includes (PEP 735)."""
+    requirements: list[str] = []
+    for entry in groups[name]:
+        if isinstance(entry, dict):
+            requirements.extend(_group_requirements(groups, entry["include-group"]))
+        else:
+            requirements.append(entry)
+    return requirements
+
+
 def _dev_only_distributions(lane_extras: set[str]) -> set[str]:
     """Dev-group distributions the wheel plus *lane_extras* does not also depend on."""
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
@@ -354,7 +368,10 @@ def _dev_only_distributions(lane_extras: set[str]) -> set[str]:
     for name in lane_extras:
         assert name in extras, f"the lane installs extra {name!r}, which pyproject does not declare"
         runtime.update(_canonical(Requirement(dep).name) for dep in extras[name])
-    dev = {_canonical(Requirement(dep).name) for dep in project["dependency-groups"]["dev"]}
+    dev = {
+        _canonical(Requirement(dep).name)
+        for dep in _group_requirements(project["dependency-groups"], "dev")
+    }
     return dev - runtime - {"haute"}
 
 
@@ -366,6 +383,7 @@ def _subset_files() -> list[Path]:
     ]
 
 
+@pytest.mark.meta
 def test_unlocked_lane_installs_every_dev_package_the_core_subset_needs() -> None:
     """The unlocked-resolve lane's hand-kept tooling list covers what the subset needs.
 

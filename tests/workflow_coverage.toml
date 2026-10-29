@@ -333,9 +333,9 @@ tests = [
 invariant = "A fresh install answers through both entry points; init scaffolds a complete project and refuses to overwrite one without --force; serve binds localhost, refuses an occupied port, states its defaults in help, and its registered signal handlers terminate the child and exit; run reports missing files, parse errors and node failures with exit code 1; a missing optional dependency names the exact install command; and the hosted bootstrap seeds a volatile project only when unbound, never reseeds a restored or present project, and gates the boot when the restore fails. The real start/readiness/stop lifecycle is exercised by scripts/init_smoke.py in the init-smoke CI lane."
 
 [scenarios.evidence]
-commit = "10e94474"
-command = 'uv run pytest tests/test_cli.py tests/test_cli_init.py tests/test_cli_serve.py tests/test_cli_fail_loudly.py tests/test_starter_pipeline_e2e.py tests/test_optional_dependency_matrix.py tests/test_hatch_build.py tests/test_hosted.py tests/test_databricks_routes_auth.py -q -p no:warnings'
-result = "244 passed, 4 skipped in 11.18s"
+commit = "f8af18c67"
+command = 'uv run pytest tests/test_cli.py tests/test_cli_init.py tests/test_cli_serve.py tests/test_cli_fail_loudly.py tests/test_starter_pipeline_e2e.py tests/test_optional_dependency_matrix.py tests/test_hatch_build.py tests/test_hosted.py tests/test_databricks_routes_auth.py -q -n 4'
+result = "281 passed, 4 skipped in 22.30s"
 
 [[scenarios]]
 id = "W01-S02"
@@ -375,9 +375,9 @@ tests = [
 invariant = "A Save based on a stale document revision is rejected with a conflict and the newer on-disk bytes of every owned artifact survive; the browser keeps the local edit and succeeds only after an explicit reload."
 
 [scenarios.evidence]
-commit = "e512dc5f"
-command = 'uv run pytest "tests/test_route_save_pipeline.py::TestStaleSavePrecondition" "tests/test_partial_failure.py::TestStaleSaveUnderLock" -q -p no:warnings'
-result = "10 passed; sensitivity replay 2026-09-06 at 9daa4372: TestStaleSavePrecondition and TestStaleSaveUnderLock fail 10 of 10 against src/haute/routes/_save_pipeline.py and src/haute/routes/pipeline.py from e512dc5f^"
+commit = "f8af18c67"
+command = 'uv run pytest "tests/test_route_save_pipeline.py::TestStaleSavePrecondition" "tests/test_partial_failure.py::TestStaleSaveUnderLock" -q'
+result = "10 passed in 7.56s; sensitivity replay 2026-09-06 at 9daa4372: TestStaleSavePrecondition and TestStaleSaveUnderLock fail 10 of 10 against src/haute/routes/_save_pipeline.py and src/haute/routes/pipeline.py from e512dc5f^"
 
 [[scenarios]]
 id = "W02-S02"
@@ -398,9 +398,9 @@ tests = [
 invariant = "A server write followed by an external write to the same path before the coalesced event is processed is broadcast as the external content; an unchanged self-write and a self-deletion stay suppressed."
 
 [scenarios.evidence]
-commit = "e512dc5f"
-command = 'uv run pytest "tests/test_server.py::TestFileWatcher::test_external_write_to_self_written_path_before_flush_is_broadcast" "tests/test_server.py::TestFileWatcher::test_unchanged_self_write_to_same_path_is_suppressed" "tests/test_server.py::TestFileWatcher::test_self_delete_is_suppressed_but_external_recreate_is_broadcast" -q -p no:warnings'
-result = "3 passed; sensitivity replay 2026-09-06 at 9daa4372: TestFileWatcher fails 6 of 12 against src/haute/routes/_helpers.py, src/haute/_file_ops.py and src/haute/server.py from e512dc5f^"
+commit = "f8af18c67"
+command = 'uv run pytest "tests/test_server.py::TestFileWatcher::test_external_write_to_self_written_path_before_flush_is_broadcast" "tests/test_server.py::TestFileWatcher::test_unchanged_self_write_to_same_path_is_suppressed" "tests/test_server.py::TestFileWatcher::test_self_delete_is_suppressed_but_external_recreate_is_broadcast" -q -n 4'
+result = "3 passed in 9.30s; sensitivity replay 2026-09-06 at 9daa4372: TestFileWatcher fails 6 of 12 against src/haute/routes/_helpers.py, src/haute/_file_ops.py and src/haute/server.py from e512dc5f^"
 
 [[scenarios]]
 id = "W02-S03"
@@ -418,9 +418,9 @@ tests = [
 invariant = "An unrelated external edit in the same watcher batch as a server write is broadcast with the edited file's actual document content and fingerprint."
 
 [scenarios.evidence]
-commit = "e512dc5f"
-command = 'uv run pytest "tests/test_server.py::TestFileWatcher::test_unrelated_external_edit_in_same_batch_is_broadcast_with_its_content" -q -p no:warnings'
-result = "1 passed"
+commit = "f8af18c67"
+command = 'uv run pytest "tests/test_server.py::TestFileWatcher::test_unrelated_external_edit_in_same_batch_is_broadcast_with_its_content" -q'
+result = "1 passed in 4.95s"
 
 [[scenarios]]
 id = "W03-S01"
@@ -443,9 +443,9 @@ tests = [
 invariant = "A parent connection naming a private submodel child is rejected as a dangling connect() endpoint with its authored identity before any save can drop it; legal public-port connections through one or two occurrences are preserved."
 
 [scenarios.evidence]
-commit = "4f2b0865"
-command = 'uv run pytest "tests/test_parser_conservation.py::TestPrivateChildEndpoints" -q -p no:warnings'
-result = "5 passed; sensitivity replay 2026-09-06 at 9daa4372: TestPrivateChildEndpoints fails 5 of 5 against the parser files from 4f2b0865^"
+commit = "f8af18c67"
+command = 'uv run pytest "tests/test_parser_conservation.py::TestPrivateChildEndpoints" -q'
+result = "5 passed in 5.08s; sensitivity replay 2026-09-06 at 9daa4372: TestPrivateChildEndpoints fails 5 of 5 against the parser files from 4f2b0865^"
 
 [[scenarios]]
 id = "W03-S02"
@@ -476,9 +476,9 @@ tests = [
 invariant = "Renaming an upstream node or an API input frame never edits a coded transform's code or parameter names: the rename records the logical-name binding on inputMapping (dropping identity entries, rejecting logical-name collisions before any mutation), the executor and codegen honour it, and preview rows are equal before and after the rename, save and reload."
 
 [scenarios.evidence]
-commit = "a9f7779a"
-command = 'cd frontend && npx playwright test e2e/rename-execution.spec.ts --retries=0 && npx vitest run src/utils/__tests__/nodeUpdatePlan.test.ts src/__tests__/App.integration.test.tsx; cd .. && uv run pytest tests/test_rename_stable_binding.py -q -p no:warnings'
-result = "e2e 1 passed (14.8s); vitest 57 passed; pytest 1 passed; sensitivity replay 2026-09-06 at 9daa4372: the Vitest witnesses fail 7 of 57 against frontend/src/utils/nodeUpdatePlan.ts from a9f7779a^ (browser journey not replayed)"
+commit = "f8af18c67"
+command = 'cd frontend && npx playwright test e2e/rename-execution.spec.ts --retries=0 && npx vitest run src/utils/__tests__/nodeUpdatePlan.test.ts src/__tests__/App.integration.test.tsx; cd .. && uv run pytest tests/test_rename_stable_binding.py -q'
+result = "e2e 1 passed (26.8s); vitest Tests 87 passed (87); pytest 1 passed in 5.31s; sensitivity replay 2026-09-06 at 9daa4372: the Vitest witnesses fail 7 of 57 against frontend/src/utils/nodeUpdatePlan.ts from a9f7779a^ (browser journey not replayed)"
 
 [[scenarios]]
 id = "W03-S03"
@@ -513,9 +513,9 @@ tests = [
 invariant = "A real editing sequence over the seeded project (disconnect, undo, redo, copy and paste, delete, instance, group and dissolve) leaves the graph structure and the previewed rows unchanged after save and reopen, and the saved file carries exactly the surviving nodes and connections; the client-side gestures are pinned individually by the store and hook tests, and the parser conserves or rejects every authored connection."
 
 [scenarios.evidence]
-commit = "b22726d8"
-command = 'cd frontend && npx playwright test e2e/graph-editing-sequence.spec.ts e2e/core-flows.spec.ts e2e/edge-join.spec.ts --retries=0 && npx vitest run src/hooks/__tests__/useEdgeHandlers.test.ts src/hooks/__tests__/useKeyboardShortcuts.test.ts src/hooks/__tests__/useNodeHandlers.test.ts src/hooks/__tests__/useSubmodelNavigation.test.ts src/stores/__tests__/useGraphStore.undoAtomicity.test.ts src/stores/__tests__/useGraphStore.loadSnapshot.test.ts; cd .. && uv run pytest tests/test_parser_conservation.py tests/test_parser_submodels.py -q -p no:warnings'
-result = "e2e 12 passed (1.0m); vitest Tests  240 passed (240); pytest 69 passed in 1.88s"
+commit = "f8af18c67"
+command = 'cd frontend && npx playwright test e2e/graph-editing-sequence.spec.ts e2e/core-flows.spec.ts e2e/edge-join.spec.ts --retries=0 && npx vitest run src/hooks/__tests__/useEdgeHandlers.test.ts src/hooks/__tests__/useKeyboardShortcuts.test.ts src/hooks/__tests__/useNodeHandlers.test.ts src/hooks/__tests__/useSubmodelNavigation.test.ts src/stores/__tests__/useGraphStore.undoAtomicity.test.ts src/stores/__tests__/useGraphStore.loadSnapshot.test.ts; cd .. && uv run pytest tests/test_parser_conservation.py tests/test_parser_submodels.py -q'
+result = "23 passed (5.1m); vitest Tests 266 passed (266); pytest 118 passed in 8.14s"
 
 [[scenarios]]
 id = "W03-S04"
@@ -556,9 +556,9 @@ tests = [
 invariant = "A Polars node's positional parameters are exactly its connected inputs by name (an ordinary source's node name, an API frame handle, a sanitized public submodel output port name, or a declared inputMapping): the parser infers nothing, an unbound parameter or unconsumed input is a ParseError carried into the editor as a degraded document that refuses Save, a mapped or port-named consumer parses, executes and regenerates byte-identically, and the input chips show the same names the executor binds."
 
 [scenarios.evidence]
-commit = "dc586a50"
-command = 'uv run pytest tests/test_parser_conservation.py tests/test_graph_utils.py tests/test_submodel_instances.py tests/test_pipeline_recovery.py tests/test_submodel_endpoint_properties.py -q -p no:warnings'
-result = "259 passed in 24.32s; red before the fix on 2af17e3b: the ordinary and occurrence consumers fail at execution with NameError and the binding gate does not exist (probe 2026-09-06)"
+commit = "f8af18c67"
+command = 'uv run pytest tests/test_parser_conservation.py tests/test_graph_utils.py tests/test_submodel_instances.py tests/test_pipeline_recovery.py tests/test_submodel_endpoint_properties.py -q -n 4'
+result = "291 passed in 28.39s; red before the fix on 2af17e3b: the ordinary and occurrence consumers fail at execution with NameError and the binding gate does not exist (probe 2026-09-06)"
 
 [[scenarios]]
 id = "W04-S01"
@@ -606,9 +606,9 @@ tests = [
 invariant = "Every registry-supported input and output provider round-trips through a snapshot or a direct scan; a preview passes a data output through without writing while the explicit write publishes it; source switch, schema discovery and cache refresh follow the source signature; a missing, malformed, emptied or cancelled source and a failed output leave the previously published generation or target intact; and credentials never enter identities, fixtures or error text."
 
 [scenarios.evidence]
-commit = "f9265ddf"
-command = 'uv run pytest tests/test_input_providers.py tests/test_input_preparation.py tests/test_source_cache.py tests/test_data_io_nodes.py tests/test_data_io_roundtrips.py tests/test_data_io_config_contract.py tests/test_polars_io_registry.py tests/test_databricks_io.py tests/test_databricks_credentials.py tests/test_databricks_endpoints.py "tests/test_io.py::TestReadSourceCSV" -q -p no:warnings'
-result = "378 passed, 2 skipped in 13.97s"
+commit = "f8af18c67"
+command = 'uv run pytest tests/test_input_providers.py tests/test_input_preparation.py tests/test_source_cache.py tests/test_data_io_nodes.py tests/test_data_io_roundtrips.py tests/test_data_io_config_contract.py tests/test_polars_io_registry.py tests/test_databricks_io.py tests/test_databricks_credentials.py tests/test_databricks_endpoints.py "tests/test_io.py::TestReadSourceCSV" -q -n 4'
+result = "471 passed, 2 skipped in 21.60s"
 
 [[scenarios]]
 id = "W05-S01"
@@ -627,9 +627,9 @@ tests = [
 invariant = "Cancellation or the deadline of an HTTP API Input table build terminates the live capped worker, settles every generation the parent chose for it, removes its shred scratch and store staging, and publishes nothing; the job reports the stop as cancelled or timed_out."
 
 [scenarios.evidence]
-commit = "8a23de70"
-command = 'uv run pytest "tests/test_input_cache_route.py::test_a_stopped_api_input_build_kills_its_worker_and_discards_its_staging" -q -p no:warnings'
-result = "2 passed in 10.68s"
+commit = "f8af18c67"
+command = 'uv run pytest "tests/test_input_cache_route.py::test_a_stopped_api_input_build_kills_its_worker_and_discards_its_staging" -q'
+result = "2 passed in 13.96s"
 
 [[scenarios]]
 id = "W05-S02"
@@ -671,9 +671,9 @@ tests = [
 invariant = "JSON, JSONL and XML inputs shred to the declared tables with every root row accounted for; frame and edge joins, output mapping, dry-run and batch assembly return the exact expected document per request; missing, null, empty and nested arrays, duplicate or missing keys, deterministic row order and strict schema errors have the documented outcomes; and frame edits persist through save and reload."
 
 [scenarios.evidence]
-commit = "4427e219"
-command = 'uv run pytest tests/test_v2_codec_and_shred.py tests/test_load_v2_api_source.py tests/test_scalar_array_and_inference.py tests/test_json_shred_parallel.py tests/test_xml_api_input.py tests/test_edge_join.py tests/test_output_assembler.py tests/test_output_nested_roundtrip.py tests/test_apiinput_flat_output_dry_run.py tests/test_json_shred_w1_conservation.py -q -p no:warnings'
-result = "506 passed in 45.03s"
+commit = "f8af18c67"
+command = 'uv run pytest tests/test_v2_codec_and_shred.py tests/test_load_v2_api_source.py tests/test_scalar_array_and_inference.py tests/test_json_shred_parallel.py tests/test_xml_api_input.py tests/test_edge_join.py tests/test_output_assembler.py tests/test_output_nested_roundtrip.py tests/test_apiinput_flat_output_dry_run.py tests/test_json_shred_w1_conservation.py -q -n 4'
+result = "588 passed in 36.06s"
 
 [[scenarios]]
 id = "W06-S01"
@@ -713,9 +713,9 @@ tests = [
 invariant = "Preview, refresh and trace over the active source return the same rows and trace identity across cold and warm caches; a config, data or helper edit invalidates the cached result; filtered, reordered, joined and multi-frame rows trace to the correct source row; a mismatched clicked row is a 409 rather than a wrong trace; and a stale preview or trace result never replaces a newer selection."
 
 [scenarios.evidence]
-commit = "dee8c285"
-command = 'uv run pytest tests/test_trace_matches_preview.py tests/test_trace_multi_frame.py tests/test_pipeline_route_supersession.py tests/test_runtime_input_cache_invalidation.py "tests/test_executor.py::TestPreviewCacheInvalidation" "tests/test_executor.py::TestPreviewCachePartialHit" "tests/test_trace_api.py::TestRequestValidation" "tests/test_server.py::TestPreviewNode" tests/test_input_preparation.py -q -p no:warnings'
-result = "172 passed in 22.44s"
+commit = "f8af18c67"
+command = 'uv run pytest tests/test_trace_matches_preview.py tests/test_trace_multi_frame.py tests/test_pipeline_route_supersession.py tests/test_runtime_input_cache_invalidation.py "tests/test_executor.py::TestPreviewCacheInvalidation" "tests/test_executor.py::TestPreviewCachePartialHit" "tests/test_trace_api.py::TestRequestValidation" "tests/test_server.py::TestPreviewNode" tests/test_input_preparation.py -q -n 4'
+result = "195 passed in 19.44s"
 
 [[scenarios]]
 id = "W06-S02"
@@ -785,9 +785,9 @@ tests = [
 invariant = "A rating step previewed and traced through the real executor reproduces hand-calculated premiums (band thresholds at the boundary, a null falling to the default, a table miss resolved as neutral, a multiplicative combine over a base value); every banding and table rule has its documented outcome at exact thresholds, ties, nulls, missing factors, mixed key dtypes and rounding; invalid expressions become opaque, and a formula one row cannot determine is reported not computable rather than guessed."
 
 [scenarios.evidence]
-commit = "dee8c285"
-command = 'uv run pytest tests/test_rating_hand_calculated.py tests/test_rating.py tests/test_banding.py tests/test_rating_step.py tests/test_rating_step_config_coverage.py tests/test_rating_key_agreement.py tests/test_rating_miss_fail_loud.py tests/test_rating_dtype_contract.py tests/test_expression_parser.py tests/test_expression_parity_properties.py -q -p no:warnings'
-result = "810 passed in 16.31s"
+commit = "f8af18c67"
+command = 'uv run pytest tests/test_rating_hand_calculated.py tests/test_rating.py tests/test_banding.py tests/test_rating_step.py tests/test_rating_step_config_coverage.py tests/test_rating_key_agreement.py tests/test_rating_miss_fail_loud.py tests/test_rating_dtype_contract.py tests/test_expression_parser.py tests/test_expression_parity_properties.py -q -n 4'
+result = "851 passed in 19.78s"
 
 [[scenarios]]
 id = "W08-S01"
@@ -816,9 +816,9 @@ tests = [
 invariant = "A HauteValidationError (the metric-stage wrapper included) is promoted verbatim as a contract_error while a dependency's plain ValueError is classified as an unexpected error whose public message names only the type, the raw text surviving in the diagnostic field; training and dispersion workers apply the same taxonomy."
 
 [scenarios.evidence]
-commit = "2073df1c"
-command = 'uv run pytest "tests/test_training_worker_protocol.py::test_training_entrypoint_maps_contract_failures" "tests/test_training_worker_protocol.py::test_training_entrypoint_rejects_incomplete_evaluation_and_tuning_artifacts" "tests/test_training_worker_protocol.py::test_dispersion_worker_maps_malformed_requests_to_contract_failures" "tests/test_training_worker_protocol.py::test_dispersion_worker_maps_estimator_failures" "tests/test_target_task_gate.py::TestWorkerBoundaryUserMessage" "tests/test_modelling_routes.py::TestBackgroundThreadErrors::test_background_validation_error" "tests/test_modelling_routes.py::TestBackgroundThreadErrors::test_background_plain_value_error_takes_the_fallback" "tests/test_modelling_routes.py::TestDispersionErrorPaths::test_worker_missing_term_columns_is_contract_error" "tests/test_modelling_routes.py::TestDispersionErrorPaths::test_worker_fallback_stamps_curated_message" -q -p no:warnings'
-result = "42 passed in 5.83s"
+commit = "f8af18c67"
+command = 'uv run pytest "tests/test_training_worker_protocol.py::test_training_entrypoint_maps_contract_failures" "tests/test_training_worker_protocol.py::test_training_entrypoint_rejects_incomplete_evaluation_and_tuning_artifacts" "tests/test_training_worker_protocol.py::test_dispersion_worker_maps_malformed_requests_to_contract_failures" "tests/test_training_worker_protocol.py::test_dispersion_worker_maps_estimator_failures" "tests/test_target_task_gate.py::TestWorkerBoundaryUserMessage" "tests/test_modelling_routes.py::TestBackgroundThreadErrors::test_background_validation_error" "tests/test_modelling_routes.py::TestBackgroundThreadErrors::test_background_plain_value_error_takes_the_fallback" "tests/test_modelling_routes.py::TestDispersionErrorPaths::test_worker_missing_term_columns_is_contract_error" "tests/test_modelling_routes.py::TestDispersionErrorPaths::test_worker_fallback_stamps_curated_message" -q -n 4'
+result = "42 passed in 17.92s"
 
 [[scenarios]]
 id = "W08-S02"
@@ -869,9 +869,9 @@ tests = [
 invariant = "Configure, train, cancel, retry, persist, load and score run through the real lifecycle and a real CatBoost fit; a failed or cancelled run leaves the node startable again, owns no artifacts, and leaves the last completed run's job-owned artifacts intact until a newer run of the node supersedes them; empty input, target/weight validation, partition boundaries, non-finite metrics, stale model or cache identity and artifact mismatch each have their typed outcome; and the modelling panels switch without losing results."
 
 [scenarios.evidence]
-commit = "de9bcc0dc"
-command = 'uv run pytest tests/test_train_service_coverage.py tests/test_training_worker_protocol.py tests/test_train_config_builder.py tests/test_mlflow_io.py tests/test_mlflow_io_concurrency.py tests/test_mlflow_model_cache_key_contract.py tests/test_model_scorer.py tests/test_target_task_gate.py tests/test_training_evaluation.py tests/test_training_lorenz_nonfinite.py tests/test_modelling_export.py tests/test_offset_scoring.py "tests/test_modelling.py::TestCatBoostAlgorithm" "tests/test_modelling.py::TestTrainingJob" "tests/test_modelling_routes.py::TestTrainBackgroundLaunchFailures" -q -p no:warnings'
-result = "752 passed, 2 skipped in 109.51s"
+commit = "f8af18c67"
+command = 'uv run pytest tests/test_train_service_coverage.py tests/test_training_worker_protocol.py tests/test_train_config_builder.py tests/test_mlflow_io.py tests/test_mlflow_io_concurrency.py tests/test_mlflow_model_cache_key_contract.py tests/test_model_scorer.py tests/test_target_task_gate.py tests/test_training_evaluation.py tests/test_training_lorenz_nonfinite.py tests/test_modelling_export.py tests/test_offset_scoring.py "tests/test_modelling.py::TestCatBoostAlgorithm" "tests/test_modelling.py::TestTrainingJob" "tests/test_modelling_routes.py::TestTrainBackgroundLaunchFailures" -q -n 4'
+result = "762 passed, 2 skipped in 60.26s (0:01:00)"
 
 [[scenarios]]
 id = "W08-S03"
@@ -902,9 +902,9 @@ tests = [
 invariant = "Every native family (CatBoost, XGBoost, LightGBM, EBM) trains, cancels, fails and retrains through the real service with a real fit; a cancelled or failed run publishes nothing and the last completed model still loads and scores; a cancelled native fit stops at its next progress report and saves nothing; eager, batched, pyfunc, deployed-graph and Model Score runtime scoring agree, an executed exported training script trains the same model as the canvas config, a prediction-only classifier still deploys its labels, labels follow probability above 0.5, and selected rounds, offsets and EBM row routing match independent native oracles."
 
 [scenarios.evidence]
-commit = "de9bcc0dc"
-command = 'uv run pytest "tests/test_model_family_acceptance.py::test_native_training_lifecycle_keeps_the_last_good_model" "tests/test_model_family_acceptance.py::test_a_native_fit_stops_at_the_first_progress_report_after_cancellation" "tests/test_model_family_acceptance.py::test_regression_scores_identically_on_every_path" "tests/test_model_family_acceptance.py::test_classification_labels_follow_the_probability_on_every_path" "tests/test_model_family_acceptance.py::test_invalid_binary_targets_fail_before_fitting" "tests/test_model_family_acceptance.py::test_the_exported_training_script_trains_the_same_model" "tests/test_model_family_acceptance.py::test_a_prediction_only_classifier_deploys_its_labels" "tests/test_xgboost_family.py::test_early_stopping_selects_what_native_xgboost_selects" "tests/test_lightgbm_family.py::test_fitting_with_the_offset_as_init_score_matches_an_independent_native_fit" "tests/test_ebm_family.py::test_selection_fits_see_training_rows_and_the_refit_development_rows" "tests/test_ebm_family.py::test_published_responses_match_the_staged_ebm_artifacts" -q -p no:warnings'
-result = "33 passed in 69.39s; plus the six modelling browser journeys, each training, saving and scoring its model (9 browser scenarios with model-scoring.spec.ts passed in 2.2m)"
+commit = "f8af18c67"
+command = 'uv run pytest "tests/test_model_family_acceptance.py::test_native_training_lifecycle_keeps_the_last_good_model" "tests/test_model_family_acceptance.py::test_a_native_fit_stops_at_the_first_progress_report_after_cancellation" "tests/test_model_family_acceptance.py::test_regression_scores_identically_on_every_path" "tests/test_model_family_acceptance.py::test_classification_labels_follow_the_probability_on_every_path" "tests/test_model_family_acceptance.py::test_invalid_binary_targets_fail_before_fitting" "tests/test_model_family_acceptance.py::test_the_exported_training_script_trains_the_same_model" "tests/test_model_family_acceptance.py::test_a_prediction_only_classifier_deploys_its_labels" "tests/test_xgboost_family.py::test_early_stopping_selects_what_native_xgboost_selects" "tests/test_lightgbm_family.py::test_fitting_with_the_offset_as_init_score_matches_an_independent_native_fit" "tests/test_ebm_family.py::test_selection_fits_see_training_rows_and_the_refit_development_rows" "tests/test_ebm_family.py::test_published_responses_match_the_staged_ebm_artifacts" -q -n 4'
+result = "33 passed in 49.36s"
 
 [[scenarios]]
 id = "W09-S01"
@@ -927,9 +927,9 @@ tests = [
 invariant = "A second optimiser setup, data-output preparation, or auto-range job after a helper edit computes with the new helper value while the first keeps the old one; within one job every preamble compile uses the fingerprint pinned at admission, and an unchanged helper reuses the cached namespace."
 
 [scenarios.evidence]
-commit = "1777d16b"
-command = 'uv run pytest "tests/test_optimiser_routes.py::TestExecutePipelineExtended::test_execute_pipeline_uses_edited_helper_on_next_operation" "tests/test_optimiser_routes.py::TestExecutePipelineExtended::test_execute_pipeline_reuses_namespace_when_helper_is_unchanged" "tests/test_optimiser_auto_range_stage.py::test_one_auto_range_job_compiles_its_preamble_under_one_pinned_fingerprint" "tests/test_executor.py::TestPreviewCacheInvalidation::test_prepare_data_output_uses_edited_helper_on_next_operation" "tests/test_executor.py::TestPreambleLockConcurrency::test_compile_preamble_pinned_fingerprint_is_used_verbatim" -q -p no:warnings'
-result = "5 passed in 6.15s; auto-range now runs the solve setup's pipeline stage, so its pinned-fingerprint witness moved to tests/test_optimiser_auto_range_stage.py (the streaming auto-range job it replaced is gone)"
+commit = "f8af18c67"
+command = 'uv run pytest "tests/test_optimiser_routes.py::TestExecutePipelineExtended::test_execute_pipeline_uses_edited_helper_on_next_operation" "tests/test_optimiser_routes.py::TestExecutePipelineExtended::test_execute_pipeline_reuses_namespace_when_helper_is_unchanged" "tests/test_optimiser_auto_range_stage.py::test_one_auto_range_job_compiles_its_preamble_under_one_pinned_fingerprint" "tests/test_executor.py::TestPreviewCacheInvalidation::test_prepare_data_output_uses_edited_helper_on_next_operation" "tests/test_executor.py::TestPreambleLockConcurrency::test_compile_preamble_pinned_fingerprint_is_used_verbatim" -q -n 4'
+result = "5 passed in 11.17s; auto-range now runs the solve setup's pipeline stage, so its pinned-fingerprint witness moved to tests/test_optimiser_auto_range_stage.py (the streaming auto-range job it replaced is gone)"
 
 [[scenarios]]
 id = "W09-S02"
@@ -975,9 +975,9 @@ tests = [
 invariant = "Estimate, solve, frontier, select, save, apply and trace agree in both online and ratebook modes: non-converged, empty-constraint and non-finite cases have their typed outcomes, factor dtypes and last-duplicate tie resolution are honoured identically by engine and mirror, a stale solve result or stale configured input is never applied, capped previews state their true totals, and heavy solver entrypoints refuse to run outside the worker context."
 
 [scenarios.evidence]
-commit = "1777d16b"
-command = 'uv run pytest tests/test_optimiser_contracts.py tests/test_optimiser_apply.py tests/test_optimiser_apply_trace_enrichment.py tests/test_optimiser_frontier_materialisation.py tests/test_optimiser_ratebook_apply_agreement.py tests/test_rating_dtype_contract.py "tests/test_optimiser_routes.py::TestSolveOnlineUnit" "tests/test_optimiser_routes.py::TestRatebookSolve" "tests/test_optimiser_routes.py::TestFrontierRoute" "tests/test_optimiser_routes.py::TestFrontierSelect" "tests/test_optimiser_routes.py::TestSaveResultUnit" "tests/test_optimiser_routes.py::TestSaveArtifactGate" "tests/test_optimiser_routes.py::TestMlflowLogExtended" "tests/test_optimiser_routes.py::TestFinalizeSolveResult" "tests/test_optimiser_routes.py::TestFrontierInSolve" "tests/test_optimiser_routes.py::TestSolverWorkerContextGuard" "tests/test_optimiser_routes.py::TestApplyLambdasUnit" "tests/test_optimiser_routes.py::TestExecutePipelineArgs" "tests/test_optimiser_auto_range_stage.py::test_auto_range_seeds_only_the_configured_data_input_with_the_solves_demand" -q -p no:warnings'
-result = "501 passed in 25.92s; auto-range's data-input demand is the solve's (tests/test_optimiser_auto_range_stage.py), replacing the removed auto-range-specific seeding"
+commit = "f8af18c67"
+command = 'uv run pytest tests/test_optimiser_contracts.py tests/test_optimiser_apply.py tests/test_optimiser_apply_trace_enrichment.py tests/test_optimiser_frontier_materialisation.py tests/test_optimiser_ratebook_apply_agreement.py tests/test_rating_dtype_contract.py "tests/test_optimiser_routes.py::TestSolveOnlineUnit" "tests/test_optimiser_routes.py::TestRatebookSolve" "tests/test_optimiser_routes.py::TestFrontierRoute" "tests/test_optimiser_routes.py::TestFrontierSelect" "tests/test_optimiser_routes.py::TestSaveResultUnit" "tests/test_optimiser_routes.py::TestSaveArtifactGate" "tests/test_optimiser_routes.py::TestMlflowLogExtended" "tests/test_optimiser_routes.py::TestFinalizeSolveResult" "tests/test_optimiser_routes.py::TestFrontierInSolve" "tests/test_optimiser_routes.py::TestSolverWorkerContextGuard" "tests/test_optimiser_routes.py::TestApplyLambdasUnit" "tests/test_optimiser_routes.py::TestExecutePipelineArgs" "tests/test_optimiser_auto_range_stage.py::test_auto_range_seeds_only_the_configured_data_input_with_the_solves_demand" -q -n 4'
+result = "538 passed in 16.54s; auto-range's data-input demand is the solve's (tests/test_optimiser_auto_range_stage.py), replacing the removed auto-range-specific seeding"
 
 [[scenarios]]
 id = "W09-S03"
@@ -1003,9 +1003,9 @@ tests = [
 invariant = "Solver level tie-breaking is stable under floating-point perturbation of tied levels: for generated Int64, Float64, Float32 and String levels (single and composite) every emitted spelling of one typed value saves to one canonical key that an independent oracle predicts, distinct typed values never share a key, two spellings of one value in one emitted table are refused loudly at save rather than silently keeping the last rate, the saved artifact rates every typed row with its own level with the engine and the explainability mirror agreeing, and a duplicate saved key resolves to the last entry in both; the real solver's verbatim emission format stays pinned by the curated fixtures."
 
 [scenarios.evidence]
-commit = "b8b29097"
-command = 'uv run pytest tests/test_optimiser_level_tie_properties.py tests/test_optimiser_ratebook_apply_agreement.py -q -p no:warnings'
-result = "20 passed in 5.20s"
+commit = "f8af18c67"
+command = 'uv run pytest tests/test_optimiser_level_tie_properties.py tests/test_optimiser_ratebook_apply_agreement.py -q'
+result = "20 passed in 17.46s"
 
 [[scenarios]]
 id = "W10-S01"
@@ -1028,9 +1028,9 @@ tests = [
 invariant = "Unexpected exception text from building or profiling a data point never reaches status or result payloads; the job ends in error with the fixed internal-error detail, while contract, memory and changed-data failures keep their own typed terminal status."
 
 [scenarios.evidence]
-commit = "b75e0610"
-command = 'uv run pytest "tests/test_node_data_routes.py::test_a_remote_worker_failure_reports_only_the_fixed_internal_detail" "tests/test_node_data_routes.py::test_an_unexpected_parent_failure_reports_only_the_fixed_internal_detail" "tests/test_node_data_routes.py::test_worker_contract_and_memory_failures_use_the_job_failure_envelope" "tests/test_analysis_results.py::test_a_profile_that_is_not_admitted_reports_a_memory_limit_and_stores_nothing" "tests/test_analysis_results.py::test_a_direct_file_rewritten_while_it_is_profiled_is_reported_as_changed" -q -p no:warnings'
-result = "5 passed in 2.45s"
+commit = "f8af18c67"
+command = 'uv run pytest "tests/test_node_data_routes.py::test_a_remote_worker_failure_reports_only_the_fixed_internal_detail" "tests/test_node_data_routes.py::test_an_unexpected_parent_failure_reports_only_the_fixed_internal_detail" "tests/test_node_data_routes.py::test_worker_contract_and_memory_failures_use_the_job_failure_envelope" "tests/test_analysis_results.py::test_a_profile_that_is_not_admitted_reports_a_memory_limit_and_stores_nothing" "tests/test_analysis_results.py::test_a_direct_file_rewritten_while_it_is_profiled_is_reported_as_changed" -q -n 4'
+result = "5 passed in 9.88s"
 
 [[scenarios]]
 id = "W10-S02"
@@ -1065,9 +1065,9 @@ tests = [
 invariant = "Cache, pivot, chart, edit, save and reopen work against the real backend: a chart bound to a pivot renders from real pivot results and goes stale with its pivot, and a failed re-cache keeps the previous generation visible as stale with a curated failure; the shared cache state, profile cancel and retry, filters, export, exact aggregates and the all-null, cardinality and cap boundaries are pinned by the component and backend tests."
 
 [scenarios.evidence]
-commit = "b75e0610"
-command = 'cd frontend && npx vitest run src/panels/__tests__/ExplorePreview.test.tsx src/__tests__/editors/ExplorePivotsConfig.test.tsx src/__tests__/editors/ExploreChartsConfig.test.tsx src/panels/explore/__tests__/ExploreSummaryCards.test.tsx src/panels/explore/__tests__/ComboChart.test.tsx; cd .. && uv run pytest tests/test_explore_pivot_routes.py tests/test_explore_pivots.py tests/test_explore_round_trip.py tests/test_frame_profile.py -q -p no:warnings'
-result = "vitest Tests 95 passed (95); pytest 182 passed in 35.46s; e2e journey run in the release Playwright pass"
+commit = "f8af18c67"
+command = 'cd frontend && npx vitest run src/panels/__tests__/ExplorePreview.test.tsx src/__tests__/editors/ExplorePivotsConfig.test.tsx src/__tests__/editors/ExploreChartsConfig.test.tsx src/panels/explore/__tests__/ExploreSummaryCards.test.tsx src/panels/explore/__tests__/ComboChart.test.tsx; cd .. && uv run pytest tests/test_explore_pivot_routes.py tests/test_explore_pivots.py tests/test_explore_round_trip.py tests/test_frame_profile.py -q -n 4'
+result = "vitest Tests 110 passed (110); pytest 208 passed in 23.82s"
 
 [[scenarios]]
 id = "W11-S01"
@@ -1098,9 +1098,9 @@ tests = [
 invariant = "Every committed generation is one create-only pointer object: a competitor committing the same generation after this writer's head read (or during its bundle upload, or at the initial publication of an empty location, or as the successor of a stalled predecessor) is never overwritten but refused at the create, the loser's local saves survive, a create that failed before commit is retried, an ambiguous create that landed is reconciled on the next attempt, and a two-writer history keeps every acknowledged generation strictly ordered. Production atomicity of the create-only upload is a separate provider qualification (scripts/uc_create_only_qualification.py), not claimed by these tests."
 
 [scenarios.evidence]
-commit = "272af286"
-command = 'uv run pytest "tests/test_project_storage.py::TestUcPublicationAuthority" "tests/test_project_storage.py::TestUcContainerDeathSurvival" -q -p no:warnings'
-result = "34 passed in 27.00s; sensitivity replay 2026-09-06 at 9daa4372: TestUcPublicationAuthority errors 9 of 9 against src/haute/_uc_transport.py and src/haute/_storage_types.py from 272af286^"
+commit = "f8af18c67"
+command = 'uv run pytest "tests/test_project_storage.py::TestUcPublicationAuthority" "tests/test_project_storage.py::TestUcContainerDeathSurvival" -q'
+result = "36 passed in 95.74s (0:01:35); sensitivity replay 2026-09-06 at 9daa4372: TestUcPublicationAuthority errors 9 of 9 against src/haute/_uc_transport.py and src/haute/_storage_types.py from 272af286^"
 
 [[scenarios]]
 id = "W11-S02"
@@ -1130,9 +1130,9 @@ tests = [
 invariant = "Restore after publishing on a newly selected branch resumes that branch with its contents and save ledger, over UC and a bare git remote; the restart target moves only with a successful publish (a populated bind records none until the first publish, a failed transport or record write leaves the previous target and reports a transport failure), a record naming an absent branch still serves with the chooser, and a restored clone without a git identity fails its first save loudly and succeeds after identity setup. The browser chooser witness covers the recovery indication."
 
 [scenarios.evidence]
-commit = "e46d9c6a"
-command = 'uv run pytest "tests/test_project_storage.py::TestUcContainerDeathSurvival" "tests/test_project_storage.py::TestContainerDeathSurvival" -q -p no:warnings'
-result = "40 passed in 37.10s; sensitivity replay 2026-09-06 at 9daa4372: the container-death witnesses fail 7 of 40 against src/haute/_project_storage.py from e46d9c6a^"
+commit = "f8af18c67"
+command = 'uv run pytest "tests/test_project_storage.py::TestUcContainerDeathSurvival" "tests/test_project_storage.py::TestContainerDeathSurvival" -q'
+result = "43 passed in 112.43s (0:01:52); sensitivity replay 2026-09-06 at 9daa4372: the container-death witnesses fail 7 of 40 against src/haute/_project_storage.py from e46d9c6a^"
 
 [[scenarios]]
 id = "W11-S03"
@@ -1150,9 +1150,9 @@ tests = [
 invariant = "A competing pointer arriving before the final read stops publication loudly."
 
 [scenarios.evidence]
-commit = "33e755eb"
-command = 'uv run pytest "tests/test_project_storage.py::TestUcContainerDeathSurvival::test_a_mid_flight_publish_by_another_writer_stops_before_the_pointer" -q -p no:warnings'
-result = "1 passed"
+commit = "f8af18c67"
+command = 'uv run pytest "tests/test_project_storage.py::TestUcContainerDeathSurvival::test_a_mid_flight_publish_by_another_writer_stops_before_the_pointer" -q'
+result = "1 passed in 7.90s"
 
 [[scenarios]]
 id = "W12-S01"
@@ -1177,9 +1177,9 @@ tests = [
 invariant = "An executable-flow assistant edit declares the schema tier with exact evidence for the affected nodes, a mutation with no executable target declares structural, and a schema failure on a changed node is rejected before any plan is stored."
 
 [scenarios.evidence]
-commit = "2073df1c"
-command = 'uv run pytest "tests/test_assistant_application.py::TestSchemaValidationScope" "tests/test_assistant_application.py::TestApply::test_low_risk_apply_is_exact_single_use_and_truthfully_verified" "tests/test_assistant_application.py::test_dry_run_binds_schema_evidence_into_executable_plan" "tests/test_assistant_application.py::test_dry_run_rejects_trace_regression_polars_plan_before_storing" -q -p no:warnings'
-result = "8 passed in 2.29s"
+commit = "f8af18c67"
+command = 'uv run pytest "tests/test_assistant_application.py::TestSchemaValidationScope" "tests/test_assistant_application.py::TestApply::test_low_risk_apply_is_exact_single_use_and_truthfully_verified" "tests/test_assistant_application.py::test_dry_run_binds_schema_evidence_into_executable_plan" "tests/test_assistant_application.py::test_dry_run_rejects_trace_regression_polars_plan_before_storing" -q -n 4'
+result = "8 passed in 14.38s"
 
 [[scenarios]]
 id = "W12-S02"
@@ -1218,9 +1218,9 @@ tests = [
 invariant = "A turn streams typed events through the real application service with a deterministic provider; a proposal is validated and applied only under its exact revision-bound plan, a stale proposal is rejected before any write, a failed post-commit verification stays visible, cancellation lets an in-flight save finish, a session resumes after restart, an applied mutation is undone by moving the save ledger back to the prior commit, and the client renders failed, cancelled and interrupted streams as such."
 
 [scenarios.evidence]
-commit = "06427690"
-command = 'uv run pytest tests/test_assistant_routes.py tests/test_assistant_loop.py tests/test_assistant_application.py tests/test_assistant_integration.py tests/test_assistant_session_persistence.py tests/test_assistant_providers.py tests/test_assistant_config.py tests/test_assistant_tools.py tests/test_assistant_ops.py -q -p no:warnings'
-result = "931 passed, 1 skipped in 92.76s, with ASSIST-38's per-lane tool projections on 06427690; the provider witness is now the per-lane projection test, which replaced the one-projection-for-every-provider test"
+commit = "f8af18c67"
+command = 'uv run pytest tests/test_assistant_routes.py tests/test_assistant_loop.py tests/test_assistant_application.py tests/test_assistant_integration.py tests/test_assistant_session_persistence.py tests/test_assistant_providers.py tests/test_assistant_config.py tests/test_assistant_tools.py tests/test_assistant_ops.py -q -n 4'
+result = "1044 passed, 1 skipped in 103.27s (0:01:43); the provider witness is now the per-lane projection test, which replaced the one-projection-for-every-provider test"
 
 [[scenarios]]
 id = "W13-S01"
@@ -1259,9 +1259,9 @@ tests = [
 invariant = "Validate, prune, bundle, load and score succeed for one and many requests and the editor dry-run, score_graph and the packaged pyfunc model return identical rows for the same synthetic input; missing artifacts, expected-output drift, non-finite values, malformed request bodies and unsupported or planned targets fail at their specified stage; and the upload and service SDKs are stubbed in ordinary CI; a build-and-push-only platform target requires a registry, pushes the image and reports that its service update is manual."
 
 [scenarios.evidence]
-commit = "c2c0fcf2"
-command = 'uv run pytest tests/test_deploy.py tests/test_deploy_config.py tests/test_deploy_expected_output_validation.py tests/test_deploy_config_and_bundle.py tests/test_deploy_internals.py tests/test_deploy_batch_scoring.py tests/test_deploy_identity_parity.py tests/test_deploy_dispatch.py tests/test_container.py tests/test_deploy_container.py -q -p no:warnings'
-result = "563 passed, 2 skipped in 16.37s"
+commit = "f8af18c67"
+command = 'uv run pytest tests/test_deploy.py tests/test_deploy_config.py tests/test_deploy_expected_output_validation.py tests/test_deploy_config_and_bundle.py tests/test_deploy_internals.py tests/test_deploy_batch_scoring.py tests/test_deploy_identity_parity.py tests/test_deploy_dispatch.py tests/test_container.py tests/test_deploy_container.py -q -n 4'
+result = "586 passed, 2 skipped in 37.96s"
 
 [[scenarios]]
 id = "W13-S02"
@@ -1286,9 +1286,9 @@ tests = [
 invariant = "The deployable artefact is proven, not only the in-process app: prepare_build_directory writes the manifest, artifacts, app.py and pinned Dockerfile (installing a local wheel when one is supplied) and build_and_push_image still cleans the build directory on a docker failure; scripts/container_smoke.py boots that build directory under a real uvicorn process and /health answers ok while /quote scores the example's golden request to every golden_output.json column; the container-smoke workflow builds and runs the real image weekly (Mondays 04:23 UTC) and on dispatch, checks the same two endpoints with curl and raises a container-watch issue on failure, and its cron, force_fail input, wheel build, serve-check, docker build/run and alarm steps are pinned by a contract test. Docker is not available on the development machine, so the image itself is verified only by the scheduled lane."
 
 [scenarios.evidence]
-commit = "63e71a61"
-command = 'uv run pytest tests/test_container_smoke_script.py tests/test_infrastructure_contracts.py tests/test_container.py tests/test_deploy_container.py -q -p no:warnings'
-result = "152 passed in 13.03s"
+commit = "f8af18c67"
+command = 'uv run pytest tests/test_container_smoke_script.py tests/test_infrastructure_contracts.py tests/test_container.py tests/test_deploy_container.py -q -n 4'
+result = "163 passed in 28.60s"
 
 [[scenarios]]
 id = "W14-S01"
@@ -1335,9 +1335,9 @@ tests = [
 invariant = "Every job family that owns a background lifecycle (training, dispersion, optimiser solve/frontier/auto-range, node-data build and profile, input-cache build) reaches its running, completed, error, cancelled and timed-out terminal states through the shared lifecycle; a late completion or progress report never revives a terminal job; single-flight keys, child processes, cache admission and marker-owned artifacts release exactly once; and a retry after a failure succeeds."
 
 [scenarios.evidence]
-commit = "b75e0610"
-command = 'uv run pytest tests/test_job_lifecycle.py tests/test_job_store.py tests/test_worker_protocol.py tests/test_artifact_housekeeping.py tests/test_input_cache_route.py "tests/test_modelling_routes.py::TestTrainStatusTimeout" "tests/test_modelling_routes.py::TestDispersionErrorPaths" "tests/test_optimiser_routes.py::TestSolveStatusTimeout" "tests/test_optimiser_routes.py::TestFrontierRoute" "tests/test_optimiser_routes.py::TestLaunchBackground" "tests/test_node_data_routes.py::test_a_different_signature_supersedes_the_running_build" "tests/test_node_data_routes.py::test_cancelling_a_running_build_terminates_its_worker_without_publishing" "tests/test_analysis_results.py::test_cancelling_a_profile_ends_it_cancelled_and_stores_nothing" -q -p no:warnings'
-result = "381 passed in 24.39s"
+commit = "f8af18c67"
+command = 'uv run pytest tests/test_job_lifecycle.py tests/test_job_store.py tests/test_worker_protocol.py tests/test_artifact_housekeeping.py tests/test_input_cache_route.py "tests/test_modelling_routes.py::TestTrainStatusTimeout" "tests/test_modelling_routes.py::TestDispersionErrorPaths" "tests/test_optimiser_routes.py::TestSolveStatusTimeout" "tests/test_optimiser_routes.py::TestFrontierRoute" "tests/test_optimiser_routes.py::TestLaunchBackground" "tests/test_node_data_routes.py::test_a_different_signature_supersedes_the_running_build" "tests/test_node_data_routes.py::test_cancelling_a_running_build_terminates_its_worker_without_publishing" "tests/test_analysis_results.py::test_cancelling_a_profile_ends_it_cancelled_and_stores_nothing" -q -n 4'
+result = "447 passed in 27.08s"
 
 [[scenarios]]
 id = "W14-S02"
@@ -1379,9 +1379,9 @@ tests = [
 invariant = "Project code is trusted first-party code, stated in sandbox-security, execution-engine, the hosted app specification and the node editor: through the real node entry point the accident guard rejects input(), exit(), quit() and breakpoint() before any code runs and leaves a sentinel untouched, ordinary Python (a class, getattr, type, vars, global, an import) and a Polars transform run, haute's own file loads stay inside the project root, untrusted model artifacts cannot execute code, and a synthetic environment marker and an outside-project write remain reachable through the injected Polars module and are pinned as the accepted posture rather than claimed contained."
 
 [scenarios.evidence]
-commit = "b1345006"
-command = 'uv run pytest tests/test_node_code_trust_boundary.py tests/test_sandbox.py -q -p no:warnings'
-result = "200 passed, 5 skipped in 8.92s on the SBX-R02 working tree over b1345006; the environment-marker and outside-write probes of the 5 September 2026 review reproduce on every tree and are pinned as the accepted trust posture, not contained"
+commit = "f8af18c67"
+command = 'uv run pytest tests/test_node_code_trust_boundary.py tests/test_sandbox.py -q'
+result = "211 passed, 2 skipped in 13.21s; the environment-marker and outside-write probes of the 5 September 2026 review reproduce on every tree and are pinned as the accepted trust posture, not contained"
 
 [[scenarios]]
 id = "W15-S02"
@@ -1399,6 +1399,6 @@ tests = [
 invariant = "From a fresh copy of the tracked root haute.toml and examples/, `haute run` resolves the repository's default pipeline, runs all three nodes of examples/reference/, and its output returns the six expected priced quote records."
 
 [scenarios.evidence]
-commit = "6d67330a"
-command = 'uv run pytest tests/test_reference_pipeline.py -q -p no:warnings'
-result = "1 passed in 5.10s"
+commit = "f8af18c67"
+command = 'uv run pytest tests/test_reference_pipeline.py -q'
+result = "1 passed in 7.62s"

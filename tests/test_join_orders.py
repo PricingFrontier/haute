@@ -11,6 +11,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 from tests._source_files import source_files
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "haute"
@@ -40,6 +42,7 @@ def unordered_joins(source: str) -> list[int]:
     return sorted(lines)
 
 
+@pytest.mark.meta
 def test_every_frame_join_in_haute_states_its_order() -> None:
     reports = [
         f"src/haute/{path.relative_to(SRC).as_posix()}:{line}"

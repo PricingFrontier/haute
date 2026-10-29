@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 BOUNDED_EXECUTION_MODULES = (
     "src/haute/_edge_join.py",
     "src/haute/_execute_lazy.py",
@@ -16,6 +18,7 @@ BOUNDED_EXECUTION_MODULES = (
 )
 
 
+@pytest.mark.meta
 def test_bounded_execution_modules_do_not_call_polars_collect_directly() -> None:
     """Bounded paths must use the shared collection/sink helpers."""
     violations: list[str] = []

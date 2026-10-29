@@ -142,6 +142,7 @@ def test_run_restores_cwd_and_removes_state_when_pytest_raises(
     assert not observed_working_dir.exists()
 
 
+@pytest.mark.meta
 def test_script_has_a_spawn_safe_main_guard() -> None:
     source = Path(run_mutation_pytest.__file__).read_text(encoding="utf-8")
 

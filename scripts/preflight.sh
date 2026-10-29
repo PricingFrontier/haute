@@ -182,7 +182,7 @@ if [[ "$RUN_BACKEND" == true ]]; then
   fi
 
   step "Mypy type check (Python)"
-  if uv run mypy src/haute/; then
+  if uv run mypy src/haute/ scripts/; then
     pass "Mypy"
   else
     fail "Mypy type errors"

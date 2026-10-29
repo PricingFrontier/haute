@@ -41,17 +41,17 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # The environment below mirrors the `browser-e2e` job in ci.yml. It has to:
       # a baseline rendered against different fonts or a different browser build
       # is a baseline that fails the job it was made for.
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           version: "0.8.22"
           python-version: "3.12"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22.14.0
 
@@ -60,7 +60,7 @@ jobs:
 
       - run: npm ci
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
@@ -120,7 +120,7 @@ jobs:
 
       - name: Upload the regenerated baselines
         if: always() && steps.collect.outputs.count != '0'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: updated-snapshots-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/updated-snapshots
@@ -130,7 +130,7 @@ jobs:
       # assertion never got as far as writing a baseline.
       - name: Upload the Playwright report
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: e2e-snapshots-report-${{ github.run_id }}-${{ github.run_attempt }}
           path: |

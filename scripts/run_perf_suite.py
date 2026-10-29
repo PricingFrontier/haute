@@ -22,7 +22,7 @@ import pytest
 try:
     from scripts.memory_smoke import StdlibMemorySampler
 except ModuleNotFoundError:  # Direct ``python scripts/run_perf_suite.py`` execution.
-    from memory_smoke import StdlibMemorySampler
+    from memory_smoke import StdlibMemorySampler  # type: ignore[import-not-found,no-redef]
 
 _POLARS_SCALE_ENV = "HAUTE_POLARS_PERF_SCALE"
 _WALL_TIME_PARTITION_TOLERANCE_SECONDS = 0.05
@@ -30,7 +30,7 @@ _WALL_TIME_PARTITION_TOLERANCE_SECONDS = 0.05
 
 def _nonnegative_float(value: object) -> float:
     """Argparse converter and public validation boundary for regression limits."""
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
         raise ValueError("must be a finite non-negative number")
     try:
         number = float(value)
@@ -63,6 +63,16 @@ class PerfTestResult:
     phase: str
     wasxfail: str | None = None
     evidence: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass
+class _ScenarioEvidence:
+    """What the tests of one named scenario recorded, gathered for the workload."""
+
+    name: str
+    scales: set[str] = field(default_factory=set)
+    execution_profiles: set[str] = field(default_factory=set)
+    inputs: list[dict[str, object]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -503,16 +513,18 @@ def _historical_comparison(
             }
         )
 
+    baseline_entries, current_entries = baseline["tests"], report["tests"]
+    assert isinstance(baseline_entries, list) and isinstance(current_entries, list)
     baseline_tests = {
         (item["nodeid"], item["phase"]): item
-        for item in baseline["tests"]
+        for item in baseline_entries
         if isinstance(item, dict)
         and item.get("outcome") == "passed"
         and item.get("phase") == "call"
     }
     current_tests = {
         (item["nodeid"], item["phase"]): item
-        for item in report["tests"]
+        for item in current_entries
         if isinstance(item, dict)
         and item.get("outcome") == "passed"
         and item.get("phase") == "call"
@@ -585,7 +597,7 @@ def _summarise_evidence(
     results: Sequence[PerfTestResult], rss: dict[str, object]
 ) -> tuple[dict[str, object], dict[str, object]]:
     """Create deterministic aggregate evidence while retaining each test's detail."""
-    scenarios: dict[str, dict[str, object]] = {}
+    scenarios: dict[str, _ScenarioEvidence] = {}
     input_bytes = output_bytes = n_collects = n_checkpoints = chunk_count = 0
     any_input_bytes = any_output_bytes = any_collects = any_checkpoints = any_chunks = False
     temp_disk_peaks: list[int] = []
@@ -596,18 +608,16 @@ def _summarise_evidence(
         name = evidence.get("scenario")
         if not isinstance(name, str):
             continue
-        scenario = scenarios.setdefault(
-            name, {"name": name, "scales": set(), "execution_profiles": set(), "inputs": []}
-        )
+        scenario = scenarios.setdefault(name, _ScenarioEvidence(name))
         scale = evidence.get("scale")
         if isinstance(scale, str):
-            scenario["scales"].add(scale)  # type: ignore[index]
+            scenario.scales.add(scale)
         profiles = evidence.get("execution_profiles", [])
         if isinstance(profiles, list):
-            scenario["execution_profiles"].update(str(profile) for profile in profiles)  # type: ignore[index]
+            scenario.execution_profiles.update(str(profile) for profile in profiles)
         descriptor = evidence.get("input")
         if isinstance(descriptor, dict):
-            scenario["inputs"].append(descriptor)  # type: ignore[index]
+            scenario.inputs.append(descriptor)
             value = descriptor.get("total_bytes")
             if isinstance(value, int):
                 input_bytes += value
@@ -642,29 +652,23 @@ def _summarise_evidence(
         value = evidence.get("payload_bytes")
         if isinstance(value, int):
             payload_bytes.append(value)
-    workload_scenarios = []
-    for scenario in scenarios.values():
-        workload_scenarios.append(
+    workload: dict[str, object] = {
+        "scenarios": [
             {
-                "name": scenario["name"],
-                "scales": sorted(scenario["scales"]),
-                "execution_profiles": sorted(scenario["execution_profiles"]),
+                "name": scenario.name,
+                "scales": sorted(scenario.scales),
+                "execution_profiles": sorted(scenario.execution_profiles),
                 "inputs": sorted(
-                    scenario["inputs"], key=lambda item: json.dumps(item, sort_keys=True)
+                    scenario.inputs, key=lambda item: json.dumps(item, sort_keys=True)
                 ),
             }
-        )
-    workload = {
-        "scenarios": sorted(workload_scenarios, key=lambda item: item["name"]),
+            for scenario in sorted(scenarios.values(), key=lambda scenario: scenario.name)
+        ],
         "execution_profiles": sorted(
-            {
-                profile
-                for scenario in workload_scenarios
-                for profile in scenario["execution_profiles"]
-            }
+            {profile for scenario in scenarios.values() for profile in scenario.execution_profiles}
         ),
     }
-    resources = {
+    resources: dict[str, object] = {
         "rss": rss,
         "input_bytes": input_bytes if any_input_bytes else None,
         "output_bytes": output_bytes if any_output_bytes else None,

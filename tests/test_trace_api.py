@@ -233,6 +233,7 @@ class TestRequestValidation:
         # With column filter, output_value should be a scalar, not a dict
         assert not isinstance(trace["output_value"], dict)
 
+    @pytest.mark.in_process
     def test_waterfall_error_payload_is_valid_response(self, client, tmp_path):
         """Trace may return a structured waterfall error without a 500."""
         from unittest.mock import patch
@@ -389,6 +390,7 @@ class TestResponseShape:
         assert ov["y"] == 10
         assert ov["z"] == 11
 
+    @pytest.mark.in_process
     def test_route_rejects_an_invalid_internal_trace_payload(
         self,
         client,

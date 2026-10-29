@@ -48,7 +48,7 @@ probe files stayed outside the repository. No full backend/frontend suite,
 browser journey, hosted deployment, external model registry, Linux worker/cgroup
 run or production performance benchmark was performed. The foreign-Host probe
 used TestClient; browser DNS-rebinding exploitability is an inference, not an
-executed browser attack. The CI finding is now also measured in hosted
+executed browser attack. The core-only CI finding, since delivered, was also measured in hosted
 [main run 40754355254, optional-deps-smoke](https://github.com/PricingFrontier/haute/actions/runs/40754355254/job/123049170185):
 the `uv run` step uninstalled 5 packages, installed 42, and passed with
 `3 skipped in 0.18s`. The cross-family reviewer supplied this evidence and the
@@ -74,7 +74,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P1 | Inference for `first.json` returns after the user selected `second.json` and added a table; old path/tables are written back. | [FNED-R06](frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft) | Actual API Input editor with delayed inference response. |
 | P1 | Auto-layout finishes after a code edit and restores the old code from its node snapshot. | [FGC-R05](frontend-graph-canvas.md#fgc-r05--auto-layout-cannot-overwrite-edits) | Actual node-handler hook with delayed layout. Node addition/deletion and document-switch variants are source-supported. |
 | P2 | Stratified test allocation consumes class members needed by later validation, refusing feasible plans. | [MOD-R07](modelling.md#mod-r07--stratified-allocation-reserves-every-later-partition) | Real evaluation planner; holdout and five-fold examples below. |
-| P2 | Core-only CI invokes resyncing `uv run`, restores the optional connector and passes with the whole smoke module skipped. | [ENGQ-R07](engineering-quality.md#engq-r07--every-gate-runs-on-every-run), extended | [Hosted main run 40754355254, optional-deps-smoke](https://github.com/PricingFrontier/haute/actions/runs/40754355254/job/123049170185): `uv run` uninstalled 5 packages, installed 42, then `3 skipped in 0.18s`. |
 
 ### Additional full-source findings
 
@@ -103,7 +102,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P2 | Unary parentheses disappear and regex value substitution rewrites a matching string literal. | [TRACE-R02](tracing.md#trace-r02--expression-facts-from-the-located-expression), extended | Real expression evaluator: `-(x+z)` displayed as `-x+z`; concat literal `"x"` is replaced. Numerical execution remains correct in these two cases. The actual browser formatter also rewrites quoted `a/b` and `a*b` into different literal text. |
 | P2 | Deployment proves a literal-only select preserves request order, then fails a three-quote request with one row. | [EXEC-R09](execution-engine.md#exec-r09--column-free-selects-are-not-row-local), extended | Actual row proof and score_graph. Existing chunk row-count corruption stays P1; this added deployment failure is loud. |
 | P2 | Late GLM dispersion estimate for A overwrites manually chosen theta 7 in newer target B with 3. | [FMOU-R06](frontend-modelling-optimiser-ui.md#fmou-r06--dispersion-estimates-belong-to-the-initiating-training-draft) | Actual GLMTargetConfig, only the estimate promise substituted. |
-| P2 | UC release qualification passes one success plus three permission errors, and also zero rounds. | [ENGQ-R12](engineering-quality.md#engq-r12--storage-qualification-proves-actual-contention) | Actual threaded gate with offline transport. Does not establish that a live UC backend lacks atomicity. |
 | P2 | JSON omits an all-null nested pricing object while NDJSON returns pricing:null for the same quote. | [DEP-R17](deploy.md#dep-r17--json-and-ndjson-preserve-the-same-output-document) | Real generated FastAPI app, request shredder, scorer, assembler and materializer; no scorer mock. Batch variant is source-supported. |
 | P2 | From project root, rating/modules edits are skipped even when rating/main.py is the configured importer. | [API-R11](server-api.md#api-r11--module-watching-follows-the-configured-pipeline-directory) | Real discovery/parser/dependency index and watcher event handling; event transport/publish capture substituted. No subsequent save-overwrite claim. |
 | P2 | A utility file load replaces a newer selection and can discard the old file's draft typed after its initial flush when autosave later fails. | [FGC-R08](frontend-graph-canvas.md#fgc-r08--utility-navigation-preserves-drafts-across-pending-reads) | Actual UtilityPanel/debounce, textarea editor and transport seams; two controlled interleavings independently reproduced. |
@@ -245,7 +243,7 @@ adds a finding group or changes the 42-group count.
 | `src/haute/_rating.py` null-factor/miss handling | **Unverified contract question separate from accepted `value` collision.** Run a valid table containing a null level through ordinary lookup with each declared miss policy, compare with the specified null/missing behavior, and show an incorrect match/default/refusal. The note already says nulls are deliberately treated as misses; it does not prove that policy violates the contract. |
 | `src/haute/_api_input_schema.py` typed codec | **Partly duplicate / otherwise underspecified.** Persisted editor-only `origin`/`key` belongs to FNED-R01/PCFG-R08. Any other claim must first identify an exact unknown key or valid level/path shape, then demonstrate accepted data lost on codec round trip. The general note gives no other concrete case. |
 | `.github/workflows/performance.yml` execution-engine-platform job | **Unverified.** Inspect or execute the exact macOS locked install and named certification tests, showing a required engine fails import/is skipped unexpectedly. No macOS execution or native dependency failure was recorded. Existing pin/coverage packages do not prove this platform-specific case. |
-| `hatch_build.py` frontend freshness input closure | **Unverified residual suspicion.** Identify a real imported frontend build dependency omitted from the hook's closure, modify it, then demonstrate a build incorrectly reuses stale output. The source note supplies no omitted file; ENGQ-R06 already owns its machine-specific Node fallback, not every possible closure defect. |
+| `hatch_build.py` frontend freshness input closure | **Unverified residual suspicion.** Identify a real imported frontend build dependency omitted from the hook's closure, modify it, then demonstrate a build incorrectly reuses stale output. The source note supplies no omitted file. The hook's machine-specific Node fallback, a separate defect, has been removed. |
 | Frontend scratch report; `SchemaTableCard.tsx` search state | **Unverified.** Apply a search while the schema exceeds its search-control threshold, refresh to fewer columns without remounting, and observe hidden search state continuing to filter with no visible way to clear it. The full report explicitly left this without a demonstrated transition. |
 | Frontend scratch report; `frontend/src/panels/modelling/glmTerms.ts` override maps | **Unverified.** Use a valid feature named `__proto__` through actual term creation/rename/remove and serialize config; show loss or wrong lookup caused by assigning to a plain object. First establish that the feature name is permitted end to end. No special-name witness was executed. |
 | private legacy `SplitConfig` Boolean grouping | **Not reachable through the canonical public evaluation path:** its group-key mechanism differs. This is a narrow public-path disposition, not a claim that every private caller is safe. |
@@ -296,7 +294,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 
 | Earlier candidate note | Accepted owner |
 |---|---|
-| CI no-extra resync / docs / warning gate | **ENGQ-R07**; action pins **ENGQ-CI06**. |
 | dispersion caller ownership / estimate queued | **FMOU-R06** for same-mounted draft identity; separate helper error-contract wording is **FSH-R06**. |
 | archive/restore obsolete query | **WB-35**. |
 | rejection remote “candidate pending” | **GIT-R18**. |
@@ -312,7 +309,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | edge ID collisions | **NAME-10**. |
 | failed new solve identity | **FSH-R12**. |
 | quoted literal formatting | **TRACE-R02**. |
-| UC losers treated as valid contention | **ENGQ-R12**. |
 | malformed connect extraction | **PCFG-R20**. |
 | keyword-only defaults | **PCFG-R21**. |
 | local app Host boundary | **WB-39**. |
@@ -364,7 +360,7 @@ that regression. This was same-family review, not cross-family validation.
 The subsequent **cross-family review by Claude** checked the decisive code for all
 42 finding groups and reported no false positives; it did not check MOD-R05's integer
 PDP-label item. It reproduced MOD-R07, PCFG-R21, the parser half of NAME-10 and two
-findings since delivered, and supplied the hosted ENGQ-R07 evidence cited above. This documentation
+findings since delivered, and supplied the hosted evidence for the core-only smoke finding, since delivered. This documentation
 follow-up incorporates its coverage qualifications, candidate dispositions, package
 splits, priorities, ownership, ordering and link corrections. Neither review approval
 claims that the recorded production defects have been fixed.

@@ -32,12 +32,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # uv is pinned exactly, like the rest of the development tooling; this
       # value is repeated in every workflow and must move together (grep
       # `setup-uv` across .github/workflows/).
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           version: "0.8.22"
           python-version: "3.12"
@@ -74,14 +74,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           version: "0.8.22"
           python-version: "3.12"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22.14.0
 
@@ -108,9 +108,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           version: "0.8.22"
           python-version: "3.11"
@@ -148,9 +148,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           version: "0.8.22"
           python-version: "3.12"
@@ -173,7 +173,7 @@ jobs:
           fi
 
       - name: Mypy
-        run: uv run mypy src/haute/
+        run: uv run mypy src/haute/ scripts/
 
       # Guards the DECLARATION layer only — the lockfile is the supply-chain
       # control and `uv sync --locked` / `npm ci` already enforce it everywhere.
@@ -197,7 +197,8 @@ jobs:
   #
   # Each shard also uploads a JUnit report in the xunit1 family, so every test
   # case names its file: the input for refreshing the durations with
-  # scripts/refresh_test_durations.py.
+  # scripts/refresh_test_durations.py. Both uploads run even when the shard's
+  # tests fail, so the gate below can still report what the shard covered.
   backend-coverage-shard:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -206,26 +207,30 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           version: "0.8.22"
           python-version: "3.12"
 
       - run: uv sync --group dev --locked
 
+      # The shard also records the write-sandbox census, every write its
+      # observe-mode tests made outside their sandbox, for the gate below.
       - name: Pytest shard ${{ matrix.shard }}/4 (coverage)
         env:
           COVERAGE_FILE: .coverage.shard${{ matrix.shard }}
+          HAUTE_TEST_WRITE_SANDBOX_CENSUS_OUT: .cache/write-sandbox/census-shard${{ matrix.shard }}.json
         run: >
           uv run pytest tests/ -q -n 4 --timeout=60 --timeout-method=signal
-          --shard=${{ matrix.shard }}/4
+          --shard=${{ matrix.shard }}/4 --shard-lane=coverage
           --cov=src/haute --cov-branch --cov-report= --cov-fail-under=0
           --junitxml=.cache/junit/coverage-shard${{ matrix.shard }}.xml
           -o junit_family=xunit1
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
         with:
           name: backend-coverage-${{ matrix.shard }}
           path: .coverage.shard${{ matrix.shard }}
@@ -233,30 +238,53 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: backend-junit-${{ matrix.shard }}
           path: .cache/junit/
           retention-days: 14
 
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: write-sandbox-census-${{ matrix.shard }}
+          path: .cache/write-sandbox/
+          if-no-files-found: error
+          retention-days: 14
+
+  # The gate runs whenever the shards ran, red or green (`!cancelled()`), as the
+  # mutation gate does: a pull request red for an unrelated test still learns
+  # what its coverage is, instead of the floors being skipped. A red shard fails
+  # the gate's first step explicitly, and every later step still runs.
   backend-coverage-gate:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: backend-coverage-shard
+    if: ${{ !cancelled() }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Require every coverage shard to pass
+        if: ${{ needs.backend-coverage-shard.result != 'success' }}
+        run: |
+          echo "::error title=Coverage shards::A coverage shard did not pass (${{ needs.backend-coverage-shard.result }}); the steps below still report the coverage its data shows."
+          exit 1
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: ${{ !cancelled() }}
         with:
           fetch-depth: 0
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        if: ${{ !cancelled() }}
         with:
           version: "0.8.22"
           python-version: "3.12"
 
       - run: uv sync --group dev --locked
+        if: ${{ !cancelled() }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: ${{ !cancelled() }}
         with:
           pattern: backend-coverage-*
           merge-multiple: true
@@ -264,24 +292,26 @@ jobs:
       # The global floor and the per-file critical gates are independent invariants,
       # so they get their own steps: the step name in the GitHub UI then tells you
       # which one broke without opening the log. The critical gate runs even when the
-      # global floor fails (`always()`), because a run that breaches both should say
+      # global floor fails (`!cancelled()`), because a run that breaches both should say
       # so — a masked critical-coverage regression has bitten this repo before.
       - name: Combine coverage shards
         id: combine
+        if: ${{ !cancelled() }}
         run: |
           mkdir -p .cache/coverage
           uv run coverage combine .coverage.shard1 .coverage.shard2 .coverage.shard3 .coverage.shard4
           uv run coverage json -o .cache/coverage/backend.json
 
       - name: Enforce global coverage floor (90%)
+        if: ${{ !cancelled() && steps.combine.outcome == 'success' }}
         run: uv run coverage report --fail-under=90 --show-missing
 
       - name: Enforce per-file critical coverage gates
-        if: always() && steps.combine.outcome == 'success'
+        if: ${{ !cancelled() && steps.combine.outcome == 'success' }}
         run: uv run python scripts/check_critical_coverage.py --coverage-json .cache/coverage/backend.json
 
       - name: Changed-code coverage (gates the safety-critical modules, reports the rest)
-        if: always() && steps.combine.outcome == 'success'
+        if: ${{ !cancelled() && steps.combine.outcome == 'success' }}
         env:
           HAUTE_COVERAGE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: >
@@ -289,9 +319,28 @@ jobs:
           --coverage-json .cache/coverage/backend.json
           --base-ref "$HAUTE_COVERAGE_BASE"
 
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: ${{ !cancelled() }}
+        with:
+          pattern: write-sandbox-census-*
+          path: .cache/write-sandbox
+          merge-multiple: true
+
+      # Every shard's census must be there, and no class of write outside the
+      # test sandbox may appear or linger unlisted (tests/write_sandbox.toml).
+      - name: Write-sandbox census may not grow
+        if: ${{ !cancelled() }}
+        run: >
+          uv run python scripts/check_write_sandbox_census.py
+          .cache/write-sandbox/census-shard1.json .cache/write-sandbox/census-shard2.json
+          .cache/write-sandbox/census-shard3.json .cache/write-sandbox/census-shard4.json
+
   # Compatibility: the full suite (no coverage) on the supported version edges,
   # split by test module into 3 shards per interpreter exactly as the coverage
-  # shards are (tests/_ci_shards.py); the matrix must list every shard.
+  # shards are (tests/_ci_shards.py); the matrix must list every shard. The
+  # shards balance on the compatibility lane's own durations, since coverage
+  # tracing slows some modules far more than others, and upload JUnit reports
+  # to refresh that table with scripts/refresh_test_durations.py.
   backend-compat:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -301,9 +350,9 @@ jobs:
         python-version: ["3.11", "3.13"]
         shard: [1, 2, 3]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           version: "0.8.22"
           python-version: ${{ matrix.python-version }}
@@ -324,7 +373,49 @@ jobs:
         run: >
           uv run pytest tests/ -q -n 4 --timeout=60 --timeout-method=signal
           -m "not perf and not meta"
-          --shard=${{ matrix.shard }}/3
+          --shard=${{ matrix.shard }}/3 --shard-lane=compat
+          --junitxml=.cache/junit/compat-${{ matrix.python-version }}-shard${{ matrix.shard }}.xml
+          -o junit_family=xunit1
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: backend-compat-junit-${{ matrix.python-version }}-${{ matrix.shard }}
+          path: .cache/junit/
+          retention-days: 14
+
+  # Production runs previews, traces, free-code steps and the optimiser estimate
+  # in warm worker processes; the rest of the suite runs them in threads so
+  # tests can patch in-process seams (tests/conftest.py). This lane runs a route
+  # slice the way production does, so a defect that shows only across the
+  # process boundary (result serialisation, worker preload, environment
+  # propagation) is red here. A test in the slice that patches an in-process
+  # seam carries the `in_process` marker and stays in threads.
+  backend-process-mode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          version: "0.8.22"
+          python-version: "3.12"
+
+      - run: uv sync --group dev --locked
+
+      - name: Route slice in process mode (preview, trace, free-code steps, optimiser estimate)
+        env:
+          HAUTE_TEST_INTERACTIVE_EXECUTION_MODE: process
+        run: >
+          uv run pytest
+          tests/test_interactive_route_isolation.py
+          tests/test_server.py
+          tests/test_trace_api.py
+          tests/test_trace_multi_frame.py
+          tests/test_adversarial_inputs.py
+          tests/test_security_gaps.py
+          -q -n 4 --timeout=120 --timeout-method=signal
 
   # Forward-looking, NON-BLOCKING probe: does haute install + its core test
   # subset pass on Python 3.14? `continue-on-error` keeps it off the required
@@ -343,9 +434,9 @@ jobs:
     timeout-minutes: 20
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           version: "0.8.22"
           python-version: "3.14"
@@ -368,9 +459,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           version: "0.8.22"
           python-version: "3.12"
@@ -382,35 +473,61 @@ jobs:
           uv run python scripts/run_perf_suite.py --output-dir .cache/perf --max-test-seconds 180
           --pytest-arg=-m "--pytest-arg=perf and not perf_evidence"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: python-perf-${{ github.run_id }}-${{ github.run_attempt }}
           path: .cache/perf/
 
+  # Core-only install: the project with the test harness group alone, never the
+  # dev group, whose haute[databricks] restores the SQL connector and makes the
+  # whole smoke module skip. Every later command is `uv run --no-sync`, because a
+  # bare `uv run` syncs the default groups back in.
   optional-deps-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           version: "0.8.22"
           python-version: "3.12"
 
-      - run: uv sync --locked --no-group dev
-      - run: uv pip install pytest pytest-asyncio httpx
+      - run: uv sync --locked --no-default-groups --group test-harness
+
+      # Outside the smoke module's own skip, which lets a full development
+      # environment pass over it: here an environment that is not core-only fails.
+      - name: Core-only environment (core MLflow present, Databricks SQL connector absent)
+        run: |
+          uv run --no-sync python - <<'PY'
+          import importlib.util
+          import sys
+
+          problems = []
+          if importlib.util.find_spec("mlflow") is None:
+              problems.append("core MLflow is not installed")
+          try:
+              connector = importlib.util.find_spec("databricks.sql")
+          except ModuleNotFoundError:
+              connector = None
+          if connector is not None:
+              problems.append("the Databricks SQL connector is installed")
+          for problem in problems:
+              print(f"::error title=Core-only lane::{problem}")
+          sys.exit(1 if problems else 0)
+          PY
+
       - name: Optional dependency smoke (core MLflow, no Databricks SQL connector)
-        run: uv run pytest tests/test_optional_dependency_matrix.py -q
+        run: uv run --no-sync pytest tests/test_optional_dependency_matrix.py -q
 
   optional-deps-present-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           version: "0.8.22"
           python-version: "3.12"
@@ -423,14 +540,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           version: "0.8.22"
           python-version: "3.12"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22.14.0
 
@@ -458,9 +575,9 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           version: "0.8.22"
           python-version: "3.12"
@@ -502,13 +619,32 @@ jobs:
           tests/test_json_runtime_storage.py
           -q
 
+  # The documentation site builds strictly on every pull request, not only when a
+  # merge to main deploys it (docs.yml), so a broken nav entry or dead link is red
+  # before it merges rather than at the Pages deploy.
+  docs-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          version: "0.8.22"
+          python-version: "3.12"
+
+      - run: uv sync --group dev --locked
+
+      - name: Documentation site (strict build)
+        run: uv run mkdocs build --strict
+
   mutation-config-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           version: "0.8.22"
           python-version: "3.12"
@@ -530,9 +666,9 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22.14.0
 
@@ -571,9 +707,9 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22.14.0
 
@@ -596,14 +732,14 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           version: "0.8.22"
           python-version: "3.12"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22.14.0
 
@@ -619,7 +755,7 @@ jobs:
       # than to drop one. On a Playwright version bump the exact key misses,
       # the restore-key returns the previous browsers, and the install step
       # fetches only what changed.
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
@@ -628,10 +764,22 @@ jobs:
 
       - run: ./node_modules/.bin/playwright install --with-deps chromium firefox
       - run: npm run test:e2e -- --shard=${{ matrix.shard }}/2
+        env:
+          # A browser test that passes only on a retry fails a push to main;
+          # on a pull request the step below names it in the job summary.
+          HAUTE_E2E_FAIL_ON_FLAKY: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && '1' || '0' }}
+
+      - name: Name the flaky browser tests in the job summary
+        if: ${{ !cancelled() }}
+        working-directory: .
+        run: >
+          uv run python scripts/report_flaky_browser_tests.py
+          --report frontend/test-results/report.json
+          --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Playwright artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: browser-e2e-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
