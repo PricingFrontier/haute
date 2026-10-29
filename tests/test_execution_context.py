@@ -41,7 +41,7 @@ from haute._pipeline_recovery import pipeline_document_fingerprint
 from haute._pipeline_settings import PipelineSettings
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.deploy._request_rows import RequestRows
-from haute.errors import ContractMismatchError, SchemaMismatchError
+from haute.errors import ContractMismatchError, SchemaMismatchError, TraceTargetNotFoundError
 from haute.execution import execute_lazy_graph
 from haute.graph_utils import NodeType
 from haute.schemas import ExecutionMetricsPayload
@@ -3689,6 +3689,10 @@ async def test_trace_route_maps_target_not_found_and_unknown_value_errors(
     )
 
     def raise_value_error(*_args, **_kwargs):
+        # The trace refuses a missing target by type; any other ValueError is a
+        # failure of the server.
+        if expected_status == 404:
+            raise TraceTargetNotFoundError(message)
         raise ValueError(message)
 
     monkeypatch.setattr(pipeline_route, "execute_trace", raise_value_error)

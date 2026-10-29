@@ -226,7 +226,6 @@ def test_save_refuses_a_violation_naming_the_node(
     ("route", "fields"),
     [
         pytest.param("/api/pipeline/trace", {"seed_plan": []}, id="trace"),
-        pytest.param("/api/pipeline/preview", {"node_id": "n0"}, id="preview"),
         pytest.param("/api/pipeline/write-output", {"node_id": "n0"}, id="write-output"),
         pytest.param("/api/pipeline/output-destination", {"node_id": "n0"}, id="destination"),
         pytest.param("/api/output-assemble/dry-run", {"node_id": "n0"}, id="output-dry-run"),
@@ -244,6 +243,19 @@ def test_every_route_taking_a_graph_answers_a_collision_with_400(
 
     assert response.status_code == 400, response.text
     assert response.json()["detail"] == format_name_violations(executable_name_violations(graph))
+
+
+def test_a_preview_shows_a_collision_on_its_node(client: Any) -> None:
+    """The one exception: the preview reports the refusal where it is read, on the node."""
+    graph = _labels("Rates", "rates")
+
+    response = client.post(
+        "/api/pipeline/preview", json={"graph": graph.model_dump(mode="json"), "node_id": "n0"}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "error"
+    assert response.json()["error"] == format_name_violations(executable_name_violations(graph))
 
 
 def test_save_accepts_a_name_that_only_resembles_a_builtin(tmp_path: Path) -> None:

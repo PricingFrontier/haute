@@ -1687,9 +1687,6 @@ async def _preview_canonical_graph(
     that disconnects (the browser's Stop) cancels the preview's own token, so
     the worker or thread stops; a request still queued never executes.
     """
-    # A graph the flattener refuses is the request's fault, answered 400 by the
-    # application handler; a graph-shape issue the run meets is shown on the node.
-    graph = flatten_executable_graph(body.graph)
     run = _InteractiveRun("pipeline_preview")
     limit = _pipeline_time_limit()
     request_id = body.request_id
@@ -1709,6 +1706,10 @@ async def _preview_canonical_graph(
             run, timed_out=f"Preview execution timed out ({limit:.0f}s limit)"
         ):
             try:
+                # A graph the flattener refuses (a name collision, an undeclared
+                # handle) is shown on the node, as a graph-shape issue the run meets
+                # is; every other route that takes a graph answers it 400.
+                graph = flatten_executable_graph(body.graph)
                 _ensure_source_file(graph)
                 if not graph.nodes:
                     raise HTTPException(status_code=400, detail="Empty graph")
@@ -1763,8 +1764,8 @@ async def _preview_canonical_graph(
             except PUBLIC_CONTRACT_ERROR_TYPES:
                 raise
             except (ContractMismatchError, SchemaMismatchError, ParseError, ConfigError) as e:
-                # The run shows these on the node; one met before it starts, while
-                # the graph is fingerprinted for supersession, is shown the same way.
+                # The run shows these on the node; one met before it starts, while the
+                # graph is flattened or fingerprinted, is shown the same way.
                 logger.warning("preview_refused_before_run", error=str(e))
                 return PreviewNodeResponse(node_id=body.node_id, status="error", error=str(e))
             except PreviewProjectionError as e:

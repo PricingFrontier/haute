@@ -609,13 +609,14 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
   `HauteError`, optional structured `**context`) that the relevant route treats as safe to
   surface: save-time `ConfigError` → 400; output dry-run `ConfigError` /
   `ContractMismatchError` → 422; trace `ContractMismatchError` → 422; and preview
-  `ContractMismatchError` / `SchemaMismatchError` failures, and a graph-shape `ParseError`
-  raised while a preview runs, are embedded in `NodeResult.error` so the canvas can show
-  them in-situ rather than as a banner.
+  `ContractMismatchError` / `SchemaMismatchError` failures, and a `ParseError` a preview
+  meets while it flattens the graph or runs it, are embedded in `NodeResult.error` so the
+  canvas can show them in-situ rather than as a banner.
 - **A graph the user can fix is answered as one.** A graph the browser sent that the
   flattener or the save refuses (`ParseError`: a name collision, an undeclared handle) is
   answered 400 with the refusal's message by every route that takes a graph, through one
-  application handler. A trace that fails in a node's own code (a syntax error, a missing
+  application handler, except the preview: it shows the refusal on the node, where a file
+  loaded with colliding names is read. A trace that fails in a node's own code (a syntax error, a missing
   column) is answered 422 naming the node with the failure's message, as a preview shows it
   on the node. A trace the data or the graph cannot answer as asked is refused by the
   refusal's type: 409 when the clicked row has changed since its preview, 400 for a row or
