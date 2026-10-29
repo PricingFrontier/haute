@@ -12,7 +12,7 @@ import { canonicalJson } from "../utils/canonicalJson"
 import { formatValue } from "../utils/formatValue"
 import { formattedNumber, valuesBasis } from "../utils/sheetValues"
 import { sheetVisibility } from "../utils/sheetVisibility"
-import { QUOTE_DETAILS_ID, readableName, type SampleRow } from "../utils/workbenchForm"
+import { QUOTE_DETAILS, QUOTE_DETAILS_ID, readableName, type QuoteDetailName, type SampleRow } from "../utils/workbenchForm"
 
 export type Values = Record<string, SampleRow[]>
 
@@ -103,7 +103,7 @@ export interface ListColumn {
 }
 
 /** The quote_details columns the Quotes page lists after the quote's reference and title. */
-const LISTED = ["insured", "broker", "inception_date"] as const
+const LISTED = ["insured", "broker", "inception_date"] as const satisfies readonly QuoteDetailName[]
 
 /** The listed columns, as the release's sheets label and format them. */
 export function listColumns(form: FormSpec | null): ListColumn[] {
@@ -358,7 +358,7 @@ export function forgetCreation(key: string): void {
 /** A renewal's values: those carried from its source, with `is_renewal` ticked in its details. */
 export function asRenewal(values: Values): Values {
   const [details = {}] = values[QUOTE_DETAILS_ID] ?? []
-  return { ...values, [QUOTE_DETAILS_ID]: [{ ...details, qd_is_renewal: true }] }
+  return { ...values, [QUOTE_DETAILS_ID]: [{ ...details, [QUOTE_DETAILS.is_renewal]: true }] }
 }
 
 /**

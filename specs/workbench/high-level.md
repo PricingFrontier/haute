@@ -864,7 +864,9 @@ Out of scope:
   and "is empty"), its value, the control the column's cell is (a dropdown of the allowed
   values, a date picker, else a text field, committing on blur or Enter), or for "is one
   of" and "is not one of" a tick box per allowed value, or the values typed comma-separated
-  when the column allows any, and a cross that removes it. A condition on a table's rows
+  when the column allows any, a number's written without a thousands separator, which the
+  comma would split: "1,000" in a number column's list is refused, saying to write 1000,
+  and never read as 1 and 0; and a cross that removes it. A condition on a table's rows
   says which rows, Any row, Every row, Number of rows, or the Sum, Smallest, Largest or
   Average of a number column of the table other than its index, chosen beside it, then its
   tests of a row, all passing in the same row, each a column of the table other than its

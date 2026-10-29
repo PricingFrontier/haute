@@ -29,7 +29,7 @@ and rules named once and used by many sheets were offered and not taken. Fields 
 columns with conditions of their own, not taken that day, were asked for on 2026-10-22;
 cells shown row by row through "this row" tests were offered again and not taken.
 
-`WB-36` to `WB-38` come from the [25 October 2026 codebase
+`WB-37` and `WB-38` come from the [25 October 2026 codebase
 review](codebase-review-2026-10-25.md): what the review found in the Workbench view and
 the underwriter app in the browser.
 
@@ -51,7 +51,6 @@ Workbench nodes stop keeping copies of the tables in a pull request after the fo
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-28 | Planned | P3 | A condition tests a field against another field, text within text, and a date against another date give or take a number of days. |
 | WB-29 | Planned | P3 | A component that takes nothing typed, or a section or a sheet holding only such components, shows by conditions on the price, applied after it so the price never decides what is priced. |
-| WB-36 | Planned | P2 | A number list in a Show when condition never splits a thousands separator into two values, and the app reads quote_details ids from one typed map. |
 | WB-37 | Planned | P3 | The column key, the refusal predicate, the 409 detail reader, the empty visibility constants, the half-window width, the collapsible group and the pricing basis each exist once in the workbench and the app. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
 | WB-41 | Planned | P2 | The Workbench Input and Workbench Output read their tables from the form folder instead of keeping copies, so a schema change shows once in a pull request and no copy can fall out of step. |
@@ -492,39 +491,6 @@ sides.
 table named as a fault); `src/haute/_workbench_visibility.py::_tested_column` (input tables
 alone); `src/haute/_workbench_tables.py::sample_quote` (the hidden columns the quote leaves
 out).
-
-### WB-36 — Number lists in Show when, and the quote_details ids from one map
-**Why:** "is one of" and "is not one of" on a number column without allowed values split
-the typed list on every comma, so a thousands-separated "1,000" becomes the values "1"
-and "000"; `parseTypedNumber` strips separators, so both pass `valueFits`, no fault
-shows, and the condition silently tests 1 and 0. The single-value field of the same
-column reads "1,000" correctly, and the specification shares the gap ("values typed
-comma-separated"). Separately, the app repeats Haute's quote_details column ids and
-names as string literals (`qd_is_renewal`, `qd_quote_name`, `qd_reference`, the listed
-columns) instead of reading `QUOTE_DETAILS_COLUMNS`, so a rename on the server passes
-`tsc` and the parity tests while the renewal tick, the name cell, the reference and the
-listed columns silently miss. From the [25 October 2026 codebase
-review](codebase-review-2026-10-25.md) (FWB-2, FWB-3).
-
-**Plan:** For Integer and Decimal columns take one value per field, or refuse a comma
-inside a number with a fault; keep the comma split for text; update both specification
-sentences. Export a typed id map from `workbenchForm.ts` (`QUOTE_DETAILS.is_renewal` and
-the rest) and import it at the four sites, or extend the parity test to assert each
-literal is a member of the table.
-
-**Acceptance:** Tests: "1,000" typed into an is-one-of on an Integer column is the one
-value 1000 or shows a fault, never two values; a renamed quote_details id fails `tsc` or
-the parity test.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/workbench/ShowWhenEditor.tsx`,
-`frontend/src/utils/sheetValues.ts::parseTypedNumber`,
-`frontend/src/utils/sheetVisibility.ts::valueFits`,
-`frontend/src/utils/workbenchForm.ts::QUOTE_DETAILS_COLUMNS`, `frontend/src/app/quoteValues.ts`,
-`frontend/src/app/QuoteView.tsx`, `frontend/src/app/useNewQuoteStore.ts`,
-`frontend/src/utils/quoteIdentity.ts`; `specs/workbench/high-level.md` and
-`specs/workbench/low-level.md` (the comma-separated sentences).
 
 ### WB-37 — One copy of each workbench helper
 **Why:** The `tableId:columnId` key that looks, Order rows, the Columns list, the

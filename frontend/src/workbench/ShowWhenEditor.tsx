@@ -71,6 +71,15 @@ const label = (column: SchemaColumn) => column.label || readableName(column.name
 const countValid = wholeNumber({ min: 0, unit: "rows" })
 /** A total's number: blank, which its fault names, or a number as the sample's are typed. */
 const numberValid = (text: string): string | null => (text.trim() === "" || parseTypedNumber(text.trim()) !== null ? null : "Enter a number.")
+/** A number written with a thousands separator, `1,000` or `1,000,000.5`. */
+const GROUPED = /(?<![\d.])\d+(?:,\d{3})+(?:\.\d+)?(?!\d)/
+/** A number column's values, comma-separated: none with a thousands separator, which the split would cut in two. */
+const listedNumbersValid = (text: string): string | null => {
+  const grouped = GROUPED.exec(text)?.[0]
+  return grouped === undefined ? null : `Write ${grouped.replaceAll(",", "")}, not ${grouped}: a comma separates the values.`
+}
+/** Values typed comma-separated, each trimmed, the blanks dropped. */
+const splitValues = (text: string): string[] => text.split(",").map((value) => value.trim()).filter((value) => value !== "")
 
 /** The tables a condition can test: the input tables with a column to test. */
 const testable = (form: FormSpec): SchemaTable[] => form.schema.tables.filter((table) => testableColumns(table).length > 0)
@@ -632,12 +641,27 @@ function ConditionValue({
         </div>
       )
     }
+    if (column?.type === "int" || column?.type === "float") {
+      return (
+        <ValidatedTextField
+          dataTestId={`${name}-values`}
+          ariaLabel={aria}
+          value={condition.values.join(", ")}
+          placeholder="Values, comma-separated"
+          validate={listedNumbersValid}
+          onCommit={(text) => onChange(splitValues(text))}
+          containerClassName="min-w-0 flex-1"
+          className={`${FIELD_CLASS} w-full tabular-nums`}
+          style={INPUT_STYLE}
+        />
+      )
+    }
     return (
       <CommittedTextField
         aria-label={aria}
         value={condition.values.join(", ")}
         placeholder="Values, comma-separated"
-        onCommit={(text) => onChange(text.split(",").map((value) => value.trim()).filter((value) => value !== ""))}
+        onCommit={(text) => onChange(splitValues(text))}
         className={`${FIELD_CLASS} flex-1`}
         style={INPUT_STYLE}
       />

@@ -265,7 +265,6 @@ adds a finding group or changes the 42-group count.
 | Scenario Steps coercion / Optimiser Apply alias mode | Duplicate **FNED-R01**. |
 | rating permissive numeric parsing / grids | Duplicate **FNED-R04**; grid/helper duplication belongs **FNED-R03/FNED-R05**. |
 | assistant undo/state fencing | Duplicate **ASSIST-60**. |
-| Show When numeric comma split | Duplicate **WB-36**. |
 | typed allowed-values onto older form | Duplicate **WB-38**. |
 | closing return / Unicode line splitting | Duplicates **PCFG-R17**, **PCFG-R18**. |
 | replacement decoding | Duplicate **PCFG-R10**, which explicitly covers sidecar/source replacement decoding before save. |

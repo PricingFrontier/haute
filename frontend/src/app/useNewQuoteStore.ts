@@ -17,7 +17,7 @@ import type { FormSpec } from "../api/types"
 import useToastStore from "../stores/useToastStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import { cellKey, cellProblem, newQuoteValues } from "../utils/sheetValues"
-import { QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, type SampleRow, type SampleValue, type ShownField } from "../utils/workbenchForm"
+import { QUOTE_DETAILS, QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, type SampleRow, type SampleValue, type ShownField } from "../utils/workbenchForm"
 import { latest } from "../utils/latest"
 import {
   asRenewal,
@@ -39,7 +39,7 @@ import useAppStore from "./useAppStore"
 import useOpenQuoteStore, { openDraftKey } from "./useOpenQuoteStore"
 
 /** The quote_details column of the quote's reference, keyed in the window alone. */
-export const REFERENCE_COLUMN = "qd_reference"
+export const REFERENCE_COLUMN = QUOTE_DETAILS.quote_reference
 
 /** A quote made from another's revision in the window: a duplicate or a renewal. */
 export interface WindowOrigin {

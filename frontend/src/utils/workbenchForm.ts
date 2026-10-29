@@ -2247,28 +2247,9 @@ function defaultProblem(column: SchemaColumn): string | null {
 // ── Haute's quote_details table ──────────────────────────────────────────
 
 export { QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED }
+export { QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, type QuoteDetailName } from "./quoteIdentity"
 /** Why another table under its name is refused, in the server's words (`QUOTE_DETAILS_REFUSAL` in `src/haute/_workbench_form.py`). */
 export const QUOTE_DETAILS_REFUSAL = "quote_details is Haute's own table of a quote's details: name yours otherwise"
-
-/** Its columns, in order, as id, name and type (`QUOTE_DETAILS_COLUMNS`), a quote's administration; their structure is fixed. */
-export const QUOTE_DETAILS_COLUMNS: ReadonlyArray<readonly [id: string, name: string, type: SchemaColumn["type"]]> = [
-  ["qd_reference", "quote_reference", "str"],
-  ["qd_option", "quote_option", "int"],
-  ["qd_quote_name", "quote_name", "str"],
-  ["qd_insured", "insured", "str"],
-  ["qd_broker", "broker", "str"],
-  ["qd_inception_date", "inception_date", "date"],
-  ["qd_expiry_date", "expiry_date", "date"],
-  ["qd_is_renewal", "is_renewal", "bool"],
-  ["qd_stage", "stage", "str"],
-  ["qd_assignee", "assignee", "str"],
-  ["qd_archived", "archived", "bool"],
-  ["qd_created_date", "created_date", "date"],
-  ["qd_created_by", "created_by", "str"],
-  ["qd_modified_date", "modified_date", "date"],
-  ["qd_modified_by", "modified_by", "str"],
-  ["qd_haute_version", "haute_version", "str"],
-]
 
 /** Why a table's own column keeps the quote's identity from it, in the server's words (`identity_clashes`). */
 const identityClash = (table: SchemaTable, column: SchemaColumn): string =>

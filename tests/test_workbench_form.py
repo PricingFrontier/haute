@@ -381,15 +381,19 @@ def read_after_layout_edit(
 
 @pytest.mark.meta
 def test_the_editor_names_the_quote_details_columns_the_server_does() -> None:
+    """The view's columns of quote_details, whose `QUOTE_DETAILS` map is how the app names
+    each one it reads, and the columns the app sets, named through that map."""
     utils = Path(__file__).resolve().parents[1] / "frontend" / "src" / "utils"
-    source = (utils / "workbenchForm.ts").read_text(encoding="utf-8")
-    columns = re.findall(r'\["(qd_\w+)", "(\w+)", "(\w+)"\]', source)
     identity = (utils / "quoteIdentity.ts").read_text(encoding="utf-8")
+    columns = re.findall(r'\["(qd_\w+)", "(\w+)", "(\w+)"\]', identity)
     managed = re.search(r"QUOTE_DETAILS_MANAGED[^=]*= new Set\(\[([^\]]*)\]\)", identity)
 
     assert tuple(columns) == QUOTE_DETAILS_COLUMNS
     assert managed is not None
-    assert set(re.findall(r'"(\w+)"', managed.group(1))) == QUOTE_DETAILS_MANAGED
+    by_name = {name: column_id for column_id, name, _ in QUOTE_DETAILS_COLUMNS}
+    named = re.findall(r"QUOTE_DETAILS\.(\w+)", managed.group(1))
+    assert {by_name[name] for name in named} == QUOTE_DETAILS_MANAGED
+    assert len(named) == len(QUOTE_DETAILS_MANAGED)
 
 
 @pytest.mark.meta

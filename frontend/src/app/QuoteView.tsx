@@ -32,7 +32,7 @@ import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
 import { canonicalJson } from "../utils/canonicalJson"
 import { quoteEligible } from "../utils/sheetVisibility"
-import { QUOTE_DETAILS_ID } from "../utils/workbenchForm"
+import { QUOTE_DETAILS, QUOTE_DETAILS_ID } from "../utils/workbenchForm"
 import PageTabs from "../workbench/PageTabs"
 import SheetCanvas from "../workbench/SheetCanvas"
 import AppHeader from "./AppHeader"
@@ -49,7 +49,7 @@ type QuoteRoute = Extract<AppRoute, { page: "new" } | { page: "quote" }>
 const RELATION_LABEL = { duplicate: "Duplicate", renewal: "Renewal", alternative: "Alternative" } as const
 
 /** The quote_details column that names a quote, typed in the bar. */
-const NAME_COLUMN = "qd_quote_name"
+const NAME_COLUMN = QUOTE_DETAILS.quote_name
 
 /** A quote just made, on the sheets already: its address is moved to without opening it again. */
 let adopted: string | null = null

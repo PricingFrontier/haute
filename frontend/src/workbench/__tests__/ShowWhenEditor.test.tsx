@@ -143,6 +143,29 @@ describe("ShowWhenEditor", () => {
     expect(showWhen().conditions[0]).toMatchObject({ op: "not_one_of", values: ["Acme", "Brown Ltd"] })
   })
 
+  it("refuses a number written with its thousands separator in a number column's list, which the comma would split", () => {
+    render(<Editor />)
+    fireEvent.click(screen.getByRole("button", { name: "Add condition" }))
+    fireEvent.change(screen.getByRole("combobox", { name: "Condition 1 column" }), { target: { value: "policy:policy.year" } })
+    fireEvent.change(screen.getByRole("combobox", { name: "Condition 1 test" }), { target: { value: "one_of" } })
+    const values = screen.getByRole("textbox", { name: "Condition 1 value" })
+    const steps = undoSteps()
+
+    for (const typed of ["1,000", "2020, 1,000,000.5"]) {
+      fireEvent.change(values, { target: { value: typed } })
+      fireEvent.blur(values)
+      expect(values).toHaveValue(typed)
+      expect(showWhen().conditions[0]).toMatchObject({ op: "one_of", values: [] })
+      expect(undoSteps()).toBe(steps)
+    }
+    expect(screen.getByText("Write 1000000.5, not 1,000,000.5: a comma separates the values.")).toBeInTheDocument()
+
+    fireEvent.change(values, { target: { value: "1000, 2500,10" } })
+    fireEvent.blur(values)
+    expect(showWhen().conditions[0]).toMatchObject({ op: "one_of", values: ["1000", "2500", "10"] })
+    expect(undoSteps()).toBe(steps + 1)
+  })
+
   it("removes a condition, and with two or more asks whether all or any must hold", () => {
     render(<Editor />)
     fireEvent.click(screen.getByRole("button", { name: "Add condition" }))

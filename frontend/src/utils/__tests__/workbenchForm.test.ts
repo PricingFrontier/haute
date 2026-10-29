@@ -113,7 +113,7 @@ import {
   type FieldsWidget,
   type Widget,
 } from "../workbenchForm"
-import { identityCount, QUOTE_DETAILS_ID } from "../quoteIdentity"
+import { identityCount, QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED } from "../quoteIdentity"
 import { columnKey, sheetVisibility, testableColumns } from "../sheetVisibility"
 
 /** A section `height` tall holding `widgets`, always shown unless `showWhen` says otherwise. */
@@ -178,6 +178,14 @@ const messages = (spec: FormSpec, reserved: ReadonlySet<string> = new Set()) =>
   schemaProblems(spec, reserved).map((problem) => problem.message)
 
 describe("Haute's own table", () => {
+  it("names each of its columns' ids by the column's name, so a name it no longer has does not compile", () => {
+    expect(Object.entries(QUOTE_DETAILS)).toEqual(QUOTE_DETAILS_COLUMNS.map(([id, name]) => [name, id]))
+    expect([QUOTE_DETAILS.quote_reference, QUOTE_DETAILS.quote_name, QUOTE_DETAILS.is_renewal]).toEqual(["qd_reference", "qd_quote_name", "qd_is_renewal"])
+    expect(QUOTE_DETAILS_MANAGED.has(QUOTE_DETAILS.stage)).toBe(true)
+    // @ts-expect-error quote_details has no column of this name
+    expect(QUOTE_DETAILS.renewal).toBeUndefined()
+  })
+
   it("names a table of the analyst's called quote_details in the server's own words, not as a repeated name", () => {
     const spec = addSchemaTable(blank(), table("t_mine", "quote_details"))
 
