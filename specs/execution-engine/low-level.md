@@ -1889,6 +1889,15 @@ present a structural or schema result as execution evidence.
   mappings raise `ConfigError`; they never fall back positionally. Instance nodes
   retain the existing original-node mapping path and take precedence over this
   ordinary-transform behaviour.
+- **An instance's missing-column warnings compare the frames its edges carry.** For
+  each node with an `instanceOf`, every preview (full, target-only, a run of the
+  whole graph) reports as `missing` the columns the original's incoming edges carry
+  that the instance's do not, read from the walk's recorded schemas rather than a
+  materialised frame, so a source the preview did not materialise still counts. A
+  request input emits one frame per table, and its edge carries the frame its
+  `sourceHandle` names, never the bundle; an edge naming no frame the source emits
+  carries none, even from a one-frame source. Its consumer reports that binding as
+  its own failure when it runs, and the warnings never choose a frame for it.
 - **`topo_sort_ids`** is insertion-order deterministic (via `graphlib.TopologicalSorter`),
   so callers must pass `node_ids` as an
   insertion-ordered sequence, never a `set`, or tie-break order becomes

@@ -43,6 +43,7 @@ from haute._env import int_env
 from haute._execute_lazy import lineage_preparation_order
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._graph_utils import REQUEST_INPUT_KINDS
 from haute._graph_walker import CollectPolicy, walk_graph
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._logging import get_logger
@@ -77,6 +78,7 @@ from haute._types import NodeData
 from haute._validation_error import HauteValidationError
 from haute.errors import PreambleError
 from haute.graph_utils import (
+    GraphEdge,
     NodeType,
     PipelineGraph,
     _prune_live_switch_edges,
@@ -1471,7 +1473,6 @@ def _execute_graph_core(
         # Pre-compute schema warnings for instance nodes by comparing the
         # columns available at the instance's inputs vs the original's inputs.
         node_map = graph.node_map
-        parents_of = graph.parents_of
         if target_preview_only and not include_schema_metadata:
             result_order = (
                 [target_node_id]
@@ -1490,26 +1491,39 @@ def _execute_graph_core(
 
         schema_warnings: dict[str, list[SchemaWarning]] = {}
 
-        def _cached_output_names(node_id: str) -> set[str]:
-            cached = output_cols.get(node_id)
-            if cached:
-                return {name for name, _dtype in cached}
-            df = eager_outputs.get(node_id)
-            return set(df.columns) if df is not None else set()
+        def _delivered_column_names(edge: GraphEdge) -> set[str]:
+            """The columns *edge* carries into its target, from the walk's schemas.
+
+            A request input emits one frame per table and an edge carries the
+            one its ``sourceHandle`` names, never the bundle. An edge naming no
+            frame the source emits carries none here: its consumer reports that
+            binding when it runs, and no other frame stands in for it.
+            """
+            if edge.sourceHandle is None:
+                if str(node_map[edge.source].data.nodeType) in REQUEST_INPUT_KINDS:
+                    return set()
+            else:
+                frame_schema = frame_cols.get((edge.source, edge.sourceHandle))
+                if frame_schema is not None:
+                    return {name for name, _dtype in frame_schema}
+            # A multi-frame source has no flat schema of its own, so a handle
+            # naming none of its frames finds nothing here either.
+            return {name for name, _dtype in output_cols.get(edge.source, [])}
+
+        def _input_column_names(node_id: str) -> set[str]:
+            return {
+                name
+                for edge in graph.edges
+                if edge.target == node_id
+                for name in _delivered_column_names(edge)
+            }
 
         for nid in result_order:
             ref = node_map[nid].data.config.get("instanceOf")
             if not ref or ref not in node_map:
                 continue
-            # Columns feeding into the original node
-            orig_input_cols: set[str] = set()
-            for pid in parents_of.get(ref, []):
-                orig_input_cols.update(_cached_output_names(pid))
-            # Columns feeding into the instance node
-            inst_input_cols: set[str] = set()
-            for pid in parents_of.get(nid, []):
-                inst_input_cols.update(_cached_output_names(pid))
-            missing = orig_input_cols - inst_input_cols
+            # Columns the original's inputs carry that the instance's do not.
+            missing = _input_column_names(ref) - _input_column_names(nid)
             if missing:
                 schema_warnings[nid] = [
                     SchemaWarning(column=c, status="missing") for c in sorted(missing)

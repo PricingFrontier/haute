@@ -1316,3 +1316,158 @@ def test_a_multi_port_target_counts_its_bundle_collection_as_a_step(isolated_roo
 
     assert results["api"].status == "ok"
     assert steps[-1].done == steps[-1].total == 1
+
+
+# ─── node instance after a multi-frame source (SUB-R06) ───────────
+
+
+def _instance_after_two_frames(config: dict[str, Any]) -> PipelineGraph:
+    """The original reads the ``policies`` frame; its instance runs the same code on ``drivers``."""
+    return PipelineGraph(
+        nodes=[
+            _api_input_node("api", config),
+            GraphNode(
+                id="original",
+                data=NodeData(
+                    label="original",
+                    nodeType=NodeType.POLARS,
+                    config={"code": "df = policies"},
+                ),
+            ),
+            GraphNode(
+                id="copy",
+                data=NodeData(
+                    label="copy",
+                    nodeType=NodeType.POLARS,
+                    config={"instanceOf": "original"},
+                ),
+            ),
+        ],
+        edges=[
+            GraphEdge(id="e_o", source="api", target="original", sourceHandle="policies"),
+            GraphEdge(id="e_c", source="api", target="copy", sourceHandle="drivers"),
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    "preview",
+    [
+        # haute run's call.
+        pytest.param({}, id="full"),
+        # The assistant's bundle check: one target, its whole lineage materialised.
+        pytest.param({"target_node_id": "copy", "row_limit": 10}, id="assistant"),
+        # The editor's preview route.
+        pytest.param(
+            {
+                "target_node_id": "copy",
+                "target_preview_only": True,
+                "include_schema_metadata": True,
+            },
+            id="target_only",
+        ),
+    ],
+)
+def test_node_instance_after_a_multi_frame_source_previews(
+    isolated_root, preview: dict[str, Any]
+) -> None:
+    """Each consumer's warning compares the frames its edges select, not the bundle."""
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+
+    results = execute_graph(_instance_after_two_frames(config), **preview)
+
+    copy = results["copy"]
+    assert copy.status == "ok", copy.error
+    assert copy.row_count == 3
+    assert [column.name for column in copy.columns] == ["driver_id", "age_band"]
+    # The original reads policy_id from its frame; the copy's frame has none.
+    assert [(warning.column, warning.status) for warning in copy.schema_warnings] == [
+        ("policy_id", "missing")
+    ]
+    if "target_node_id" not in preview:
+        original = results["original"]
+        assert original.status == "ok", original.error
+        assert original.row_count == 2
+        assert [column.name for column in original.columns] == ["policy_id"]
+        assert original.schema_warnings == []
+
+
+@pytest.mark.parametrize("make_config", [_single_port_config, _multi_port_config])
+def test_node_instance_unbound_from_a_request_input_reports_its_binding(
+    isolated_root, make_config
+) -> None:
+    """An instance edge naming no frame fails as any consumer's does; no frame stands in.
+
+    Even a one-frame source lends its frame to no unbound edge, so the
+    instance's inputs carry none of the original's columns.
+    """
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = make_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+    graph = _instance_after_two_frames(config)
+    graph = graph.model_copy(
+        update={
+            "edges": [
+                graph.edges[0],
+                GraphEdge(id="e_c", source="api", target="copy", sourceHandle=None),
+            ]
+        }
+    )
+
+    results = execute_graph(graph)
+
+    assert results["original"].status == "ok", results["original"].error
+    copy = results["copy"]
+    assert copy.status == "error"
+    assert "sourceHandle" in (copy.error or "")
+    assert [(warning.column, warning.status) for warning in copy.schema_warnings] == [
+        ("policy_id", "missing")
+    ]
+
+
+def test_haute_run_executes_a_node_instance_after_a_multi_frame_source(
+    isolated_root, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from haute.cli._run import RunConfig, handle_run
+
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    (isolated_root / "config").mkdir()
+    (isolated_root / "config" / "request.json").write_text(
+        json.dumps(_multi_port_config(data_path))
+    )
+    pipeline_path = isolated_root / "main.py"
+    pipeline_path.write_text(
+        "import polars as pl\n"
+        "\n"
+        "import haute\n"
+        "\n"
+        'pipeline = haute.Pipeline("instances")\n'
+        "\n"
+        "\n"
+        '@pipeline.api_input(config="config/request.json")\n'
+        "def request(): ...\n"
+        "\n"
+        "\n"
+        "@pipeline.polars\n"
+        "def policy_rows(policies: pl.LazyFrame) -> pl.LazyFrame:\n"
+        "    return policies\n"
+        "\n"
+        "\n"
+        '@pipeline.instance(of="policy_rows")\n'
+        "def driver_rows(drivers): ...\n"
+        "\n"
+        "\n"
+        'pipeline.connect("request", "policy_rows", source_port="policies")\n'
+        'pipeline.connect("request", "driver_rows", source_port="drivers")\n'
+    )
+
+    handle_run(RunConfig(pipeline_file=pipeline_path))
+
+    out = capsys.readouterr().out
+    assert "policy_rows: 2 rows × 1 cols" in out
+    assert "driver_rows: 3 rows × 2 cols" in out

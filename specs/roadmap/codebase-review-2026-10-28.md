@@ -89,7 +89,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P2 | Integer regression target yields a declared long MLflow output although the native pyfunc predicts floats. | [MOD-R09](modelling.md#mod-r09--output-signatures-describe-predictions) | Real small CatBoost fit and generated signature; no remote registry enforcement failure claimed. |
 | P2 | Haute classifier pyfunc's label/probability table is flattened to 40 values for 20 input rows. | [MSC-11](model-scoring.md#msc-11--pyfunc-classification-outputs-have-an-explicit-scoring-shape) | Real saved/loaded CatBoost pyfunc, feature contract and scoring adapter. Explicit pyfunc selection is affected; automatic native selection may avoid it. |
 | P3 | Model card loses its name to a metric, importance method labels disagree with families, and integer PDP labels do not match scored values. | [MOD-R05](modelling.md#mod-r05--diagnostics-measured-as-the-fit-was), extended | Real card generation and model diagnostic calculations; separate from the signature's P2 contract impact. |
-| P2 | Full preview of a node instance after a multi-frame request source reads `.columns` on a dict and fails. | [SUB-R06](submodels.md#sub-r06--multi-frame-sources-work-through-node-instances) | Real graph/executor: full preview fails, target-only succeeds. CLI/assistant use the same full-preview path by source inspection. |
 | P3 | Relationships target `__w=[10,20]` is overwritten by internal weight alias: means become `[1,1]`, strength 0. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual Parquet, data-point resolver and relationship service; ordinary-name equivalent requires means `[10,20]`, strength 1. |
 | P3 | Copied Explore node B receives cached result.node_id A for the same producer/card. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual pivot service/cache. Numbers are correct; browser stores them under B, so no numerical cross-node corruption claim. |
 | P2 | Training status discards eight recorded tuning progress fields. | [MOD-R08](modelling.md#mod-r08--training-status-carries-the-progress-the-worker-records) | Real JobStore and async status route. Cancel response has the same omission by source inspection. |
@@ -315,7 +314,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | save/repair Git transaction gap | **GIT-R17**. |
 | pyfunc classifier output shape | **MSC-11**. |
 | literal select row proof | **EXEC-R09**. |
-| multi-frame node-instance full preview | **SUB-R06** after requested split; formerly bundled SUB-R01. |
 | predicted output signature dtype | **MOD-R09** after requested split; formerly bundled MOD-R05. |
 | “PDP integer grids … pending contract test” | **MOD-R05**. The copied note belongs to `modelling/_metrics.py::compute_pdp`, not `_gpu.py` or `_shap.py`; it is not a separate unresolved GPU contract concern. |
 | completed TimeoutError retry loop | **ROAD-WORKER-09** after requested split; formerly bundled ROAD-WORKER-07. |
@@ -354,8 +352,8 @@ Before this follow-up, the documentation delta received **APPROVED** from a seco
 read-only Codex session of the **same model family** (`gpt-6-astra`, `xhigh`; thread
 `01a18333-1e39-7b51-ac2c-9fcf2f76843b`). It requested separate classifier label and
 probability assertions and a concrete P2 preview fix independent of reuse migration.
-The latter now belongs to SUB-R06; SUB-R01 retains its original P3 scope and must pass
-that regression. This was same-family review, not cross-family validation.
+The latter, since delivered, was split from SUB-R01, which retains its original P3 scope
+and must pass that regression. This was same-family review, not cross-family validation.
 
 The subsequent **cross-family review by Claude** checked the decisive code for all
 42 finding groups and reported no false positives; it did not check MOD-R05's integer

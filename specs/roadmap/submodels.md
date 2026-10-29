@@ -16,7 +16,6 @@ come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md).
 | SUB-R01 | Planned | P3 | One mechanism reuses a node or group of nodes. |
 | SUB-R04 | Planned | P2 | A Load File child whose free code names a second input keeps that input across a submodel boundary, as a Polars child does. |
 | SUB-R05 | Planned | P3 | The no-op alias rewrite, the hidden-port fields nothing produces, the parse that create and dissolve never read, and the second validation per flatten are gone. |
-| SUB-R06 | Planned | P2 | Node instances after multi-frame request sources work in full preview, CLI run and assistant preview as well as target-only preview. |
 
 ## Planned improvements
 
@@ -64,7 +63,9 @@ naming the submodel form; no parser, codegen, executor or editor path handles
 node-level instances; **Create Instance** yields a working one-node submodel
 occurrence for Polars and Model Score nodes; the documentation describes only
 supported mechanisms. The replacement one-node submodel also passes the
-[SUB-R06](#sub-r06--multi-frame-sources-work-through-node-instances) regression.
+multi-frame regression in `tests/test_apiinput_multi_port_runtime.py`: an
+instance after a two-frame request input previews in full, target-only and
+assistant previews and runs under `haute run`.
 
 **Dependencies:** None. The canonical-input rule that applies to removed forms
 is in the [specification README](../README.md#canonical-only-format-policy).
@@ -131,25 +132,3 @@ submodel tests pass unchanged.
 `src/haute/_flatten.py::flatten_graph`;
 `src/haute/_submodel_instances.py::expand_submodel_instances`.
 
-### SUB-R06 — Multi-frame sources work through node instances
-
-**Why:** A current instance downstream of a two-frame Quote Input fails ordinary full
-preview: the executor's instance schema-warning code treats the upstream bundle dict as
-a DataFrame and reads `.columns`. The same graph succeeds with target-only preview.
-The full-preview failure was reproduced; CLI run and assistant preview share that path
-by source inspection.
-
-**Plan:** Make the instance schema-warning path respect the source's multi-frame contract
-and the selected input binding. Preserve the normal input-identity checks; do not invent
-a default frame or suppress the failure. Deliver this correctness fix independently of
-the reuse migration in SUB-R01.
-
-**Acceptance:** Use the measured policy/risks source with original and copied Polars
-consumers. Full preview, CLI run, assistant preview and target-only preview return the
-expected rows and columns, without `.columns` on a bundle. The one-node submodel
-replacement must pass the same regression when SUB-R01 ships.
-
-**Dependencies:** None; this fix cannot wait for SUB-R01.
-
-**Evidence:** `src/haute/executor.py::_execute_graph_core._cached_output_names`
-and its instance schema-warning consumer in `_execute_graph_core`.
