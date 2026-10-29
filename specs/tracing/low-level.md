@@ -5,10 +5,10 @@
 | File | Responsibility |
 | --- | --- |
 | `src/haute/trace.py` | Public facade and orchestrator. `execute_trace()` entry point, `TraceStep`/`TraceOmission`/`TraceResult` dataclasses, the trace execution cache (`_cache`, `TRACE_CACHE_MAX_BYTES`), row/omission assembly, column-relevance pruning, provenance, and JSON serialisation (`trace_result_to_dict`). Re-exports expression-parser and node-type enricher names as public convenience imports; `_trace_enrichment.py` owns its dependencies directly. |
-| `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. It imports the shared row JSON converter from `src/haute/_json_safe.py` (owned by [json-shredding](../json-shredding/low-level.md)) imported locally as `_jsonify_row` rather than owning a second converter; the module owns `SchemaDiff` computation, dtype-robust Polars match-expression construction (`_typed_value_match_expr`), exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, shared by the single-frame and multi-frame paths), multi-frame per-edge parent resolution (`_resolve_multi_frame_parent`), and the backward-walk driver `_correlate_rows_posthoc`. |
+| `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. It imports the shared row JSON converter from `src/haute/_json_safe.py` (owned by [json-shredding](../json-shredding/low-level.md)) imported locally as `_jsonify_row` rather than owning a second converter; the module owns `SchemaDiff` computation, dtype-robust Polars match-expression construction (`_typed_value_match_expr`), exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, used for every head frame and every frame of a multi-frame parent), the limited-preview resolver (`RowScopeResolver`, which resolves every port of a parent one physical edge at a time), and the backward-walk driver `_correlate_rows_posthoc`. |
 | `src/haute/_python_syntax.py` | Cross-component dependency owned by [codegen](../codegen/low-level.md): tracing consumes its LibCST-derived exact method-call names and positions; it does not mutate trace source. |
-| `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), canonical instance-aware code selection (`_effective_node_code`), row-lineage-type classification (`detect_row_lineage_type`, from node type and operation alone), and the per-step dispatch walk (`enrich_steps`) that drives expression parsing/evaluation (with a pre-assignment-value guard for self-referential columns), intra-node chain analysis, recursive upstream input-source derivation, rename detection, and node-type dispatch for every `TraceStep`. |
-| `src/haute/_trace_lineage.py` | The traced value's lineage. `trace_value_lineage()` walks a column trace's demand back from the target over the enriched steps and returns a `ValueLineage`: the nodes it reaches (step relevance and omission relevance), the columns each step contributes, and what each contributed column read (`reads`: per column, `ColumnRead` entries naming every node, as a `ColumnSource`, that computed the value read). |
+| `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), canonical instance-aware code selection (`_effective_node_code`), row-lineage-type classification (`detect_row_lineage_type`, from node type and operation alone), the per-step dispatch walk (`enrich_steps`) that drives expression parsing/evaluation (with a pre-assignment-value guard for self-referential columns), intra-node chain analysis, rename detection, and node-type dispatch for every `TraceStep`, and the input-source entry (`input_source_entry`: how one node computed a value a formula read). |
+| `src/haute/_trace_lineage.py` | The traced value's lineage. `trace_value_lineage()` walks a column trace's demand back from the target over the enriched steps and returns a `ValueLineage`: the nodes it reaches (step relevance and omission relevance), the columns each step contributes, and what each column a step computes for the value read (`reads`: per column, a helper the step dropped included, `ColumnRead` entries naming every node, as a `ColumnSource`, that computed the value read). |
 | `src/haute/_trace_waterfall.py` | Waterfall assembly for sequential multiplicative/additive rating chains. `WaterfallEntry`/`WaterfallResult` dataclasses, the value-derived `build_waterfall_from_steps()` traced-path driver, and the C8 arithmetic-reconciliation guards. |
 
 ## Key types and data structures
@@ -84,7 +84,12 @@
 - **`WaterfallEntry`** / **`WaterfallResult`** (`_trace_waterfall.py`, dataclasses)
   — `label`, `operation` (`"base"` / `"multiply"` / `"add"`), `value`, `delta`,
   `cumulative`, and `default_used` per entry; `WaterfallResult` wraps `entries`
-  plus `final_value`.
+  plus `final_value`. `default_used` reads the typed fields of the step's detail for
+  the traced column: the rating table that produces it (`tables[].default_used`, every
+  table for a combined output), the banding factor that does (`factors[].is_default`), or
+  an optimiser ratebook factor (`factor_ladder[].default_used`, every factor for the
+  optimised output). A value elsewhere in the detail, such as a user column named
+  `status`, never sets it.
 - **`WaterfallReconciliationError`** / **`WaterfallUnavailableError`**
   (`_trace_waterfall.py`, both `ValueError` subclasses) — the former means the
   arithmetic contradicts observed values (an invariant violation); the latter
@@ -235,30 +240,25 @@ continuation is never cached: every click proves again.
 4. Read the target output with `.get()`. If it is a `dict` (a multi-frame source
    targeted directly, with no downstream node to pick a frame), raise
    `ValueError` naming the node and directing the caller to trace a node
-   downstream of a specific frame instead. If it is absent because execution
-   produced only a partial result, retain the documented partial-trace path
-   below rather than indexing the missing key.
+   downstream of a specific frame instead. The walk raises a node's failure and
+   always collects the target, and the cache holds only completed walks, so a target
+   with no frame is a broken invariant and raises `RuntimeError`.
 5. Build `source_frames_of`: for every edge in the graph, append its
    `sourceHandle` to the list keyed by `(edge.source, edge.target)`, preserving
    edge order. One entry per edge, not per pair — a multi-frame source can feed
    the same child through several edges.
 6. Build a `RowScopeResolver` over a click-local copy of the head frames (row-scoped
    lookups are written only there, never to cached head frames). If the caller supplied
-   `row_values` and the target DataFrame exists, verify the row at `row_index` with
+   `row_values`, verify the row at `row_index` with
    `_match_rows_vectorized`. On mismatch, search via `_find_target_row_index` in the
    limited target frame; when the clicked values are absent from it, look the row up in
    the target's uncapped plan (`_lookup_clicked_row`), use that lookup as the target frame,
    and clear the resolver's head-resolved set so no ancestor is proven by a head frame. No
    match or ambiguity raises `ValueError`, while an unsupported target dtype raises
-   `TraceCorrelationUnsupportedError`. A missing target skips verification and continues
-   through the partial-result path.
-7. If the target node produced output, call `_correlate_rows_posthoc()` (below,
-   passed the click-local frames, `source_frames_of`, `column` as `traced_column`, and the
-   resolver as `row_scope`) to get a JSON-safe row dict per node (or `None` for unresolved
-   nodes). If the target node's
-   execution failed, build partial rows directly from whatever `eager_outputs`
-   are available instead (no correlation), skipping any node whose output is a
-   multi-frame `dict`.
+   `TraceCorrelationUnsupportedError`.
+7. Call `_correlate_rows_posthoc()` (below, passed the click-local frames,
+   `source_frames_of`, `column` as `traced_column`, and the resolver as `row_scope`) to
+   get a JSON-safe row dict per node (or `None` for unresolved nodes).
 8. `_assemble_steps()` builds `TraceStep`s from the correlated rows: source nodes
    get `input_values = {}`; other nodes' `input_values` merge each parent's
    correlated row (namespacing every parent's copy as `f"{pid}.{k}"` whenever
@@ -280,8 +280,12 @@ continuation is never cached: every click proves again.
     `_attach_derivations()` then gives each kept step its `derivations`:
     `column_derivation()` (`_trace_enrichment.py`) evaluates the step's formula for
     each contributed column with the traced column's own machinery (`_formula_fields`,
-    shared with `_build_input_sources`), skipping a step read from a snapshot no
-    recompute reproduced, and the lineage supplies what the column read. While
+    shared with `input_source_entry`), skipping a step read from a snapshot no
+    recompute reproduced, and the lineage supplies what the column read.
+    `_attach_input_sources()` then gives each kept step that shows a formula for the
+    traced column it contributes (an `expression` with text that is not opaque: a
+    formula its code assigns, or a banding factor) its `calculation.input_sources`, from
+    the same reads (*Input sources* below). While
     deriving a column the walk notes each reference as this node's own value (an
     earlier assignment, or a generated column read before the code), a generated
     value the code later rewrote (`before_code`), or an input; an input is resolved
@@ -312,8 +316,10 @@ continuation is never cached: every click proves again.
 
 It runs only on a trace-cache miss; trace never reads the preview cache.
 
-1. Compile the preamble, merge in any caller-supplied `preamble_ns`
-   (caller-supplied keys win, for test convenience), and call
+1. Take the names node code runs with (`_trace_preamble_ns`: the compiled preamble
+   with any caller-supplied `preamble_ns` over it, caller-supplied keys winning, for
+   test convenience; `_build_trace_plans` and enrichment's formula names use the same
+   helper), and call
    a display walk (`walk_graph`, execution-engine) that raises node failures, collects
    the head-framed nodes (`CollectPolicy.display(collect=..., row_limits_by_node=...)`)
    each to its prefix, so each head frame is its node's plan limited to its own prefix;
@@ -445,6 +451,10 @@ the limited preview shows rather than independent source samples.
    the preamble's selector aliases, and the child's `inputMapping` aliases, which the proof
    resolves to the edge input names it reports (`input_aliases`). The proof is closed and syntactic over
    `df = <chain>` statements rooted at one input:
+   - a statement that only binds a name to a value no frame flows into (`factor = 2`, plain,
+     annotated or augmented) rewrites no frame and is skipped; binding `df` or an input, or
+     reading a frame (`n = src.height`), fails the proof, and a later use of the bound name
+     as a frame fails it on its own;
    - `filter`, `sort`, `head`, `tail`, `limit`, `slice`, `unique`, `drop`, `drop_nulls`,
      and `lazy` keep values;
    - `with_columns` and `select` assign every keyword output and every output that is not a
@@ -488,10 +498,10 @@ the limited preview shows rather than independent source samples.
 
 ### `_match_parent_row()` (`_trace_correlation.py`)
 
-Correlates ONE candidate frame (a bare parent `DataFrame`, or one frame of a
-multi-frame parent) against the resolved child row. Factored out of
-`_correlate_rows_posthoc` so the single-frame and multi-frame paths share
-identical matching logic:
+Correlates ONE candidate frame (a parent's head frame, or one frame of a
+multi-frame parent) against the resolved child row. `RowScopeResolver.resolve`
+calls it for every port matched in a head frame, so a single-frame parent and each
+frame of a multi-frame one share identical matching logic:
 
 1. Project the child's row onto the parent's columns (`_build_parent_match_row`)
    — a generic name-based projection, except for the JOIN-role parent of an
@@ -541,33 +551,8 @@ identical matching logic:
    (`_allows_relaxed_parent_match`) — a
    relaxed miss there must not manufacture false lineage.
 4. Returns `(row_dict, positional_index, match_width)`, where `match_width` is
-   the number of child columns projected onto this frame — the specificity a
-   multi-frame resolution uses to rank competing candidate frames.
-
-### `_resolve_multi_frame_parent()` (`_trace_correlation.py`)
-
-Correlates a multi-frame parent (`dict[label, DataFrame]`) row for one child.
-Called once per (parent, child) pair from `_correlate_rows_posthoc`, with
-`edges` set to `(edge_metadata or {}).get((parent_id, child_id))` — a sequence
-of `(sourceHandle, targetHandle)` pairs per edge between that pair, in edge order:
-
-1. Appends one candidate per physical edge (duplicates allowed, without deduplicating
-   handles) for non-`None` handles whose frame exists in the parent's `dict` and is
-   non-empty as `candidates`. No candidates → record an `unresolved_source_frame`
-   diagnostic and return `(None, -1)`.
-2. Exactly one candidate → delegate straight to `_match_parent_row` on that
-   frame.
-3. Several candidates → call `_match_parent_row` on *each* independently
-   (diagnostics suppressed per-candidate to avoid noise), keeping only frames
-   that produced a confident row match. Duplicate-handle edges are compared
-   independently. No frame matches → record `unresolved_source_frame` and
-   return `(None, -1)`.
-4. Disambiguate the surviving matches in order: (a) if `traced_column` is set
-   and any matched frame's `DataFrame` has that column, narrow to those frames;
-   (b) narrow further to the frame(s) with the widest `match_width`; (c) if more
-   than one frame still survives, record an `ambiguous_source_frame` diagnostic
-   (`severity: "warning"`) naming the candidates and return `(None, -1)`.
-5. Return the winning frame's `(row_dict, positional_index)`.
+   the number of child columns projected onto this frame — the specificity the
+   resolver uses to rank competing ports of one parent.
 
 ### `_correlate_rows_posthoc()` (`_trace_correlation.py`)
 
@@ -580,17 +565,9 @@ of `(sourceHandle, targetHandle)` pairs per edge between that pair, in edge orde
    then by descending position in `order` (nearest the target first). The first child
    that proves the row decides it and only its diagnostics are kept; when none does, the
    first child's diagnostics explain the omission. A node with no such child is not on
-   the path to the target. Without a resolver (direct callers of the
-   function), walk `order` in reverse. For each unresolved node with a materialized output:
-   - Find a child of that node already resolved with a non-empty row
-     (`resolved_child_id`); if none exists, the node is not on the path to the
-     target and is marked unresolved (`None`, index `-1`).
-   - If the parent's output (`eager_outputs[nid]`) is a `dict` (a multi-frame
-     source), delegate to `_resolve_multi_frame_parent()` (above) with
-     `edges=(edge_metadata or {}).get((nid, resolved_child_id))` and the caller's
-     `traced_column`, and continue to the next node.
-   - Otherwise, delegate to `_match_parent_row()` (above) on the bare
-     `DataFrame`.
+   the path to the target. The resolver is required: correlation has this one path, and a
+   caller holding only materialised frames builds a resolver whose every edge is aligned
+   and every node head-framed, so each parent is matched in its frame.
 4. Return the per-node row dict (or `None`) map.
 
 The caller creates one `CorrelationWork` recorder and passes it through the
@@ -627,7 +604,10 @@ its public facade.
    creator's expression, so all three enrichment paths follow the identical
    `instanceOf`/`.with_columns(` rule.
 2. Parses/evaluates the expression for `column` when the column is
-   added/modified at this step, or (for the *target* step only) borrows the
+   added/modified at this step or its code assigns it (`assigns_column` in
+   `_expression_parser.py`: `assignment_phases` or `_locate_defining_expression`
+   finds the assignment in the syntax tree, so a comment, a string or a `==`
+   comparison naming the column is not one), or (for the *target* step only) borrows the
    expression/calculation of the step a pass-through value came from.
    `_pass_through_origin` follows the target's value back one step at a time
    through the single parent that holds `column` with that same value, to the
@@ -689,21 +669,13 @@ its public facade.
    target the chain assigns once. `execute_trace` passes enrichment the compiled preamble
    namespace (cached per process) over any caller-supplied `preamble_ns`, so formulas resolve the
    names the node code ran with.
-4. Recursively derives `input_sources` for every referenced column
-   (`_build_input_sources`, depth-limited to 3, cycle-guarded via a
-   `(node_id, column)` visited set) — for each reference, finds the nearest
-   upstream step that created/modified it, parses/evaluates its formula (with a
-   banding-specific branch that reuses `enrich_banding`'s factor detail instead
-   of generic expression parsing), and recurses into *its* references. When the
-   parse finds no expression text for the column, the step's code demonstrably does
-   not assign it (a model's prediction beside `with_columns` transform steps): the
-   source carries the value the step produced, as for a step with no code. Code the
-   parser cannot read keeps its text as an opaque expression and is still evaluated,
-   so a column such code brings in (a join, say) can still report
-   `expression_not_located`.
-5. Detects renames (`.rename({...})` or a pure `.with_columns(new=pl.col(old))`)
-   and builds a rename chain by walking backward through prior steps.
-6. Dispatches node-type enrichment by `node_type` (`ratingStep`, `banding`,
+4. Detects renames from the syntax tree: a `rename` call whose own literal mapping
+   renames a column to `column` (`renamed_from`; another call's dict, such as
+   `replace({...})`, never counts), which also marks the step's `node_detail` a rename, or
+   an assignment of `column` that copies another column unchanged (`copied_from`:
+   `pl.col(old)` as a keyword or an alias), and builds a rename chain by walking backward
+   through prior steps' copies.
+5. Dispatches node-type enrichment by `node_type` (`ratingStep`, `banding`,
    `modelScore`, `scenarioExpander`, `liveSwitch`, `optimiserApply`) into
    `step.node_detail`; for `banding`, additionally attaches lineage
    (`_attach_banding_lineage`) directly into `step.expression`/`step.calculation`
@@ -725,13 +697,47 @@ its public facade.
    by enrichment. A traced value is compared in the kind its breakpoints share
    (`_match_interval_rule` reads a date or date-and-time input as the runtime's
    `banding_comparison_expr` does), so a date band the engine chose is credited.
-7. Classifies `step.row_lineage_type` via `detect_row_lineage_type()`, using the
+6. Classifies `step.row_lineage_type` via `detect_row_lineage_type()`, using the
    node type first (source nodes and constants → `"created"`, `liveSwitch` →
    `"selected"`, `edgeJoin` → `"joined"`, `scenarioExpander` → `"expanded"`,
    `optimiserApply` → `"aggregated"` — checked before any code-sniffing because
    config-driven nodes carry no literal operation), then a code-sniffed
    `operation_type` (`_sniff_operation_type`), falling back to `"passthrough"`.
    Trace frames are limited or row-scoped, so frame heights never decide a label.
+
+### Input sources (`_attach_input_sources`, `trace.py`)
+
+A step's `calculation.input_sources` maps each column its formula for the traced column
+read from the node's inputs to the node that computed the value it read, taken from the
+lineage's reads (`ValueLineage.column_reads`) — the mechanism that gives `derivations`
+their `reads`, so the two never disagree. The formula's own reads and those of each
+intra-node chain entry (`calculation.expression_chain`) are taken in that order, the first
+read of a column kept:
+
+- a read with exactly one source in another node names that node. Its entry
+  (`input_source_entry`, `_trace_enrichment.py`) carries its `node_id` and `node_name` and
+  how it computed the column: a banding factor's detail; the formula its code assigns the
+  column (`_effective_node_code`, then `parse_expression`), evaluated on its row by
+  `_formula_fields`; or, when its code does not assign the column (a model's prediction
+  beside `with_columns` transform steps, a loaded column), the value it produced. Code the
+  parser cannot read keeps its text as an opaque expression and is still evaluated, so a
+  column such code brings in (a join, say) can still report `expression_not_located`. A
+  step read from a snapshot no recompute reproduced gives only the value it held there with
+  its `snapshot_generation_id`, and a node the trace could not correlate only its name.
+  The entry's own `input_sources` follow that node's reads of the column the same way, to
+  three levels below the formula's own entries.
+- a read whose source is the step itself is the step's own value — an earlier assignment
+  the chain shows, or a column a rule of the node computed (a model's prediction) — and
+  has no entry.
+- a read with no source, with several (a coalesced full-join key, a column several
+  parents hold) or with unknown reads (`None`: a formula the lineage could not read) has no
+  entry: no single node supplied the value, and naming one would explain a value the
+  formula never read.
+
+A failure deriving one entry is that entry's `error`/`error_type` (logged
+`input_source_derivation_failed`); any other failure building a step's sources is its
+calculation's `error` (`input_sources build failed: ...`, logged `input_sources_failed`).
+Each node's entry is derived once per trace.
 
 ### `build_waterfall_from_steps()` (`_trace_waterfall.py`)
 
@@ -749,8 +755,8 @@ its public facade.
    opens the chain as `"base"` (`value_before = observed`). Each subsequent step
    where the column is modified, *or* where the node's code structurally
    assigns the column even though this row's value did not change
-   (`_step_targets_column` parses `with_columns(...)` assignments with the
-   Python AST; comments and `==` comparisons are not assignments — an identity
+   (`_step_targets_column` asks `assigns_column` of the node's effective code;
+   comments and `==` comparisons are not assignments — an identity
    factor like `×1.0` would otherwise vanish as a `"passed"` schema-diff entry),
    contributes an entry via
    `_classify_contribution()`.
@@ -856,16 +862,19 @@ snapshot deterministically.
   branches); a calculated/modified column keeps its origin node(s) plus every
   ancestor that produces a column its formula's `referenced_columns` actually
   names (falling back to keeping *all* ancestors when no expression info is
-  available, e.g. an opaque node). Pruning decides which steps are returned; the
-  lineage decides which of them are relevant.
+  available, e.g. an opaque node). A node whose effective code assigns the column
+  (`assigns_column`) is an origin even when its row shows no change. Pruning decides
+  which steps are returned; the lineage alone decides which of them are relevant, so a
+  step whose code only mentions the column (a comment, a comparison) is never made
+  relevant by it.
 - **The value lineage is a backward demand walk** (`trace_value_lineage`). Each node
   gets the set of its output columns the value depends on (or "every column"), seeded
   with the traced column at the target and visited in reverse topological order over
   the graph's parents. At a step, a demanded column it computes is contributed and
   replaced by its dependencies; a demanded column it does not compute is carried to its
   parents. A step computes a column its row shows added or modified, its effective code
-  assigns (even to the value the column already held, or to a helper column it later
-  drops), or one of its rules generates. A pure router (`edgeJoin`, `liveSwitch`,
+  assigns (`assigns_column`; even to the value the column already held, or to a helper
+  column it later drops), or one of its rules generates. A pure router (`edgeJoin`, `liveSwitch`,
   `dataOutput`) computes nothing: every column is carried, including one its schema
   diff shows as added because the parent holding it was not correlated. A source
   computes its columns from nothing.
@@ -903,8 +912,8 @@ snapshot deterministically.
   such parent whose edge's frame has it, and to every such parent when that frame is
   unknown. An unresolved node that the walk reaches depends on every input column, so
   every attempted ancestor above it stays relevant.
-- **`instanceOf` code resolution appears in three independent places**
-  (`enrich_steps`, `_build_input_sources`, `_build_rename_chain`) — a cloned
+- **`instanceOf` code resolution goes through `_effective_node_code`**
+  (`enrich_steps`, `input_source_entry`, the lineage's `_Derivation`) — a cloned
   node instance whose own code lacks `.with_columns(` borrows the *original*
   node's code so the step that structurally created a column gets the correct
   expression, not a blank one.
@@ -923,9 +932,8 @@ snapshot deterministically.
   at once (the canonical four-port `apiInput` → `OUTPUT` topology, or a node
   joining two data levels straight off one multi-frame source). `source_frames_of`
   therefore stores a `list[str | None]` per pair — one entry per edge, in edge
-  order — and `_resolve_multi_frame_parent` matches every distinct candidate
-  frame against the resolved child row independently rather than assuming a
-  single frame per pair.
+  order — and `RowScopeResolver.resolve` matches every port's frame against the
+  resolved child row independently rather than assuming a single frame per pair.
 - **Multi-frame disambiguation never guesses.** When several frames of one
   source all confidently match the child row, the traced column (if any) wins
   first, then the widest `match_width` (most specific match). A surviving tie
@@ -1018,7 +1026,11 @@ integration/regression suites:
   source of a generated column the code reassigns, a value reassigned unchanged under
   every-column demand read from the step that assigned it, rating and banding rules
   never reading their own output, and join reads resolving to both sides of a
-  coalesced full-join key and to an uncorrelated join side.
+  coalesced full-join key and to an uncorrelated join side. Its input-source tests pin
+  a formula below a join whose two sides share a non-key column naming the base side,
+  with the value the row carries, in either declaration order; a chain's intermediate
+  read through to the upstream input it read, with no entry of its own; and a read
+  several nodes may have supplied giving no entry.
 - **`tests/test_trace_api.py`** — the `POST /api/pipeline/trace` HTTP layer via
   FastAPI `TestClient`: request validation, response shape, serialisation, and
   error-status mapping. Explicitly deferred to `test_trace_integration.py` for
@@ -1049,6 +1061,8 @@ integration/regression suites:
   its input through an `inputMapping` alias traced through both upstream Edge Joins, a
   node its nearest child cannot prove traced through another child, and a left join's
   unmatched and null keys reported as `join_no_match`.
+  `tests/test_column_lineage.py::test_carried_column_proof_skips_a_binding_no_frame_flows_into`
+  pins the proof past a scalar binding and refusing one that binds or reads a frame.
   `tests/test_trace_multi_frame.py::test_a_source_row_is_given_only_to_the_child_reading_its_frame`
   pins a multi-frame source's row coming from the join base's frame and never given as
   the input of a child reading another frame. `tests/test_column_lineage.py` pins the
@@ -1075,7 +1089,12 @@ integration/regression suites:
   pre-assignment-value substitution fix for self-referential assignments
   (`premium = premium * factor`), both as a single expression and as an
   intra-node chain that feeds a self-referential intermediate forward into a
-  dependent entry.
+  dependent entry. It also pins a window beside a row-local column in one call explaining
+  each by its own expression, and (`TestStatementTimeBindings`) a scalar rebound after the
+  formula explained with the value the pipeline ran with, in the calculation and the
+  derivation alike. `tests/test_trace_hero_tdd.py` pins a `replace` mapping beside a
+  `rename` never labelling the step a rename, and `tests/test_trace_value_lineage.py` a
+  comment naming the traced column never making a joined-in step relevant.
 - **`tests/test_trace_waterfall.py`** — the C8 arithmetic-contract
   regression suite, driving flagship multiplicative/additive scenarios through
   `execute_trace` end-to-end (not hand-fed factors) so a regression in
@@ -1117,7 +1136,11 @@ integration/regression suites:
   or a non-string quote id), with the quote id alone left ambiguous.
 - **`tests/test_trace_w4_fixes.py`** — W4-audit correlation-soundness
   regressions: fail-loud/unresolved behaviour over wrong-row attribution, and
-  numeric-comparison agreement with actual engine behaviour.
+  numeric-comparison agreement with actual engine behaviour. It, the identical-row,
+  multi-frame and evidence suites and the performance corpus call
+  `_correlate_rows_posthoc` over materialised frames through
+  `tests/conftest.py::head_frame_resolver`, a resolver whose every edge is aligned and
+  every node head-framed, so they exercise the one correlation path the trace runs.
 - **`tests/test_trace_fail_loudly.py`** — the fail-loud enrichment
   sweep: pins that specific `except Exception` sites inside `_enrich_steps` and
   its helpers surface a visible `error` field (or raise) rather than silently

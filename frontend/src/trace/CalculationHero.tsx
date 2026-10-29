@@ -15,6 +15,7 @@ import {
   type WaterfallStep,
 } from "./traceHelpers"
 import {
+  displayOperators,
   formatSmartValue,
   formatResultValueFull,
   formatDisplayExpression,
@@ -151,6 +152,27 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
       style={{ fontSize: 11, color: "var(--text-secondary)", fontStyle: "italic", marginTop: 2 }}
     >
       {resultNote}
+    </div>
+  )
+
+  // Without its frame, whose header carries the result, a mode that has no
+  // result line of its own shows the value under its body.
+  const renderValueRow = () => !frame && calculation && (
+    <div
+      data-testid="trace-calculation-value"
+      style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 4, fontFamily: "var(--font-data)", fontSize: 12 }}
+    >
+      <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>= {column}</span>
+      <span
+        style={{
+          fontWeight: 700,
+          ...tabularNums,
+          ...(resultIsNull ? { fontStyle: "italic", opacity: 0.5, color: "var(--text-secondary)" } : { color: "var(--accent)" }),
+        }}
+        title={resultFormattedFull !== resultFormatted ? resultFormattedFull : undefined}
+      >
+        {resultFormatted}
+      </span>
     </div>
   )
 
@@ -454,16 +476,19 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
       // A result the trace could not compute is explained by the note instead.
       if (resultNotComputed) return null
       return (
-        <div
-          style={{
-            fontSize: 11,
-            fontStyle: "italic",
-            color: "var(--text-secondary)",
-            marginTop: 2,
-          }}
-        >
-          <em style={{ fontStyle: "italic" }}>computed</em>
-        </div>
+        <>
+          <div
+            style={{
+              fontSize: 11,
+              fontStyle: "italic",
+              color: "var(--text-secondary)",
+              marginTop: 2,
+            }}
+          >
+            <em style={{ fontStyle: "italic" }}>computed</em>
+          </div>
+          {renderValueRow()}
+        </>
       )
     }
 
@@ -503,6 +528,7 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
               </div>
             )
           })}
+          {renderValueRow()}
         </div>
       )
     }
@@ -530,8 +556,7 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
     }
 
     // Default: everything in one unified box, top-down chronological
-    const rawSubText = calculation?.substituted_text ?? ""
-    const subText = rawSubText.replace(/\*/g, "\u00d7").replace(/\//g, "\u00f7")
+    const subText = displayOperators(calculation?.substituted_text ?? "")
     const formulaText = hasExpressionText && !isOpaque
       ? formatDisplayExpression(expression!.expression_text).text
       : null

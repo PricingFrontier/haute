@@ -1589,3 +1589,191 @@ class TestAssignmentPhases:
 
     def test_a_column_no_call_assigns_has_no_phases(self) -> None:
         assert assignment_phases("df = df.with_columns(y=pl.col('x'))", "z") is None
+
+
+# ###########################################################################
+# The located expression alone: its type, text, bindings and grouping
+# ###########################################################################
+
+
+class TestTheLocatedExpressionAlone:
+    """Each column is explained by its own expression, as it stood where it ran."""
+
+    WINDOW_BESIDE_ROW_LOCAL = (
+        "df = df.with_columns(\n"
+        '    pl.col("x").rank().over("g").alias("r"),\n'
+        '    (pl.col("a") * 2).alias("y"),\n'
+        ")"
+    )
+
+    def test_a_row_local_column_beside_a_window_keeps_its_own_facts(self) -> None:
+        result = evaluate_expression(self.WINDOW_BESIDE_ROW_LOCAL, "y", {"a": 10, "x": 3, "g": "A"})
+
+        assert result.expression_type == "arithmetic"
+        assert result.substituted_text == "10 * 2"
+        assert result.referenced_columns == ["a"]
+        assert result.result_value == 20
+
+    def test_the_window_beside_it_is_described_from_its_own_tree(self) -> None:
+        result = evaluate_expression(self.WINDOW_BESIDE_ROW_LOCAL, "r", {"a": 10, "x": 3, "g": "A"})
+
+        assert result.expression_type == "window"
+        assert result.substituted_text == "rank of x over g"
+        assert result.referenced_columns == ["x", "g"]
+        assert result.result_value is None
+        assert result.not_computable_reason == "not_row_local: rank"
+
+    def test_a_window_inside_arithmetic_is_described_in_place(self) -> None:
+        code = 'df = df.with_columns((pl.col("a") / pl.col("a").sum().over("g")).alias("share"))'
+
+        result = evaluate_expression(code, "share", {"a": 10.0, "g": "A"})
+
+        assert result.expression_type == "window"
+        assert result.substituted_text == "10.0 / (sum of a over g)"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            'factor = 2\ndf = df.with_columns((pl.col("x") * factor).alias("y"))\nfactor = 3',
+            'factor = 2; df = df.with_columns(y=pl.col("x") * factor); factor = 3',
+        ],
+        ids=["lines", "one-line"],
+    )
+    def test_a_scalar_rebound_after_the_formula_is_read_as_the_formula_saw_it(
+        self, code: str
+    ) -> None:
+        result = evaluate_expression(code, "y", {"x": 10})
+
+        assert parse_expression(code, "y").expression_text == "x * 2"
+        assert result.substituted_text == "10 * 2"
+        assert result.result_value == 20
+
+    def test_a_binding_keeps_the_names_it_read_when_it_ran(self) -> None:
+        # ``rate`` was the preamble's when ``expr`` was built; rebinding it later
+        # changes neither the formula nor its value.
+        code = 'expr = pl.col("x") * rate\nrate = 3\ndf = df.with_columns(expr.alias("y"))'
+
+        result = evaluate_expression(code, "y", {"x": 10}, preamble_ns={"rate": 2})
+
+        assert result.substituted_text == "10 * 2"
+        assert result.result_value == 20
+
+    def test_a_binding_the_code_rebinds_out_of_sight_is_reported_not_guessed(self) -> None:
+        code = 'factor = 2\nfactor *= 3\ndf = df.with_columns((pl.col("x") * factor).alias("y"))'
+
+        result = evaluate_expression(code, "y", {"x": 10}, preamble_ns={"factor": 5})
+
+        # Neither the stale 2 nor the preamble's 5: the value the code ran with is unknown.
+        assert parse_expression(code, "y").expression_type == "opaque"
+        assert result.result_value is None
+        assert result.not_computable_reason == "unresolved_name: factor"
+
+    @pytest.mark.parametrize(
+        ("expression", "row", "text", "substituted", "value"),
+        [
+            ('-(pl.col("x") + pl.col("z"))', {"x": 1, "z": 2}, "-(x + z)", "-(1 + 2)", -3),
+            (
+                '-(pl.col("x") * -(pl.col("z") - 1))',
+                {"x": 2, "z": 4},
+                "-(x * -(z - 1))",
+                "-(2 * -(4 - 1))",
+                6,
+            ),
+            ('-pl.col("x") ** 2', {"x": 3}, "-x ** 2", "-3 ** 2", -9),
+            ('(-pl.col("x")) ** 2', {"x": 3}, "(-x) ** 2", "(-3) ** 2", 9),
+            (
+                '~(pl.col("a") & pl.col("b"))',
+                {"a": True, "b": False},
+                "~(a & b)",
+                "~(True & False)",
+                True,
+            ),
+        ],
+        ids=["neg-sum", "nested", "neg-power", "power-of-neg", "invert-and"],
+    )
+    def test_unary_operators_keep_their_grouping(
+        self, expression: str, row: dict, text: str, substituted: str, value: object
+    ) -> None:
+        code = f'df = df.with_columns(({expression}).alias("out"))'
+
+        result = evaluate_expression(code, "out", row)
+
+        assert result.expression_text == text
+        assert result.substituted_text == substituted
+        assert result.result_value == value
+
+    def test_a_literal_spelled_like_a_column_is_never_substituted(self) -> None:
+        code = 'df = df.with_columns(pl.concat_str([pl.col("x"), pl.lit("x")]).alias("s"))'
+
+        result = evaluate_expression(code, "s", {"x": "A"})
+
+        assert result.expression_text == 'concat_str(x, "x")'
+        assert result.substituted_text == 'concat_str("A", "x")'
+        assert result.result_value == "Ax"
+
+    def test_a_method_named_like_a_column_keeps_its_name(self) -> None:
+        code = 'df = df.with_columns(pl.col("round").round(1).alias("r"))'
+
+        result = evaluate_expression(code, "r", {"round": 1.26})
+
+        assert result.substituted_text == "1.26.round(1)"
+        assert result.result_value == 1.3
+
+    @pytest.mark.parametrize(
+        ("call", "unknown"),
+        [
+            ("df = df.with_columns(y=expr)", "expr"),
+            ('exprs = [expr.alias("y")]\ndf = df.with_columns(exprs)', "exprs"),
+            ('named = expr.alias("y")\ndf = df.with_columns(named)', "named"),
+            ("again = expr\ndf = df.with_columns(y=again)", "again"),
+        ],
+        ids=["keyword", "list", "aliased", "rebound"],
+    )
+    def test_a_binding_captured_from_an_unknown_value_is_reported_not_guessed(
+        self, call: str, unknown: str
+    ) -> None:
+        # ``expr`` captured ``factor`` while its value was unknown (the code
+        # computes 60); rebinding ``factor`` afterwards, or binding ``expr``
+        # to another name, does not make it known.
+        code = 'factor = 2\nfactor *= 3\nexpr = pl.col("x") * factor\nfactor = 4\n' + call
+
+        result = evaluate_expression(code, "y", {"x": 10}, preamble_ns={"factor": 5})
+
+        assert result.result_value is None
+        assert result.not_computable_reason == f"unresolved_name: {unknown}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            'expr = pl.col("x").rank().over("g")\ndf = df.with_columns(y=expr)',
+            'expr = pl.col("x").rank().over("g").alias("y")\ndf = df.with_columns(expr)',
+        ],
+        ids=["keyword", "aliased-positional"],
+    )
+    def test_a_window_bound_to_a_variable_is_typed_from_its_binding(self, code: str) -> None:
+        result = evaluate_expression(code, "y", {"x": 3, "g": "A"})
+
+        assert result.expression_type == "window"
+        assert result.referenced_columns == ["x", "g"]
+        assert result.substituted_text == "rank of x over g"
+        assert result.not_computable_reason == "not_row_local: rank"
+
+    def test_a_nested_conditional_substitutes_values_in_every_branch(self) -> None:
+        code = (
+            "df = df.with_columns(\n"
+            '    pl.when(pl.col("a") > 1)\n'
+            '    .then(pl.when(pl.col("b") > 2).then(pl.col("c")).otherwise(0))\n'
+            '    .otherwise(pl.col("d"))\n'
+            '    .alias("r")\n'
+            ")"
+        )
+
+        result = evaluate_expression(code, "r", {"a": 2, "b": 3, "c": 10, "d": 20})
+
+        assert result.expression_text == (
+            "when a > 1 then when b > 2 then c otherwise 0 otherwise d"
+        )
+        assert result.substituted_text == (
+            "when 2 > 1 then when 3 > 2 then 10 otherwise 0 otherwise 20"
+        )
+        assert result.result_value == 10

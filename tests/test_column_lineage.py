@@ -2995,6 +2995,49 @@ def test_carried_column_proof_refuses_programs_whose_rewrites_it_cannot_name(cod
     assert carried_column_proof(code, ("src", "prices")) is None
 
 
+@pytest.mark.parametrize(
+    "code",
+    [
+        "factor = 2\ndf = src.with_columns(y=pl.col('x') * factor)\nfactor = 3",
+        "factor: float = 2.0\ndf = src.with_columns(y=pl.col('x') * factor)",
+        "factor = 2\nfactor *= 3\ndf = src.with_columns(y=pl.col('x') * factor)",
+        "df = src.with_columns(y=pl.col('x') * 2)\nnote = 'priced'",
+    ],
+    ids=["plain", "annotated", "augmented", "after-the-frame"],
+)
+def test_carried_column_proof_skips_a_binding_no_frame_flows_into(code: str) -> None:
+    from haute._column_lineage import carried_column_proof
+
+    proof = carried_column_proof(code, ("src",))
+
+    assert proof is not None
+    assert proof.root_input == "src"
+    assert proof.assigned == frozenset({"y"})
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        # A binding that reads a frame.
+        "n = src.height\ndf = src.with_columns(y=pl.lit(n))",
+        "rows = df.filter(pl.col('x') > 0)\ndf = src",
+        # A binding of an input or of ``df``.
+        "src = 2\ndf = src.with_columns(y=pl.lit(1))",
+        "df: int = 2\ndf = src.with_columns(y=pl.lit(1))",
+        # A bound name used as a frame.
+        "tmp = 1\ndf = tmp.with_columns(y=pl.lit(1))",
+        "rates = load()\ndf = src.join(rates, on='id')",
+        # Several targets or unpacking.
+        "a = b = 1\ndf = src",
+        "a, b = 1, 2\ndf = src",
+    ],
+)
+def test_carried_column_proof_refuses_a_binding_that_touches_a_frame(code: str) -> None:
+    from haute._column_lineage import carried_column_proof
+
+    assert carried_column_proof(code, ("src",)) is None
+
+
 def test_carried_column_proof_matches_executed_values() -> None:
     from haute._column_lineage import carried_column_proof
 

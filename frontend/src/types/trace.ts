@@ -347,7 +347,8 @@ export type TraceNodeDetail = (
 
 export interface WaterfallEntry {
   label: string
-  operation: string
+  /** The first entry's value, a factor the entry multiplied by, or a delta it added. */
+  operation: "base" | "multiply" | "add"
   value: number
   delta: number
   cumulative: number

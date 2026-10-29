@@ -1665,7 +1665,11 @@ function parseWaterfallEntry(value: unknown, field: string): WaterfallEntry {
   const obj = expectPlainObject("parseTraceResponse", value, field)
   return {
     label: expectString("parseTraceResponse", obj.label, `${field}.label`),
-    operation: expectString("parseTraceResponse", obj.operation, `${field}.operation`),
+    operation: expectStringLiteral("parseTraceResponse", obj.operation, `${field}.operation`, [
+      "base",
+      "multiply",
+      "add",
+    ]),
     value: expectNumber("parseTraceResponse", obj.value, `${field}.value`),
     delta: expectNumber("parseTraceResponse", obj.delta, `${field}.delta`),
     cumulative: expectNumber("parseTraceResponse", obj.cumulative, `${field}.cumulative`),

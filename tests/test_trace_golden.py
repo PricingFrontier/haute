@@ -64,7 +64,7 @@ def _make_trace_result() -> TraceResult:
         waterfall=[
             {
                 "label": "base rate",
-                "operation": "set",
+                "operation": "base",
                 "value": 10.0,
                 "delta": 10.0,
                 "cumulative": 10.0,
