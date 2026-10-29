@@ -1306,7 +1306,8 @@ def _record_kinds(
     A name may hold what it gets there or still what it held, since a block
     may not run. A value is read without the names *stmts* may bind (*table*
     gives the rest), since those may hold something else by then. A name bound
-    with no value to read (``except ... as e``) may hold anything.
+    with no value to read (``except ... as e``) may hold anything, whatever
+    else binds it.
     """
     may_bind = set().union(*(_names_assigned_by(stmt) for stmt in stmts))
     outside = {name: value for name, value in table.items() if name not in may_bind}
@@ -1322,8 +1323,70 @@ def _record_kinds(
                     may_change.setdefault(name, True)
                 else:
                     may_change[name] = may_change.get(name, False) or changeable
-    for name in may_bind - given:
+    captured = {
+        node.name
+        for stmt in stmts
+        for node in ast.walk(stmt)
+        if isinstance(node, ast.ExceptHandler) and node.name
+    }
+    for name in (may_bind - given) | captured:
         may_change[name] = True
+
+
+# Builtins that read or bind names, or change a value, out of the code's
+# sight. Code that uses one is not followed past it: every name is unknown.
+_REFLECTIVE_BUILTINS = frozenset(
+    {"exec", "eval", "compile", "setattr", "delattr", "globals", "locals", "vars", "__import__"}
+)
+# Stands for every name, in what a use of a function binds again.
+_EVERY_NAME = "<every name>"
+
+
+@dataclass(frozen=True)
+class _Changing:
+    """The code's functions and classes whose use changes a value in place.
+
+    *names* maps each name whose use runs one (a function, a class, a name
+    bound to either) to the names of the code that use binds again
+    (``global factor``; ``_EVERY_NAME`` when it runs ``exec`` or the like).
+    *methods* are the classes' methods among them: the only names a use as an
+    attribute (``box.bump()``) matches, so a helper named like a Polars
+    method does not make every ``.clip(...)`` a change.
+    """
+
+    names: Mapping[str, frozenset[str]]
+    methods: frozenset[str]
+
+    def used_by(self, node: ast.AST) -> str | None:
+        """The changing name *node* uses, as a value or a callee."""
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            return node.id if node.id in self.names else None
+        if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
+            return node.attr if node.attr in self.methods else None
+        return None
+
+
+def _run_nodes(node: ast.AST) -> Iterator[ast.AST]:
+    """*node* and the nodes under it that run when it does: not a function's or lambda's body."""
+    yield node
+    parts = (
+        _scope_parts(node)[0]
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+        else ast.iter_child_nodes(node)
+    )
+    for part in parts:
+        yield from _run_nodes(part)
+
+
+def _uses_reflection(node: ast.AST, bound: Collection[str]) -> bool:
+    """Whether *node* uses a reflective builtin the code did not bind itself."""
+    return any(
+        isinstance(sub, ast.Name)
+        and isinstance(sub.ctx, ast.Load)
+        and sub.id in _REFLECTIVE_BUILTINS
+        and sub.id not in bound
+        for sub in ast.walk(node)
+    )
 
 
 def _own_line_changes(value: ast.AST, bound: Collection[str]) -> list[str | None]:
@@ -1339,26 +1402,18 @@ def _own_line_changes(value: ast.AST, bound: Collection[str]) -> list[str | None
     return []
 
 
-def _used_names(node: ast.AST) -> str | None:
-    """The name *node* uses as a value or calls: ``bump`` in ``bump``, ``box.bump``."""
-    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-        return node.id
-    if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
-        return node.attr
-    return None
-
-
 def _changed_bases(
-    node: ast.AST, may_change: Mapping[str, bool], changing: Collection[str]
+    node: ast.AST, may_change: Mapping[str, bool], changing: _Changing
 ) -> list[str | None]:
     """The names whose value *node* itself may change in place.
 
     ``None`` stands for a change to a value no name reaches as written
     (``d.get("A")["rate"] = 2``): the change happened all the same. A use of a
-    function of the code that changes a value when it runs (one of
-    *changing*) is a change: a call to it, or handing it on to be called. A
-    container method on a name that may hold a container changes it whether
-    or not its result is used (``ordered = cols.sort()``).
+    function or class of the code that changes a value (see ``_Changing``) is
+    a change: a call to it, or handing it on to be called; so is a call of a
+    computed callee (``handlers["bump"](d)``, ``make()(d)``), which may be
+    one. A container method on a name that may hold a container changes it
+    whether or not its result is used (``ordered = cols.sort()``).
     """
     if isinstance(node, (ast.Subscript, ast.Attribute)) and isinstance(
         node.ctx, (ast.Store, ast.Del)
@@ -1367,32 +1422,25 @@ def _changed_bases(
     if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
         return [node.target.id]
     if isinstance(node, ast.Call):
-        callee = (
-            node.func.id
-            if isinstance(node.func, ast.Name)
-            else node.func.attr
-            if isinstance(node.func, ast.Attribute)
-            else None
-        )
-        if callee is not None and callee in changing:
+        computed = isinstance(node.func, (ast.Call, ast.Subscript))
+        if computed or changing.used_by(node.func) is not None:
             passed = [*node.args, *(keyword.value for keyword in node.keywords)]
             return [_base_name(value) for value in passed] or [None]
         if isinstance(node.func, ast.Attribute):
             receiver = _base_name(node.func.value)
-            if callee in _CHANGING_METHODS_WITH_RESULTS:
+            if node.func.attr in _CHANGING_METHODS_WITH_RESULTS:
                 return [receiver]
-            if callee in _CHANGING_METHODS and receiver is not None and may_change.get(receiver):
+            if node.func.attr in _CHANGING_METHODS and receiver and may_change.get(receiver):
                 return [receiver]
         return []
-    used = _used_names(node)
-    if used is not None:
-        return [None] if used in changing else []
+    if changing.used_by(node) is not None:
+        return [None]
     if isinstance(node, ast.Expr):
         return _own_line_changes(node.value, may_change.keys())
     return []
 
 
-def _changes_when_run(function: ast.AST, changing: Collection[str]) -> bool:
+def _changes_when_run(function: ast.AST, changing: _Changing) -> bool:
     """Whether running *function* (a ``def`` or a ``lambda``) changes a value in place.
 
     A change to one of its own names counts unless every binding of that name
@@ -1416,92 +1464,139 @@ def _changes_when_run(function: ast.AST, changing: Collection[str]) -> bool:
     )
 
 
+def _stored_names(node: ast.AST) -> set[str]:
+    """Every name *node* binds anywhere under it, its nested scopes included."""
+    names: set[str] = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Name) and not isinstance(sub.ctx, ast.Load):
+            names.add(sub.id)
+        elif isinstance(sub, (ast.MatchAs, ast.MatchStar, ast.ExceptHandler)) and sub.name:
+            names.add(sub.name)
+        elif isinstance(sub, ast.MatchMapping) and sub.rest:
+            names.add(sub.rest)
+        elif isinstance(sub, (ast.Import, ast.ImportFrom)):
+            names |= {alias.asname or alias.name.split(".")[0] for alias in sub.names}
+    return names
+
+
 def _global_rebinds(function: ast.AST) -> frozenset[str]:
-    """The names a function binds again in the scope around it (``global factor``)."""
+    """The names of the code a function binds again when it runs (``global factor``).
+
+    Every name, when it uses a reflective builtin (``exec``, ``globals()``).
+    """
+    if _uses_reflection(function, ()):
+        return frozenset({_EVERY_NAME})
     declared = {
         name for node in ast.walk(function) if isinstance(node, ast.Global) for name in node.names
     }
-    return frozenset(
-        node.id
-        for node in ast.walk(function)
-        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load) and node.id in declared
-    )
+    return frozenset(declared & _stored_names(function))
 
 
-def _changing_callables(tree: ast.Module) -> dict[str, frozenset[str]]:
-    """The names whose use runs code that changes a value in place, each with the
-    names of the code that use may bind again (``global factor``).
+def _container_stores(tree: ast.AST) -> Iterator[tuple[set[str], ast.AST]]:
+    """The containers *tree* puts a value into, each with the value: a store
+    through a subscript or attribute (``handlers["k"] = bump``), or an
+    argument of a container method (``handlers.append(bump)``)."""
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)) and node.value is not None:
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                for part in ast.walk(target):
+                    if isinstance(part, (ast.Subscript, ast.Attribute)) and isinstance(
+                        part.ctx, ast.Store
+                    ):
+                        base = _base_name(part.value)
+                        if base is not None:
+                            yield {base}, node.value
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in _CHANGING_METHODS | _CHANGING_METHODS_WITH_RESULTS:
+                base = _base_name(node.func.value)
+                if base is not None:
+                    for value in [*node.args, *(keyword.value for keyword in node.keywords)]:
+                        yield {base}, value
 
-    A function whose body changes a value, binds a ``global`` name, or uses
-    another such function; a class defining one (making or using an instance
-    runs it); and every name bound to a value that refers to one
-    (``run = bump``, ``box = Box()``) or holds a ``lambda`` that changes a value.
+
+def _changing_callables(tree: ast.Module) -> _Changing:
+    """The code's functions and classes whose use changes a value in place.
+
+    A function whose body changes a value, binds a name of the code again, or
+    uses another such function or class; a class defining one or deriving
+    from one (making or using an instance runs it); and every name bound to
+    a value that refers to one (``run = bump``, ``box = Box()``) or holds a
+    ``lambda`` that changes a value, or a container one is put into
+    (``handlers["bump"] = bump``).
     """
     functions = [
         node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     ]
     classes = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
-    bindings = [
+    method_names = {
+        node.name
+        for cls in classes
+        for node in cls.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    bindings: list[tuple[set[str], ast.AST]] = [
         (names, value)
         for scope in [tree, *functions, *classes]
         for stmt in cast(ast.Module, scope).body
         for names, value in _possible_bindings(stmt)
         if value is not None
     ]
-    changing: dict[str, frozenset[str]] = {}
+    bindings.extend(_container_stores(tree))
+    names: dict[str, frozenset[str]] = {}
 
     def gain(name: str, rebinds: frozenset[str]) -> None:
-        changing[name] = changing.get(name, frozenset()) | rebinds
+        names[name] = names.get(name, frozenset()) | rebinds
+
+    def changing() -> _Changing:
+        return _Changing(dict(names), frozenset(method_names & names.keys()))
 
     while True:
-        before = dict(changing)
+        before = dict(names)
+        current = changing()
         for function in functions:
-            used = {_used_names(node) for node in ast.walk(function)} - {None}
-            rebinds = _global_rebinds(function).union(
-                *(changing[name] for name in used if name in changing)
-            )
-            if rebinds or function.name in changing or _changes_when_run(function, changing):
+            used = {current.used_by(node) for node in ast.walk(function)} - {None}
+            rebinds = _global_rebinds(function).union(*(names[name] for name in used if name))
+            if rebinds or function.name in names or _changes_when_run(function, current):
                 gain(function.name, rebinds)
         for cls in classes:
-            methods = [
+            derived = [*cls.bases, *(keyword.value for keyword in cls.keywords)]
+            referred = {current.used_by(node) for part in derived for node in ast.walk(part)}
+            methods = {
                 node.name
                 for node in cls.body
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and node.name in changing
-            ]
-            if methods:
-                gain(cls.name, frozenset().union(*(changing[name] for name in methods)))
-        for names, value in bindings:
-            referred = [
-                node.id
-                for node in ast.walk(value)
-                if isinstance(node, ast.Name) and node.id in changing
-            ]
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names
+            }
+            reached = (referred - {None}) | methods
+            if reached:
+                gain(cls.name, frozenset().union(*(names[name] for name in reached if name)))
+        for targets, value in bindings:
+            referred = {current.used_by(node) for node in ast.walk(value)} - {None}
             if referred or any(
-                isinstance(node, ast.Lambda) and _changes_when_run(node, changing)
+                isinstance(node, ast.Lambda) and _changes_when_run(node, current)
                 for node in ast.walk(value)
             ):
-                for name in names:
-                    gain(name, frozenset().union(*(changing[each] for each in referred)))
-        if changing == before:
-            return changing
+                for target in targets:
+                    gain(target, frozenset().union(*(names[name] for name in referred if name)))
+        if names == before:
+            return changing()
 
 
 def _names_changed_in_place(
     node: ast.AST,
     may_change: Mapping[str, bool],
-    changing: Collection[str],
+    changing: _Changing,
     shadowed: frozenset[str] = frozenset(),
 ) -> set[str | None]:
     """The names whose value *node* may change without binding them again.
 
     A store or delete through a subscript or attribute (``d["k"] = v``,
     ``del d["k"]``, ``obj.a = v``), an augmented assignment, a ``pop``,
-    ``popitem`` or ``setdefault`` call, a use of a function of the code that
-    changes a value when it runs (one of *changing*), and a method called on
-    its own line that changes a container (``d.update(...)``) or is called on
-    a value the code bound, anywhere in *node*. A function's or lambda's body
-    runs when it is used, so only what is written around it is scanned here
+    ``popitem`` or ``setdefault`` call, a use of a function or class of the
+    code that changes a value (*changing*), and a method called on its own
+    line that changes a container (``d.update(...)``) or is called on a value
+    the code bound, anywhere in *node*. A function's or lambda's body runs
+    when it is used, so only what is written around it is scanned here
     (decorators, defaults), with a decorated function or a ``lambda`` that
     changes a value counting as used. A hit on a name the code bound only
     ever to values that cannot change (*may_change* false) is no change,
@@ -1516,7 +1611,7 @@ def _names_changed_in_place(
         handed_on = (
             _changes_when_run(node, changing)
             if isinstance(node, ast.Lambda)
-            else bool(node.decorator_list) and node.name in changing
+            else bool(node.decorator_list) and node.name in changing.names
         )
         if handed_on:
             names.add(None)
@@ -1543,7 +1638,7 @@ def _bind_statement(
     table: dict[str, ast.AST],
     unprovable: set[str],
     may_change: dict[str, bool],
-    changing: Mapping[str, frozenset[str]],
+    changing: _Changing,
 ) -> bool:
     """Fold one top-level statement into the names the code has bound.
 
@@ -1552,9 +1647,12 @@ def _bind_statement(
     name whose value is unknown is unknown too. Any other assignment (inside
     control flow, augmented, unpacking, a match capture) leaves its names
     unknown. A value changed in place may be one any name holds, so every
-    name whose value could change goes unknown with it. *may_change* records,
-    for every name the code bound, whether it may hold a value that can
-    change. Returns whether the statement changed a value in place.
+    name whose value could change goes unknown with it. A reflective builtin
+    (``exec``, ``globals()``) may bind or change anything, so every name the
+    code bound goes unknown, and ``_EVERY_NAME`` joins *unprovable* for the
+    preamble's names. *may_change* records, for every name the code bound,
+    whether it may hold a value that can change. Returns whether the
+    statement changed or bound again a value out of the table's sight.
     """
     _record_kinds([stmt], may_change, table)
     changed = _names_changed_in_place(stmt, may_change, changing)
@@ -1564,18 +1662,22 @@ def _bind_statement(
         for name in reached:
             table.pop(name, None)
             unprovable.add(name)
-    # A use of a function that binds a ``global`` name binds that name again.
-    rebound = {
-        name
-        for node in ast.walk(stmt)
-        for used in [_used_names(node)]
-        if used is not None and used in changing
-        for name in changing[used]
-    }
+    # A use of a function that binds a name of the code again binds it here,
+    # a decorated one where it is defined (the decorator may run it).
+    rebound: set[str] = set()
+    for node in _run_nodes(stmt):
+        used = changing.used_by(node)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.decorator_list:
+            used = node.name if node.name in changing.names else used
+        if used is not None:
+            rebound |= changing.names.get(used, frozenset())
+    if _EVERY_NAME in rebound or _uses_reflection(stmt, may_change.keys()):
+        rebound = {*table, *may_change, _EVERY_NAME}
     for name in rebound:
         table.pop(name, None)
         unprovable.add(name)
-        may_change[name] = True
+        if name != _EVERY_NAME:
+            may_change[name] = True
     changed_here = bool(changed) or bool(rebound)
     binding = _simple_binding(stmt)
     if binding is None:
@@ -2164,14 +2266,20 @@ def _evaluate_expression_impl(
     node = None if resolved is None else _inline_global_constants(resolved, constant_values)
     if unknown is None and node is not None and definition is not None and definition.after_change:
         # After a change in place, a preamble value the code could have changed
-        # is not known to be the one the preamble bound.
+        # is not known to be the one the preamble bound; after a reflective
+        # builtin (``exec``), nor is any other value it could have bound again.
+        rebound = _EVERY_NAME in unprovable
         unknown = next(
             (
                 sub.id
                 for sub in ast.walk(node)
                 if isinstance(sub, ast.Name)
                 and sub.id in namespace
-                and _may_change(namespace[sub.id])
+                and (
+                    _may_be_rebound(namespace[sub.id])
+                    if rebound
+                    else _may_change(namespace[sub.id])
+                )
             ),
             None,
         )
@@ -2226,6 +2334,12 @@ def _may_change(value: object) -> bool:
         type,
     )
     return not (value is None or isinstance(value, unchangeable) or callable(value))
+
+
+def _may_be_rebound(value: object) -> bool:
+    """Whether ``exec`` or the like could have bound *value*'s name to something else:
+    anything but a module, a class or a function."""
+    return not (isinstance(value, (types.ModuleType, type)) or callable(value))
 
 
 def _inline_global_constants(node: ast.AST, values: Mapping[str, Any]) -> ast.AST:

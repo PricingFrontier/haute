@@ -207,24 +207,34 @@ no alias or migration shim; direct test callers use the same current contract.
   on a closed Polars expression). The scan reaches every depth of a statement, a loop body and
   a class body included.
 - **A function the code defines changes values when it is used**: a `def` or `lambda` whose body
-  changes a value in place, uses another such function, or changes one of its own names that a
-  binding there could make a container (a parameter always can; `t += x` on `t = 0` cannot) is
-  a changing function, and so are a class defining one (making or using an instance runs it)
-  and every name bound to a value that refers to one (`run = bump`, `box = Box()`). Its body
-  runs when it is used, so the change counts at every use: a call by name or as a method, or
-  handing it on to be called (an alias, an argument, a decorator, a `lambda` written where it
-  is passed). A function that binds a `global` name binds it again wherever it is used, so
-  that name is unknown afterwards. A definition nobody uses changes nothing; decorators,
-  defaults and base classes run where they are written. A change made by a function the code
-  does not define (`random.shuffle(cols)`, a preamble helper) is not followed: that is the
-  boundary of what reading the code can see.
+  changes a value in place, uses another such function or class, binds a name of the code again
+  (`global factor`, any binding form), or changes one of its own names that a binding there
+  could make a container (a parameter always can; `t += x` on `t = 0` cannot) is a changing
+  function. So are a class defining one or deriving from one (making or using an instance runs
+  it), every name bound to a value that refers to one (`run = bump`, `box = Box()`), and a
+  container one is put into (`handlers["bump"] = bump`, `handlers.append(bump)`). Its body runs
+  when it is used, so the change counts at every use that runs: a call by name, a call of a
+  class's method as an attribute (`box.bump()`; a module-level helper named like a Polars
+  method does not make every `.clip(...)` a use), handing it on (an alias, an argument, a
+  decorator, a `lambda` written where it is passed), and any call of a computed callee
+  (`handlers.get("bump")(d)`, `make()(d)`), which may be one. A use of a function that binds a name
+  of the code again binds that name again, a decorated one where it is defined (the decorator
+  may run it). A definition nobody uses changes nothing, nor does a use inside a function body
+  that never runs; decorators, defaults and base classes run where they are written. A change
+  made by a function the code does not define (`random.shuffle(cols)`, a preamble helper) is not
+  followed: that is the boundary of what reading the code can see.
+- **Reflection is not followed**: a reflective builtin (`exec`, `eval`, `compile`, `setattr`,
+  `delattr`, `globals`, `locals`, `vars`, `__import__`), used directly or by a function the code
+  defines, may bind or change any name, so every name the code bound is unknown from there on,
+  and evaluation treats every preamble value a later formula reads as unknown except a module,
+  a class or a function.
 - **Every way of binding a name counts**: besides assignments, a `match` capture,
   `except ... as e`, a walrus inside a simple assignment's value and a walrus inside a
   comprehension (which binds in the scope around it) bind their names, so a name they bind is
-  unknown afterwards. Whether a name may hold a value that can change counts every
-  binding a block may make, reads a binding's value without the names the block may bind
-  (those may hold something else by then), and treats a name bound with no value to read
-  (`except ... as e`) as able to hold anything.
+  unknown afterwards. Whether a name may hold a value that can change counts every binding a
+  block may make, reads a binding's value without the names the block may bind (those may
+  hold something else by then), and treats a name bound with no value to read
+  (`except ... as e`) as able to hold anything, whatever else binds it.
 - **A formula sees the changes of its own statement**: a `with_columns`/`select` call inside
   `if`/`for`/`while`/`try`/`with`/`match`, or in a statement that changes a value in place
   (`with_columns(a=pl.lit(d.pop("k")), y=...)`), takes the bindings in force after that whole

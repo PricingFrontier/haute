@@ -2007,6 +2007,39 @@ class TestValuesChangedInPlace:
                 'df = df.with_columns(y=pl.col("x") * factors[0])',
                 "factors",
             ),
+            (
+                'factors = {"A": 1.0}\ntry:\n    error = None\n    raise ValueError(factors)\n'
+                'except ValueError as error:\n    error.args[0]["A"] = 2.0\n'
+                + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'handlers = {}\ndef bump(d):\n    d["A"] = 2.0\nhandlers["bump"] = bump\n'
+                'factors = {"A": 1.0}\nhandlers["bump"](factors)\n' + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'rate = 2.0\nclass Parent:\n    def __init__(self, d):\n        d["A"] = rate\n'
+                'class Child(Parent):\n    pass\nfactors = {"A": 1.0}\nChild(factors)\n'
+                + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                "factor = 1.0\ndef run(fn):\n    fn()\n    return fn\n@run\ndef reset():\n"
+                "    global factor\n    factor = 2.0\n"
+                'df = df.with_columns(y=pl.col("x") * factor)',
+                "factor",
+            ),
+            (
+                "factor = 1.0\ndef reset():\n    global factor\n    match 2.0:\n"
+                "        case factor:\n            pass\nreset()\n"
+                'df = df.with_columns(y=pl.col("x") * factor)',
+                "factor",
+            ),
+            (
+                'factor = 1.0\nexec("factor = 2.0")\ndf = df.with_columns(y=pl.col("x") * factor)',
+                "factor",
+            ),
         ],
         ids=[
             "subscript",
@@ -2056,6 +2089,12 @@ class TestValuesChangedInPlace:
             "a-global-bound-again-by-a-function",
             "a-walrus-in-a-comprehension",
             "a-container-method-whose-result-is-used",
+            "an-exception-capture-beside-a-binding",
+            "a-function-registered-in-a-container",
+            "a-subclass-of-a-changing-class",
+            "a-decorator-running-a-global-rebinding",
+            "a-global-bound-again-by-a-match-capture",
+            "exec",
         ],
     )
     def test_the_value_is_reported_not_guessed(self, code: str, unknown: str) -> None:
@@ -2116,6 +2155,17 @@ class TestValuesChangedInPlace:
                 "        t += x\n    return t\nn = total([1, 2])\n" + _TIMES_A.format("factors"),
                 20.0,
             ),
+            (
+                "factor = 1.0\ndef reset():\n    global factor\n    factor = 2.0\n"
+                "def unused():\n    reset()\n"
+                'df = df.with_columns(y=pl.col("x") * factor)',
+                10.0,
+            ),
+            (
+                'factors = {"A": 2.0}\ndef clip(d):\n    d["A"] = 5.0\n'
+                'df = df.with_columns(y=pl.col("x").clip(0, 100) * factors["A"])',
+                20.0,
+            ),
         ],
         ids=[
             "read-before-the-change",
@@ -2128,6 +2178,8 @@ class TestValuesChangedInPlace:
             "a-method-alone-on-a-polars-expression",
             "a-null-default",
             "a-helper-summing-numbers",
+            "a-global-rebinding-only-an-unused-function-runs",
+            "a-helper-named-like-a-polars-method",
         ],
     )
     def test_a_value_the_code_did_not_change_keeps_it(self, code: str, value: float) -> None:
@@ -2145,6 +2197,14 @@ class TestValuesChangedInPlace:
 
         assert result.result_value is None
         assert result.not_computable_reason == "unresolved_name: RATES"
+
+    def test_a_preamble_number_bound_again_by_reflection_is_reported_not_guessed(self) -> None:
+        code = 'factor = 1.0\nglobals()["RATE"] = 3.0\ndf = df.with_columns(y=pl.col("x") * RATE)'
+
+        result = evaluate_expression(code, "y", {"x": 10.0}, preamble_ns={"RATE": 2.0})
+
+        assert result.result_value is None
+        assert result.not_computable_reason == "unresolved_name: RATE"
 
     def test_a_preamble_number_after_a_change_still_computes(self) -> None:
         code = (
