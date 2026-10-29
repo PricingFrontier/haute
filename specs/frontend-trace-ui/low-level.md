@@ -21,7 +21,7 @@
 | `frontend/src/trace/ScenarioExpanderDetail.tsx`, `frontend/src/trace/scenarioExpanderHelpers.ts` | Scenario expansion view and shape guards/row helpers. |
 | `frontend/src/trace/LiveSwitchDetail.tsx`, `frontend/src/trace/liveSwitchHelpers.ts` | Live-switch detail and typed extraction. |
 | `frontend/src/trace/DerivationTree.tsx`, `frontend/src/trace/derivationTreeHelpers.ts`, `frontend/src/trace/traceContext.ts` | How a value was calculated, followed across steps: `buildDerivationTree` builds a tree from the steps' `derivations` (a formula, a load, a rule such as a model or an optimiser, a value generated before its node's code rewrote it, a node not in the trace, or no source found, each labelled with the step number its card shows), cut off with a note on a repeat within one path or beyond 12 levels; `DerivationTree` renders it with the expression-chain row view, formulas open and rules collapsed; `ComputedHere` lists a step's own formulas. `traceContext.ts` holds `TraceStepsContext` (every step of the trace, for details inside the panel) and `TraceNavigationContext` (`focusStep`, `hoverStep`; inert outside a panel). A row's step label is a link ("Go to fill_na, step 9"), and pointing at a row rings its node. |
-| `frontend/src/trace/traceHelpers.ts`, `frontend/src/trace/traceFormatting.ts`, `frontend/src/trace/traceOrigins.ts` | Waterfall/chain/source transformations, trace value formatting and origin classification. `displayOperators` shows a formula's binary `*` as × and `/` as ÷ and leaves quoted text, `**`, `//` and an unpacking `*` as written; `formatDisplayExpression` and the hero's substituted line use it. |
+| `frontend/src/trace/traceHelpers.ts`, `frontend/src/trace/traceFormatting.ts`, `frontend/src/trace/traceOrigins.ts` | Waterfall/chain/source transformations, trace value formatting and origin classification. Every formula or substituted line the trace shows (the hero, its chain and input-source rows, the derivation tree, the step card's expression) goes through the one `displayOperators` (`frontend/src/utils/formatTrace.ts`, re-exported here), which shows a binary `*` as × and `/` as ÷ and leaves quoted text, a power (`**`), a floor division (`//`) and an unpacking `*` as written. |
 
 ## Key types and data structures
 
@@ -101,7 +101,10 @@
    `seed_recompute_refused`, `seed_row_not_reproduced` and `seed_row_ambiguous` (a node
    not traced above the snapshot its diagnostic's message names) labelled "snapshot";
    every other omission, `seed_recompute_failed` and `ancestor_row_conflict` included,
-   is a warning "trace gap" alert. With no traced column, it leaves the steps uncollapsed.
+   is a warning "trace gap" alert. A gap's sentence is chosen by its diagnostic's `code`
+   (`ambiguous_row_match`; `ambiguous_source_frame` or `unresolved_source_frame`;
+   `unsupported_dtype`; any other a generic one), never by a word inside its reason, so an
+   ambiguous source frame reads as a source-frame gap. With no traced column, it leaves the steps uncollapsed.
    The story opens on the clicked node: each new story key scrolls the story, instantly and
    without moving any other scroll container, so the card of `target_node_id` starts at the
    top of the view, or the last card shown when the focused story hides that node (a node
@@ -138,7 +141,14 @@
 5. `frontend/src/trace/NodeDetailBlock.tsx` dispatches on `detail_type` (and optimiser status/mode).
    Detail components call their matching helpers before rendering; an unknown type is shown as
    formatted generic detail instead of disappearing.
-6. `frontend/src/trace/CalculationHero.tsx` prefers backend waterfall entries. A calculation,
+6. `frontend/src/trace/CalculationHero.tsx` prefers backend waterfall entries, each shown
+   with its own operation (`base`, `multiply` or `add`; the response guard in
+   `frontend/src/types/guards.ts` refuses any other): the first entry's value, a
+   multiplicative step as `×factor` and an
+   additive one as its delta, `+30` or `−30`; a waterfall the hero builds from a product's
+   factors multiplies. In a card that mounts the hero without its frame (the clicked
+   column's own card), a conditional or opaque calculation shows its value row, `= column
+   value`, under its branches or its "computed" line, as the unified box does. A calculation,
    chain entry or input source carrying `not_computable_reason` shows a note: "From the traced
    run: …" when `result_source` is `trace_execution`, otherwise "Not computed from this row: …",
    with the reason described by `describeNotComputable`. A value that was not computed is never
@@ -153,7 +163,9 @@
    downloads use the shared browser helper, which removes the synthetic anchor
    immediately but revokes its object URL on the next task so the browser can
    start the download. Clipboard, download, and print failures remain visible
-   in the mounted trace panel.
+   in the mounted trace panel, worded by their cause: the browser refused clipboard access,
+   blocked the download, or blocked the print window, or the export failed with its own
+   message.
 
 ## Edge cases and invariants
 

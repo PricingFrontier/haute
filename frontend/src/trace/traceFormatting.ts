@@ -2,9 +2,12 @@ import type React from "react"
 
 import { formatJsonSpecialValue } from "../utils/formatValue"
 import {
+  displayOperators,
   formatTraceValue as formatCanonicalTraceValue,
   TRACE_MAX_FRACTION_DIGITS,
 } from "../utils/formatTrace"
+
+export { displayOperators }
 
 // ---------------------------------------------------------------------------
 // Value formatting helpers shared across CalculationHero and its sub-components.
@@ -15,10 +18,6 @@ import {
 
 export function formatSmartValue(v: unknown): string {
   return formatCanonicalTraceValue(v)
-}
-
-export function formatResultValue(v: unknown, precision?: number): string {
-  return formatCanonicalTraceValue(v, precision ?? TRACE_MAX_FRACTION_DIGITS)
 }
 
 export function formatResultValueFull(v: unknown): string {
@@ -49,54 +48,6 @@ export function traceValuePresentation(
     title: `${context}: ${full}`,
     ariaLabel: `${context}: ${display} (full precision ${full})`,
   }
-}
-
-const OPERATOR_GLYPHS: Record<string, string> = { "*": "\u00d7", "/": "\u00f7" }
-
-/** Whether the text before `index` ends an operand, so an operator there is binary. */
-function followsOperand(text: string, index: number): boolean {
-  const before = text.slice(0, index).trimEnd()
-  return /[\p{L}\p{N}_)\]}"'.]$/u.test(before)
-}
-
-/**
- * A formula with its arithmetic operators shown as the trace writes them: a
- * binary `*` as \u00d7 and `/` as \u00f7. Quoted text, `**`, `//` and an unpacking `*`
- * stay as written, so a literal such as `"a/b"` reads as the code wrote it.
- */
-export function displayOperators(text: string): string {
-  let out = ""
-  let quote: string | null = null
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i]
-    if (quote !== null) {
-      out += ch
-      if (ch === "\\" && i + 1 < text.length) {
-        i += 1
-        out += text[i]
-      } else if (ch === quote) {
-        quote = null
-      }
-      continue
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch
-      out += ch
-      continue
-    }
-    const glyph = OPERATOR_GLYPHS[ch]
-    if (glyph === undefined) {
-      out += ch
-      continue
-    }
-    if (text[i + 1] === ch) {
-      out += ch + ch
-      i += 1
-      continue
-    }
-    out += followsOperand(text, i) ? glyph : ch
-  }
-  return out
 }
 
 export function formatDisplayExpression(

@@ -379,18 +379,41 @@ def _step_targets_column(
     return assigns_column(wrap_node_code(_effective_node_code(config, node_map)), column)
 
 
-def _detail_uses_default(value: Any) -> bool:
-    """Return whether specialised trace evidence says a default was used."""
-    if isinstance(value, dict):
-        if (
-            value.get("default_used") is True
-            or value.get("is_default") is True
-            or value.get("status") == "default"
-        ):
-            return True
-        return any(_detail_uses_default(item) for item in value.values())
-    if isinstance(value, (list, tuple)):
-        return any(_detail_uses_default(item) for item in value)
+def _detail_uses_default(detail: Any, column: str) -> bool:
+    """Whether the step's detail says the traced *column* came from a default.
+
+    Only the typed fields count: the rating table producing the column (every
+    table, for a combined output), the banding factor producing it, and an
+    optimiser ratebook factor (every factor, for the optimised output). A value
+    elsewhere in the detail, such as a user column named ``status``, never does.
+    """
+    if not isinstance(detail, dict):
+        return False
+
+    def entries(key: str) -> list[dict[str, Any]]:
+        values = detail.get(key)
+        if not isinstance(values, list):
+            return []
+        return [value for value in values if isinstance(value, dict)]
+
+    detail_type = detail.get("detail_type")
+    if detail_type == "rating_step":
+        combined = any(output.get("column") == column for output in entries("combined_outputs"))
+        return any(
+            table.get("default_used") is True and (combined or table.get("output_column") == column)
+            for table in entries("tables")
+        )
+    if detail_type == "banding":
+        return any(
+            factor.get("is_default") is True and factor.get("output_column") == column
+            for factor in entries("factors")
+        )
+    if detail_type == "optimiser_apply":
+        whole = detail.get("output_column") == column
+        return any(
+            factor.get("default_used") is True and (whole or factor.get("output_column") == column)
+            for factor in entries("factor_ladder")
+        )
     return False
 
 
@@ -505,7 +528,7 @@ def build_waterfall_from_steps(
                             "operation": "base",
                             "value": observed,
                             "cumulative": observed,
-                            "default_used": _detail_uses_default(step.node_detail),
+                            "default_used": _detail_uses_default(step.node_detail, column),
                         }
                     )
                     value_before = observed
@@ -523,7 +546,7 @@ def build_waterfall_from_steps(
                         "operation": operation,
                         "value": display_value,
                         "cumulative": observed,
-                        "default_used": _detail_uses_default(step.node_detail),
+                        "default_used": _detail_uses_default(step.node_detail, column),
                     }
                 )
                 value_before = observed

@@ -84,7 +84,12 @@
 - **`WaterfallEntry`** / **`WaterfallResult`** (`_trace_waterfall.py`, dataclasses)
   — `label`, `operation` (`"base"` / `"multiply"` / `"add"`), `value`, `delta`,
   `cumulative`, and `default_used` per entry; `WaterfallResult` wraps `entries`
-  plus `final_value`.
+  plus `final_value`. `default_used` reads the typed fields of the step's detail for
+  the traced column: the rating table that produces it (`tables[].default_used`, every
+  table for a combined output), the banding factor that does (`factors[].is_default`), or
+  an optimiser ratebook factor (`factor_ladder[].default_used`, every factor for the
+  optimised output). A value elsewhere in the detail, such as a user column named
+  `status`, never sets it.
 - **`WaterfallReconciliationError`** / **`WaterfallUnavailableError`**
   (`_trace_waterfall.py`, both `ValueError` subclasses) — the former means the
   arithmetic contradicts observed values (an invariant violation); the latter

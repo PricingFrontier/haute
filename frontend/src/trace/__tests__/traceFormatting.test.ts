@@ -6,6 +6,8 @@ import {
   formatResultValueFull,
   formatSmartValue,
 } from "../traceFormatting"
+import { buildChainEntries, buildInputSourceEntries } from "../traceHelpers"
+import { formatExpression } from "../../utils/formatTrace"
 
 describe("traceFormatting", () => {
   it("renders Haute non-finite JSON sentinels distinctly from null", () => {
@@ -37,6 +39,26 @@ describe("displayOperators", () => {
     expect(displayOperators("a ** 2")).toBe("a ** 2")
     expect(displayOperators("a // 2")).toBe("a // 2")
     expect(displayOperators("sum_horizontal(*cols)")).toBe("sum_horizontal(*cols)")
+  })
+
+  it("is what every trace renderer shows: a power stays a power", () => {
+    expect(formatExpression("a ** 2 * b")).toBe("a ** 2 \u00d7 b")
+    const [chain] = buildChainEntries(
+      [
+        { target_column: "squared", expression_text: "a ** 2", substituted_text: "3 ** 2" },
+        { target_column: "out", expression_text: "squared * 2", substituted_text: "9 * 2" },
+      ],
+      "out",
+      {},
+    )
+    expect(chain.formulaText).toBe("a ** 2")
+    expect(chain.substitutedText).toBe("3 ** 2")
+    const [source] = buildInputSourceEntries(
+      { squared: { node_name: "Squares", expression_text: "a ** 2", substituted_text: "3 ** 2" } },
+      {},
+      new Set(),
+    )
+    expect(source.substitutedText).toBe("3 ** 2")
   })
 
   it("is what the shared formula formatter shows", () => {
