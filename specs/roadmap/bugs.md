@@ -9,9 +9,8 @@ submodel files.
 `BUG-21` and `BUG-24` were found on 5 October 2026 while checking the deployment
 guides against the CI/CD files `haute init` generates: as generated, those files fail before a
 first container release succeeds. The guides give the manual step that works today for each,
-and drop it when the package lands. `BUG-28` and
-`BUG-29`, found the same day, are text that no longer matches the behaviour it
-describes: the offset tooltip and a tuned t-boost run's summary. `BUG-40` to `BUG-43`
+and drop it when the package lands. `BUG-29`, found the same day, is text that no
+longer matches the behaviour it describes: a tuned t-boost run's summary. `BUG-40` to `BUG-43`
 come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md): the hosted
 Databricks app's boot and build script, the UC transport's clients, the storage binding's
 unknown keys and a quadratic schema resolution in banding; `BUG-44` and `BUG-45`, from the
@@ -24,7 +23,6 @@ same review, are the Databricks browsing errors and the non-atomic first append.
 | BUG-19 | Planned | P2 | A save never drops a statement written after a submodel file's constructor. |
 | BUG-21 | Planned | P2 | The generated smoke and impact steps work for the generic container target once its endpoint addresses are set. |
 | BUG-24 | Decision | P1 | Container targets log in to their registry before `haute deploy` pushes, and GitLab container deploys run where Docker is available. |
-| BUG-28 | Planned | P2 | The offset tooltip names every loss that treats the offset as an exposure, and the losses that take no offset. |
 | BUG-29 | Planned | P2 | A tuned t-boost run's summary says its published model is the winning trial's fit, not a refit. |
 | BUG-40 | Planned | P2 | The hosted Databricks app installs the wheel and its pinned dependencies from a lock at boot, and its build script takes the app name as a parameter. The build selects its current wheel rather than a stale lexicographic match. |
 | BUG-41 | Planned | P3 | The UC volume transport builds one workspace client per process. |
@@ -98,27 +96,6 @@ Docker, AWS ECS and Azure guides are removed.
 
 **Evidence:** `src/haute/deploy/_container.py::_check_docker_available` and the push;
 `src/haute/_scaffold.py::TARGETS` (secrets) and the workflow generators.
-
-### BUG-28 — The offset tooltip matches the families' offset rules
-**Why:** The info icon beside Model Training's **Offset column (optional)** says the
-offset is an exposure multiplier under "a log-link GLM, or a CatBoost Poisson or Tweedie
-loss". The Gamma loss, and Poisson, Gamma and Tweedie on XGBoost, LightGBM, t-boost and
-EBM, use it the same way, and XGBoost, LightGBM, t-boost and EBM refuse an offset with
-the Logloss loss when training starts. The Model Training guide says so, and no longer
-claims the tooltip repeats it.
-
-**Plan:** Reword `OFFSET_HELP` from the family capabilities: a log link under a log-link
-GLM or a Poisson, Gamma or Tweedie loss, added under any other link, and no offset with
-Logloss on the families that refuse one.
-
-**Acceptance:** The tooltip's text names the same losses as the backend's offset rules,
-and a component test pins it.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/modelling/OffsetFieldLabel.tsx` (`OFFSET_HELP`);
-`src/haute/modelling/_xgboost.py`, `src/haute/modelling/_lightgbm.py`,
-`src/haute/modelling/_tboost.py`, `src/haute/modelling/_ebm.py` (the offset refusals).
 
 ### BUG-29 — A tuned t-boost summary does not claim a refit
 **Why:** After tuning, the Summary tab ends its tuning line with "· final tree count N"

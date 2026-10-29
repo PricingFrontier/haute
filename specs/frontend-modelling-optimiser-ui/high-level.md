@@ -208,7 +208,11 @@ strip; it never falls through to CatBoost. Pane ownership:
   combine with automatically smoothed splines or robust standard errors; and a Solver disclosure
   holds maximum iterations, tolerance, and robust standard errors. Its read-only
   algorithm context reads **Algorithm Rustystats**, while the stored algorithm remains `glm`.
-  CatBoost has no separate task
+  The info icon beside **Offset column (optional)** states the families' offset rules: a
+  positive exposure multiplier under a log link (a log-link GLM, or a Poisson, Gamma or Tweedie
+  loss), read as a full policy term when missing at scoring; added under any other link and
+  required when scoring; and no offset with the Logloss loss on XGBoost, LightGBM, t-boost
+  and EBM. CatBoost has no separate task
   selector: choosing a loss derives and stores its regression/classification task, every supported
   loss remains visible, and metrics that are incompatible with the selected loss stay visible but
   disabled. Both families' metric pickers read one table
