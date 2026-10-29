@@ -33,12 +33,8 @@ cells shown row by row through "this row" tests were offered again and not taken
 review](codebase-review-2026-10-25.md): the server's pricing executor and first saves, and
 what the review found in the Workbench view and the underwriter app in the browser.
 
-`WB-40` and `WB-41` change how the form is kept. Two designs made independently on
-28 October 2026 (a Claude and a Codex model, the first tried on commercial-pricing's real
-form) agreed on the folder's shape; the owner chose that day that the form lives in the
-pipeline folder, that its tables' folder is `schema/`, that tables and columns keep fixed
-ids beside their names, that only what is set is written, that a missing folder is
-recovered from version history rather than replaced by a blank form, and that the
+`WB-41` finishes moving the form into the pipeline folder, the folder of named files the
+workbench specification describes. The owner chose on 28 October 2026 that the
 Workbench nodes stop keeping copies of the tables in a pull request after the folder's.
 
 ## Priorities
@@ -61,7 +57,6 @@ Workbench nodes stop keeping copies of the tables in a pull request after the fo
 | WB-37 | Planned | P3 | The column key, the refusal predicate, the 409 detail reader, the empty visibility constants, the half-window width, the collapsible group and the pricing basis each exist once in the workbench and the app. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
 | WB-39 | Planned | P1 | The locally served underwriter app rejects foreign Host and forwarded requests before assigning the analyst's identity. |
-| WB-40 | Planned | P2 | The form is a folder in the pipeline folder: an index, a file per table and per sheet, each sheet's layout in a file of its own and the sample by table, columns named by name and only what is set written, so a pull request shows what changed and where. |
 | WB-41 | Planned | P2 | The Workbench Input and Workbench Output read their tables from the form folder instead of keeping copies, so a schema change shows once in a pull request and no copy can fall out of step. |
 
 ## Planned improvements
@@ -682,109 +677,17 @@ temporary store. Hosted proxy operation remains covered by its existing tests.
 `src/haute/_local_security.py::LocalTrustedHostMiddleware`;
 `tests/test_workbench_app.py`.
 
-### WB-40 — The form as a folder of named files
-**Why:** The form is one JSON document at the project root. In commercial-pricing it is
-230,549 bytes and 7,893 lines holding 14 tables, 298 columns, five sheets and the sample.
-Every field is written, defaults included, so a column takes 21 lines, and the sheets name
-columns by random ids (`{"table": "t_517c29a8", "column": "c_fb083d46"}`). A pull request
-therefore shows hunks thousands of lines apart that say neither which table nor which sheet
-they change, and every save commits as "Updated form.json". Kept outside the pipeline
-folder, the form is a special case wherever that folder is the rule: the seed pathspecs,
-the release's inputs and the CI triggers each name `forms/`, and commercial-pricing's
-deploy workflow, generated before that trigger existed, misses it.
-
-**Plan:** The workbench specification's form folder is the contract. The decisions behind
-it are in Scope above.
-- The form is the pipeline folder's `workbench/`: `form.json` (`version`, `name`, the
-  colours set in `theme`, and the order of `schema` and `sheets`), `schema/<table>.json`
-  per table, `sheets/<sheet>.json` and `sheets/<sheet>.layout.json` per sheet (the second
-  holding geometry alone), and `sample/<table>.json` per input table with rows.
-  `[workbench].form` goes.
-- Files are named by the table's name in lower case and by a name made from the sheet's
-  title, so a rename that changes only a name's case renames no file. Inside them a column
-  is `table.column`, or its bare name where its table is said. Tables and
-  columns keep a fixed id written beside their name, so a rename keeps saved quotes'
-  values and a column made again under an old name does not take them. Sheets, sections
-  and components take ids that say their kind (`collection_k3f9`).
-- Only what is set is written, besides the keys that say what a thing is. Haute's own
-  parts (`quote_details`' structure, the identity columns) are never written.
-- One new storage module turns the folder into the `FormSpec` the editor, the routes, the
-  release and the quote store already hold, and back. Nothing else changes its model.
-  Save writes the files that changed and deletes the form's files it no longer has, all
-  staged and rolled back together under the pipeline save's lock with the pipeline save's
-  staged writes and deletes, and captures every path on the ledger. The folder's revision
-  hashes every file's path and bytes.
-- A missing folder is refused, pointing to version history. `haute init --workbench` is
-  the only thing that makes the folder, and it can add one to a project that already has
-  a `haute.toml`.
-- Save refuses names the folder cannot hold. `haute app build` and deploy refuse
-  references to columns the schema does not hold; the editor opens such a form and shows
-  them.
-- The scaffold, the seed pathspecs, the CI triggers, the commit messages and the watcher
-  follow the folder, and the documentation moves with it. No reader of `forms/form.json`
-  remains.
-- commercial-pricing's form is converted once, with the owner's agreement, by a script
-  that is not shipped. Its tables' and columns' ids are kept, its sheets', sections' and
-  components' ids are made anew, and the compiled form is compared before and after.
-
-**Acceptance:**
-- commercial-pricing's form, converted, reads back to the same compiled form apart from
-  the sheets', sections' and components' ids, and prices its sample as before.
-- Changing a column's label writes one file; moving a component writes one layout file;
-  renaming a column changes its name, every reference to it and its sample's key, and
-  keeps its id; renaming a table moves its schema file and its sample file.
-- A read refuses, naming the file and the place: a missing folder, a missing listed file,
-  an unlisted file, a file whose name is not in lower case, a sheet without its layout
-  file or the reverse, an identity column written, a rule on an output column, an unknown
-  key and an unknown version. A read never mixes two saves: it takes each file's bytes
-  once under the form folder's lock, which every save holds while it writes, in any
-  process, and reads again when a writer that takes no lock changed the folder meanwhile.
-- A sample keeps its rows' places, empty rows included, so index numbers and preset rows
-  are priced as before; a value under an unknown column is kept and priced nowhere.
-- Every path a save or `haute init --workbench` writes or deletes passes the project's
-  write rules first: a junction inside the folder, or one leading out of it, is refused
-  before anything is written.
-- Save refuses, writing nothing: two tables of one name whatever their case, two columns
-  of one name in a table, a name that is not an identifier, a Windows-reserved table or
-  sheet name, a sheet title that gives no name or another sheet's, and a path over 240
-  characters.
-- A write that fails leaves every file as it was; a stale base revision writes nothing.
-- `haute app build` and `haute deploy` refuse a form that names a column the schema does
-  not hold, naming each place; the editor opens it and shows each one as a problem.
-- `haute init --workbench` writes the blank folder in a new project and adds it to an
-  existing one, refusing when the table or the folder is already there.
-- A save's commit message names the tables and sheets it changed.
-- For the same form, the release's `form.json` and `form_revision`, and the quote store's
-  forms, are unchanged.
-
-**Dependencies:** None. `WB-41` follows it.
-
-**Evidence:** `src/haute/_workbench_folder.py::read_form_document`,
-`src/haute/_workbench_folder.py::folder_files`, `src/haute/_workbench_form.py::render_form`;
-`src/haute/_workbench_config.py::FORM_FOLDER`;
-`src/haute/routes/workbench.py::_save_form`;
-`src/haute/routes/_save_pipeline.py::_stage_artifact_write_bytes`,
-`src/haute/routes/_save_pipeline.py::capture_save_in_ledger`;
-`src/haute/_workbench_app.py::build_release`;
-`src/haute/deploy/_validators.py::_workbench_form_errors`;
-`src/haute/_git_setup.py::_SEED_PATHSPECS`;
-`src/haute/_git_core.py::_generate_commit_message`;
-`src/haute/_scaffold.py::starter_form`;
-`src/haute/cli/_init_cmd.py::handle_init`;
-`src/haute/server.py::_workbench_form_file`;
-`frontend/src/stores/useWorkbenchFormStore.ts`; `frontend/src/utils/workbenchForm.ts`.
-
 ### WB-41 — The Workbench nodes read the form folder
 **Why:** A Workbench Input and a Workbench Output keep copies of the tables, and the Input
 keeps a copy of the sample, in their config files. The editor keeps the copies current and
 deploy holds them to the form, so every schema change shows twice in a pull request
 (commercial-pricing's copies are 21,167 and 7,959 bytes), and a copy out of step is a
 failure that exists only because there is a copy. The copy's rationale, that runs, tests,
-generated code and deploy never read the form, stops holding once the form is in the
-pipeline folder (`WB-40`): deploy already reads the form to check the copies.
+generated code and deploy never read the form, no longer holds: the form is in the
+pipeline folder, and deploy already reads it to check the copies.
 
 **Plan:** Rewrite "A copy, not a reference" in the workbench specification first. The
-nodes then take their tables from the form folder through `WB-40`'s reader: the schema
+nodes then take their tables from the form folder through its reader: the schema
 gives the ports and the request's shape, and the sample is the one `sample_quote` makes,
 with its visibility and preset rows, never the typed rows read raw. The node configs hold
 no tables, the editor's synchronisation of the copies goes, and deploy's comparison
@@ -797,9 +700,10 @@ deploy` and the release price commercial-pricing's requests as before, hidden fi
 still left out of the sample. No copy can fall out of step, and an undo never brings one
 back.
 
-**Dependencies:** `WB-40`.
+**Dependencies:** None.
 
-**Evidence:** `src/haute/_workbench_input.py::workbench_input_tables`;
+**Evidence:** `src/haute/_workbench_folder.py::read_form_document`;
+`src/haute/_workbench_input.py::workbench_input_tables`;
 `src/haute/_workbench_tables.py::sample_quote`;
 `src/haute/deploy/_validators.py::_workbench_form_errors`;
 `frontend/src/hooks/useWorkbenchTables.ts`.

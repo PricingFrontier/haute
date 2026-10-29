@@ -23,14 +23,14 @@ packages come from the [25 October 2026 codebase review](codebase-review-2026-10
 ### CLI-R01 — `init --force` keeps the analyst's work
 **Why:** After the `haute.toml` guard, `handle_init` writes every scaffold file
 unconditionally: with `--force`, `rating/main.py`, `rating/utility/__init__.py` and
-`features.py`, `tests/test_pipeline.py`, `tests/quotes/example.json` and `forms/form.json`
-are replaced by the starters, so an analyst who re-runs init to change the CI provider or
+`features.py`, `tests/test_pipeline.py` and `tests/quotes/example.json` are replaced by
+the starters, so an analyst who re-runs init to change the CI provider or
 the target loses uncommitted pipeline work. The first `init` also deletes a root `main.py`
 it did not write. `haute ci update` already regenerates the CI files alone.
 
 **Plan:** Make `--force` regenerate only Haute's own generated files (`haute.toml`, the CI
-files, `.env.example`, the pre-commit hook) and refuse to overwrite a pipeline, utility,
-test or form that differs from the starter, naming it; remove a root `main.py` only when
+files, `.env.example`, the pre-commit hook) and refuse to overwrite a pipeline, utility
+or test that differs from the starter, naming it; remove a root `main.py` only when
 it is the `uv init` placeholder byte for byte.
 
 **Acceptance:** `haute init --force` in a project with an edited `rating/main.py` leaves
