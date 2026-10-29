@@ -16,10 +16,7 @@ up to empty collections.
 
 from __future__ import annotations
 
-from typing import Any
-
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
 
 from haute._execution_admission import (
     IsolatedExecutionBudget,
@@ -44,7 +41,7 @@ from haute.routes.pipeline import (
     _run_interactive,
     _validate_runtime_input_paths,
 )
-from haute.schemas import MAX_REQUEST_ITEMS, BoundedName, Graph
+from haute.schemas import Graph, OutputAssembleDryRunRequest, OutputAssembleDryRunResponse
 
 logger = get_logger(component="server.output_assemble")
 
@@ -54,25 +51,6 @@ router = APIRouter(prefix="/api/output-assemble", tags=["output-assemble"])
 def _dry_run_timeout() -> float:
     """The pipeline time limit in seconds, read from the pipeline settings per request."""
     return project_pipeline_settings().pipeline_time_limit_seconds
-
-
-class OutputAssembleDryRunRequest(BaseModel):
-    graph: Graph
-    node_id: BoundedName
-    #: The in-progress (volatile, unsaved) outputMapping to preview.
-    output_mapping: list[dict[str, Any]] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
-    output_format: BoundedName = "json"
-    #: Cap upstream source rows so the preview stays cheap.
-    row_limit: int = Field(default=100, ge=1, le=10000)
-    source: BoundedName = "live"
-
-
-class OutputAssembleDryRunResponse(BaseModel):
-    status: str
-    #: The assembled response document (already pruned by the render path).
-    document: list[Any] = Field(default_factory=list)
-    row_count: int = 0
-    error: str | None = None
 
 
 def _assembled_document(

@@ -8849,6 +8849,436 @@
       "title": "ImportWidget",
       "type": "object"
     },
+    "InputCacheBuildResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "build_class": {
+          "enum": [
+            "bounded",
+            "admitted_eager"
+          ],
+          "title": "Build Class",
+          "type": "string"
+        },
+        "forced": {
+          "title": "Forced",
+          "type": "boolean"
+        },
+        "identity_digest": {
+          "title": "Identity Digest",
+          "type": "string"
+        },
+        "job_id": {
+          "title": "Job Id",
+          "type": "string"
+        },
+        "joined": {
+          "title": "Joined",
+          "type": "boolean"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "running",
+            "blocked"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "job_id",
+        "identity_digest",
+        "status",
+        "joined",
+        "forced",
+        "build_class"
+      ],
+      "title": "InputCacheBuildResponse",
+      "type": "object"
+    },
+    "InputCacheCancelResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "cancellation_requested": {
+          "title": "Cancellation Requested",
+          "type": "boolean"
+        },
+        "job_id": {
+          "title": "Job Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "running",
+            "completed",
+            "error",
+            "cancelled",
+            "superseded",
+            "timed_out",
+            "memory_limited",
+            "contract_error"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "job_id",
+        "cancellation_requested",
+        "status"
+      ],
+      "title": "InputCacheCancelResponse",
+      "type": "object"
+    },
+    "InputCacheGenerationPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "build_class": {
+          "enum": [
+            "bounded",
+            "admitted_eager",
+            "unsupported"
+          ],
+          "title": "Build Class",
+          "type": "string"
+        },
+        "column_count": {
+          "minimum": 0,
+          "title": "Column Count",
+          "type": "integer"
+        },
+        "columns": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Columns",
+          "type": "object"
+        },
+        "created_at": {
+          "title": "Created At",
+          "type": "number"
+        },
+        "generation_id": {
+          "title": "Generation Id",
+          "type": "string"
+        },
+        "row_count": {
+          "minimum": 0,
+          "title": "Row Count",
+          "type": "integer"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "generation_id",
+        "row_count",
+        "column_count",
+        "columns",
+        "size_bytes",
+        "created_at",
+        "build_class"
+      ],
+      "title": "InputCacheGenerationPayload",
+      "type": "object"
+    },
+    "InputCacheJobStatusResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "build_class": {
+          "enum": [
+            "bounded",
+            "admitted_eager",
+            "unsupported"
+          ],
+          "title": "Build Class",
+          "type": "string"
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Code"
+        },
+        "identity_digest": {
+          "title": "Identity Digest",
+          "type": "string"
+        },
+        "job_id": {
+          "title": "Job Id",
+          "type": "string"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "progress": {
+          "$ref": "#/$defs/InputCacheProgress"
+        },
+        "refresh": {
+          "title": "Refresh",
+          "type": "boolean"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "snapshot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InputCacheSnapshotStatusResponse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "enum": [
+            "running",
+            "completed",
+            "error",
+            "cancelled",
+            "superseded",
+            "timed_out",
+            "memory_limited",
+            "contract_error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "terminal_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Terminal Reason"
+        }
+      },
+      "required": [
+        "schema_version",
+        "job_id",
+        "identity_digest",
+        "status",
+        "terminal_reason",
+        "message",
+        "refresh",
+        "build_class",
+        "progress",
+        "snapshot",
+        "error_code"
+      ],
+      "title": "InputCacheJobStatusResponse",
+      "type": "object"
+    },
+    "InputCacheProgress": {
+      "additionalProperties": false,
+      "properties": {
+        "batches": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Batches",
+          "type": "integer"
+        },
+        "bytes": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Bytes",
+          "type": "integer"
+        },
+        "elapsed_seconds": {
+          "default": 0.0,
+          "minimum": 0,
+          "title": "Elapsed Seconds",
+          "type": "number"
+        },
+        "phase": {
+          "enum": [
+            "queued",
+            "building",
+            "publishing",
+            "completed",
+            "failed",
+            "cancelled"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "rows": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Rows",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "phase",
+        "rows",
+        "batches",
+        "bytes",
+        "elapsed_seconds"
+      ],
+      "title": "InputCacheProgress",
+      "type": "object"
+    },
+    "InputCacheSnapshotStatusResponse": {
+      "additionalProperties": false,
+      "description": "A Data Input's snapshot, or a structured API Input's tables together.\n\nFor an API Input, ``identity_digest`` names the node's set of tables,\n``state`` and ``freshness`` summarise them (ready only when every table\nis), ``generation`` is ``None``, and ``tables`` lists each one; a Data\nInput has no ``tables``.",
+      "properties": {
+        "freshness": {
+          "enum": [
+            "fresh",
+            "stale",
+            "unknown"
+          ],
+          "title": "Freshness",
+          "type": "string"
+        },
+        "generation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InputCacheGenerationPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "identity_digest": {
+          "title": "Identity Digest",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "state": {
+          "enum": [
+            "missing",
+            "building",
+            "ready",
+            "corrupt",
+            "failed"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "tables": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/InputCacheTableStatus"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tables"
+        }
+      },
+      "required": [
+        "schema_version",
+        "identity_digest",
+        "state",
+        "freshness",
+        "generation",
+        "tables"
+      ],
+      "title": "InputCacheSnapshotStatusResponse",
+      "type": "object"
+    },
+    "InputCacheTableStatus": {
+      "additionalProperties": false,
+      "description": "One emitting table of a structured API Input and its own snapshot.",
+      "properties": {
+        "freshness": {
+          "enum": [
+            "fresh",
+            "stale",
+            "unknown"
+          ],
+          "title": "Freshness",
+          "type": "string"
+        },
+        "generation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InputCacheGenerationPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "identity_digest": {
+          "title": "Identity Digest",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "missing",
+            "building",
+            "ready",
+            "corrupt",
+            "failed"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "identity_digest",
+        "state",
+        "freshness",
+        "generation"
+      ],
+      "title": "InputCacheTableStatus",
+      "type": "object"
+    },
     "InputPreparationRecordPayload": {
       "description": "One Data Input's automatic preparation record: digests and counts only.",
       "properties": {
@@ -13378,6 +13808,71 @@
         "column"
       ],
       "title": "OptionsSource",
+      "type": "object"
+    },
+    "OutputAssembleDryRunResponse": {
+      "properties": {
+        "document": {
+          "items": {},
+          "title": "Document",
+          "type": "array"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "row_count": {
+          "default": 0,
+          "title": "Row Count",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "document",
+        "row_count",
+        "error"
+      ],
+      "title": "OutputAssembleDryRunResponse",
+      "type": "object"
+    },
+    "OutputDestinationResponse": {
+      "properties": {
+        "format": {
+          "title": "Format",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "suffix_mismatch": {
+          "title": "Suffix Mismatch",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "format",
+        "suffix_mismatch"
+      ],
+      "title": "OutputDestinationResponse",
       "type": "object"
     },
     "Page": {
@@ -18790,6 +19285,55 @@
       ],
       "title": "WorkbenchTablesResponse",
       "type": "object"
+    },
+    "WriteOutputResponse": {
+      "properties": {
+        "execution_metrics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionMetricsPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "format": {
+          "default": "parquet",
+          "title": "Format",
+          "type": "string"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "path": {
+          "default": "",
+          "title": "Path",
+          "type": "string"
+        },
+        "row_count": {
+          "default": 0,
+          "title": "Row Count",
+          "type": "integer"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "message",
+        "row_count",
+        "path",
+        "format",
+        "execution_metrics"
+      ],
+      "title": "WriteOutputResponse",
+      "type": "object"
     }
   },
   "$id": "https://haute.dev/schemas/api-contracts.v1.json",
@@ -18916,6 +19460,18 @@
     "GitWorkingBranchesResponse": {
       "$ref": "#/$defs/GitWorkingBranchesResponse"
     },
+    "InputCacheBuildResponse": {
+      "$ref": "#/$defs/InputCacheBuildResponse"
+    },
+    "InputCacheCancelResponse": {
+      "$ref": "#/$defs/InputCacheCancelResponse"
+    },
+    "InputCacheJobStatusResponse": {
+      "$ref": "#/$defs/InputCacheJobStatusResponse"
+    },
+    "InputCacheSnapshotStatusResponse": {
+      "$ref": "#/$defs/InputCacheSnapshotStatusResponse"
+    },
     "IoCapabilitiesResponse": {
       "$ref": "#/$defs/IoCapabilitiesResponse"
     },
@@ -19002,6 +19558,12 @@
     },
     "OptimiserStatusResponse": {
       "$ref": "#/$defs/OptimiserStatusResponse"
+    },
+    "OutputAssembleDryRunResponse": {
+      "$ref": "#/$defs/OutputAssembleDryRunResponse"
+    },
+    "OutputDestinationResponse": {
+      "$ref": "#/$defs/OutputDestinationResponse"
     },
     "PipelineSettingsResponse": {
       "$ref": "#/$defs/PipelineSettingsResponse"
@@ -19129,6 +19691,9 @@
     "WorkbenchTablesResponse": {
       "$ref": "#/$defs/WorkbenchTablesResponse"
     },
+    "WriteOutputResponse": {
+      "$ref": "#/$defs/WriteOutputResponse"
+    },
     "execution_strategy_diagnostic": {
       "$ref": "#/$defs/ExecutionStrategyDiagnosticPayload"
     },
@@ -19213,6 +19778,13 @@
     "CacheNodesResponse",
     "CacheClearResponse",
     "CacheUsageResponse",
+    "InputCacheBuildResponse",
+    "InputCacheJobStatusResponse",
+    "InputCacheCancelResponse",
+    "InputCacheSnapshotStatusResponse",
+    "WriteOutputResponse",
+    "OutputDestinationResponse",
+    "OutputAssembleDryRunResponse",
     "IoCapabilitiesResponse",
     "WorkbenchStatusResponse",
     "WorkbenchTablesResponse",
@@ -19324,6 +19896,12 @@
       "GitMilestoneFork",
       "SaveCapture"
     ],
+    "input-cache": [
+      "InputCacheBuildResponse",
+      "InputCacheJobStatusResponse",
+      "InputCacheCancelResponse",
+      "InputCacheSnapshotStatusResponse"
+    ],
     "io": [
       "IoCapabilitiesResponse"
     ],
@@ -19364,6 +19942,11 @@
       "OptimiserFrontierSelectResponse",
       "OptimiserSegmentsResponse",
       "OptimiserSegmentIndexResponse"
+    ],
+    "output": [
+      "WriteOutputResponse",
+      "OutputDestinationResponse",
+      "OutputAssembleDryRunResponse"
     ],
     "session": [
       "SessionStatusResponse",

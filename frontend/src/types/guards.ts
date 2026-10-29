@@ -25,6 +25,7 @@ import type {
   ExplorePivotRunResponse as GeneratedExplorePivotRunResponse,
   ExplorePivotStatusResponse as GeneratedExplorePivotStatusResponse,
   NodeDataStatusResponse as GeneratedNodeDataStatusResponse,
+  WriteOutputResponse as GeneratedWriteOutputResponse,
 } from "../generated/api-contracts.generated"
 import type {
   DissolveSubmodelResponse,
@@ -56,14 +57,6 @@ import type {
   FrontierAutoRangeStatusResponse,
   FrontierStatusResponse,
   FrontierResponse,
-  OutputDestinationResponse,
-  InputCacheBuildResponse,
-  InputCacheCancelResponse,
-  InputCacheGeneration,
-  InputCacheJobStatusResponse,
-  InputCacheProgress,
-  InputCacheSnapshotResponse,
-  InputCacheTableStatus,
   NodeDataStatusResponse,
   OptimiserStatusResponse,
   PortPreview,
@@ -77,9 +70,6 @@ import type {
   SubmodelCreateResponse,
   SubmodelGraphResponse,
   TraceResponse,
-} from "../api/types"
-import {
-  JOB_STATUS_VALUES,
 } from "../api/types"
 import {
   PIPELINE_NODE_TYPES,
@@ -1797,44 +1787,6 @@ export function parseTraceResponse(value: unknown): TraceResponse {
   }
 }
 
-/** Validate a `/api/pipeline/write-output` response — brings writeOutput in line with
- *  every sibling data endpoint (preview, save, trace) that runtime-checks its
- *  wire body instead of casting it. */
-export function parseWriteOutputResponse(value: unknown): WriteOutputResponse {
-  const obj = expectPlainObject("parseWriteOutputResponse", value)
-  return {
-    status: expectString("parseWriteOutputResponse", obj.status, "field `status`"),
-    message: optionalString("parseWriteOutputResponse", obj, "message"),
-    row_count: optionalNumber("parseWriteOutputResponse", obj, "row_count"),
-    path: optionalString("parseWriteOutputResponse", obj, "path"),
-    format: optionalString("parseWriteOutputResponse", obj, "format", "parquet"),
-    execution_metrics: optionalExecutionMetrics("parseWriteOutputResponse", obj),
-  }
-}
-
-export function parseOutputDestinationResponse(
-  value: unknown,
-): OutputDestinationResponse {
-  const obj = expectPlainObject("parseOutputDestinationResponse", value)
-  return {
-    path: expectString(
-      "parseOutputDestinationResponse",
-      obj.path,
-      "field `path`",
-    ),
-    format: expectString(
-      "parseOutputDestinationResponse",
-      obj.format,
-      "field `format`",
-    ),
-    suffix_mismatch: expectBoolean(
-      "parseOutputDestinationResponse",
-      obj.suffix_mismatch,
-      "field `suffix_mismatch`",
-    ),
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Schema + modelling contracts
 // ---------------------------------------------------------------------------
@@ -1851,23 +1803,6 @@ export function parseSchemaResponse(value: unknown): SchemaResult {
   }
 }
 
-const BUILD_CLASSES = ["bounded", "admitted_eager", "unsupported"] as const
-const INPUT_CACHE_PHASES = ["queued", "building", "publishing", "completed", "failed", "cancelled"] as const
-const INPUT_CACHE_SNAPSHOT_STATES = ["missing", "building", "ready", "corrupt", "failed"] as const
-const INPUT_CACHE_FRESHNESS = ["fresh", "stale", "unknown"] as const
-function parseInputCacheStringRecord(parser: string, value: unknown, field: string): Record<string, string> {
-  const obj = expectPlainObject(parser, value, field)
-  return Object.fromEntries(Object.entries(obj).map(([key, item]) => [key, expectString(parser, item, `${field}.${key}`)]))
-}
-
-function parseInputCacheProgress(value: unknown, field: string): InputCacheProgress {
-  const p = "parseInputCacheJobStatusResponse"; const obj = expectPlainObject(p, value, field)
-  return { phase: expectStringLiteral(p, obj.phase, `${field}.phase`, INPUT_CACHE_PHASES), rows: expectNumber(p, obj.rows, `${field}.rows`), batches: expectNumber(p, obj.batches, `${field}.batches`), bytes: expectNumber(p, obj.bytes, `${field}.bytes`), elapsed_seconds: expectNumber(p, obj.elapsed_seconds, `${field}.elapsed_seconds`) }
-}
-function parseInputCacheGeneration(value: unknown, field: string): InputCacheGeneration {
-  const p = "parseInputCacheSnapshotResponse"; const obj = expectPlainObject(p, value, field)
-  return { generation_id: expectString(p, obj.generation_id, `${field}.generation_id`), row_count: expectNumber(p, obj.row_count, `${field}.row_count`), column_count: expectNumber(p, obj.column_count, `${field}.column_count`), columns: parseInputCacheStringRecord(p, obj.columns, `${field}.columns`), size_bytes: expectNumber(p, obj.size_bytes, `${field}.size_bytes`), created_at: expectNumber(p, obj.created_at, `${field}.created_at`), build_class: expectStringLiteral(p, obj.build_class, `${field}.build_class`, BUILD_CLASSES) }
-}
 export function parsePreviewProgressResponse(value: unknown): PreviewProgressResponse {
   const p = "parsePreviewProgressResponse"
   const obj = expectPlainObject(p, value)
@@ -1881,15 +1816,6 @@ export function parsePreviewProgressResponse(value: unknown): PreviewProgressRes
     label: obj.label === undefined ? null : expectNullableString(p, obj.label, "field `label`"),
   }
 }
-export function parseInputCacheBuildResponse(value: unknown): InputCacheBuildResponse { const p = "parseInputCacheBuildResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), job_id: expectString(p, obj.job_id, "field `job_id`"), identity_digest: expectString(p, obj.identity_digest, "field `identity_digest`"), status: expectStringLiteral(p, obj.status, "field `status`", ["running", "blocked"]), joined: expectBoolean(p, obj.joined, "field `joined`"), forced: expectBoolean(p, obj.forced, "field `forced`"), build_class: expectStringLiteral(p, obj.build_class, "field `build_class`", ["bounded", "admitted_eager"]) } }
-function parseInputCacheTableStatus(value: unknown, field: string): InputCacheTableStatus {
-  const p = "parseInputCacheSnapshotResponse"; const obj = expectPlainObject(p, value, field)
-  return { label: expectString(p, obj.label, `${field}.label`), identity_digest: expectString(p, obj.identity_digest, `${field}.identity_digest`), state: expectStringLiteral(p, obj.state, `${field}.state`, INPUT_CACHE_SNAPSHOT_STATES), freshness: expectStringLiteral(p, obj.freshness, `${field}.freshness`, INPUT_CACHE_FRESHNESS), generation: obj.generation === null ? null : parseInputCacheGeneration(obj.generation, `${field}.generation`) }
-}
-export function parseInputCacheSnapshotResponse(value: unknown): InputCacheSnapshotResponse { const p = "parseInputCacheSnapshotResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), identity_digest: expectString(p, obj.identity_digest, "field `identity_digest`"), state: expectStringLiteral(p, obj.state, "field `state`", INPUT_CACHE_SNAPSHOT_STATES), freshness: expectStringLiteral(p, obj.freshness, "field `freshness`", INPUT_CACHE_FRESHNESS), generation: obj.generation === null ? null : parseInputCacheGeneration(obj.generation, "field `generation`"), tables: obj.tables === null || obj.tables === undefined ? null : parseArray(p, obj.tables, "field `tables`", parseInputCacheTableStatus) } }
-export function parseInputCacheJobStatusResponse(value: unknown): InputCacheJobStatusResponse { const p = "parseInputCacheJobStatusResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), job_id: expectString(p, obj.job_id, "field `job_id`"), identity_digest: expectString(p, obj.identity_digest, "field `identity_digest`"), status: expectStringLiteral(p, obj.status, "field `status`", JOB_STATUS_VALUES), terminal_reason: expectNullableString(p, obj.terminal_reason, "field `terminal_reason`"), message: expectString(p, obj.message, "field `message`"), refresh: expectBoolean(p, obj.refresh, "field `refresh`"), build_class: expectStringLiteral(p, obj.build_class, "field `build_class`", BUILD_CLASSES), progress: parseInputCacheProgress(obj.progress, "field `progress`"), snapshot: obj.snapshot === null ? null : parseInputCacheSnapshotResponse(obj.snapshot), error_code: expectNullableString(p, obj.error_code, "field `error_code`") } }
-export function parseInputCacheCancelResponse(value: unknown): InputCacheCancelResponse { const p = "parseInputCacheCancelResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), job_id: expectString(p, obj.job_id, "field `job_id`"), cancellation_requested: expectBoolean(p, obj.cancellation_requested, "field `cancellation_requested`"), status: expectStringLiteral(p, obj.status, "field `status`", JOB_STATUS_VALUES) } }
-
 // ---------------------------------------------------------------------------
 // Explore contracts
 // ---------------------------------------------------------------------------
@@ -2135,6 +2061,18 @@ export function explorePivotStatusFromContract(
   }
 }
 
+export function writeOutputFromContract(
+  response: GeneratedWriteOutputResponse,
+): WriteOutputResponse {
+  return {
+    ...response,
+    execution_metrics: optionalExecutionMetrics(
+      "parseWriteOutputResponse",
+      { execution_metrics: response.execution_metrics },
+    ),
+  }
+}
+
 export function nodeDataStatusFromContract(
   response: GeneratedNodeDataStatusResponse,
 ): NodeDataStatusResponse {
@@ -2261,20 +2199,6 @@ export function frontierAutoRangeStatusFromContract(
 // ---------------------------------------------------------------------------
 // Databricks / cache / git contracts
 // ---------------------------------------------------------------------------
-
-export function parseOutputAssembleDryRunResponse(value: unknown): { status: string; document: unknown[]; row_count: number; error?: string | null } {
-  const obj = expectPlainObject("parseOutputAssembleDryRunResponse", value)
-  const error = obj.error
-  if (error !== undefined && error !== null && typeof error !== "string") {
-    throw new Error(`parseOutputAssembleDryRunResponse: expected field \`error\` to be a string or null, got ${typeName(error)}`)
-  }
-  return {
-    status: expectString("parseOutputAssembleDryRunResponse", obj.status, "field `status`"),
-    document: expectArray("parseOutputAssembleDryRunResponse", obj.document, "field `document`"),
-    row_count: expectNumber("parseOutputAssembleDryRunResponse", obj.row_count, "field `row_count`"),
-    ...(error === undefined ? {} : { error }),
-  }
-}
 
 export function parseJsonCacheSchemaInferenceResponse(value: unknown): { tables: Array<Record<string, unknown>> } {
   const obj = expectPlainObject("parseJsonCacheSchemaInferenceResponse", value)

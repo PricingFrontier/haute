@@ -27,6 +27,7 @@ import {
   getInputCacheStatus,
 } from "../../api/client"
 import { ensureInputSnapshots } from "../ensureInputSnapshots"
+import { makeInputCacheSnapshot } from "../../test-utils/factories"
 
 function dataInput(id: string): Node {
   return {
@@ -48,13 +49,13 @@ function snapshot(
   state: InputCacheSnapshotResponse["state"],
   freshness: InputCacheSnapshotResponse["freshness"] = "unknown",
 ): InputCacheSnapshotResponse {
-  return {
+  return makeInputCacheSnapshot({
     schema_version: 1,
     identity_digest: "identity",
     state,
     freshness,
     generation: null,
-  }
+  })
 }
 
 function buildResponse(joined = false): InputCacheBuildResponse {

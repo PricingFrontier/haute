@@ -76,7 +76,9 @@ success response; the training responses (`TrainResponse`,
 `TrainStatusResponse`); Explore pivot run, status, cancel and
 members, the data profile and target relationships; banding stats and rating
 levels, with the node-data point they carry; node data (point, run, status,
-clear) and the cache inventory, usage and clear; I/O
+clear) and the cache inventory, usage and clear; the input cache's build, job,
+cancel, status and clear, an API Input's tables included; the output write, its
+destination and the OUTPUT dry run; I/O
 capabilities; the session check and file listing; editor identities, Polars
 step rendering and execution settings; the git 409 advisory bodies
 (`GitPushRejection`, `GitMilestoneFork`), whose storage-claim reader had no
@@ -88,8 +90,7 @@ select).
 document come after `PCFG-R07`: pipeline load and save, preview, trace,
 submodel, recovery and repair (`PipelineRepairApplyResponse.document` is a
 `PipelineEditorDocument`), and JSON-cache inference (its tables merge into the
-API Input config). The rest carry none and can go first: JSON-cache status and
-input cache; output write, destination and assemble dry run; and the shared
+API Input config). The rest carry none and can go first: the shared
 execution-metrics parser, which the converted status responses still apply
 after their generated check (each group's validator carries its own copy of
 the metrics contract, about 13 KiB gzip; one shared execution-metrics

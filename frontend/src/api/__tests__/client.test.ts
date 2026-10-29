@@ -75,7 +75,7 @@ import {
   testMlflowConnection,
 } from "../client"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
-import { makeGitWorkingBranch } from "../../test-utils/factories"
+import { makeGitWorkingBranch, makeInputCacheSnapshot, makeWriteOutput } from "../../test-utils/factories"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 
 // ---------------------------------------------------------------------------
@@ -932,7 +932,7 @@ describe("endpoint contracts", () => {
   })
 
   it("writeOutput posts to /api/pipeline/write-output", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ status: "ok" }))
+    mockFetch.mockReturnValue(jsonResponse(makeWriteOutput()))
     await writeOutput({ graph: dummyGraph, nodeId: "sink1" })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/pipeline/write-output")
@@ -1854,7 +1854,7 @@ describe("no request carries streaming_chunk_size", () => {
   })
 
   it("writeOutput body omits streaming_chunk_size", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ status: "ok" }))
+    mockFetch.mockReturnValue(jsonResponse(makeWriteOutput()))
     await writeOutput({ graph: dummyGraph, nodeId: "sink1", source: "live" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
@@ -1905,7 +1905,7 @@ describe("no request carries streaming_chunk_size", () => {
     expect(mockFetch.mock.calls[2][0]).toBe("/api/input-cache/jobs/job%20%2F%201")
     expect(mockFetch.mock.calls[2][1].method).toBe("DELETE")
 
-    const snapshot = { schema_version: 1, identity_digest: "digest", state: "missing", freshness: "unknown", generation: null }
+    const snapshot = makeInputCacheSnapshot()
     mockFetch.mockReturnValueOnce(jsonResponse(snapshot))
     await getInputCacheStatus(source)
     expect(mockFetch.mock.calls[3][0]).toBe("/api/input-cache/status")

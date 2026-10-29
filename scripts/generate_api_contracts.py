@@ -65,6 +65,10 @@ from haute.schemas import (
     GitUpstreamStatusResponse,
     GitWorkingBranchesResponse,
     GitWorkingBranchResponse,
+    InputCacheBuildResponse,
+    InputCacheCancelResponse,
+    InputCacheJobStatusResponse,
+    InputCacheSnapshotStatusResponse,
     IoCapabilitiesResponse,
     LogExperimentResponse,
     MlflowDestinationsResponse,
@@ -94,6 +98,8 @@ from haute.schemas import (
     OptimiserSegmentsResponse,
     OptimiserSolveResponse,
     OptimiserStatusResponse,
+    OutputAssembleDryRunResponse,
+    OutputDestinationResponse,
     PipelineSettingsResponse,
     PolarsFreeCodeColumnsResponse,
     PolarsStepsRenderResponse,
@@ -136,6 +142,7 @@ from haute.schemas import (
     WorkbenchParamFileResponse,
     WorkbenchStatusResponse,
     WorkbenchTablesResponse,
+    WriteOutputResponse,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -256,6 +263,17 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         CacheNodesResponse,
         CacheClearResponse,
         CacheUsageResponse,
+    ),
+    "input-cache": (
+        InputCacheBuildResponse,
+        InputCacheJobStatusResponse,
+        InputCacheCancelResponse,
+        InputCacheSnapshotStatusResponse,
+    ),
+    "output": (
+        WriteOutputResponse,
+        OutputDestinationResponse,
+        OutputAssembleDryRunResponse,
     ),
     "io": (IoCapabilitiesResponse,),
     "workbench": (

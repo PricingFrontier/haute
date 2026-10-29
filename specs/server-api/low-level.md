@@ -287,7 +287,7 @@ when a path/query/body fails model validation):
 | `POST /api/utility` | `UtilityCreateRequest {name, content=""}` | `UtilityWriteResponse {status="ok", name, module, import_line, revision, git_sha, identity_required, warnings, uncaptured}`; 409 `file_exists` for a file that appeared since the name check |
 | `PUT /api/utility/{module}` | `UtilityWriteRequest {content, revision}` | `UtilityWriteResponse`; 404 when the file is missing, 412 `file_changed` when its revision is not the request's (nothing written) |
 | `DELETE /api/utility/{module}` | Module path, query `revision` | `UtilityDeleteResponse {status="ok", module, git_sha, identity_required, warnings, uncaptured}`; 404 when the file is missing, 412 `file_changed` when its revision is not the request's (nothing deleted) |
-| `POST /api/output-assemble/dry-run` | Route-local `OutputAssembleDryRunRequest {graph, node_id, output_mapping=[], output_format="json", row_limit=100 (1..10000), source="live"}` | Route-local `OutputAssembleDryRunResponse {status, document=[], row_count=0, error=null}` |
+| `POST /api/output-assemble/dry-run` | `OutputAssembleDryRunRequest {graph, node_id, output_mapping=[], output_format="json", row_limit=100 (1..10000), source="live"}` | `OutputAssembleDryRunResponse {status: "ok"|"error", document=[], row_count=0, error=null}` |
 
 `TraceResultResponse` requires `omissions`, `correlation_diagnostics`, `generated_at`, and
 `execution_origin`; these are not compatibility defaults. Each successful step requires a

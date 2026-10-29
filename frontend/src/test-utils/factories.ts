@@ -663,3 +663,53 @@ export function makeNodeDataProfile(
     ...overrides,
   }
 }
+
+// ---------------------------------------------------------------------------
+// Output and input-cache payloads, complete as the server sends them.
+// ---------------------------------------------------------------------------
+
+import type {
+  InputCacheSnapshotResponse,
+  OutputAssembleDryRunResponse,
+  WriteOutputResponse,
+} from "../api/types"
+
+export function makeWriteOutput(
+  overrides: Partial<WriteOutputResponse> = {},
+): WriteOutputResponse {
+  return {
+    status: "ok",
+    message: "",
+    row_count: 0,
+    path: "",
+    format: "parquet",
+    execution_metrics: null,
+    ...overrides,
+  }
+}
+
+export function makeOutputDryRun(
+  overrides: Partial<OutputAssembleDryRunResponse> = {},
+): OutputAssembleDryRunResponse {
+  return {
+    status: "ok",
+    document: [],
+    row_count: 0,
+    error: null,
+    ...overrides,
+  }
+}
+
+export function makeInputCacheSnapshot(
+  overrides: Partial<InputCacheSnapshotResponse> = {},
+): InputCacheSnapshotResponse {
+  return {
+    schema_version: 1,
+    identity_digest: "digest",
+    state: "missing",
+    freshness: "unknown",
+    generation: null,
+    tables: null,
+    ...overrides,
+  }
+}

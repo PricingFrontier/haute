@@ -1329,6 +1329,80 @@ export interface SaveCapture {
   uncaptured: string[];
   warnings: string[];
 }
+export interface InputCacheBuildResponse {
+  build_class: 'bounded' | 'admitted_eager';
+  forced: boolean;
+  identity_digest: string;
+  job_id: string;
+  joined: boolean;
+  schema_version: 1;
+  status: 'running' | 'blocked';
+}
+export interface InputCacheJobStatusResponse {
+  build_class: 'bounded' | 'admitted_eager' | 'unsupported';
+  error_code: string | null;
+  identity_digest: string;
+  job_id: string;
+  message: string;
+  progress: InputCacheProgress;
+  refresh: boolean;
+  schema_version: 1;
+  snapshot: InputCacheSnapshotStatusResponse | null;
+  status:
+    'running' | 'completed' | 'error' | 'cancelled' | 'superseded' | 'timed_out' | 'memory_limited' | 'contract_error';
+  terminal_reason: string | null;
+}
+export interface InputCacheProgress {
+  batches: number;
+  bytes: number;
+  elapsed_seconds: number;
+  phase: 'queued' | 'building' | 'publishing' | 'completed' | 'failed' | 'cancelled';
+  rows: number;
+}
+/**
+ * A Data Input's snapshot, or a structured API Input's tables together.
+ *
+ * For an API Input, ``identity_digest`` names the node's set of tables,
+ * ``state`` and ``freshness`` summarise them (ready only when every table
+ * is), ``generation`` is ``None``, and ``tables`` lists each one; a Data
+ * Input has no ``tables``.
+ */
+export interface InputCacheSnapshotStatusResponse {
+  freshness: 'fresh' | 'stale' | 'unknown';
+  generation: InputCacheGenerationPayload | null;
+  identity_digest: string;
+  schema_version: 1;
+  state: 'missing' | 'building' | 'ready' | 'corrupt' | 'failed';
+  tables: InputCacheTableStatus[] | null;
+}
+export interface InputCacheGenerationPayload {
+  build_class: 'bounded' | 'admitted_eager' | 'unsupported';
+  column_count: number;
+  columns: {
+    [k: string]: string;
+  };
+  created_at: number;
+  generation_id: string;
+  row_count: number;
+  size_bytes: number;
+}
+/**
+ * One emitting table of a structured API Input and its own snapshot.
+ */
+export interface InputCacheTableStatus {
+  freshness: 'fresh' | 'stale' | 'unknown';
+  generation: InputCacheGenerationPayload | null;
+  identity_digest: string;
+  label: string;
+  state: 'missing' | 'building' | 'ready' | 'corrupt' | 'failed';
+}
+export interface InputCacheCancelResponse {
+  cancellation_requested: boolean;
+  job_id: string;
+  schema_version: 1;
+  status:
+    'running' | 'completed' | 'error' | 'cancelled' | 'superseded' | 'timed_out' | 'memory_limited' | 'contract_error';
+}
 export interface IoCapabilitiesResponse {
   groups: IoCapabilityGroup[];
   schema_version: 1;
@@ -2165,6 +2239,25 @@ export interface OptimiserSegmentIndexKey {
 export interface OptimiserSegmentIndexStatistic {
   description: string;
   label: string;
+}
+export interface WriteOutputResponse {
+  execution_metrics: ExecutionMetricsPayload | null;
+  format: string;
+  message: string;
+  path: string;
+  row_count: number;
+  status: string;
+}
+export interface OutputDestinationResponse {
+  format: string;
+  path: string;
+  suffix_mismatch: boolean;
+}
+export interface OutputAssembleDryRunResponse {
+  document: unknown[];
+  error: string | null;
+  row_count: number;
+  status: 'ok' | 'error';
 }
 export interface SessionStatusResponse {
   ok: boolean;

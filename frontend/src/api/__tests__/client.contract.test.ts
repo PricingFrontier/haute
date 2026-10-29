@@ -147,12 +147,14 @@ describe("client runtime contracts", () => {
   it("writeOutput rejects malformed output payloads", async () => {
     mockFetch.mockReturnValue(jsonResponse({ message: "done" }))
 
-    await expect(writeOutput({ graph: dummyGraph, nodeId: "sink1" })).rejects.toThrow(/parseWriteOutputResponse/i)
+    await expect(writeOutput({ graph: dummyGraph, nodeId: "sink1" })).rejects.toThrow(
+      "WriteOutputResponse: invalid contract at /status: required",
+    )
   })
 
   it("writeOutput validates and returns a well-formed output payload", async () => {
     mockFetch.mockReturnValue(
-      jsonResponse({ status: "ok", message: "Wrote 3 rows", row_count: 3, path: "out.parquet", format: "parquet" }),
+      jsonResponse({ status: "ok", message: "Wrote 3 rows", row_count: 3, path: "out.parquet", format: "parquet", execution_metrics: null }),
     )
 
     const result = await writeOutput({ graph: dummyGraph, nodeId: "sink1" })
@@ -172,7 +174,7 @@ describe("client runtime contracts", () => {
 
     await expect(
       resolveOutputDestination({ graph: dummyGraph, nodeId: "sink1" }),
-    ).rejects.toThrow(/parseOutputDestinationResponse/i)
+    ).rejects.toThrow("OutputDestinationResponse: invalid contract at /suffix_mismatch: type")
   })
 
   it("resolveOutputDestination validates its complete response", async () => {
@@ -443,7 +445,9 @@ describe("client runtime contracts", () => {
 
   it("input-cache build rejects a malformed V1 response", async () => {
     mockFetch.mockReturnValue(jsonResponse({ schema_version: 2, job_id: "job", identity_digest: "digest", status: "running", joined: false }))
-    await expect(buildInputCache({ schema_version: 1, config: {}, refresh: false })).rejects.toThrow(/parseInputCacheBuildResponse/i)
+    await expect(buildInputCache({ schema_version: 1, config: {}, refresh: false })).rejects.toThrow(
+      "InputCacheBuildResponse: invalid contract at",
+    )
   })
 
   it("previewInputs asks which inputs a preview reads", async () => {

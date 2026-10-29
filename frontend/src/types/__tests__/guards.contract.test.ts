@@ -16,9 +16,7 @@ import {
   frontierAutoRangeStatusFromContract,
   frontierStatusFromContract,
   optimiserStatusFromContract,
-  parseInputCacheSnapshotResponse,
   parseJsonCacheSchemaInferenceResponse,
-  parseOutputAssembleDryRunResponse,
   parsePreviewNodeResponse,
   parseSavePipelineResponse,
   parseTraceResponse,
@@ -80,6 +78,14 @@ import {
 } from "../../generated/api-contracts.git.validators.mjs"
 import { makeGitWorkingBranch } from "../../test-utils/factories"
 import { expectGeneratedContract } from "../generatedContractValidation"
+import { validateInputCacheSnapshotStatusResponse } from "../../generated/api-contracts.input-cache.validators.mjs"
+import { validateOutputAssembleDryRunResponse } from "../../generated/api-contracts.output.validators.mjs"
+
+// The input-cache and output responses are checked by their generated validators (API-R03).
+const parseInputCacheSnapshotResponse = (value: unknown) =>
+  expectGeneratedContract("InputCacheSnapshotStatusResponse", validateInputCacheSnapshotStatusResponse, value)
+const parseOutputAssembleDryRunResponse = (value: unknown) =>
+  expectGeneratedContract("OutputAssembleDryRunResponse", validateOutputAssembleDryRunResponse, value)
 import {
   parseTrainEstimateResponse,
   parseTrainFeatureSelection,
@@ -3235,15 +3241,14 @@ describe("API response guards", () => {
 
     expect(parsed.tables).toBeNull()
 
-    const parsedAbsent = parseInputCacheSnapshotResponse({
+    // The server sends every field, a Data Input's null tables included.
+    expect(() => parseInputCacheSnapshotResponse({
       schema_version: 1,
       identity_digest: "digest-1",
       state: "missing",
       freshness: "unknown",
       generation: null,
-    })
-
-    expect(parsedAbsent.tables).toBeNull()
+    })).toThrow("InputCacheSnapshotStatusResponse: invalid contract at /tables: required")
   })
 
   it("parses an API Input input-cache snapshot with two tables", () => {
@@ -3766,7 +3771,7 @@ describe("API response guards", () => {
 
   it.each([
     ["session boolean", () => sessionStatus({ ok: "yes" })],
-    ["output document", () => parseOutputAssembleDryRunResponse({ status: "ok", document: {}, row_count: 1 })],
+    ["output document", () => parseOutputAssembleDryRunResponse({ status: "ok", document: {}, row_count: 1, error: null })],
     ["inferred nested table", () => parseJsonCacheSchemaInferenceResponse({ tables: ["bad"] })],
     ["file item type", () => browseFiles({ dir: "/", items: [{ name: "x", path: "/x", type: "link", size: null }] })],
     ["git graph nested parents", () => gitGraph({ working_branch: null, order: [], branches: [{ name: "main", is_archived: false, is_current: true, tip_sha: "a", fork_point_sha: null, fork_of: null, fork_source_sha: null, fork_credit_sha: null, truncated: false, entries: [{ sha: "a", short_sha: "a", message: "init", timestamp: "today", version_label: null, is_root: true, parents: [1] }] }] })],

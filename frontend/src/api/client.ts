@@ -135,20 +135,14 @@ import {
   explorePivotRunFromContract,
   explorePivotStatusFromContract,
   nodeDataStatusFromContract,
-  parseInputCacheBuildResponse,
-  parseInputCacheCancelResponse,
-  parseInputCacheJobStatusResponse,
-  parseInputCacheSnapshotResponse,
   parseJsonCacheSchemaInferenceResponse,
-  parseOutputDestinationResponse,
-  parseOutputAssembleDryRunResponse,
   parsePipelineResponse,
   parsePreviewInputsResponse,
   parsePreviewNodeResponse,
   parsePreviewProgressResponse,
   parseSavePipelineResponse,
   parseSchemaResponse,
-  parseWriteOutputResponse,
+  writeOutputFromContract,
   parseSubmodelCreateResponse,
   parseSubmodelGraphResponse,
   parseTraceResponse,
@@ -164,11 +158,13 @@ const editorValidators = () => import("../generated/api-contracts.editor.validat
 const exploreValidators = () => import("../generated/api-contracts.explore.validators.mjs")
 const factorsValidators = () => import("../generated/api-contracts.factors.validators.mjs")
 const gitValidators = () => import("../generated/api-contracts.git.validators.mjs")
+const inputCacheValidators = () => import("../generated/api-contracts.input-cache.validators.mjs")
 const ioValidators = () => import("../generated/api-contracts.io.validators.mjs")
 const mlflowValidators = () => import("../generated/api-contracts.mlflow.validators.mjs")
 const modellingValidators = () => import("../generated/api-contracts.modelling.validators.mjs")
 const nodeDataValidators = () => import("../generated/api-contracts.node-data.validators.mjs")
 const optimiserValidators = () => import("../generated/api-contracts.optimiser.validators.mjs")
+const outputValidators = () => import("../generated/api-contracts.output.validators.mjs")
 const sessionValidators = () => import("../generated/api-contracts.session.validators.mjs")
 const utilityValidators = () => import("../generated/api-contracts.utility.validators.mjs")
 import {
@@ -1060,7 +1056,11 @@ export function outputAssembleDryRun(
       source: source ?? "live",
     },
     { signal, timeout },
-  ).then(parseOutputAssembleDryRunResponse)
+  ).then(async (data) => expectGeneratedContract(
+    "OutputAssembleDryRunResponse",
+    (await outputValidators()).validateOutputAssembleDryRunResponse,
+    data,
+  ))
 }
 
 export interface TraceCellArgs {
@@ -1113,7 +1113,11 @@ export function resolveOutputDestination(
       node_id: nodeId,
     },
     { signal, timeout },
-  ).then(parseOutputDestinationResponse)
+  ).then(async (data) => expectGeneratedContract(
+    "OutputDestinationResponse",
+    (await outputValidators()).validateOutputDestinationResponse,
+    data,
+  ))
 }
 
 export function writeOutput(args: WriteOutputArgs): Promise<WriteOutputResponse> {
@@ -1134,7 +1138,11 @@ export function writeOutput(args: WriteOutputArgs): Promise<WriteOutputResponse>
       overwrite: overwrite ?? false,
     },
     { signal, timeout },
-  ).then(parseWriteOutputResponse)
+  ).then(async (data) => writeOutputFromContract(expectGeneratedContract(
+    "WriteOutputResponse",
+    (await outputValidators()).validateWriteOutputResponse,
+    data,
+  )))
 }
 
 // ---------------------------------------------------------------------------
@@ -1275,35 +1283,45 @@ export function buildInputCache(
   payload: InputCacheBuildRequest,
   options?: { signal?: AbortSignal; timeout?: number },
 ): Promise<InputCacheBuildResponse> {
-  return post<unknown>("/api/input-cache/build", payload, options).then(parseInputCacheBuildResponse)
+  return post<unknown>("/api/input-cache/build", payload, options).then(async (data) =>
+    expectGeneratedContract("InputCacheBuildResponse", (await inputCacheValidators()).validateInputCacheBuildResponse, data),
+  )
 }
 
 export function getInputCacheJob(
   jobId: string,
   options?: { signal?: AbortSignal },
 ): Promise<InputCacheJobStatusResponse> {
-  return request<unknown>(`/api/input-cache/jobs/${encodeURIComponent(jobId)}`, options).then(parseInputCacheJobStatusResponse)
+  return request<unknown>(`/api/input-cache/jobs/${encodeURIComponent(jobId)}`, options).then(async (data) =>
+    expectGeneratedContract("InputCacheJobStatusResponse", (await inputCacheValidators()).validateInputCacheJobStatusResponse, data),
+  )
 }
 
 export function cancelInputCacheJob(
   jobId: string,
   options?: { signal?: AbortSignal },
 ): Promise<InputCacheCancelResponse> {
-  return del<unknown>(`/api/input-cache/jobs/${encodeURIComponent(jobId)}`, options).then(parseInputCacheCancelResponse)
+  return del<unknown>(`/api/input-cache/jobs/${encodeURIComponent(jobId)}`, options).then(async (data) =>
+    expectGeneratedContract("InputCacheCancelResponse", (await inputCacheValidators()).validateInputCacheCancelResponse, data),
+  )
 }
 
 export function getInputCacheStatus(
   payload: InputCacheSourceRequest,
   options?: { signal?: AbortSignal },
 ): Promise<InputCacheSnapshotResponse> {
-  return post<unknown>("/api/input-cache/status", payload, options).then(parseInputCacheSnapshotResponse)
+  return post<unknown>("/api/input-cache/status", payload, options).then(async (data) =>
+    expectGeneratedContract("InputCacheSnapshotStatusResponse", (await inputCacheValidators()).validateInputCacheSnapshotStatusResponse, data),
+  )
 }
 
 export function clearInputCache(
   payload: InputCacheSourceRequest,
   options?: { signal?: AbortSignal },
 ): Promise<InputCacheSnapshotResponse> {
-  return post<unknown>("/api/input-cache/clear", payload, options).then(parseInputCacheSnapshotResponse)
+  return post<unknown>("/api/input-cache/clear", payload, options).then(async (data) =>
+    expectGeneratedContract("InputCacheSnapshotStatusResponse", (await inputCacheValidators()).validateInputCacheSnapshotStatusResponse, data),
+  )
 }
 
 // ---------------------------------------------------------------------------

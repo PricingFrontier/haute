@@ -2074,6 +2074,26 @@ class WriteOutputResponse(BaseModel):
     execution_metrics: ExecutionMetricsPayload | None = None
 
 
+class OutputAssembleDryRunRequest(BaseModel):
+    graph: Graph
+    node_id: BoundedName
+    #: The in-progress (volatile, unsaved) outputMapping to preview.
+    output_mapping: list[dict[str, Any]] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
+    output_format: BoundedName = "json"
+    #: Cap upstream source rows so the preview stays cheap.
+    row_limit: int = Field(default=100, ge=1, le=10000)
+    source: BoundedName = "live"
+
+
+class OutputAssembleDryRunResponse(BaseModel):
+    #: ``error`` carries why the document could not be assembled.
+    status: Literal["ok", "error"]
+    #: The assembled response document (already pruned by the render path).
+    document: list[Any] = Field(default_factory=list)
+    row_count: int = 0
+    error: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # /api/input-cache
 # ---------------------------------------------------------------------------

@@ -24,6 +24,7 @@ import type {
   MlflowDestinationEntry as GeneratedMlflowDestinationEntry,
   MlflowTestConnectionResponse as GeneratedMlflowTestConnectionResponse,
   NodeDataStatusResponse as GeneratedNodeDataStatusResponse,
+  WriteOutputResponse as GeneratedWriteOutputResponse,
   OptimiserFrontierAutoRangeStatusResponse as GeneratedOptimiserFrontierAutoRangeStatusResponse,
   OptimiserFrontierResponse as GeneratedOptimiserFrontierResponse,
   OptimiserFrontierStatusResponse as GeneratedOptimiserFrontierStatusResponse,
@@ -486,20 +487,15 @@ export interface TraceResponse {
   trace: import("../types/trace").TraceResult
 }
 
-export interface WriteOutputResponse {
-  status: string
-  message?: string
-  row_count?: number
-  path?: string
-  format?: string
-  execution_metrics?: ExecutionMetrics | null
+// The output write, its destination and the OUTPUT dry run are generated.
+export type WriteOutputResponse = Omit<GeneratedWriteOutputResponse, "execution_metrics"> & {
+  execution_metrics: ExecutionMetrics | null
 }
 
-export interface OutputDestinationResponse {
-  path: string
-  format: string
-  suffix_mismatch: boolean
-}
+export type {
+  OutputAssembleDryRunResponse,
+  OutputDestinationResponse,
+} from "../generated/api-contracts.generated"
 
 /** Schema info returned by the schema endpoint. */
 export interface SchemaResult {
@@ -629,80 +625,16 @@ export interface InputCacheBuildRequest extends InputCacheSourceRequest {
   refresh: boolean
 }
 
-export interface InputCacheBuildResponse {
-  schema_version: 1
-  job_id: string
-  identity_digest: string
-  /**
-   * `blocked`: `job_id` is a build this request may not join (one being
-   * cancelled, or an ordinary build for a forced request). Wait for it to end
-   * without owning it, then ask again.
-   */
-  status: "running" | "blocked"
-  joined: boolean
-  /** Whether the build `job_id` names re-reads the source (`refresh`). */
-  forced: boolean
-  /** How the server builds it: a bounded lazy sink, or an eager read in a capped worker. */
-  build_class: "bounded" | "admitted_eager"
-}
-
-export interface InputCacheProgress {
-  phase: "queued" | "building" | "publishing" | "completed" | "failed" | "cancelled"
-  rows: number
-  batches: number
-  bytes: number
-  elapsed_seconds: number
-}
-
-export interface InputCacheGeneration {
-  generation_id: string
-  row_count: number
-  column_count: number
-  columns: Record<string, string>
-  size_bytes: number
-  created_at: number
-  build_class: "bounded" | "admitted_eager" | "unsupported"
-}
-
-/** One emitting table of a structured API Input and its own snapshot. */
-export interface InputCacheTableStatus {
-  label: string
-  identity_digest: string
-  state: "missing" | "building" | "ready" | "corrupt" | "failed"
-  freshness: "fresh" | "stale" | "unknown"
-  generation: InputCacheGeneration | null
-}
-
-export interface InputCacheSnapshotResponse {
-  schema_version: 1
-  identity_digest: string
-  state: "missing" | "building" | "ready" | "corrupt" | "failed"
-  freshness: "fresh" | "stale" | "unknown"
-  generation: InputCacheGeneration | null
-  /** A structured API Input's tables; absent or null for a Data Input. */
-  tables?: InputCacheTableStatus[] | null
-}
-
-export interface InputCacheJobStatusResponse {
-  schema_version: 1
-  job_id: string
-  identity_digest: string
-  status: JobStatus
-  terminal_reason: string | null
-  message: string
-  refresh: boolean
-  build_class: "bounded" | "admitted_eager" | "unsupported"
-  progress: InputCacheProgress
-  snapshot: InputCacheSnapshotResponse | null
-  error_code: string | null
-}
-
-export interface InputCacheCancelResponse {
-  schema_version: 1
-  job_id: string
-  cancellation_requested: boolean
-  status: JobStatus
-}
+// The input-cache responses are generated.
+export type {
+  InputCacheBuildResponse,
+  InputCacheCancelResponse,
+  InputCacheGenerationPayload as InputCacheGeneration,
+  InputCacheJobStatusResponse,
+  InputCacheProgress,
+  InputCacheSnapshotStatusResponse as InputCacheSnapshotResponse,
+  InputCacheTableStatus,
+} from "../generated/api-contracts.generated"
 
 // ---------------------------------------------------------------------------
 // Graph payload — internal to the API client layer
@@ -724,19 +656,6 @@ export type GraphPayload = {
 // ---------------------------------------------------------------------------
 // OUTPUT assemble dry-run (/api/output-assemble/dry-run)
 // ---------------------------------------------------------------------------
-
-/**
- * Response from the OUTPUT assembler dry-run. `document` is the assembled
- * response document (already pruned by the render path); `status` is "ok" or
- * "error" (an assembly that ran but failed surfaces `error` with `status:
- * "error"` and a 200 — transport/validation failures arrive as ApiError).
- */
-export interface OutputAssembleDryRunResponse {
-  status: string
-  document: unknown[]
-  row_count: number
-  error?: string | null
-}
 
 // ---------------------------------------------------------------------------
 // Modelling types

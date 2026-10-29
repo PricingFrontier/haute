@@ -98,7 +98,7 @@ import {
   getTrainStatus,
 } from "../../api/client"
 import { resolveGraphFromRefs } from "../../utils/buildGraph"
-import { makeEdge, makeNode, makeTrainResult, makeTrainStatus } from "../../test-utils/factories"
+import { makeEdge, makeInputCacheSnapshot, makeNode, makeTrainResult, makeTrainStatus } from "../../test-utils/factories"
 
 // A preview that waits on a cache build crosses several effects and mocked
 // requests; a whole parallel suite run makes that slower without making it
@@ -252,13 +252,13 @@ function inputCacheSnapshot(
   state: InputCacheSnapshotResponse["state"],
   freshness: InputCacheSnapshotResponse["freshness"] = "unknown",
 ): InputCacheSnapshotResponse {
-  return {
+  return makeInputCacheSnapshot({
     schema_version: 1,
     identity_digest: "snapshot-identity",
     state,
     freshness,
     generation: null,
-  }
+  })
 }
 
 function inputCacheJob(
