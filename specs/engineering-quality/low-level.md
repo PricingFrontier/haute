@@ -820,7 +820,8 @@ lint; layer 3 owns those.
   path and the test. This catches the computed paths layer 2 cannot see. The
   stores the harness keeps for the test outside its `tmp_path`, which a test
   may list, are inside the sandbox too: its source-proof records, the session's
-  source cache, and the widened-root fixture's cache.
+  source cache and local MLflow store (both moved off the repository root), and
+  the widened-root fixture's cache.
 - **observe** — the same interception with no working-directory or environment
   changes; out-of-sandbox writes are *recorded*, not failed, and a terminal
   summary prints the census by path. With
@@ -877,7 +878,7 @@ moves one way:
 3. The census may not grow. Every coverage shard records its census and
    uploads it, and the coverage gate's census check
    (`scripts/check_write_sandbox_census.py`) puts each write in a class: a root
-   the shard recorded and the first path component below it (`repo:mlruns`,
+   the shard recorded and the first path component below it (`repo:.haute_cache`,
    `home:.cache`, `runner-temp:_runner_file_commands`), or `other:` and the
    path's first two components. A class not listed under `[census]`, with its
    reason, fails the gate, and so does a listed class no shard recorded. A

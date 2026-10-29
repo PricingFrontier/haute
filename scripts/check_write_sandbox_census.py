@@ -9,7 +9,7 @@ compares the classes with the ``[census]`` table of tests/write_sandbox.toml:
 * a listed class no shard recorded fails too, so the table only shrinks.
 
 A class is a root the shard recorded and the first path component below it
-(``repo:mlruns``, ``home:.cache``, ``runner-temp:_runner_file_commands``), or
+(``repo:.haute_cache``, ``home:.cache``, ``runner-temp:_runner_file_commands``), or
 ``other:`` and the first two components of the path. pytest's assertion-rewrite
 bytecode (``__pycache__/*.pyc.<pid>``) is the harness's write, not a test's: it
 is reported but never gated, because which test happens to trigger it depends

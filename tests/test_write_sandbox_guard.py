@@ -293,3 +293,22 @@ def test_multiprocessing_shared_memory_is_not_a_test_write() -> None:
     assert ws._is_multiprocessing_arena("/dev/shm/pym-12-abcd1234")
     assert not ws._is_multiprocessing_arena("/dev/shm/haute-cache")
     assert not ws._is_multiprocessing_arena("/tmp/pym-12-abcd1234")
+
+
+def test_a_strict_test_creates_the_repository_mlflow_store_in_the_session(
+    _isolate_repository_mlflow_store: Path,
+) -> None:
+    """The local destination resolved against the repository root is the
+    session's store, so whichever test creates it first, strict or not, may."""
+    from mlflow.tracking import MlflowClient
+
+    from haute._mlflow_utils import allow_file_store_if_local
+    from haute.modelling._mlflow_settings import resolve_destination
+
+    config = resolve_destination("local", project_root=_REPO_ROOT)
+    assert ws._is_within(_real(config.destination), _real(_isolate_repository_mlflow_store))
+
+    # Opening the store writes its default experiment on first use.
+    allow_file_store_if_local(config.tracking_uri, config.mode)
+    client = MlflowClient(tracking_uri=config.tracking_uri)
+    assert client.get_experiment("0") is not None

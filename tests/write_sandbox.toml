@@ -609,12 +609,6 @@ reason = """\
     store and its storage budget), and observe-mode tests leave the project \
     root at the repository root."""
 
-[census."repo:mlruns"]
-reason = """\
-    MLflow's default tracking store is ./mlruns: tests that log a run or score \
-    a registered model without pointing MLflow at a sandbox store create it \
-    under the repository root."""
-
 [census."runner-temp:_runner_file_commands"]
 reason = """\
     The coverage scripts and the CLI's impact report append a job summary to \

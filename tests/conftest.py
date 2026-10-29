@@ -154,6 +154,37 @@ def _isolate_repository_source_cache(
             patch.undo()
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _isolate_repository_mlflow_store(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[Path]:
+    """Keep the suite's local MLflow runs out of the working tree.
+
+    A test that never sets its own project root inherits the repository root, so
+    the local destination's default store is ``<repo>/mlruns``: created by
+    whichever test first resolves it, and found already there by the tests that
+    follow on any worker. Resolved against the repository root, the store moves
+    to one directory for the session instead, as ``_widen_sandbox_root`` moves
+    it for the widened root; the write sandbox lets every test write there.
+    """
+    from haute.modelling import _mlflow_settings
+
+    repository_root = Path(__file__).resolve().parents[1]
+    session_root = tmp_path_factory.mktemp("mlflow-root")
+    resolve_local = _mlflow_settings._resolve_local
+
+    def resolve_local_off_the_working_tree(stored: Any, root: Path) -> Any:
+        moved = Path(root).resolve() == repository_root
+        return resolve_local(stored, session_root if moved else root)
+
+    patch = pytest.MonkeyPatch()
+    patch.setattr(_mlflow_settings, "_resolve_local", resolve_local_off_the_working_tree)
+    try:
+        yield session_root
+    finally:
+        patch.undo()
+
+
 @pytest.fixture(autouse=True)
 def _restore_mlflow_databricks_binding() -> Iterator[None]:
     """Undo the process-global MLflow Databricks credential binding after each test.
@@ -1066,6 +1097,7 @@ def _haute_write_sandbox(
     monkeypatch: pytest.MonkeyPatch,
     source_proof_records: Path,
     _isolate_repository_source_cache: Path,
+    _isolate_repository_mlflow_store: Path,
 ) -> Iterator[_ws.Guard | None]:
     """Layer-3 runtime guard: containment env + open() interception.
 
@@ -1096,11 +1128,12 @@ def _haute_write_sandbox(
         monkeypatch.setenv("USERPROFILE", str(sandbox_home))
         # The stores the harness keeps for the test outside its tmp_path, which
         # a test may list: its source-proof records and the session's source
-        # cache. The widened-root fixture adds its own.
+        # cache and MLflow store. The widened-root fixture adds its own.
         allowed = (
             os.path.realpath(str(tmp_path)),
             os.path.realpath(str(source_proof_records)),
             os.path.realpath(str(_isolate_repository_source_cache)),
+            os.path.realpath(str(_isolate_repository_mlflow_store)),
         )
     else:
         allowed = (
