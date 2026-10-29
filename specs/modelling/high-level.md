@@ -674,9 +674,14 @@ metric list remain their current advanced/configuration contracts.
 Diagnostics are computed by reading the chosen evaluation partition exactly once and
 reusing it for every chart — training data is often multi-GB, so re-reading per
 diagnostic was a real memory cost, not a theoretical one. The same memory discipline
-(`gc.collect()`, `_malloc_trim()`, temp-parquet ownership tracking with an abort-safety
-cleanup net) runs throughout the pipeline, and an admission/RAM-estimation system gates
-whether a job is even allowed to start.
+runs throughout the pipeline: temp-parquet ownership tracking with an abort-safety
+cleanup net, and, between stages, an explicit collection and heap trim once a stage has
+freed data of at least `EXPLICIT_RELEASE_MIN_BYTES` (64 MiB;
+`haute._polars_utils.release_freed_memory`). Smaller data is left to the interpreter: its
+buffers go on `del`, and a full collection in a process holding Haute, Polars and the
+model libraries costs about 150 ms each time, which made a small fit seconds slower than
+its training. An admission/RAM-estimation system gates whether a job is even allowed to
+start.
 
 Post-fit progress names the diagnostic currently running. SHAP summary and
 loss-based feature importance are separate stages: the SHAP message must end
