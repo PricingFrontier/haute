@@ -17,7 +17,8 @@ interpreter), plus the two frontend jobs (`frontend-static`, `frontend-tests`)
 and `init-smoke` wholesale. This procedure
 covers the remaining `ci.yml` jobs (`dependency-floors`, `backend-compat`,
 the non-blocking `backend-314-probe`, `perf`, both optional-deps smokes,
-`package-smoke`, `platform-smoke`, `mutation-config-smoke`, `browser-e2e`)
+`package-smoke`, `platform-smoke`, `docs-build`, `mutation-config-smoke`,
+`browser-e2e`)
 plus the conditional `mutation.yml` and `docs.yml` workflows, and states the
 residual deficiencies explicitly.
 
@@ -31,26 +32,29 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
 | `ci.yml` | `canary` | push+PR | **Yes** | `uv sync --group dev --locked` → `ruff check --output-format=github` + `ruff format --check` → pytest on the core test subset (`scripts/core_test_files.txt`, 11 files, `-n 4 --timeout=60`) |
 | `ci.yml` | `init-smoke` (×3: ubuntu, windows, macos) | push+PR | **Yes** | `uv run --no-project python scripts/init_smoke.py` — wheel build (frontend included) → fresh venv, fresh resolve → `haute init` in an empty dir → headless `haute serve` → session-cookie bootstrap → authed `/api/files` → clean shutdown |
 | `ci.yml` | `dependency-floors` | push+PR | **Yes** | `uv lock --resolution lowest-direct` (py3.11) → `uv sync --frozen --group dev` → core test subset run at the re-resolved floor lockfile — proves the published floor specifiers actually install and pass |
-| `ci.yml` | `backend-static` | push+PR | **Yes** | `uv sync --group dev --locked` (py3.12) → ruff lint + ruff format-check + mypy + `scripts/lint_pins.py` (dependency-pin doctrine: floor+cap for published deps, exact for tooling, no `npx` on executable surfaces) + `HAUTE_BUILD_FRONTEND=1 uv build` |
-| `ci.yml` | `backend-coverage-shard` (×4 shards) | push+PR | **Yes** | full suite (py3.12) split 4-way by test module (`--shard=K/4`, `tests/_ci_shards.py`, balanced by `scripts/test_file_durations.json`), coverage collected per shard (`--cov-fail-under=0`) and uploaded with a JUnit report (xunit1) |
-| `ci.yml` | `backend-coverage-gate` | push+PR | **Yes** | needs `backend-coverage-shard` → `coverage combine` the four shards → `coverage report --fail-under=90` → per-file critical floors → 100% changed statement/branch coverage for the safety-critical modules, with other changed files reported in the job summary |
-| `ci.yml` | `backend-compat` (×6: py3.11 and py3.13, 3 shards each) | push+PR | **Yes** | full suite split 3-way by test module (`--shard=K/3`), no coverage collected |
+| `ci.yml` | `backend-static` | push+PR | **Yes** | `uv sync --group dev --locked` (py3.12) → ruff lint + ruff format-check + mypy (`src/haute/` and `scripts/`) + `scripts/lint_pins.py` (dependency-pin doctrine: floor+cap for published deps, exact for tooling, no `npx` on executable surfaces, actions pinned by commit) + `HAUTE_BUILD_FRONTEND=1 uv build` |
+| `ci.yml` | `backend-coverage-shard` (×4 shards) | push+PR | **Yes** | full suite (py3.12) split 4-way by test module (`--shard=K/4 --shard-lane=coverage`, `tests/_ci_shards.py`, balanced by `scripts/test_file_durations.json`), coverage collected per shard (`--cov-fail-under=0`) and uploaded with a JUnit report (xunit1) and the shard's write-sandbox census (`HAUTE_TEST_WRITE_SANDBOX_CENSUS_OUT`), all whether the shard's tests passed or not |
+| `ci.yml` | `backend-coverage-gate` | push+PR | **Yes** | needs `backend-coverage-shard` and runs whatever its result (`!cancelled()`); a shard that did not pass fails the gate's first step, and the later steps still run → `coverage combine` the four shards → `coverage report --fail-under=90` → per-file critical floors → 100% changed statement/branch coverage for the safety-critical modules, with other changed files reported in the job summary → the write-sandbox census check (`scripts/check_write_sandbox_census.py` over every shard's census: a class of out-of-sandbox write not listed in `tests/write_sandbox.toml`, a listed class no shard recorded, or a missing shard record fails) |
+| `ci.yml` | `backend-compat` (×6: py3.11 and py3.13, 3 shards each) | push+PR | **Yes** | full suite split 3-way by test module (`--shard=K/3 --shard-lane=compat`, balanced on the compatibility lane's own durations, each shard uploading a JUnit report), no coverage collected |
+| `ci.yml` | `backend-process-mode` | push+PR | **Yes** | the route slice (`test_interactive_route_isolation.py`, `test_server.py`, `test_trace_api.py`, `test_trace_multi_frame.py`, `test_adversarial_inputs.py`, `test_security_gaps.py`) with `HAUTE_TEST_INTERACTIVE_EXECUTION_MODE=process`, so previews, traces, free-code steps and the optimiser estimate run in worker processes as in production; an `in_process`-marked test stays in threads |
 | `ci.yml` | `backend-314-probe` | push+PR | **No** (`continue-on-error: true`; advisory only) | py3.14 forward-looking probe: `uv sync` (expected to fail until catboost ships cp314 wheels) → full suite if sync succeeds |
 | `ci.yml` | `perf` | push+PR | **Yes** | `uv run python scripts/run_perf_suite.py --output-dir .cache/perf` |
-| `ci.yml` | `optional-deps-smoke` | push+PR | **Yes** | core install (`uv sync --locked --no-group dev` + `uv pip install pytest pytest-asyncio httpx`) → `pytest tests/test_optional_dependency_matrix.py -q` |
+| `ci.yml` | `optional-deps-smoke` | push+PR | **Yes** | core install with the test harness alone (`uv sync --locked --no-default-groups --group test-harness`) → a step asserting core MLflow is present and the Databricks SQL connector absent → `uv run --no-sync pytest tests/test_optional_dependency_matrix.py -q` |
 | `ci.yml` | `optional-deps-present-smoke` | push+PR | **Yes** | `uv sync --group dev --locked` → `pytest tests/test_optional_dependency_extras.py -q` |
 | `ci.yml` | `package-smoke` | push+PR | **Yes** | `HAUTE_BUILD_FRONTEND=1 uv build --sdist --wheel` → install wheel into fresh venv → `package_smoke_check.py` + `haute --help`; repeat for sdist |
 | `ci.yml` | `platform-smoke` (×2: windows-latest, macos-latest) | push+PR | **Yes** | `pytest tests/test_path_resolution.py tests/test_pipeline_runtime_path_validation.py tests/test_test_debt.py tests/test_file_ops.py tests/test_write_sandbox_guard.py tests/test_data_io_roundtrips.py -q` |
+| `ci.yml` | `docs-build` | push+PR | **Yes** | `uv sync --group dev --locked` → `uv run mkdocs build --strict` |
 | `ci.yml` | `mutation-config-smoke` | push+PR | **Yes** | `uv run python scripts/run_mutation_suite.py --dry-run --output-dir .mutation-plan --run-id ci` |
 | `ci.yml` | `frontend-static` | push+PR | **Yes** | `npm ci` → `npm run check:contracts`, `typecheck`, `lint`, `build`, `check:bundle`, `test:benchmark:pr` as separate steps (each runs even after another fails; the bundle budget only after a successful build) |
 | `ci.yml` | `frontend-tests` | push+PR | **Yes** | `npm ci` → `npm run test:coverage` (Vitest with coverage thresholds, then the critical-coverage check) |
-| `ci.yml` | `browser-e2e` (×2 shards) | push+PR | **Yes** | `npm ci` → `playwright install --with-deps chromium firefox` → `npm run test:e2e -- --shard=K/2` |
+| `ci.yml` | `browser-e2e` (×2 shards) | push+PR | **Yes** | `npm ci` → `playwright install --with-deps chromium firefox` → `npm run test:e2e -- --shard=K/2` → `scripts/report_flaky_browser_tests.py` names any test that passed only on a retry in the job summary; on a push to `main` such a test fails the run (`failOnFlakyTests`) |
 | `mutation.yml` | `plan` → `shard` (matrix) → `mutation` (gate) | PR **iff** `src/haute/**/*.py`, `tests/**/*.py`, `mutation/**`, `scripts/run_mutation_suite.py`, or the workflow changed | **Conditional** | `plan` selects targets and builds the shared Cosmic Ray session; matrix `shard` jobs execute disjoint mutant subsets in parallel; `mutation` merges shard results and checks survival thresholds — equivalent to one bounded run (`run_mutation_suite.py --changed-files-from <difflist>`) |
-| `docs.yml` | `build`+`deploy` | push to main **iff** `docs/**` or `mkdocs.yml` changed (NOT on PR) | **Post-merge** | `uv run mkdocs build --strict` → deploy to GitHub Pages |
+| `docs.yml` | `build`+`deploy` | push to main **iff** `docs/**` or `mkdocs.yml` changed (NOT on PR) | **Post-merge** (the strict build itself gates PRs through `ci.yml`'s `docs-build`) | `uv run mkdocs build --strict` → deploy to GitHub Pages |
 | `performance.yml` | `python-perf` + `frontend-performance` | `workflow_dispatch` + weekly cron (Mon 03:17 UTC) | **No** | perf lanes; not a PR gate (see Deficiencies) |
 | `dependencies.yml` | `unlocked-resolve` | `workflow_dispatch` + weekly cron (Mon 04:41 UTC only — keyed on that expression, so the daily advisory cron does not trigger it) | **No** | fresh unlocked-resolve smoke: builds the wheel, resolves latest-within-caps deps (incl. `databricks` extra) with no lockfile, runs `init_smoke.py` + the core test subset against it; not a PR gate — opens/updates a `dependency-watch` issue on failure |
 | `dependencies.yml` | `locked-advisory-audit` | daily cron (06:29 UTC) + weekly cron + `workflow_dispatch` + push/PR **iff** a lock or policy path changed (`pyproject.toml`, `uv.lock`, `frontend/package{,-lock}.json`, `scripts/check_dependency_audit.py`, `security/accepted-risks.toml`, the workflow) | **Yes on PR** | audits the *locked* dependency set against live advisory feeds (`pip-audit` pinned at 2.10.1; `npm audit` in `frontend/`). Every Python advisory blocks; only `high`/`critical` block for npm. Exit 1 = an advisory with no accepted risk, exit 2 = the policy file itself is wrong. Escape hatch is a reviewed entry in `security/accepted-risks.toml`, which is itself checked: an acceptance matching no live finding fails the audit, so the register cannot go stale. Opens/updates a `dependency-watch` issue on any non-PR failure. **Not a pure function of the tree** — it reads live data, so an unchanged lockfile can pass one day and block the next |
 | `frontend-shuffle.yml` | `frontend-shuffle` | `workflow_dispatch` + nightly cron (02:07 UTC) | **No** | frontend vitest suite under `--sequence.shuffle` to catch within-file test-order dependence; not a PR gate (ruled non-required 2026-07-15) — opens/updates a `shuffle-watch` issue on failure |
+| `write-sandbox-survey.yml` | `write-sandbox-survey` | `workflow_dispatch` + monthly cron (05:11 UTC on the 1st) | **No** | the suite with the test write sandbox forced strict, then `scripts/write_sandbox_promotions.py` names each module that passed whole and can join `strict` in `tests/write_sandbox.toml`; red while any remain — opens/updates a `sandbox-watch` issue, closed by the next green run on `main` |
 | `release.yml` | `check` → `build` → `publish` → `verify` → `github-release` | `workflow_dispatch` on `main` only (optional dry run) | **No** (a release, not a gate) | refuses unless `main`'s push CI passed for the commit and `[project] version` is `X.Y.Z`, not on PyPI, newer than every release and untagged (`scripts/check_release_version.py`) → `HAUTE_BUILD_FRONTEND=1 uv build --sdist --wheel` → wheel and sdist install smoke → PyPI trusted publishing (`pypi` environment, `main` only; files PyPI already has are skipped) → wait until PyPI serves exactly the built files (`scripts/verify_pypi_release.py`) → tag `vX.Y.Z` and GitHub release |
 
 ## Local mirror — gate by gate
@@ -73,7 +77,7 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
    three shards each, plus a non-blocking `backend-314-probe`. The shards
    together run exactly the unsharded suite, so one local run covers all of
    them; to reproduce a single CI shard, pass its `--shard`, e.g.
-   `uv run pytest tests/ -q -n 4 --shard=2/4` (add
+   `uv run pytest tests/ -q -n 4 --shard=2/4 --shard-lane=coverage` (add
    `-m "not perf and not meta"` for a `backend-compat` shard, whose count is 3).
    Preflight itself still runs one interpreter (the `.venv`). See
    "Multi-Python matrix" below.
@@ -113,27 +117,36 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
    (and the extras pulled in via the dev group's `haute[databricks]`) are
    honest — a red run means a dishonest floor, and raising it is a maintainer
    decision, not something a PR does unilaterally.
-6. **`perf`** → `uv run python scripts/run_perf_suite.py --output-dir .cache/perf`
+6. **`backend-process-mode`** →
+   `HAUTE_TEST_INTERACTIVE_EXECUTION_MODE=process uv run pytest tests/test_interactive_route_isolation.py tests/test_server.py tests/test_trace_api.py tests/test_trace_multi_frame.py tests/test_adversarial_inputs.py tests/test_security_gaps.py -q -n 4`.
+   Each test starts its own warm worker, so the lane is slower than the same
+   modules in thread mode.
+7. **`perf`** → `uv run python scripts/run_perf_suite.py --output-dir .cache/perf`
    (or `preflight.sh --backend-only --perf`, which wraps the same call).
-7. **`optional-deps-smoke`** → **separate venv + direct interpreter** (NOT
-   `uv run`). `uv run` re-syncs by default and would rip out the
-   manually-installed pytest/httpx (they aren't project deps). Run:
+8. **`optional-deps-smoke`** → **separate environment, never resynced.** The
+   lane installs the project with the `test-harness` dependency group alone
+   (pytest, pytest-asyncio, httpx and Hypothesis, which `tests/conftest.py`
+   imports), never the dev group, whose `haute[databricks]` would put the SQL
+   connector back. A bare `uv run` syncs the default groups back in, so every
+   command is `uv run --no-sync`:
    ```bash
-   uv venv .venv-coreonly --python 3.12
-   UV_PROJECT_ENVIRONMENT=.venv-coreonly uv sync --locked --no-group dev
-   uv pip install --python .venv-coreonly/bin/python pytest pytest-asyncio httpx
-   .venv-coreonly/bin/python -m pytest tests/test_optional_dependency_matrix.py -q
+   export UV_PROJECT_ENVIRONMENT=.venv-coreonly
+   uv sync --locked --no-default-groups --group test-harness --python 3.12
+   uv run --no-sync python -c "import importlib.util as u; import mlflow; assert u.find_spec('databricks.sql') is None"
+   uv run --no-sync pytest tests/test_optional_dependency_matrix.py -q
+   unset UV_PROJECT_ENVIRONMENT
    ```
    This is the lane that proves haute imports and runs with core MLflow but
    **no Databricks SQL connector**. MLflow itself depends transitively on
    `databricks-sdk`; the optional Haute extra adds the SQL connector and pins
-   the supported Databricks client versions. The `--python 3.12` matches CI's
-   interpreter; the direct
-   `.venv-coreonly/bin/python -m pytest` call avoids the `uv run` re-sync trap.
-8. **`optional-deps-present-smoke`** →
+   the supported Databricks client versions. The module skips itself in a full
+   development environment, so the lane checks the environment in a step of its
+   own: an environment with the connector fails there instead of passing with
+   every test skipped. The `--python 3.12` matches CI's interpreter.
+9. **`optional-deps-present-smoke`** →
    `uv run pytest tests/test_optional_dependency_extras.py -q` (dev group
    present; safe in the normal `.venv`).
-9. **`package-smoke`** ← **THE GAP THAT CATCHES A DEPENDENCY YANK.** Build the
+10. **`package-smoke`** ← **THE GAP THAT CATCHES A DEPENDENCY YANK.** Build the
    artifacts and install each into a throwaway venv, exactly as CI does (clean
    stale build dirs first, or the `*.whl` glob matches multiple files on rerun):
    ```bash
@@ -162,12 +175,12 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
    makes `uv build` compile the frontend into the wheel via `hatch_build.py`,
    which shells into `npm` — so Node must be on PATH); without it the
    package-smoke `_assert_static_assets_present()` check fails.
-10. **`platform-smoke`** → macOS leg runs locally:
+11. **`platform-smoke`** → macOS leg runs locally:
    `uv run pytest tests/test_path_resolution.py tests/test_pipeline_runtime_path_validation.py tests/test_test_debt.py tests/test_file_ops.py tests/test_write_sandbox_guard.py tests/test_data_io_roundtrips.py -q`.
    **Windows leg: cannot be mirrored on macOS** — see Deficiencies.
-11. **`mutation-config-smoke`** →
+12. **`mutation-config-smoke`** →
    `uv run python scripts/run_mutation_suite.py --dry-run --output-dir .mutation-plan --run-id ci`.
-12. **`browser-e2e`** →
+13. **`browser-e2e`** →
    `cd frontend && ./node_modules/.bin/playwright install chromium firefox && CI=1 npm run test:e2e`.
    CI runs this as two shards (`npm run test:e2e -- --shard=K/2`); one
    unsharded local run covers both.
@@ -180,7 +193,7 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
 
 ### Conditional workflows
 
-13. **`mutation.yml`** — runs on PR **only if** `src/haute/**/*.py`,
+14. **`mutation.yml`** — runs on PR **only if** `src/haute/**/*.py`,
     `tests/**/*.py`, `mutation/**`, `scripts/run_mutation_suite.py`, or the
     workflow itself changed. CI itself now runs this as three jobs
     (`plan` → matrix `shard` → `mutation` gate) so the mutant execution can be
@@ -195,14 +208,14 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
     ```
     Mutation testing mutates **source** (`src/haute`), so a PR that changed only
     a *test* file should map to few/zero mutation targets and finish fast —
-    **but confirm**, don't assume; the `--dry-run` from gate 11 reports the
+    **but confirm**, don't assume; the `--dry-run` from gate 12 reports the
     target plan cheaply first. (A test-only diff is *not* universally cheap: if
     it touches a target's declared `test_paths`, or touches `mutation/targets.json`,
     the full bounded run is selected.)
-14. **`docs.yml`** — not a PR gate, but a **post-merge** gate: a PR that touches
-    `docs/**` or `mkdocs.yml` won't fail the PR, yet **will** fail the docs
-    deploy when it lands on main if `mkdocs build --strict` breaks. Mirror when
-    docs change:
+15. **`docs.yml`** — the Pages deploy after a merge that touches `docs/**` or
+    `mkdocs.yml`. Its strict build also runs on every PR as `ci.yml`'s
+    `docs-build`, so a broken nav entry or dead link is red before the merge.
+    Mirror when docs change:
     ```bash
     uv run mkdocs build --strict
     ```
@@ -450,7 +463,7 @@ uv run python scripts/run_mutation_suite.py --output-dir mutation-artifacts --ch
   Gate B's `run_perf_suite.py` runs the Python perf lane, which mirrors
   `ci.yml`'s `perf` job, not `performance.yml`.
 - **`docs.yml` deploy step** — Pages deployment is not a correctness gate; the
-  gate is `mkdocs build --strict`, which is mirrored (conditional gate 14).
+  gate is `mkdocs build --strict`, which is mirrored (conditional gate 15).
   Docs CI runs on 3.11, so this is the one lane where the local 3.11 `.venv`
   and CI agree on interpreter.
 - **Artifact-upload steps across all jobs** — `actions/upload-artifact` /
@@ -473,6 +486,11 @@ uv run python scripts/run_mutation_suite.py --output-dir mutation-artifacts --ch
   instead, and its next green run on `main` closes it. Its core-subset assertion is already covered locally by the
   `dependency-floors` mirror (A-floors) and the canary subset (gate 4), just
   against a different resolution (latest-within-caps vs. locked vs. floors).
+- **`write-sandbox-survey.yml`** — excluded because it is **not a PR gate**
+  (`workflow_dispatch` + monthly cron). It runs the whole suite strict to find
+  the modules ready to join the strict set, which no diff can change by
+  itself. Reproduce one module with `HAUTE_TEST_WRITE_SANDBOX=strict uv run
+  pytest tests/<module> -q`.
 - **`frontend-shuffle.yml`** — excluded because it is **not a PR gate**
   (`workflow_dispatch` + nightly cron; explicitly ruled non-required
   2026-07-15, see the workflow's own comment). It catches within-file
@@ -527,14 +545,14 @@ and surfaced eight must-fixes, all since incorporated:
    before any slow run.
 5. **`browser-e2e` missing `CI=1`.** `playwright.config.ts` branches on `CI`
    for retry count (2 vs 0) and `reuseExistingServer`; without it local results
-   diverge from CI. `CI=1` added to the runlist (gate 12 / runlist E).
+   diverge from CI. `CI=1` added to the runlist (gate 13 / runlist E).
 6. **`package-smoke` ergonomics/safety.** Stale `dist-smoke` globs match
    multiple artifacts on rerun, and the matrix loop could clobber the ambient
    `.venv` that earlier gates depend on. Added `rm -rf` cleanup and per-leg
    `UV_PROJECT_ENVIRONMENT` isolation.
 7. **`package-smoke` oversold as bulletproof.** It resolves macOS-arm64 wheels,
    not the linux-x86-64 wheels CI resolves, so a linux-only missing/yanked
-   wheel passes locally and fails CI. Arch-sensitivity caveat added (gate 9 /
+   wheel passes locally and fails CI. Arch-sensitivity caveat added (gate 10 /
    Deficiency 3), with Docker named as the only local mirror.
 8. **Undocumented Node 22 / `HAUTE_BUILD_FRONTEND` coupling.** The backend
    `uv build` path shells into npm via `hatch_build.py`, so Node must be on

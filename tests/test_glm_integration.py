@@ -1176,6 +1176,7 @@ class TestGLMTermsEndToEnd:
         np.testing.assert_allclose(doubled, 2.0 * predictions, rtol=1e-9)
 
 
+@pytest.mark.meta
 def test_all_factors_is_gone():
     from pathlib import Path
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import gc
 import hashlib
 import os
 import tempfile
@@ -25,13 +24,17 @@ from haute._polars_dtypes import (
     wide_integer_column,
     wide_integer_message,
 )
-from haute._polars_utils import bounded_collect_batches, streaming_collect
+from haute._polars_utils import (
+    bounded_collect_batches,
+    read_parquet_metadata,
+    release_freed_memory,
+    streaming_collect,
+)
 from haute.errors import HauteError, HauteValidationError
 from haute.modelling._algorithms import (
     ALGORITHM_REGISTRY,
     TWEEDIE_LOSS_NEEDS_POWER,
     IterationCallback,
-    _malloc_trim,
     resolve_loss_function,
 )
 from haute.modelling._descriptors import (
@@ -2138,9 +2141,9 @@ class TrainingJob:
             except BaseException:
                 _remove_temp_parquet(data_path, context="training_input_parquet_write")
                 raise
+            freed_bytes = df.estimated_size()
             del df
-            gc.collect()
-            _malloc_trim()
+            release_freed_memory(freed_bytes)
             _mem_checkpoint("wrote temp parquet, freed df")
 
         try:
@@ -2401,8 +2404,8 @@ class TrainingJob:
             _remove_temp_parquet(split_path, context="training_split_parquet_write")
             raise
         del mask
-        gc.collect()
-        _malloc_trim()
+        # The sink streamed the whole training frame through this process.
+        release_freed_memory(read_parquet_metadata(Path(split_path))["uncompressed_size_bytes"])
 
         # Free the original temp parquet if we own it
         if owns_tmp and data_path != split_path:
@@ -2463,6 +2466,7 @@ class TrainingJob:
             execution_context=execution_context,
         )
         _mem_checkpoint(f"read train partition ({len(train_df):,} rows)")
+        train_bytes = train_df.estimated_size()
 
         def load_validation() -> pl.DataFrame:
             _report("Loading validation data", 0.25)
@@ -2509,9 +2513,9 @@ class TrainingJob:
                     **adapter_kwargs,
                 )
             _mem_checkpoint("frame-based algo.fit() returned")
+            eval_bytes = 0 if eval_df is None else eval_df.estimated_size()
             del train_df, eval_df
-            gc.collect()
-            _malloc_trim()
+            release_freed_memory(train_bytes + eval_bytes)
         else:
             # CatBoost: build memory-efficient pools, then fit
             from haute.modelling._algorithms import _build_pool
@@ -2533,8 +2537,7 @@ class TrainingJob:
             )
             train_features_df = train_df.select(features)
             del train_df
-            gc.collect()
-            _malloc_trim()
+            release_freed_memory(train_bytes)
             _mem_checkpoint("extracted labels, freed train_df")
 
             with _training_stage(execution_context, "training_build_train_pool"):
@@ -2547,13 +2550,14 @@ class TrainingJob:
                     baseline=train_baseline,
                 )
             del train_features_df, train_y, train_w, train_baseline
-            gc.collect()
-            _malloc_trim()
+            release_freed_memory(train_bytes)
             _mem_checkpoint("train pool built")
 
             eval_pool = None
+            eval_bytes = 0
             if has_validation:
                 eval_df = load_validation()
+                eval_bytes = eval_df.estimated_size()
                 _report("Building eval pool", 0.25)
                 val_y = eval_df[self.target].cast(pl.Float64).to_numpy()
                 val_w = eval_df[self.weight].cast(pl.Float64).to_numpy() if self.weight else None
@@ -2569,8 +2573,7 @@ class TrainingJob:
                 )
                 val_features_df = eval_df.select(features)
                 del eval_df
-                gc.collect()
-                _malloc_trim()
+                release_freed_memory(eval_bytes)
 
                 with _training_stage(execution_context, "training_build_eval_pool"):
                     eval_pool = _build_pool(
@@ -2582,8 +2585,7 @@ class TrainingJob:
                         baseline=val_baseline,
                     )
                 del val_features_df, val_y, val_w, val_baseline
-                gc.collect()
-                _malloc_trim()
+                release_freed_memory(eval_bytes)
                 _mem_checkpoint("eval pool built")
 
             _report("Training model", 0.3)
@@ -2607,8 +2609,7 @@ class TrainingJob:
                 )
             _mem_checkpoint("algo.fit() returned")
             del train_pool, eval_pool
-            gc.collect()
-            _malloc_trim()
+            release_freed_memory(train_bytes + eval_bytes)
             _mem_checkpoint("del pools")
 
         return _TrainModelResult(
@@ -2842,8 +2843,9 @@ class TrainingJob:
                 )
             except _METRIC_STAGE_FAILURE_TYPES as exc:
                 raise self._metric_stage_error(exc, evaluation_set="validation") from exc
+            freed_bytes = val_df.estimated_size()
             del val_df, val_y_true, val_y_pred, val_w
-            gc.collect()
+            release_freed_memory(freed_bytes)
 
         # ── Read the diagnostics partition ONCE — metrics + all diagnostics ──
         _report("Computing diagnostics", 0.8)
@@ -2997,8 +2999,9 @@ class TrainingJob:
             except Exception as exc:
                 _record_diag_error(diagnostics_errors, "tboost_tables", exc)
 
+        freed_bytes = diag_df.estimated_size()
         del diag_df, diag_row_order
-        gc.collect()
+        release_freed_memory(freed_bytes)
 
         # Clean up split parquet
         if split_result.owns_tmp and Path(data_path).exists():

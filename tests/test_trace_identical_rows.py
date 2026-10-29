@@ -15,7 +15,13 @@ from haute._trace_correlation import (
 )
 from haute._types import GraphNode, NodeData, NodeType
 from haute.trace import execute_trace, trace_result_to_dict
-from tests.conftest import make_edge, make_graph, make_source_node, make_transform_node
+from tests.conftest import (
+    head_frame_resolver,
+    make_edge,
+    make_graph,
+    make_source_node,
+    make_transform_node,
+)
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -94,16 +100,20 @@ def test_a_sorted_duplicate_row_is_traced_to_its_identical_source_rows() -> None
     unresolved: dict[str, tuple[str, int]] = {}
     positions: dict[str, int] = {}
 
+    frames = {"source": source, "ordered": ordered}
+    parents_of: dict[str, list[str]] = {"source": [], "ordered": ["source"]}
+    node_map = {
+        "source": _node("source", NodeType.DATA_INPUT),
+        "ordered": _node("ordered", NodeType.POLARS, 'df = source.sort("a", descending=True)'),
+    }
     rows = _correlate_rows_posthoc(
-        {"source": source, "ordered": ordered},
+        frames,
         ["source", "ordered"],
-        {"source": [], "ordered": ["source"]},
+        parents_of,
         "ordered",
         1,
-        node_map={
-            "source": _node("source", NodeType.DATA_INPUT),
-            "ordered": _node("ordered", NodeType.POLARS, 'df = source.sort("a", descending=True)'),
-        },
+        node_map=node_map,
+        row_scope=head_frame_resolver(frames, parents_of, "ordered", node_map),
         diagnostics=diagnostics,
         unresolved=unresolved,
         row_positions=positions,
@@ -128,22 +138,31 @@ def test_rows_made_identical_by_a_projection_do_not_name_a_source_row() -> None:
     diagnostics: list[dict[str, Any]] = []
     unresolved: dict[str, tuple[str, int]] = {}
 
+    frames = {"source": source, "projected": projected, "lookup": lookup, "joined": joined}
+    parents_of: dict[str, list[str]] = {
+        "source": [],
+        "lookup": [],
+        "projected": ["source"],
+        "joined": ["projected", "lookup"],
+    }
+    node_map = {
+        "source": _node("source", NodeType.DATA_INPUT),
+        "lookup": _node("lookup", NodeType.DATA_INPUT),
+        "projected": _node("projected", NodeType.POLARS, 'df = source.select("x")'),
+        "joined": _node(
+            "joined",
+            NodeType.POLARS,
+            'df = projected.join(lookup, on="x", how="left", maintain_order="left")',
+        ),
+    }
     rows = _correlate_rows_posthoc(
-        {"source": source, "projected": projected, "lookup": lookup, "joined": joined},
+        frames,
         ["source", "lookup", "projected", "joined"],
-        {"source": [], "lookup": [], "projected": ["source"], "joined": ["projected", "lookup"]},
+        parents_of,
         "joined",
         0,
-        node_map={
-            "source": _node("source", NodeType.DATA_INPUT),
-            "lookup": _node("lookup", NodeType.DATA_INPUT),
-            "projected": _node("projected", NodeType.POLARS, 'df = source.select("x")'),
-            "joined": _node(
-                "joined",
-                NodeType.POLARS,
-                'df = projected.join(lookup, on="x", how="left", maintain_order="left")',
-            ),
-        },
+        node_map=node_map,
+        row_scope=head_frame_resolver(frames, parents_of, "joined", node_map),
         diagnostics=diagnostics,
         unresolved=unresolved,
     )
@@ -263,14 +282,16 @@ def test_a_multi_frame_parent_keeps_the_winning_frames_identical_row_count() -> 
     edge = policies.join(rates, on="policy_id", how="inner", suffix="_right")
     diagnostics: list[dict[str, Any]] = []
 
+    frames: dict[str, Any] = {"api": {"policies": policies, "rates": rates}, "edge": edge}
+    edge_metadata = {("api", "edge"): [("policies", "base"), ("rates", "join")]}
     rows = _correlate_rows_posthoc(
-        {"api": {"policies": policies, "rates": rates}, "edge": edge},
+        frames,
         order=["api", "edge"],
         parents_of={"edge": ["api"]},
         target_node_id="edge",
         row_index=0,
         node_map=node_map,
-        edge_metadata={("api", "edge"): [("policies", "base"), ("rates", "join")]},
+        row_scope=head_frame_resolver(frames, {"edge": ["api"]}, "edge", node_map, edge_metadata),
         traced_column="rate",
         diagnostics=diagnostics,
     )
@@ -324,7 +345,6 @@ def test_a_row_scope_port_keeps_the_winning_ports_identical_row_count() -> None:
         target_node_id="priced",
         row_index=0,
         node_map=node_map,
-        edge_metadata=edge_metadata,
         traced_column="premium",
         row_scope=resolver,
         diagnostics=diagnostics,

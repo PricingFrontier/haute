@@ -31,6 +31,32 @@ def _assert_server_routes_present() -> None:
     assert not missing, f"Installed app is missing expected routes: {missing}"
 
 
+def _assert_within_declared_range(distribution: str, installed: str) -> None:
+    """*installed* is inside the range the installed haute declares for *distribution*.
+
+    The range is read from the wheel's own requirements, for this platform, so a
+    cap moved in pyproject.toml needs no edit here.
+    """
+    from importlib.metadata import requires
+
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    wanted = canonicalize_name(distribution)
+    declared = [
+        requirement.specifier
+        for requirement in map(Requirement, requires("haute") or ())
+        if canonicalize_name(requirement.name) == wanted
+        and (requirement.marker is None or requirement.marker.evaluate())
+    ]
+    assert len(declared) == 1, (
+        f"Expected haute to declare one requirement on {distribution} here; found {declared}"
+    )
+    assert declared[0].contains(installed, prereleases=True), (
+        f"{distribution} {installed} is outside the range haute declares ({declared[0]})"
+    )
+
+
 def _assert_one_xgboost_distribution() -> None:
     """``xgboost`` and ``xgboost-cpu`` install the same import package; never both."""
     from importlib.metadata import PackageNotFoundError, version
@@ -38,7 +64,7 @@ def _assert_one_xgboost_distribution() -> None:
     installed = []
     for distribution in ("xgboost", "xgboost-cpu"):
         try:
-            installed.append(f"{distribution} {version(distribution)}")
+            installed.append((distribution, version(distribution)))
         except PackageNotFoundError:
             continue
     assert len(installed) == 1, (
@@ -47,7 +73,7 @@ def _assert_one_xgboost_distribution() -> None:
     )
     import xgboost
 
-    assert xgboost.__version__.startswith("3.2."), xgboost.__version__
+    _assert_within_declared_range(installed[0][0], xgboost.__version__)
 
 
 def _assert_model_engines() -> None:
@@ -55,9 +81,9 @@ def _assert_model_engines() -> None:
     import interpret
     import lightgbm
 
-    assert lightgbm.__version__.startswith("4."), lightgbm.__version__
+    _assert_within_declared_range("lightgbm", lightgbm.__version__)
     # An .ebm loads only under the exact interpret-core version its contract records.
-    assert interpret.__version__.startswith("0.7."), interpret.__version__
+    _assert_within_declared_range("interpret-core", interpret.__version__)
     from haute.modelling._algorithms import ALGORITHM_REGISTRY
 
     assert set(ALGORITHM_REGISTRY) >= {"catboost", "glm", "xgboost", "lightgbm", "ebm"}

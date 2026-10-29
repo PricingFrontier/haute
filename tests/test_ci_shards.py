@@ -7,6 +7,7 @@ import json
 import re
 import xml.etree.ElementTree as ElementTree
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -53,13 +54,29 @@ def _write_json(path: Path, payload: object) -> Path:
     return path
 
 
-def test_a_version_one_durations_file_loads_as_seconds_per_module(tmp_path: Path) -> None:
+def _lanes(**tables: dict[str, object]) -> dict[str, object]:
+    return {"version": 2, "lanes": tables}
+
+
+def test_each_lane_reads_its_own_table(tmp_path: Path) -> None:
     path = _write_json(
         tmp_path / "durations.json",
-        {"version": 1, "files": {"tests/test_a.py": 2, "tests/sub/test_b.py": 0.5}},
+        _lanes(
+            coverage={"tests/test_a.py": 2, "tests/sub/test_b.py": 0.5},
+            compat={"tests/test_a.py": 1.25},
+        ),
     )
 
-    assert load_durations(path) == {"tests/test_a.py": 2.0, "tests/sub/test_b.py": 0.5}
+    assert load_durations(path, "coverage") == {"tests/test_a.py": 2.0, "tests/sub/test_b.py": 0.5}
+    assert load_durations(path, "compat") == {"tests/test_a.py": 1.25}
+
+
+def test_a_lane_without_a_table_is_refused_naming_the_tables_there(tmp_path: Path) -> None:
+    path = _write_json(tmp_path / "durations.json", _lanes(coverage={}, compat={}))
+
+    with pytest.raises(ValueError, match=re.escape("no durations for lane 'nightly'")) as raised:
+        load_durations(path, "nightly")
+    assert "['compat', 'coverage']" in str(raised.value)
 
 
 @pytest.mark.parametrize(
@@ -68,19 +85,20 @@ def test_a_version_one_durations_file_loads_as_seconds_per_module(tmp_path: Path
         (None, "Cannot read test durations"),
         ("{not json", "Cannot read test durations"),
         ([], "must be a JSON object"),
-        ({"version": 2, "files": {}}, "must be a JSON object"),
-        ({"version": 1}, "must be a JSON object"),
-        ({"version": 1, "files": {}, "source": "x"}, "must be a JSON object"),
-        ({"version": 1, "files": []}, "must be a JSON object"),
-        ({"version": 1, "files": {"/tests/test_a.py": 1}}, "not a repository-relative"),
-        ({"version": 1, "files": {"tests/../test_a.py": 1}}, "not a repository-relative"),
-        ({"version": 1, "files": {"tests\\test_a.py": 1}}, "not a repository-relative"),
-        ({"version": 1, "files": {"tests//test_a.py": 1}}, "not a repository-relative"),
-        ({"version": 1, "files": {"tests/test_a.txt": 1}}, "not a repository-relative"),
-        ({"version": 1, "files": {"tests/test_a.py": -1}}, "must be finite and >= 0"),
-        ({"version": 1, "files": {"tests/test_a.py": float("nan")}}, "must be finite and >= 0"),
-        ({"version": 1, "files": {"tests/test_a.py": True}}, "must be finite and >= 0"),
-        ({"version": 1, "files": {"tests/test_a.py": "1"}}, "must be finite and >= 0"),
+        ({"version": 1, "files": {}}, "must be a JSON object"),
+        ({"version": 2}, "must be a JSON object"),
+        ({"version": 2, "lanes": {}, "source": "x"}, "must be a JSON object"),
+        ({"version": 2, "lanes": []}, "must be a JSON object"),
+        ({"version": 2, "lanes": {"ci": []}}, "must be a JSON object"),
+        (_lanes(ci={"/tests/test_a.py": 1}), "not a repository-relative"),
+        (_lanes(ci={"tests/../test_a.py": 1}), "not a repository-relative"),
+        (_lanes(ci={"tests\\test_a.py": 1}), "not a repository-relative"),
+        (_lanes(ci={"tests//test_a.py": 1}), "not a repository-relative"),
+        (_lanes(ci={"tests/test_a.txt": 1}), "not a repository-relative"),
+        (_lanes(ci={"tests/test_a.py": -1}), "must be finite and >= 0"),
+        (_lanes(ci={"tests/test_a.py": float("nan")}), "must be finite and >= 0"),
+        (_lanes(ci={"tests/test_a.py": True}), "must be finite and >= 0"),
+        (_lanes(ci={"tests/test_a.py": "1"}), "must be finite and >= 0"),
     ],
 )
 def test_a_malformed_durations_file_is_refused(
@@ -93,7 +111,7 @@ def test_a_malformed_durations_file_is_refused(
         _write_json(path, contents)
 
     with pytest.raises(ValueError, match=re.escape(message)) as raised:
-        load_durations(path)
+        load_durations(path, "ci")
     assert str(path) in str(raised.value)
 
 
@@ -171,6 +189,23 @@ def test_a_module_without_a_recorded_duration_goes_to_its_hashed_shard(tmp_path:
     assert selection.pytest_ignore_collect(tmp_path / "tests" / "test_example.py") is True
 
 
+def test_a_shard_runs_its_longest_modules_first_each_in_its_own_order(tmp_path: Path) -> None:
+    _touch(tmp_path, "tests/test_a.py", "tests/test_b.py", "tests/test_c.py", "tests/test_d.py")
+    durations = {"tests/test_a.py": 2.0, "tests/test_b.py": 9.0, "tests/test_c.py": 4.0}
+    selection = ShardSelection(ShardSpec(1, 1), durations, tmp_path, ["test_*.py"])
+    items: list[Any] = [
+        SimpleNamespace(path=tmp_path / "tests" / f"test_{module}.py", name=f"{module}{index}")
+        for module in "abcd"
+        for index in (1, 2)
+    ]
+
+    selection.pytest_collection_modifyitems(items)
+
+    # test_d is unrecorded and counts as the median, 4 s: a tie with test_c, which
+    # keeps their collection order.
+    assert [item.name for item in items] == ["b1", "b2", "c1", "c2", "d1", "d2", "a1", "a2"]
+
+
 def test_python_files_patterns_naming_directories_are_refused(tmp_path: Path) -> None:
     with pytest.raises(pytest.UsageError, match="unsupported patterns"):
         ShardSelection(ShardSpec(1, 2), {}, tmp_path, ["test_*.py", "checks/check_*.py"])
@@ -225,7 +260,7 @@ def _sharded_project(pytester: pytest.Pytester) -> set[str]:
             }
         )
     (pytester.path / "durations.json").write_text(
-        json.dumps({"version": 1, "files": _RECORDED}), encoding="utf-8"
+        json.dumps({"version": 2, "lanes": {"ci": _RECORDED}}), encoding="utf-8"
     )
     return {f"{module}.py::{test}" for module in _MODULES for test in ("test_one", "test_two")}
 
@@ -250,7 +285,9 @@ def test_the_shards_of_a_lane_run_every_test_exactly_once(pytester: pytest.Pytes
 
     per_shard = []
     for index in (1, 2, 3):
-        result = pytester.runpytest(f"--shard={index}/3", "--shard-durations=durations.json")
+        result = pytester.runpytest(
+            f"--shard={index}/3", "--shard-lane=ci", "--shard-durations=durations.json"
+        )
         result.stdout.fnmatch_lines([f"shard {index}/3: * recorded test modules*"])
         passed = _passed(result)
         # A module outside the shard is ignored before it is ever imported.
@@ -260,6 +297,37 @@ def test_the_shards_of_a_lane_run_every_test_exactly_once(pytester: pytest.Pytes
     assert sum(len(passed) for passed in per_shard) == len(every_test)
     assert set().union(*per_shard) == every_test
     assert all(passed for passed in per_shard)
+
+
+def _module_order(result: pytest.RunResult) -> list[str]:
+    calls = [
+        report.nodeid.split(".py::")[0]
+        for report in result.reprec.getreports("pytest_runtest_logreport")
+        if report.when == "call"
+    ]
+    return list(dict.fromkeys(calls))
+
+
+def test_a_sharded_run_executes_its_longest_modules_first(pytester: pytest.Pytester) -> None:
+    _sharded_project(pytester)
+
+    sharded = pytester.runpytest(
+        "--shard=1/1", "--shard-lane=ci", "--shard-durations=durations.json"
+    )
+
+    # alpha 9 s, beta 6, gamma 4 and delta 1 are recorded; epsilon and zeta count as
+    # the median, 5 s, and keep their collection order.
+    assert _module_order(sharded) == [
+        "test_alpha",
+        "test_beta",
+        "test_epsilon",
+        "test_zeta",
+        "test_gamma",
+        "test_delta",
+    ]
+    sharded.stdout.fnmatch_lines(["shard 1/1: *; longest modules first"])
+    # An unsharded run keeps pytest's own order.
+    assert _module_order(pytester.runpytest()) == sorted(_MODULES)
 
 
 def _passed_in_summary(result: pytest.RunResult) -> set[str]:
@@ -272,7 +340,7 @@ def test_xdist_workers_select_the_same_modules_as_a_single_process(
     pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _sharded_project(pytester)
-    args = ("--shard=2/3", "--shard-durations=durations.json")
+    args = ("--shard=2/3", "--shard-lane=ci", "--shard-durations=durations.json")
     single = _passed(pytester.runpytest(*args))
     # xdist hands workers the sys.path its controller had when xdist was imported, so the
     # controller is a subprocess started with the repository (tests._ci_shards) importable.
@@ -288,9 +356,18 @@ def test_xdist_workers_select_the_same_modules_as_a_single_process(
 @pytest.mark.parametrize(
     ("args", "message"),
     [
-        (["--shard=4/3"], "expected K/N with 1 <= K <= N"),
-        (["--shard=1/2", "--shard-durations=missing.json"], "Cannot read test durations"),
+        (["--shard=4/3", "--shard-lane=ci"], "expected K/N with 1 <= K <= N"),
+        (
+            ["--shard=1/2", "--shard-lane=ci", "--shard-durations=missing.json"],
+            "Cannot read test durations",
+        ),
+        (["--shard=1/2", "--shard-durations=durations.json"], "--shard requires --shard-lane"),
+        (
+            ["--shard=1/2", "--shard-lane=nightly", "--shard-durations=durations.json"],
+            "no durations for lane 'nightly'",
+        ),
         (["--shard-durations=durations.json"], "--shard-durations requires --shard"),
+        (["--shard-lane=ci"], "--shard-lane requires --shard"),
     ],
 )
 def test_a_bad_shard_request_fails_before_collection(
@@ -335,20 +412,97 @@ def test_the_refresh_sums_each_modules_test_case_times(tmp_path: Path) -> None:
         _case("tests\\test_b.py", "test_one", "4.04"),
         _case("tests/test_c.py", "test_one", "0.01"),
     )
-    output = tmp_path / "durations.json"
+    output = _write_json(tmp_path / "durations.json", _lanes(compat={"tests/test_a.py": 9.0}))
 
-    assert refresh_test_durations.main([str(reports), "--output", str(output)]) == 0
+    assert (
+        refresh_test_durations.main([str(reports), "--lane", "coverage", "--output", str(output)])
+        == 0
+    )
 
     assert json.loads(output.read_text(encoding="utf-8")) == {
-        "version": 1,
-        "files": {"tests/test_a.py": 1.6, "tests/test_b.py": 4.0, "tests/test_c.py": 0.0},
+        "version": 2,
+        "lanes": {
+            # The other lane's table is kept.
+            "compat": {"tests/test_a.py": 9.0},
+            "coverage": {"tests/test_a.py": 1.6, "tests/test_b.py": 4.0, "tests/test_c.py": 0.0},
+        },
     }
     # The shard selection reads exactly what the refresh writes.
-    assert load_durations(output) == {
+    assert load_durations(output, "coverage") == {
         "tests/test_a.py": 1.6,
         "tests/test_b.py": 4.0,
         "tests/test_c.py": 0.0,
     }
+
+
+def test_the_refresh_keeps_each_modules_median_across_runs(tmp_path: Path) -> None:
+    # Three runs of two shards; each run sees the same test once, so a run is one table.
+    runs = tmp_path / "junit"
+    for run, (a, b) in enumerate((("1.0", "8.0"), ("3.0", "2.0"), ("2.0", "4.0")), start=1):
+        _report(runs / f"run{run}" / "shard1" / "report.xml", _case("tests/test_a.py", "t", a))
+        _report(runs / f"run{run}" / "shard2" / "report.xml", _case("tests/test_b.py", "t", b))
+    # A module only the latest run has keeps that run's time.
+    _report(runs / "run3" / "shard2" / "new.xml", _case("tests/test_new.py", "t", "5.0"))
+    output = _write_json(tmp_path / "durations.json", _lanes(coverage={"tests/test_a.py": 9.0}))
+
+    assert (
+        refresh_test_durations.main(
+            [
+                *(str(runs / f"run{run}") for run in (1, 2, 3)),
+                "--median-of-runs",
+                "--lane",
+                "compat",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+
+    assert load_durations(output, "compat") == {
+        "tests/test_a.py": 2.0,
+        "tests/test_b.py": 4.0,
+        "tests/test_new.py": 5.0,
+    }
+    assert load_durations(output, "coverage") == {"tests/test_a.py": 9.0}
+
+
+def test_without_median_of_runs_two_runs_of_one_test_are_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for run in (1, 2):
+        _report(tmp_path / f"run{run}" / "report.xml", _case("tests/test_a.py", "t", "1"))
+    output = tmp_path / "durations.json"
+
+    assert (
+        refresh_test_durations.main(
+            [
+                str(tmp_path / "run1"),
+                str(tmp_path / "run2"),
+                "--lane",
+                "compat",
+                "--output",
+                str(output),
+            ]
+        )
+        == 2
+    )
+    assert "appears twice" in capsys.readouterr().err
+    assert not output.exists()
+
+
+def test_the_refresh_will_not_overwrite_a_file_it_cannot_read_as_lanes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    report = _report(tmp_path / "report.xml", _case("tests/test_a.py", "test_one", "1"))
+    output = _write_json(tmp_path / "durations.json", {"version": 1, "files": {}})
+
+    assert (
+        refresh_test_durations.main([str(report), "--lane", "compat", "--output", str(output)]) == 2
+    )
+
+    assert "refusing to overwrite the other lanes' tables" in capsys.readouterr().err
+    assert json.loads(output.read_text(encoding="utf-8")) == {"version": 1, "files": {}}
 
 
 @pytest.mark.parametrize(
@@ -372,7 +526,10 @@ def test_the_refresh_refuses_reports_it_cannot_trust(
     report = _report(tmp_path / "report.xml", *cases)
     output = tmp_path / "durations.json"
 
-    assert refresh_test_durations.main([str(report), "--output", str(output)]) == 2
+    assert (
+        refresh_test_durations.main([str(report), "--lane", "coverage", "--output", str(output)])
+        == 2
+    )
 
     assert message in capsys.readouterr().err
     assert not output.exists()
@@ -384,7 +541,11 @@ def test_the_refresh_refuses_an_unreadable_report(
     report = tmp_path / "report.xml"
     report.write_text("<testsuites><testcase", encoding="utf-8")
 
-    assert refresh_test_durations.main([str(report), "--output", str(tmp_path / "out.json")]) == 2
+    output = tmp_path / "out.json"
+    assert (
+        refresh_test_durations.main([str(report), "--lane", "coverage", "--output", str(output)])
+        == 2
+    )
     assert "Cannot read JUnit report" in capsys.readouterr().err
 
 
@@ -406,6 +567,7 @@ def _shard_count(job: dict[str, Any]) -> int | None:
     return counts.pop() if counts else None
 
 
+@pytest.mark.meta
 def test_every_sharded_ci_job_runs_each_of_its_shards_once() -> None:
     sharded = {}
     for name, job in _ci_jobs().items():
@@ -418,6 +580,7 @@ def test_every_sharded_ci_job_runs_each_of_its_shards_once() -> None:
     assert set(sharded) == {"backend-coverage-shard", "backend-compat", "browser-e2e"}
 
 
+@pytest.mark.meta
 def test_the_coverage_gate_combines_exactly_the_coverage_shards() -> None:
     jobs = _ci_jobs()
     shards = _shard_count(jobs["backend-coverage-shard"])
@@ -442,12 +605,36 @@ def test_the_coverage_gate_combines_exactly_the_coverage_shards() -> None:
     assert combined == [[f".coverage.shard{index}" for index in range(1, shards + 1)]]
 
 
-def test_the_refresh_recipe_downloads_the_coverage_shards_junit_artifacts() -> None:
-    uploads = [
+def _uploads(job: dict[str, Any]) -> list[str]:
+    return [
         step["with"]["name"]
-        for step in _ci_jobs()["backend-coverage-shard"]["steps"]
+        for step in job["steps"]
         if step.get("uses", "").startswith("actions/upload-artifact")
     ]
 
-    assert "backend-junit-${{ matrix.shard }}" in uploads
-    assert '--pattern "backend-junit-*"' in (refresh_test_durations.__doc__ or "")
+
+@pytest.mark.meta
+def test_the_refresh_recipe_downloads_each_lanes_junit_artifacts() -> None:
+    jobs = _ci_jobs()
+    recipe = refresh_test_durations.__doc__ or ""
+
+    assert "backend-junit-${{ matrix.shard }}" in _uploads(jobs["backend-coverage-shard"])
+    assert '--pattern "backend-junit-*"' in recipe
+    assert "backend-compat-junit-${{ matrix.python-version }}-${{ matrix.shard }}" in _uploads(
+        jobs["backend-compat"]
+    )
+    assert '--pattern "backend-compat-junit-3.13-*"' in recipe
+    assert "--lane coverage" in recipe and "--lane compat" in recipe
+
+
+@pytest.mark.meta
+def test_each_sharded_backend_lane_balances_on_a_table_the_durations_file_records() -> None:
+    lanes = {
+        name: re.findall(r"--shard-lane=(\S+)", "\n".join(_runs(job)))
+        for name, job in _ci_jobs().items()
+        if name in {"backend-coverage-shard", "backend-compat"}
+    }
+
+    assert lanes == {"backend-coverage-shard": ["coverage"], "backend-compat": ["compat"]}
+    for lane in ("coverage", "compat"):
+        assert load_durations(REPO_ROOT / "scripts" / "test_file_durations.json", lane)

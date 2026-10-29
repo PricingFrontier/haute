@@ -469,7 +469,9 @@ in the manifest as `container_dependencies`, pick
 an image tag (`<registry>/<model_name>:<git_sha>` or `<model_name>:<git_sha>`; the short
 SHA is read through the git command core's `_run_git_ok`, falling back to `"local"` when
 git is not installed or the directory is not a git repository), `docker build`, then
-`docker push` only if a registry is configured.
+`docker push` only if a registry is configured. The deploy logs in to no registry: the
+push uses whatever `docker login` ran before it, which a generated container workflow
+runs ([pipeline-config](../pipeline-config/low-level.md)).
 
 The manifest paths are resolved by the generated runtime against the image's
 `WORKDIR /app`. `_container.py`'s `artifacts/<file>` remapping and the Dockerfile's

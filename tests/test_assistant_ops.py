@@ -1283,6 +1283,7 @@ class TestRenameNode:
         assert "'sink'" in str(excinfo.value) and "'renamed'" in str(excinfo.value)
         assert excinfo.value.where["node"] == "sink"
 
+    @pytest.mark.meta
     def test_rename_reconciliation_covers_every_field_the_editor_reconciles(self):
         """The editor's rename plan and this operation rewrite the same fields.
 

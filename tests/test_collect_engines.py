@@ -47,6 +47,7 @@ def engineless_collects(source: str) -> list[int]:
     return sorted(lines)
 
 
+@pytest.mark.meta
 def test_every_collect_in_haute_names_its_engine() -> None:
     reports = [
         f"src/haute/{path.relative_to(SRC).as_posix()}:{line}"

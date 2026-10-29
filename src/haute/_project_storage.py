@@ -130,6 +130,8 @@ PROJECT_DIR_ENV = "HAUTE_PROJECT_DIR"
 DEFAULT_GIT_USERNAME = "x-access-token"
 _BINDING_FILE = "binding.json"
 _BINDING_PREFIX = "haute-apps"
+# The binding record's keys, as StorageBinding.to_json writes them.
+_BINDING_KEYS = ("remote_url", "branch", "bound_by", "bound_at")
 # https for real remotes; file:// is the local/bare-repo transport used by
 # tests and offline experiments. Plain http and ssh are refused: the former
 # would carry a token in clear, the latter needs key material this deployment
@@ -169,24 +171,39 @@ class StorageBinding:
 
     @classmethod
     def from_payload(cls, payload: Any) -> StorageBinding:
-        """Parse a stored record, tolerating fields a newer haute added.
+        """Parse a stored record: exactly the record ``to_json`` writes.
 
-        Unknown keys are ignored on purpose: a container running an older
-        haute must not be bricked by a record written by a newer one.
+        An unknown, missing or malformed key is refused by name; nothing is
+        dropped or coerced.
         """
         if not isinstance(payload, dict):
             raise StorageUnavailableError("The stored binding record is not an object.")
-        remote_url = payload.get("remote_url")
-        if not isinstance(remote_url, str) or not remote_url.strip():
-            raise StorageUnavailableError("The stored binding record has no remote URL.")
-        branch = payload.get("branch")
-        bound_by = payload.get("bound_by")
-        bound_at = payload.get("bound_at")
+        unknown = sorted(set(payload) - set(_BINDING_KEYS))
+        if unknown:
+            raise StorageUnavailableError(
+                f"The stored binding record has unknown key(s) {', '.join(unknown)}; "
+                f"its keys are {', '.join(_BINDING_KEYS)}."
+            )
+        missing = [key for key in _BINDING_KEYS if key not in payload]
+        if missing:
+            raise StorageUnavailableError(f"The stored binding record has no {', '.join(missing)}.")
+        remote_url = payload["remote_url"]
+        if not isinstance(remote_url, str) or not remote_url or remote_url != remote_url.strip():
+            raise StorageUnavailableError(
+                "The stored binding record's remote_url is not a non-empty string "
+                "without surrounding whitespace."
+            )
+        for key in _BINDING_KEYS[1:]:
+            value = payload[key]
+            if value is not None and not (isinstance(value, str) and value):
+                raise StorageUnavailableError(
+                    f"The stored binding record's {key} is neither a non-empty string nor null."
+                )
         return cls(
-            remote_url=remote_url.strip(),
-            branch=branch if isinstance(branch, str) and branch else None,
-            bound_by=bound_by if isinstance(bound_by, str) and bound_by else None,
-            bound_at=bound_at if isinstance(bound_at, str) and bound_at else None,
+            remote_url=remote_url,
+            branch=payload["branch"],
+            bound_by=payload["bound_by"],
+            bound_at=payload["bound_at"],
         )
 
 

@@ -460,6 +460,7 @@ class TestJobStoreAtomicUpdateEnforced:
         assert final["key_a"] == n_ops - 1
         assert final["key_b"] == n_ops - 1
 
+    @pytest.mark.meta
     def test_routes_migrate_to_atomic_update(self) -> None:
         """Structural: every ``update_job`` call in the routes package
         must be migrated to ``atomic_update``, OR ``update_job`` itself

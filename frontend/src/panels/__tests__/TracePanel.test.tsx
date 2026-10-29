@@ -87,7 +87,72 @@ describe("TracePanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Download trace as Markdown" }))
 
     await waitFor(() => expect(downloadTextFile).toHaveBeenCalledTimes(1), { timeout: DOWNLOAD_TIMEOUT_MS })
-    expect(screen.getByRole("alert")).toHaveTextContent("The trace could not be exported")
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "The trace could not be downloaded: this browser cannot save files from the page.",
+    )
+  })
+
+  it("says the browser refused clipboard access when a copy is denied", async () => {
+    const writeText = vi.fn().mockRejectedValue(new DOMException("Denied", "NotAllowedError"))
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true })
+    render(<TracePanel trace={makeTrace()} onClose={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy trace as Markdown" }))
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "The trace could not be copied: the browser refused clipboard access.",
+      ),
+    { timeout: DOWNLOAD_TIMEOUT_MS })
+  })
+
+  it("says the browser blocked the print window", async () => {
+    vi.spyOn(window, "open").mockReturnValue(null)
+    render(<TracePanel trace={makeTrace()} onClose={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Print trace" }))
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "The trace could not be printed: the browser blocked the print window.",
+      ),
+    )
+  })
+
+  it("explains an ambiguous source frame as a source-frame gap", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          column: null,
+          steps: [makeStep({ node_id: "target", node_name: "Target", topological_rank: 1 })],
+          omissions: [{
+            node_id: "api",
+            node_name: "API",
+            node_type: "apiInput",
+            topological_rank: 0,
+            reason: "ambiguous_source_frame",
+            diagnostic_index: 0,
+          }],
+          correlation_diagnostics: [{
+            code: "ambiguous_source_frame",
+            severity: "warning",
+            reason: "ambiguous_source_frame",
+            message: "Two frames matched.",
+            node_id: "api",
+            child_node_id: "target",
+            match_columns: [],
+            ignored_columns: [],
+            matched_row_indices: [],
+            seed_node_ids: [],
+          }],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByTestId("trace-omission-api")).toHaveTextContent(
+      "The contributing source frame could not be identified safely.",
+    )
   })
 
   it("surfaces a model-score enrichment failure instead of calculation output", () => {

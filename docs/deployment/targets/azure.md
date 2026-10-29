@@ -75,26 +75,16 @@ dir = "tests/quotes"
 
 ## Step 2: Add credentials to CI
 
-CI needs registry credentials to push images to ACR. Credentials for a manual Container Apps revision update belong to the tool and process your platform team uses, not to Haute's current adapter.
+CI needs the service principal's credentials to push images to ACR. Credentials for a manual Container Apps revision update belong to the tool and process your platform team uses, not to Haute's current adapter.
 
 | Secret name | Value |
 |---|---|
-| `DOCKER_USERNAME` | Your ACR name (e.g. `pricingregistry`) |
-| `DOCKER_PASSWORD` | Your ACR admin password or service principal secret |
 | `AZURE_SUBSCRIPTION_ID` | Your Azure subscription ID |
 | `AZURE_TENANT_ID` | Your Azure tenant ID |
 | `AZURE_CLIENT_ID` | Your service principal app ID |
 | `AZURE_CLIENT_SECRET` | Your service principal password |
 
-Haute pushes with a plain `docker push` and does not log in to ACR, and the generated workflows do not either. Until they do, add a login line before `haute deploy` in both the staging and the production deploy step of your workflow file, for example on GitHub Actions:
-
-```yaml
-        run: |
-          echo "$DOCKER_PASSWORD" | docker login pricingregistry.azurecr.io --username "$DOCKER_USERNAME" --password-stdin
-          uv run haute deploy --endpoint-suffix "-staging"
-```
-
-With a service principal, `DOCKER_USERNAME` is its app ID.
+Before each staging and production deploy, the generated workflow logs in to the ACR login server in `registry` as the service principal, with `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`. It must be allowed to push there: the `AcrPush` role on the registry, or Contributor on its resource group, as the [setup below](#infrastructure-setup-one-time-done-by-it) creates it.
 
 How to add them depends on your CI provider - see [GitHub Actions](../ci/github-actions.md#step-1-add-your-credentials-as-github-secrets), [GitLab](../ci/gitlab.md#step-1-add-your-credentials-as-cicd-variables), or [Azure DevOps](../ci/azure-devops.md#step-1-create-a-variable-group-for-credentials).
 
@@ -158,7 +148,7 @@ print(response.json())
 
 ### "Access denied" when pushing to ACR
 
-Check that your Docker credentials are correct. If using admin credentials, make sure admin access is enabled on the ACR. If using a service principal, check it has the `AcrPush` role on the registry.
+Check that `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET` are the service principal's app ID and password, and that it has the `AcrPush` role on the registry or Contributor on its resource group.
 
 ### Container app not starting
 

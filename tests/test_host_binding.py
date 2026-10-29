@@ -31,9 +31,11 @@ from haute.cli._serve import (
 
 
 @pytest.fixture(autouse=True)
-def port_available() -> None:
-    with patch("haute.cli._serve._port_is_available", return_value=True):
-        yield
+def port_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Through the test's own MonkeyPatch, which the suite's autouse fixtures set
+    # up first and undo last: a patch() undone before it would let a test's own
+    # monkeypatch of the probe restore this always-free one for every later test.
+    monkeypatch.setattr("haute.cli._serve._port_is_available", lambda *_: True)
 
 
 def test_cli_default_host_uses_browser_safe_localhost_authority() -> None:

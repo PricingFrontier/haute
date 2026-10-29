@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -263,7 +264,7 @@ def seed_deep(project_root: Path, milestones: int = 51) -> SeededTopology:
     )
 
 
-CASES = {"rich": seed_rich, "deep": seed_deep}
+CASES: dict[str, Callable[[Path], SeededTopology]] = {"rich": seed_rich, "deep": seed_deep}
 
 
 def main(argv: list[str] | None = None) -> int:

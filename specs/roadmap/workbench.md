@@ -175,10 +175,9 @@ the run failed and the copy to restore named.
 
 **Dependencies:** WB-10 (the store and its migrations), WB-11 (the export
 the app's tests make, once its formats are decided) and WB-12 (the test quotes). The Azure
-resources and identities, provided by the project's IT team. Shared ground with
-[BUG-24](bugs.md#bug-24--container-deploys-log-in-to-their-registry) (the registry login
-before a push); impact's input is the `[safety]` portfolio sample, or the test
-quotes without one.
+resources and identities, provided by the project's IT team. The generated deploy jobs
+already log in to the registry before a push; impact's input is the `[safety]` portfolio
+sample, or the test quotes without one.
 
 **Evidence:** `src/haute/_scaffold.py::github_deploy_yml`, `::github_deploy_prod_yml`,
 `::gitlab_ci_yml`, `::azure_devops_yml` and `::_build_only_notice` (the generated workflows,

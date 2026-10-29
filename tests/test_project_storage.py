@@ -451,15 +451,38 @@ class TestBindingRecord:
         )
         assert StorageBinding.from_payload(json.loads(binding.to_json())) == binding
 
-    def test_unknown_fields_are_tolerated(self) -> None:
-        """A record written by a newer haute must not brick an older container."""
-        binding = StorageBinding.from_payload(
-            {"remote_url": "https://host/r.git", "future_field": {"nested": 1}}
-        )
-        assert binding.remote_url == "https://host/r.git"
-        assert binding.branch is None
+    def test_an_unknown_key_is_refused_by_name(self) -> None:
+        payload = json.loads(StorageBinding(remote_url="https://host/r.git").to_json())
+        payload["future_field"] = {"nested": 1}
+        with pytest.raises(StorageUnavailableError, match="future_field"):
+            StorageBinding.from_payload(payload)
 
-    @pytest.mark.parametrize("payload", [{}, {"remote_url": "  "}, [], "text"])
+    @pytest.mark.parametrize("key", ["remote_url", "branch", "bound_by", "bound_at"])
+    def test_a_missing_key_is_refused_by_name(self, key: str) -> None:
+        payload = json.loads(StorageBinding(remote_url="https://host/r.git").to_json())
+        del payload[key]
+        with pytest.raises(StorageUnavailableError, match=key):
+            StorageBinding.from_payload(payload)
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("remote_url", None),
+            ("remote_url", "  "),
+            ("remote_url", " https://host/r.git"),
+            ("branch", 5),
+            ("branch", ""),
+            ("bound_by", ""),
+            ("bound_at", ["2026-07-30"]),
+        ],
+    )
+    def test_a_malformed_value_is_refused_by_name(self, key: str, value: object) -> None:
+        payload = json.loads(StorageBinding(remote_url="https://host/r.git").to_json())
+        payload[key] = value
+        with pytest.raises(StorageUnavailableError, match=key):
+            StorageBinding.from_payload(payload)
+
+    @pytest.mark.parametrize("payload", [{}, [], "text"])
     def test_malformed_records_fail_loudly(self, payload: object) -> None:
         with pytest.raises(StorageUnavailableError):
             StorageBinding.from_payload(payload)

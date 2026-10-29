@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextvars
+import gc
 import math
 import shutil
 import tempfile
@@ -958,6 +959,25 @@ def read_parquet_metadata(path: Path) -> dict[str, Any]:
         "column_compressed_size_bytes": column_compressed_size_bytes,
         "mtime": stat.st_mtime,
     }
+
+
+#: Freed data below this size is left to the interpreter: its buffers go on
+#: ``del``, and a full collection in a process holding Haute, Polars and the model
+#: libraries costs about 150 ms each time, more than so little garbage returns.
+EXPLICIT_RELEASE_MIN_BYTES = 64 * 1024 * 1024
+
+
+def release_freed_memory(freed_bytes: float) -> None:
+    """Collect cyclic garbage and trim the C heap after a step freed *freed_bytes* of data.
+
+    Training releases large data explicitly between stages, so the next stage's
+    allocation does not stack on what the last one dropped; below
+    ``EXPLICIT_RELEASE_MIN_BYTES`` it does nothing.
+    """
+    if freed_bytes < EXPLICIT_RELEASE_MIN_BYTES:
+        return
+    gc.collect()
+    _malloc_trim()
 
 
 def _malloc_trim() -> None:

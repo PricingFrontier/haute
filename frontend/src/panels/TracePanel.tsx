@@ -39,6 +39,24 @@ function loadTraceExport() {
   return import("../trace/traceExport")
 }
 
+type ExportStatus =
+  | { state: "idle" }
+  | { state: "copied" }
+  | { state: "failed"; message: string }
+
+/** What an export failure says: the action, and why it failed. */
+function exportFailure(action: "copied" | "downloaded" | "printed", cause: unknown): ExportStatus {
+  const reason =
+    cause instanceof DOMException && cause.name === "NotAllowedError"
+      ? "the browser refused clipboard access"
+      : typeof cause === "string"
+        ? cause
+        : cause instanceof Error && cause.message
+          ? cause.message
+          : String(cause)
+  return { state: "failed", message: `The trace could not be ${action}: ${reason}.` }
+}
+
 /** Card labels of omissions that are facts about the data, not correlation gaps. */
 const NOTE_LABELS: Readonly<Record<string, string>> = {
   join_no_match: "no match",
@@ -56,6 +74,14 @@ const SNAPSHOT_REASONS: Readonly<Record<string, string>> = {
   seed_recompute_failed: "recomputing it failed",
   seed_row_not_reproduced: "recomputing it does not reproduce the snapshot's row",
   seed_row_ambiguous: "recomputing it gives several rows equal to the snapshot's",
+}
+
+/** A trace gap's sentence, by the code of the diagnostic that explains it. */
+const GAP_SUMMARIES: Readonly<Record<string, string>> = {
+  ambiguous_row_match: "One upstream row could not be identified unambiguously.",
+  ambiguous_source_frame: "The contributing source frame could not be identified safely.",
+  unresolved_source_frame: "The contributing source frame could not be identified safely.",
+  unsupported_dtype: "This upstream row uses a key type that tracing cannot compare safely.",
 }
 
 function omissionSummary(reason: string, diagnostic: TraceCorrelationDiagnostic | undefined): string {
@@ -76,16 +102,7 @@ function omissionSummary(reason: string, diagnostic: TraceCorrelationDiagnostic 
       ? `This row aggregates rows of this input grouped by ${keys}: ${count} of them share its key values.`
       : "This row aggregates several rows of this input."
   }
-  if (reason.includes("ambiguous") || reason.includes("duplicate")) {
-    return "One upstream row could not be identified unambiguously."
-  }
-  if (reason.includes("unsupported")) {
-    return "This upstream row uses a key type that tracing cannot compare safely."
-  }
-  if (reason.includes("source_frame")) {
-    return "The contributing source frame could not be identified safely."
-  }
-  return "This upstream row could not be correlated safely."
+  return (diagnostic && GAP_SUMMARIES[diagnostic.code]) ?? "This upstream row could not be correlated safely."
 }
 
 /** How long after a derivation link's click hovers are ignored: the scroll to the card. */
@@ -97,7 +114,7 @@ const STORY_PADDING_PX = 12
 export default function TracePanel({ trace, onClose }: TracePanelProps) {
   const storyKey = traceStoryKey(trace)
   const [showHidden, setShowHidden] = useState(false)
-  const [exportStatus, setExportStatus] = useState<"idle" | "copied" | "error">("idle")
+  const [exportStatus, setExportStatus] = useState<ExportStatus>({ state: "idle" })
   const omittedDiagnosticIndices = useMemo(
     () => new Set(trace.omissions.map((omission) => omission.diagnostic_index)),
     [trace.omissions],
@@ -204,9 +221,9 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
     try {
       const { copyTraceMarkdown } = await loadTraceExport()
       await copyTraceMarkdown(trace, (value) => navigator.clipboard.writeText(value))
-      setExportStatus("copied")
-    } catch {
-      setExportStatus("error")
+      setExportStatus({ state: "copied" })
+    } catch (error) {
+      setExportStatus(exportFailure("copied", error))
     }
   }
 
@@ -222,24 +239,26 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
         exporter.traceExportFilename(trace, extension),
         markdown ? "text/markdown;charset=utf-8" : "text/csv;charset=utf-8",
       )
-      if (!downloaded) setExportStatus("error")
-    } catch {
-      setExportStatus("error")
+      if (!downloaded) {
+        setExportStatus(exportFailure("downloaded", "this browser cannot save files from the page"))
+      }
+    } catch (error) {
+      setExportStatus(exportFailure("downloaded", error))
     }
   }
 
   const printTrace = async () => {
     const printWindow = window.open("", "haute-trace-print", "width=900,height=700")
     if (!printWindow) {
-      setExportStatus("error")
+      setExportStatus(exportFailure("printed", "the browser blocked the print window"))
       return
     }
     try {
       const { printTraceReport } = await loadTraceExport()
       printTraceReport(trace, () => printWindow)
-    } catch {
+    } catch (error) {
       printWindow.close()
-      setExportStatus("error")
+      setExportStatus(exportFailure("printed", error))
     }
   }
 
@@ -352,14 +371,14 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
           data-testid="trace-story"
           style={{ background: "var(--bg-panel)" }}
         >
-          {exportStatus === "copied" && (
+          {exportStatus.state === "copied" && (
             <div role="status" className="text-[11px]" style={{ color: "var(--flash-success-text)" }}>
               Trace copied as Markdown.
             </div>
           )}
-          {exportStatus === "error" && (
+          {exportStatus.state === "failed" && (
             <div role="alert" className="text-[11px]" style={{ color: "var(--danger-text)" }}>
-              The trace could not be exported. Check browser permissions and try again.
+              {exportStatus.message}
             </div>
           )}
           {correlationDiagnostics.length > 0 && (

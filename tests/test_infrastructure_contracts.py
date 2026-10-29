@@ -164,6 +164,7 @@ class TestApiRouteContracts:
 
 
 class TestLocalToolingContracts:
+    @pytest.mark.meta
     def test_pre_commit_config_avoids_platform_shell_wrappers(self) -> None:
         config = (Path(__file__).resolve().parents[1] / ".pre-commit-config.yaml").read_text(
             encoding="utf-8"
@@ -176,6 +177,7 @@ class TestLocalToolingContracts:
 
 
 class TestTestFileNamingContracts:
+    @pytest.mark.meta
     def test_test_paths_describe_contracts_not_review_phases(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         roots = (repo_root / "tests", repo_root / "frontend" / "src")
@@ -193,6 +195,7 @@ class TestTestFileNamingContracts:
 
 
 class TestContainerSmokeWorkflowContract:
+    @pytest.mark.meta
     def test_container_smoke_workflow_matches_operational_contracts(self) -> None:
         import yaml
 
@@ -239,6 +242,30 @@ class TestContainerSmokeWorkflowContract:
         assert "container-watch" in alarm_step["run"]
 
 
+_MONITORING_ALARM_CONDITION = "failure() && (github.event_name == 'schedule' || inputs.force_fail)"
+
+
+@pytest.mark.meta
+@pytest.mark.parametrize(
+    ("workflow", "job"),
+    [
+        ("container-smoke.yml", "container-smoke"),
+        ("dependencies.yml", "unlocked-resolve"),
+        ("frontend-shuffle.yml", "frontend-shuffle"),
+        ("property-exploration.yml", "property-exploration"),
+        ("write-sandbox-survey.yml", "write-sandbox-survey"),
+    ],
+)
+def test_monitoring_lanes_raise_their_alarm_on_schedule_or_force_fail(
+    workflow: str, job: str
+) -> None:
+    steps = _workflow(workflow)["jobs"][job]["steps"]
+    alarms = [step for step in steps if "gh issue create" in step.get("run", "")]
+
+    assert len(alarms) == 1, f"{workflow}:{job} should raise exactly one alarm"
+    assert alarms[0]["if"] == _MONITORING_ALARM_CONDITION
+
+
 def _workflow(name: str) -> dict[str, Any]:
     import yaml
 
@@ -252,6 +279,7 @@ def _step_running(steps: list[dict[str, Any]], command: str) -> dict[str, Any]:
     return step
 
 
+@pytest.mark.meta
 class TestWatchLaneIssueContract:
     """A watch lane's issue says whether the lane is red now, not whether it ever was.
 

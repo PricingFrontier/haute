@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import os
+import sys
 import threading
 import time
 import weakref
@@ -1022,3 +1023,237 @@ def test_diagnostic_prediction_wrong_row_count_closes_reader(monkeypatch):
             algo, object(), pl.DataFrame({"x": [1, 2]}), ["x"], execution_context=None
         )
     assert closed == [True]
+
+
+def _counted_releases(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record each explicit collection and heap trim the training path makes."""
+    import haute._polars_utils as polars_utils
+
+    calls: list[str] = []
+    real_collect = gc.collect
+    monkeypatch.setattr(
+        polars_utils.gc, "collect", lambda *a, **k: (calls.append("collect"), real_collect())[1]
+    )
+    monkeypatch.setattr(polars_utils, "_malloc_trim", lambda: calls.append("trim"))
+    return calls
+
+
+def test_freed_data_below_the_threshold_is_left_to_the_interpreter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._polars_utils as polars_utils
+
+    calls = _counted_releases(monkeypatch)
+
+    polars_utils.release_freed_memory(polars_utils.EXPLICIT_RELEASE_MIN_BYTES - 1)
+    assert calls == []
+
+    polars_utils.release_freed_memory(polars_utils.EXPLICIT_RELEASE_MIN_BYTES)
+    assert calls == ["collect", "trim"]
+
+
+def _small_training_frame() -> pl.DataFrame:
+    rng = np.random.default_rng(3)
+    n = 200
+    return pl.DataFrame(
+        {
+            "region": rng.choice(["east", "north", "south"], n).tolist(),
+            "age": rng.uniform(18, 80, n),
+            "claims": rng.poisson(0.3, n).astype(float),
+        }
+    )
+
+
+def _small_training_job(
+    tmp_path: Path, algorithm: str, params: dict[str, Any], data: pl.DataFrame
+) -> TrainingJob:
+    return TrainingJob(
+        name=algorithm,
+        data=data,
+        target="claims",
+        algorithm=algorithm,
+        loss_function="Poisson",
+        params=params,
+        metrics=["poisson_deviance"],
+        output_dir=str(tmp_path),
+        evaluation={
+            "schema_version": 1,
+            "strategy": "random",
+            "seed": 5,
+            "validation": {"method": "single", "size": 0.2},
+        },
+        feature_columns=["region", "age"],
+    )
+
+
+_PARTITION_STAGES = {
+    "training_train_partition_materialise": "train",
+    "training_validation_partition_materialise": "validation",
+}
+
+
+def _training_events(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, float]]:
+    """What the training path frees, in order, each part measured where it enters.
+
+    ``("release", function, bytes)`` is a release with the size the code reports
+    freeing; ``("partition", "train" | "validation", bytes)``, ``("pool", "",
+    bytes)`` and ``("split", "", bytes)`` are the partitions it loads, the frames it
+    builds pools from and the split parquet it writes, measured here and not by the
+    code under test.
+    """
+    import pyarrow.parquet as pq
+
+    import haute._polars_utils as polars_utils
+    import haute.modelling._algorithms as algorithms
+
+    events: list[tuple[str, str, float]] = []
+    release = polars_utils.release_freed_memory
+
+    def record_release(freed_bytes: float) -> None:
+        events.append(("release", sys._getframe(1).f_code.co_name, freed_bytes))
+        release(freed_bytes)
+
+    for module in (training_job, algorithms):
+        monkeypatch.setattr(module, "release_freed_memory", record_release)
+
+    collect = training_job._training_streaming_collect
+
+    def record_partition(lf: pl.LazyFrame, *, stage_name: str, **kwargs: Any) -> pl.DataFrame:
+        frame = collect(lf, stage_name=stage_name, **kwargs)
+        if stage_name in _PARTITION_STAGES:
+            events.append(("partition", _PARTITION_STAGES[stage_name], frame.estimated_size()))
+        return frame
+
+    monkeypatch.setattr(training_job, "_training_streaming_collect", record_partition)
+
+    build_pool = algorithms._build_pool
+
+    def record_pool(df: pl.DataFrame, *args: Any, **kwargs: Any) -> Any:
+        events.append(("pool", "", df.estimated_size()))
+        return build_pool(df, *args, **kwargs)
+
+    monkeypatch.setattr(algorithms, "_build_pool", record_pool)
+
+    read_metadata = training_job.read_parquet_metadata
+
+    def record_split(path: Path) -> dict[str, Any]:
+        metadata = pq.ParquetFile(path).metadata
+        events.append(
+            (
+                "split",
+                "",
+                sum(
+                    metadata.row_group(group).column(column).total_uncompressed_size
+                    for group in range(metadata.num_row_groups)
+                    for column in range(metadata.num_columns)
+                ),
+            )
+        )
+        return read_metadata(path)
+
+    monkeypatch.setattr(training_job, "read_parquet_metadata", record_split)
+    return events
+
+
+def _released(events: list[tuple[str, str, float]], function: str) -> list[float]:
+    return [size for kind, name, size in events if kind == "release" and name == function]
+
+
+def _measured(events: list[tuple[str, str, float]], kind: str) -> list[float]:
+    return [size for event, _, size in events if event == kind]
+
+
+_CATBOOST = ("catboost", {"iterations": 5, "depth": 2})
+_LIGHTGBM = ("lightgbm", {"num_iterations": 5, "num_leaves": 3, "min_data_in_leaf": 5})
+
+
+def _assert_shared_stages_free_what_they_measured(
+    events: list[tuple[str, str, float]], data: pl.DataFrame
+) -> None:
+    releases = [(name, size) for kind, name, size in events if kind == "release"]
+    assert releases[0] == ("_prepare_data", data.estimated_size())
+    # Each split frees the parquet it wrote, uncompressed, as pyarrow reads it.
+    assert _released(events, "_split_data") == _measured(events, "split") != []
+    assert _released(events, "_compute_metrics")
+
+
+def test_catboost_training_releases_what_each_stage_freed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events = _training_events(monkeypatch)
+    collections = _counted_releases(monkeypatch)
+    data = _small_training_frame()
+
+    _small_training_job(tmp_path, *_CATBOOST, data).run()
+
+    _assert_shared_stages_free_what_they_measured(events, data)
+    # Each pool frees the frame it was built from, after preparing its data and
+    # after building.
+    pools = _measured(events, "pool")
+    assert pools
+    assert _released(events, "_build_pool") == [size for size in pools for _ in (1, 2)]
+    # The selection fit, with its validation pool: the labels taken from the
+    # training partition, its pool built, the same for the validation partition,
+    # then both pools dropped.
+    partitions = [(name, size) for kind, name, size in events if kind == "partition"]
+    assert [name for name, _ in partitions[:2]] == ["train", "validation"]
+    (_, train), (_, validation) = partitions[:2]
+    assert _released(events, "_train_model")[:5] == [
+        train,
+        train,
+        validation,
+        validation,
+        train + validation,
+    ]
+    # A 200-row job frees far less than the threshold: nothing was collected.
+    assert collections == []
+
+
+def test_lightgbm_training_releases_what_each_stage_freed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events = _training_events(monkeypatch)
+    collections = _counted_releases(monkeypatch)
+    data = _small_training_frame()
+
+    _small_training_job(tmp_path, *_LIGHTGBM, data).run()
+
+    _assert_shared_stages_free_what_they_measured(events, data)
+    # Each frame-based fit frees the partitions it loaded, together.
+    fits: list[tuple[float, float]] = []
+    loaded = 0.0
+    for kind, name, size in events:
+        if kind == "partition":
+            loaded += size
+        elif kind == "release" and name == "_train_model":
+            fits.append((size, loaded))
+            loaded = 0.0
+    assert fits
+    assert all(freed == loaded for freed, loaded in fits), fits
+    assert collections == []
+
+
+@pytest.mark.parametrize(("algorithm", "params"), [_CATBOOST, _LIGHTGBM])
+def test_only_a_stage_freeing_the_threshold_or_more_collects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, algorithm: str, params: dict[str, Any]
+) -> None:
+    """With the threshold at the input frame's size, the stages that free the
+    whole frame collect and trim, and those that free a partition of it do not.
+    The tests above hold each release to the size measured where it entered."""
+    import haute._polars_utils as polars_utils
+
+    events = _training_events(monkeypatch)
+    collections = _counted_releases(monkeypatch)
+    data = _small_training_frame()
+    threshold = data.estimated_size()
+    monkeypatch.setattr(polars_utils, "EXPLICIT_RELEASE_MIN_BYTES", threshold)
+
+    _small_training_job(tmp_path, algorithm, params, data).run()
+
+    released = [size for kind, _, size in events if kind == "release"]
+    collected = sum(1 for size in released if size >= threshold)
+    # The input frame's release collects; the training partition's does not.
+    assert _released(events, "_prepare_data") == [threshold]
+    assert _measured(events, "partition")[0] < threshold
+    assert 0 < collected < len(released)
+    assert collections == ["collect", "trim"] * collected

@@ -272,6 +272,7 @@ def test_cli_json_is_deterministic(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.meta
 def test_repository_inventory_matches_every_supported_suffix_file() -> None:
     root = Path(__file__).parents[1]
     inventory_paths = {item["path"] for item in build_inventory(root)["files"]}

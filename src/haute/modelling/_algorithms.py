@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import gc
 import os
 import time
 from collections.abc import Callable
@@ -15,7 +14,7 @@ import polars as pl
 from haute._host_memory import available_ram_bytes
 from haute._logging import get_logger
 from haute._polars_dtypes import is_string_or_categorical
-from haute._polars_utils import _malloc_trim
+from haute._polars_utils import release_freed_memory
 from haute._process_memory import current_process_rss_bytes
 from haute.errors import HauteValidationError
 from haute.modelling._algorithm_base import BaseAlgorithm, FitResult, IterationCallback
@@ -265,6 +264,8 @@ def _build_pool(
     n_rows = len(df)
     tag = f"_build_pool({n_rows:,} rows)"
     _mem_checkpoint(f"{tag} start")
+    # What each release below frees is at most the frame's own size.
+    freed_bytes = df.estimated_size()
 
     from haute._mlflow_io import _prepare_predict_frame
 
@@ -289,8 +290,7 @@ def _build_pool(
         flavor="catboost",
     )
     del selected
-    gc.collect()
-    _malloc_trim()
+    release_freed_memory(freed_bytes)
     _mem_checkpoint(f"{tag} after data preparation")
 
     # Extract labels from df if not pre-supplied by the caller.
@@ -335,8 +335,7 @@ def _build_pool(
     )
     _mem_checkpoint(f"{tag} after Pool()")
     del x_data, y, w, baseline
-    gc.collect()
-    _malloc_trim()
+    release_freed_memory(freed_bytes)
     _mem_checkpoint(f"{tag} after cleanup")
 
     return pool

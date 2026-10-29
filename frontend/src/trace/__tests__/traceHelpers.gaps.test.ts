@@ -33,6 +33,7 @@ describe("buildWaterfallSteps", () => {
 
     expect(steps![0]).toEqual({
       name: "a",
+      operation: "base",
       factor: 100,
       runningValue: 100,
       prevValue: 0,
@@ -41,6 +42,7 @@ describe("buildWaterfallSteps", () => {
     // b = 1.5 > 1 -> positive, running 100 * 1.5 = 150
     expect(steps![1]).toMatchObject({
       name: "b",
+      operation: "multiply",
       factor: 1.5,
       runningValue: 150,
       prevValue: 100,
@@ -85,17 +87,17 @@ describe("resolveWaterfallProp", () => {
 
   it("returns nulls when fewer than 3 entries", () => {
     const entries: WaterfallEntryProp[] = [
-      { label: "a", operation: "x", value: 1, delta: 0, cumulative: 1 },
-      { label: "b", operation: "x", value: 2, delta: 1, cumulative: 2 },
+      { label: "a", operation: "base", value: 1, delta: 0, cumulative: 1 },
+      { label: "b", operation: "multiply", value: 2, delta: 1, cumulative: 2 },
     ]
     expect(resolveWaterfallProp(entries)).toEqual({ steps: null, error: null })
   })
 
   it("maps entries into steps with prevValue from prior cumulative and signed direction", () => {
     const entries: WaterfallEntryProp[] = [
-      { label: "base", operation: "init", value: 100, delta: 0, cumulative: 100 },
-      { label: "up", operation: "*", value: 1.5, delta: 50, cumulative: 150 },
-      { label: "down", operation: "*", value: 0.5, delta: -75, cumulative: 75 },
+      { label: "base", operation: "base", value: 100, delta: 0, cumulative: 100 },
+      { label: "up", operation: "multiply", value: 1.5, delta: 50, cumulative: 150 },
+      { label: "down", operation: "multiply", value: 0.5, delta: -75, cumulative: 75 },
     ]
     const { steps, error } = resolveWaterfallProp(entries)
     expect(error).toBeNull()

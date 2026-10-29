@@ -45,12 +45,12 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # uv is pinned exactly, like the rest of the development tooling; this
       # value is repeated in every workflow and must move together (grep
       # `setup-uv` across .github/workflows/).
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           version: "0.8.22"
           python-version: "3.12"
@@ -66,12 +66,14 @@ jobs:
       # The manifest is the single list of Hypothesis modules; a meta test in
       # tests/test_workflow_coverage.py keeps it equal to the modules that
       # import hypothesis, so a new property module cannot miss this lane.
+      # The warnings plugin stays loaded, so the pyproject filter that turns a
+      # RuntimeWarning into an error holds here as it does on pull requests.
       - name: Run the property suites under the exploration budget
         env:
           HAUTE_PROPERTY_EXAMPLES: ${{ inputs.examples || '1500' }}
         run: >
           uv run pytest $(grep -v '^#' scripts/property_test_files.txt)
-          -q -p no:warnings --timeout=1500 --timeout-method=signal
+          -q --timeout=1500 --timeout-method=signal
 
       # A green week never closes this issue: one exploration budget passing does not
       # prove the counterexample gone. The fix pins it as an @example, and its author
@@ -86,7 +88,7 @@ jobs:
           body="A Hypothesis suite failed under the exploration budget. Run: ${RUN_URL}
 
           Reproduce locally (from the repository root):
-              HAUTE_PROPERTY_EXAMPLES=1500 uv run pytest <module from the log> -q -p no:warnings
+              HAUTE_PROPERTY_EXAMPLES=1500 uv run pytest <module from the log> -q
 
           The log carries the shrunk failing example and a @reproduce_failure blob; add the example as an @example on the failing test so the PR lane keeps it (tests/_property_budget.py)."
           gh label create property-watch --color FBCA04 --force \

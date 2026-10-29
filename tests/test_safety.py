@@ -26,6 +26,7 @@ def _find_pipeline_files() -> list[Path]:
 class TestApiOutputSafety:
     """Every fixture pipeline must contain at least one output node."""
 
+    @pytest.mark.meta
     @pytest.mark.parametrize(
         "pipeline_file",
         _find_pipeline_files(),

@@ -234,6 +234,7 @@ def test_every_trained_algorithm_writes_the_suffix_its_family_loads() -> None:
     assert {f.algorithm for f in model_families() if f.algorithm} == set(DESCRIPTORS)
 
 
+@pytest.mark.meta
 def test_frontend_model_family_fixture_matches_the_registry() -> None:
     """The UI's checked-in family table is exactly the backend registry."""
     fixture = Path(__file__).resolve().parents[1] / "frontend/src/utils/modelFamilies.json"

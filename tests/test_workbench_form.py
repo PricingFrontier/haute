@@ -379,6 +379,7 @@ def read_after_layout_edit(
     return read_form_document(config), files[LAYOUT]
 
 
+@pytest.mark.meta
 def test_the_editor_names_the_quote_details_columns_the_server_does() -> None:
     utils = Path(__file__).resolve().parents[1] / "frontend" / "src" / "utils"
     source = (utils / "workbenchForm.ts").read_text(encoding="utf-8")
@@ -391,6 +392,7 @@ def test_the_editor_names_the_quote_details_columns_the_server_does() -> None:
     assert set(re.findall(r'"(\w+)"', managed.group(1))) == QUOTE_DETAILS_MANAGED
 
 
+@pytest.mark.meta
 def test_the_editor_mirrors_the_forms_limits_and_words() -> None:
     """The view's own copies of the server's limits and refusals: a change to either side
     alone fails here."""

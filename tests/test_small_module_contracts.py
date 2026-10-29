@@ -213,20 +213,20 @@ class TestPackageInit:
         with pytest.raises(AttributeError, match="does_not_exist"):
             haute.__getattr__("does_not_exist")
 
-    def test_version_falls_back_in_editable_dev_context(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_version_falls_back_in_editable_dev_context(self) -> None:
         import importlib.metadata
 
-        monkeypatch.setattr(
-            importlib.metadata,
-            "version",
-            lambda _name: (_ for _ in ()).throw(importlib.metadata.PackageNotFoundError()),
-        )
-
-        reloaded = importlib.reload(haute)
         try:
-            assert reloaded.__version__ == "0.0.0-dev"
+            with pytest.MonkeyPatch.context() as patch:
+                patch.setattr(
+                    importlib.metadata,
+                    "version",
+                    lambda _name: (_ for _ in ()).throw(importlib.metadata.PackageNotFoundError()),
+                )
+                assert importlib.reload(haute).__version__ == "0.0.0-dev"
         finally:
-            importlib.reload(reloaded)
+            # Reloaded once the patch is undone, so later tests on this worker
+            # read the installed version rather than the fallback.
+            importlib.reload(haute)
+
+        assert haute.__version__ == importlib.metadata.version("haute")

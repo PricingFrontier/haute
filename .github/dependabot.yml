@@ -1,0 +1,12 @@
+# Proposes the next commit, with its tag comment, when an action a workflow
+# uses releases. Python and npm updates are not asked for here: the lockfiles
+# hold those versions, and dependencies.yml resolves them fresh every week.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

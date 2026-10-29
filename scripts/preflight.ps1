@@ -179,7 +179,7 @@ if ($RunBackend) {
     } "Ruff format - run 'uv run ruff format .' to fix"
 
     Invoke-Check "Mypy type check (Python)" {
-        & uv run mypy src/haute/
+        & uv run mypy src/haute/ scripts/
     } "Mypy type errors"
 
     if (-not $Quick) {

@@ -1341,196 +1341,9 @@ def _match_parent_row(
     return row_dict, idx, len(match_row)
 
 
-class _FrameCandidate(NamedTuple):
-    """A non-empty frame of a multi-frame parent reachable through one edge."""
-
-    handle: str
-    target_role: str | None
-    frame: pl.DataFrame
-
-
-class _FrameMatch(NamedTuple):
-    """A candidate frame that confidently identified a parent row."""
-
-    candidate: _FrameCandidate
-    row: dict[str, Any]
-    row_index: int
-    width: int
-    # The frame's identical_row_match diagnostic, kept for the winner only.
-    identical: tuple[dict[str, Any], ...] = ()
-
-
 def _identical_evidence(diagnostics: Sequence[dict[str, Any]]) -> tuple[dict[str, Any], ...]:
     """The identical-row diagnostics among one candidate's suppressed diagnostics."""
     return tuple(item for item in diagnostics if item.get("code") == "identical_row_match")
-
-
-def _resolve_multi_frame_parent(
-    frames: dict[str, pl.DataFrame],
-    *,
-    parent_id: str,
-    child_id: str,
-    edges: Sequence[tuple[str | None, str | None]] | None,
-    traced_column: str | None,
-    child_row: dict[str, Any],
-    child_row_idx: int,
-    child_len: int,
-    node_map: Mapping[str, GraphNode],
-    eager_outputs: Mapping[str, Any],
-    edge_metadata: Mapping[tuple[str, str], Sequence[tuple[str | None, str | None]]] | None,
-    diagnostics: list[dict[str, Any]] | None,
-    work: CorrelationWork | None = None,
-) -> tuple[dict[str, Any] | None, int]:
-    """Correlate a multi-frame parent (``dict[label, DataFrame]``) row.
-
-    *edges* carries ONE ``(sourceHandle, targetHandle)`` pair per physical
-    edge between parent and child (a
-    multi-frame source can feed the same child through several edges,
-    each consuming a distinct frame), so resolution is per-edge: every
-    candidate frame is matched against the resolved child row, and only
-    an actual, confident row match makes a frame the correlated one.
-    When several frames match, the frame carrying the traced column is
-    preferred, then the most specific match (widest projected-column
-    set). A surviving tie remains unresolved and is recorded as a
-    diagnostic rather than guessing between frames.
-    """
-    source_handles = {handle for handle, _target_role in edges or () if handle is not None}
-    candidates: list[_FrameCandidate] = []
-    for handle, target_role in edges or ():
-        if handle is None:
-            continue
-        frame = frames.get(handle)
-        if frame is not None and len(frame) > 0:
-            candidates.append(_FrameCandidate(handle, target_role, frame))
-
-    if not candidates:
-        if diagnostics is not None:
-            diagnostics.append(
-                {
-                    "code": "unresolved_source_frame",
-                    "severity": "warning",
-                    "reason": "source_frame_unavailable",
-                    "message": (
-                        f"Row correlation for multi-frame node {parent_id!r} "
-                        f"could not resolve a source frame for child {child_id!r}."
-                    ),
-                    "node_id": parent_id,
-                    "child_node_id": child_id,
-                    "match_strategy": "source_frame",
-                    "match_columns": [],
-                    "ignored_columns": [],
-                    "matched_row_count": 0,
-                    "matched_row_indices": [],
-                    "source_handles": sorted(source_handles),
-                    "frames": sorted(frames.keys()),
-                }
-            )
-        return None, -1
-
-    if len(candidates) == 1:
-        row_dict, idx, _ = _match_parent_row(
-            candidates[0].frame,
-            parent_id=parent_id,
-            child_row=child_row,
-            child_row_idx=child_row_idx,
-            child_len=child_len,
-            child_id=child_id,
-            node_map=node_map,
-            eager_outputs=eager_outputs,
-            edge_metadata=edge_metadata,
-            target_role=candidates[0].target_role,
-            diagnostics=diagnostics,
-            work=work,
-        )
-        return row_dict, idx
-
-    # Several edges consume distinct frames of this parent — match each
-    # candidate frame independently (suppressing per-candidate ambiguity
-    # noise) and keep the frames that confidently identify a row.
-    matches: list[_FrameMatch] = []
-    for candidate in candidates:
-        candidate_diagnostics: list[dict[str, Any]] = []
-        row_dict, idx, width = _match_parent_row(
-            candidate.frame,
-            parent_id=parent_id,
-            child_row=child_row,
-            child_row_idx=child_row_idx,
-            child_len=child_len,
-            child_id=child_id,
-            node_map=node_map,
-            eager_outputs=eager_outputs,
-            edge_metadata=edge_metadata,
-            target_role=candidate.target_role,
-            diagnostics=candidate_diagnostics,
-            work=work,
-        )
-        if row_dict is not None:
-            matches.append(
-                _FrameMatch(
-                    candidate, row_dict, idx, width, _identical_evidence(candidate_diagnostics)
-                )
-            )
-
-    if not matches:
-        if diagnostics is not None:
-            diagnostics.append(
-                {
-                    "code": "unresolved_source_frame",
-                    "severity": "warning",
-                    "reason": "source_frame_row_not_correlated",
-                    "message": (
-                        f"Row correlation for multi-frame node {parent_id!r} "
-                        f"found no source frame matching child {child_id!r}."
-                    ),
-                    "node_id": parent_id,
-                    "child_node_id": child_id,
-                    "match_strategy": "source_frame",
-                    "match_columns": [],
-                    "ignored_columns": [],
-                    "matched_row_count": 0,
-                    "matched_row_indices": [],
-                    "source_handles": [candidate.handle for candidate in candidates],
-                    "frames": sorted(frames.keys()),
-                }
-            )
-        return None, -1
-
-    picked = matches
-    if traced_column is not None:
-        with_column = [m for m in picked if traced_column in m.candidate.frame.columns]
-        if with_column:
-            picked = with_column
-    if len(picked) > 1:
-        best_width = max(m.width for m in picked)
-        picked = [m for m in picked if m.width == best_width]
-    if len(picked) > 1:
-        if work is not None:
-            work.ambiguity_count += 1
-        if diagnostics is not None:
-            diagnostics.append(
-                {
-                    "code": "ambiguous_source_frame",
-                    "severity": "warning",
-                    "reason": "multiple_source_frames_matched",
-                    "message": (
-                        f"Row correlation for multi-frame node {parent_id!r} for child "
-                        f"{child_id!r} matched several frames "
-                        f"({[m.candidate.handle for m in picked]}); no frame was selected."
-                    ),
-                    "node_id": parent_id,
-                    "child_node_id": child_id,
-                    "match_strategy": "source_frame",
-                    "match_columns": [],
-                    "ignored_columns": [],
-                    "matched_row_count": len(picked),
-                    "matched_row_indices": [],
-                    "candidates": [m.candidate.handle for m in picked],
-                }
-            )
-        return None, -1
-    if diagnostics is not None:
-        diagnostics.extend(picked[0].identical)
-    return picked[0].row, picked[0].row_index
 
 
 def _ensure_unresolved_diagnostic(
@@ -1581,34 +1394,22 @@ def _correlate_rows_posthoc(
     row_index: int,
     *,
     node_map: Mapping[str, GraphNode],
+    row_scope: RowScopeResolver,
     diagnostics: list[dict[str, Any]] | None = None,
     unresolved: dict[str, tuple[str, int]] | None = None,
-    edge_metadata: Mapping[tuple[str, str], Sequence[tuple[str | None, str | None]]] | None = None,
     traced_column: str | None = None,
     work: CorrelationWork | None = None,
-    row_scope: RowScopeResolver | None = None,
     row_positions: dict[str, int] | None = None,
 ) -> dict[str, dict[str, Any] | None]:
     """Extract the correct row from each node using post-hoc correlation.
 
-    Uses the preview-cached DataFrames directly — no re-execution, no
-    injected columns.  Walks backward from the target node and matches
-    each parent's row by shared column values with the already-resolved
-    child row.  *node_map* supplies node type and config so that
-    edge-join children can route suffixed/colliding columns to the
-    correct parent (see :func:`_build_parent_match_row`).
-
-    *edge_metadata* maps a (source, target) node pair to the
-    ``(sourceHandle, targetHandle)`` of EVERY physical edge between them,
-    in edge order — the
-    per-edge frame selection ``_pick_source_frame`` makes at execution
-    time for multi-frame sources.  *traced_column* (the column the user
-    is tracing, if any) disambiguates when several frames of one source
-    feed the same child and more than one matches the child row.
-
-    *row_scope* (limited-preview traces) routes every parent that no head
-    frame proves to contain its child's lineage to a row-scoped lookup of the
-    parent's uncapped plan instead of its materialised frame.
+    Walks backward from the target node and resolves each parent's row from
+    an already-resolved child through *row_scope*, one physical edge at a
+    time: in the parent's head frame by shared column values (an edge join's
+    suffixed/colliding columns routed to the parent they came from), or by a
+    row-scoped lookup of the parent's uncapped plan. *traced_column* (the
+    column the user is tracing, if any) disambiguates when several frames of
+    one source feed the same child and more than one matches the child row.
 
     Returns a dict mapping node_id → row values (JSON-safe), or None
     for nodes where row correlation failed.
@@ -1641,171 +1442,56 @@ def _correlate_rows_posthoc(
         if nid in result:
             continue
 
-        if row_scope is not None:
-            resolved_children = [
-                cid
-                for cid in children_of.get(nid, [])
-                if cid in result and result[cid] and row_scope.reads_parent(nid, cid)
-            ]
-            if not resolved_children:
-                result[nid] = None
-                row_indices[nid] = -1
-                continue
-            # Head-framed children first, then nearest the target first; the
-            # first child that proves the row decides it, and the first child's
-            # evidence explains a node none of them proves.
-            candidates = sorted(
-                resolved_children,
-                key=lambda cid: (not row_scope.prefers_child(nid, cid), -position[cid]),
-            )
-            diagnostic_start = len(diagnostics) if diagnostics is not None else 0
-            scoped_child_id = candidates[0]
-            scoped_row: dict[str, Any] | None = None
-            scoped_idx = -1
-            kept_evidence: list[dict[str, Any]] | None = None
-            for child_id in candidates:
-                evidence: list[dict[str, Any]] | None = [] if diagnostics is not None else None
-                child_frame = eager_outputs.get(child_id)
-                row, index = row_scope.resolve(
-                    parent_id=nid,
-                    child_id=child_id,
-                    child_row=result[child_id] or {},
-                    child_row_idx=row_indices.get(child_id, -1),
-                    child_len=len(child_frame) if isinstance(child_frame, pl.DataFrame) else -1,
-                    diagnostics=evidence,
-                    work=work,
-                    traced_column=traced_column,
-                )
-                if row is not None:
-                    scoped_child_id, scoped_row, scoped_idx = child_id, row, index
-                    kept_evidence = evidence
-                    break
-                if kept_evidence is None:
-                    kept_evidence = evidence
-            if diagnostics is not None and kept_evidence:
-                diagnostics.extend(kept_evidence)
-            result[nid] = scoped_row
-            row_indices[nid] = scoped_idx
-            if scoped_row is None and unresolved is not None:
-                diagnostic_index = _ensure_unresolved_diagnostic(
-                    diagnostics,
-                    diagnostic_start=diagnostic_start,
-                    node_id=nid,
-                    child_node_id=scoped_child_id,
-                )
-                diagnostic = diagnostics[diagnostic_index] if diagnostics is not None else {}
-                unresolved[nid] = (
-                    str(
-                        diagnostic.get("reason")
-                        or diagnostic.get("code")
-                        or "row_correlation_failed"
-                    ),
-                    diagnostic_index,
-                )
-            continue
-
-        parent_df = eager_outputs.get(nid)
-        if parent_df is None or len(parent_df) == 0:
-            result[nid] = {}
-            row_indices[nid] = 0
-            continue
-
-        # Find a child of this node that's already resolved (with actual data)
-        resolved_child_id = None
-        for cid in children_of.get(nid, []):
-            if cid in result and result[cid] is not None and result[cid]:
-                resolved_child_id = cid
-                break
-
-        if resolved_child_id is None:
-            # Node not on path to target — cannot correlate
+        resolved_children = [
+            cid
+            for cid in children_of.get(nid, [])
+            if cid in result and result[cid] and row_scope.reads_parent(nid, cid)
+        ]
+        if not resolved_children:
             result[nid] = None
             row_indices[nid] = -1
             continue
-
-        child_row = result[resolved_child_id]
-        if child_row is None:
-            result[nid] = None
-            row_indices[nid] = -1
-            continue
-        child_row_idx = row_indices.get(resolved_child_id, 0)
-        child_df = eager_outputs.get(resolved_child_id)
-        child_len = len(child_df) if child_df is not None else 0
-
-        # Multi-frame sources store dict[label, DataFrame]. The edges'
-        # sourceHandles name the frame each child EDGE consumes (the same
-        # per-edge selection _pick_source_frame makes at execution time)
-        # — a single child may consume several frames of one source
-        # through distinct edges, so the frame is resolved against the
-        # child row rather than assumed unique per (source, target) pair.
-        if isinstance(parent_df, dict):
-            diagnostic_start = len(diagnostics) if diagnostics is not None else 0
-            row_dict, idx = _resolve_multi_frame_parent(
-                parent_df,
-                parent_id=nid,
-                child_id=resolved_child_id,
-                edges=(edge_metadata or {}).get((nid, resolved_child_id)),
-                traced_column=traced_column,
-                child_row=child_row,
-                child_row_idx=child_row_idx,
-                child_len=child_len,
-                node_map=node_map,
-                eager_outputs=eager_outputs,
-                edge_metadata=edge_metadata,
-                diagnostics=diagnostics,
-                work=work,
-            )
-            result[nid] = row_dict  # may be None if no frame resolved
-            row_indices[nid] = idx
-            if row_dict is None and unresolved is not None:
-                diagnostic_index = _ensure_unresolved_diagnostic(
-                    diagnostics,
-                    diagnostic_start=diagnostic_start,
-                    node_id=nid,
-                    child_node_id=resolved_child_id,
-                )
-                diagnostic = diagnostics[diagnostic_index] if diagnostics is not None else {}
-                unresolved[nid] = (
-                    str(
-                        diagnostic.get("reason")
-                        or diagnostic.get("code")
-                        or "row_correlation_failed"
-                    ),
-                    diagnostic_index,
-                )
-            continue
-
-        # Build a filtered child_row for matching: only include columns
-        # that exist in this parent's DataFrame, and — when the child is
-        # an edge-join — route suffixed/colliding columns to the parent
-        # they actually came from.  This prevents columns brought in by
-        # a *different* parent (via a join) from confusing the value
-        # matcher.  (Both steps live in _match_parent_row.)
-        diagnostic_start = len(diagnostics) if diagnostics is not None else 0
-        edge_roles = (edge_metadata or {}).get((nid, resolved_child_id), ())
-        target_role = edge_roles[0][1] if len(edge_roles) == 1 else None
-        row_dict, idx, _ = _match_parent_row(
-            parent_df,
-            parent_id=nid,
-            child_row=child_row,
-            child_row_idx=child_row_idx,
-            child_len=child_len,
-            child_id=resolved_child_id,
-            node_map=node_map,
-            eager_outputs=eager_outputs,
-            edge_metadata=edge_metadata,
-            target_role=target_role,
-            diagnostics=diagnostics,
-            work=work,
+        # Head-framed children first, then nearest the target first; the
+        # first child that proves the row decides it, and the first child's
+        # evidence explains a node none of them proves.
+        candidates = sorted(
+            resolved_children,
+            key=lambda cid: (not row_scope.prefers_child(nid, cid), -position[cid]),
         )
-        result[nid] = row_dict  # may be None if no match found
-        row_indices[nid] = idx
-        if row_dict is None and unresolved is not None:
+        diagnostic_start = len(diagnostics) if diagnostics is not None else 0
+        scoped_child_id = candidates[0]
+        scoped_row: dict[str, Any] | None = None
+        scoped_idx = -1
+        kept_evidence: list[dict[str, Any]] | None = None
+        for child_id in candidates:
+            evidence: list[dict[str, Any]] | None = [] if diagnostics is not None else None
+            child_frame = eager_outputs.get(child_id)
+            row, index = row_scope.resolve(
+                parent_id=nid,
+                child_id=child_id,
+                child_row=result[child_id] or {},
+                child_row_idx=row_indices.get(child_id, -1),
+                child_len=len(child_frame) if isinstance(child_frame, pl.DataFrame) else -1,
+                diagnostics=evidence,
+                work=work,
+                traced_column=traced_column,
+            )
+            if row is not None:
+                scoped_child_id, scoped_row, scoped_idx = child_id, row, index
+                kept_evidence = evidence
+                break
+            if kept_evidence is None:
+                kept_evidence = evidence
+        if diagnostics is not None and kept_evidence:
+            diagnostics.extend(kept_evidence)
+        result[nid] = scoped_row
+        row_indices[nid] = scoped_idx
+        if scoped_row is None and unresolved is not None:
             diagnostic_index = _ensure_unresolved_diagnostic(
                 diagnostics,
                 diagnostic_start=diagnostic_start,
                 node_id=nid,
-                child_node_id=resolved_child_id,
+                child_node_id=scoped_child_id,
             )
             diagnostic = diagnostics[diagnostic_index] if diagnostics is not None else {}
             unresolved[nid] = (

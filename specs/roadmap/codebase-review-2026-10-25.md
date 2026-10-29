@@ -125,8 +125,8 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the twenty-three packages delivered or settled since (thirteen by 28
-October 2026, ten more on 29 October) have been removed from the sections below; the coverage table keeps the
+The findings of the thirty-four packages delivered or settled since (thirteen by 28
+October 2026, twenty-one more on 29 October) have been removed from the sections below; the coverage table keeps the
 original counts.
 
 ## Validation — 25 October 2026
@@ -229,13 +229,6 @@ these are the Majors still open.
 - **The optimiser's MLflow log writes the complete result artifact without the
   finiteness gate the save applies** (Major, `OPT-R01`): a missing defence layer
   on a pricing artifact, since the status poll corrects the UI path.
-- **A trace's input sources name the nearest step in declaration order, not
-  the node whose value the row carries** (Major, `TRACE-R01`; reproduced): on a
-  join with a shared non-key column the join side is shown as the source of a
-  base-side value, flipping with node order.
-- **`.over(` anywhere in a node's code types every column of the node as a
-  window** (Major, `TRACE-R02`; reproduced): `y = a * 2` is shown as "rank of x
-  over g" with the right value.
 - **The assistant's SDK clients are built without the validated endpoint**
   (Major, `ASSIST-54`): `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` in the
   server's environment redirects the key, the prompt and project material to a
@@ -256,10 +249,6 @@ these are the Majors still open.
 - **Saving the pipeline cancels an auto-range run in flight, and a percentage
   constraint is shown as "at least 0" and rewritten as an absolute bound on
   edit** (two Majors, `FMOU-R04`).
-- **The trace panel labels an additive waterfall step as a multiplication**
-  (Major, `TRACE-R05`): the backend's `operation` is dropped and every row after
-  the first is prefixed `×`, so a step that added 30 reads `×30`; the totals stay
-  right.
 - **Ctrl+S with the cursor in a code box saves without the last keystrokes**
   (Major, `FSH-R07`): the save helper blurs only text fields, the code editor's
   debounced commit flushes only on blur, and the toolbar shows "Saved" while the
@@ -341,10 +330,7 @@ production:
 | Modelling | MDL-3, MDL-9, MDL-11, MDL-16, MDL-20, MDL-21 | `MOD-R05` |
 | Modelling | MDL-2, MDL-18, MDL-22 | `MOD-R06` |
 | Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
-| Tracing | TRC-1 | `TRACE-R01` |
-| Tracing | TRC-2, TRC-3, TRC-4 | `TRACE-R02` |
 | Tracing | TRC-8, TRC-9, TRC-10, TRC-14 | `TRACE-R03` |
-| Tracing | TRC-5, TRC-6, TRC-7, TRC-11, TRC-12, TRC-13 | `TRACE-R04` |
 | Git integration | GIT-12, GIT-13 | `GIT-R05` |
 | Git integration | GIT-14 | `GIT-R06` (Decision) |
 | Assistant | ASA-1, ASA-2, ASA-7, ASA-13 | `ASSIST-54` |
@@ -372,14 +358,10 @@ production:
 | Frontend optimiser | FOX-1, FOX-2, FOX-3 | `FMOU-R04` |
 | Frontend optimiser | FOX-4, FOX-5, FOX-6, FOX-8, FOX-10 (optimiser part) | `FMOU-R05` |
 | Frontend Explore | FOX-7, FOX-9, FOX-10 (Explore part), FOX-11, FOX-12 | `EDA-R03` |
-| Trace UI | FTG-1, FTG-4, FTG-6, FTG-10, FTG-11, FTG-13, FTG-15, FTG-16, FTG-21 | `TRACE-R05` |
 | Assistant UI | FTG-5, FTG-18, FTG-20 | `ASSIST-60` |
 | Sandbox security | PM-42 | `SBX-R04` |
 | Workbench | PM-44 | `WB-33` |
 | Workbench | PM-45 | `WB-10` (selected server engine's atomic form insertion) |
-| Bugs | PM-47 | `BUG-42` (Decision) |
-| Engineering quality | PM-29 (Haute's own workflows) | `ENGQ-CI06` |
-| Engineering quality | PM-48 | `ENGQ-R06` |
 | Engineering quality | PM-50 | `ENGQ-R01` (evidence added) |
 | Engineering quality | the campaign-named test modules recounted | `ENGQ-R05` (evidence added) |
 | Workbench UI | FWB-1, FWB-6, FWB-8, FWB-9 | `WB-35` |
@@ -390,16 +372,13 @@ production:
 | App shell and canvas | FAP-1, FAP-11 | `FGC-R02` |
 | App shell and canvas | FAP-9 | `FGC-R03` |
 | App shell and canvas | FAP-4, FAP-6, FAP-7, FAP-8, FAP-10, FAP-12, FAP-13, FAP-15 | `FGC-R04` |
-| Tests, scripts and CI | ENG-1, ENG-2, ENG-4, ENG-8 | `ENGQ-R07` |
-| Tests, scripts and CI | ENG-5, ENG-6, ENG-10, ENG-16 | `ENGQ-R08` |
-| Tests, scripts and CI | ENG-7 | `ENGQ-R09` |
-| Tests, scripts and CI | ENG-3, ENG-9, ENG-11, ENG-12, ENG-13, ENG-14, ENG-15 | `ENGQ-R10` |
+| Tests, scripts and CI | ENG-6 | `ENGQ-R01` |
 | Tests, scripts and CI | ENG-17 | `ENGQ-R11` (Decision) |
 
 Already tracked before this review and not repeated: the `cwd`-captured sandbox
 root used by the deploy modules, the underwriter app and the server
 (`PCFG-R04`); the SPA path containment and the build hook's asset containment
-(`SBX-R01`); the generated container registry-login steps (`BUG-24`); the
+(`SBX-R01`); the
 three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`);
 `HTTPException` raised from service modules (`API-R02`) and the hand-maintained
 browser contract (`API-R03`); the cwd-dependent resolvers in the routes and the
@@ -409,8 +388,8 @@ validators and branches (`PCFG-R07`, `PCFG-R09`); name-violation reporting
 event-bus hooks (`ENGQ-R01`); the optimiser's unshown solve-memory forecast (`OPT-W02`) and its frontier
 points without convergence traces (`OPT-PC04`); the optimiser's job registries
 not cancelled at shutdown (`ROAD-WORKER-06`); the test-only
-`_compute_schema_hash` and the training facade (`ENGQ-R01`); the cost of the
-training test modules (`ENGQ-CI03`); fits that exceed their budget
+`_compute_schema_hash` and the training facade (`ENGQ-R01`); fits that exceed
+their budget
 (`MOD-M01`, `MOD-M02`); the trace route's status by message prefix and its
 sanitized 500 for a node failure (`API-R06`); two trace inconsistencies that
 vanish with node-level instances (`SUB-R01`); the git routes' and the
@@ -446,13 +425,11 @@ an output-table condition (`WB-29`), the browser's 90 s pricing timeout past the
 server's 60 s (`WB-33`), browser-locale dates (`FSH-R08`), the bootstrap without
 a deadline (`FSH-R05`), Ctrl+S inside a code box (`FSH-R07`), editor state inside
 node data (`PCFG-R08`), the recovery banner's re-minted id (`PCFG-R19`) and the
-modelling pane badges (`FMOU-R03`); in the tests, scripts and CI, the hundred
-floating action tags (`ENGQ-CI06`, `CLI-R06`), the campaign-named test modules
-(`ENGQ-R05`), the test-only reset hooks in production code (`ENGQ-R01`), the
-training-test cost, the order-dependent tests and the shard balance
-(`ENGQ-CI03` to `ENGQ-CI05`), the 189 test modules that change directory
-because production resolves the project root from it (`PCFG-R04`), and the
-generated scaffold workflows (`BUG-24`).
+modelling pane badges (`FMOU-R03`); in the tests, scripts and CI, the floating
+action tags in the generated workflows (`CLI-R06`), the campaign-named test modules
+(`ENGQ-R05`), the test-only reset hooks in production code (`ENGQ-R01`), and the
+189 test modules that change directory because production resolves the project
+root from it (`PCFG-R04`).
 
 ## Verdicts that changed or stayed open
 
@@ -515,4 +492,4 @@ All probes live outside the repository and wrote nothing into it.
 | jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13`, `EXEC-R17`, `IO-R08`, `ROAD-WORKER-08`, `API-R09` and `PCFG-R15`. |
 | jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `FNED-R03`, `FNED-R05`, `FMOU-R05`, `EDA-R03`, `WB-37` and `FGC-R04`. |
 | knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted; every frontend reviewer found the hits used inside their own module, so they are over-exports under `ENGQ-R01`'s gate, not dead code. |
-| sweeps | 100 floating action tags in `.github/workflows` (`ENGQ-CI06`, `CLI-R06`); 35 campaign-named test modules (`ENGQ-R05`). |
+| sweeps | 35 campaign-named test modules (`ENGQ-R05`). |

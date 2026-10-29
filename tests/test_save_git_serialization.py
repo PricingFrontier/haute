@@ -114,9 +114,8 @@ def _save_request(root: Path, *, banding: bool) -> SavePipelineRequest:
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A pipeline saved once through the service, so its ledger holds a save to commit."""
-    root = _repository(
-        tmp_path / "project", {"haute.toml": '[project]\nname = "demo"\n'}, monkeypatch
-    )
+    root = tmp_path / "project"
+    _repository(root, {"haute.toml": '[project]\nname = "demo"\n'}, monkeypatch)
     (root / "main.py").write_text(PIPELINE, encoding="utf-8")
     SavePipelineService(project_root=root).save(_save_request(root, banding=False))
     return root

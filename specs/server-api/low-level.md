@@ -291,7 +291,8 @@ when a path/query/body fails model validation):
 `TraceResultResponse` requires `omissions`, `correlation_diagnostics`, `generated_at`, and
 `execution_origin`; these are not compatibility defaults. Each successful step requires a
 non-negative `topological_rank` and carries no per-step timing. A successful waterfall entry is
-the typed `{label, operation, value, delta, cumulative, default_used}` shape, while a failed
+the typed `{label, operation, value, delta, cumulative, default_used}` shape (`operation` one
+of `base`, `multiply` or `add`, as the browser's guard also requires), while a failed
 waterfall is the typed `{error, error_type}` shape. This keeps omission links, default evidence,
 and reconciliation failures enforceable at the HTTP boundary rather than accepting arbitrary
 trace dictionaries.

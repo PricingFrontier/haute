@@ -10,9 +10,9 @@ repos:
     hooks:
       - id: mypy
         name: Mypy type check
-        entry: uv run mypy src/haute/
+        entry: uv run mypy src/haute/ scripts/
         language: system
-        files: '^src/haute/.*\.py$'
+        files: '^(src/haute|scripts)/.*\.py$'
         pass_filenames: false
 
       - id: frontend-typecheck

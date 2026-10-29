@@ -324,6 +324,7 @@ def test_the_checker_reports_every_other_form(path: str, source: str, lines: lis
     assert request_input_reports(source, path) == [Report(path, line) for line in lines]
 
 
+@pytest.mark.meta
 def test_request_input_checks_use_the_shared_set() -> None:
     reports = [
         report

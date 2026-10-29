@@ -42,7 +42,8 @@ In scope:
   sorted / passthrough).
 - Intra-node and cross-node calculation derivation: parsing/evaluating the
   expression that produced a traced column, walking intra-node dependency chains,
-  recursively deriving upstream "input sources," and detecting column renames.
+  naming the upstream node behind each value a formula read ("input sources") from the
+  value's lineage, and detecting column renames.
 - Waterfall assembly for sequential multiplicative/additive rating chains, with an
   arithmetic-reconciliation invariant against the traced output value.
 - Serialising a trace to a JSON-safe API response shape (`trace_result_to_dict`),
@@ -256,7 +257,12 @@ Out of scope (owned elsewhere, linked where relevant):
   columns: the step's formula evaluated on the traced row (none for a column a model,
   an optimiser or a scenario grid computed, or a source loaded) and, for every column
   that formula or rule read, the nodes that computed the value it read, so a value can
-  be followed down to what was loaded. A kept step off the lineage (an ancestor
+  be followed down to what was loaded. A step's formula for the traced column names its
+  `input_sources` from the same reads: each column the formula read from its inputs names
+  the one node that computed the value read — on a join whose sides share a column, the
+  side whose value the row holds, whatever order the nodes were declared in — with that
+  node's own formula and inputs below it. A value no single node supplied (a coalesced
+  full-join key) names none. A kept step off the lineage (an ancestor
   whose data never reaches the value) is not relevant, and an unresolved node is
   reported as an omission only when the lineage reaches it.
 - **Enrichment is best-effort per step.** Expression parsing/evaluation, chain

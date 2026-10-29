@@ -1034,6 +1034,7 @@ def test_the_quotes_identity_and_a_tables_one_row_read_the_same_on_either_engine
             execution_collect(refused["pricing"], engine=engine)
 
 
+@pytest.mark.meta
 def test_the_editor_holds_the_same_response_nodes() -> None:
     text = NODE_TYPES_TS.read_text(encoding="utf-8")
     match = re.search(r"export const RESPONSE_TYPES = new Set<\w+>\(\[(.*?)\]\)", text, re.S)

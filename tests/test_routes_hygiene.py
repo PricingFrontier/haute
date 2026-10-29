@@ -722,6 +722,7 @@ class TestNoDirectJobStoreInstantiation:
     inside the factory in ``_job_store.py`` itself.
     """
 
+    @pytest.mark.meta
     def test_no_direct_jobstore_calls_in_route_modules(self) -> None:
         # Every .py file under src/haute/routes/ except _job_store.py
         offenders: list[tuple[str, int, str]] = []
@@ -778,6 +779,7 @@ class TestJobStoreStateOwnership:
 
     _FORBIDDEN_ATTRIBUTES = {"jobs", "_write_lock", "_store_merged_job_locked"}
 
+    @pytest.mark.meta
     def test_routes_do_not_access_job_store_backing_state_or_lock(self) -> None:
         offenders: list[tuple[str, int, str]] = []
         for py_file in source_files(_ROUTES_DIR):
@@ -859,6 +861,7 @@ class TestNoNewPrivateEngineImports:
             ("haute._execute_lazy", "_build_funcs"),
         ]
 
+    @pytest.mark.meta
     def test_no_new_private_execution_helper_imports_in_routes_or_deploy(self) -> None:
         offenders: list[tuple[str, str, str, int]] = []
         seen_private_imports: set[tuple[str, str, str]] = set()
@@ -894,6 +897,7 @@ class TestNoNewPrivateEngineImports:
 class TestExecutionBoundaryGuardrails:
     """Static guardrails for the shared execution/projection architecture."""
 
+    @pytest.mark.meta
     def test_graph_walk_call_sites_make_execution_context_decision(self) -> None:
         offenders: list[tuple[str, int, str]] = []
 
@@ -960,6 +964,7 @@ class TestExecutionBoundaryGuardrails:
             "redefined locally."
         )
 
+    @pytest.mark.meta
     def test_polars_streaming_chunk_size_is_only_mutated_in_shared_helper(self) -> None:
         offenders: list[tuple[str, int, str]] = []
 
@@ -982,6 +987,7 @@ class TestExecutionBoundaryGuardrails:
             f"Offenders: {offenders}"
         )
 
+    @pytest.mark.meta
     def test_status_responses_do_not_default_to_unknown_status(self) -> None:
         offenders: list[tuple[str, int, str]] = []
 

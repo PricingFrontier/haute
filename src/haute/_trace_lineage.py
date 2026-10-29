@@ -20,10 +20,12 @@ from haute._expression_parser import (
     AssignmentPhases,
     _locate_defining_expression,
     assignment_phases,
+    assigns_column,
     parse_expression,
+    wrap_node_code,
 )
 from haute._trace_correlation import _edge_join_key_pairs
-from haute._trace_enrichment import _effective_node_code, _wrap_node_code
+from haute._trace_enrichment import _effective_node_code
 from haute._types import NodeType
 
 if TYPE_CHECKING:
@@ -91,9 +93,9 @@ class ColumnRead:
 class ValueLineage:
     """The nodes a traced value's lineage reaches, and what each step computes for it.
 
-    ``reads`` maps a node and a column it contributes to the columns that
-    column was computed from, or to ``None`` when the walk could not tell
-    which inputs it read.
+    ``reads`` maps a node and a column it computes for the value (a helper it
+    dropped included) to the columns that column was computed from, or to
+    ``None`` when the walk could not tell which inputs it read.
     """
 
     reached: frozenset[str]
@@ -226,13 +228,11 @@ def trace_value_lineage(
         return resolved[key]
 
     reads: dict[str, dict[str, tuple[ColumnRead, ...] | None]] = {}
-    for node_id, shown_columns in contributed.items():
-        node_reads = local_reads[node_id]
+    for node_id, node_reads in local_reads.items():
         reads[node_id] = {}
-        for shown_column in shown_columns:
-            local = node_reads.get(shown_column, [])
+        for computed, local in node_reads.items():
             if local is None:
-                reads[node_id][shown_column] = None
+                reads[node_id][computed] = None
                 continue
             sources: dict[str, set[ColumnSource]] = {}
             for reference, kind in local:
@@ -242,7 +242,7 @@ def trace_value_lineage(
                     sources.setdefault(reference, set()).add(
                         ColumnSource(node_id, reference, before_code=kind == "before_code")
                     )
-            reads[node_id][shown_column] = tuple(
+            reads[node_id][computed] = tuple(
                 ColumnRead(
                     reference,
                     tuple(sorted(found, key=lambda s: (s.node_id, s.column, s.before_code))),
@@ -325,7 +325,7 @@ class _Derivation:
         self.changed = changed
         config = node.data.config if isinstance(node.data.config, dict) else {}
         self.config: dict[str, Any] = config
-        self.code = _wrap_node_code(_effective_node_code(config, node_map))
+        self.code = wrap_node_code(_effective_node_code(config, node_map))
         self.made: set[str] = set()
         self.needed: _Demand = set()
         # Columns whose final value, and whose value from before the code,
@@ -402,10 +402,7 @@ class _Derivation:
                 self._value_before_code(reference)
 
     def _code_writes(self, column: str) -> bool:
-        return bool(self.code.strip()) and (
-            assignment_phases(self.code, column) is not None
-            or _locate_defining_expression(self.code, column) is not None
-        )
+        return assigns_column(self.code, column)
 
     def _code_derivation(
         self, column: str

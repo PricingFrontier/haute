@@ -1865,6 +1865,7 @@ def test_start_process_with_environment_deletes_an_absent_value_when_start_raise
     assert "POLARS_MAX_THREADS" not in os.environ
 
 
+@pytest.mark.meta
 def test_every_multiprocessing_spawn_goes_through_the_environment_helper() -> None:
     """A bare ``process.start()`` could inherit another spawn's environment overrides.
 

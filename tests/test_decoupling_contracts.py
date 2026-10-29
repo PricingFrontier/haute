@@ -546,6 +546,7 @@ class TestLoggingConvention:
 
     # -- click.echo / click.secho must stay in cli/ ----------------------
 
+    @pytest.mark.meta
     def test_click_echo_forbidden_outside_cli(self) -> None:
         offenders: list[tuple[Path, int, str]] = []
         for py in _iter_py_files(SRC_ROOT, exclude_dirs=_CLI_ONLY_DIRS):
@@ -569,6 +570,7 @@ class TestLoggingConvention:
 
     # -- No bare print() ---------------------------------------------------
 
+    @pytest.mark.meta
     def test_no_print_calls_anywhere_in_src(self) -> None:
         """``print(...)`` is forbidden.  CLI output uses click.echo; server
         code uses structlog.  Docstrings and code-generation string literals
@@ -591,6 +593,7 @@ class TestLoggingConvention:
 
     # -- No stdlib logging emission outside _logging.py ------------------
 
+    @pytest.mark.meta
     def test_no_stdlib_logging_emission_in_server_code(self) -> None:
         """``logging.info(...)`` / ``logging.error(...)`` etc. are forbidden
         outside ``_logging.py``.  Config-only calls like
@@ -620,6 +623,7 @@ class TestLoggingConvention:
             + "\n".join(f"  {p}:{ln} — {name}" for p, ln, name in offenders)
         )
 
+    @pytest.mark.meta
     def test_no_top_level_getlogger_binding_outside_logging_py(self) -> None:
         """Server/internal code must not bind a module-level ``logger`` via
         ``logging.getLogger(...)`` — that indicates stdlib-logging usage.
@@ -795,6 +799,7 @@ def _guarded_attribute_reads(tree: ast.Module) -> set[str]:
 class TestPriceContourBoundary:
     """``haute._price_contour`` is the only runtime import point for the library."""
 
+    @pytest.mark.meta
     def test_no_runtime_price_contour_import_outside_the_guard(self) -> None:
         guard = SRC_ROOT / "_price_contour.py"
         offenders = [
@@ -822,6 +827,7 @@ class TestPriceContourBoundary:
 
         assert _runtime_price_contour_imports(tree) == [5, 7]
 
+    @pytest.mark.meta
     def test_every_symbol_haute_reads_is_verified_by_the_guard(self) -> None:
         from haute._price_contour import REQUIRED_SYMBOLS
 

@@ -46,7 +46,11 @@ Out of scope:
   90% floor, per-file floors for the safety-critical modules, and the
   changed-code coverage check. They also run supported Python compatibility
   tests, package/install smoke tests, optional-dependency checks, frontend
-  checks, browser E2E, and the named auxiliary lanes in the CI workflow.
+  checks, browser E2E, the strict documentation build, and the named auxiliary
+  lanes in the CI workflow. Every gate runs on every run: a gate that combines
+  other jobs' results (the coverage gate, the mutation gate) runs whether they
+  passed or not and fails explicitly when one did not, so a red shard can never
+  turn it into a skipped check.
 - Coverage is gated by risk. The changed-code gate (100% statement and branch
   coverage of changed lines), the per-file critical floors and the mutation
   targets apply only to the safety-critical modules, whose silent failure
@@ -64,23 +68,29 @@ Out of scope:
     `_json_shred/_inference_cache.py`;
   - snapshot publication: `_source_cache.py`, `_node_snapshots.py`,
     `_file_lock.py`, and the rest of the API-input snapshot package
-    (`_json_shred/_snapshots.py`, `_writer.py`, `_shred.py`, `_records.py`,
-    `_runtime_storage.py`, `_inference.py`, `_inference_filter.py`,
-    `_json_shred/_cache.py`);
+    (`_json_shred/_snapshots.py`, `_json_shred/_writer.py`,
+    `_json_shred/_shred.py`, `_json_shred/_records.py`,
+    `_json_shred/_runtime_storage.py`, `_json_shred/_inference.py`,
+    `_json_shred/_inference_filter.py`, `_json_shred/_cache.py`);
   - the workbench's tables: `_workbench_tables.py`, `_workbench_input.py` and
-    `_workbench_output.py`, which type a quote's tables and build its response.
+    `_workbench_output.py`, which type a quote's tables and build its response,
+    and `_workbench_visibility.py`, which decides which input columns a quote
+    leaves out.
 
   `[tool.haute.changed_coverage].paths` and `[tool.haute.critical_coverage]` in
-  `pyproject.toml` list exactly this set, and the mutation targets are
-  `output-assembler`, `jsonpath` and `json-shred`. The general execution engine
+  `pyproject.toml` list exactly this set, which a `meta` test
+  (`tests/test_safety_critical_lists.py`) holds equal to the list above, and
+  the mutation targets are `output-assembler`, `jsonpath` and `json-shred`. The general execution engine
   (`executor.py`, `execution.py`, `projection.py`, the node builders) is not on
   the list: the deploy-scoring and snapshot tests run through it, and its own
   coverage is judged in review. Changed code in any other file under
   `src/haute/` is listed in the coverage job's summary with its changed-line
   coverage but does not fail the build; coverage there is judged in review
   against risk. The global 90% floor applies to all of `src/haute/`.
-- The user-facing documentation is checked by `mkdocs build --strict` in the
-  documentation workflow, by the generated node-reference tables
+- The user-facing documentation is checked by `mkdocs build --strict` on every
+  pull request and push to `main` (the CI workflow's `docs-build` job, and again
+  in the documentation workflow before it deploys), by the generated
+  node-reference tables
   (`tests/test_node_reference_docs.py`), and by the `docs/` checks in
   `tests/test_docs_accuracy.py`: the execution-strategy, managed Windows setup
   and edge-join guides, the exclusion of internal engineering documents from the
@@ -113,12 +123,23 @@ Out of scope:
     declared supplemental documents;
   - the property manifest check (`scripts/property_test_files.txt`): the
     scheduled exploration lane runs only the modules it lists.
+- Production runs previews, traces, free-code steps and the optimiser estimate
+  in warm worker processes; the suite runs them in threads, because most tests
+  patch in-process seams a worker process would not see. A CI lane runs a route
+  slice in production's process mode, so a defect that shows only across the
+  process boundary is red; a test in the slice that patches a seam says so with
+  the `in_process` marker.
+- Fixture git commands raise at the call with git's error, so a failed setup
+  step is not first seen as an unrelated assertion.
 - Python 3.14 is a non-blocking forward probe. A failure in that lane reports
   compatibility information but does not become a required green result.
 - Pre-commit runs Ruff fix/format and repository-local mypy/frontend
   typecheck/lint hooks for matching source files. The hooks do not replace CI.
 - The default pytest configuration excludes only `perf`-marked tests, treats
   xfails/config/markers strictly, and turns most runtime warnings into errors.
+  No lane and no recorded ledger evidence unloads the warnings plugin
+  (`-p no:warnings`), so that filter holds everywhere a result is relied on,
+  the weekly exploration lane included.
   Performance tests run through dedicated scripts/workflows with explicit time
   budgets instead.
 - Tests leave the source tree alone. `SourceTreeGuard` in
@@ -148,22 +169,24 @@ Out of scope:
   `decision` without an active roadmap package, a `not-applicable` without a
   reason, a test reference that is not a collectable test under the repository's
   pytest, Vitest, or Playwright discovery rules, a referenced test the test-debt
-  scanners classify as skipped, expected-failure, or focused, and a `covered`
-  record without commit-stamped execution evidence. Static discovery rules and
+  scanners classify as skipped, expected-failure, or focused, a `covered`
+  record without commit-stamped execution evidence, and evidence whose command
+  unloads pytest's warnings plugin. Static discovery rules and
   evidence establish existence and scheduling; assertion quality stays in
   review, and a green result from another snapshot is never carried forward
   silently.
 - Frontend commands use TypeScript build-mode type checking, ESLint, Vitest,
   critical coverage validation, and Playwright. Browser E2E serialises workers,
   retries only in CI, and starts the repository's E2E server with readiness
-  checking. Vitest's blocking global coverage floors are 80% statements, 75%
+  checking. A browser test that passes only on a retry fails a push to `main`
+  and is named in a pull request's job summary. Vitest's blocking global coverage floors are 80% statements, 75%
   branches, 80% functions, and 80% lines, followed by the configured
   source-specific critical-coverage ratchet. ESLint treats useless assignments,
   discarded caught-error context, unsafe hook refs, state updates in effects, and
   job-polling loops or intervals outside the shared poller, and local copies of
-  the shared error-text, formatting and object-guard helpers as errors; thirteen
-  pre-existing file/rule pairs remain visible as narrow config
-  exceptions until their owning changes land.
+  the shared error-text, formatting and object-guard helpers as errors; the
+  pre-existing file/rule pairs `frontend/eslint.config.js` lists remain visible
+  as narrow config exceptions until their owning changes land.
 - Execution-strategy diagnostics, Explore chart configuration and the API
   responses of each converted module group use a two-stage, reviewed contract
   pipeline. Canonical domain Pydantic models emit one committed JSON Schema
@@ -183,8 +206,9 @@ Out of scope:
   compatibility project rather than a visual oracle. User-reported canvas
   defects receive the smallest regression at the owning tier before a fix.
 - Scheduled dependency, frontend-order, property-exploration and container-smoke lanes are
-  deliberately non-PR monitoring checks: on eligible failures they create or update a labelled
-  GitHub issue carrying diagnostic/reproduction context. Mutation and
+  deliberately non-PR monitoring checks: on a scheduled failure, or a dispatch asked to prove
+  the alarm rings (`force_fail`), they create or update a labelled GitHub issue carrying
+  diagnostic/reproduction context. Mutation and
   performance workflows likewise operate through maintained scripts/artifacts.
 - Python performance reports use schema 4, recording deterministic workload and
   profile descriptors, environment versions, independent resource counters,
@@ -257,6 +281,11 @@ Out of scope:
 - Locked dependencies prove the committed environment; the scheduled unlocked
   resolve lane separately exposes breakage from a later dependency release
   within published version caps. These answer different questions.
+- Workflow actions run a pinned commit, not a tag. A tag is a ref its owner can
+  move, and a moved tag would run with the release and container-registry
+  secrets; a commit cannot be moved. The tag stays beside it as a comment, so a
+  reader sees the version and Dependabot can propose the next one. The pin lint
+  refuses a tag, a branch or a short commit.
 - npm meta-findings use the affected package plus a stable transitive-advisory
   identity. A lockfile topology change must not invalidate a reviewed acceptance;
   a different package or concrete GHSA identity still does.
@@ -298,6 +327,11 @@ Out of scope:
   run, and the runtime guard catches computed destinations no static scan can
   resolve. The guard advertises its root in the environment so an external
   permission gate can scope "run the tests" without parsing test internals.
+  The census, the lint allowlist and the strict set are a ratchet, so each list
+  in it moves one way: the census is recorded on every coverage run and may not
+  grow by a class of write, the lint allowlist names sites rather than counts,
+  and a monthly survey run strict names the modules ready to join the strict
+  set.
 
 ## Assistant evaluation
 
@@ -321,15 +355,6 @@ by, a scripted result.
 
 ## Failure model
 
-> NOTE: The UC create-only qualification script can currently pass despite all
-> losers failing before contention, or without running a round.
-> [ENGQ-R12](../roadmap/engineering-quality.md#engq-r12--storage-qualification-proves-actual-contention) owns the gate correction.
-
-> NOTE: The core-only optional-dependency workflow invokes a resyncing `uv run`
-> after removing the dev group; the restored connector makes its entire smoke
-> module skip, including its environment assertion. A non-vacuous lane is tracked
-> in [ENGQ-R07](../roadmap/engineering-quality.md#engq-r07--every-gate-runs-on-every-run).
-
 - A failing CI command stops its job and makes the corresponding check red;
   package, test, lint, type, coverage, mutation-config, frontend, and E2E
   failures are surfaced rather than replaced with a passing fallback. GitHub
@@ -345,6 +370,10 @@ by, a scripted result.
   missing static reason, a non-strict unbudgeted xfail, a stale aggregate
   summary, or malformed mutation-target metadata. Zero current backend flaky
   markers is an enforced budget, not an undocumented observation.
+- The coverage gate runs after its shards whatever their result. A shard that
+  did not pass fails the gate's first step explicitly, and the later steps still
+  report the floors from the data the shards uploaded, since each shard uploads
+  its coverage data and JUnit report whether its tests passed or not.
 - Coverage merge/gate fails when shard data cannot satisfy the 90% global floor,
   `scripts/check_critical_coverage.py` finds a safety-critical file below its
   statement/branch thresholds, or the changed-code gate finds an uncovered changed

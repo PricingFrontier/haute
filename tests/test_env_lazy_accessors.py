@@ -616,6 +616,7 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
 }
 
 
+@pytest.mark.meta
 def test_production_direct_environment_reads_match_reviewed_exceptions():
     root = Path(__file__).parents[1]
     discovered: set[DirectEnvRead] = set()

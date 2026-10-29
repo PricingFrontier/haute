@@ -96,3 +96,44 @@ def test_blank_scaffold_is_augmented_with_complete_browser_graph(
         ("q_001", "South"),
         ("q_002", "East"),
     ]
+
+
+class _RunningProcess:
+    pid = 4242
+
+    def __init__(self) -> None:
+        self.terminated = False
+
+    def poll(self) -> None:
+        return None
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def wait(self, timeout: float) -> int:
+        return 0
+
+
+def test_a_windows_stop_fells_the_whole_process_tree(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On Windows the npm launcher's Node child would outlive terminate() on Vite's port."""
+    felled: list[object] = []
+    monkeypatch.setattr(run_frontend_e2e_server, "kill_process_tree", felled.append)
+    monkeypatch.setattr(run_frontend_e2e_server.sys, "platform", "win32")
+    process = _RunningProcess()
+
+    run_frontend_e2e_server._terminate_process(process)  # type: ignore[arg-type]
+
+    assert felled == [process]
+    assert not process.terminated
+
+
+def test_a_posix_stop_terminates_the_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    felled: list[object] = []
+    monkeypatch.setattr(run_frontend_e2e_server, "kill_process_tree", felled.append)
+    monkeypatch.setattr(run_frontend_e2e_server.sys, "platform", "linux")
+    process = _RunningProcess()
+
+    run_frontend_e2e_server._terminate_process(process)  # type: ignore[arg-type]
+
+    assert felled == []
+    assert process.terminated

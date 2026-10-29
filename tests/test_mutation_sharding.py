@@ -232,6 +232,7 @@ def test_slice_keeps_only_requested_job_ids(tmp_path: Path) -> None:
     assert _all_job_ids(src) == sorted(job_ids)
 
 
+@pytest.mark.meta
 def test_mutation_gate_runs_and_fails_when_plan_fails() -> None:
     workflow = yaml.safe_load(
         (REPO_ROOT / ".github" / "workflows" / "mutation.yml").read_text(encoding="utf-8")

@@ -540,12 +540,14 @@ def _test_health_summary() -> str:
     return "\n".join(lines) + "\n"
 
 
+@pytest.mark.meta
 def test_skip_xfail_importorskip_sites_have_reasons() -> None:
     missing_reasons = [site for site in _scan_debt_sites() if not site.reason_is_static]
 
     assert not missing_reasons, "\n".join(_format_site(site) for site in missing_reasons)
 
 
+@pytest.mark.meta
 def test_skip_xfail_importorskip_debt_matches_reviewed_budget() -> None:
     sites = _scan_debt_sites()
     actual_by_id = {site.id: site for site in sites}
@@ -563,6 +565,7 @@ def test_skip_xfail_importorskip_debt_matches_reviewed_budget() -> None:
     assert not details, "\n".join(details)
 
 
+@pytest.mark.meta
 def test_frontend_skip_fixme_fail_only_debt_matches_reviewed_budget() -> None:
     assert all(reason.strip() for reason in _EXPECTED_FRONTEND_DEBT_REASONS.values())
 
@@ -588,6 +591,7 @@ def test_frontend_skip_fixme_fail_only_debt_matches_reviewed_budget() -> None:
     assert not details, "\n".join(details)
 
 
+@pytest.mark.meta
 def test_non_strict_xfails_are_explicitly_budgeted() -> None:
     sites = _scan_debt_sites()
     non_strict_or_ambiguous_xfails = {
@@ -597,11 +601,13 @@ def test_non_strict_xfails_are_explicitly_budgeted() -> None:
     assert non_strict_or_ambiguous_xfails == _EXPECTED_NON_STRICT_XFAIL_IDS
 
 
+@pytest.mark.meta
 def test_playwright_ci_retry_budget_is_pinned() -> None:
     source = (REPO_ROOT / "frontend" / "playwright.config.ts").read_text(encoding="utf-8")
     assert f"retries: process.env.CI ? {_PLAYWRIGHT_CI_RETRY_BUDGET} : 0," in source
 
 
+@pytest.mark.meta
 @pytest.mark.timeout(180)
 def test_test_health_summary_matches_regeneration() -> None:
     # This regenerates from full backend/frontend source scans. Coverage

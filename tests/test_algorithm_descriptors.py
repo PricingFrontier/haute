@@ -328,6 +328,7 @@ def test_capability_fixture_lists_each_family_in_vocabulary_order() -> None:
     assert algorithm_descriptor("CatBoost") is CATBOOST
 
 
+@pytest.mark.meta
 def test_frontend_capability_fixture_matches_the_descriptors() -> None:
     """The UI's checked-in capability table is exactly the backend descriptors."""
     fixture = (

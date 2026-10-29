@@ -105,7 +105,7 @@ def test_an_input_a_node_computed_without_its_code_keeps_the_value_it_produced()
     predicted value rather than a "not computed" from looking for a formula the
     model's code never wrote.
     """
-    from haute._trace_enrichment import _build_input_sources
+    from haute._trace_enrichment import input_source_entry
     from haute.trace import SchemaDiff
 
     def diff(added: list[str]) -> SchemaDiff:
@@ -121,14 +121,6 @@ def test_an_input_a_node_computed_without_its_code_keeps_the_value_it_produced()
         input_values={"premium": 250.0},
         output_values={"premium": 250.0, "prediction": 252.2, "ratio": 250.0 / 252.2},
     )
-    reader = TraceStep(
-        node_id="reader",
-        node_name="reader",
-        node_type="polars",
-        schema_diff=diff(["margin"]),
-        input_values={"premium": 250.0, "prediction": 252.2},
-        output_values={"premium": 250.0, "prediction": 252.2, "margin": -2.2},
-    )
     node_map = {
         "scoring": _transform_node(
             "scoring",
@@ -136,9 +128,9 @@ def test_an_input_a_node_computed_without_its_code_keeps_the_value_it_produced()
         ),
     }
 
-    sources = _build_input_sources(["prediction"], reader, [model, reader], node_map, None)
+    entry = input_source_entry(model, "scoring", "prediction", node_map, None)
 
-    assert sources["prediction"] == {
+    assert entry == {
         "node_id": "scoring",
         "node_name": "scoring",
         "result_value": 252.2,
