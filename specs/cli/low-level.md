@@ -14,7 +14,7 @@
 | `src/haute/cli/_train.py` | `haute train` — `TrainConfig`, `handle_train`, loads a training script as a module, runs its `job`, prints a live progress bar. |
 | `src/haute/cli/_serve.py` | `haute serve` — `ServeConfig`, `handle_serve`, host-safety checks, working-directory/editable-checkout frontend selection, dev/prod mode dispatch, Vite and uvicorn launch/cleanup. |
 | `src/haute/cli/_deploy.py` | `haute deploy` — `DeployCliConfig`, `handle_deploy`, CI-gate check, resolve → validate-and-score-once → render quote results → deploy pipeline. |
-| `src/haute/cli/_ci.py` | `haute ci` — the `ci` group. `secrets`: `CiSecretsConfig` and `handle_ci_secrets`, which sets every one of the deploy target's `ci_secret_names` on GitHub from `.env`, else the environment, through `haute._ci_secrets` (each value refused unset or still `.env.example`'s placeholder, each Databricks pair checked unless `--no-verify`), printing where each came from; `--check` compares the repository's list; another provider is given the names and its guide. Each of that module's failures is a Click error with its message. `update`: `handle_ci_update`, which rewrites `ci_files` for `[ci] provider` and `[deploy] target`, with the project's workbench and Python, and `.env.example`, through `write_generated_files`, pruning another provider's generated files. |
+| `src/haute/cli/_ci.py` | `haute ci` — the `ci` group. `secrets`: `CiSecretsConfig` and `handle_ci_secrets`, which sets every one of the deploy target's `ci_secret_names` on GitHub from `.env`, else the environment, through `haute._ci_secrets` (each value refused unset or still `.env.example`'s placeholder, each Databricks pair checked unless `--no-verify`), printing where each came from; `--check` compares the repository's list; another provider is given the names and its guide. Each of that module's failures is a Click error with its message. `update`: `handle_ci_update`, which rewrites `ci_files` for `[ci] provider` and `[deploy] target`, with the project's workbench and Python, and `.env.example`, through `write_generated_files`, pruning another provider's generated files. `registry-host`: `handle_ci_registry_host`, which prints the host `docker login` takes for `[deploy.container] registry`, for the login step of a container target's generated deploy jobs. |
 | `src/haute/_ci_secrets.py` | The deploy's CI secrets on GitHub, for `haute ci secrets` and the editor's Push. `CiSecretsError` (a step that could not be taken; its message says why and never holds a value) and its `DatabricksRefusedError`. The GitHub CLI's subprocess chokepoint: `resolve_gh` (`gh` on the search path) and `run_gh` (prompts disabled, `GH_TIMEOUT_SECONDS`, UTF-8 pinned, a failure raised with `gh`'s own message, known values redacted), under `github_secret_names` (`gh secret list`) and `set_github_secret` (`gh secret set NAME`, the value on standard input), each on the repository `--repo` names, else the one `gh` resolves from the project's remotes. `secret_values` (`.env`, else the environment, and where each came from), `usable_secret_values` (unset and placeholder values refused, `env_example_placeholders`) and `verify_databricks` (each pair through `haute.deploy._databricks_serving.workspace_user`). `github_repository`, the `OWNER/REPO` a `github.com` remote URL names. The Push's step: `RemoteSecrets` and `remote_secrets` (the deploy's secrets on one remote's repository, or none where they do not apply), `push_with_ci_secrets` (`POST /api/git/push`) and `set_missing_ci_secrets` (`POST /api/git/ci-secrets`), whose outcome is a `GitCiSecrets`. |
 | `src/haute/cli/_app.py` | `haute app` — the `app` group and its `build`, `serve` and `migrate` commands: `AppBuildConfig` and `handle_app_build` (the working directory's release through `build_release` into the directory given, `RELEASE_DIR` by default, and with `--image` its image through `build_image`), `AppServeConfig` (with `reader`, `--reader`) and `handle_app_serve` (the release built into `RELEASE_DIR`, the quote store at `QUOTES_FILE` made and migrated through `_local_store`, then `create_app` with the git identity from `get_identity` as its local principal, refused without one, and that store, a reader with `--reader`, served by `uvicorn` on `SERVE_HOST` alone), `handle_app_migrate` (`migrate_store` on the `--url` given, else `quote_store_url`, refused naming `STORE_URL_ENV` without either); any fault Haute or SQLAlchemy names (a release, a project or a store that is not as the command needs it) said as a Click error through `_said`, never a traceback, and a note when `[workbench.app] host` is unset. |
 | `src/haute/cli/_smoke.py` | `haute smoke` — `SmokeConfig`, `handle_smoke`, waits for a Databricks endpoint through the serving pair's client (`haute.deploy._databricks_serving`), then sends each test quote to a live endpoint (Databricks or HTTP) as a request of its own through `_smoke_files`, which reports each file from `price_test_quotes_live`. |
@@ -213,7 +213,8 @@ scripting) and raises `click.ClickException` — rather than printing a misleadi
 version is registered.
 
 **`ci secrets`**: `handle_ci_secrets` reads the project's `haute.toml`; the deploy target's
-`ci_secret_names` are the secrets its generated deploy, smoke, impact and tag steps read. On
+`ci_secret_names` are the secrets its generated deploy, registry login, smoke, impact and
+tag steps read. On
 GitHub it needs `gh`: `--check` lists the repository's secrets (`gh secret list --json name`) and
 marks each name set or missing. Otherwise each value is read from `.env`, else the environment,
 refused unset or equal to `.env.example`'s placeholder, and for Databricks each pair is checked
@@ -267,6 +268,15 @@ repository lacks the same way, never overwriting one it lists, and answers `read
 pushing somewhere other than it fetches from, a project whose provider is not GitHub or whose
 target has no secrets), settings that cannot be read, and every `CiSecretsError` are a 400
 naming why; a secret set before a later one failed stays set.
+
+**`ci registry-host`**: `handle_ci_registry_host` reads `[deploy.container] registry` from
+the project's `haute.toml` and prints the host a `docker login` before the push takes: the
+registry's first `/` segment when Docker reads it as a host (it holds a `.` or a `:`, or is
+`localhost`), `docker.io` when the registry is a Docker Hub namespace such as `myteam`, and
+an empty line when the registry is empty. The host is the last line it prints: a log line
+may come first (on Windows, the CPU QoS line), so a container-based target's generated
+deploy jobs read the last line in their login step
+([pipeline-config](../pipeline-config/low-level.md)).
 
 **`ci update`**: `handle_ci_update` regenerates the CI files `haute init` would write for the
 project's `[ci] provider` and `[deploy] target`, with its workbench, Python,

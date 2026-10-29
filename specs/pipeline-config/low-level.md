@@ -138,8 +138,9 @@
 - **`TARGETS`** (`_scaffold.py`) — `dict[str, _TargetConfig]`, the 5-entry registry (one per
   offered `--target`) that every scaffold template dispatches through: `label` (for the
   `.env.example` header), `env_body` (literal credential block), `secrets` (ordered CI
-  secret/env-var names), and `toml_section` (a `Callable[[str], str]` building that target's
-  `[deploy.*]` TOML block from the project name). `_get_target` raises `ValueError` on an
+  secret/env-var names), `toml_section` (a `Callable[[str], str]` building that target's
+  `[deploy.*]` TOML block from the project name), and for a container-based target
+  `registry_login`, the shell command that logs in to its registry. `_get_target` raises `ValueError` on an
   unknown target rather than returning a default. The Databricks `env_body` separates three
   credential spaces — data access (`DATABRICKS_HOST`/`DATABRICKS_TOKEN`), MLflow tracking and
   registry (`DATABRICKS_MLFLOW_HOST`/`DATABRICKS_MLFLOW_TOKEN`), and the serving endpoint
@@ -411,6 +412,32 @@ minutes and any other 15 (`_deploy_timeout_minutes`), longer than a Databricks d
 for its endpoint. GitLab's file keeps `.cache/uv` between runs and sets `UV_CACHE_DIR` to
 `$CI_PROJECT_DIR/.cache/uv` in its top-level `variables:`, one path (`_GITLAB_UV_CACHE`), so
 uv writes its package cache where the cache is kept rather than in `~/.cache/uv`.
+`haute deploy` pushes a container image with a plain `docker push` and logs in to
+nothing, so a container-based target's staging and production deploy jobs log in
+first (BUG-24): after `uv sync --frozen`, a **Log in to the registry** step (GitHub,
+Azure DevOps) or script entry (GitLab), given the deploy step's secrets, runs
+`_registry_login_script`. `uv run haute ci registry-host` prints the host of
+`[deploy.container] registry` as its last line, which the step reads since a log line
+may come first, and an empty line when the registry is empty (a `container` image then
+stays local, and a platform target's deploy refuses it). With `set -eo pipefail` (no
+`-u`: on GitLab the lines share the job's shell), a failed command fails the step, and the
+target's `registry_login` command pipes its credential to `docker login "$registry"
+--password-stdin`: for `container` the `DOCKER_USERNAME`/`DOCKER_PASSWORD` pair; for
+`aws-ecs` an ECR password, which lasts 12 hours, that `aws ecr get-login-password`
+fetches with the AWS keys in `AWS_DEFAULT_REGION`, as user `AWS` (the AWS CLI v1, which
+`uvx` runs from `awscli>=1.18,<2`, the one tool the jobs install unlocked besides uv);
+for `azure-container-apps` the service principal, `AZURE_CLIENT_ID` and
+`AZURE_CLIENT_SECRET`, which needs AcrPush on the registry; and for `gcp-run` the
+`GCP_SERVICE_ACCOUNT_KEY` JSON as user `_json_key`. No platform target lists the
+`DOCKER_*` pair. GitLab's job image has no Docker, so its container deploy jobs extend a
+hidden `.docker` job: a `docker:<version>-dind` service reached over TLS (`DOCKER_HOST`
+`tcp://docker:2376`, certificates under `/certs`, so the runner must be privileged and
+share `/certs/client`, as GitLab.com's instance runners do), and a `before_script`, which
+replaces the default one, that installs the static Docker CLI of the same version
+(`_GITLAB_DOCKER_VERSION`) from download.docker.com for the runner's architecture and
+then runs the default's uv install and sync. The static CLI has no buildx, so `docker
+build` uses the classic builder, deprecated but still shipped, which the generated
+Dockerfile's plain instructions suffice for.
 The release inputs that start a deploy are listed once
 too (`_RELEASE_INPUT_DIRS`, the pipeline folder of `PIPELINE_FILE`, the file the
 scaffolded `haute.toml` names, which holds the form folder too, and the test quotes'
@@ -461,8 +488,8 @@ and removes the resulting empty `.github/workflows/`/`.github` directories, befo
 Every generator result must parse as one complete YAML document for every
 `TARGETS` entry. Structural tests locate the actual validate, staging, smoke,
 impact, and production jobs/stages, assert their branch/manual conditions, and
-compare each consuming step's environment/variables mapping with the target's
-registry-derived secret list. Header-only parsing and substring checks are not
+compare each consuming step's environment/variables mapping, the login step's
+included, with the target's registry-derived secret list. Header-only parsing and substring checks are not
 accepted as evidence for this boundary.
 
 `tests/test_docs_accuracy.py` builds a real Databricks/GitHub scaffold on

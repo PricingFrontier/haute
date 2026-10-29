@@ -349,6 +349,73 @@ def test_update_outside_a_project_fails(runner, tmp_path: Path, monkeypatch) -> 
 
 
 # ---------------------------------------------------------------------------
+# haute ci registry-host, which a container deploy's login step runs
+# ---------------------------------------------------------------------------
+
+
+def _container_project(runner, tmp_path: Path, monkeypatch, registry: str) -> None:
+    monkeypatch.chdir(tmp_path)
+    assert runner.invoke(cli, ["init", "--target", "container", "--ci", "github"]).exit_code == 0
+    toml = tmp_path / "haute.toml"
+    text = toml.read_text(encoding="utf-8")
+    assert text.count('registry = ""') == 1
+    toml.write_text(text.replace('registry = ""', f'registry = "{registry}"'), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("registry", "host"),
+    [
+        ("ghcr.io/pricing-team", "ghcr.io"),
+        (
+            "123456789012.dkr.ecr.eu-west-1.amazonaws.com",
+            "123456789012.dkr.ecr.eu-west-1.amazonaws.com",
+        ),
+        ("pricingregistry.azurecr.io/", "pricingregistry.azurecr.io"),
+        ("europe-west1-docker.pkg.dev/pricing/models", "europe-west1-docker.pkg.dev"),
+        ("localhost:5000/models", "localhost:5000"),
+        ("localhost/models", "localhost"),
+        # A bare Docker Hub namespace names no host; Docker reads it as docker.io's.
+        ("pricingteam", "docker.io"),
+        ("pricingteam/motor", "docker.io"),
+        ("docker.io/pricingteam", "docker.io"),
+    ],
+)
+def test_registry_host_prints_the_host_docker_logs_in_to(
+    runner, tmp_path: Path, monkeypatch, registry: str, host: str
+) -> None:
+    _container_project(runner, tmp_path, monkeypatch, registry)
+
+    result = runner.invoke(cli, ["ci", "registry-host"])
+
+    # The login step reads the last line: a log line may come first (on Windows, the
+    # CPU QoS line every command logs).
+    assert result.exit_code == 0, result.output
+    assert result.stdout.endswith(f"\n{host}\n") or result.stdout == f"{host}\n"
+
+
+def test_registry_host_prints_an_empty_line_without_a_registry(
+    runner, tmp_path: Path, monkeypatch
+) -> None:
+    # A container image with no registry stays local: there is nothing to log in to.
+    # The line is printed all the same, so a log line is never read as the host.
+    _container_project(runner, tmp_path, monkeypatch, "")
+
+    result = runner.invoke(cli, ["ci", "registry-host"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.endswith("\n\n") or result.stdout == "\n"
+
+
+def test_registry_host_outside_a_project_fails(runner, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli, ["ci", "registry-host"])
+
+    assert result.exit_code == 1
+    assert "No haute.toml found" in result.output
+
+
+# ---------------------------------------------------------------------------
 # haute init names the secrets
 # ---------------------------------------------------------------------------
 
@@ -373,8 +440,6 @@ def test_a_usable_default_from_env_example_is_set_like_any_value(
 ) -> None:
     # .env.example's AWS region is a real default, not a placeholder to replace.
     values = {
-        "DOCKER_USERNAME": "registry-user",
-        "DOCKER_PASSWORD": "registry-password",
         "AWS_ACCESS_KEY_ID": "AKIAEXAMPLE",
         "AWS_SECRET_ACCESS_KEY": "aws-secret",
         "AWS_DEFAULT_REGION": "eu-west-1",

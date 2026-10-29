@@ -404,7 +404,7 @@ production:
 Already tracked before this review and not repeated: the `cwd`-captured sandbox
 root used by the deploy modules, the underwriter app and the server
 (`PCFG-R04`); the SPA path containment and the build hook's asset containment
-(`SBX-R01`); the generated container registry-login steps (`BUG-24`); the
+(`SBX-R01`); the
 three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`);
 `HTTPException` raised from service modules (`API-R02`) and the hand-maintained
 browser contract (`API-R03`); the cwd-dependent resolvers in the routes and the
@@ -456,9 +456,8 @@ modelling pane badges (`FMOU-R03`); in the tests, scripts and CI, the hundred
 floating action tags (`ENGQ-CI06`, `CLI-R06`), the campaign-named test modules
 (`ENGQ-R05`), the test-only reset hooks in production code (`ENGQ-R01`), the
 training-test cost, the order-dependent tests and the shard balance
-(`ENGQ-CI03` to `ENGQ-CI05`), the 189 test modules that change directory
-because production resolves the project root from it (`PCFG-R04`), and the
-generated scaffold workflows (`BUG-24`).
+(`ENGQ-CI03` to `ENGQ-CI05`), and the 189 test modules that change directory
+because production resolves the project root from it (`PCFG-R04`).
 
 ## Verdicts that changed or stayed open
 
