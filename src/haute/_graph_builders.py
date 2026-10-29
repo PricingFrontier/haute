@@ -20,6 +20,7 @@ from haute._ast_helpers import (
 )
 from haute._config_builder import _resolve_node_config
 from haute._graph_utils import _edge_id, resolve_input_mapping_names
+from haute._polars_steps import stepped_surface_allows_input_references
 from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType
 from haute.errors import ConfigError, ParseError
@@ -239,11 +240,12 @@ def _extract_decorated_nodes(
 def _edge_param_names_for_node(node_info: dict[str, Any]) -> list[str]:
     """Return physical names used to infer a parsed node's incoming edges.
 
-    A mapped Polars signature intentionally keeps logical parameter names in
-    authored code.  Its decorator records the current physical edge names, so
-    implicit edge reconstruction must apply that mapping before matching node
-    identifiers.  Instances keep their existing semantics: their signature is
-    already physical and ``inputMapping`` describes the referenced original.
+    A mapped Transform or Load File signature intentionally keeps the logical
+    parameter names its code reads.  Its ``inputMapping`` (a Transform's
+    decorator, a Load File's sidecar) records the current physical edge names,
+    so implicit edge reconstruction must apply that mapping before matching
+    node identifiers.  Instances keep their existing semantics: their signature
+    is already physical and ``inputMapping`` describes the referenced original.
     """
     logical_params = list(node_info["edge_param_names"])
     node_type = node_info.get("node_type")
@@ -257,7 +259,8 @@ def _edge_param_names_for_node(node_info: dict[str, Any]) -> list[str]:
     config = node_info.get("config", {})
     input_mapping = config.get("inputMapping") if isinstance(config, dict) else None
     if (
-        node_info.get("node_type") != NodeType.POLARS
+        node_type is None
+        or not stepped_surface_allows_input_references(node_type)
         or not isinstance(config, dict)
         or "instanceOf" in config
         or input_mapping is None
@@ -274,8 +277,7 @@ def _edge_param_names_for_node(node_info: dict[str, Any]) -> list[str]:
     resolved_logical_params = resolve_input_mapping_names(edge_params, input_mapping)
     if resolved_logical_params != logical_params:
         raise ConfigError(
-            "inputMapping logical names must match the Polars function's "
-            "positional input parameters.",
+            "inputMapping logical names must match the function's positional input parameters.",
             logical_params=logical_params,
             resolved_logical_params=resolved_logical_params,
         )

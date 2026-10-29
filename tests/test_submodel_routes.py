@@ -143,18 +143,17 @@ def _graph_model(
 
 def _patch_parent_document(
     tmp_path: Path,
-    raw_graph: dict[str, object],
     *,
     source_file: str = "pipeline.py",
 ):
-    """Patch authoritative loading while retaining real route/save boundaries."""
+    """Patch the ready parent's revision while retaining real route/save boundaries."""
     parent = tmp_path / source_file
     parent.parent.mkdir(parents=True, exist_ok=True)
     if not parent.exists():
         parent.write_text("# mocked parent document\n", encoding="utf-8")
     return patch(
         "haute.routes.submodel._load_parent_document",
-        return_value=(tmp_path.resolve(), parent.resolve(), _graph_model(raw_graph)),
+        return_value=(tmp_path.resolve(), parent.resolve(), _CURRENT_REVISION),
     )
 
 
@@ -243,7 +242,7 @@ class TestCreateSubmodel:
         """An unknown selected id is a stale-selection conflict."""
         body = _create_body()
         body["node_ids"] = ["nonexistent"]
-        with _patch_parent_document(tmp_path, _simple_graph()):
+        with _patch_parent_document(tmp_path):
             response = client.post("/api/submodel/create", json=body)
         assert response.status_code == 409
 
@@ -259,7 +258,7 @@ class TestCreateSubmodel:
     ) -> None:
         body = _create_body()
         body["name"] = name
-        with _patch_parent_document(tmp_path, _simple_graph()):
+        with _patch_parent_document(tmp_path):
             response = client.post("/api/submodel/create", json=body)
 
         assert response.status_code == 400
@@ -275,7 +274,7 @@ class TestCreateSubmodel:
             if node["id"] == "calc":
                 node["data"]["label"] = "pl"
         body = _create_body(graph=graph)
-        with _patch_parent_document(tmp_path, graph):
+        with _patch_parent_document(tmp_path):
             response = client.post("/api/submodel/create", json=body)
 
         assert response.status_code == 200, response.text
@@ -284,7 +283,7 @@ class TestCreateSubmodel:
         """A submodel must contain at least 2 nodes."""
         body = _create_body()
         body["node_ids"] = ["calc"]
-        with _patch_parent_document(tmp_path, _simple_graph()):
+        with _patch_parent_document(tmp_path):
             response = client.post("/api/submodel/create", json=body)
         assert response.status_code == 400
 
@@ -296,7 +295,7 @@ class TestCreateSubmodel:
         )
 
         with (
-            _patch_parent_document(tmp_path, _simple_graph()),
+            _patch_parent_document(tmp_path),
             patch("haute.routes._submodel_ops.create_submodel_graph", return_value=result),
             patch(
                 "haute.routes._save_pipeline.SavePipelineService.save_graph_transactionally",
@@ -327,7 +326,7 @@ class TestCreateSubmodel:
         )
 
         with (
-            _patch_parent_document(tmp_path, _simple_graph()),
+            _patch_parent_document(tmp_path),
             patch("haute.routes._submodel_ops.create_submodel_graph", return_value=result),
             patch(
                 "haute.routes._save_pipeline.SavePipelineService.validate_new_module_files",
@@ -351,7 +350,7 @@ class TestCreateSubmodel:
         body["pipeline_description"] = "My pricing pipeline"
 
         with (
-            _patch_parent_document(tmp_path, _simple_graph()),
+            _patch_parent_document(tmp_path),
             patch("haute.routes._submodel_ops.create_submodel_graph", return_value=result),
             patch(
                 "haute.routes._save_pipeline.SavePipelineService.save_graph_transactionally",
@@ -375,7 +374,7 @@ class TestCreateSubmodel:
         )
 
         with (
-            _patch_parent_document(tmp_path, _simple_graph()),
+            _patch_parent_document(tmp_path),
             patch("haute.routes._submodel_ops.create_submodel_graph", return_value=result),
             patch(
                 "haute.codegen.graph_to_code_multi",
@@ -431,11 +430,7 @@ class TestCreateSubmodel:
         )
 
         with (
-            _patch_parent_document(
-                tmp_path,
-                _simple_graph(),
-                source_file="rating/main.py",
-            ),
+            _patch_parent_document(tmp_path, source_file="rating/main.py"),
             patch("haute.routes._submodel_ops.create_submodel_graph", return_value=result),
             patch(
                 "haute.codegen.graph_to_code_multi",
@@ -657,11 +652,7 @@ class TestDissolveSubmodel:
                 parent.parent.mkdir(parents=True, exist_ok=True)
                 if not parent.exists():
                     parent.write_text("# mocked parent document\n", encoding="utf-8")
-            return (
-                tmp_path.resolve(),
-                parent.resolve(),
-                _graph_model(_graph_with_submodel()),
-            )
+            return (tmp_path.resolve(), parent.resolve(), _CURRENT_REVISION)
 
         monkeypatch.setattr(
             "haute.routes.submodel._load_parent_document",
@@ -975,7 +966,7 @@ class TestTransformOnlySubmodelRoutes:
         parent = tmp_path / "pipeline.py"
 
         with (
-            _patch_parent_document(tmp_path, _simple_graph()),
+            _patch_parent_document(tmp_path),
             patch("haute.routes._submodel_ops.create_submodel_graph", return_value=result),
             patch(
                 "haute.routes._save_pipeline.SavePipelineService.save_graph_transactionally",
@@ -1004,7 +995,7 @@ class TestTransformOnlySubmodelRoutes:
         flat_graph = _graph_model(_simple_graph())
 
         with (
-            _patch_parent_document(tmp_path, _graph_with_submodel()),
+            _patch_parent_document(tmp_path),
             patch(
                 "haute.parser.parse_submodel_file",
                 return_value=PipelineGraph(pipeline_name="pricing"),
@@ -1035,7 +1026,7 @@ class TestTransformOnlySubmodelRoutes:
         flat_graph = _graph_model(_simple_graph())
 
         with (
-            _patch_parent_document(tmp_path, _simple_graph()),
+            _patch_parent_document(tmp_path),
             patch("haute.graph_utils.flatten_graph", return_value=flat_graph) as flatten,
             patch(
                 "haute.routes._save_pipeline.SavePipelineService.save_graph_transactionally"

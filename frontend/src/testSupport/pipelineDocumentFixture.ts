@@ -111,7 +111,6 @@ function recoveryNode(node: Node, index: number): RecoveryNode {
 
 function recoveryEdge(edge: Edge, nodesById: ReadonlyMap<string, RecoveryNode>): RecoveryEdge {
   const data = record(edge.data)
-  const pipelineEdge = edge as Edge & { sourcePort?: string | null; targetPort?: string | null }
   const availability = data._loadAvailability
   const sourceNode = nodesById.get(edge.source)
   const sourceHandle = edge.sourceHandle ?? null
@@ -129,8 +128,6 @@ function recoveryEdge(edge: Edge, nodesById: ReadonlyMap<string, RecoveryNode>):
       typeof data._targetAuthoredId === "string" ? data._targetAuthoredId : edge.target,
     source_handle: sourceHandle,
     target_handle: edge.targetHandle ?? null,
-    source_port: pipelineEdge.sourcePort ?? null,
-    target_port: pipelineEdge.targetPort ?? null,
     input_name: suppliedInputName ?? edge.source,
     availability:
       availability === "unavailable" || availability === "blocked" ? availability : "ready",

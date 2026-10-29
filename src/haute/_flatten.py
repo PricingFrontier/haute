@@ -27,7 +27,7 @@ def flatten_graph(
     if not instances:
         return graph
     selected = None if target_instance_id is None else {target_instance_id}
-    return expand_submodel_instances(graph, instance_ids=selected)
+    return expand_submodel_instances(graph, instances, instance_ids=selected)
 
 
 def flatten_executable_graph(graph: PipelineGraph) -> PipelineGraph:

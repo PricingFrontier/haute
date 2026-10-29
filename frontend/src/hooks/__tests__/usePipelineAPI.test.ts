@@ -1043,7 +1043,7 @@ describe("usePipelineAPI", () => {
     }))
   })
 
-  it("preserves authored submodel boundary ports in the save payload", async () => {
+  it("saves submodel boundary handles as the edge carries them", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
     mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save" })
     const boundaryEdge: PipelineEdge = {
@@ -1052,8 +1052,6 @@ describe("usePipelineAPI", () => {
       target: "scoring",
       sourceHandle: "out__priced",
       targetHandle: "in__score",
-      sourcePort: "quotes",
-      targetPort: "base",
     }
     const params = makeParams()
     params.graphRef.current = { nodes: [], edges: [boundaryEdge] }
@@ -1069,8 +1067,8 @@ describe("usePipelineAPI", () => {
       graph: expect.objectContaining({
         edges: [
           expect.objectContaining({
-            sourcePort: "quotes",
-            targetPort: "base",
+            sourceHandle: "out__priced",
+            targetHandle: "in__score",
           }),
         ],
       }),

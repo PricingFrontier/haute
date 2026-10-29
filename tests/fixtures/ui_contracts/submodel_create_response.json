@@ -51,15 +51,13 @@
         "id": "e_source_pricing",
         "source": "source",
         "target": "pricing",
-        "targetHandle": "in__base",
-        "targetPort": "base"
+        "targetHandle": "in__base"
       },
       {
         "id": "e_pricing_sink",
         "source": "pricing",
         "target": "sink",
-        "sourceHandle": "out__quotes",
-        "sourcePort": "quotes"
+        "sourceHandle": "out__quotes"
       }
     ],
     "submodels": {

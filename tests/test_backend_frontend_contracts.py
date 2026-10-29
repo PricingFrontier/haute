@@ -144,25 +144,23 @@ def test_generated_response_fixture_is_exactly_what_the_server_sends(
     assert model.model_validate(fixture).model_dump(mode="json") == fixture
 
 
-def test_graph_edge_schema_exposes_authored_boundary_ports() -> None:
+def test_graph_edge_schema_is_endpoints_and_handles() -> None:
+    """A submodel boundary edge's ports are its ``out__``/``in__`` handles; it has no others."""
     schema = GraphEdge.model_json_schema()
 
-    assert "sourcePort" in schema["properties"]
-    assert "targetPort" in schema["properties"]
+    assert set(schema["properties"]) == {"id", "source", "target", "sourceHandle", "targetHandle"}
     assert GraphEdge(
         id="e",
-        source="submodel__a",
-        target="submodel__b",
-        sourcePort="quotes",
-        targetPort="base",
+        source="a",
+        target="b",
+        sourceHandle="out__quotes",
+        targetHandle="in__base",
     ).model_dump() == {
         "id": "e",
-        "source": "submodel__a",
-        "target": "submodel__b",
-        "sourceHandle": None,
-        "targetHandle": None,
-        "sourcePort": "quotes",
-        "targetPort": "base",
+        "source": "a",
+        "target": "b",
+        "sourceHandle": "out__quotes",
+        "targetHandle": "in__base",
     }
 
 

@@ -357,8 +357,9 @@ def rewrite_boundary_input_names(
     """Rewrite every schema-owned input-name reference after boundary expansion.
 
     Selector fields and live-switch map keys follow the new physical edge name.
-    Ordinary Polars code retains its public logical name through
-    ``inputMapping``; instance mappings only update existing physical values.
+    Free Transform and Load File code retains its public logical name through
+    ``inputMapping``, their steps have the references rewritten, and instance
+    mappings only update existing physical values.
     """
     rewritten: list[GraphNode] = []
     for node in nodes:
@@ -464,14 +465,14 @@ def rewrite_boundary_input_names(
             renamed_currents = set()
 
         steps = config.get("steps")
-        if (
-            stepped_surface_allows_input_references(node.data.nodeType)
-            and not config.get("instanceOf")
-            and isinstance(steps, list)
-        ):
-            # A stepped edges surface addresses inputs by their edge names, so the
-            # boundary rename rewrites the references inside the steps rather
-            # than recording an ``inputMapping`` indirection.
+        # Transform and Load File code address their inputs by edge name.
+        names_inputs = stepped_surface_allows_input_references(
+            node.data.nodeType
+        ) and not config.get("instanceOf")
+        if names_inputs and isinstance(steps, list):
+            # Steps hold the edge names themselves, so the boundary rename
+            # rewrites the references inside the steps rather than recording
+            # an ``inputMapping`` indirection.
             try:
                 renamed_steps = rename_step_inputs(steps, renames)
             except PolarsStepError as exc:
@@ -483,7 +484,8 @@ def rewrite_boundary_input_names(
             if renamed_steps != steps:
                 config["steps"] = renamed_steps
                 changed = True
-        elif node.data.nodeType == NodeType.POLARS and not config.get("instanceOf"):
+        elif names_inputs:
+            # Free code keeps reading the names it was written with.
             for logical, current in renames.items():
                 if logical == current or logical in renamed_currents:
                     continue
@@ -517,37 +519,6 @@ def rewrite_boundary_input_names(
             continue
         rewritten.append(node.with_config(config))
     return rewritten
-
-
-def rewrite_node_references(
-    nodes: list[GraphNode],
-    reference_map_by_node: dict[str, dict[str, str]],
-) -> list[GraphNode]:
-    """Rewrite only schema-declared node-reference config fields."""
-    rewritten: list[GraphNode] = []
-    for node in nodes:
-        config = dict(node.data.config)
-        changed = False
-        references = reference_map_by_node.get(node.id, {})
-        for field in _GLOBAL_NODE_REFERENCE_FIELDS:
-            reference = config.get(field)
-            replacement = references.get(reference) if isinstance(reference, str) else None
-            if replacement is not None:
-                config[field] = replacement
-                changed = True
-        if not changed:
-            rewritten.append(node)
-            continue
-        rewritten.append(node.with_config(config))
-    return rewritten
-
-
-def rewrite_submodel_alias_references(
-    nodes: list[GraphNode],
-    alias_to_instance_id: dict[str, str],
-) -> list[GraphNode]:
-    """Rewrite schema-declared parent config references from aliases to ids."""
-    return rewrite_node_references(nodes, {node.id: alias_to_instance_id for node in nodes})
 
 
 def _rewrite_config_references(
@@ -643,21 +614,11 @@ def _clone_definition(
                 target=edge.target,
             )
         edges.append(
-            GraphEdge(
-                id=_edge_id(
-                    source,
-                    target,
-                    edge.sourceHandle,
-                    edge.targetHandle,
-                    hidden_source_port=edge.sourcePort,
-                    hidden_target_port=edge.targetPort,
-                ),
+            _expanded_edge(
                 source=source,
                 target=target,
-                sourceHandle=edge.sourceHandle,
-                targetHandle=edge.targetHandle,
-                sourcePort=edge.sourcePort,
-                targetPort=edge.targetPort,
+                source_handle=edge.sourceHandle,
+                target_handle=edge.targetHandle,
             )
         )
     return nodes, edges, id_map
@@ -669,24 +630,13 @@ def _expanded_edge(
     target: str,
     source_handle: str | None,
     target_handle: str | None,
-    source_port: str | None = None,
-    target_port: str | None = None,
 ) -> GraphEdge:
     return GraphEdge(
-        id=_edge_id(
-            source,
-            target,
-            source_handle,
-            target_handle,
-            hidden_source_port=source_port,
-            hidden_target_port=target_port,
-        ),
+        id=_edge_id(source, target, source_handle, target_handle),
         source=source,
         target=target,
         sourceHandle=source_handle,
         targetHandle=target_handle,
-        sourcePort=source_port,
-        targetPort=target_port,
     )
 
 
@@ -708,17 +658,10 @@ def _boundary_edge_input_name(
 
 
 def _deduplicate_edges(edges: list[GraphEdge]) -> list[GraphEdge]:
-    seen: set[tuple[str, str, str | None, str | None, str | None, str | None]] = set()
+    seen: set[tuple[str, str, str | None, str | None]] = set()
     result: list[GraphEdge] = []
     for edge in edges:
-        identity = (
-            edge.source,
-            edge.target,
-            edge.sourceHandle,
-            edge.targetHandle,
-            edge.sourcePort,
-            edge.targetPort,
-        )
+        identity = (edge.source, edge.target, edge.sourceHandle, edge.targetHandle)
         if identity in seen:
             continue
         seen.add(identity)
@@ -780,11 +723,15 @@ def _merge_definition_support_code(
 
 def expand_submodel_instances(
     graph: PipelineGraph,
+    instances: dict[str, ResolvedSubmodelInstance],
     *,
     instance_ids: set[str] | None = None,
 ) -> PipelineGraph:
-    """Purely expand selected occurrences using shared definition state."""
-    instances = resolve_submodel_instances(graph)
+    """Purely expand selected occurrences using shared definition state.
+
+    *instances* is :func:`resolve_submodel_instances` of *graph*: the caller
+    has validated the graph, so expansion does not validate it again.
+    """
     selected_ids = set(instances) if instance_ids is None else set(instance_ids)
     missing = sorted(selected_ids - set(instances))
     if missing:
@@ -872,13 +819,7 @@ def expand_submodel_instances(
 
     expanded_parent_edges: list[GraphEdge] = []
     for edge in graph.edges:
-        source_variants = [
-            (
-                edge.source,
-                edge.sourceHandle,
-                edge.sourcePort,
-            )
-        ]
+        source_variants = [(edge.source, edge.sourceHandle)]
         source_instance = instances.get(edge.source)
         if edge.source in selected_ids:
             if source_instance is None:
@@ -889,20 +830,10 @@ def expand_submodel_instances(
                 )
             output = bound_output_port(source_instance, edge)
             source_variants = [
-                (
-                    id_maps[edge.source][output.source.node_id],
-                    output.source.handle_id,
-                    None,
-                )
+                (id_maps[edge.source][output.source.node_id], output.source.handle_id)
             ]
 
-        target_variants = [
-            (
-                edge.target,
-                edge.targetHandle,
-                edge.targetPort,
-            )
-        ]
+        target_variants = [(edge.target, edge.targetHandle)]
         target_instance = instances.get(edge.target)
         if edge.target in selected_ids:
             if target_instance is None:
@@ -921,23 +852,17 @@ def expand_submodel_instances(
                     port_name=input_port.name,
                 )
             target_variants = [
-                (
-                    id_maps[edge.target][target.node_id],
-                    target.handle_id,
-                    None,
-                )
+                (id_maps[edge.target][target.node_id], target.handle_id)
                 for target in input_port.targets
             ]
 
-        for source, source_handle, source_port in source_variants:
-            for target, target_handle, target_port in target_variants:
+        for source, source_handle in source_variants:
+            for target, target_handle in target_variants:
                 expanded_edge = _expanded_edge(
                     source=source,
                     target=target,
                     source_handle=source_handle,
                     target_handle=target_handle,
-                    source_port=source_port,
-                    target_port=target_port,
                 )
                 expanded_parent_edges.append(expanded_edge)
                 if edge.source not in selected_ids and edge.target not in selected_ids:

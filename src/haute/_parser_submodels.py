@@ -39,7 +39,6 @@ from haute._parser_bindings import (
     assert_request_frames_named,
 )
 from haute._parser_conservation import assert_parser_structure_conserved
-from haute._submodel_instances import rewrite_submodel_alias_references
 from haute._submodel_paths import (
     SUBMODEL_PACKAGE,
     MalformedSubmodelPathError,
@@ -791,21 +790,9 @@ def _merge_registered_submodels(
             )
         )
 
-    parent_nodes = rewrite_submodel_alias_references(
-        parent_nodes,
-        {name: name for name in occurrences},
-    )
     merged_edges = list(parent_graph.edges)
     existing = {
-        (
-            edge.source,
-            edge.target,
-            edge.sourceHandle,
-            edge.targetHandle,
-            edge.sourcePort,
-            edge.targetPort,
-        )
-        for edge in merged_edges
+        (edge.source, edge.target, edge.sourceHandle, edge.targetHandle) for edge in merged_edges
     }
     for source, target, source_port, target_port in parent_edges:
         source_definition = occurrences.get(source)
@@ -820,8 +807,6 @@ def _merge_registered_submodels(
         actual_target = target
         source_handle = source_port
         target_handle = target_port
-        hidden_source_port: str | None = None
-        hidden_target_port: str | None = None
 
         if source_definition is not None:
             definition = source_definition
@@ -861,33 +846,17 @@ def _merge_registered_submodels(
                 target=target,
             )
 
-        identity = (
-            actual_source,
-            actual_target,
-            source_handle,
-            target_handle,
-            hidden_source_port,
-            hidden_target_port,
-        )
+        identity = (actual_source, actual_target, source_handle, target_handle)
         if identity in existing:
             continue
         existing.add(identity)
         merged_edges.append(
             GraphEdge(
-                id=_edge_id(
-                    actual_source,
-                    actual_target,
-                    source_handle,
-                    target_handle,
-                    hidden_source_port=hidden_source_port,
-                    hidden_target_port=hidden_target_port,
-                ),
+                id=_edge_id(actual_source, actual_target, source_handle, target_handle),
                 source=actual_source,
                 target=actual_target,
                 sourceHandle=source_handle,
                 targetHandle=target_handle,
-                sourcePort=hidden_source_port,
-                targetPort=hidden_target_port,
             )
         )
 

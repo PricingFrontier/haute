@@ -531,9 +531,8 @@ class ProjectionEdgeKey:
     """Complete immutable identity for one graph edge in a projection plan.
 
     A source/target pair is insufficient: one multi-frame source may connect
-    several ports to the same target.  The persisted id and every visible or
-    retained port field participate so those demands cannot overwrite one
-    another.
+    several ports to the same target.  The persisted id and both handles
+    participate so those demands cannot overwrite one another.
     """
 
     edge_id: str
@@ -541,8 +540,6 @@ class ProjectionEdgeKey:
     target: str
     source_handle: str | None = None
     target_handle: str | None = None
-    source_port: str | None = None
-    target_port: str | None = None
 
     @classmethod
     def from_edge(cls, edge: GraphEdge) -> ProjectionEdgeKey:
@@ -552,8 +549,6 @@ class ProjectionEdgeKey:
             target=edge.target,
             source_handle=edge.sourceHandle,
             target_handle=edge.targetHandle,
-            source_port=edge.sourcePort,
-            target_port=edge.targetPort,
         )
 
     def sort_key(self) -> tuple[str, ...]:
@@ -562,8 +557,6 @@ class ProjectionEdgeKey:
             self.target,
             self.source_handle or "",
             self.target_handle or "",
-            self.source_port or "",
-            self.target_port or "",
             self.edge_id,
         )
 
@@ -574,8 +567,6 @@ class ProjectionEdgeKey:
             "target": self.target,
             "source_handle": self.source_handle,
             "target_handle": self.target_handle,
-            "source_port": self.source_port,
-            "target_port": self.target_port,
         }
 
 

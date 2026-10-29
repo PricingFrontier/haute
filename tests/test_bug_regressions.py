@@ -386,23 +386,19 @@ class TestBugB7DissolveTargetOnly:
                     source="src",
                     target="rating_instance",
                     targetHandle="in__base",
-                    targetPort="base",
                 ),
                 GraphEdge(
                     id="e_rating_pricing",
                     source="rating_instance",
                     target="pricing_instance",
                     sourceHandle="out__quotes",
-                    sourcePort="quotes",
                     targetHandle="in__base",
-                    targetPort="base",
                 ),
                 GraphEdge(
                     id="e_pricing_out",
                     source="pricing_instance",
                     target="out",
                     sourceHandle="out__quotes",
-                    sourcePort="quotes",
                 ),
             ],
             submodels={

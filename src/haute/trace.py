@@ -66,6 +66,7 @@ from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute._path_resolution import runtime_project_root_scope
 from haute._polars_selectors import preamble_selector_aliases
+from haute._polars_steps import stepped_surface_allows_input_references
 from haute._seed_plans import (
     ListedSeed,
     SeedPlan,
@@ -1686,14 +1687,16 @@ def _trace_lineage_alignments(
             continue
         input_names[(edge.source, edge.target, edge.sourceHandle, edge.targetHandle)] = name
         child_inputs.setdefault(edge.target, []).append(name)
-    # A Polars transform's ``inputMapping`` lets its code name an input by a
-    # stable logical name (``logical -> current edge name``); the executor binds
-    # both, so the trace analysers must read both too.
+    # A Transform's or Load File's ``inputMapping`` lets its code name an input
+    # by a stable logical name (``logical -> current edge name``); the executor
+    # binds both, so the trace analysers must read both too.
     input_aliases: dict[str, dict[str, str]] = {}
     for target, names in child_inputs.items():
         node = prepared.node_map[target]
         mapping = node.data.config.get("inputMapping")
-        if node.data.nodeType != NodeType.POLARS or not isinstance(mapping, dict):
+        if not stepped_surface_allows_input_references(node.data.nodeType) or not isinstance(
+            mapping, dict
+        ):
             continue
         aliases = {
             logical: current

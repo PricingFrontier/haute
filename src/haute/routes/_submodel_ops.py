@@ -103,12 +103,7 @@ def _build_public_interface(
             SubmodelInputPort(
                 name=port_name,
                 targets=[
-                    SubmodelEndpoint(
-                        nodeId=edge.target,
-                        handleId=(
-                            edge.targetHandle if edge.targetHandle is not None else edge.targetPort
-                        ),
-                    )
+                    SubmodelEndpoint(nodeId=edge.target, handleId=edge.targetHandle)
                     for edge in edges
                 ],
             )
@@ -125,12 +120,7 @@ def _build_public_interface(
         output_ports.append(
             SubmodelOutputPort(
                 name=port_name,
-                source=SubmodelEndpoint(
-                    nodeId=edge.source,
-                    handleId=(
-                        edge.sourceHandle if edge.sourceHandle is not None else edge.sourcePort
-                    ),
-                ),
+                source=SubmodelEndpoint(nodeId=edge.source, handleId=edge.sourceHandle),
             )
         )
     return input_ports, output_ports, input_names, output_names
@@ -155,36 +145,22 @@ def _rewire_canonical_boundary_edges(
             target_handle = f"in__{input_names[identity]}"
             rewired.append(
                 GraphEdge(
-                    id=_edge_id(
-                        edge.source,
-                        instance_id,
-                        edge.sourceHandle,
-                        target_handle,
-                        hidden_source_port=edge.sourcePort,
-                    ),
+                    id=_edge_id(edge.source, instance_id, edge.sourceHandle, target_handle),
                     source=edge.source,
                     target=instance_id,
                     sourceHandle=edge.sourceHandle,
                     targetHandle=target_handle,
-                    sourcePort=edge.sourcePort,
                 )
             )
         else:
             source_handle = f"out__{output_names[(edge.source, edge.sourceHandle)]}"
             rewired.append(
                 GraphEdge(
-                    id=_edge_id(
-                        instance_id,
-                        edge.target,
-                        source_handle,
-                        edge.targetHandle,
-                        hidden_target_port=edge.targetPort,
-                    ),
+                    id=_edge_id(instance_id, edge.target, source_handle, edge.targetHandle),
                     source=instance_id,
                     target=edge.target,
                     sourceHandle=source_handle,
                     targetHandle=edge.targetHandle,
-                    targetPort=edge.targetPort,
                 )
             )
     return rewired
@@ -220,7 +196,6 @@ def _preserve_consumer_input_names(
             target=edge.target,
             sourceHandle=f"out__{output_names[(edge.source, edge.sourceHandle)]}",
             targetHandle=edge.targetHandle,
-            targetPort=edge.targetPort,
         )
         new_name = edge_input_name(rewired, occurrence, submodels=submodels_after)
         if old_name != new_name:

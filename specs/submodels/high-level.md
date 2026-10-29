@@ -199,9 +199,11 @@ Extraction preserves the existing executable frame name by making it the new
 public port's name at the same time as it rewires the edge; remaining parent
 consumers therefore require no generated alias/port rename. Expansion resolves
 public input and output names to the concrete upstream or qualified child
-source names inside cloned and remaining configs. Ordinary Polars code keeps
-its public logical name through an explicit `inputMapping` whenever the physical
-expanded source name differs. Every schema-owned incoming-frame reference is
+source names inside cloned and remaining configs. Code that names its inputs,
+a Transform's or a Load File's (the stepped surfaces whose steps may name their
+inputs), keeps its public logical name through an explicit `inputMapping`
+whenever the physical expanded source name differs; steps on those surfaces
+have their input references rewritten instead. Every schema-owned incoming-frame reference is
 migrated with that edge identity, including selector fields, live-switch maps,
 instance mappings, and each OUTPUT `outputMapping[].source_port`. Edge and
 config rewrites are one atomic transform, so no consumer retains a stale

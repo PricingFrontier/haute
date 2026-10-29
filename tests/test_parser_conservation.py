@@ -546,9 +546,7 @@ class TestGraphStructureConservationGate:
             if edge.source == "ported_child" and edge.target == "sink"
         )
         assert inbound.targetHandle == "in__base"
-        assert inbound.targetPort is None
         assert outbound.sourceHandle == "out__quotes"
-        assert outbound.sourcePort is None
 
         flattened = parse_pipeline_file(parent, flatten=True)
         runtime_in = qualified_runtime_node_id("ported_child", "child_in")

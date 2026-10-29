@@ -364,6 +364,32 @@ describe("prepareNodeUpdate rename stable bindings", () => {
       inputMapping: { src: "My_Source_2" },
     })
   })
+
+  // A Load File's free code names its inputs as a Transform's does.
+  it("11. coded Load File consumer gains the binding on rename", () => {
+    const src = makeNode("src", "src", NODE_TYPES.POLARS)
+    const consumer = makeNode("consumer", "Loader", NODE_TYPES.EXTERNAL_FILE, {
+      code: "df = df.join(src, on='k')",
+    })
+    const edge = makeEdge("e1", "src", "consumer", null, "src")
+
+    const result = prepareNodeUpdate({
+      nodeId: "src",
+      data: renamedData(src, "Renamed Src"),
+      refreshSourceIdentity: true,
+      readOnly: false,
+      graph: { nodes: [src, consumer], edges: [edge] },
+      submodels: {},
+      reservedApiInputFrameLabels: RESERVED,
+    })
+
+    expect(result.ok).toBe(true)
+    const prepared = result as PreparedNodeUpdate
+    expect(prepared.nodes.find((n) => n.id === "consumer")?.data.config).toEqual({
+      code: "df = df.join(src, on='k')",
+      inputMapping: { src: "Renamed_Src" },
+    })
+  })
 })
 
 describe("prepareNodeUpdate on a Workbench Output", () => {
