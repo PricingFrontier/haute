@@ -112,7 +112,8 @@ class FormFolderNameError(WorkbenchFormError):
 
     def __init__(self, problems: list[str]) -> None:
         self.problems = problems
-        super().__init__("The form cannot be saved: " + "; ".join(problems))
+        # The problems alone: the editor's toast already says what could not be saved.
+        super().__init__("; ".join(problems))
 
 
 # -- Names -------------------------------------------------------------------------------

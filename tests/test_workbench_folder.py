@@ -1904,6 +1904,14 @@ READ_REFUSALS = [
         id="a component without a layout entry",
     ),
     pytest.param(
+        # Named by its kind as the editor names it, though the files call a Table "table".
+        _edit(_LAYOUT, '        "table_l4y5": {"x": 16, "y": 152, "w": 720, "h": 200},\n', ""),
+        f"{FOLDER}/{_LAYOUT} ",
+        ('leaves out the Table "Layers" (table_l4y5)',),
+        None,
+        id="a Table without a layout entry",
+    ),
+    pytest.param(
         _edit_json(_LAYOUT, lambda data: data["sections"].pop("section_pr01")),
         f"{FOLDER}/{_LAYOUT} ",
         ("section_pr01",),

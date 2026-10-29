@@ -1130,6 +1130,13 @@ describe("what the sheets show", () => {
     expect(widgetProblems(dangling).map((p) => p.message)).toEqual([
       'Table "Equipment" shows a column that is no longer in the schema',
     ])
+    // A name a sheet's file gives that its schema doesn't hold reads as "?" and the name: the
+    // same problem, on a known table or an unknown one.
+    for (const field of [{ table: "equipment", column: "?gone" }, { table: "?gone", column: "?x" }]) {
+      expect(widgetProblems(updateWidget(spec, "w_grid", { fields: [field] })).map((p) => p.message)).toEqual([
+        'Table "Equipment" shows a column that is no longer in the schema',
+      ])
+    }
 
     // A table switched between one row and many after its columns were chosen.
     expect(widgetProblems(setSchemaTableRows(spec, "policy", "many")).map((p) => p.message)).toEqual([
