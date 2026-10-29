@@ -299,7 +299,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 
 | Earlier candidate note | Accepted owner |
 |---|---|
-| CI action pins | **ENGQ-CI06**. |
 | stale hosted wheel | **BUG-40**. |
 | dispersion caller ownership / estimate queued | **FMOU-R06** for same-mounted draft identity; separate helper error-contract wording is **FSH-R06**. |
 | archive/restore obsolete query | **WB-35**. |

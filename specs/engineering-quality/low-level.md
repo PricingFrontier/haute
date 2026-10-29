@@ -19,6 +19,7 @@
 | `.github/workflows/e2e-snapshots.yml` | Manual-dispatch lane that re-renders Playwright screenshot baselines in the same Ubuntu environment the browser E2E lane compares them in, for the per-platform `-linux` baselines a Windows or macOS developer cannot produce. It writes nothing to the repository: it uploads only the baselines whose pixels changed, for review and commit alongside the change that moved them. |
 | `.github/workflows/mutation.yml` | Plans changed mutation targets, runs separate CI-job shards whose mutants execute serially per runner, and uses a failure-aware non-cancelled status condition on the single merge gate so plan/shard failures become failed rather than skipped checks. |
 | `.github/workflows/performance.yml` | Runs scheduled/manual Python and browser-performance lanes and uploads their artifacts. |
+| `.github/dependabot.yml` | Has Dependabot propose the next commit, tag comment included, when an action a workflow uses releases. It covers GitHub Actions only: the lockfiles hold the Python and npm versions, and the dependencies workflow resolves them fresh every week. |
 | `frontend/package.json` | Cross-component dependency owned by [build-and-distribution](../build-and-distribution/low-level.md); defines frontend lint/type/unit/coverage/bundle/E2E/benchmark command entry points and frontend critical-coverage entries. |
 | `frontend/scripts/generate-api-contracts.mjs` | Pinned schema-to-browser generator: selects each contract's exact transitive definition closure, compiles every contract root into one TypeScript declaration module (property-level titles dropped, so a nested definition is declared once and an unrelated addition never renames an alias; objects are closed; array length bounds stay in the validators rather than becoming tuple types; a schema that says nothing of its type, pydantic's `Any`, is declared `unknown` through `untypedAsUnknown` rather than an object), emits constants, and bundles self-contained Ajv standalone ESM validator modules, one per pilot, one per converted response module group with one validator export per response and one per request group with one per request body (a group compiles one schema holding every definition its responses reach, so a shared definition compiles once), so Explore validation remains lazy. The eager execution validator co-exports its schema-version literal while Explore-only option constants remain in the lazy contract module. Its check mode compares every output byte without writing. |
 | `frontend/scripts/generate-api-contracts.test.mjs` | Isolated generator contract: regenerates outside the repository dependency tree, imports both standalone validators without runtime Ajv, and proves that independently staling every generated output makes check mode fail without modifying the file. |
@@ -80,7 +81,7 @@
 | `scripts/update_assistant_example_manifests.py` | Checks or explicitly refreshes closed content-addressed assistant example inventories; unsafe, duplicate, missing, and undeclared paths fail in both modes. |
 | `scripts/update_assistant_prompt_golden.py` | Cross-component dependency owned by [assistant](../assistant/low-level.md); checks, or with `--write` refreshes, the golden snapshot of the assistant's system prompt and provider tool schemas, failing with a unified diff per changed file. |
 | `scripts/preflight.ps1` | Windows preflight entry point for selected backend/frontend/init-smoke checks. |
-| `scripts/lint_pins.py` | Enforces the asymmetric dependency-pinning doctrine against the declaration layer: published dependencies need an explicit floor and cap and may not be exact-pinned or prefix-matched, tooling dependencies must be exact with a concrete version, and executable surfaces may not invoke `npx`. |
+| `scripts/lint_pins.py` | Enforces the asymmetric dependency-pinning doctrine against the declaration layer: published dependencies need an explicit floor and cap and may not be exact-pinned or prefix-matched, tooling dependencies must be exact with a concrete version, executable surfaces may not invoke `npx`, and every action a workflow or composite action uses names the 40-hex commit it runs, with its tag in a comment (local actions and container images aside). |
 | `scripts/preflight.sh` | POSIX preflight entry point for selected backend/frontend/init-smoke checks. |
 | `scripts/regen_sanitize_parity_fixture.py` | Regenerates the retained backend compatibility golden when deliberately requested. |
 | `scripts/report_flaky_browser_tests.py` | Reads Playwright's JSON report and names each browser test that passed only on a retry, in the job summary and as a warning annotation; a missing report fails rather than reporting nothing. |
@@ -731,10 +732,15 @@
   specifier; npm exactness across the install sections and the deliberate
   `peerDependencies` exemption; lexical `npx` detection in shell grouping,
   line continuations and package scripts against its non-detection of shell
-  comments, markdown prose and shim paths; annotation line selection and
+  comments, markdown prose and shim paths; commit pins for the actions that
+  workflows, reusable workflows and composite actions use, refusing tags,
+  branches, short commits and a commit without its tag comment, exempting
+  local actions and container images, and not mistaking a mention in a
+  comment or a `run:` line for a use; annotation line selection and
   workflow-command escaping; and both ratchet directions against the real
   manifests through the collector — the live tree stays clean, and removing a
-  real Python cap or relaxing a real npm pin is caught.
+  real Python cap, relaxing a real npm pin or moving a real action back to
+  its tag is caught.
 - `mutation/` is tested as configuration/orchestration through its active
   script/tests and CI workflow. `specs/roadmap/`, `scripts/benchmarks/`, and generated
   artifacts are intentionally not claimed as a current test suite.

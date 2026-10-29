@@ -34,6 +34,14 @@ entirely, and no amount of tightening the rules below would reach it.
 Constraining one of those means declaring a dependency the project does not
 otherwise need, which is a policy decision rather than a lint.
 
+The same declaration layer covers the workflows' actions: every ``uses:`` names
+the 40-hex commit it runs, with its tag in a comment
+(``uses: actions/checkout@<commit> # v4.4.0``). A tag is a ref its owner can move,
+and a moved tag runs under the release and container-registry secrets; a commit
+cannot be. Dependabot (``.github/dependabot.yml``) proposes the new commit and
+comment when an action releases. Local actions (``./``) and container images
+(``docker://``) are not pinned this way.
+
 Deliberately NOT enforced: how TIGHT a cap is.  The doctrine suggests capping
 below the next major for >=1.0 packages and below the next minor for 0.x ones,
 but that is guidance for a human choosing a bound, not a mechanical rule -- a
@@ -107,6 +115,19 @@ _NPX_CALL = re.compile(r"(?<![\w./-])npx(?![\w-])")
 # quoted mention (`echo "do not use npx"`) or a heredoc body is flagged too.
 # That is the chosen direction -- rewording a mention on an executable surface
 # is cheap and visible, while an invocation hidden by quoting would be silent.
+
+# Workflows and composite actions, the files GitHub reads a ``uses:`` from.
+_ACTION_SCAN_GLOBS = (
+    ".github/workflows/*.yml",
+    ".github/workflows/*.yaml",
+    ".github/actions/*/action.yml",
+    ".github/actions/*/action.yaml",
+)
+
+# A step's action or a job's reusable workflow: ``uses: owner/repo[/path]@ref``,
+# then the comment naming the tag that commit was.
+_USES = re.compile(r"^\s*(?:-\s*)?uses:\s*(?P<ref>[^\s#]+)(?:\s+#\s*(?P<tag>\S+))?")
+_COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
 def _strip_comment(line: str) -> str:
@@ -392,12 +413,48 @@ def check_npx(root: Path) -> list[Violation]:
     return violations
 
 
+def check_action_pins(root: Path) -> list[Violation]:
+    """Every action a workflow uses runs a pinned commit, its tag named beside it."""
+    violations: list[Violation] = []
+    for glob in _ACTION_SCAN_GLOBS:
+        for path in sorted(root.glob(glob)):
+            rel = path.relative_to(root).as_posix()
+            for number, text in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+                match = _USES.match(text)
+                if match is None:
+                    continue
+                ref = match.group("ref").strip("\"'")
+                if ref.startswith(("./", "docker://")):
+                    continue
+                action, _, version = ref.rpartition("@")
+                if not action or not _COMMIT.fullmatch(version):
+                    violations.append(
+                        Violation(
+                            rel,
+                            number,
+                            f"uses {ref!r}, a ref its owner can move. Pin the 40-hex commit "
+                            f"with the tag in a comment: uses: {action or ref}@<commit> # <tag>.",
+                        ),
+                    )
+                elif match.group("tag") is None:
+                    violations.append(
+                        Violation(
+                            rel,
+                            number,
+                            f"uses {ref!r} without naming its tag. Add it as a comment: "
+                            f"uses: {ref} # <tag>.",
+                        ),
+                    )
+    return violations
+
+
 def collect(root: Path = REPO_ROOT) -> list[Violation]:
     """Every violation across every manifest, in file order."""
     return [
         *check_pyproject(root / "pyproject.toml"),
         *check_package_json(root / "frontend" / "package.json"),
         *check_npx(root),
+        *check_action_pins(root),
     ]
 
 

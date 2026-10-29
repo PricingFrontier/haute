@@ -281,6 +281,11 @@ Out of scope:
 - Locked dependencies prove the committed environment; the scheduled unlocked
   resolve lane separately exposes breakage from a later dependency release
   within published version caps. These answer different questions.
+- Workflow actions run a pinned commit, not a tag. A tag is a ref its owner can
+  move, and a moved tag would run with the release and container-registry
+  secrets; a commit cannot be moved. The tag stays beside it as a comment, so a
+  reader sees the version and Dependabot can propose the next one. The pin lint
+  refuses a tag, a branch or a short commit.
 - npm meta-findings use the affected package plus a stable transitive-advisory
   identity. A lockfile topology change must not invalidate a reviewed acceptance;
   a different package or concrete GHSA identity still does.

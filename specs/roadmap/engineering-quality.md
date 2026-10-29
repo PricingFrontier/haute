@@ -10,7 +10,7 @@ specified in
 [23 September 2026 codebase review](codebase-review-2026-09-23.md). The
 `ENGQ-CI` packages come from the 30 September 2026 CI duration study: per-test
 timings from diagnostic PR #279 (run 36769548458) and the sharded lanes of
-PR #280. `ENGQ-CI06`, `ENGQ-R09` and `ENGQ-R11` come from the
+PR #280. `ENGQ-R09` and `ENGQ-R11` come from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md), which also added
 evidence to `ENGQ-R01` and `ENGQ-R05`.
 
@@ -21,7 +21,6 @@ evidence to `ENGQ-R01` and `ENGQ-R05`.
 | ENGQ-CI03 | Planned | P2 | The 21 model-training, export and scoring test modules take at most half their recorded coverage-lane time, with no assertion weakened and no training code newly uncovered. |
 | ENGQ-R01 | Planned | P3 | Production code that nothing calls, or only tests call, is removed. |
 | ENGQ-R05 | Planned | P3 | Tests are organised by component and behaviour, not by coverage campaign. |
-| ENGQ-CI06 | Planned | P3 | Haute's own workflows pin every action by commit. |
 | ENGQ-R09 | Planned | P3 | The write-sandbox ratchet moves: the observe census is recorded and may not grow, modules with an empty census become strict, the system temp directory is a stated gap or no longer allowed, and the lint allowlist is keyed by site. |
 | ENGQ-R11 | Decision | P2 | Mutation witnesses cover the rating step and deploy scoring, the modules whose silent failure changes a price, or the specification says why the three JSON-boundary targets suffice. |
 
@@ -186,24 +185,6 @@ modules is unchanged; suite runtime is recorded before and after.
 `tests/test_json_cache_coverage_uplift.py`; `tests/test_coverage_gaps.py`;
 `tests/test_dry_fixes.py`; `tests/test_expression_parser_w3_fixes.py`;
 `tests/test_trace_w4_fixes.py`.
-
-### ENGQ-CI06 — Actions pinned by commit
-**Why:** Haute's own workflows pin actions by floating major tag
-(`actions/checkout@v4`, `astral-sh/setup-uv@v4`, `actions/upload-artifact@v4`; a
-hundred such lines across `.github/workflows`), so a compromised tag runs with
-the release and container-registry secrets. The templates `haute init` writes
-are `CLI-R06`.
-
-**Plan:** Pin each action to a commit SHA with the tag in a comment and let
-Dependabot keep them fresh.
-
-**Acceptance:** Every `uses:` under `.github/workflows` names a 40-hex commit; a
-lint step fails on a tag pin.
-
-**Dependencies:** None.
-
-**Evidence:** `.github/workflows/ci.yml`; `.github/workflows/release.yml`;
-`.github/workflows/container-smoke.yml`.
 
 ### ENGQ-R09 — The write-sandbox ratchet moves
 **Why:** Strict interception covers 4 of 603 test modules: `STRICT_FILES` has had no

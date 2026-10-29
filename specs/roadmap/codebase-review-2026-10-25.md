@@ -389,7 +389,6 @@ production:
 | Bugs | PM-46 | `BUG-41` |
 | Bugs | PM-47 | `BUG-42` (Decision) |
 | Bugs | PM-49 | `BUG-43` |
-| Engineering quality | PM-29 (Haute's own workflows) | `ENGQ-CI06` |
 | Engineering quality | PM-50 | `ENGQ-R01` (evidence added) |
 | Engineering quality | the campaign-named test modules recounted | `ENGQ-R05` (evidence added) |
 | Workbench UI | FWB-1, FWB-6, FWB-8, FWB-9 | `WB-35` |
@@ -459,8 +458,8 @@ an output-table condition (`WB-29`), the browser's 90 s pricing timeout past the
 server's 60 s (`WB-33`), browser-locale dates (`FSH-R08`), the bootstrap without
 a deadline (`FSH-R05`), Ctrl+S inside a code box (`FSH-R07`), editor state inside
 node data (`PCFG-R08`), the recovery banner's re-minted id (`PCFG-R19`) and the
-modelling pane badges (`FMOU-R03`); in the tests, scripts and CI, the hundred
-floating action tags (`ENGQ-CI06`, `CLI-R06`), the campaign-named test modules
+modelling pane badges (`FMOU-R03`); in the tests, scripts and CI, the floating
+action tags in the generated workflows (`CLI-R06`), the campaign-named test modules
 (`ENGQ-R05`), the test-only reset hooks in production code (`ENGQ-R01`), the
 training-test cost
 (`ENGQ-CI03`), the 189 test modules that change directory
@@ -528,4 +527,4 @@ All probes live outside the repository and wrote nothing into it.
 | jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13`, `EXEC-R17`, `IO-R08`, `ROAD-WORKER-08`, `API-R09` and `PCFG-R15`. |
 | jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `FNED-R03`, `FNED-R05`, `FMOU-R05`, `EDA-R03`, `GIT-R08`, `WB-37` and `FGC-R04`. |
 | knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted; every frontend reviewer found the hits used inside their own module, so they are over-exports under `ENGQ-R01`'s gate, not dead code. |
-| sweeps | 100 floating action tags in `.github/workflows` (`ENGQ-CI06`, `CLI-R06`); 35 campaign-named test modules (`ENGQ-R05`). |
+| sweeps | 35 campaign-named test modules (`ENGQ-R05`). |
