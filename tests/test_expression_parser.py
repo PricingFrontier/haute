@@ -13,6 +13,7 @@ pass as the parser is built out.
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import polars as pl
 import pytest
@@ -1777,3 +1778,137 @@ class TestTheLocatedExpressionAlone:
             "when 2 > 1 then when 3 > 2 then 10 otherwise 0 otherwise 20"
         )
         assert result.result_value == 10
+
+
+_TIMES_A = 'df = df.with_columns(y=pl.col("x") * {}["A"])'
+_LOOKUP = 'df = df.with_columns(y=pl.col("code").replace_strict(mapping, default=0.0))'
+
+
+class TestValuesChangedInPlace:
+    """A value changed without binding its name again is unknown from there on."""
+
+    @pytest.mark.parametrize(
+        ("code", "unknown"),
+        [
+            ('factors = {"A": 1.0}\nfactors["A"] = 2.0\n' + _TIMES_A.format("factors"), "factors"),
+            ('factors = {"A": 1.0}\nfactors["A"] += 1.0\n' + _TIMES_A.format("factors"), "factors"),
+            ('mapping = {"a": 2.0}\ndel mapping["a"]\n' + _LOOKUP, "mapping"),
+            (
+                'factors = {"A": 1.0}\nfactors.update({"A": 2.0})\n' + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            ('mapping = {"a": 2.0, "b": 3.0}\nlast = mapping.pop("b")\n' + _LOOKUP, "mapping"),
+            (
+                'mapping = {"a": 1.0}\nfor key in ["a"]:\n    mapping[key] = 2.0\n' + _LOOKUP,
+                "mapping",
+            ),
+            ('box.rate = 2.0\ndf = df.with_columns(y=pl.col("x") * box.rate)', "box"),
+            ('RATES["A"] = 2.0\n' + _TIMES_A.format("RATES"), "RATES"),
+            (
+                'factors = {"A": 1.0}\nalias = factors\nalias["A"] = 2.0\n'
+                + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\nalias = factors\nfactors["A"] = 2.0\n'
+                + _TIMES_A.format("alias"),
+                "alias",
+            ),
+            (
+                'inner = {"A": 1.0}\nouter = {"k": inner}\ninner["A"] = 2.0\n'
+                'df = df.with_columns(y=pl.col("x") * outer["k"]["A"])',
+                "outer",
+            ),
+            (
+                'a = {"A": 1.0}\nb = a\nc = b\nb = {}\na["A"] = 2.0\n' + _TIMES_A.format("c"),
+                "c",
+            ),
+            (
+                "base = [1.0]\nalias = base\nbase += [2.0]\n"
+                'df = df.with_columns(y=pl.col("x") * alias[1])',
+                "alias",
+            ),
+            (
+                "factor = 1.0\nif True:\n    factor = 2.0\n"
+                '    df = df.with_columns(y=pl.col("x") * factor)',
+                "factor",
+            ),
+            (
+                'factors = {"A": 1.0}\nif True:\n    factors["A"] = 2.0\n'
+                '    df = df.with_columns(y=pl.col("x") * factors["A"])',
+                "factors",
+            ),
+        ],
+        ids=[
+            "subscript",
+            "augmented-subscript",
+            "delete",
+            "method-on-its-own-line",
+            "pop-in-a-binding",
+            "inside-a-loop",
+            "attribute",
+            "preamble-value",
+            "through-an-alias",
+            "read-through-an-alias",
+            "nested",
+            "alias-through-a-rebound-name",
+            "augmented-list",
+            "rebound-in-the-formula-block",
+            "changed-in-the-formula-block",
+        ],
+    )
+    def test_the_value_is_reported_not_guessed(self, code: str, unknown: str) -> None:
+        preamble = {"RATES": {"A": 1.0}, "box": SimpleNamespace(rate=1.0)}
+
+        result = evaluate_expression(code, "y", {"x": 10.0, "code": "a"}, preamble_ns=preamble)
+
+        assert result.result_value is None
+        assert result.not_computable_reason == f"unresolved_name: {unknown}"
+        parsed = parse_expression(code, "y")
+        assert parsed is not None
+        assert parsed.expression_type == "opaque"
+
+    @pytest.mark.parametrize(
+        ("code", "value"),
+        [
+            (
+                'factors = {"A": 1.0}\nrate = factors["A"]\nfactors["A"] = 2.0\n'
+                'df = df.with_columns(y=pl.col("x") * rate)',
+                10.0,
+            ),
+            (
+                'factors = {"A": 2.0}\nmine = dict(factors)\nmine["A"] = 5.0\n'
+                + _TIMES_A.format("factors"),
+                20.0,
+            ),
+            ('factors = {"A": 2.0}\nprint(factors)\n' + _TIMES_A.format("factors"), 20.0),
+            (
+                "factor = 2.0\npl.Config.set_tbl_rows(5)\n"
+                'df = df.with_columns(y=pl.col("x") * factor)',
+                20.0,
+            ),
+            (
+                'alias = {"A": 1.0}\nfactors = alias\nfactors = {"A": 2.0}\nalias["A"] = 5.0\n'
+                + _TIMES_A.format("factors"),
+                20.0,
+            ),
+            (
+                "factor = 2.0\nif True:\n    other = 1\n"
+                '    df = df.with_columns(y=pl.col("x") * factor)',
+                20.0,
+            ),
+        ],
+        ids=[
+            "read-before-the-change",
+            "a-copy-changed",
+            "a-function-call",
+            "a-method-on-a-name-the-code-never-bound",
+            "an-alias-bound-again",
+            "a-block-that-leaves-the-name-alone",
+        ],
+    )
+    def test_a_value_the_code_did_not_change_keeps_it(self, code: str, value: float) -> None:
+        result = evaluate_expression(code, "y", {"x": 10.0, "code": "a"})
+
+        assert result.not_computable_reason is None
+        assert result.result_value == value

@@ -156,6 +156,8 @@ _CONTROL_FLOW_STATEMENT_TYPES: tuple[type[ast.stmt], ...] = (
     ast.TryStar,
     ast.With,
 )
+# Statements holding other statements a ``with_columns`` call can sit in.
+_BLOCK_STATEMENT_TYPES = (*_CONTROL_FLOW_STATEMENT_TYPES, ast.Match)
 
 
 @lru_cache(maxsize=256)
@@ -1034,25 +1036,145 @@ def _statement_index(stmts: list[ast.stmt], node: ast.AST) -> int:
     return len(stmts)
 
 
-def _bind_statement(stmt: ast.stmt, table: dict[str, ast.AST], unprovable: set[str]) -> None:
+# Methods that change the value they are called on and return something worth
+# binding, so even a binding can hide the change (``default = rates.pop("x")``).
+_CHANGING_METHODS_WITH_RESULTS = frozenset({"pop", "popitem", "setdefault"})
+
+
+def _base_name(node: ast.AST) -> str | None:
+    """The name *node* reaches through subscripts and attributes (``d`` in ``d["k"].a``)."""
+    while isinstance(node, (ast.Attribute, ast.Subscript)):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def _names_changed_in_place(stmt: ast.stmt, bound: Collection[str]) -> set[str]:
+    """The names whose value *stmt* may change without binding them again.
+
+    A store or delete through a subscript or attribute (``d["k"] = v``,
+    ``del d["k"]``, ``obj.a = v``), an augmented assignment, a ``pop``,
+    ``popitem`` or ``setdefault`` call, and a method called on its own line on
+    a value the code bound (one of *bound*: ``d.update(...)``), anywhere in
+    *stmt*. A method called alone on a name the code never bound (``pl``) is
+    not a change the table could have followed.
+    """
+    names: set[str] = set()
+    for node in ast.walk(stmt):
+        base: str | None = None
+        if isinstance(node, (ast.Subscript, ast.Attribute)) and isinstance(
+            node.ctx, (ast.Store, ast.Del)
+        ):
+            base = _base_name(node.value)
+        elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
+            base = node.target.id
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in _CHANGING_METHODS_WITH_RESULTS:
+                base = _base_name(node.func.value)
+        elif (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute)
+        ):
+            called_on = _base_name(node.value.func.value)
+            base = called_on if called_on in bound else None
+        if base is not None:
+            names.add(base)
+    return names
+
+
+def _held_names(node: ast.AST) -> set[str]:
+    """The names whose value *node* is or holds as it stands (``a``, ``[a]``, ``{"k": a}``)."""
+    parts: list[ast.expr]
+    if isinstance(node, ast.Name):
+        return {node.id}
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        parts = node.elts
+    elif isinstance(node, ast.Dict):
+        parts = [value for key, value in zip(node.keys, node.values) if key is not None]
+    elif isinstance(node, ast.IfExp):
+        parts = [node.body, node.orelse]
+    elif isinstance(node, ast.BoolOp):
+        parts = node.values
+    elif isinstance(node, ast.NamedExpr):
+        parts = [node.value]
+    else:
+        return set()
+    return set().union(*(_held_names(part) for part in parts))
+
+
+class _SharedValues:
+    """Which names may hold the same value, as far as the code's bindings show.
+
+    ``b = a`` and ``b = {"k": a}`` put ``b`` in ``a``'s group, merging groups
+    when a value holds several names; binding ``b`` again takes it out and
+    leaves the rest of its group together.
+    """
+
+    def __init__(self) -> None:
+        self._groups: dict[str, int] = {}
+        self._made = 0
+
+    @property
+    def names(self) -> Collection[str]:
+        return self._groups.keys()
+
+    def bind(self, name: str, held: Collection[str]) -> None:
+        groups = {self._group(other) for other in held}
+        merged = min(groups) if groups else self._new_group()
+        for other, group in self._groups.items():
+            if group in groups:
+                self._groups[other] = merged
+        self._groups[name] = merged
+
+    def forget(self, name: str) -> None:
+        self._groups.pop(name, None)
+
+    def sharing(self, names: Collection[str]) -> set[str]:
+        """*names* and every name in the group of one of them."""
+        groups = {self._groups[name] for name in names if name in self._groups}
+        return set(names) | {name for name, group in self._groups.items() if group in groups}
+
+    def _group(self, name: str) -> int:
+        if name not in self._groups:
+            self._groups[name] = self._new_group()
+        return self._groups[name]
+
+    def _new_group(self) -> int:
+        self._made += 1
+        return self._made
+
+
+def _bind_statement(
+    stmt: ast.stmt,
+    table: dict[str, ast.AST],
+    unprovable: set[str],
+    shared: _SharedValues,
+) -> None:
     """Fold one top-level statement into the names the code has bound.
 
     A simple assignment binds its value with the names it reads resolved as
     they stand, so a later rebinding never changes it; a binding that reads a
     name whose value is unknown is unknown too. Any other assignment (inside
-    control flow, augmented, unpacking) leaves its names unknown.
+    control flow, augmented, unpacking) leaves its names unknown, and a value
+    changed in place leaves unknown every name that may hold it.
     """
+    bound = {*table, *unprovable, *shared.names}
+    for name in shared.sharing(_names_changed_in_place(stmt, bound)):
+        table.pop(name, None)
+        unprovable.add(name)
     binding = _simple_binding(stmt)
     if binding is None:
         for name in _names_assigned_by(stmt):
             table.pop(name, None)
             unprovable.add(name)
+            shared.forget(name)
         return
     name, value = binding
     if _is_df_assignment(value):
         return
     resolved = _substitute_names_in_ast(value, table)
     table[name] = resolved
+    shared.bind(name, _held_names(value))
     # The names as written count too: an unknown binding the value reads is
     # replaced by its expression, which no longer names it.
     if any(
@@ -1072,6 +1194,8 @@ def _calls_with_bindings(
     """Every ``with_columns``/``select`` call of *code* in execution order, with
     the names bound before its statement and those whose value there is unknown.
 
+    A call inside a block (``if``, ``for``, ...) takes the bindings after the
+    whole block, so whatever the block assigns or changes is unknown to it.
     The tables are shared through the cache: callers read them, never change them.
     """
     tree = _cached_parse(code)
@@ -1082,11 +1206,16 @@ def _calls_with_bindings(
     snapshots: dict[int, tuple[dict[str, ast.AST], frozenset[str]]] = {}
     table: dict[str, ast.AST] = {}
     unprovable: set[str] = set()
+    shared = _SharedValues()
     for index in range(len(stmts) + 1):
-        if index in wanted:
+        stmt = stmts[index] if index < len(stmts) else None
+        block = isinstance(stmt, _BLOCK_STATEMENT_TYPES)
+        if index in wanted and not block:
             snapshots[index] = (dict(table), frozenset(unprovable))
-        if index < len(stmts):
-            _bind_statement(stmts[index], table, unprovable)
+        if stmt is not None:
+            _bind_statement(stmt, table, unprovable, shared)
+        if index in wanted and block:
+            snapshots[index] = (dict(table), frozenset(unprovable))
     return tuple((call, lineno, *snapshots[index]) for (call, lineno), index in zip(calls, indices))
 
 

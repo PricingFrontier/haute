@@ -177,8 +177,21 @@ no alias or migration shim; direct test callers use the same current contract.
   read such a name, directly or through another binding, and stays unknown when that name is
   bound again) makes it opaque too, and `evaluate_expression` reports `unresolved_name: <name>`
   for the first such name the expression reads instead of computing with a stale binding or a
-  preamble value of the same name. A value changed in place (`d["k"] = v`, `d.update(...)`) is
-  not followed: the table keeps the value as bound.
+  preamble value of the same name.
+- **A value changed in place is unknown from there on**: a statement can change a value without
+  binding its name again. A store or delete through a subscript or attribute (`d["k"] = v`,
+  `d["k"] += v`, `del d["k"]`, `obj.a = v`), an augmented assignment (`items += [x]`), a method
+  called on its own line on a value the code bound (`d.update(...)`, `cols.append(x)`), and a
+  `pop`, `popitem` or `setdefault` call anywhere make the name it reaches unknown, at any depth of
+  the statement (inside a loop body too). So does every name that may hold the same value: one
+  bound to it (`alias = d`) or to a list, tuple, set or dict holding it (`outer = {"k": d}`), in
+  either direction and through further such bindings. A copy (`dict(d)`) or a value read out
+  before the change (`rate = d["A"]`) is a different value and stays known. A change inside a
+  function the value is passed to (`shuffle(cols)`) is not followed.
+- **A formula inside a block reads the block's changes**: a `with_columns`/`select` call inside
+  `if`/`for`/`while`/`try`/`with`/`match` takes the bindings in force after the whole block, so a
+  name the block assigns or changes anywhere is unknown to it, while names the block does not
+  touch keep their values.
 - **Values are Polars' own**: integer overflow wraps as the column's dtype does, division and
   modulo by zero, Kleene `&`/`|`, rounding and NaN handling are whatever Polars computes on the
   row, because Polars computes them. A typed null propagates through every operation; a native
