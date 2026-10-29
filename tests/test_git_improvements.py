@@ -38,6 +38,22 @@ from haute._git_state import (
 from haute.routes._helpers import commit_pipeline_graph
 
 WORKING = "pricing-dev"
+# CreateProcess takes at most this many characters of command line, its null included.
+_WINDOWS_COMMAND_LINE_LIMIT = 32_767
+
+
+def _record_command_lines(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """The length of every command line launched from now on, as Windows would receive it."""
+    lengths: list[int] = []
+    real = subprocess.Popen
+
+    class Recording(real):  # type: ignore[valid-type, misc]
+        def __init__(self, args: list[str], *rest: object, **kwargs: object) -> None:
+            lengths.append(len(subprocess.list2cmdline(args)))
+            super().__init__(args, *rest, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", Recording)
+    return lengths
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -309,6 +325,56 @@ class TestGitOutputIntegrity:
         monkeypatch.setattr(git_history, "_ledger_point", per_item_probe)
         commit_context(repo, save, cwd=repo)
 
+    def test_commit_context_reads_a_thousand_milestones_within_a_command_line(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every milestone SHA went into one rev-list argv, so on Windows a branch with
+        about 790 milestones failed with WinError 206 and the breadcrumb answered 500."""
+        project = tmp_path / "long"
+        project.mkdir()
+        _git(project, "init", "-q", "-b", "main")
+        stream = [
+            "blob\nmark :1\ndata 11\n# pipeline\n\n",
+            "commit refs/heads/main\nmark :2\ncommitter T <t@e.com> 1700000000 +0000\n"
+            "data 4\ninit\nM 100644 :1 rating.py\n\n",
+        ]
+        previous_save = previous_milestone = 2
+        for number in range(1, 1001):
+            save, milestone = 2 * number + 1, 2 * number + 2
+            stream.append(
+                f"commit refs/heads/{WORKING}-save\nmark :{save}\n"
+                f"committer T <t@e.com> {1700000000 + 2 * number} +0000\n"
+                f"data 7\nsave {number % 10}\nfrom :{previous_save}\n\n"
+            )
+            stream.append(
+                f"commit refs/heads/{WORKING}\nmark :{milestone}\n"
+                f"committer T <t@e.com> {1700000001 + 2 * number} +0000\n"
+                f"data 12\nmilestone {number % 10}\n"
+                f"from :{previous_milestone}\nmerge :{save}\n\n"
+            )
+            previous_save, previous_milestone = save, milestone
+        stream.append(
+            f"commit refs/heads/{WORKING}-save\nmark :3000\n"
+            "committer T <t@e.com> 1800000000 +0000\n"
+            f"data 7\npending\nfrom :{previous_save}\n\n"
+        )
+        subprocess.run(
+            ["git", "fast-import", "--quiet"],
+            cwd=project,
+            input="".join(stream),
+            text=True,
+            check=True,
+        )
+        write_working_branch(project, WORKING)
+        pending = _git(project, "rev-parse", f"{WORKING}-save")
+        lengths = _record_command_lines(monkeypatch)
+
+        context = commit_context(project, pending, cwd=project)
+
+        assert context.nearest_milestone.sha == _git(project, "rev-parse", WORKING)
+        assert context.distance == 1
+        assert max(lengths) < _WINDOWS_COMMAND_LINE_LIMIT
+
     def test_replay_refuses_to_linearise_a_merge(self, repo: Path) -> None:
         base = _git(repo, "rev-parse", "HEAD")
         _git(repo, "checkout", "-b", "side")
@@ -378,6 +444,49 @@ class TestHistoricalPipelineReads:
         assert (dest / "rating.haute.json").exists()
         assert (dest / "config" / "node.json").exists()
         assert not (dest / "data").exists()
+
+    def test_archive_extracts_a_commit_whose_paths_pass_a_command_line(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every selected path went into one git archive argv, so on Windows a commit
+        with more than about 32K characters of pipeline paths could not be shown."""
+        names = [
+            f"config/banding/segment_banding_configuration_for_quote_book_{index:04d}.json"
+            for index in range(600)
+        ]
+        assert sum(len(name) for name in names) > 40_000
+        for name in names:
+            (repo / name).parent.mkdir(parents=True, exist_ok=True)
+            (repo / name).write_text(f'{{"index": "{name}"}}\n')
+        _git(repo, "add", "config")
+        _git(repo, "commit", "-q", "-m", "many configurations")
+        dest = tmp_path / "archive"
+        dest.mkdir()
+        lengths = _record_command_lines(monkeypatch)
+
+        archive_commit("HEAD", dest, cwd=repo)
+
+        assert sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*.json")) == names
+        assert max(lengths) < _WINDOWS_COMMAND_LINE_LIMIT
+
+    def test_archive_limits_count_every_batch(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The member ceiling holds across the batches a large commit is archived in."""
+        names = [f"config/item_{index:03d}.json" for index in range(40)]
+        for name in names:
+            (repo / name).parent.mkdir(parents=True, exist_ok=True)
+            (repo / name).write_text("{}\n")
+        _git(repo, "add", "config")
+        _git(repo, "commit", "-q", "-m", "configurations")
+        monkeypatch.setattr(git_history, "_ARCHIVE_COMMAND_BUDGET", 200)
+        monkeypatch.setattr(git_history, "_HISTORY_ARCHIVE_MAX_MEMBERS", 30)
+        dest = tmp_path / "archive"
+        dest.mkdir()
+
+        with pytest.raises(GitHistoryReadError, match="too many archived files"):
+            archive_commit("HEAD", dest, cwd=repo)
+        assert list(dest.iterdir()) == []
 
     def test_all_parse_failures_are_typed_instead_of_empty_success(
         self,

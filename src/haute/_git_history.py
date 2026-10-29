@@ -5,6 +5,8 @@ from __future__ import annotations
 import io
 import shutil
 import tarfile
+from collections.abc import Iterator
+from contextlib import ExitStack
 from pathlib import Path
 
 # The command core is the sole process boundary.  Its helpers are imported
@@ -50,6 +52,9 @@ logger = get_logger(component="git")
 
 _HISTORY_ARCHIVE_MAX_MEMBERS = 10_000
 _HISTORY_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024
+# Windows' CreateProcess takes at most 32,767 characters of command line, and git archive
+# reads no paths from stdin, so a commit's paths are archived in batches within this.
+_ARCHIVE_COMMAND_BUDGET = 24_000
 _SAVE_RECORD_SEP = "\x1e"
 _HISTORY_UNREADABLE = (
     "This branch's history could not be read. The repository may be damaged; "
@@ -151,18 +156,20 @@ def _milestone_fold_points(
     milestones: list[GitMilestoneEntry],
     cwd: Path | None = None,
 ) -> dict[str, str]:
-    """Return milestone → ledger fold-point from one parent-metadata query."""
+    """Return milestone → ledger fold-point from one parent-metadata query.
+
+    The SHAs go through stdin: as arguments, a branch of about 790 milestones would pass
+    Windows' command-line limit."""
     if not milestones:
         return {}
-    ok, raw = _run_git_ok(
+    raw = _run_git(
         "rev-list",
         "--parents",
         "--no-walk=unsorted",
-        *[milestone.sha for milestone in milestones],
+        "--stdin",
         cwd=cwd,
+        input_text="".join(f"{milestone.sha}\n" for milestone in milestones),
     )
-    if not ok:
-        raise GitError("could not read milestone parent metadata")
     parents_by_sha: dict[str, list[str]] = {}
     for line in raw.splitlines():
         fields = line.split()
@@ -682,12 +689,23 @@ def _historical_artifact_paths(sha: str, cwd: Path | None = None) -> list[str]:
 
 def _extract_history_tar(payload: bytes, dest: Path) -> None:
     """Portably extract regular files/directories after containment checks."""
+    _extract_history_tars([payload], dest)
+
+
+def _extract_history_tars(payloads: list[bytes], dest: Path) -> None:
+    """Extract one commit's archive, taken in batches, once every member of every batch has
+    passed the containment, type and size checks; the limits count all the batches."""
     root = dest.resolve()
     try:
-        with tarfile.open(fileobj=io.BytesIO(payload)) as tar:
-            validated: list[tuple[tarfile.TarInfo, Path]] = []
+        with ExitStack() as archives:
+            tars = [
+                archives.enter_context(tarfile.open(fileobj=io.BytesIO(payload)))
+                for payload in payloads
+            ]
+            members = ((tar, member) for tar in tars for member in tar)
+            validated: list[tuple[tarfile.TarFile, tarfile.TarInfo, Path]] = []
             extracted_bytes = 0
-            for member_number, member in enumerate(tar, start=1):
+            for member_number, (tar, member) in enumerate(members, start=1):
                 if member_number > _HISTORY_ARCHIVE_MAX_MEMBERS:
                     raise GitHistoryReadError(
                         "The selected version contains too many archived files."
@@ -698,7 +716,7 @@ def _extract_history_tar(payload: bytes, dest: Path) -> None:
                         "The selected version contains an unsafe archive path."
                     )
                 if member.isdir():
-                    validated.append((member, target))
+                    validated.append((tar, member, target))
                     continue
                 if not member.isfile():
                     raise GitHistoryReadError(
@@ -713,9 +731,9 @@ def _extract_history_tar(payload: bytes, dest: Path) -> None:
                     raise GitHistoryReadError(
                         "The selected version's pipeline files are too large to extract safely."
                     )
-                validated.append((member, target))
+                validated.append((tar, member, target))
 
-            for member, target in validated:
+            for tar, member, target in validated:
                 if member.isdir():
                     target.mkdir(parents=True, exist_ok=True)
                     continue
@@ -739,21 +757,31 @@ def archive_commit(sha: str, dest: Path, cwd: Path | None = None) -> None:
     _validate_ref_name(sha)
     if _rev_parse(sha, cwd=cwd) is None:
         raise GitDomainError(f"No commit found for '{sha}'.")
-    paths = _historical_artifact_paths(sha, cwd=cwd)
-    if not paths:
-        return
-    proc = _run_git_process(
-        "archive",
-        "--format=tar",
-        sha,
-        "--",
-        *[f":(literal){path}" for path in paths],
-        binary=True,
-        cwd=cwd,
-        env=_git_env(),
-    )
-    if proc.returncode != 0:
-        stderr = proc.stderr.decode(errors="replace").strip()
-        logger.warning("git_archive_failed", sha=sha, stderr=stderr)
-        raise GitError(stderr or "git archive failed")
-    _extract_history_tar(proc.stdout, dest)
+    payloads: list[bytes] = []
+    for batch in _path_batches(_historical_artifact_paths(sha, cwd=cwd)):
+        proc = _run_git_process(
+            "archive", "--format=tar", sha, "--", *batch, binary=True, cwd=cwd, env=_git_env()
+        )
+        if proc.returncode != 0:
+            stderr = proc.stderr.decode(errors="replace").strip()
+            logger.warning("git_archive_failed", sha=sha, stderr=stderr)
+            raise GitError(stderr or "git archive failed")
+        payloads.append(proc.stdout)
+    _extract_history_tars(payloads, dest)
+
+
+def _path_batches(paths: list[str]) -> Iterator[list[str]]:
+    """*paths* as literal pathspecs, in batches whose command line fits the budget."""
+    batch: list[str] = []
+    used = 0
+    for path in paths:
+        pathspec = f":(literal){path}"
+        # Its separator and the quotes a path with a space is given.
+        cost = len(pathspec) + 3
+        if batch and used + cost > _ARCHIVE_COMMAND_BUDGET:
+            yield batch
+            batch, used = [], 0
+        batch.append(pathspec)
+        used += cost
+    if batch:
+        yield batch

@@ -453,7 +453,9 @@ read once per request with `for-each-ref`. The paginated milestone endpoint defa
 newest 20 entries, while `commit_context` explicitly reads the complete first-parent
 milestone spine so commits older than that display window are still classified and anchored
 correctly. It reads the target's ancestor set in batched commands, derives fold points from
-the already returned parent columns, and never launches one subprocess per milestone.
+the already returned parent columns, and never launches one subprocess per milestone. The
+milestones' parents come from one `rev-list --parents --no-walk=unsorted --stdin` with the
+SHAs on stdin, so a branch of any length stays within Windows' 32,767-character command line.
 
 **Graph topology (`graph_topology`).** Reads every working pair's tip via one
 `for-each-ref` call (`_list_branches_with_tips`), then for each branch reads its full
@@ -687,11 +689,15 @@ first, as `deleted`.
 
 **Historical extraction (`src/haute/_git_history.py::archive_commit` / `src/haute/routes/_helpers.py::commit_pipeline_graph`).** Bounded extraction is owned by `archive_commit`, while the parse step `commit_pipeline_graph` is owned by [server-api](../server-api/low-level.md). `ls-tree` first
 enumerates the selected commit and filters to `haute.toml`, Python modules, Haute sidecars,
-and files below `config/` or `prompts/`; `git archive` receives only those literal paths.
-Tar extraction is implemented with Python-3.11-compatible regular-file/directory handling
-and validates the complete member list before writing. It rejects traversal, unsupported
+and files below `config/` or `prompts/`; `git archive` receives only those literal paths,
+which take no stdin, so `_path_batches` splits them into batches whose command lines stay
+within `_ARCHIVE_COMMAND_BUDGET` (24,000 characters, under Windows' 32,767) and every batch
+is archived before any is extracted. Tar extraction is implemented with
+Python-3.11-compatible regular-file/directory handling and validates the complete member list
+of every batch before writing. It rejects traversal, unsupported
 members, more than `_HISTORY_ARCHIVE_MAX_MEMBERS = 10_000` entries, and cumulative
-regular-file size above `_HISTORY_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024`. Malformed or
+regular-file size above `_HISTORY_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024`, both counted over
+all the batches. Malformed or
 over-limit tar data raises `GitHistoryReadError`. Parsing reads only the requested
 `source_file` (contained to the extracted tree); a file absent at that commit or one that fails to parse raises the same typed failure rather than returning
 `PipelineGraph()`. Temporary
@@ -894,7 +900,9 @@ process failures, and precise ref-movement races deterministic.
   seven-state readiness, locale-stable Git execution, NUL-delimited history fields,
   batched commit context, merge-replay refusal, network-free remote listing, targeted
   historical extraction, archive member/byte ceilings, typed archive/parse failures, and
-  Windows cleanup retries.
+  Windows cleanup retries; commit context over 1,000 milestones and the extraction of a
+  commit with 40,000 characters of paths, every command line launched within Windows' limit,
+  and the member ceiling counted across batches with nothing written.
 - **`tests/test_save_git_serialization.py`** — real saves and repairs against a real
   repository, each paused between two artifact writes while a milestone or restore runs on
   another thread: the Git action cannot take the repository lock until the save is done,

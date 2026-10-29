@@ -18,7 +18,6 @@ and return cycles and made and deleted two branches between 13:14 and 13:36.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| GIT-R04 | Planned | P3 | Commit context and historical extraction pass their SHAs and paths through stdin, so a long branch or a large commit does not fail on Windows' command-line limit. |
 | GIT-R05 | Planned | P3 | The git modules carry no dead symbols, one free-name finder and one compensation helper. |
 | GIT-R06 | Decision | P3 | Automatic ledger saves either skip the project's git hooks or the specification says they run them. |
 | GIT-R07 | Planned | P2 | Every tree-changing action in the git UI passes the dirty-project guard and names what changes, a failed history read shows an error rather than an empty branch, a failed preference save is reported, and the dialogs say what the server does. |
@@ -27,26 +26,6 @@ and return cycles and made and deleted two branches between 13:14 and 13:36.
 | GIT-R18 | Planned | P2 | A rejected push's Catch up and Spin off actions stay bound to that rejection's remote. |
 
 ## Planned improvements
-
-### GIT-R04 — Long argument lists through stdin
-**Why:** `_milestone_fold_points` spreads every milestone SHA of the first-parent
-spine into one `git rev-list` argv and `archive_commit` spreads every selected
-path, so on Windows `GET /api/git/commit-context/{sha}` fails with a 500 once
-the working branch has about 790 milestones and `GET /api/git/show/{sha}` fails
-when a commit's paths exceed about 32K characters (probed: `WinError 206` at
-32,814 characters).
-
-**Plan:** Feed the SHAs through `git rev-list --stdin` (byte-mode stdin as
-`_run_git(input_text=...)` already does) and archive the whole commit, letting
-the validated extractor skip non-artifact members, or chunk the path list.
-
-**Acceptance:** A branch with 1,000 milestones answers commit context on
-Windows; a commit with 40K characters of paths is shown.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_git_history.py::_milestone_fold_points`;
-`src/haute/_git_history.py::archive_commit`; `src/haute/_git_core.py::_run_git`.
 
 ### GIT-R05 — Dead symbols, one free-name finder, one compensation helper
 **Why:** `PROTECTED_BRANCHES` is only re-exported (`DEFAULT_PROTECTED_BRANCHES`
