@@ -463,8 +463,8 @@ node data (`PCFG-R08`), the recovery banner's re-minted id (`PCFG-R19`) and the
 modelling pane badges (`FMOU-R03`); in the tests, scripts and CI, the hundred
 floating action tags (`ENGQ-CI06`, `CLI-R06`), the campaign-named test modules
 (`ENGQ-R05`), the test-only reset hooks in production code (`ENGQ-R01`), the
-training-test cost, the order-dependent tests and the shard balance
-(`ENGQ-CI03` to `ENGQ-CI05`), the 189 test modules that change directory
+training-test cost and the shard balance
+(`ENGQ-CI03`, `ENGQ-CI05`), the 189 test modules that change directory
 because production resolves the project root from it (`PCFG-R04`), and the
 generated scaffold workflows (`BUG-21`, `BUG-24`, `BUG-26`).
 

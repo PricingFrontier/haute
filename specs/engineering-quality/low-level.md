@@ -646,6 +646,13 @@
   reload, exact named API-input `sourceHandle`, immediate drill and render of an
   API Input inside a newly created unsaved submodel, and an Edge Join retained
   and highlighted in a downstream trace. Private React state is not an oracle.
+- `tests/test_test_isolation.py` — test orders that once leaked state into a
+  later test on the same worker, found when the CI study ran the suite under
+  `--dist loadfile` and `-n 8`: each case runs its pair in one child pytest, in
+  that order, and requires both to pass. The package-version fallback test now
+  restores `haute` after undoing its patch of `importlib.metadata.version`, and
+  the host-binding module patches the port probe through the test's own
+  `MonkeyPatch`, so a test that patches it again is undone in order.
 - `tests/test_safety_critical_lists.py` — a `meta` check that the changed-code
   gate's paths, the critical floors and the high-level specification's list name
   the same modules, read as the two gates read `pyproject.toml`, and that a

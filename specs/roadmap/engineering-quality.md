@@ -19,7 +19,6 @@ evidence to `ENGQ-R01` and `ENGQ-R05`.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | ENGQ-CI03 | Planned | P2 | The 21 model-training, export and scoring test modules take at most half their recorded coverage-lane time, with no assertion weakened and no training code newly uncovered. |
-| ENGQ-CI04 | Planned | P2 | Three tests that failed only under another xdist scheduler or a higher worker count pass regardless of their neighbours and runner load. |
 | ENGQ-CI05 | Planned | P3 | The compatibility shards are balanced by durations measured without coverage. |
 | ENGQ-R01 | Planned | P3 | Production code that nothing calls, or only tests call, is removed. |
 | ENGQ-R05 | Planned | P3 | Tests are organised by component and behaviour, not by coverage campaign. |
@@ -31,8 +30,7 @@ evidence to `ENGQ-R01` and `ENGQ-R05`.
 
 ## Planned improvements
 
-`ENGQ-CI03` is the largest further cut in CI time and
-`ENGQ-CI04` removes known causes of flaky runs; both are independent of the
+`ENGQ-CI03` is the largest further cut in CI time and is independent of the
 other packages. `ENGQ-CI05` is balance tuning for the compatibility shards.
 `ENGQ-R01` is an independent clean-up, cheapest after the larger refactors
 have deleted what they replace. `ENGQ-R05` reorganises the suite under the
@@ -103,37 +101,6 @@ other and keeps the cohort's measure comparable.
 `tests/test_mlflow_log_button_roundtrip.py`;
 `tests/test_training_contract_per_model.py`;
 `scripts/test_file_durations.json`; `mutation/targets.json`.
-
-### ENGQ-CI04 — Remove order and load dependence from three tests
-**Why:** The CI study ran the backend suite under other xdist schedulers and
-worker counts. Three tests failed for reasons outside the code they test:
-- `test_openapi_and_installed_package_versions_match_pyproject` read version
-  `0.0.0-dev` instead of the `pyproject.toml` version when `--dist loadfile`
-  changed which tests shared its worker. Another test leaks package-version
-  state.
-- `test_concurrent_training_workers_publish_each_capture_once` was refused by
-  memory admission (`ExecutionAdmissionError` for `training_prep`) at six and
-  eight workers.
-- `test_serve_fails_loudly_when_port_is_bound` failed at eight workers.
-
-Each is a hidden dependency between tests, or a race that a busier runner or
-a different shard layout can expose.
-
-**Plan:** Reproduce each test under the condition that exposed it:
-`--dist loadfile` for the first, `-n 8` for the other two. Find the leaked
-state or the race, and fix it with a regression test that fails first. Fix
-the product code when the race is real.
-
-**Acceptance:** In a diagnostic CI run of the full suite under
-`--dist loadfile` and at `-n 8`, all three tests pass. Any product race found
-has its own regression test.
-
-**Dependencies:** None.
-
-**Evidence:**
-`tests/test_infrastructure_contracts.py::TestApiRouteContracts::test_openapi_and_installed_package_versions_match_pyproject`;
-`tests/test_training_seeding.py::test_concurrent_training_workers_publish_each_capture_once`;
-`tests/test_cli_fail_loudly.py::TestServePortConflictDetection::test_serve_fails_loudly_when_port_is_bound`.
 
 ### ENGQ-CI05 — Balance the compatibility shards on their own durations
 **Why:** One durations table, measured on the coverage lane, balances every
