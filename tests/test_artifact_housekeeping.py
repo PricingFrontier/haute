@@ -445,7 +445,6 @@ def test_server_lifespan_reaps_artifacts_without_delaying_readiness(
     reaper_started = threading.Event()
     allow_reaper_finish = threading.Event()
 
-    monkeypatch.setattr(server, "_clear_bytecache", lambda: calls.append("clear_bytecache"))
     monkeypatch.setattr(server, "configure_logging", lambda: calls.append("configure_logging"))
     monkeypatch.setattr(deploy_config, "_load_env", lambda _path: calls.append("load_env"))
     monkeypatch.setattr(server, "configure_execution_telemetry", lambda: calls.append("telemetry"))
@@ -537,7 +536,6 @@ def test_server_lifespan_cleans_partial_interactive_startup(
         created.append(task)
         return task
 
-    monkeypatch.setattr(server, "_clear_bytecache", lambda: None)
     monkeypatch.setattr(server, "configure_logging", lambda: None)
     monkeypatch.setattr(deploy_config, "_load_env", lambda _path: None)
     monkeypatch.setattr(server, "configure_execution_telemetry", lambda: None)

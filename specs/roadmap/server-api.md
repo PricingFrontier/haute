@@ -14,7 +14,6 @@ come from the [23 September 2026 codebase review](codebase-review-2026-09-23.md)
 |---|---|---:|---|
 | API-R02 | Planned | P3 | Domain services raise domain errors; only routes speak HTTP. |
 | API-R03 | Planned | P2 | Every browser type and response parser is generated from the Pydantic models. |
-| API-R05 | Planned | P3 | The server start does not delete bytecode caches under the installed package. |
 | API-R06 | Planned | P2 | A user-fixable error is answered as one: a graph the flattener refuses, a trace that fails in the user's node code, and the two 400s that carry the server-error text, with the trace's status chosen by type rather than by message prefix. |
 | API-R08 | Planned | P2 | A save never round-trips through the file watcher, and its request is validated before any file is staged. |
 | API-R09 | Planned | P3 | The repair routes, the admit-run-translate pattern, the path-resolution preludes and the two point-analysis services exist once each, and a save loads the pipeline once. |
@@ -116,24 +115,6 @@ models to the generated set.
 `frontend/src/api/types.ts`; `frontend/src/api/client.ts`;
 `src/haute/schemas.py`; `tests/fixtures/ui_contracts`;
 `frontend/src/types/__tests__/guards.contract.test.ts`.
-
-### API-R05 — No bytecode deletion at start
-**Why:** `_lifespan` deletes every `__pycache__` under the installed `haute`
-package on each server start "so stale bytecode never masks code changes", a
-development convenience that writes into site-packages on every production
-start and is silently skipped (`ignore_errors=True`) on a read-only install.
-This package comes from the
-[25 October 2026 codebase review](codebase-review-2026-10-25.md).
-
-**Plan:** Remove the deletion, or run it only for an editable install detected
-from the package's location.
-
-**Acceptance:** A production start touches nothing under site-packages; the
-dev-mode watcher still reloads changed code.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/server.py::_clear_bytecache`; `src/haute/server.py::_lifespan`.
 
 ### API-R06 — Client errors answered as client errors
 **Why:** `flatten_executable_graph` refuses a client graph with a name violation or an

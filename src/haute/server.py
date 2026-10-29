@@ -426,19 +426,6 @@ _unsubscribe_pipeline_document_update = default_bus.subscribe(
 )
 
 
-def _remove_bytecode_caches(root: Path) -> None:
-    """Remove every ``__pycache__`` directory under *root*."""
-    import shutil
-
-    for pycache in root.rglob("__pycache__"):
-        shutil.rmtree(pycache, ignore_errors=True)
-
-
-def _clear_bytecache() -> None:
-    """Remove the package's .pyc files so stale bytecode never masks code changes."""
-    _remove_bytecode_caches(Path(__file__).resolve().parent)
-
-
 async def _reap_stale_job_artifacts_in_background(stale_after_seconds: int) -> None:
     """Reap optimiser and training artifacts off the event loop and surface failures."""
     try:
@@ -472,7 +459,6 @@ def _follow_pipeline_settings_chunk_rows() -> None:
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     from haute.deploy._config import _load_env
 
-    _clear_bytecache()
     configure_logging()
     configure_process_high_qos()
     _load_env(Path.cwd())

@@ -302,7 +302,6 @@ production:
 | Background jobs | WRK-2 | `ROAD-WORKER-06` |
 | Background jobs | WRK-5, WRK-6, WRK-11, WRK-14 | `ROAD-WORKER-07` |
 | Background jobs | WRK-8, WRK-9, WRK-10 | `ROAD-WORKER-08` |
-| Server API | PM-43 | `API-R05` |
 | Server API | SRV-2, SRV-3, SRV-9, SRV-11 | `API-R06` |
 | Server API | SRV-1, SRV-5 | `API-R08` |
 | Server API | SRV-6, SRV-7, SRV-8, SRV-13, SRV-15 | `API-R09` |

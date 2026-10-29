@@ -103,11 +103,13 @@ native commit in the worker.
 
 ## Behaviour
 
-**App lifecycle.** On startup the app clears stale `.pyc` bytecode, configures structured
-logging, loads the project's `.env`, reaps only stale ownership-marked children of the two
+**App lifecycle.** On startup the app configures structured logging, loads the project's
+`.env`, reaps only stale ownership-marked children of the two
 registered optimiser artifact roots, primes the pipeline-name→path index (so the first HTTP
 request doesn't pay for a full filesystem discovery + parse), and starts the background file
-watcher as an `asyncio.Task`. Shutdown cancels the watcher task and awaits it. If the built
+watcher as an `asyncio.Task`. It writes nothing under the installed `haute` package, whose
+bytecode Python's own source-timestamp check keeps current. Shutdown cancels the watcher
+task and awaits it. If the built
 frontend (`src/haute/static/`) is present and complete (`index.html` **and** `assets/` both
 exist — a partial build is treated as absent, not served broken), every unmatched `GET` falls
 through to the SPA `index.html`. In dev mode Vite proxies `/api` and `/ws` while preserving

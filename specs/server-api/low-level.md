@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/_editor_identities.py` | Pure derivation of node function names, default/handle input identities, and config references used by editor documents and the bounded prospective-identity endpoint. |
-| `src/haute/server.py` | App factory (`app = FastAPI(...)`), lifespan (bytecode clear, logging config, env load, marked optimiser-artifact reaping, pipeline-index priming, watcher task lifecycle), middleware registration, router inclusion, `/api/session` health/bootstrap routes, bounded request-ID selection, the API/WS 404 guard, the `/ws/sync` WebSocket endpoint, the debounced file watcher (the workbench's form file announced through
+| `src/haute/server.py` | App factory (`app = FastAPI(...)`), lifespan (logging config, env load, marked optimiser-artifact reaping, pipeline-index priming, watcher task lifecycle), middleware registration, router inclusion, `/api/session` health/bootstrap routes, bounded request-ID selection, the API/WS 404 guard, the `/ws/sync` WebSocket endpoint, the debounced file watcher (the workbench's form file announced through
 `workbench.form.changed`, forwarded as `workbench_form_changed`), and credential-free static SPA serving. |
 | `src/haute/_local_security.py` | [sandbox-security](../sandbox-security/low-level.md)-owned per-process local-session token, trusted-Origin/Host parsing (including bracketed IPv6), `LocalSessionMiddleware`, `LocalTrustedHostMiddleware`, and the HTTP/WebSocket token-validation contract. |
 | `src/haute/schemas.py` | Stable shared Pydantic request/response import surface used across the app — re-exports canonical graph types from `_types.py`, re-exports execution-strategy DTOs from `_execution_schemas.py`, and defines the remaining per-feature model groups, including the structurally separate pipeline editor-recovery document and diagnostics. The OUTPUT dry-run models are the deliberate route-local exception. |
@@ -346,8 +346,7 @@ used plans fail at the tool boundary before save. Runtime execution and
 external writes remain separate user-initiated operations; v1 exposes no
 assistant execution tool.
 
-**Startup.** `_lifespan()`: `_clear_bytecache()` (rmtree every `__pycache__` under
-`src/haute/`) → `configure_logging()` → `_load_env(Path.cwd())` → validate and cache
+**Startup.** `_lifespan()`: `configure_logging()` → `_load_env(Path.cwd())` → validate and cache
 execution-telemetry and optimiser-housekeeping configuration →
 `recover_json_runtime_storage()` (reaps dead-process spills and orphaned runtime storage under `.haute_cache`) →
 `_ensure_pipeline_index()` (builds the name→path index once, under a double-checked lock) →

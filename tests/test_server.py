@@ -3434,46 +3434,52 @@ class TestSinkEmptyGraph:
 # ---------------------------------------------------------------------------
 
 
-class TestClearBytecache:
-    """The startup bytecode clear removes every __pycache__ under a tree.
+class TestStartupLeavesTheInstalledPackageAlone:
+    """A server start removes nothing under the installed package: on a site-packages
+    install that would edit the environment. Python's own source-timestamp check already
+    keeps an edited module from running from stale bytecode."""
 
-    These run on temporary trees: removing the real package's caches would race
-    other test workers walking the source tree.
-    """
+    def test_the_lifespan_removes_nothing_under_the_package(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shutil
 
-    def test_removes_pycache_directories(self, tmp_path: Path):
-        from haute.server import _remove_bytecode_caches
+        import haute.deploy._config as deploy_config
+        import haute.server as server
 
-        pycache = tmp_path / "haute" / "__pycache__"
-        pycache.mkdir(parents=True)
-        (tmp_path / "haute" / "__pycache__" / "foo.cpython-312.pyc").write_bytes(b"\x00")
-        nested = tmp_path / "haute" / "routes" / "__pycache__"
-        nested.mkdir(parents=True)
+        package = Path(server.__file__).resolve().parent
+        removed: list[Path] = []
+        monkeypatch.setattr(shutil, "rmtree", lambda path, *_a, **_k: removed.append(Path(path)))
+        for step in (
+            "configure_logging",
+            "configure_process_high_qos",
+            "configure_execution_telemetry",
+            "recover_json_runtime_storage",
+            "_ensure_pipeline_index",
+            "_follow_pipeline_settings_chunk_rows",
+            "open_dedicated_workers",
+            "start_interactive_worker_pool",
+            "shutdown_dedicated_workers",
+            "shutdown_interactive_worker_pool",
+            "stop_following_chunk_rows",
+        ):
+            monkeypatch.setattr(server, step, lambda *_a, **_k: None)
+        monkeypatch.setattr(deploy_config, "_load_env", lambda _path: None)
+        monkeypatch.setattr(server, "_artifact_stale_seconds", lambda: 86_400)
 
-        _remove_bytecode_caches(tmp_path / "haute")
+        async def idle(*_args: object) -> None:
+            return None
 
-        assert not pycache.exists()
-        assert not nested.exists()
+        monkeypatch.setattr(server, "_watcher_forever", idle)
+        monkeypatch.setattr(server, "_reap_stale_job_artifacts_in_background", idle)
 
-    def test_handles_missing_pycache(self, tmp_path: Path):
-        from haute.server import _remove_bytecode_caches
+        async def start_and_stop() -> None:
+            async with server._lifespan(server.app):
+                pass
 
-        (tmp_path / "haute").mkdir()
-        _remove_bytecode_caches(tmp_path / "haute")  # should not raise
+        asyncio.run(start_and_stop())
 
-    def test_startup_clears_the_package_tree(self, monkeypatch: pytest.MonkeyPatch):
-        import inspect
-
-        import haute.server as _srv
-
-        # The suite stubs the startup clear (conftest); unwrap to the real one.
-        clear_bytecache = inspect.unwrap(_srv._clear_bytecache)
-        roots: list[Path] = []
-        monkeypatch.setattr(_srv, "_remove_bytecode_caches", roots.append)
-
-        clear_bytecache()
-
-        assert roots == [Path(_srv.__file__).resolve().parent]
+        assert [path for path in removed if path.resolve().is_relative_to(package)] == []
 
 
 class TestMiddleware500:
