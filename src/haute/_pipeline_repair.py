@@ -18,7 +18,6 @@ from typing import Any, Literal
 from haute._ast_helpers import (
     _chained_receiver_calls,
     _connect_call_edge,
-    _extract_function_bodies,
     _is_pipeline_authored_decorator,
     _is_submodel_authored_decorator,
 )
@@ -344,18 +343,7 @@ def _extract_skeletons(
         if receiver == "pipeline"
         else _is_submodel_authored_decorator
     )
-    bodies = _extract_function_bodies(source, tree=tree)
-    return (
-        tree,
-        list(
-            _extract_decorated_node_skeletons(
-                tree,
-                predicate,
-                bodies,
-                source=source,
-            )
-        ),
-    )
+    return tree, _extract_decorated_node_skeletons(tree, predicate, source=source)
 
 
 def _implicit_consumers(

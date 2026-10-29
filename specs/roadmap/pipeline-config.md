@@ -16,7 +16,7 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 | PCFG-R08 | Planned | P3 | Editor-only state travels beside the node config, not inside it. |
 | PCFG-R09 | Planned | P3 | A node type is declared in one place. |
 | PCFG-R12 | Planned | P2 | A save keeps every authored comment, or reports the ones it would drop before it proceeds. |
-| PCFG-R15 | Planned | P3 | The unreachable config branches, the other dead symbols, the five duplicated mechanisms and the stale comments are gone. |
+| PCFG-R15 | Planned | P3 | The unreachable config branches, the five duplicated mechanisms and the stale comments are gone. |
 | PCFG-R16 | Decision | P3 | The `earlier` step spelling is either dropped or named as the one allowed recogniser of old generated code. |
 | PCFG-R19 | Planned | P3 | The file-to-recovery-graph pass is written once, for a pipeline file and a submodel file alike. |
 | PCFG-R21 | Planned | P1 | A parse/save round trip preserves supported keyword-only bindings or refuses an unsupported signature before losing it. |
@@ -216,11 +216,7 @@ pipeline file, so a comment check built beside it covers both.
 ### PCFG-R15 — Dead branches, dead paths, clones and stale comments
 **Why:** Every folder-backed branch of `_build_node_config` is unreachable from
 production (the sidecar branch raises first) and is kept alive by eight test files;
-several convert an inline decorator format the parser refuses.
-`_get_docstring`, `_is_pipeline_node_decorator`, `_is_submodel_node_decorator`, the
-textual preamble path and its three regexes, the `n_params` parameter, the
-`_parser_parameter_names` attribute and the `func_bodies` parameter have no
-production reader. Five mechanisms are written more than once: the
+several convert an inline decorator format the parser refuses. Five mechanisms are written more than once: the
 load-document-at-revision preamble (four times), the single-`df`-assignment check
 (twice), the receiver call-chain walk (five), the module-level constructor scan
 (three) and the preserve-marker scanner (two). Comments and three specifications
@@ -228,8 +224,8 @@ still describe the deleted regex recovery and a codegen that post-edits source, 
 name functions nothing calls.
 
 **Plan:** Reduce `_build_node_config` to the Edge Join, Explore and transform
-branches and move the tests onto sidecar fixtures; delete the dead symbols and
-their tests; one helper per duplicated mechanism; align the
+branches and move the tests onto sidecar fixtures; one helper per duplicated
+mechanism; align the
 comments and the codegen and expression-parsing specifications with the AST-only
 loader.
 

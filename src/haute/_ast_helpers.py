@@ -9,7 +9,6 @@ knowledge of node types, configs, or graphs — that logic lives in
 from __future__ import annotations
 
 import ast
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -30,14 +29,10 @@ __all__ = [
     "_eval_ast_literal",
     "_get_decorator_kwargs",
     "_is_pipeline_authored_decorator",
-    "_is_pipeline_node_decorator",
     "_is_submodel_authored_decorator",
-    "_is_submodel_node_decorator",
     "_get_decorator_node_type",
-    "_get_docstring",
     "_strip_docstring",
     "_dedent",
-    "_extract_function_bodies",
     "_extract_connect_calls",
     "_extract_meta",
     "_extract_pipeline_meta",
@@ -161,22 +156,6 @@ def _get_decorator_kwargs(decorator: ast.expr) -> dict[str, Any]:
     return {}
 
 
-def _is_pipeline_node_decorator(decorator: ast.expr) -> bool:
-    """Check if a decorator is @pipeline.<type>(...) for any type in DECORATOR_TO_NODE_TYPE."""
-    if isinstance(decorator, ast.Attribute):
-        if (
-            isinstance(decorator.value, ast.Name)
-            and decorator.value.id == "pipeline"
-            and decorator.attr in DECORATOR_TO_NODE_TYPE
-        ):
-            return True
-
-    if isinstance(decorator, ast.Call):
-        return _is_pipeline_node_decorator(decorator.func)
-
-    return False
-
-
 def _is_receiver_authored_decorator(decorator: ast.expr, receiver: str) -> bool:
     """Return whether *decorator* is any direct ``@receiver.<name>`` use.
 
@@ -221,24 +200,9 @@ def _get_decorator_node_type(decorator: ast.expr) -> NodeType | None:
     return None
 
 
-def _is_submodel_node_decorator(decorator: ast.expr) -> bool:
-    """Check if a decorator is @submodel.<type>(...) for any type in DECORATOR_TO_NODE_TYPE."""
-    if isinstance(decorator, ast.Attribute):
-        if isinstance(decorator.value, ast.Name) and decorator.attr in DECORATOR_TO_NODE_TYPE:
-            return decorator.value.id == "submodel"
-    if isinstance(decorator, ast.Call):
-        return _is_submodel_node_decorator(decorator.func)
-    return False
-
-
 # ---------------------------------------------------------------------------
 # Docstring / whitespace helpers
 # ---------------------------------------------------------------------------
-
-
-def _get_docstring(func: ast.FunctionDef) -> str:
-    """Extract the docstring from a function def."""
-    return ast.get_docstring(func) or ""
 
 
 def _strip_docstring(lines: list[str]) -> list[str]:
@@ -320,31 +284,6 @@ def _dedent(code: str) -> str:
 # ---------------------------------------------------------------------------
 # Source extraction
 # ---------------------------------------------------------------------------
-
-
-def _extract_function_bodies(
-    source: str,
-    *,
-    tree: ast.Module,
-) -> dict[str, str]:
-    """Extract raw source of each function body, keyed by function name.
-
-    Args:
-        source: The raw source code (needed for line extraction).
-        tree: Pre-parsed AST tree.  Required — callers must parse the
-            source exactly once and pass the resulting tree.  Making this
-            mandatory prevents a class of bug where *source* and *tree*
-            are computed from two different snapshots of the file, and
-            avoids a silent second ``ast.parse()`` call that masks errors.
-    """
-    source_lines = python_lines(source)
-    bodies: dict[str, str] = {}
-
-    for node in ast.iter_child_nodes(tree):
-        if isinstance(node, ast.FunctionDef) and node.body:
-            bodies[node.name] = _function_body_source(source_lines, node)
-
-    return bodies
 
 
 def _function_body_source(
@@ -724,8 +663,6 @@ def _reject_reserved_global_constants_bindings(tree: ast.Module, *, receiver: st
 # ---------------------------------------------------------------------------
 
 
-_RE_POLARS_IMPORT = re.compile(r"import\s+polars(?:\s+as\s+\w+)?\s*$")
-_RE_HAUTE_IMPORT = re.compile(r"import\s+haute(?:\s+as\s+(\w+))?\s*$")
 _PRESERVE_START = "# haute:preserve-start"
 _PRESERVE_END = "# haute:preserve-end"
 
@@ -1047,126 +984,20 @@ def _extract_preamble(
     receiver: str = "pipeline",
     constructor_name: str = "Pipeline",
 ) -> str:
-    """Extract user preamble with AST boundaries when the module is valid.
+    """Extract the user preamble between the standard imports and the generated code.
 
-    The regex fallback calls this on an invalid whole file, so a conservative
-    textual implementation remains available for that path.
+    *tree* is the module's syntax tree, parsed from *source* when not given.
     """
     if receiver not in {"pipeline", "submodel"}:
         raise ValueError(f"Unsupported generated-code receiver: {receiver!r}")
     if tree is None:
-        try:
-            tree = ast.parse(source)
-        except SyntaxError:
-            return _extract_preamble_textual(
-                source,
-                receiver=receiver,
-                constructor_name=constructor_name,
-            )
+        tree = ast.parse(source)
     return _extract_preamble_from_ast(
         source,
         tree,
         receiver=receiver,
         constructor_name=constructor_name,
     )
-
-
-_RE_SUBMODEL_IMPORT = re.compile(rf"from\s+{SUBMODEL_PACKAGE}(?:\.\w+)*\s+import\b")
-
-
-def _textual_submodel_import_lines(lines: list[str]) -> frozenset[int]:
-    """The lines of a file that does not parse that its submodel imports span.
-
-    A parenthesised import runs to the line that closes it.
-    """
-    found: set[int] = set()
-    open_import = False
-    for index, line in enumerate(lines):
-        stripped = line.strip()
-        if open_import or _RE_SUBMODEL_IMPORT.match(stripped):
-            found.add(index)
-            open_import = ("(" in stripped or open_import) and ")" not in stripped
-    return frozenset(found)
-
-
-def _extract_preamble_textual(
-    source: str,
-    *,
-    receiver: str,
-    constructor_name: str,
-) -> str:
-    """Extract user preamble between standard imports and generated object code.
-
-    The preamble is any code that appears after the standard imports
-    (``import polars as pl``, ``import haute``) but before the first
-    ``@<receiver>.<type>`` decorator or
-    ``<receiver> = haute.<constructor_name>(...)`` line.
-
-    Import spellings are alias-aware: ``import haute as ht`` is recognised as
-    a standard import (not preamble) and its alias is used to detect the
-    matching construction line. Without this, an aliased import over-captures
-    the generated construction into the preamble and duplicates it on the
-    next round-trip save.
-    """
-    lines = python_lines(source)
-    # Find the end of standard imports region, capturing either supported
-    # spelling of the requested constructor.
-    last_standard_idx = -1
-    constructor = f"haute.{constructor_name}"
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        haute_match = _RE_HAUTE_IMPORT.match(stripped)
-        if haute_match is not None:
-            haute_alias = haute_match.group(1) or "haute"
-            constructor = f"{haute_alias}.{constructor_name}"
-            last_standard_idx = i
-            continue
-        constructor_import_match = re.fullmatch(
-            rf"from\s+haute\s+import\s+{re.escape(constructor_name)}"
-            r"(?:\s+as\s+(\w+))?\s*",
-            stripped,
-        )
-        if constructor_import_match is not None:
-            constructor = constructor_import_match.group(1) or constructor_name
-            last_standard_idx = i
-            continue
-        if _RE_POLARS_IMPORT.match(stripped):
-            last_standard_idx = i
-
-    if last_standard_idx == -1:
-        return ""
-
-    # Find the start of generated object code (assignment or node decorator).
-    generated_start_idx = len(lines)
-    for i in range(last_standard_idx + 1, len(lines)):
-        stripped = lines[i].strip()
-        starts_receiver = stripped.startswith(f"{receiver} =") or stripped.startswith(
-            f"{receiver}="
-        )
-        is_constructor = starts_receiver and constructor in stripped
-        if is_constructor:
-            generated_start_idx = i
-            break
-        decorator_prefix = f"@{receiver}."
-        if stripped.startswith(decorator_prefix):
-            generated_start_idx = i
-            break
-
-    # Extract lines between standard imports and generated object code.
-    preamble_lines = _slice_without_module_preserve_spans(
-        lines,
-        last_standard_idx + 1,
-        generated_start_idx,
-        generated=_textual_submodel_import_lines(lines) if receiver == "pipeline" else frozenset(),
-    )
-
-    # Strip leading/trailing blank lines
-    while preamble_lines and not preamble_lines[0].strip():
-        preamble_lines.pop(0)
-    while preamble_lines and not preamble_lines[-1].strip():
-        preamble_lines.pop()
-
-    return "\n".join(preamble_lines)
 
 
 # ---------------------------------------------------------------------------

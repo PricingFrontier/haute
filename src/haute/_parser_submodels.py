@@ -17,7 +17,6 @@ from typing import TypeVar
 
 from haute._ast_helpers import (
     _extract_connect_calls,
-    _extract_function_bodies,
     _extract_global_constants_declaration,
     _extract_preamble,
     _extract_preserved_blocks,
@@ -633,11 +632,9 @@ def parse_submodel_source(
             nested_lines=nested_lines,
         )
 
-    func_bodies = _extract_function_bodies(source, tree=tree)
     raw_nodes = _extract_decorated_nodes(
         tree,
         _is_submodel_authored_decorator,
-        func_bodies,
         _base_dir,
         source=source,
     )
@@ -666,9 +663,6 @@ def parse_submodel_source(
         preserved_blocks=_extract_preserved_blocks(source),
         source_file=source_file,
     )
-    graph._parser_parameter_names = {
-        str(node["func_name"]): [str(name) for name in node["param_names"]] for node in raw_nodes
-    }
     graph._parser_edge_parameter_names = {
         str(node["func_name"]): [str(name) for name in node["edge_param_names"]]
         for node in raw_nodes

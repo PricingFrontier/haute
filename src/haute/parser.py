@@ -16,7 +16,6 @@ from pathlib import Path
 
 from haute._ast_helpers import (
     _extract_connect_calls,
-    _extract_function_bodies,
     _extract_global_constants_declaration,
     _extract_pipeline_meta,
     _extract_preamble,
@@ -266,11 +265,9 @@ def parse_pipeline_source_with_name_violations(
     )
 
     # Find @pipeline.<type> decorated functions
-    func_bodies = _extract_function_bodies(source, tree=tree)
     raw_nodes = _extract_decorated_nodes(
         tree,
         _is_pipeline_authored_decorator,
-        func_bodies,
         _base_dir,
         source=source,
     )
@@ -307,9 +304,6 @@ def parse_pipeline_source_with_name_violations(
         warning=_graph_warning(global_constants_error),
     )
     graph._parser_global_constants_declared = declares_global_constants
-    graph._parser_parameter_names = {
-        str(node["func_name"]): [str(name) for name in node["param_names"]] for node in raw_nodes
-    }
     graph._parser_edge_parameter_names = {
         str(node["func_name"]): [str(name) for name in node["edge_param_names"]]
         for node in raw_nodes

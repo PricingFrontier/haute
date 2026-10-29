@@ -620,7 +620,6 @@ def _resolve_node_config(
     decorator_kwargs: dict[str, Any],
     body: str,
     param_names: list[str],
-    n_params: int,
     base_dir: Path | None,
     func_name: str = "",
     explicit_node_type: NodeType | None = None,

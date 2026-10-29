@@ -490,17 +490,3 @@ class TestUnkeptModuleStatements:
         assert unkept_module_statements(source) == []
         assert _extract_preamble(source) == "RATE = 1.05"
 
-    def test_a_wrapped_submodel_import_is_left_out_of_a_preamble_read_from_text(self):
-        """A file that does not parse has its preamble read line by line: the
-        import's continuation lines are left out with it."""
-        source = (
-            "import haute\n\n"
-            "RATE = 1.05\n"
-            "from modules import (\n    pricing,\n    rating,\n)\n\n"
-            'pipeline = haute.Pipeline("p")\n\n\n'
-            "@pipeline.polars\n"
-            "def broken(:\n"
-            "    pass\n"
-        )
-
-        assert _extract_preamble(source) == "RATE = 1.05"
