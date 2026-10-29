@@ -14,6 +14,7 @@ import pytest
 from haute._rating import (
     _apply_banding,
     _breakpoints_to_rules,
+    apply_banding_factors,
     banding_temporal_ordinal_expr,
     parse_breakpoint_boundary,
     validate_banding_config,
@@ -999,6 +1000,89 @@ _DUPLICATE_OUTPUT_MESSAGE = re.escape(
 
 
 class TestMultiFactor:
+    _LOW_HIGH = [{"boundary": "4", "label": "low"}, {"boundary": "", "label": "high"}]
+
+    @staticmethod
+    def _count_schema_resolutions(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+        calls = [0]
+        resolve = pl.LazyFrame.collect_schema
+
+        def counting(frame: pl.LazyFrame) -> pl.Schema:
+            calls[0] += 1
+            return resolve(frame)
+
+        monkeypatch.setattr(pl.LazyFrame, "collect_schema", counting)
+        return calls
+
+    def test_many_breakpoint_factors_resolve_the_schema_once(self, monkeypatch: pytest.MonkeyPatch):
+        """BUG-43: every breakpoints factor re-resolved the growing plan's schema."""
+        lf = pl.LazyFrame({f"x{i}": [1.0, 5.0, None] for i in range(12)})
+        factors = [
+            {
+                "banding": "breakpoints",
+                "column": f"x{i}",
+                "outputColumn": f"x{i}_band",
+                "rules": self._LOW_HIGH,
+            }
+            for i in range(12)
+        ]
+        one_at_a_time = lf
+        for factor in factors:
+            one_at_a_time = _apply_banding(
+                one_at_a_time,
+                factor["column"],
+                factor["outputColumn"],
+                "breakpoints",
+                self._LOW_HIGH,
+            )
+        expected = one_at_a_time.collect()
+        calls = self._count_schema_resolutions(monkeypatch)
+
+        banded = apply_banding_factors(lf, factors)
+
+        assert calls[0] == 1
+        monkeypatch.undo()
+        plt.assert_frame_equal(banded.collect(), expected)
+
+    def test_categorical_factors_alone_resolve_no_schema(self, monkeypatch: pytest.MonkeyPatch):
+        lf = pl.LazyFrame({"prop": ["House", "Office"]})
+        factor = {
+            "banding": "categorical",
+            "column": "prop",
+            "outputColumn": "prop_band",
+            "rules": [{"value": "House", "assignment": "Residential"}],
+        }
+        calls = self._count_schema_resolutions(monkeypatch)
+
+        banded = apply_banding_factors(lf, [factor])
+
+        assert calls[0] == 0
+        monkeypatch.undo()
+        assert banded.collect()["prop_band"].to_list() == ["Residential", None]
+
+    def test_a_factor_reading_an_earlier_output_sees_its_text_dtype(self):
+        """The threaded schema keeps each written band, as a fresh resolution would."""
+        lf = pl.LazyFrame({"x": [1.0, 9.0]})
+        factors = [
+            {
+                "banding": "breakpoints",
+                "column": "x",
+                "outputColumn": "x_band",
+                "rules": self._LOW_HIGH,
+            },
+            {
+                "banding": "breakpoints",
+                "column": "x_band",
+                "outputColumn": "again",
+                "rules": self._LOW_HIGH,
+            },
+        ]
+
+        with pytest.raises(
+            ConfigSettingError, match="number breakpoints, but its column is String"
+        ):
+            apply_banding_factors(lf, factors)
+
     def test_executor_applies_all_factors(self):
         node = _multi_banding_node(
             "multi",

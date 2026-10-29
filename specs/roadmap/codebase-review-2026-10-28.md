@@ -79,13 +79,11 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 
 | Priority | Trigger and observed consequence | Owning package | Evidence and practical limit |
 |---|---|---|---|
-| P2 | Building 0.10.0 beside stale 0.9.0 bundles the old wheel because selection is lexicographic. | [BUG-40](bugs.md#bug-40--the-hosted-app-boots-from-a-lock), extended | Unchanged shell builder in a temporary layout; deterministic builder output and local digest-tool adapter, no actual deployment. |
 | P2 | Invalid connect endpoints/keywords/ports are dropped or repaired; parameter inference can hide the discarded call. | [PCFG-R20](pipeline-config.md#pcfg-r20--malformed-connect-calls-are-parse-errors) | Actual strict parse/codegen versus executing original Python; four malformed call shapes. Existing helper tests preserve some wrong behavior. |
 | P1 | A keyword-only factor default disappears on Save; a preamble name takes over and changes 120 to 90. | [PCFG-R21](pipeline-config.md#pcfg-r21--node-signatures-retain-their-configuration-bindings) | Actual original and regenerated functions, strict file parse. |
 | P2 | Archive finishes after the user changes Team to Mine and reloads the older Team query as the newest request. | [WB-35](workbench.md#wb-35--every-quote-action-says-what-it-did), extended | Actual QuotesPage/store with deferred transport. Restore has the same source pattern but was not separately executed. |
 | P1 | Parser endpoint concatenation and multi-frame paste mint duplicate edge ids; healthy recovery can be refused and deleting one duplicate deletes both. | [NAME-10](name-collisions.md#name-10--every-distinct-connection-has-a-distinct-identity) | Real parser/codegen and actual keyboard/store paste/delete. Healthy recovery rejection follows its duplicate-id validator; malformed documents were not assumed to load normally. |
 | P3 | Delete with a selected node and unrelated selected edge leaves the edge. | [FGC-R07](frontend-graph-canvas.md#fgc-r07--delete-removes-the-complete-eligible-selection) | Actual keyboard/store witness; the remaining edge stays visible and can be deleted again. Undo behavior is an acceptance requirement, not an executed assertion after the failure. |
-| P2 | Rating factor `value` shares its serialized key with the rate, overwriting levels and later causing DuplicateError. | [BUG-46](bugs.md#bug-46--a-rating-factor-cannot-collide-with-its-rate-field) | Real accepted config and rating operation; editor availability/overwrite verified in source. |
 | P1 | Pending submodel drill-in replaces a newly loaded root with the old child and mismatched navigation context. | [FGC-R06](frontend-graph-canvas.md#fgc-r06--pending-submodel-navigation-belongs-to-its-document) | Actual navigation hook and stores, delayed layout. A subsequent destructive Save was not executed. |
 | P1 | Failed solve B restamps retained success A with B's identity, making old numbers appear current under a new objective. | [FSH-R12](frontend-shared.md#fsh-r12--failed-solves-cannot-relabel-retained-successful-results) | Actual store/hash/staleness helpers; preview label source checked. Publication already refuses the error state. |
 | P2 | Integer regression target yields a declared long MLflow output although the native pyfunc predicts floats. | [MOD-R09](modelling.md#mod-r09--output-signatures-describe-predictions) | Real small CatBoost fit and generated signature; no remote registry enforcement failure claimed. |
@@ -96,7 +94,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P3 | Copied Explore node B receives cached result.node_id A for the same producer/card. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual pivot service/cache. Numbers are correct; browser stores them under B, so no numerical cross-node corruption claim. |
 | P2 | Training status discards eight recorded tuning progress fields. | [MOD-R08](modelling.md#mod-r08--training-status-carries-the-progress-the-worker-records) | Real JobStore and async status route. Cancel response has the same omission by source inspection. |
 | P2 | Shared-flight operation TimeoutError is mistaken for a polling timeout; completed work spins until cancellation. | [ROAD-WORKER-09](background-jobs-api.md#road-worker-09--completed-operation-timeouts-are-terminal-failures) | Real SharedFlights and LatestWinsQueue with controlled failure/cancellation. |
-| P2 | Initial bind publishes second/second-save after a branch change but records unpublished first. | [BUG-47](bugs.md#bug-47--initial-storage-binding-records-the-published-branch) | Real local Git transport/bare remote; only volume IO and timing substituted. UC shares the ignored snapshot by source inspection. |
 | P1 | Project utility junction points outside: GET reads and PUT changes the outside Python file. | [API-R07](server-api.md#api-r07--utility-files-written-like-project-files), extended | Actual Windows junction and route operations in temporary directories; only project discovery injected. |
 | P2 | Push rejection names origin; after dropdown changes, its Catch up/Spin off submits backup. | [GIT-R18](git-integration.md#git-r18--recovery-acts-on-the-remote-named-by-its-dialog) | Actual component/ApiError/response parser, both actions, with the remote changed mid-push. Spin off sets local work aside on a branch; a real wrong-remote mutation was not executed. |
 | P2 | Returning from a failed directory to a cached parent leaves the error hiding the files. | [FNED-R02](frontend-node-editors.md#fned-r02--drafts-in-step-with-the-document-errors-with-their-detail), extended | Actual FileBrowser and settings cache, list transport substituted. |
@@ -275,7 +272,6 @@ adds a finding group or changes the 42-group count.
 | typed allowed-values onto older form | Duplicate **WB-38**. |
 | closing return / Unicode line splitting | Duplicates **PCFG-R17**, **PCFG-R18**. |
 | replacement decoding | Duplicate **PCFG-R10**, which explicitly covers sidecar/source replacement decoding before save. |
-| Databricks append | Duplicate **BUG-45**. |
 | dirty delete / broken pairs | Duplicates **GIT-R03**, **GIT-R16**. |
 | recurring Git failures/compensation | The named failure-surfacing concern is **GIT-R02**; duplicate compensation mechanisms are **GIT-R05**. These broad notes do not establish any additional specific exception path. |
 | non-SQLite form insertion | Duplicate **WB-10** for non-SQLite form insertion (the scratch spelling WB-R10 is not another package). The note gives no additional concrete database defect. |
@@ -286,7 +282,6 @@ adds a finding group or changes the 42-group count.
 | CLI/init/deploy existing gaps | Duplicates **DEP-R11** for impact alignment, **DEP-R12A** for build ownership, **DEP-R09** for dependency closure, and **CLI-R01**, **CLI-R04**, **CLI-R06** for init overwrite, TOML mutation and hook behavior. The scratch shorthand DEP-R12 predates its split; generic CLI errors/eager reads name no additional concrete case. |
 | inactive source-switch branch | Duplicate **EXEC-R14**. |
 | Literal-only chunked selects | Duplicate **EXEC-R09**; the deployed request-order witness is included in its accepted extension above. |
-| Submodel source conservation | Duplicate **BUG-19** for dropped authored statements; no additional unspecified conservation failure is claimed. |
 | Model diagnostic weights | Duplicate **MOD-R05**. |
 | Hosted sign-in headers | Duplicate **WB-25**; separate local Host-boundary finding remains WB-39. |
 | Asynchronous assistant tool blocking | Duplicate **ASSIST-57**. |
@@ -299,7 +294,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 
 | Earlier candidate note | Accepted owner |
 |---|---|
-| stale hosted wheel | **BUG-40**. |
 | dispersion caller ownership / estimate queued | **FMOU-R06** for same-mounted draft identity; separate helper error-contract wording is **FSH-R06**. |
 | archive/restore obsolete query | **WB-35**. |
 | rejection remote “candidate pending” | **GIT-R18**. |
@@ -310,7 +304,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | blocked recovery inspector | **FGC-R09**. |
 | API Input / Data Input schema identity | **FNED-R06**. |
 | cached file browser error | **FNED-R02**. |
-| reserved rating `value` | **BUG-46**. |
 | cached pivot response consumer node identity | **EDA-R01**; numbers remain correct as recorded in the accepted report. |
 | tuning status fields | **MOD-R08**. |
 | edge ID collisions | **NAME-10**. |
@@ -321,7 +314,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | local app Host boundary | **WB-39**. |
 | save/repair Git transaction gap | **GIT-R17**. |
 | pyfunc classifier output shape | **MSC-11**. |
-| initial binding restart branch | **BUG-47**. |
 | literal select row proof | **EXEC-R09**. |
 | multi-frame node-instance full preview | **SUB-R06** after requested split; formerly bundled SUB-R01. |
 | predicted output signature dtype | **MOD-R09** after requested split; formerly bundled MOD-R05. |

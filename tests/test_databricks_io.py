@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pyarrow as pa
 import pytest
 
+from haute._databricks_credentials import DatabricksCredentials
 from haute._databricks_io import (
     _TABLE_NAME_RE,
     DatabricksConfigError,
@@ -15,13 +17,29 @@ from haute._databricks_io import (
     FetchIntegrityError,
     _assert_no_rows_lost_after_retry,
     _canonical_table,
-    _connection_settings,
     _iter_databricks_batches,
     _quoted_table_name,
+    _resolve_connection,
+    _sql_auth_kwargs,
     _validate_select_clause,
 )
 from haute._execution_context import ExecutionProfile
 from haute._source_cache import SourceCacheBuildContext, SourceCacheIdentity, SourceCacheStore
+
+_PAT = DatabricksCredentials(
+    workspace_host="https://host",
+    server_hostname="host",
+    auth_mode="pat",
+    token="token",
+    client_id=None,
+    client_secret=None,
+)
+
+
+def _connection_settings(http_path: str | None) -> tuple[str, dict[str, Any], str]:
+    """What a Data Input connects with: the host, the connector's auth arguments, the path."""
+    credentials, resolved_http_path = _resolve_connection(http_path, node_label="Data Input")
+    return credentials.server_hostname, _sql_auth_kwargs(credentials), resolved_http_path
 
 
 @pytest.fixture()
@@ -235,10 +253,7 @@ def _stream(cursor: _Cursor, context: MagicMock) -> list[pa.Table]:
     connection.__enter__.return_value = connection
     with (
         patch("databricks.sql.connect", return_value=connection),
-        patch(
-            "haute._databricks_io._connection_settings",
-            return_value=("host", {"access_token": "token"}, "/wh"),
-        ),
+        patch("haute._databricks_io._resolve_connection", return_value=(_PAT, "/wh")),
         patch("haute._databricks_io.time.sleep"),
     ):
         return list(
@@ -279,10 +294,7 @@ def test_iter_batches_checks_cancellation_before_connect_or_execute() -> None:
 
     with (
         patch("databricks.sql.connect", return_value=connection) as connect,
-        patch(
-            "haute._databricks_io._connection_settings",
-            return_value=("host", {"access_token": "token"}, "/wh"),
-        ),
+        patch("haute._databricks_io._resolve_connection", return_value=(_PAT, "/wh")),
     ):
         with pytest.raises(RuntimeError, match="cancelled"):
             list(
@@ -403,10 +415,7 @@ def test_snapshot_builder_publishes_through_source_cache_store(tmp_path: Path) -
 
     with (
         patch("databricks.sql.connect", return_value=connection),
-        patch(
-            "haute._databricks_io._connection_settings",
-            return_value=("host", {"access_token": "token"}, "/wh"),
-        ),
+        patch("haute._databricks_io._resolve_connection", return_value=(_PAT, "/wh")),
     ):
         generation = SourceCacheStore(tmp_path).build(
             identity,

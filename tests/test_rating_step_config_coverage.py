@@ -15,6 +15,7 @@ from haute._rating_step_config import (
     normalise_rating_step_config,
     normalise_rating_tables,
 )
+from haute.errors import ConfigSettingError
 from tests.fixtures.rating_key_cases import RATING_KEY_CASES, RatingKeyCase
 
 _FACTOR_SCALARS = st.one_of(
@@ -401,6 +402,39 @@ def test_factor_dtype_metadata_preserves_every_supported_descriptor(
     }
 
     assert normalise_rating_step_config(config) == config
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        # Imported or assistant-authored rows: the level and the rate share the key.
+        {
+            "factors": ["value"],
+            "outputColumn": "value_factor",
+            "entries": [{"value": 1.2}, {"value": 0.9}],
+        },
+        # A table whose factors are chosen and whose rows are not built yet.
+        {"factors": ["area", "value"], "outputColumn": "joint_factor"},
+    ],
+)
+def test_a_factor_named_value_is_refused_with_a_rename(table: dict[str, object]) -> None:
+    """BUG-46: a row keeps its rate under ``value``, so a factor of that name loses its
+    level in the editor and selects ``["value", "value"]`` at run time."""
+    with pytest.raises(ConfigSettingError, match=r"factors\[\d\] 'value'") as excinfo:
+        normalise_rating_step_config({"tables": [table]})
+
+    assert excinfo.value.fix is not None
+    assert "Rename the column" in excinfo.value.fix
+
+
+def test_a_factor_merely_containing_value_round_trips() -> None:
+    table = {
+        "factors": ["vehicle_value", "Value"],
+        "outputColumn": "value_band_factor",
+        "entries": [{"vehicle_value": "high", "Value": "A", "value": 1.1}],
+    }
+
+    assert normalise_rating_step_config({"tables": [table]})["tables"] == [table]
 
 
 def test_duplicate_factor_columns_are_rejected_as_ambiguous() -> None:

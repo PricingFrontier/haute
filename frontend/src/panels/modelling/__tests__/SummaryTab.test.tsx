@@ -278,4 +278,33 @@ describe("SummaryTab", () => {
     }))
     expect(onUseBestParameters).toHaveBeenCalledWith(tuning.final_params)
   })
+
+  it("names a round-refitting family's final tree count", () => {
+    render(<SummaryTab result={makeTrainResult({ tuning: makeTuningReport() })} />)
+
+    expect(screen.getByText(/· final tree count 412/)).toBeInTheDocument()
+  })
+
+  // BUG-29: t-boost publishes the winning trial's early-stopped fit and is never refit,
+  // while EBM refits with its winning max_rounds; neither has a final tree count.
+  it("says a tuned t-boost model is the winning trial's fit, not a refit", () => {
+    const tuning = makeTuningReport({
+      final_params: { n_trees: 4000, learning_rate: 0.05 },
+      final_tree_count: null,
+    })
+    render(<SummaryTab result={makeTrainResult({ tuning })} />)
+
+    expect(screen.getByText(/· published the winning trial's fit/)).toBeInTheDocument()
+    expect(screen.queryByText(/refit/)).not.toBeInTheDocument()
+  })
+
+  it("says a tuned EBM model is refit with the winning round budget", () => {
+    const tuning = makeTuningReport({
+      final_params: { max_rounds: 2000, learning_rate: 0.02 },
+      final_tree_count: null,
+    })
+    render(<SummaryTab result={makeTrainResult({ tuning })} />)
+
+    expect(screen.getByText(/· refit with the winning round budget/)).toBeInTheDocument()
+  })
 })

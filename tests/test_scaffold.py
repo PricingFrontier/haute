@@ -1,6 +1,7 @@
 """Tests for haute._scaffold - template generation for ``haute init``."""
 
 import os
+import re
 import subprocess
 import tomllib
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 import yaml
 
 from haute._scaffold import (
+    _CONTAINER_BASED_TARGETS,
     BUILD_AND_PUSH_ONLY_TARGETS,
     TARGETS,
     _release_tag_script,
@@ -29,20 +31,7 @@ from haute._scaffold import (
     starter_test,
     starter_test_quote,
 )
-
-
-def _posix_shell() -> str:
-    """The bash a CI runner would use: Git for Windows' own on Windows.
-
-    A bare ``bash`` on Windows may be WSL's, which sees neither the Windows
-    paths nor the Windows git.
-    """
-    if os.name != "nt":
-        return "bash"
-    exec_path = subprocess.run(
-        ["git", "--exec-path"], check=True, capture_output=True, text=True
-    ).stdout.strip()
-    return str(Path(exec_path).parents[2] / "bin" / "bash.exe")
+from tests._posix_shell import posix_shell
 
 
 class TestHauteToml:
@@ -85,6 +74,20 @@ class TestHauteToml:
         result = haute_toml("motor", "databricks", "github")
         assert "[ci.staging]" in result
         assert 'endpoint_suffix = "-staging"' in result
+        assert "endpoint_url" not in result
+
+    @pytest.mark.parametrize("target", ["container", "azure-container-apps", "aws-ecs", "gcp-run"])
+    def test_a_container_target_writes_its_service_addresses_commented(self, target: str) -> None:
+        """BUG-21: smoke and impact call [ci.staging] and [ci.production] endpoint_url,
+        which only IT can fill in; until then they stop naming the missing address."""
+        result = haute_toml("motor", target, "github")
+
+        assert tomllib.loads(result)["ci"]["production"] == {}
+        assert "endpoint_url" not in tomllib.loads(result)["ci"]["staging"]
+        uncommented = result.replace("# endpoint_url = ", "endpoint_url = ")
+        ci = tomllib.loads(uncommented)["ci"]
+        assert ci["staging"]["endpoint_url"] == "https://motor-staging.example.com"
+        assert ci["production"]["endpoint_url"] == "https://motor.example.com"
 
     def test_azure_container_apps_contains_both_sections(self) -> None:
         result = haute_toml("motor", "azure-container-apps", "github")
@@ -155,20 +158,25 @@ class TestEnvExample:
         assert "DATABRICKS_" not in result
 
     def test_azure_container_apps_creds(self) -> None:
+        # The registry login uses the service principal, not a Docker pair.
         result = env_example("azure-container-apps")
-        assert "DOCKER_USERNAME" in result
+        assert "DOCKER_" not in result
+        assert "AZURE_CLIENT_SECRET" in result
         assert "AZURE_SUBSCRIPTION_ID" in result
         assert "DATABRICKS_" not in result
 
     def test_aws_ecs_creds(self) -> None:
+        # The registry login fetches an ECR password with the AWS keys.
         result = env_example("aws-ecs")
-        assert "DOCKER_USERNAME" in result
+        assert "DOCKER_" not in result
         assert "AWS_ACCESS_KEY_ID" in result
         assert "DATABRICKS_" not in result
 
     def test_gcp_run_creds(self) -> None:
+        # The registry login uses the service account key.
         result = env_example("gcp-run")
-        assert "DOCKER_USERNAME" in result
+        assert "DOCKER_" not in result
+        assert "GCP_SERVICE_ACCOUNT_KEY" in result
         assert "GCP_PROJECT_ID" in result
         assert "DATABRICKS_" not in result
 
@@ -218,7 +226,7 @@ class TestGithubDeployYml:
     def test_aws_ecs_secrets(self) -> None:
         result = github_deploy_yml("aws-ecs")
         assert "secrets.AWS_ACCESS_KEY_ID" in result
-        assert "secrets.DOCKER_USERNAME" in result
+        assert "secrets.DOCKER_USERNAME" not in result
         assert "secrets.DATABRICKS_RATING_HOST" not in result
 
     def test_contains_staging_and_impact(self) -> None:
@@ -373,11 +381,12 @@ class TestGitlabCiYml:
         assert "timeout:" in result
 
     def test_caching(self) -> None:
+        """BUG-26: uv writes ``~/.cache/uv`` unless ``UV_CACHE_DIR`` names the kept path."""
         from haute._scaffold import gitlab_ci_yml
 
-        result = gitlab_ci_yml("databricks")
-        assert "cache:" in result
-        assert ".cache/uv" in result
+        document = yaml.safe_load(gitlab_ci_yml("databricks"))
+        (kept,) = document["default"]["cache"]["paths"]
+        assert document["variables"]["UV_CACHE_DIR"] == f"$CI_PROJECT_DIR/{kept}"
 
     def test_uv_version_pinned(self) -> None:
         from haute._scaffold import gitlab_ci_yml
@@ -403,21 +412,23 @@ class TestGitlabCiYml:
         from haute._scaffold import gitlab_ci_yml
 
         result = gitlab_ci_yml("azure-container-apps")
-        assert "$DOCKER_USERNAME" in result
+        assert "$DOCKER_USERNAME" not in result
+        assert "$AZURE_CLIENT_SECRET" in result
         assert "$AZURE_SUBSCRIPTION_ID" in result
 
     def test_aws_ecs_secrets(self) -> None:
         from haute._scaffold import gitlab_ci_yml
 
         result = gitlab_ci_yml("aws-ecs")
-        assert "$DOCKER_USERNAME" in result
+        assert "$DOCKER_USERNAME" not in result
         assert "$AWS_ACCESS_KEY_ID" in result
 
     def test_gcp_run_secrets(self) -> None:
         from haute._scaffold import gitlab_ci_yml
 
         result = gitlab_ci_yml("gcp-run")
-        assert "$DOCKER_USERNAME" in result
+        assert "$DOCKER_USERNAME" not in result
+        assert "$GCP_SERVICE_ACCOUNT_KEY" in result
         assert "$GCP_PROJECT_ID" in result
 
 
@@ -606,7 +617,7 @@ class TestYamlStructure:
 
         result = azure_devops_yml("aws-ecs")
         assert "$(AWS_ACCESS_KEY_ID)" in result
-        assert "$(DOCKER_USERNAME)" in result
+        assert "$(DOCKER_USERNAME)" not in result
         assert "$(DATABRICKS_RATING_HOST)" not in result
 
 
@@ -681,7 +692,10 @@ class TestCompleteYamlParity:
         verification = {"smoke-test", "impact-analysis"} if verifies else set()
         assert set(jobs) == {"validate", "deploy-staging"} | verification
         expected = _target_secrets(target, "${{{{ secrets.{secret} }}}}")
+        logs_in = target in _CONTAINER_BASED_TARGETS
         secret_steps = [("deploy-staging", "Deploy to staging")]
+        if logs_in:
+            secret_steps.append(("deploy-staging", "Log in to the registry"))
         if verifies:
             secret_steps += [
                 ("smoke-test", "Score test quotes against staging endpoint"),
@@ -694,12 +708,16 @@ class TestCompleteYamlParity:
         production = yaml.safe_load(github_deploy_prod_yml(target))
         assert isinstance(production, dict)
         assert "workflow_dispatch" in _github_trigger(production)
-        production_step = next(
-            step
-            for step in production["jobs"]["deploy-production"]["steps"]
-            if step.get("name") == "Deploy to production"
-        )
-        assert production_step["env"] == expected
+        production_names = ["Deploy to production"]
+        if logs_in:
+            production_names.append("Log in to the registry")
+        for step_name in production_names:
+            production_step = next(
+                step
+                for step in production["jobs"]["deploy-production"]["steps"]
+                if step.get("name") == step_name
+            )
+            assert production_step["env"] == expected, step_name
 
     @pytest.mark.parametrize("target", TARGETS)
     def test_gitlab_release_structure_and_secret_consumers(self, target: str) -> None:
@@ -719,6 +737,11 @@ class TestCompleteYamlParity:
             job = document[job_name]
             assert job["variables"] == expected
             assert job["rules"] == [{"if": "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"}]
+        if target in _CONTAINER_BASED_TARGETS:
+            # The Docker-in-Docker variables come from the hidden job both deploys extend.
+            for job_name in ("deploy-staging", "deploy-production"):
+                assert document[job_name]["extends"] == ".docker"
+            assert set(document[".docker"]["variables"]).isdisjoint(expected)
         assert document["deploy-production"]["when"] == "manual"
 
     @pytest.mark.parametrize("target", TARGETS)
@@ -734,7 +757,10 @@ class TestCompleteYamlParity:
         assert "refs/heads/main" in stages["DeployStaging"]["condition"]
         assert stages["DeployProduction"]["jobs"][0]["environment"] == "production"
         expected = _target_secrets(target, "$({secret})")
+        logs_in = target in _CONTAINER_BASED_TARGETS
         secret_steps = [("DeployStaging", "Deploy staging")]
+        if logs_in:
+            secret_steps.append(("DeployStaging", "Log in to the registry"))
         if verifies:
             secret_steps += [("SmokeTest", "Smoke test"), ("ImpactAnalysis", "Impact analysis")]
         for stage_name, display_name in secret_steps:
@@ -744,10 +770,14 @@ class TestCompleteYamlParity:
         production_steps = stages["DeployProduction"]["jobs"][0]["strategy"]["runOnce"]["deploy"][
             "steps"
         ]
-        production_step = next(
-            step for step in production_steps if step.get("displayName") == "Deploy production"
-        )
-        assert production_step["env"] == expected
+        production_names = ["Deploy production"]
+        if logs_in:
+            production_names.append("Log in to the registry")
+        for display_name in production_names:
+            production_step = next(
+                step for step in production_steps if step.get("displayName") == display_name
+            )
+            assert production_step["env"] == expected, display_name
 
 
 # ---------------------------------------------------------------------------
@@ -1204,7 +1234,7 @@ class TestOfferedTargets:
             heads.append(git("rev-parse", "--short", "HEAD").strip())
             for _ in range(2):  # the second run is a redeploy of the same commit
                 subprocess.run(
-                    [_posix_shell(), "-c", "set -euo pipefail\n" + script],
+                    [posix_shell(), "-c", "set -euo pipefail\n" + script],
                     cwd=tmp_path / "work",
                     check=True,
                     capture_output=True,
@@ -1250,6 +1280,208 @@ class TestOfferedTargets:
         assert isinstance(yaml.safe_load(files["azure-pipelines.yml"]), dict)
 
 
+# Each container-based target's credentials, the registry host `haute ci registry-host`
+# prints for it, and the `docker login` user and password its login step must give.
+_REGISTRY_LOGINS = {
+    "container": (
+        {"DOCKER_USERNAME": "robot", "DOCKER_PASSWORD": "docker-secret"},
+        "ghcr.io",
+        "robot",
+        "docker-secret",
+    ),
+    "aws-ecs": (
+        {
+            "AWS_ACCESS_KEY_ID": "AKIAEXAMPLE",
+            "AWS_SECRET_ACCESS_KEY": "aws-secret",
+            "AWS_DEFAULT_REGION": "eu-west-1",
+        },
+        "123456789012.dkr.ecr.eu-west-1.amazonaws.com",
+        "AWS",
+        "ecr-password",
+    ),
+    "azure-container-apps": (
+        {"AZURE_CLIENT_ID": "app-id", "AZURE_CLIENT_SECRET": "sp-secret"},
+        "pricingregistry.azurecr.io",
+        "app-id",
+        "sp-secret",
+    ),
+    "gcp-run": (
+        {"GCP_SERVICE_ACCOUNT_KEY": '{\n  "type": "service_account"\n}'},
+        "europe-west1-docker.pkg.dev",
+        "_json_key",
+        '{\n  "type": "service_account"\n}',
+    ),
+}
+
+
+def _login_scripts(target: str) -> dict[str, str]:
+    """Every registry login script in *target*'s generated CI files, by where it runs.
+
+    Each runs right before the deploy it logs in for.
+    """
+    scripts: dict[str, str] = {}
+    for label, workflow, job, deploy in (
+        ("GitHub staging", github_deploy_yml(target), "deploy-staging", "Deploy to staging"),
+        (
+            "GitHub production",
+            github_deploy_prod_yml(target),
+            "deploy-production",
+            "Deploy to production",
+        ),
+    ):
+        steps = yaml.safe_load(workflow)["jobs"][job]["steps"]
+        names = [step.get("name") for step in steps]
+        assert names[names.index("Log in to the registry") + 1] == deploy, label
+        scripts[label] = steps[names.index("Log in to the registry")]["run"]
+    gitlab = yaml.safe_load(gitlab_ci_yml(target))
+    for job in ("deploy-staging", "deploy-production"):
+        login, deploy_line, *_ = gitlab[job]["script"]
+        assert deploy_line.startswith("uv run haute deploy"), job
+        scripts[f"GitLab {job}"] = login
+    azure = {stage["stage"]: stage for stage in yaml.safe_load(azure_devops_yml(target))["stages"]}
+    staging_steps = azure["DeployStaging"]["jobs"][0]["steps"]
+    production_steps = azure["DeployProduction"]["jobs"][0]["strategy"]["runOnce"]["deploy"][
+        "steps"
+    ]
+    for label, steps, deploy in (
+        ("Azure DevOps staging", staging_steps, "Deploy staging"),
+        ("Azure DevOps production", production_steps, "Deploy production"),
+    ):
+        names = [step.get("displayName") for step in steps]
+        assert names[names.index("Log in to the registry") + 1] == deploy, label
+        scripts[label] = steps[names.index("Log in to the registry")]["script"]
+    return scripts
+
+
+def _run_login(
+    script: str, cwd: Path, host: str, credentials: dict[str, str], *, ecr: str = "ecr-password"
+) -> subprocess.CompletedProcess[str]:
+    """Run a login *script* with ``uv``, ``uvx`` and ``docker`` as shell functions.
+
+    ``uv`` stands in for ``uv run haute ci registry-host``: a log line, then *host* on the
+    last line, as the command prints them. ``uvx`` stands in for the AWS CLI's ``ecr
+    get-login-password`` and prints *ecr* (or fails, given ``"FAIL"``); ``docker`` writes
+    its arguments, then what it reads, to ``docker.log``.
+    """
+    fakes = (
+        "uv() {\n"
+        "  [ \"$*\" = 'run haute ci registry-host' ] || return 9\n"
+        "  printf '%s\\n' '2026-10-29 12:00:00 [info] process_high_qos_configured'\n"
+        f"  printf '%s\\n' '{host}'\n"
+        "}\n"
+        "uvx() {\n"
+        "  [ \"$*\" = '--from awscli>=1.18,<2 aws ecr get-login-password --region eu-west-1' ]"
+        " || return 9\n"
+        f"  [ '{ecr}' != FAIL ] || return 1\n"
+        f"  printf '%s' '{ecr}'\n"
+        "}\n"
+        "docker() { printf '%s\\n' \"$*\" > docker.log; cat >> docker.log; }\n"
+        "rm -f docker.log\n"
+    )
+    return subprocess.run(
+        [posix_shell(), "-c", fakes + script],
+        cwd=cwd,
+        env={**os.environ, **credentials},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+class TestRegistryLogin:
+    """A container target's generated deploy jobs log in to its registry before the push
+    (BUG-24), with the credential each registry takes."""
+
+    @pytest.mark.parametrize("target", _CONTAINER_BASED_TARGETS)
+    def test_every_deploy_logs_in_with_the_targets_credential(
+        self, target: str, tmp_path: Path
+    ) -> None:
+        credentials, host, user, password = _REGISTRY_LOGINS[target]
+        scripts = _login_scripts(target)
+        assert len(scripts) == 6
+        for label, script in scripts.items():
+            result = _run_login(script, tmp_path, host, credentials)
+
+            assert result.returncode == 0, (label, result.stderr)
+            log = (tmp_path / "docker.log").read_text(encoding="utf-8")
+            assert log == f"login {host} --username {user} --password-stdin\n{password}", label
+
+    @pytest.mark.parametrize("target", _CONTAINER_BASED_TARGETS)
+    def test_a_project_without_a_registry_logs_in_to_nothing(
+        self, target: str, tmp_path: Path
+    ) -> None:
+        # A `container` image with no registry stays local, and a platform target's deploy
+        # refuses an empty registry with its own message.
+        credentials, *_ = _REGISTRY_LOGINS[target]
+        for label, script in _login_scripts(target).items():
+            result = _run_login(script, tmp_path, "", credentials)
+
+            assert result.returncode == 0, (label, result.stderr)
+            assert not (tmp_path / "docker.log").exists(), label
+
+    def test_an_ecr_password_that_cannot_be_fetched_fails_the_login(self, tmp_path: Path) -> None:
+        credentials, host, *_ = _REGISTRY_LOGINS["aws-ecs"]
+        for label, script in _login_scripts("aws-ecs").items():
+            result = _run_login(script, tmp_path, host, credentials, ecr="FAIL")
+
+            assert result.returncode != 0, label
+
+    @pytest.mark.parametrize("target", _CONTAINER_BASED_TARGETS)
+    def test_every_variable_the_login_reads_is_one_of_the_targets_secrets(
+        self, target: str
+    ) -> None:
+        # The login step is given the target's secrets; the AWS CLI also reads the AWS
+        # keys from the environment.
+        credentials, *_ = _REGISTRY_LOGINS[target]
+        assert set(credentials) <= set(ci_secret_names(target))
+        for label, script in _login_scripts(target).items():
+            read = set(re.findall(r"\$([A-Z][A-Z0-9_]*)", script))
+            assert read and read <= set(credentials), label
+
+    def test_a_databricks_project_logs_in_to_no_registry(self) -> None:
+        for content in (
+            github_deploy_yml("databricks"),
+            github_deploy_prod_yml("databricks"),
+            gitlab_ci_yml("databricks"),
+            azure_devops_yml("databricks"),
+        ):
+            assert "docker login" not in content
+            assert "registry-host" not in content
+
+    @pytest.mark.parametrize("target", _CONTAINER_BASED_TARGETS)
+    def test_gitlab_container_deploys_run_where_docker_is(self, target: str) -> None:
+        # The job image has no Docker: the deploy jobs extend a hidden job that adds a
+        # Docker-in-Docker service and installs the matching Docker CLI before uv.
+        document = yaml.safe_load(gitlab_ci_yml(target))
+        docker = document[".docker"]
+        [service] = docker["services"]
+        version = service.removeprefix("docker:").removesuffix("-dind")
+        assert re.fullmatch(r"\d+\.\d+\.\d+", version), service
+        assert docker["variables"] == {
+            "DOCKER_HOST": "tcp://docker:2376",
+            "DOCKER_TLS_CERTDIR": "/certs",
+            "DOCKER_TLS_VERIFY": "1",
+            "DOCKER_CERT_PATH": "/certs/client",
+        }
+        install, sync = docker["before_script"]
+        assert (
+            f"https://download.docker.com/linux/static/stable/$(uname -m)/docker-{version}.tgz"
+            in install
+        )
+        assert "-C /usr/local/bin" in install and install.endswith(" docker/docker")
+        assert sync == document["default"]["before_script"][0]
+        for job in ("deploy-staging", "deploy-production"):
+            assert document[job]["extends"] == ".docker", job
+        for job in ("lint", "smoke-test", "impact-analysis"):
+            assert "extends" not in document.get(job, {}), job
+
+    def test_gitlab_databricks_deploys_need_no_docker(self) -> None:
+        document = yaml.safe_load(gitlab_ci_yml("databricks"))
+        assert ".docker" not in document
+        assert "extends" not in document["deploy-staging"]
+        assert "extends" not in document["deploy-production"]
+
+
 class TestDatabricksReleaseAndDeployJobs:
     """The generated Databricks workflows: a release tag carrying the deployed version
     (BUG-25), and deploy jobs that outlast the wait for the endpoint."""
@@ -1279,7 +1511,7 @@ class TestDatabricksReleaseAndDeployJobs:
         # ``uv`` is a shell function standing in for ``uv run haute status --version-only``.
         script = _release_tag_script("databricks", "")
         return subprocess.run(
-            [_posix_shell(), "-c", f"set -euo pipefail\nuv() {{ {fake_uv}; }}\n{script}"],
+            [posix_shell(), "-c", f"set -euo pipefail\nuv() {{ {fake_uv}; }}\n{script}"],
             cwd=work,
             capture_output=True,
             text=True,
@@ -1374,6 +1606,18 @@ class TestCiFiles:
         # The staging deploy, its smoke test and the impact analysis, all on the one suffix.
         assert text.count('--endpoint-suffix "-stg"') == 3
         assert "--endpoint-suffix" not in text.replace('--endpoint-suffix "-stg"', "")
+
+    @pytest.mark.parametrize("ci", ["github", "gitlab", "azure-devops"])
+    def test_container_smoke_and_impact_call_their_addresses_not_a_suffix(self, ci: str) -> None:
+        """BUG-21: both commands refuse --endpoint-suffix for a container target; they
+        read [ci.staging] and [ci.production] endpoint_url instead."""
+        text = "".join(ci_files("container", ci, staging_suffix="-stg").values())
+
+        steps = re.findall(r"uv run haute (smoke|impact)(.*)", text)
+        assert sorted(command for command, _ in steps) == ["impact", "smoke"]
+        assert [arguments for _, arguments in steps] == ["", ""]
+        # The staging deploy alone keeps the project's suffix.
+        assert text.count('--endpoint-suffix "-stg"') == 1
 
     @pytest.mark.parametrize("suffix", ["", "-st ag", '-stg" && curl evil', "-stäg"])
     def test_a_staging_suffix_that_cannot_name_an_endpoint_is_refused(self, suffix: str) -> None:

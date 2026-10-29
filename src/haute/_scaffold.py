@@ -22,6 +22,8 @@ from haute.deploy._config import DEFAULT_STAGING_ENDPOINT_SUFFIX, DEFAULT_TEST_Q
 #   env_body     – literal body appended after the .env.example header
 #   secrets      – ordered list of CI secret / env-var names
 #   toml_section – callable(name) -> TOML string for [deploy.*] block
+#   registry_login – a container-based target's shell command that pipes its
+#                  credential to `docker login "$registry"` (_registry_login_script)
 
 _TargetConfig = dict[str, str | list[str] | Callable[[str], str]]
 
@@ -71,6 +73,10 @@ DOCKER_PASSWORD=
             "DOCKER_USERNAME",
             "DOCKER_PASSWORD",
         ],
+        "registry_login": (
+            "printf '%s' \"$DOCKER_PASSWORD\""
+            ' | docker login "$registry" --username "$DOCKER_USERNAME" --password-stdin'
+        ),
         "toml_section": lambda name: (
             """\
 [deploy.container]
@@ -83,21 +89,22 @@ base_image = "python:3.11.9-slim"
     "azure-container-apps": {
         "label": "Azure Container Apps",
         "env_body": """
-DOCKER_USERNAME=
-DOCKER_PASSWORD=
 AZURE_SUBSCRIPTION_ID=
 AZURE_TENANT_ID=
 AZURE_CLIENT_ID=
 AZURE_CLIENT_SECRET=
 """,
         "secrets": [
-            "DOCKER_USERNAME",
-            "DOCKER_PASSWORD",
             "AZURE_SUBSCRIPTION_ID",
             "AZURE_TENANT_ID",
             "AZURE_CLIENT_ID",
             "AZURE_CLIENT_SECRET",
         ],
+        # The service principal logs in to the Azure Container Registry: it needs AcrPush.
+        "registry_login": (
+            "printf '%s' \"$AZURE_CLIENT_SECRET\""
+            ' | docker login "$registry" --username "$AZURE_CLIENT_ID" --password-stdin'
+        ),
         "toml_section": lambda name: (
             f"""\
 [deploy.container]
@@ -115,19 +122,21 @@ environment_name = ""
     "aws-ecs": {
         "label": "AWS ECS",
         "env_body": """
-DOCKER_USERNAME=
-DOCKER_PASSWORD=
 AWS_ACCESS_KEY_ID=
 AWS_SECRET_ACCESS_KEY=
 AWS_DEFAULT_REGION=eu-west-1
 """,
         "secrets": [
-            "DOCKER_USERNAME",
-            "DOCKER_PASSWORD",
             "AWS_ACCESS_KEY_ID",
             "AWS_SECRET_ACCESS_KEY",
             "AWS_DEFAULT_REGION",
         ],
+        # An ECR password lasts 12 hours, so each login fetches one with the AWS keys,
+        # through the AWS CLI v1 that uvx runs.
+        "registry_login": (
+            'uvx --from "awscli>=1.18,<2" aws ecr get-login-password --region "$AWS_DEFAULT_REGION"'
+            ' | docker login "$registry" --username AWS --password-stdin'
+        ),
         "toml_section": lambda name: (
             f"""\
 [deploy.container]
@@ -145,17 +154,18 @@ service = "{name}"
     "gcp-run": {
         "label": "GCP Cloud Run",
         "env_body": """
-DOCKER_USERNAME=
-DOCKER_PASSWORD=
 GCP_PROJECT_ID=
 GCP_SERVICE_ACCOUNT_KEY=
 """,
         "secrets": [
-            "DOCKER_USERNAME",
-            "DOCKER_PASSWORD",
             "GCP_PROJECT_ID",
             "GCP_SERVICE_ACCOUNT_KEY",
         ],
+        # The service account's JSON key logs in as Artifact Registry's `_json_key` user.
+        "registry_login": (
+            "printf '%s' \"$GCP_SERVICE_ACCOUNT_KEY\""
+            ' | docker login "$registry" --username _json_key --password-stdin'
+        ),
         "toml_section": lambda name: (
             f"""\
 [deploy.container]
@@ -222,9 +232,21 @@ def _pin_ci_python(text: str, python_version: str) -> str:
 # shell, where these characters are inert.
 _STAGING_SUFFIX_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
 
-# How the templates' staging deploy, smoke and impact steps name the staging suffix;
-# ``_pin_staging_suffix`` swaps in the project's.
+# How the templates' staging deploy steps, and a Databricks project's smoke and impact
+# steps, name the staging suffix; ``_pin_staging_suffix`` swaps in the project's.
 _STAGING_SUFFIX_FLAG = '--endpoint-suffix "{}"'
+
+
+def _verification_suffix_option(target: str) -> str:
+    """The staging suffix option a smoke or impact step passes, with its leading space.
+
+    Databricks names its staging endpoint by the suffix. A container-based target's
+    ``haute smoke`` and ``haute impact`` refuse the option and call the addresses in
+    ``[ci.staging]`` and ``[ci.production]`` ``endpoint_url`` instead.
+    """
+    if target in _CONTAINER_BASED_TARGETS:
+        return ""
+    return " " + _STAGING_SUFFIX_FLAG.format(DEFAULT_STAGING_ENDPOINT_SUFFIX)
 
 
 def staging_suffix_problem(suffix: object) -> str | None:
@@ -338,6 +360,28 @@ def _release_tag_script(target: str, indent: str) -> str:
     return "\n".join(indent + line for line in lines)
 
 
+def _registry_login_script(target: str, indent: str) -> str:
+    """Shell lines, indented, that log in to *target*'s registry before its deploy pushes.
+
+    ``haute deploy`` pushes with a plain ``docker push``. ``haute ci registry-host`` prints
+    the host of ``[deploy.container] registry`` as its last line, after any log line, and
+    an empty one when the registry is empty: a ``container`` image then stays local, and a
+    platform target's deploy refuses it. The target's ``registry_login`` pipes its
+    credential to ``docker login``. No ``-u``: on GitLab the lines share one shell with the
+    job's later entries and the runner's own.
+    """
+    login = _get_target(target)["registry_login"]
+    assert isinstance(login, str)
+    lines = [
+        "set -eo pipefail",
+        'registry="$(uv run haute ci registry-host | tail -n 1)"',
+        'if [ -n "$registry" ]; then',
+        f"  {login}",
+        "fi",
+    ]
+    return "\n".join(indent + line for line in lines)
+
+
 def _deploy_timeout_minutes(target: str) -> int:
     """Minutes a generated deploy job may run.
 
@@ -427,7 +471,7 @@ provider = "{ci}"
 
 [ci.staging]
 endpoint_suffix = "{DEFAULT_STAGING_ENDPOINT_SUFFIX}"
-""",
+{_service_addresses(name, target)}""",
     ]
     if workbench:
         sections.append(
@@ -437,6 +481,26 @@ enabled = true
 """
         )
     return "\n".join(sections)
+
+
+def _service_addresses(name: str, target: str) -> str:
+    """A container-based target's staging and production addresses, commented out.
+
+    Its ``haute smoke`` and ``haute impact`` call the running services at ``[ci.staging]``
+    and ``[ci.production]`` ``endpoint_url``, which only IT can supply; until they are
+    uncommented both commands stop naming the missing address. Databricks reaches its
+    endpoints by name and has none.
+    """
+    if target not in _CONTAINER_BASED_TARGETS:
+        return ""
+    return f"""\
+# The services the smoke test and impact analysis call: uncomment both addresses
+# once IT runs them.
+# endpoint_url = "https://{name}-staging.example.com"
+
+[ci.production]
+# endpoint_url = "https://{name}.example.com"
+"""
 
 
 def _target_section(name: str, target: str) -> str:
@@ -497,7 +561,8 @@ def env_example_placeholders(target: str) -> dict[str, str]:
 
 
 def ci_secret_names(target: str) -> list[str]:
-    """The CI secrets *target*'s generated deploy, smoke, impact and tag steps read."""
+    """The CI secrets *target*'s generated deploy, registry login, smoke, impact and tag
+    steps read."""
     secrets = _get_target(target)["secrets"]
     assert isinstance(secrets, list)
     return list(secrets)
@@ -549,6 +614,22 @@ def _azure_devops_secrets_env(target: str, indent: str = "              ") -> st
         indent=indent,
         fmt="{key}: $({key})",
     )
+
+
+def _github_login_step(target: str, secrets_env: str) -> str:
+    """A container-based target's registry login step, before its deploy step.
+
+    Empty for Databricks, which pushes no image.
+    """
+    if target not in _CONTAINER_BASED_TARGETS:
+        return ""
+    return f"""\
+      - name: Log in to the registry
+        env:
+{secrets_env}
+        run: |
+{_registry_login_script(target, " " * 10)}
+"""
 
 
 # ── GitHub Actions: ci.yml ────────────────────────────────────────────
@@ -655,6 +736,7 @@ def _github_deploy_yml(target: str) -> str:
     no updated service to smoke-test or compare.
     """
     secrets_env = _github_secrets_env(target)
+    verify_suffix = _verification_suffix_option(target)
     verification_jobs = (
         ""
         if target in BUILD_AND_PUSH_ONLY_TARGETS
@@ -674,7 +756,7 @@ def _github_deploy_yml(target: str) -> str:
       - name: Score test quotes against staging endpoint
         env:
 {secrets_env}
-        run: uv run haute smoke --endpoint-suffix "-staging"
+        run: uv run haute smoke{verify_suffix}
 
   impact-analysis:
     name: Impact Analysis
@@ -691,7 +773,7 @@ def _github_deploy_yml(target: str) -> str:
       - name: Compare staging vs production predictions
         env:
 {secrets_env}
-        run: uv run haute impact --endpoint-suffix "-staging"
+        run: uv run haute impact{verify_suffix}
       - name: Upload impact report
         if: always()
         uses: actions/upload-artifact@v4
@@ -755,7 +837,7 @@ jobs:
           enable-cache: true
           python-version: "3.11"
       - run: uv sync --frozen
-      - name: Deploy to staging
+{_github_login_step(target, secrets_env)}      - name: Deploy to staging
         env:
 {secrets_env}
         run: uv run haute deploy --endpoint-suffix "-staging"
@@ -837,7 +919,7 @@ jobs:
           enable-cache: true
           python-version: "3.11"
       - run: uv sync --frozen
-      - name: Deploy to production
+{_github_login_step(target, secrets_env)}      - name: Deploy to production
         env:
 {secrets_env}
         run: uv run haute deploy
@@ -850,6 +932,52 @@ jobs:
 
 
 # ── GitLab CI ────────────────────────────────────────────────────────
+
+# The folder, under the project, that the GitLab pipeline keeps between runs and where
+# it tells uv to put its package cache. GitLab caches only paths inside the project.
+_GITLAB_UV_CACHE = ".cache/uv"
+
+# What every GitLab job runs before its script: uv, then the locked environment.
+_GITLAB_UV_SYNC = 'pip install "uv>=0.5,<1" && uv sync --frozen'
+
+# The Docker a GitLab container deploy runs: the Docker-in-Docker service's version, and
+# the static Docker CLI's, which the job installs since its Python image has none.
+_GITLAB_DOCKER_VERSION = "29.9.2"
+
+
+def _gitlab_docker_job(target: str) -> str:
+    """The hidden job a container-based target's GitLab deploy jobs extend.
+
+    The job image has no Docker, so a Docker-in-Docker service, reached over TLS, builds
+    and pushes the image. The runner must be privileged and share ``/certs/client`` with
+    the service, as GitLab.com's instance runners do. A job's ``before_script`` replaces
+    the default one, so this one installs the Docker CLI, then runs the default's. The
+    static CLI has no buildx: ``docker build`` uses the classic builder, which the
+    generated Dockerfile's plain instructions suffice for. Empty for Databricks.
+    """
+    if target not in _CONTAINER_BASED_TARGETS:
+        return ""
+    cli = (
+        "https://download.docker.com/linux/static/stable/$(uname -m)/"
+        f"docker-{_GITLAB_DOCKER_VERSION}.tgz"
+    )
+    return f"""\
+# ── Docker for the container deploys ──────────────────────────
+# The job image has no Docker: the deploys build and push through a Docker-in-Docker
+# service, which needs a privileged runner sharing /certs/client (GitLab.com's are).
+.docker:
+  services:
+    - docker:{_GITLAB_DOCKER_VERSION}-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_CERT_PATH: "/certs/client"
+  before_script:
+    - curl -fsSL "{cli}" | tar -xz -C /usr/local/bin --strip-components=1 docker/docker
+    - {_GITLAB_UV_SYNC}
+
+"""
 
 
 def gitlab_ci_yml(
@@ -880,7 +1008,11 @@ def _gitlab_ci_yml(target: str, environment: str) -> str:
     release_tag = _release_tag_script(target, " " * 6)
     environment_line = f'  environment: "{environment}"\n' if environment else ""
     verify = target not in BUILD_AND_PUSH_ONLY_TARGETS
+    verify_suffix = _verification_suffix_option(target)
     verification_stages = "  - smoke-test\n  - impact-analysis\n" if verify else ""
+    logs_in = target in _CONTAINER_BASED_TARGETS
+    extends_docker = "  extends: .docker\n" if logs_in else ""
+    login_entry = f"    - |\n{_registry_login_script(target, ' ' * 6)}\n" if logs_in else ""
     verification_jobs = (
         f"""\
 # ── Smoke test ────────────────────────────────────────────────
@@ -891,7 +1023,7 @@ smoke-test:
   variables:
 {secrets_env}
   script:
-    - uv run haute smoke --endpoint-suffix "-staging"
+    - uv run haute smoke{verify_suffix}
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
@@ -903,7 +1035,7 @@ impact-analysis:
   variables:
 {secrets_env}
   script:
-    - uv run haute impact --endpoint-suffix "-staging"
+    - uv run haute impact{verify_suffix}
   artifacts:
     paths:
       - impact_report.md
@@ -923,14 +1055,19 @@ stages:
   - deploy-staging
 {verification_stages}  - deploy-production
 
+variables:
+  # uv keeps its package cache in ~/.cache/uv unless told otherwise; this points it
+  # at the folder the cache below keeps between runs.
+  UV_CACHE_DIR: "$CI_PROJECT_DIR/{_GITLAB_UV_CACHE}"
+
 default:
   image: python:3.11
   cache:
     key: uv-$CI_COMMIT_REF_SLUG
     paths:
-      - .cache/uv
+      - {_GITLAB_UV_CACHE}
   before_script:
-    - pip install "uv>=0.5,<1" && uv sync --frozen
+    - {_GITLAB_UV_SYNC}
 
 # ── Validate ──────────────────────────────────────────────────
 lint:
@@ -945,27 +1082,27 @@ lint:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-# ── Staging ───────────────────────────────────────────────────
+{_gitlab_docker_job(target)}# ── Staging ───────────────────────────────────────────────────
 deploy-staging:
-  stage: deploy-staging
+{extends_docker}  stage: deploy-staging
   timeout: {_deploy_timeout_minutes(target)} minutes
   resource_group: deploy
   variables:
 {secrets_env}
   script:
-    - uv run haute deploy --endpoint-suffix "-staging"
+{login_entry}    - uv run haute deploy --endpoint-suffix "-staging"
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
 {verification_jobs}# ── Production (manual approval) ─────────────────────────────
 deploy-production:
-  stage: deploy-production
+{extends_docker}  stage: deploy-production
 {environment_line}  timeout: {_deploy_timeout_minutes(target)} minutes
   resource_group: deploy
   variables:
 {secrets_env}
   script:
-    - uv run haute deploy
+{login_entry}    - uv run haute deploy
     - |
 {release_tag}
   when: manual
@@ -1016,7 +1153,26 @@ def _azure_devops_yml(target: str, *, environment: str) -> str:
         else f"                  env:\n{secrets_env_production}\n"
     )
     verify = target not in BUILD_AND_PUSH_ONLY_TARGETS
+    verify_suffix = _verification_suffix_option(target)
     production_depends_on = "ImpactAnalysis" if verify else "DeployStaging"
+    # A container-based target logs in to its registry before each deploy step.
+    if target in _CONTAINER_BASED_TARGETS:
+        login_staging = f"""\
+          - script: |
+{_registry_login_script(target, " " * 14)}
+            displayName: Log in to the registry
+            env:
+{secrets_env}
+"""
+        login_production = f"""\
+                - script: |
+{_registry_login_script(target, " " * 20)}
+                  displayName: Log in to the registry
+                  env:
+{secrets_env_production}
+"""
+    else:
+        login_staging = login_production = ""
     verification_stages = (
         f"""\
   # ── Smoke test staging ───────────────────────────────────────
@@ -1038,7 +1194,7 @@ def _azure_devops_yml(target: str, *, environment: str) -> str:
               versionSpec: "3.11"
           - script: pip install "uv>=0.5,<1" && uv sync --frozen
             displayName: Install dependencies
-          - script: uv run haute smoke --endpoint-suffix "-staging"
+          - script: uv run haute smoke{verify_suffix}
             displayName: Smoke test
             env:
 {secrets_env}
@@ -1062,7 +1218,7 @@ def _azure_devops_yml(target: str, *, environment: str) -> str:
               versionSpec: "3.11"
           - script: pip install "uv>=0.5,<1" && uv sync --frozen
             displayName: Install dependencies
-          - script: uv run haute impact --endpoint-suffix "-staging"
+          - script: uv run haute impact{verify_suffix}
             displayName: Impact analysis
             env:
 {secrets_env}
@@ -1179,7 +1335,7 @@ stages:
               versionSpec: "3.11"
           - script: pip install "uv>=0.5,<1" && uv sync --frozen
             displayName: Install dependencies
-          - script: uv run haute deploy --endpoint-suffix "-staging"
+{login_staging}          - script: uv run haute deploy --endpoint-suffix "-staging"
             displayName: Deploy staging
             env:
 {secrets_env}
@@ -1209,7 +1365,7 @@ stages:
                     versionSpec: "3.11"
                 - script: pip install "uv>=0.5,<1" && uv sync --frozen
                   displayName: Install dependencies
-                - script: uv run haute deploy
+{login_production}                - script: uv run haute deploy
                   displayName: Deploy production
                   env:
 {secrets_env_production}
@@ -1236,9 +1392,9 @@ def ci_files(
 
     Paths are relative to the project root, in the order they are reported; ``"none"``
     has no files. Every job runs *python_version*, the project's Python; the staging
-    deploy, smoke and impact steps pass *staging_suffix*, its ``[ci.staging]
-    endpoint_suffix``; and the production job runs under *production_environment*, its
-    ``[ci.production] environment``, when it names one.
+    deploy steps pass *staging_suffix*, its ``[ci.staging] endpoint_suffix``, as a
+    Databricks project's smoke and impact steps do; and the production job runs under
+    *production_environment*, its ``[ci.production] environment``, when it names one.
     """
     if ci == "github":
         return {

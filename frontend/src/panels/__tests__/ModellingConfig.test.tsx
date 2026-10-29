@@ -567,6 +567,26 @@ describe("ModellingConfig", () => {
       })
     })
 
+    it("clicking t-boost in the picker seeds its eight starter parameters (BUG-30)", () => {
+      const { props } = renderConfig({ config: { _nodeId: "node_1", target: "loss_ratio", task: "regression" } })
+      fireEvent.click(screen.getByText("t-boost"))
+      expect(props.onUpdate).toHaveBeenCalledWith({
+        algorithm: "tboost",
+        // Every value but prune_main_effects is t-boost's own default, written out.
+        params: {
+          n_trees: 4000,
+          max_interaction_order: 3,
+          n_bags: 8,
+          interaction_gain_hurdle: 2,
+          prune: true,
+          prune_main_effects: true,
+          band_tolerance: 0.75,
+          graduate: true,
+        },
+        evaluation: expect.objectContaining({ schema_version: 1 }),
+      })
+    })
+
     it("offers EBM Gamma but neither MAE nor CrossEntropy (MOD-F04)", () => {
       renderConfig({
         config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "ebm", params: {} },

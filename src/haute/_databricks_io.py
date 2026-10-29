@@ -112,32 +112,18 @@ def _service_principal_credentials(
     return provider
 
 
-def _connection_settings(
-    http_path: str | None = None, *, node_label: str = "Data Input"
-) -> tuple[str, dict[str, Any], str]:
-    """Resolve Databricks connection settings from the environment.
-
-    Auth precedence: an explicit ``DATABRICKS_TOKEN`` (PAT) wins;
-    otherwise a ``DATABRICKS_CLIENT_ID``/``DATABRICKS_CLIENT_SECRET``
-    service-principal pair (injected automatically inside a Databricks
-    App container) authenticates via OAuth M2M.
-
-    Args:
-        http_path: SQL Warehouse HTTP path from the node config.
-        node_label: The node kind named when ``http_path`` is missing.
-
-    Returns ``(host, auth_kwargs, http_path)`` where ``auth_kwargs`` are
-    passed to ``databricks.sql.connect``. The failure message names every
-    consulted source without echoing any value.
-    """
-    credentials, resolved_http_path = _resolve_connection(http_path, node_label=node_label)
-    return credentials.server_hostname, _sql_auth_kwargs(credentials), resolved_http_path
-
-
 def _resolve_connection(
     http_path: str | None, *, node_label: str
 ) -> tuple[DatabricksCredentials, str]:
-    """The environment's credentials and the stripped *http_path*, both required."""
+    """The environment's credentials and the stripped *http_path*, both required.
+
+    Auth precedence is the shared resolver's: an explicit ``DATABRICKS_TOKEN``
+    (PAT) wins; otherwise a ``DATABRICKS_CLIENT_ID``/``DATABRICKS_CLIENT_SECRET``
+    service-principal pair (injected automatically inside a Databricks App
+    container) authenticates via OAuth M2M. A missing *http_path* is named as the
+    *node_label* node's, in the same failure message as any missing variable,
+    which names every consulted source without echoing any value.
+    """
     resolved_http_path = (http_path or "").strip()
     credentials = resolve_databricks_credentials(
         additional_missing=(f"http_path on the {node_label} node",)
@@ -232,15 +218,15 @@ def _iter_databricks_batches(
     """Yield a complete Databricks result through bounded Arrow batches."""
     from databricks import sql as dbsql
 
-    host, auth_kwargs, resolved_http_path = _connection_settings(http_path)
+    credentials, resolved_http_path = _resolve_connection(http_path, node_label="Data Input")
     select_clause = query.strip() if query else "SELECT *"
     sql_query = f"{select_clause} FROM {_quoted_table_name(table)}"  # noqa: S608
     row_count = 0
     context.checkpoint()
     with dbsql.connect(
-        server_hostname=host,
+        server_hostname=credentials.server_hostname,
         http_path=resolved_http_path,
-        **auth_kwargs,
+        **_sql_auth_kwargs(credentials),
     ) as connection:
         with connection.cursor() as cursor:
             context.checkpoint()

@@ -125,8 +125,8 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the thirteen packages delivered or settled since (by 28 October
-2026) have been removed from the sections below; the coverage table keeps the
+The findings of the nineteen packages delivered or settled since (thirteen by 28
+October 2026, six more on 29 October) have been removed from the sections below; the coverage table keeps the
 original counts.
 
 ## Validation — 25 October 2026
@@ -143,7 +143,7 @@ target dependency resolution. The component roadmaps now carry the resulting pla
 | `PCFG-R18` | Normalise syntactic whitespace using token boundaries; preserve indentation and multiline literal contents. |
 | `FSH-R07`, `API-R08`, `FSH-R05` | Recover a save only from complete canonical saved-content equality, retain newer dirty edits, and distinguish intended other-tab broadcasts from watcher duplicates and self-echoes. |
 | `DEP-R11` | Check every response batch before positional pairing; require explicit first-deploy intent or authoritative absence, never infer absence from an outage. |
-| `DEP-R09`, `BUG-40` | Resolve and verify dependency locks for each target Python/platform and extras. |
+| `DEP-R09` | Resolve and verify dependency locks for each target Python/platform and extras. |
 | `WB-10` | Shipped SQLite already has atomic insert-if-absent. Require a real selected-engine concurrency test and correct transaction recovery. |
 | `GIT-R02` | Preserve configured SSH commands and Git precedence; use process-level noninteractive execution, deadlines and transport cleanup. Appended OpenSSH options do not reliably override earlier ones. |
 
@@ -351,8 +351,6 @@ production:
 | Git integration | GIT-2 | `GIT-R04` |
 | Git integration | GIT-12, GIT-13 | `GIT-R05` |
 | Git integration | GIT-14 | `GIT-R06` (Decision) |
-| Bugs | GIT-10 | `BUG-44` |
-| Bugs | GIT-11 | `BUG-45` |
 | Assistant | ASA-1, ASA-2, ASA-7, ASA-13 | `ASSIST-54` |
 | Assistant | ASA-3, ASA-4, ASA-6, ASA-9 | `ASSIST-55` |
 | Assistant | ASA-5, ASA-8, ASA-10, ASA-11, ASA-12, ASA-14 | `ASSIST-56` |
@@ -385,10 +383,6 @@ production:
 | Sandbox security | PM-42 | `SBX-R04` |
 | Workbench | PM-44 | `WB-33` |
 | Workbench | PM-45 | `WB-10` (selected server engine's atomic form insertion) |
-| Bugs | PM-40, PM-41 | `BUG-40` |
-| Bugs | PM-46 | `BUG-41` |
-| Bugs | PM-47 | `BUG-42` (Decision) |
-| Bugs | PM-49 | `BUG-43` |
 | Engineering quality | PM-50 | `ENGQ-R01` (evidence added) |
 | Engineering quality | the campaign-named test modules recounted | `ENGQ-R05` (evidence added) |
 | Workbench UI | FWB-1, FWB-6, FWB-8, FWB-9 | `WB-35` |
@@ -405,16 +399,14 @@ production:
 Already tracked before this review and not repeated: the `cwd`-captured sandbox
 root used by the deploy modules, the underwriter app and the server
 (`PCFG-R04`); the SPA path containment and the build hook's asset containment
-(`SBX-R01`); the generated container smoke, impact, registry-login and GitLab
-cache steps (`BUG-21`, `BUG-24`, `BUG-26`); the CLI docstring (`BUG-27`); the
+(`SBX-R01`); the
 three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`);
 `HTTPException` raised from service modules (`API-R02`) and the hand-maintained
 browser contract (`API-R03`); the cwd-dependent resolvers in the routes and the
 parser (`PCFG-R04`), editor state inside the config (`PCFG-R08`), the per-type
 validators and branches (`PCFG-R07`, `PCFG-R09`); name-violation reporting
-(`NAME-09`); the instance mechanism (`SUB-R01`); unkept statements in submodel
-files (`BUG-19`); the test-only config helpers and event-bus hooks (`ENGQ-R01`);
-the optimiser's unshown solve-memory forecast (`OPT-W02`) and its frontier
+(`NAME-09`); the instance mechanism (`SUB-R01`); the test-only config helpers and
+event-bus hooks (`ENGQ-R01`); the optimiser's unshown solve-memory forecast (`OPT-W02`) and its frontier
 points without convergence traces (`OPT-PC04`); the optimiser's job registries
 not cancelled at shutdown (`ROAD-WORKER-06`); the test-only
 `_compute_schema_hash` and the training facade (`ENGQ-R01`); fits that exceed
@@ -424,9 +416,8 @@ sanitized 500 for a node failure (`API-R06`); two trace inconsistencies that
 vanish with node-level instances (`SUB-R01`); the git routes' and the
 assistant's current-directory project root (`PCFG-R04`); the Databricks client
 factory's and the save service's `HTTPException`s (`API-R02`); the assistant's
-own containment comparisons (`SBX-R01`); the per-request workspace client in the
-browsing routes (`BUG-41`); the assistant catalog's hand tables and key-only
-config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
+own containment comparisons (`SBX-R01`); the assistant catalog's hand tables and
+key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
 (`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the API
 Input's supervised build (`IO-R08`), the Edge Join as a boundary (`EXEC-R15`)
 and Recover's `how="asof"` (`PCFG-R13`); node-level instances and their
@@ -443,9 +434,8 @@ utilities (`ENGQ-R01`), and the sheet-visibility fault on an output condition
 (`WB-29`); Banding's `_id` and the step error string inside the config
 (`PCFG-R08`), the editors' barrels (`ENGQ-R01`), the pivot editor writing the
 fields the backend defaults (`EDA-R02`); the panel half of the GPU loss-history
-numbering and the GLM `best_iteration` (`MOD-R05`), the offset help text, the
-tuned-refit wording and the t-boost starters (`BUG-28`, `BUG-29`, `BUG-30`), and
-a second fabricated train-failure sentinel (`FSH-R06`); the browser's frontier
+numbering and the GLM `best_iteration` (`MOD-R05`) and a second fabricated
+train-failure sentinel (`FSH-R06`); the browser's frontier
 generation fences that only ever see generation 0 (`OPT-R04`), the optimiser
 panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`) and
 `applyFrontierPointSummary`'s null handling (`FSH-R03`); typed branch names
@@ -459,9 +449,9 @@ a deadline (`FSH-R05`), Ctrl+S inside a code box (`FSH-R07`), editor state insid
 node data (`PCFG-R08`), the recovery banner's re-minted id (`PCFG-R19`) and the
 modelling pane badges (`FMOU-R03`); in the tests, scripts and CI, the floating
 action tags in the generated workflows (`CLI-R06`), the campaign-named test modules
-(`ENGQ-R05`), the test-only reset hooks in production code (`ENGQ-R01`), the 189 test modules that change directory
-because production resolves the project root from it (`PCFG-R04`), and the
-generated scaffold workflows (`BUG-21`, `BUG-24`, `BUG-26`).
+(`ENGQ-R05`), the test-only reset hooks in production code (`ENGQ-R01`), and the
+189 test modules that change directory because production resolves the project
+root from it (`PCFG-R04`).
 
 ## Verdicts that changed or stayed open
 

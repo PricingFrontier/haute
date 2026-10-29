@@ -63,11 +63,11 @@ The `deploy-staging` stage runs `haute deploy --endpoint-suffix "-staging"`. On 
 
 ### 5. Smoke test (automatic)
 
-If deploy succeeds, the `smoke-test` stage runs `haute smoke --endpoint-suffix "-staging"` against an existing live staging endpoint. On Databricks the endpoint is already serving when it starts, since the deploy waited for it. On the generic container target it needs [the service addresses, without the suffix option](../targets/docker.md#step-3-give-smoke-and-impact-their-endpoints).
+If deploy succeeds, the `smoke-test` stage runs `haute smoke --endpoint-suffix "-staging"` against an existing live staging endpoint. On Databricks the endpoint is already serving when it starts, since the deploy waited for it. On the generic container target the stage runs `haute smoke`, which calls [the staging address in `haute.toml`](../targets/docker.md#step-3-give-smoke-and-impact-their-endpoints).
 
 ### 6. Impact analysis (automatic)
 
-If smoke succeeds, the `impact-analysis` stage runs `haute impact --endpoint-suffix "-staging"`, comparing existing staging and production endpoints on the [portfolio sample in the repository](../targets/databricks.md#what-each-setting-means), or on your test quotes when no sample is named. The report is saved as a **pipeline artifact** only when this command runs.
+If smoke succeeds, the `impact-analysis` stage runs `haute impact --endpoint-suffix "-staging"` (`haute impact`, at the addresses in `haute.toml`, on the generic container target), comparing existing staging and production endpoints on the [portfolio sample in the repository](../targets/databricks.md#what-each-setting-means), or on your test quotes when no sample is named. The report is saved as a **pipeline artifact** only when this command runs.
 
 ### 7. You review the impact report
 
@@ -139,15 +139,13 @@ Your pipeline needs credentials to deploy. In GitLab, these are stored as **CI/C
 
 | Variable | Value | Options |
 |---|---|---|
-| `DOCKER_USERNAME` | Your ACR name | Mask variable ✓ |
-| `DOCKER_PASSWORD` | Your ACR password | Mask variable ✓ |
 | `AZURE_SUBSCRIPTION_ID` | Your subscription ID | Mask variable ✓ |
 | `AZURE_TENANT_ID` | Your tenant ID | Mask variable ✓ |
 | `AZURE_CLIENT_ID` | Your service principal app ID | Mask variable ✓ |
 | `AZURE_CLIENT_SECRET` | Your service principal secret | Mask variable ✓ |
 
-!!! warning "Container targets need Docker and a registry login"
-    The generated jobs run in the `python:3.11` image, which has no Docker, so for a container target `haute deploy` stops with "Docker is not available". Give the `deploy-staging` and `deploy-production` jobs a Docker-capable setup (for example a `docker:dind` service with a Docker CLI in the job image), and add a registry login line before `haute deploy` (see [Docker](../targets/docker.md#log-in-to-the-registry-before-the-deploy)). For ECR, which needs no `DOCKER_*` variables, the login line in [AWS ECS](../targets/aws.md#step-2-add-credentials-to-ci) also needs the AWS CLI, which `python:3.11` lacks: install it in those jobs or use an image that has Python, the Docker CLI and the AWS CLI.
+!!! warning "Container targets need a privileged runner"
+    The jobs run in a `python` image, which has no Docker. For a container target, the `deploy-staging` and `deploy-production` jobs extend a hidden `.docker` job: a Docker-in-Docker service builds and pushes the image, and the job installs the matching Docker CLI before logging in to the `registry` in `haute.toml`. Docker-in-Docker needs a privileged runner that shares `/certs/client` with the service. GitLab.com's instance runners are set up that way; a self-managed runner needs `privileged = true` and `volumes = ["/certs/client", "/cache"]` in its `config.toml`.
 
 !!! tip "Mask variable"
     Always tick **Mask variable** for secrets - this prevents them from appearing in pipeline logs.
@@ -192,6 +190,9 @@ Every job installs with `uv sync --frozen`, which needs the project's `uv.lock`:
       - impact-analysis
       - deploy-production
 
+    variables:
+      UV_CACHE_DIR: "$CI_PROJECT_DIR/.cache/uv"
+
     default:
       image: python:3.11
       cache:
@@ -204,7 +205,7 @@ Every job installs with `uv sync --frozen`, which needs the project's `uv.lock`:
 
 ??? info "Key features"
 
-    - **Caching** - the file keeps `.cache/uv` between runs, but uv writes its package cache elsewhere unless `UV_CACHE_DIR` points there, so add `UV_CACHE_DIR: "$CI_PROJECT_DIR/.cache/uv"` under a top-level `variables:` to make installs faster after the first run
+    - **Caching** - `UV_CACHE_DIR` puts uv's package cache in `.cache/uv`, which the file keeps between runs, so installs are faster after the first run
     - **`resource_group: deploy`** - staging, smoke, impact, and production jobs use the same resource group, which prevents two deploys from running at the same time
     - **`when: manual`** - the production job requires a manual click, so you always review before going live
     - **`allow_failure: false`** - the manual production job blocks the pipeline from showing as “passed” until you run it (so you don’t forget)
@@ -216,8 +217,8 @@ Every job installs with `uv sync --frozen`, which needs the project's `uv.lock`:
     |---|---|---|
     | validate (the `lint` job) | `ruff check .`, `mypy .`, `pytest -v`, `haute lint`, `haute deploy --dry-run` | 10 min |
     | deploy-staging | `haute deploy --endpoint-suffix "-staging"` | 15 min |
-    | smoke-test | `haute smoke --endpoint-suffix "-staging"` | 10 min |
-    | impact-analysis | `haute impact --endpoint-suffix "-staging"` | 10 min |
+    | smoke-test | `haute smoke --endpoint-suffix "-staging"` (container: `haute smoke`) | 10 min |
+    | impact-analysis | `haute impact --endpoint-suffix "-staging"` (container: `haute impact`) | 10 min |
     | deploy-production | `haute deploy` + git tag | 15 min |
 
 ---

@@ -69,6 +69,21 @@ export function fixedBudgetCapability(finalParams: Record<string, unknown>): Alg
 }
 
 /**
+ * The tunable family a study's final parameters belong to, mirroring the
+ * backend's ``tuning_family``: the one family whose round key they carry,
+ * whatever its refit policy.
+ */
+export function tuningFamilyCapability(finalParams: Record<string, unknown>): AlgorithmCapability | null {
+  const matches = Object.values(ALGORITHM_CAPABILITIES).filter(
+    (capability) =>
+      capability.refit_policy !== "none"
+      && capability.round_key !== null
+      && capability.round_key in finalParams,
+  )
+  return matches.length === 1 ? matches[0] : null
+}
+
+/**
  * Whether the family's early-stopped validation fit is the deployed model
  * (t-boost): it is never refit, so it has no refit setting and takes holdout
  * validation or none, never cross-validation.

@@ -643,8 +643,8 @@ The Summary keeps model-selection evidence distinct from final performance:
   fixed and tuned candidates. Cross-validation summaries are weighted by the number of
   validation rows in each fit.
 - A tuned run shows the baseline, winning trial, improvement, selected parameters,
-  final tree count (tree families) or the winning round budget (EBM), and exact total
-  fit count. **Use best as fixed parameters** copies the winning parameters into the
+  final tree count (tree families), the winning round budget (EBM) or, for t-boost, that
+  it published the winning trial's fit, and exact total fit count. **Use best as fixed parameters** copies the winning parameters into the
   node's **Parameters JSON** and turns tuning off, after asking.
 - An EBM's **Terms** view shows each term's additive scores on the model's link scale
   (log for Poisson, Gamma and Tweedie; log-odds for Logloss): the prediction is the

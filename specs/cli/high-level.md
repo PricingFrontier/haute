@@ -40,6 +40,8 @@ Out of scope, owned elsewhere:
   interpreter but block generated console-launcher executables. It maintains no separate command
   registry or parser: Click receives the arguments and preserves the command and exit-code
   contracts, while identifying the chosen invocation form in usage text.
+- `haute --help` opens with the package's own description, `pyproject.toml`'s `description`,
+  and so names no deploy target: Databricks is one of several.
 - `haute init [--target ...] [--ci ...] [--workbench] [--force]` scaffolds a new project in the
   current directory: `haute.toml`, a blank `rating/` pipeline package, `.env.example`, test-quote
   fixtures, CI/CD workflow files for the chosen provider, a git pre-commit hook, and `.gitignore`
@@ -88,6 +90,8 @@ Out of scope, owned elsewhere:
   installed Haute and the project's `[ci]` table, so a project takes up fixed workflows, a
   changed `[ci.staging] endpoint_suffix`, or a `[ci.production] environment` whose reviewers
   then gate production, without being initialised again.
+- `haute ci registry-host` prints the host of the registry a container target pushes to,
+  for the login step its generated deploy jobs run before `haute deploy`.
 - `haute smoke [--endpoint-suffix]` sends each test quote in `tests/quotes/` to a live
   serving endpoint as a request of its own, as a pipeline reading one quote per request takes it, and
   holds each quote with an `expected` output to it as the deploy check does, walked into a

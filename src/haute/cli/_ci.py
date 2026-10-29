@@ -7,9 +7,12 @@
 * ``haute ci update`` rewrites the CI files ``haute init`` generated, and
   ``.env.example``, for the project's provider, target, workbench and Python, so a
   project takes up a newer haute's workflows without being initialised again.
+* ``haute ci registry-host`` prints the host of the registry a container target pushes
+  to, which the login step of its generated deploy jobs logs in to.
 
 Split into the typed inputs (:class:`CiSecretsConfig`), the handlers
-(:func:`handle_ci_secrets`, :func:`handle_ci_update`) and the thin click commands.
+(:func:`handle_ci_secrets`, :func:`handle_ci_update`, :func:`handle_ci_registry_host`) and
+the thin click commands.
 """
 
 from __future__ import annotations
@@ -174,6 +177,32 @@ def handle_ci_update() -> None:
         click.echo("The CI files are up to date.")
 
 
+def registry_host(registry: str) -> str:
+    """The host ``docker login`` takes for images pushed under *registry*, ``""`` for none.
+
+    Docker reads a reference's first ``/`` segment as its registry's host when the segment
+    holds a ``.`` or a ``:`` or is ``localhost``; anything else is a Docker Hub namespace,
+    whose host is ``docker.io``.
+    """
+    if not registry:
+        return ""
+    first = registry.split("/", 1)[0]
+    if "." in first or ":" in first or first == "localhost":
+        return first
+    return "docker.io"
+
+
+def handle_ci_registry_host() -> None:
+    """Print the host of the project's ``[deploy.container] registry`` as the last line.
+
+    A container-based target's generated deploy jobs log in to it before ``haute deploy``
+    pushes, reading the last line, since a log line may come first. An empty registry
+    prints an empty line: the image then stays local.
+    """
+    _, deploy_config = _project()
+    click.echo(registry_host(deploy_config.container.registry))
+
+
 @click.group(name="ci")
 def ci() -> None:
     """The CI files and secrets a project's deploys need."""
@@ -200,3 +229,9 @@ def secrets(check_only: bool, no_verify: bool) -> None:
 def update() -> None:
     """Rewrite the generated CI files and .env.example for this haute."""
     handle_ci_update()
+
+
+@ci.command(name="registry-host")
+def registry_host_command() -> None:
+    """Print the host of the registry a container deploy pushes to."""
+    handle_ci_registry_host()

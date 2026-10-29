@@ -26,7 +26,7 @@ from haute.cli._train import train
 @click.group()
 @click.version_option(package_name="haute")
 def cli() -> None:
-    """Haute - Open-source pricing engine for insurance teams on Databricks."""
+    """Haute - Open-source pricing engine for insurance teams"""
     configure_process_high_qos()
 
 

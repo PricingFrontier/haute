@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
@@ -72,6 +73,18 @@ class TestVersion:
         result = runner.invoke(cli, ["--version"])
         assert result.exit_code == 0
         assert "version" in result.output.lower()
+
+
+class TestHelp:
+    def test_group_help_is_the_package_description(self, runner: CliRunner) -> None:
+        """BUG-27: the help read "... for insurance teams on Databricks", one target of five."""
+        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        description = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["description"]
+
+        result = runner.invoke(cli, ["--help"])
+
+        assert result.exit_code == 0, result.output
+        assert result.output.splitlines()[2].strip() == description
 
 
 class TestModuleEntrypoint:

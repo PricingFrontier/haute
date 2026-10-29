@@ -63,7 +63,7 @@ The `DeployStaging` stage runs `haute deploy --endpoint-suffix "-staging"`. On D
 
 ### 5. Smoke test (automatic)
 
-If deploy succeeds, the `SmokeTest` stage scores configured test quotes against an existing live staging endpoint. On Databricks the endpoint is already serving when it starts, since the deploy waited for it. On the generic container target it needs [the service addresses, without the suffix option](../targets/docker.md#step-3-give-smoke-and-impact-their-endpoints).
+If deploy succeeds, the `SmokeTest` stage scores configured test quotes against an existing live staging endpoint. On Databricks the endpoint is already serving when it starts, since the deploy waited for it. On the generic container target it calls [the staging address in `haute.toml`](../targets/docker.md#step-3-give-smoke-and-impact-their-endpoints).
 
 ### 6. Impact analysis (automatic)
 
@@ -140,17 +140,12 @@ Azure DevOps stores shared secrets in **Variable Groups**. Haute's generated pip
 
 | Name | Value | Secret? |
 |---|---|---|
-| `DOCKER_USERNAME` | Your ACR name | ✓ Lock |
-| `DOCKER_PASSWORD` | Your ACR password | ✓ Lock |
 | `AZURE_SUBSCRIPTION_ID` | Your subscription ID | ✓ Lock |
 | `AZURE_TENANT_ID` | Your tenant ID | ✓ Lock |
 | `AZURE_CLIENT_ID` | Your service principal app ID | ✓ Lock |
 | `AZURE_CLIENT_SECRET` | Your service principal secret | ✓ Lock |
 
 Click **Save** when done.
-
-!!! warning "Container targets need a registry login"
-    The generated deploy steps pass these variables to `haute deploy` but do not log in to the registry. Add a login line before `haute deploy` in the `DeployStaging` and `DeployProduction` steps (see [Docker](../targets/docker.md#log-in-to-the-registry-before-the-deploy); for ECR, which needs no `DOCKER_*` variables, see [AWS ECS](../targets/aws.md#step-2-add-credentials-to-ci)).
 
 !!! tip "Lock secrets"
     Click the 🔒 lock icon next to each secret value. This encrypts it and prevents it from appearing in pipeline logs.

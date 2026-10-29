@@ -270,7 +270,8 @@ the rule in the codegen specification either way.
 document reports each as unkept with its line and the save is refused until it is
 moved.
 
-**Dependencies:** `BUG-19` is the statement-shaped neighbour in submodel files.
+**Dependencies:** None. The statement check runs over submodel files as well as the
+pipeline file, so a comment check built beside it covers both.
 
 **Evidence:** `src/haute/codegen.py::_render_module`;
 `src/haute/_ast_helpers.py::_function_body_source`;

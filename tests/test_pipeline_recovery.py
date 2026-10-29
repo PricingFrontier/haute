@@ -4054,3 +4054,91 @@ def test_saving_over_statements_a_save_would_drop_is_refused_naming_them(
     assert "main.py:4" in detail and "main.py:19" in detail
     assert "preserve-start" in detail
     assert pipeline_file.read_bytes() == before
+
+
+_SUBMODEL_WITH_UNKEPT_STATEMENTS = """\
+import haute
+import polars as pl
+
+RATE_FLOOR = 0.5
+
+submodel = haute.Submodel(
+    "child",
+    definition_id="child-definition",
+    input_ports=[],
+    output_ports=[],
+    pipeline_dir="..",
+)
+LOADING = 1.1
+
+
+@submodel.polars
+def rated():
+    return pl.LazyFrame({"rate": [LOADING]})
+"""
+
+_PIPELINE_REGISTERING_CHILD = """\
+import haute
+
+from modules import child
+
+pipeline = haute.Pipeline("parent")
+
+pipeline.submodel(child.submodel, "child_one")
+"""
+
+
+def _write_pipeline_with_unkept_submodel_statement(root: Path) -> tuple[Path, Path]:
+    (root / "modules").mkdir()
+    child = _write(root / "modules" / "child.py", _SUBMODEL_WITH_UNKEPT_STATEMENTS)
+    return _write(root / "main.py", _PIPELINE_REGISTERING_CHILD), child
+
+
+def test_a_statement_after_a_submodels_constructor_degrades_its_pipeline(
+    tmp_path: Path,
+) -> None:
+    """BUG-19: a save regenerates the submodel file too, and dropped the constant."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    parent, _child = _write_pipeline_with_unkept_submodel_statement(tmp_path)
+
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+
+    unkept = [d for d in document.diagnostics if d.code == "unkept_module_statement"]
+    assert document.load_status == "degraded"
+    assert document.capabilities.can_save is False
+    assert [(d.source_file, d.scope, d.source_span) for d in unkept] == [
+        (
+            "modules/child.py",
+            "submodel",
+            RecoverySourceSpan(start_line=13, start_column=0, end_line=13, end_column=13),
+        )
+    ]
+    (statement,) = unkept
+    assert statement.message.startswith("`LOADING = 1.1`")
+    assert statement.remediation is not None
+    assert "`submodel = haute.Submodel(...)`" in statement.remediation
+
+
+def test_saving_over_a_submodel_statement_a_save_would_drop_is_refused_naming_it(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _parent, child = _write_pipeline_with_unkept_submodel_statement(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    before = child.read_bytes()
+
+    response = client.post(
+        "/api/pipeline/save",
+        json={
+            "name": "parent",
+            "source_file": "main.py",
+            "base_revision": "posted-ready-revision",
+            "graph": {"nodes": [], "edges": []},
+        },
+    )
+
+    assert response.status_code == 409
+    assert "modules/child.py:13" in response.json()["detail"]
+    assert child.read_bytes() == before
