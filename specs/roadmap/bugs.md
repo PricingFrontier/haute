@@ -9,8 +9,7 @@ submodel files.
 `BUG-21` and `BUG-24` were found on 5 October 2026 while checking the deployment
 guides against the CI/CD files `haute init` generates: as generated, those files fail before a
 first container release succeeds. The guides give the manual step that works today for each,
-and drop it when the package lands. `BUG-29`, found the same day, is text that no
-longer matches the behaviour it describes: a tuned t-boost run's summary. `BUG-40` to `BUG-43`
+and drop it when the package lands. `BUG-40` to `BUG-43`
 come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md): the hosted
 Databricks app's boot and build script, the UC transport's clients, the storage binding's
 unknown keys and a quadratic schema resolution in banding; `BUG-44` and `BUG-45`, from the
@@ -23,7 +22,6 @@ same review, are the Databricks browsing errors and the non-atomic first append.
 | BUG-19 | Planned | P2 | A save never drops a statement written after a submodel file's constructor. |
 | BUG-21 | Planned | P2 | The generated smoke and impact steps work for the generic container target once its endpoint addresses are set. |
 | BUG-24 | Decision | P1 | Container targets log in to their registry before `haute deploy` pushes, and GitLab container deploys run where Docker is available. |
-| BUG-29 | Planned | P2 | A tuned t-boost run's summary says its published model is the winning trial's fit, not a refit. |
 | BUG-40 | Planned | P2 | The hosted Databricks app installs the wheel and its pinned dependencies from a lock at boot, and its build script takes the app name as a parameter. The build selects its current wheel rather than a stale lexicographic match. |
 | BUG-41 | Planned | P3 | The UC volume transport builds one workspace client per process. |
 | BUG-42 | Decision | P3 | The storage binding record either rejects unknown keys or is named as the exception to the canonical-only policy. |
@@ -96,25 +94,6 @@ Docker, AWS ECS and Azure guides are removed.
 
 **Evidence:** `src/haute/deploy/_container.py::_check_docker_available` and the push;
 `src/haute/_scaffold.py::TARGETS` (secrets) and the workflow generators.
-
-### BUG-29 — A tuned t-boost summary does not claim a refit
-**Why:** After tuning, the Summary tab ends its tuning line with "· final tree count N"
-or, when the result has no tree count, "· refit with the winning round budget".
-`tuning_final_projection` returns no tree count for a validation-fit family, so a tuned
-t-boost run reads as refit, although t-boost publishes the winning trial's early-stopped
-fit and is never refit. The wording is right for EBM, which refits with its winning
-`max_rounds`.
-
-**Plan:** Choose the wording from the result's refit policy: the round budget for a
-fixed-budget family, and "the winning trial's fit" for a validation-fit family.
-
-**Acceptance:** A Summary tab test shows a tuned t-boost result without the refit
-wording and a tuned EBM result with it.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/modelling/SummaryTab.tsx` (the tuning line);
-`src/haute/modelling/_tuning.py::tuning_final_projection`.
 
 ### BUG-40 — The hosted app boots from a lock
 **Why:** Every boot of the hosted Databricks app force-reinstalls the vendored wheel and

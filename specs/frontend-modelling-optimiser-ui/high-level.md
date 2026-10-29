@@ -372,7 +372,12 @@ metric) lead instead, labelled "Validation, N rows" for holdout or "Validation (
 N rows" for cross-validation, with the in-sample diagnostics beneath; a run without validation
 is unchanged. Then come the selection score and variability, baseline improvement, winning/final parameters,
 fit count/elapsed time (the completed job's own, from its terminal status, never a later
-run's clock) and a bounded top-trial table. **Use best as fixed
+run's clock) and a bounded top-trial table. The fit line ends with what the published model
+is, by the tuned family's refit policy (`tuningFamilyCapability`, which finds the family as
+the backend's `tuning_family` does, from the one round key the final parameters carry): a
+round-refitting family's final tree count, "refit with the winning round budget" for a
+fixed-budget family (EBM), and "published the winning trial's fit" for a validation-fit
+family (t-boost), which is never refit. **Use best as fixed
 parameters** asks for confirmation, atomically writes the reported fixed-parameter
 projection and disables tuning; an asynchronous result never mutates node config
 automatically.
