@@ -142,6 +142,8 @@ class _EmittingTableSpec:
     label: str
     segments: tuple[PathSeg, ...]
     columns: tuple[_WalkSpec, ...]
+    #: ``(column name, strftime pattern)`` for each date column that sets a format.
+    date_formats: tuple[tuple[str, str], ...] = ()
 
     @property
     def leaf_specs(self) -> list[_LeafSpec]:
@@ -381,6 +383,7 @@ def _emitting_table_specs(v2_config: dict[str, Any]) -> tuple[_EmittingTableSpec
             continue
         segments = parse_table_path(table["path"])
         columns: list[_WalkSpec] = []
+        date_formats: list[tuple[str, str]] = []
         for col in table.get("columns", []) or []:
             if not col.get("selected"):
                 continue
@@ -393,15 +396,27 @@ def _emitting_table_specs(v2_config: dict[str, Any]) -> tuple[_EmittingTableSpec
                     array_depth(locating),
                 ),
             )
+            if "format" in col:
+                date_formats.append((col["name"], col["format"]))
         _reject_reserved_leaf_collision(table["label"], array_depth(segments), columns)
         table_specs.append(
             _EmittingTableSpec(
                 label=table["label"],
                 segments=segments,
                 columns=tuple(columns),
+                date_formats=tuple(date_formats),
             ),
         )
     return tuple(table_specs)
+
+
+def _holds_nothing(value: Any) -> bool:
+    """Whether *value* is absent where an object or an array is expected.
+
+    A null holds nothing, and so does an empty string, which is what XML makes of
+    an empty element (``<drivers/>``): neither is a value a table can lose.
+    """
+    return value is None or (isinstance(value, str) and not value)
 
 
 class _RowSkip(NamedTuple):
@@ -443,10 +458,12 @@ def shred_to_buffers(
 
     A value that is not a list where the schema declares an array is counted
     against every table at or below that array, since all their rows from it are
-    lost; a missing key or a null is no array. Likewise an array element that is
-    not an object, or a present value that is not an object where the schema steps
-    into one on the way to an array, holds none of the arrays below it, so it is
-    counted against every table below — whether or not a table emits where it sits.
+    lost; a missing key, a null or an empty string is no array. Likewise an array
+    element that is not an object, or a value that is not an object where the
+    schema steps into one on the way to an array, holds none of the arrays below
+    it, so it is counted against every table below — whether or not a table emits
+    where it sits — unless it is a null or an empty string, which holds nothing
+    (:func:`_holds_nothing`).
     *_on_row_skip* receives every counted row with its record and place; a strict
     caller raises from it. Records read from an XML file
     reach the walk through :func:`file_records`, which makes each single element
@@ -580,9 +597,9 @@ def shred_to_buffers(
 
         # Descend to each child array, navigating any 1-1 object hops that
         # locate it. The object hops don't advance depth; this dict is the
-        # ancestor element for the child array's level. A missing or null hop
-        # holds no array; any other value that is not an object loses the rows
-        # of every table at or below that array.
+        # ancestor element for the child array's level. A missing, null or empty
+        # hop holds no array; any other value that is not an object loses the
+        # rows of every table at or below that array.
         child_ancestors = ancestors + (record,)
         for obj_prefix, array_key, child_pos in descents_by_pos.get(pos, ()):
             container: Any = record
@@ -593,32 +610,28 @@ def shred_to_buffers(
             else:
                 _walk_array(container.get(array_key), child_pos, child_ancestors)
                 continue
-            if container is not None:
+            if not _holds_nothing(container):
                 place = (*pos, *((key, False) for key in obj_prefix[:hops]))
                 for label in labels_at_or_below[child_pos]:
                     _count_row_skip(label, place, "an object")
 
     def _walk_array(arr: Any, pos: tuple[PathSeg, ...], ancestors: tuple[Any, ...]) -> None:
         # Iterate the array at ``pos``, emitting a row per element. A missing
-        # key or a null yields nothing; any other value that is not a list is a
-        # counted shape mismatch.
+        # key, a null or an empty string yields nothing; any other value that is
+        # not a list is a counted shape mismatch.
         if not isinstance(arr, list):
-            if arr is not None:
+            if not _holds_nothing(arr):
                 for label in labels_at_or_below[pos]:
                     _count_row_skip(label, pos, "an array")
             return
         for item in arr:
-            if item is None:
-                # A null *element* is a real value for a scalar child table (its
-                # $value resolves to None; ancestor columns still distribute), a
-                # non-record for an object table (counted as a dropped row), and
-                # holds none of the arrays below it.
+            if _holds_nothing(item):
+                # A null or empty *element* is a real value for a scalar child
+                # table (its $value resolves to it; ancestor columns still
+                # distribute), and nothing for an object table or the tables below.
                 for label, is_scalar_table, read_row in tables_by_pos.get(pos, []):
                     if is_scalar_table:
-                        _deliver_row(label, read_row(None, ancestors))
-                    else:
-                        _count_row_skip(label, pos, "an object")
-                _count_skips_below(pos)
+                        _deliver_row(label, read_row(item, ancestors))
                 continue
             _emit_at(pos, item, ancestors)
 
@@ -753,7 +766,10 @@ def shred_request(
         _row_sink=lambda label, row: rows[label].append(row),
         _on_row_skip=refuse,
     )
-    return {spec.label: _rows_to_frame(rows[spec.label], spec.leaf_specs) for spec in table_specs}
+    return {
+        spec.label: _rows_to_frame(rows[spec.label], spec.leaf_specs, dict(spec.date_formats))
+        for spec in table_specs
+    }
 
 
 # Values are Polars DataType *classes*, not instances. Polars's Schema /
@@ -779,17 +795,22 @@ def _declared_frame_schema(table_spec: _EmittingTableSpec) -> pl.Schema:
     )
 
 
-def _iso_dates(strings: pl.Series) -> pl.Series:
-    """A declared date column's strings as dates, refusing any that is not ``YYYY-MM-DD``."""
-    dates = strings.str.to_date(_ISO_DATE_FORMAT, strict=False)
+def _dates(strings: pl.Series, date_format: str) -> pl.Series:
+    """A declared date column's strings read in *date_format*, refusing any that is not."""
+    written = (
+        "an ISO-8601 date" if date_format == _ISO_DATE_FORMAT else f"a date written {date_format}"
+    )
+    # A pattern that reads no date leaves every value unparsed, refused below.
+    dates = strings.str.to_date(date_format, strict=False)
     unparsed = strings.filter(dates.is_null() & strings.is_not_null())
     if unparsed.len():
         raise ApiInputSchemaError(
             f"column {strings.name!r} is declared 'date' but holds {unparsed[0]!r}, which is "
-            'not an ISO-8601 date; write dates year first (e.g. "2024-01-15") or change the '
-            "column's type",
+            f"not {written}; set the column's date format to the one the source uses (such "
+            "as %d/%m/%Y) or change the column's type",
             column=strings.name,
             declared_type="date",
+            format=date_format,
             value=unparsed[0],
         )
     return dates
@@ -798,12 +819,14 @@ def _iso_dates(strings: pl.Series) -> pl.Series:
 def _rows_to_frame(
     rows: Sequence[_Row],
     col_specs: list[_LeafSpec],
+    date_formats: Mapping[str, str] | None = None,  # pragma: no mutate
 ) -> pl.DataFrame:
     """Turn buffered rows into a typed Polars DataFrame.
 
     Each row holds its values in declared column order. Empty buffers produce
     an empty DataFrame with the right schema so downstream readers see a
-    consistent shape. Missing column values are ``None``.
+    consistent shape. Missing column values are ``None``. A date column is read
+    in its *date_formats* pattern, ISO ``%Y-%m-%d`` when it sets none.
     """
     # Build each column as a strictly-typed Series so a value that doesn't
     # match the declared type fails LOUD and SPECIFIC — naming the offending
@@ -860,7 +883,9 @@ def _rows_to_frame(
                 column=col_name,
                 declared_type=col_type,
             ) from exc
-        series_list.append(_iso_dates(series) if col_type == "date" else series)
+        if col_type == "date":
+            series = _dates(series, (date_formats or {}).get(col_name, _ISO_DATE_FORMAT))
+        series_list.append(series)
         progress.checkpoint("json_shred_frame_column")
     frame = pl.DataFrame(series_list)
     progress.checkpoint("json_shred_frame_after")

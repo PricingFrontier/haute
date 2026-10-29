@@ -502,6 +502,17 @@ def test_a_bracket_inside_a_string_never_moves_an_element_boundary(element: byte
     assert _elements(element + b"," + element + b"]") == [orjson.loads(element)] * 2
 
 
+def test_a_guess_that_runs_past_its_element_is_found_exactly() -> None:
+    # Counting the brackets inside the strings makes one balanced match cover both
+    # elements; orjson refuses that guess, and the exact scan finds the two.
+    assert _elements(b'{"a":"{"},{"b":"}"}]') == [{"a": "{"}, {"b": "}"}]
+
+
+def test_a_malformed_element_with_balanced_brackets_raises_its_parse_error() -> None:
+    with pytest.raises(orjson.JSONDecodeError):
+        _elements(b"{a:1},2]")
+
+
 def test_an_element_nested_deeper_than_one_match_follows_is_found_exactly() -> None:
     deep = b"[" * 12 + b'{"a":"]"}' + b"]" * 12
 

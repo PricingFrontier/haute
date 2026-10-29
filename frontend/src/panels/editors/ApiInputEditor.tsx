@@ -17,6 +17,8 @@ import {
   emptyV2,
   readV2,
   writeV2,
+  ISO_DATE_FORMAT,
+  validateDateFormat,
   type ApiInputConfigV2,
   type ApiInputColumnV2,
   type ApiInputTableV2,
@@ -161,10 +163,10 @@ export default function ApiInputEditor({
     colIdx: number,
     patch: Partial<ApiInputColumnV2>,
   ): OnUpdateConfigResult => {
-    // Editing a column's name, path, or type IS confirming it — the user has
-    // looked at the row and made it theirs.
+    // Editing a column's name, path, type or date format IS confirming it —
+    // the user has looked at the row and made it theirs.
     const confirming =
-      "name" in patch || "path" in patch || "type" in patch
+      "name" in patch || "path" in patch || "type" in patch || "format" in patch
         ? { status: "Confirmed" as const }
         : null
     // Committing a path onto a still-blank name fills the name in from the
@@ -986,6 +988,7 @@ function TableBlock({
               status: c.status,
               selected: c.selected,
               levels: c.levels ?? null,
+              ...(c.type === "date" && c.format ? { format: c.format } : {}),
             })),
           })}
           onPaste={onPasteColumns}
@@ -1227,6 +1230,19 @@ function ColumnRow({
           </option>
         ))}
       </select>
+      {col.type === "date" && (
+        <ValidatedTextField
+          dataTestId={`${testIdPrefix}-format`}
+          ariaLabel="Date format"
+          value={col.format ?? ""}
+          placeholder={ISO_DATE_FORMAT}
+          onCommit={(format) => onUpdate({ format: format.trim() || undefined })}
+          validate={validateDateFormat}
+          containerClassName="w-24 shrink-0"
+          className="w-full px-1 py-0.5 rounded font-mono"
+          style={{ background: "var(--bg-input)", border: "1px solid var(--border)" }}
+        />
+      )}
       <Tooltip
         label={
           col.key === true

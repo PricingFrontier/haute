@@ -52,7 +52,7 @@ def test_json_shred_resource_defaults_are_explicit_contracts() -> None:
     assert _runtime_storage._RUNTIME_STORAGE_BUDGET_DEFAULT_BYTES == 4 * 1024 * 1024 * 1024
     assert _runtime_storage._RUNTIME_STORAGE_ORPHAN_GRACE_DEFAULT_SECONDS == 60 * 60
     assert _snapshots.API_INPUT_PROVIDER == "api_input"
-    assert _snapshots.SHRED_SEMANTICS_VERSION == 2
+    assert _snapshots.SHRED_SEMANTICS_VERSION == 3
     assert _snapshots._SCRATCH_DIRNAME == ".shred"
     assert _cache._STANDALONE_SPILL_ROOT == ".haute_cache"
     inference_cache = _inference_cache.InferenceCache()

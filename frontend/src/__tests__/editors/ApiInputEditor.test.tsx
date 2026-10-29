@@ -1413,3 +1413,90 @@ describe("ApiInputEditor - blank entry is not lost when an unrelated field is ed
     })
   })
 })
+
+describe("ApiInputEditor - a date column's format", () => {
+  const DATED = {
+    tables: [
+      {
+        path: "$[:]",
+        label: "policies",
+        emit: true,
+        columns: [
+          { name: "start", path: "$[:].start", type: "date", status: "Inferred", selected: true },
+          { name: "policy_id", path: "$[:].policy_id", type: "int", status: "Inferred", selected: true },
+        ],
+      },
+    ],
+  }
+
+  it("only a date column shows a format box, empty for ISO", () => {
+    render(<ApiInputEditor {...DEFAULT_PROPS} config={DATED} />)
+
+    const format = screen.getByTestId("api-input-table-0-col-0-format") as HTMLInputElement
+    expect(format.value).toBe("")
+    expect(format.placeholder).toBe("%Y-%m-%d")
+    expect(screen.queryByTestId("api-input-table-0-col-1-format")).toBeNull()
+  })
+
+  it("committing a format writes it to the date column and confirms it", () => {
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={DATED} onUpdateSpy={onUpdateSpy} />)
+
+    const format = screen.getByTestId("api-input-table-0-col-0-format") as HTMLInputElement
+    fireEvent.change(format, { target: { value: "%d/%m/%Y" } })
+    fireEvent.blur(format)
+
+    const written = onUpdateSpy.mock.calls.at(-1)?.[0] as {
+      tables: { columns: Record<string, unknown>[] }[]
+    }
+    expect(written.tables[0].columns[0]).toMatchObject({ format: "%d/%m/%Y", status: "Confirmed" })
+    expect(written.tables[0].columns[1]).not.toHaveProperty("format")
+  })
+
+  it("refuses a format that is not a strftime pattern", () => {
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={DATED} onUpdateSpy={onUpdateSpy} />)
+
+    const format = screen.getByTestId("api-input-table-0-col-0-format") as HTMLInputElement
+    fireEvent.change(format, { target: { value: "dd/mm/yyyy" } })
+    fireEvent.blur(format)
+
+    expect(screen.getByTestId("api-input-table-0-col-0-format-error").textContent).toContain(
+      "strftime pattern",
+    )
+    expect(onUpdateSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe("ApiInputEditor - changing a date column's type clears its format", () => {
+  it("a switch away from date drops the format, and a switch back reads ISO", () => {
+    const onUpdateSpy = vi.fn()
+    const dated = {
+      tables: [
+        {
+          path: "$[:]",
+          label: "policies",
+          emit: true,
+          columns: [
+            {
+              name: "start",
+              path: "$[:].start",
+              type: "date",
+              status: "Confirmed",
+              selected: true,
+              format: "%d/%m/%Y",
+            },
+          ],
+        },
+      ],
+    }
+    render(<StatefulHarness initialConfig={dated} onUpdateSpy={onUpdateSpy} />)
+
+    fireEvent.change(screen.getByTestId("api-input-table-0-col-0-type"), { target: { value: "str" } })
+    const asText = onUpdateSpy.mock.calls.at(-1)?.[0] as { tables: { columns: Record<string, unknown>[] }[] }
+    expect(asText.tables[0].columns[0]).not.toHaveProperty("format")
+
+    fireEvent.change(screen.getByTestId("api-input-table-0-col-0-type"), { target: { value: "date" } })
+    expect((screen.getByTestId("api-input-table-0-col-0-format") as HTMLInputElement).value).toBe("")
+  })
+})

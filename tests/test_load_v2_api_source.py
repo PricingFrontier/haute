@@ -10,6 +10,7 @@ the two paths from drifting.
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -343,6 +344,18 @@ def test_standalone_load_shreds_without_touching_the_store(tmp_path: Path) -> No
 
     assert out["root"].collect().to_dict(as_series=False) == {"id": [1]}
     assert not _inputs_root(tmp_path).exists()
+
+
+def test_a_projected_standalone_load_reads_dates_in_their_declared_format(
+    tmp_path: Path,
+) -> None:
+    data = _write(tmp_path, [{"id": 1, "start": "15/01/2024"}, {"id": 2, "start": "01/02/2024"}])
+    start = {**_col("start", "$[:].start"), "type": "date", "format": "%d/%m/%Y"}
+    cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id"), start])]}
+
+    out = load_v2_api_source(str(data), cfg, port_columns={"root": frozenset({"start"})})
+
+    assert out["root"].collect()["start"].to_list() == [date(2024, 1, 15), date(2024, 2, 1)]
 
 
 def test_a_snapshot_read_of_an_unbuilt_table_is_refused_without_shredding(

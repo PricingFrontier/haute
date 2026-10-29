@@ -786,7 +786,7 @@ def test_parallel_build_matches_serial_build_exactly(
     at the 200-byte chunk size."""
     records = _sample_records(300)
     records[13]["claims"] = [{"amt": 130}, "stray", {"amt": 131}]
-    records[257]["claims"] = [{"amt": 2570}, None]
+    records[257]["claims"] = [{"amt": 2570}, 7]
     serial_src = _write_jsonl(tmp_path / "serial.jsonl", records)
     serial_skip, serial_frames = _build(serial_src, tmp_path / "serial_cache")
     assert serial_skip.skipped_rows_by_table == {"claims": 2}, (

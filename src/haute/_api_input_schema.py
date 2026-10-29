@@ -37,7 +37,9 @@ What lives in v2:
     ``int|float|str|bool|date`` (B1: unknown types are rejected at
     validate-time, not silently downgraded); ``status`` is
     ``"Confirmed"`` or ``"Inferred"``; ``selected`` is bool; ``levels``
-    is an optional categorical-values list.
+    is an optional categorical-values list; a ``date`` column may set
+    ``format``, the strftime pattern its source values are written in
+    (ISO ``%Y-%m-%d`` when absent).
 
 Object-nesting transparency (2026-06-17 ruling): relational depth is the
 ARRAY (``[:]``) nesting depth ONLY. Nesting inside a 1-1 object does not
@@ -148,6 +150,8 @@ class ColumnV2(TypedDict, total=False):
     status: ColumnStatus
     selected: bool
     levels: list[str | None] | None
+    #: A date column's strftime pattern for its source values; ISO ``%Y-%m-%d`` when absent.
+    format: str
 
 
 class TableV2(TypedDict, total=False):
@@ -516,6 +520,23 @@ def validate_v2_schema(config: dict[str, Any]) -> None:
                     column=cname,
                     type=ctype,
                 )
+            if "format" in col:
+                date_format = col["format"]
+                if ctype != "date":
+                    raise ApiInputSchemaError(
+                        f"v2 tables[{ti}].columns[{ci}].format is set on a {ctype!r} "
+                        "column; only a date column takes a format",
+                        table=label,
+                        column=cname,
+                    )
+                if not isinstance(date_format, str) or "%" not in date_format:
+                    raise ApiInputSchemaError(
+                        f"v2 tables[{ti}].columns[{ci}].format must be a strftime "
+                        "pattern such as %d/%m/%Y",
+                        table=label,
+                        column=cname,
+                        format=date_format,
+                    )
 
             levels = col.get("levels")
             if levels is not None:

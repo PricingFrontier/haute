@@ -244,6 +244,36 @@ def test_a_date_column_refuses_a_value_that_is_not_an_iso_date(value: str) -> No
     assert refused.value.context["value"] == value
 
 
+@pytest.mark.parametrize(
+    ("date_format", "value", "expected"),
+    [
+        ("%d/%m/%Y", "15/01/2024", date(2024, 1, 15)),
+        ("%d/%m/%Y", "01/02/2024", date(2024, 2, 1)),
+        ("%m/%d/%Y", "01/02/2024", date(2024, 1, 2)),
+    ],
+    ids=["day-first", "day-first-ambiguous", "month-first"],
+)
+def test_a_date_column_reads_dates_in_its_declared_format(
+    date_format: str, value: str, expected: date
+) -> None:
+    frame = _rows_to_frame(
+        [(value,), (None,)], [("start", "start", "date")], {"start": date_format}
+    )
+
+    assert frame["start"].to_list() == [expected, None]
+
+
+def test_a_date_column_refuses_a_value_not_written_in_its_format() -> None:
+    with pytest.raises(
+        ApiInputSchemaError,
+        match=re.escape("holds '2024-01-15', which is not a date written %d/%m/%Y"),
+    ) as refused:
+        _rows_to_frame([("2024-01-15",)], [("start", "start", "date")], {"start": "%d/%m/%Y"})
+
+    assert refused.value.context["format"] == "%d/%m/%Y"
+    assert refused.value.context["value"] == "2024-01-15"
+
+
 # ─── F717 + conservation — build consumes the iterator and reconciles ─
 
 

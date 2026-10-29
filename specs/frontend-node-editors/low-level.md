@@ -696,6 +696,14 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   ([frontend shared](../frontend-shared/low-level.md)): the API Input fields pass the
   `OnUpdateConfig` result so a refused commit keeps its draft and shows `commitError`, and the
   Output path passes its per-frame conflict warning.
+- A `date` column's row in the API Input editor adds a format field (`ValidatedTextField`,
+  labelled "Date format", placeholder `ISO_DATE_FORMAT`): empty means ISO `%Y-%m-%d`, and
+  anything else must hold a `%` directive (`validateDateFormat`, the backend's rule). A
+  committed format is written as the column's `format` and, like a name, path or type edit,
+  confirms the column. `writeV2` writes `format` only for a `date` column, so changing the
+  type away from `date` drops it, and a switch back reads ISO until a format is set again.
+  Inherit, cascade and add-keys carry a date column's format with its type and levels
+  (`buildPathInventory`, `buildInsertedColumns`), and a table's mapping JSON includes it.
 - Edge Join roles are never config values: they come exclusively from the incoming edges'
   `targetHandle="base"` / `targetHandle="join"` values and can only be exchanged by the atomic
   swap action. Creating, connecting, swapping, splitting, or deleting role edges does not write

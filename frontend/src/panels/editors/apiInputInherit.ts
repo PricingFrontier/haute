@@ -34,6 +34,8 @@ export interface InventoryKey {
   name: string
   type: ColumnType
   levels: (string | null)[] | null
+  /** A date column's strftime pattern, when it sets one. */
+  format?: string
 }
 
 /** The dotted leaf of a path, or null if the path doesn't parse / names no leaf.
@@ -73,7 +75,13 @@ export function buildPathInventory(
       // A Map.set on an existing key updates the value but keeps the original
       // insertion position — so frames override the snapshot's name/type without
       // reordering the inventory.
-      inv.set(c.path, { path: c.path, name: c.name, type: c.type, levels: c.levels ?? null })
+      inv.set(c.path, {
+        path: c.path,
+        name: c.name,
+        type: c.type,
+        levels: c.levels ?? null,
+        ...(c.type === "date" && c.format ? { format: c.format } : {}),
+      })
     }
   }
   if (lastInfer) for (const t of lastInfer) ingest(t.columns)
@@ -334,8 +342,8 @@ export function ambiguousNames(
  * — the pure core shared by inherit, cascade, and inherit-attributes. Each row
  * reuses the inventory's name for that key (so a field reads the same across
  * frames — "name transport"), falling back to the salted leaf, then de-duplicated
- * against `existingNames` (and the rows already built in this batch). The type
- * and category levels are carried from the inventory. Every row arrives
+ * against `existingNames` (and the rows already built in this batch). The type,
+ * category levels and date format are carried from the inventory. Every row arrives
  * `Confirmed` (a deliberate user act) with the given `origin` ("inherited" for
  * inherit/cascade, "manual" for hand entry). Rows are ordered shallowest level
  * first, then by the order the paths were given — the caller inserts the block
@@ -373,6 +381,7 @@ export function buildInsertedColumns(
       status: "Confirmed",
       selected: true,
       levels: entry?.levels ?? null,
+      ...(entry?.format ? { format: entry.format } : {}),
       origin,
       // Anything arriving through the key machinery is tracked as a key
       // (ruled 2026-07-09).

@@ -78,12 +78,13 @@ generations, projected to the columns it demands, never the raw source. A deploy
 Quote Input shreds each served request the same way, in memory
 (`_shred.py::shred_request`), and refuses the request where a build would count a
 skip: a quote that is not an object, an array element whose shape does not fit its
-table or that is not an object where tables below it read objects, a present value
-that is not an object where the schema steps into an object on the way to an array,
-or an object or scalar where the schema declares an array raises
-`ApiInputSchemaError` at the first such value, naming the quote, the place and the
-table, since a deployed answer must not lose a quote's rows silently
-([deploy](../deploy/high-level.md)). Generated
+table or that is not an object where tables below it read objects, a value that is
+not an object where the schema steps into an object on the way to an array, or an
+object or scalar where the schema declares an array raises `ApiInputSchemaError` at
+the first such value, naming the quote, the place and the table, since a deployed
+answer must not lose a quote's rows silently ([deploy](../deploy/high-level.md)).
+A null or an empty string inside a quote holds nothing and is never refused (see
+below): analysts cannot choose how a feed writes "none". Generated
 standalone code runs without a project store and shreds its source in-process
 through the same parsed table specs, type checks, skip accounting and conservation
 guards, into private spill-backed lazy frames.
@@ -156,15 +157,20 @@ table, or is counted as a skip against that table (its shape didn't match — an
 object where a scalar was expected, or vice versa), or — for a non-object top-level
 record — is counted as a skipped record. A JSON object or scalar where the schema
 declares an array is counted as a skip against every table at or below that array,
-since all their rows from it are lost; a missing key, a null and an empty array hold
-no elements and count nothing. In the same way an array element that is not an object
-(a scalar, a null or a nested list) holds none of the arrays below its own, so it
-counts one skip against every emitting table below it — whether or not a table emits
-at its array, which is how a malformed driver is accounted for when only the claims
-under drivers emit — beside its own table's count where one emits there; and a present
-value that is not an object where the schema steps through an object to reach an array
-(`cover` in `$[:].cover.vehicles[:]`) counts one skip against every table at or below
-that array. Where a JSON key holds a list in some records and one
+since all their rows from it are lost; a missing key, a null, an empty string and an
+empty array hold no elements and count nothing. A null or an empty string where an
+object is expected holds nothing either: as an element of an object table's array, or
+as the object on the way to an array (`cover` in `$[:].cover.vehicles[:]`), it is no
+row and no skip, for that table and every table below. That is how XML's empty
+element (`<drivers/>`, which arrives as an empty string) and JSON's null are read, and
+a scalar child table keeps such an element as its null or empty value. Any other array
+element that is not an object (a scalar or a nested list) holds none of the arrays
+below its own, so it counts one skip against every emitting table below it — whether
+or not a table emits at its array, which is how a malformed driver is accounted for
+when only the claims under drivers emit — beside its own table's count where one
+emits there; and any other value that is not an object where the schema steps through
+an object to reach an array counts one skip against every table at or below that
+array. Where a JSON key holds a list in some records and one
 object or scalar in others, inference keeps the child table, logs the key as mixed
 (`json_schema_mixed_shape`), and the shred counts the single values. No element
 silently disappears.
@@ -182,7 +188,10 @@ parsed — the exact hidden mapping this rule forbids — and ASCII lets the
 frontend mirror the rule exactly instead of approximating Unicode
 `str.isidentifier()`. Each table also carries a non-empty path,
 unique column names, known column types, and an optional row-ID column that
-must name one of its own columns. When present, `emit` and `selected` are
+must name one of its own columns. A `date` column may set `format`, the strftime
+pattern its source writes dates in (`%d/%m/%Y` for a day-first feed); without one
+it reads ISO-8601 dates (`%Y-%m-%d`). A format on any other type, or one that is not
+a strftime pattern, is rejected. When present, `emit` and `selected` are
 actual booleans (integer/string lookalikes are rejected), and column `status`
 is exactly `Confirmed` or `Inferred`. These declared scalar types are checked
 at this boundary before the shred can coerce them by truthiness. Table paths
@@ -356,8 +365,11 @@ loaded into a `Date` column as a days-since-epoch offset. Its `Date` build also
 guesses a string's format, reading `15/01/2024` as 15 January and `01/02/2024` as
 1 February. Each would produce a column that "succeeds" but is wrong. The shred
 detects the first two shapes ahead of the strict build, and parses a date
-column's strings as ISO-8601 dates, year first (`YYYY-MM-DD`), refusing any other
-string; each raises a specific, column-named error instead.
+column's strings in the one format the column declares — ISO-8601 (`YYYY-MM-DD`)
+unless it sets another, such as `%d/%m/%Y` for a feed the analyst cannot change —
+refusing any other string; each raises a specific, column-named error instead.
+Declaring the format keeps the analyst in control of a source they do not write,
+without Haute guessing which of day and month comes first.
 
 ## Interactions
 
@@ -413,8 +425,8 @@ string; each raises a specific, column-named error instead.
   table whose rows would all silently vanish as shape mismatches.
 - A value that doesn't fit its declared column type — including the silent-coercion
   shapes Polars would otherwise accept — fails the build with an error naming the
-  offending column and declared type; a date column's string that is not an ISO-8601
-  date also names the value.
+  offending column and declared type; a date column's string that is not a date in
+  its format (ISO-8601 unless it declares one) also names the value and the format.
 - A root-level conservation violation (rows lost or duplicated without accounting)
   aborts the build with `RuntimeError` rather than publishing a table with
   unaccounted data loss.

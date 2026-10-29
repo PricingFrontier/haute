@@ -16,6 +16,7 @@ import json
 import keyword
 import re
 import unicodedata
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -970,7 +971,9 @@ def test_a_value_that_is_not_a_list_at_a_declared_array_is_counted_at_and_below_
     assert stats.skipped_rows_by_table == {"drivers": 2, "claims": 2}
 
 
-@pytest.mark.parametrize("drivers", [None, [], "absent"], ids=["null", "empty", "absent"])
+@pytest.mark.parametrize(
+    "drivers", [None, [], "", "absent"], ids=["null", "empty", "empty-string", "absent"]
+)
 def test_a_missing_null_or_empty_array_loses_nothing(drivers: object) -> None:
     stats = ShredSkipStats()
     record: dict[str, Any] = {"quote_id": 1}
@@ -981,6 +984,67 @@ def test_a_missing_null_or_empty_array_loses_nothing(drivers: object) -> None:
 
     assert buffers["drivers"] == []
     assert stats.skipped_rows_by_table == {}
+
+
+@pytest.mark.parametrize("drivers_emit", [True, False], ids=["emitting", "not-emitting"])
+def test_a_null_or_empty_string_holds_nothing_where_an_object_or_array_is_expected(
+    drivers_emit: bool,
+) -> None:
+    """XML makes an empty element (``<drivers/>``) an empty string: neither it nor a
+    null is data a table could lose, as an array, an element or an object."""
+    v2 = _drivers_and_claims_v2()
+    v2["tables"][1]["emit"] = drivers_emit
+    stats = ShredSkipStats()
+    records = [
+        {"quote_id": 1, "drivers": [None, "", {"age": 30, "claims": [None, "", {"amount": 5}]}]},
+        {"quote_id": 2, "drivers": ""},
+        {"quote_id": 3, "drivers": [{"age": 40, "claims": ""}]},
+    ]
+
+    buffers = shred_to_buffers(records, v2, stats=stats)
+
+    assert buffers["claims"] == [{"amount": 5}]
+    if drivers_emit:
+        assert buffers["drivers"] == [{"age": 30}, {"age": 40}]
+    assert stats.skipped_rows_by_table == {}
+    assert shred_request(records, v2)["claims"]["amount"].to_list() == [5]
+
+
+def _dated_v2(column: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": "quotes",
+                "emit": True,
+                "columns": [{"name": "start", "path": "$[:].start", "selected": True, **column}],
+            }
+        ]
+    }
+
+
+def test_a_date_column_reads_dates_in_the_format_it_declares() -> None:
+    v2 = _dated_v2({"type": "date", "format": "%d/%m/%Y"})
+
+    frame = shred_request([{"start": "15/01/2024"}, {"start": "01/02/2024"}, {}], v2)["quotes"]
+
+    assert frame["start"].to_list() == [date(2024, 1, 15), date(2024, 2, 1), None]
+
+
+@pytest.mark.parametrize(
+    ("column", "message"),
+    [
+        ({"type": "str", "format": "%d/%m/%Y"}, "only a date column takes a format"),
+        ({"type": "date", "format": "dd/mm/yyyy"}, "must be a strftime pattern"),
+        ({"type": "date", "format": 5}, "must be a strftime pattern"),
+    ],
+    ids=["not-a-date-column", "no-directive", "not-a-string"],
+)
+def test_a_date_format_is_a_strftime_pattern_on_a_date_column(
+    column: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(ApiInputSchemaError, match=message):
+        validate_v2_schema(_dated_v2(column))
 
 
 def _tags_v2() -> dict[str, Any]:
@@ -1019,7 +1083,7 @@ def _tags_v2() -> dict[str, Any]:
         (
             _drivers_and_claims_v2,
             True,
-            {"drivers": [None]},
+            {"drivers": ["x"]},
             "$[:].drivers[:]",
             "an object",
             "drivers",
@@ -1041,7 +1105,7 @@ def _tags_v2() -> dict[str, Any]:
             "claims",
         ),
     ],
-    ids=["scalar-table", "array", "element", "null-element", "ancestor", "below-ancestor"],
+    ids=["scalar-table", "array", "element", "string-element", "ancestor", "below-ancestor"],
 )
 def test_a_served_request_is_refused_at_its_first_misshapen_value(
     v2: Any, drivers_emit: bool, quote: dict[str, Any], where: str, expected: str, table: str
@@ -1067,8 +1131,8 @@ def test_a_served_request_is_refused_at_its_first_misshapen_value(
 
 @pytest.mark.parametrize(
     "element",
-    [5, None, [{"age": 50, "claims": [{"amount": 9}]}]],
-    ids=["scalar", "null", "nested-list"],
+    [5, "x", [{"age": 50, "claims": [{"amount": 9}]}]],
+    ids=["scalar", "string", "nested-list"],
 )
 @pytest.mark.parametrize("drivers_emit", [True, False], ids=["emitting", "not-emitting"])
 def test_an_element_that_is_not_an_object_counts_against_every_table_below_it(
@@ -1126,12 +1190,13 @@ def test_a_value_that_is_not_an_object_on_the_way_to_an_array_counts_against_the
         {"quote_id": 2, "cover": [{"vehicles": [{"make": "b"}]}]},
         {"quote_id": 3, "cover": "x"},
         {"quote_id": 4, "cover": None},
-        {"quote_id": 5},
+        {"quote_id": 5, "cover": ""},
+        {"quote_id": 6},
     ]
 
     buffers = shred_to_buffers(records, v2, stats=stats)
 
-    assert [row["quote_id"] for row in buffers["quotes"]] == [1, 2, 3, 4, 5]
+    assert [row["quote_id"] for row in buffers["quotes"]] == [1, 2, 3, 4, 5, 6]
     assert buffers["vehicles"] == [{"make": "a"}]
     assert stats.skipped_rows_by_table == {"vehicles": 2}
     with pytest.raises(

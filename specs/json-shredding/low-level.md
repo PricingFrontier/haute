@@ -41,7 +41,8 @@ Submodel graph expansion and boundary rewiring are owned by
 **`_api_input_schema.py`**
 
 - `ColumnV2` and `TableV2` are total-false `TypedDict`s for
-  the wire/sidecar shape. `ColumnType` is exactly `int|float|str|bool|date`;
+  the wire/sidecar shape; a `date` column's optional `format` is its strftime
+  pattern (ISO `%Y-%m-%d` when absent). `ColumnType` is exactly `int|float|str|bool|date`;
   `ColumnStatus` is exactly `Confirmed|Inferred`; optional `emit` and
   `selected` fields, when present, are exact booleans rather than truthy
   lookalikes;
@@ -152,7 +153,8 @@ Submodel graph expansion and boundary rewiring are owned by
 then validates each table's label/path/columns, unique raw and sanitised
 labels, unique column names, supported column type/status/levels shapes,
 exact-boolean `emit`/`selected` values when present, ancestor-or-own column
-paths, and `row_id_column`. Scalar-shape failures name the exact
+paths, a `format` only on a `date` column and only as a string holding a `%`
+directive, and `row_id_column`. Scalar-shape failures name the exact
 `tables[i]...` field path and happen before any truthiness consumer.
 Labels must additionally be ASCII-only
 Python identifiers and not hard keywords — `label.isascii() and
@@ -287,15 +289,20 @@ v2 config and returns the source file (resolved) with its emitting tables in
 schema order. Each table's store identity (`haute._source_cache.SourceCacheIdentity`,
 provider `api_input`) has the descriptor
 `{path: <resolved source file>, table: {path: <table path>, columns: [[name,
-column path, type], ...selected columns in config order]}, shred_version: 2}`.
+column path, type], ...selected columns in config order]}, shred_version: 3}`, a
+date column that sets a `format` appending it to its entry, so a changed format is
+a new table.
 Sibling tables and the port label are not part of it: editing one table moves only
 that table's identity, and two tables with identical specifications share one.
 `group_digest` hashes the source path with the node's distinct table digests and
 keys node-level work (single-flight, route jobs). `shred_version`
 (`SHRED_SEMANTICS_VERSION`) is raised whenever the walk or the frame it writes
-changes, so older generations stop matching. Version 2 is the walk that reads XML's
-single elements at a declared array as one-element lists and counts a skip for every
-table at or below a non-list there.
+changes, so older generations stop matching. Version 2 read XML's single elements
+at a declared array as one-element lists and counted a skip for every table at or
+below a non-list there. Version 3 also holds a null or an empty string as absent
+wherever an object or an array is expected, counts the misshapen elements and object
+steps above an emitting table, and reads date columns in their declared format (ISO
+unless set) rather than by Polars' format guess.
 
 **Freshness** — `api_input_source_signature(path)` is the table generations'
 `source_signature`: `xxh64:<digest>:<size>` from the shared
@@ -438,16 +445,19 @@ the skip/conservation accounting.
 4. Walk: `_emit_at(pos, record, ancestors)` emits a row into every table registered
    at `pos` (skipping — and counting — a shape-mismatched record for that table),
    then descends into each child array via `_walk_array`, which iterates the array
-   and recurses into `_emit_at` per element (a `None` element is a real row for a
-   scalar table, a counted skip for an object table; a nested list is a counted
-   shape mismatch, never fabricated as a null scalar row). A missing key or a null
-   at the array position yields nothing. Any other value that is not a list there
-   counts one row skip against every emitting table at or below the position
-   (`labels_at_or_below`). An element that is not an object (scalar, null or nested
-   list) also counts one skip against every emitting table strictly below its
-   position (`labels_below`), whether or not a table is registered there, since it
-   holds none of their arrays; and while descending, a present object hop whose value
-   is not an object counts one skip against every table at or below the child array.
+   and recurses into `_emit_at` per element. `_holds_nothing` names the absent
+   values: a null, and an empty string, which is what XML makes of an empty element.
+   An absent element is a real row for a scalar table (its `$value` is that null or
+   empty value) and no row and no skip for an object table or any table below; a
+   nested list is a counted shape mismatch, never fabricated as a null scalar row. A
+   missing key or an absent value at the array position yields nothing. Any other
+   value that is not a list there counts one row skip against every emitting table
+   at or below the position (`labels_at_or_below`). Any other element that is not an
+   object (a scalar or a nested list) also counts one skip against every emitting
+   table strictly below its position (`labels_below`), whether or not a table is
+   registered there, since it holds none of their arrays; and while descending, an
+   object step whose value is neither an object nor absent counts one skip against
+   every table at or below the child array.
    Each count carries a `_RowSkip` (label, record index, place rendered by
    `make_table_path`, and the expected `an object`/`a scalar`/`an array`) to the
    optional `_on_row_skip`; `shred_request` passes one that raises
@@ -756,9 +766,10 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms. A set
   `str` by an earlier `[]`. A null-only array (`[null]`) is no evidence either: it
   seeds `None` like `[]` and never widens an already-typed level, so `[1, 2]` then
   `[null]` keeps `int`.
-- **A `None` array element** is a legitimate row for a scalar child table (its
-  `$value` resolves to `None`) but a counted shape-mismatch skip for an object
-  table.
+- **A null or empty-string array element** is a legitimate row for a scalar child
+  table (its `$value` resolves to it) and absent for an object table and the
+  tables below it: no row and no skip, so an XML feed's empty element or a JSON
+  null for "none" never refuses a served request.
 - **Conservation is asserted, not assumed**: every shred (a table build or the
   standalone path) cross-checks `emitted + skipped == records_read` for every
   emit-true root table and raises `RuntimeError` on any discrepancy — a shred bug
@@ -769,9 +780,12 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms. A set
   reinterprets as a days-since-epoch offset for the second) — both checked
   explicitly in `_rows_to_frame` before the Polars build, once per column from the
   set of value types it holds. A date column is built as strings and parsed with
-  `str.to_date("%Y-%m-%d")` (`_iso_dates`), never by Polars' format-guessing `Date`
-  build; a string that does not parse (`15/01/2024`, `2024-02-30`) raises
-  `ApiInputSchemaError` with `column`, `declared_type` and `value`.
+  `str.to_date` in its declared `format` (`_dates`; `_EmittingTableSpec.date_formats`
+  carries each set format, ISO `%Y-%m-%d` otherwise), never by Polars'
+  format-guessing `Date` build; a string that does not parse in that format
+  (`15/01/2024` under ISO, `2024-02-30`) raises `ApiInputSchemaError` with `column`,
+  `declared_type`, `format` and `value`. A pattern that reads no date leaves every
+  value unparsed and so is refused the same way.
 - **Table freshness remains content-authoritative.** The source file's complete
   content hash is reused only behind its freshness token: a native revision
   comprising file identity, length, last-write value, and an
@@ -876,16 +890,20 @@ Shred / inference / table snapshots (the `_json_shred/` package):
   a leaf that is also another column's prefix, ancestor and `$value` sources,
   string coercion, and the first crossing column in declared order); an object and
   a scalar where an array is declared each count one skip in that table and in the
-  table below it, while a missing, null or empty array counts nothing; a scalar, null
-  or nested-list driver counts one skip in the claims table below it whether or not
-  the drivers table emits, and a list or scalar where `cover` is an object on the way
-  to `$[:].cover.vehicles[:]` counts one skip there and refuses `shred_request`
-  naming the quote and place.
+  table below it, while a missing, null, empty-string or empty array counts nothing;
+  a null or empty-string driver, claim or `cover` is no row and no skip, emitting or
+  not, and `shred_request` prices it; a scalar, string or nested-list driver counts
+  one skip in the claims table below it whether or not the drivers table emits, and
+  a list or scalar where `cover` is an object on the way to
+  `$[:].cover.vehicles[:]` counts one skip there and refuses `shred_request` naming
+  the quote and place; a date column reads `15/01/2024` under `%d/%m/%Y`, and a
+  `format` on a non-date column or without a `%` directive is a schema error.
 - `tests/test_deploy_quote_input_tables.py` — the deployed strict boundary through a
   real `QuoteRequest` and `score_graph`: a quote that is not an object, an element or
-  array of the wrong shape, and a scalar, null or nested-list driver beside a valid
+  array of the wrong shape, and a scalar, string or nested-list driver beside a valid
   sibling (with and without an emitting drivers table) refuse naming the quote, the
-  place and the table; omitted, null and empty arrays still price.
+  place and the table; omitted, null, empty-string and empty arrays, and null or
+  empty drivers and claims, still price.
 - `tests/test_v2_object_nesting_inference.py` — the 2026-06-17 object-nesting
   transparency ruling, end to end through inference/shred/grammar agreement; a key
   held as a list and as one object (with a nested array and a null-only field) or
@@ -896,7 +914,8 @@ Shred / inference / table snapshots (the `_json_shred/` package):
   build/read values, and fail-loud rejection of DTD/entity declarations; a single
   `<driver>` beside repeated ones infers one child table and keeps its row, a later
   file of single elements keeps its rows under that schema while the same tag under
-  another parent does not join the table, and single scalar elements join their list.
+  another parent does not join the table, and single scalar elements join their list;
+  an empty element (`<driver/>`), alone or among repeated ones, is no row and no skip.
 - `tests/test_json_shred_parallel.py` — byte-range splitting (exact tiling, no
   record split, order preserved) and serial-equivalence of parallel inference
   and build: identical inferred schema ordering, late-field discovery and type
@@ -926,7 +945,8 @@ Shred / inference / table snapshots (the `_json_shred/` package):
   inferred table-label derivation, symmetric collision qualification,
   deterministic suffixing, case-only collisions, and validation closure.
 - `tests/test_load_v2_api_source.py` — direct coverage of the shared runtime entry
-  point: emit checks, `port_columns` projection rules, store-leased table reads
+  point: emit checks, `port_columns` projection rules (a projected date column keeps
+  its declared format), store-leased table reads
   (a missing table is `input_snapshot_missing`; a built table reads without its
   source; under the schema tier recorder a missing table resolves its declared
   schema without a request file, is recorded with its declared column count, and
@@ -946,7 +966,8 @@ Shred / inference / table snapshots (the `_json_shred/` package):
   (`a_items`/`b_items`), the numeric-suffix backstop, and the closure
   property that inferred output passes `validate_v2_schema` unchanged.
 - `tests/test_api_input_table_snapshots.py` — table identities (one per emitting
-  table, label- and sibling-independent), the source signature and table
+  table, label- and sibling-independent, a date format part of its column's entry),
+  the source signature and table
   freshness, the one-shred build (full width, shared identities built once, exact
   plans, missing and changing sources, cancellation, skip reporting, serial/parallel
   dispatch, scratch cleanup), store-leased reads without the source, the supervised

@@ -294,15 +294,19 @@ def test_claims_under_drivers_no_table_emits_price_every_driver(sample):
         {"quote_id": 3, "drivers": []},
         {"quote_id": 4, "drivers": None},
         {"quote_id": 5, "drivers": [{"claims": []}, {"claims": None}, {}, _claim(20)]},
+        # Nulls and empty strings (an empty XML element) hold nothing.
+        {"quote_id": 6, "drivers": [None, "", {"claims": [None, "", {"amount": 30}]}]},
+        {"quote_id": 7, "drivers": ""},
     ]
 
     assert _claims_total(sample, quotes).to_dicts() == [
         {"quote_id": 1, "total": 150},
         {"quote_id": 5, "total": 20},
+        {"quote_id": 6, "total": 30},
     ]
 
 
-@pytest.mark.parametrize("driver", [7, None, [_claim(50)]], ids=["scalar", "null", "nested-list"])
+@pytest.mark.parametrize("driver", [7, "x", [_claim(50)]], ids=["scalar", "string", "nested-list"])
 @pytest.mark.parametrize("drivers_emit", [False, True], ids=["not-emitting", "emitting"])
 def test_a_driver_that_is_not_an_object_refuses_the_request(sample, driver, drivers_emit):
     # Before, the valid sibling's claims priced at 100 and the malformed driver vanished.

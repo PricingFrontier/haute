@@ -128,7 +128,7 @@ def test_each_emitting_table_is_one_identity_named_by_its_own_spec(tmp_path: Pat
             "path": "$[:].drivers[:]",
             "columns": [["id", "$[:].id", "int"], ["age", "$[:].drivers[:].age", "int"]],
         },
-        "shred_version": 2,
+        "shred_version": 3,
     }
     with pytest.raises(KeyError, match="unused"):
         source.table("unused")
@@ -148,6 +148,31 @@ def test_editing_one_table_moves_only_its_identity(tmp_path: Path) -> None:
     assert renamed.table("policies").identity == before.table("quotes").identity
     assert after.group_digest != before.group_digest
     assert renamed.group_digest == before.group_digest
+
+
+def test_a_date_format_is_part_of_its_tables_identity(tmp_path: Path) -> None:
+    # A changed format reads the source's dates differently, so it is a new table.
+    data = _write_source(tmp_path / "quotes.jsonl")
+    config = _config(data)
+    config["tables"][0]["columns"].append(
+        {"name": "start", "path": "$[:].start", "type": "date", "selected": True}
+    )
+    iso = api_input_snapshot_source(config, data).table("quotes").identity
+    config["tables"][0]["columns"][-1]["format"] = "%d/%m/%Y"
+    day_first = api_input_snapshot_source(config, data).table("quotes").identity
+
+    assert day_first != iso
+    assert dict(day_first.descriptor)["table"]["columns"][-1] == [  # type: ignore[index]
+        "start",
+        "$[:].start",
+        "date",
+        "%d/%m/%Y",
+    ]
+    assert dict(iso.descriptor)["table"]["columns"][-1] == [  # type: ignore[index]
+        "start",
+        "$[:].start",
+        "date",
+    ]
 
 
 def test_the_group_digest_is_the_path_and_the_distinct_table_digests(tmp_path: Path) -> None:

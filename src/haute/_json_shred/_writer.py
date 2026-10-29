@@ -246,7 +246,7 @@ class _BoundedParquetRowGroupWriter:
                 rows = self.buffers[spec.label]
                 if not rows:
                     continue
-                frame = _shred._rows_to_frame(rows, spec.leaf_specs)
+                frame = _shred._rows_to_frame(rows, spec.leaf_specs, dict(spec.date_formats))
                 self.writers[spec.label].write_table(frame.to_arrow())
                 rows.clear()
         self.buffered_rows = 0
