@@ -301,10 +301,42 @@ def _no_mlflow_telemetry(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MLFLOW_DISABLE_TELEMETRY", "true")
 
 
+# The CI lane that runs a route slice the way production runs it sets this.
+_LANE_INTERACTIVE_MODE_ENV = "HAUTE_TEST_INTERACTIVE_EXECUTION_MODE"
+
+
 @pytest.fixture(autouse=True)
-def _interactive_execution_test_mode(monkeypatch: pytest.MonkeyPatch):
-    """Keep legacy in-process seams explicit; isolation tests opt into processes."""
-    monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "thread")
+def _interactive_execution_test_mode(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """Run previews, traces and estimates in threads unless a lane asks for processes.
+
+    Production runs them in warm worker processes (``process``, the default);
+    the suite defaults to ``thread`` because most tests patch in-process seams
+    a worker process would not see, and the isolation tests opt into processes
+    themselves. ``HAUTE_TEST_INTERACTIVE_EXECUTION_MODE=process`` keeps
+    production's mode for a whole run (the CI process-mode lane): one warm
+    worker per test process, shut down after each test so every test starts it
+    with its own environment. A test marked ``in_process`` patches such a seam
+    and stays in threads.
+    """
+    from haute._interactive_workers import shutdown_interactive_worker_pool
+
+    mode = os.environ.get(_LANE_INTERACTIVE_MODE_ENV, "thread")
+    if mode not in {"thread", "process"}:
+        raise RuntimeError(f"{_LANE_INTERACTIVE_MODE_ENV} must be 'thread' or 'process'")
+    if request.node.get_closest_marker("in_process") is not None:
+        mode = "thread"
+    monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", mode)
+    if mode == "thread":
+        yield
+        return
+    monkeypatch.setenv("HAUTE_INTERACTIVE_WORKER_COUNT", "1")
+    shutdown_interactive_worker_pool()
+    try:
+        yield
+    finally:
+        shutdown_interactive_worker_pool()
 
 
 @pytest.fixture(autouse=True)

@@ -33,7 +33,13 @@ export default defineConfig({
   forbidOnly: true,
   workers: 1,
   retries: process.env.CI ? 2 : 0,
-  reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : "list",
+  // A test that passes only on a retry fails a push to main (the CI workflow
+  // sets this); on a pull request scripts/report_flaky_browser_tests.py names it
+  // in the job summary from the JSON report.
+  failOnFlakyTests: process.env.HAUTE_E2E_FAIL_ON_FLAKY === "1",
+  reporter: process.env.CI
+    ? [["list"], ["html", { open: "never" }], ["json", { outputFile: "test-results/report.json" }]]
+    : "list",
   use: {
     baseURL: `http://127.0.0.1:${frontendPort}`,
     trace: "on-first-retry",

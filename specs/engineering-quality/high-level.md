@@ -123,6 +123,14 @@ Out of scope:
     declared supplemental documents;
   - the property manifest check (`scripts/property_test_files.txt`): the
     scheduled exploration lane runs only the modules it lists.
+- Production runs previews, traces, free-code steps and the optimiser estimate
+  in warm worker processes; the suite runs them in threads, because most tests
+  patch in-process seams a worker process would not see. A CI lane runs a route
+  slice in production's process mode, so a defect that shows only across the
+  process boundary is red; a test in the slice that patches a seam says so with
+  the `in_process` marker.
+- Fixture git commands raise at the call with git's error, so a failed setup
+  step is not first seen as an unrelated assertion.
 - Python 3.14 is a non-blocking forward probe. A failure in that lane reports
   compatibility information but does not become a required green result.
 - Pre-commit runs Ruff fix/format and repository-local mypy/frontend
@@ -170,7 +178,8 @@ Out of scope:
 - Frontend commands use TypeScript build-mode type checking, ESLint, Vitest,
   critical coverage validation, and Playwright. Browser E2E serialises workers,
   retries only in CI, and starts the repository's E2E server with readiness
-  checking. Vitest's blocking global coverage floors are 80% statements, 75%
+  checking. A browser test that passes only on a retry fails a push to `main`
+  and is named in a pull request's job summary. Vitest's blocking global coverage floors are 80% statements, 75%
   branches, 80% functions, and 80% lines, followed by the configured
   source-specific critical-coverage ratchet. ESLint treats useless assignments,
   discarded caught-error context, unsafe hook refs, state updates in effects, and

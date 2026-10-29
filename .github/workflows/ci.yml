@@ -345,6 +345,39 @@ jobs:
           -m "not perf and not meta"
           --shard=${{ matrix.shard }}/3
 
+  # Production runs previews, traces, free-code steps and the optimiser estimate
+  # in warm worker processes; the rest of the suite runs them in threads so
+  # tests can patch in-process seams (tests/conftest.py). This lane runs a route
+  # slice the way production does, so a defect that shows only across the
+  # process boundary (result serialisation, worker preload, environment
+  # propagation) is red here. A test in the slice that patches an in-process
+  # seam carries the `in_process` marker and stays in threads.
+  backend-process-mode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.8.22"
+          python-version: "3.12"
+
+      - run: uv sync --group dev --locked
+
+      - name: Route slice in process mode (preview, trace, free-code steps, optimiser estimate)
+        env:
+          HAUTE_TEST_INTERACTIVE_EXECUTION_MODE: process
+        run: >
+          uv run pytest
+          tests/test_interactive_route_isolation.py
+          tests/test_server.py
+          tests/test_trace_api.py
+          tests/test_trace_multi_frame.py
+          tests/test_adversarial_inputs.py
+          tests/test_security_gaps.py
+          -q -n 4 --timeout=120 --timeout-method=signal
+
   # Forward-looking, NON-BLOCKING probe: does haute install + its core test
   # subset pass on Python 3.14? `continue-on-error` keeps it off the required
   # set; it fails fast at dependency sync (catboost is the likely cp314-wheel
@@ -692,6 +725,18 @@ jobs:
 
       - run: ./node_modules/.bin/playwright install --with-deps chromium firefox
       - run: npm run test:e2e -- --shard=${{ matrix.shard }}/2
+        env:
+          # A browser test that passes only on a retry fails a push to main;
+          # on a pull request the step below names it in the job summary.
+          HAUTE_E2E_FAIL_ON_FLAKY: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && '1' || '0' }}
+
+      - name: Name the flaky browser tests in the job summary
+        if: ${{ !cancelled() }}
+        working-directory: .
+        run: >
+          uv run python scripts/report_flaky_browser_tests.py
+          --report frontend/test-results/report.json
+          --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Playwright artifacts
         if: always()

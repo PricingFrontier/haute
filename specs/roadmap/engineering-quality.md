@@ -10,7 +10,7 @@ specified in
 [23 September 2026 codebase review](codebase-review-2026-09-23.md). The
 `ENGQ-CI` packages come from the 30 September 2026 CI duration study: per-test
 timings from diagnostic PR #279 (run 36769548458) and the sharded lanes of
-PR #280. `ENGQ-CI06` and `ENGQ-R08` to `ENGQ-R11` come from the
+PR #280. `ENGQ-CI06` and `ENGQ-R09` to `ENGQ-R11` come from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md), which also added
 evidence to `ENGQ-R01` and `ENGQ-R05`.
 
@@ -23,7 +23,6 @@ evidence to `ENGQ-R01` and `ENGQ-R05`.
 | ENGQ-R01 | Planned | P3 | Production code that nothing calls, or only tests call, is removed. |
 | ENGQ-R05 | Planned | P3 | Tests are organised by component and behaviour, not by coverage campaign. |
 | ENGQ-CI06 | Planned | P3 | Haute's own workflows pin every action by commit. |
-| ENGQ-R08 | Planned | P2 | The suite exercises what production runs: a representative route slice under the process execution mode, the production preparation-join bound, a flaky browser test made visible, and fixture git commands that fail loudly. |
 | ENGQ-R09 | Planned | P3 | The write-sandbox ratchet moves: the observe census is recorded and may not grow, modules with an empty census become strict, the system temp directory is a stated gap or no longer allowed, and the lint allowlist is keyed by site. |
 | ENGQ-R10 | Planned | P3 | Repository-health hygiene: file-reading tests carry the `meta` marker, the specification's bundle and lint numbers are read from their files, `mypy` covers `scripts/`, the package smoke derives its version prefixes, the Windows preflight is held in step, the dependency alarm fires on schedule only, and the e2e server stops its Node child on Windows. |
 | ENGQ-R11 | Decision | P2 | Mutation witnesses cover the rating step and deploy scoring, the modules whose silent failure changes a price, or the specification says why the three JSON-boundary targets suffice. |
@@ -150,7 +149,10 @@ editors), 33 unused exports, 91 unused exported types and an unlisted
 production caller left. The 25 October 2026 review added two parameters that are
 accepted and never read, `_resolve_node_config(n_params=...)` and
 `render_ave_feature_svg(is_categorical=...)`, which every caller computes and
-passes.
+passes. `TrainService._join_preparation` says shutdown uses it, but only tests
+call it; its 10 s default exists for them alone, and an autouse fixture
+(`tests/conftest.py::_patient_preparation_join`) rewrites that default to
+120 s for every test.
 
 **Plan:** Delete the unreferenced code. For test-only functions, either move
 the tests to the production entry point the function was meant to serve or
@@ -183,7 +185,9 @@ is gone; tests import the owning modules.
 `frontend/src/panels/editors/rating/index.ts`;
 `frontend/src/api/client.ts::checkHauteSession`;
 `src/haute/_config_builder.py::_resolve_node_config`;
-`src/haute/modelling/_charts.py::render_ave_feature_svg`.
+`src/haute/modelling/_charts.py::render_ave_feature_svg`;
+`src/haute/routes/_training_lifecycle.py::TrainService._join_preparation`;
+`tests/conftest.py::_patient_preparation_join`.
 
 ### ENGQ-R05 — Organise tests by behaviour
 **Why:** Backend tests total 421,000 lines, 2.3 times the source they test;
@@ -232,38 +236,6 @@ lint step fails on a tag pin.
 
 **Evidence:** `.github/workflows/ci.yml`; `.github/workflows/release.yml`;
 `.github/workflows/container-smoke.yml`.
-
-### ENGQ-R08 — The suite exercises what production runs
-**Why:** An autouse fixture runs every preview, trace and estimate in `thread` mode while
-production defaults to `process`; only 21 sites in 11 modules opt back in, so the pool's
-result serialisation, worker preload and environment propagation are exercised by a few
-dozen tests and a route defect that shows only across the process boundary passes the
-route suite; the engineering-quality specification does not mention the fixture. A second
-autouse fixture rewrites the training service's preparation-join bound from 10 s to 120 s
-for every test, so the production bound is never exercised. Playwright retries twice in CI
-and nothing reports a test that passed on its third attempt; `failOnFlakyTests` is
-available and unset. The test helper `git_run` runs git without `check=True`, so a failed
-`init` or `commit` in fixture setup surfaces later as an unrelated assertion. From the
-[25 October 2026 codebase review](codebase-review-2026-10-25.md) (ENG-5, ENG-6, ENG-10,
-ENG-16).
-
-**Plan:** Document the thread-mode fixture in the specification and run one
-representative route slice (preview, trace, node data, optimiser estimate) under `process`
-mode in a lane, or make the fixture opt-out per module. Keep the production join bound and
-widen it only for the slow training-lifecycle tests, with one test pinning the default. On
-push to `main` set `failOnFlakyTests`, and on pull requests write the flaky titles to the
-job summary. `git_run` raises with stderr on failure.
-
-**Acceptance:** The route slice passes under `process` mode in CI; a test pinning the 10 s
-default exists; a browser test that passes only on retry is red on `main` and named in
-the pull-request summary; a failing fixture git command raises at the call.
-
-**Dependencies:** None.
-
-**Evidence:** `tests/conftest.py::_interactive_execution_test_mode`,
-`src/haute/_interactive_workers.py::resolve_interactive_execution_mode`,
-`tests/conftest.py::_patient_preparation_join`, `frontend/playwright.config.ts`,
-`tests/_git_helpers.py::git_run`, `specs/engineering-quality/low-level.md`.
 
 ### ENGQ-R09 — The write-sandbox ratchet moves
 **Why:** Strict interception covers 4 of 603 test modules: `STRICT_FILES` has had no

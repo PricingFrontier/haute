@@ -276,6 +276,7 @@ markers = [
     "perf_evidence: perf measurements that inform a decision and assert none of their figures; the Performance workflow runs them, the pull-request perf job does not",
     "sandbox_strict: opts a test into the strict write-sandbox (see tests/_write_sandbox.py)",
     "meta: repo-health checks that read files rather than exercise behaviour, so their result cannot vary by interpreter; deselected from the compatibility lanes (see .github/workflows/ci.yml)",
+    "in_process: patches an in-process seam a worker process would not see, so previews, traces and estimates stay in threads even in the process-mode lane (see tests/conftest.py)",
 ]
 filterwarnings = [
     "error::RuntimeWarning",

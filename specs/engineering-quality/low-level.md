@@ -11,7 +11,7 @@
 | `specs/corpus.toml` | Versioned declaration for supported component documents outside the conventional high/low pair; records a closed document kind and exact required headings. |
 | `specs/ownership.toml` | Machine-checked ledger for files shared by multiple Module maps or explicit cross-component prose ownership claims; records the single primary owner and all consumer components. |
 | `.pre-commit-config.yaml` | Runs Ruff fix/format plus local mypy and frontend typecheck/lint hooks on relevant source changes. |
-| `.github/workflows/ci.yml` | Defines PR/main CI jobs: canary, install/package smoke, dependency floors, static/type checks, duration-balanced coverage shards and their gate (which runs whatever the shards' result and fails explicitly when one did not pass), duration-balanced compatibility shards, the 3.14 probe, performance, the core-only and extras-installed optional-dependency lanes, platform, the strict documentation build (`docs-build`), mutation-config, frontend static and test lanes, and two browser E2E shards. Branch protection, outside this repository workflow file, determines which checks are required for merge. |
+| `.github/workflows/ci.yml` | Defines PR/main CI jobs: canary, install/package smoke, dependency floors, static/type checks, duration-balanced coverage shards and their gate (which runs whatever the shards' result and fails explicitly when one did not pass), duration-balanced compatibility shards, the process-mode route slice (`backend-process-mode`), the 3.14 probe, performance, the core-only and extras-installed optional-dependency lanes, platform, the strict documentation build (`docs-build`), mutation-config, frontend static and test lanes, and two browser E2E shards. Branch protection, outside this repository workflow file, determines which checks are required for merge. |
 | `.github/workflows/dependencies.yml` | Runs the weekly/manual fresh unlocked-resolve monitor plus the locked Python/frontend advisory gate, the latter daily as well as on manual dispatch, main lock-policy changes, and relevant PRs; retains failed reports and raises/updates dependency-watch issues on every non-pull-request failure, and closes a lane's issue when that lane next passes on `main` (`locked-advisory-all-clear` for the audit), since both lanes are deterministic for a given index or advisory feed. |
 | `.github/workflows/frontend-shuffle.yml` | Runs the scheduled/manual shuffled Vitest monitor and raises/updates shuffle-watch issues with its seed on eligible failures. A green night never closes one: one passing seed does not prove an order dependence gone, so the fix's author closes it. |
 | `.github/workflows/property-exploration.yml` | Runs the weekly/manual wide-budget Hypothesis lane (HAUTE_PROPERTY_EXAMPLES over `scripts/property_test_files.txt`, with the warnings plugin loaded so a RuntimeWarning fails it) and raises/updates property-watch issues on eligible failures. A green week never closes one: the fix pins the counterexample as an `@example`, and its author closes it. |
@@ -83,6 +83,7 @@
 | `scripts/lint_pins.py` | Enforces the asymmetric dependency-pinning doctrine against the declaration layer: published dependencies need an explicit floor and cap and may not be exact-pinned or prefix-matched, tooling dependencies must be exact with a concrete version, and executable surfaces may not invoke `npx`. |
 | `scripts/preflight.sh` | POSIX preflight entry point for selected backend/frontend/init-smoke checks. |
 | `scripts/regen_sanitize_parity_fixture.py` | Regenerates the retained backend compatibility golden when deliberately requested. |
+| `scripts/report_flaky_browser_tests.py` | Reads Playwright's JSON report and names each browser test that passed only on a retry, in the job summary and as a warning annotation; a missing report fails rather than reporting nothing. |
 | `scripts/run_frontend_e2e_server.py` | Generates the isolated browser fixture, then starts and readiness-signals its dedicated-port backend and Vite proxy for Playwright. |
 | `scripts/run_mutation_pytest.py` | Runs a mutation witness command from a fresh synthetic project while retaining repository pytest configuration and placing pytest inputs in a sibling temporary boundary, so relative Haute runtime state cannot leak between mutants or alter path-confinement semantics. |
 | `scripts/run_mutation_suite.py` | Implements mutation target selection, work planning, shard execution, merge, and survival-threshold reporting. |
@@ -186,7 +187,29 @@
 - **Playwright configuration** uses a single worker and `fullyParallel: false`;
   Chromium is the normal project and Firefox is restricted to `@smoke` tests.
   CI retries twice, recording traces on first retry and screenshots/video on
-  failure.
+  failure, and writes a JSON report (`test-results/report.json`) beside the list
+  and HTML ones. `failOnFlakyTests` holds when `HAUTE_E2E_FAIL_ON_FLAKY=1`, which
+  the CI workflow sets on a push to `main` only, so there a test that passed
+  only on a retry fails the run; on a pull request
+  `scripts/report_flaky_browser_tests.py` names each such test in the job
+  summary instead.
+- **Interactive execution mode in tests.** Production runs previews, traces,
+  free-code step resolution and the optimiser estimate in warm worker
+  processes (`process`, the default). The autouse fixture
+  `tests/conftest.py::_interactive_execution_test_mode` runs them in threads for
+  every test, because most tests patch in-process seams a worker would not
+  see; the isolation tests opt back into processes themselves.
+  `HAUTE_TEST_INTERACTIVE_EXECUTION_MODE=process` keeps production's mode for a
+  whole run, with one warm worker per test process, shut down after each test
+  so each test starts it with its own environment. The `backend-process-mode`
+  CI lane runs the route slice that way: `tests/test_interactive_route_isolation.py`,
+  `tests/test_server.py`, `tests/test_trace_api.py`,
+  `tests/test_trace_multi_frame.py`, `tests/test_adversarial_inputs.py` and
+  `tests/test_security_gaps.py`. A test marked `in_process` patches a seam and
+  stays in threads even there. An interactive worker resolves the project root
+  from its own working directory, so a test that sets the root in memory
+  without changing directory fails across the boundary for that reason;
+  carrying the project into every worker request is `PCFG-R04`'s.
 - **E2E project reset** (`frontend/e2e/projectIsolation.ts`) verifies the git toplevel,
   restores `main`, deletes other branches, version tags and the deleted branches' pins under
   `refs/haute/`, scrubs untracked files with `git clean -fdx`, and reseeds the working
@@ -206,9 +229,9 @@
   proving its API Input retains an authoritative rendered source handle.
 - **Pytest configuration** constrains collection to `tests/`, has strict
   markers/configuration/xfails, excludes `perf` by default, and recognises
-  `slow`, `perf`, `sandbox_strict`, and `meta` markers (meta-marked
-  repository-health modules are deselected from the Python compatibility
-  lanes in `.github/workflows/ci.yml`).
+  `slow`, `perf`, `sandbox_strict`, `meta`, and `in_process` markers
+  (meta-marked repository-health modules are deselected from the Python
+  compatibility lanes in `.github/workflows/ci.yml`).
 - **Test-file durations** in `scripts/test_file_durations.json` are
   `{"version": 1, "files": {"tests/<module>.py": seconds}}`: repository-relative
   POSIX module paths and finite non-negative seconds rounded to one decimal
@@ -646,6 +669,15 @@
   reload, exact named API-input `sourceHandle`, immediate drill and render of an
   API Input inside a newly created unsaved submodel, and an Edge Join retained
   and highlighted in a downstream trace. Private React state is not an oracle.
+- `tests/test_report_flaky_browser_tests.py` — flaky browser tests named with
+  their describe path and project from a Playwright JSON report, in the job
+  summary and as warnings; a run with none says so and claims nothing about
+  tests that failed outright; a missing or malformed report fails; and the CI wiring (`failOnFlakyTests` on a push to `main`, the
+  summary step after the browser run) is in place.
+- Fixture git commands go through `tests/_git_helpers.py::git_run`, which
+  raises at the call with git's stderr; `check=False` is only for a query whose
+  non-zero exit is its answer. `tests/test_git_helpers.py` runs a real failing
+  command both ways.
 - `tests/test_test_isolation.py` — test orders that once leaked state into a
   later test on the same worker, found when the CI study ran the suite under
   `--dist loadfile` and `-n 8`: each case runs its pair in one child pytest, in

@@ -284,7 +284,7 @@ def test_a_local_file_is_written_but_never_versioned(client: TestClient, project
     assert response.status_code == 200, response.text
     assert response.json()["git_sha"] is None
     assert (project / "data" / "portfolio.parquet").read_bytes() == b"rows"
-    assert git_run(project, "rev-parse", "--verify", "-q", f"{WORKING}-save") == ""
+    assert git_run(project, "rev-parse", "--verify", "-q", f"{WORKING}-save", check=False) == ""
 
 
 @pytest.mark.parametrize(
