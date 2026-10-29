@@ -55,7 +55,7 @@
 ## Key types and data structures
 
 - **`NodeSource`** (`_codegen_builders.py`) — frozen dataclass: `decorator` (the
-  registry method name, e.g. `data_input`, `polars`, `instance`), `keywords`
+  registry method name, e.g. `data_input`, `polars`, `model_score`), `keywords`
   (ordered `(name, value)` decorator keywords whose values are literals),
   `params` / `keyword_only` (`Param(name, annotation)` tuples), `returns`
   (`"pl.LazyFrame"` or `None`), `description`, and `body` (`None` for a
@@ -188,7 +188,7 @@ fresh markers.
    contract from the current config (`_derive_contract_for_codegen`) and fills
    only that contract's opaque sides from a declared `config["contract"]`
    (`Contract.fill_opaque_sides`), keeping the declaration's `inputs_by_parent`;
-   an instance, or `"declared"` generation, starts from the declaration alone. It
+   a `"declared"` generation starts from the declaration alone. It
    then compares the result with what the parser derives offline
    (`resolve_parse_time_contract`) and returns `None` — no keyword — unless the
    result has a concrete side the offline derivation leaves opaque or carries
@@ -492,7 +492,7 @@ file tree on disk.
 - `tests/test_executable_names.py` — one table-driven test of the executable-name rule (each
   reserved name, built-ins, near misses such as `Max premium`, case-only and sanitized
   collisions, a root node against a submodel child, an occurrence alias against its own child,
-  and a reserved Quote Input frame, `inputMapping` alias, instance mapping and submodel port),
+  and a reserved Quote Input frame, `inputMapping` alias and submodel port),
   and one test per entry point proving a violation reaches the user through it: save, codegen,
   the strict parse, a standalone import (with the direct `pipeline.polars(f)` form accepted and
   a node named like a preamble helper refused), execution, the assistant and the document's
@@ -529,8 +529,7 @@ than one file per module:
 - **`test_codegen.py`** — the largest suite; broad coverage of
   `graph_to_code`/`graph_to_code_multi` across every node type, param
   building, path-literal safety, live-switch/selected-columns/
-  passthrough-vs-behavioural codegen, instance-node mapping (including
-  ambiguous/missing-target error cases), submodel pipeline replacement,
+  passthrough-vs-behavioural codegen, submodel pipeline replacement,
   special-character labels, connect-call deduplication, contract-source
   collision handling, and an explicit single-file guard for `graph_to_code`.
   The input-identity scenarios live here: frame-labelled parameters for

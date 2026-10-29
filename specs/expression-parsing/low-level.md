@@ -380,8 +380,8 @@ Tests live under `tests/`, split by concern:
 - **`test_parser_project_layout.py`**, **`test_parser_internals.py`**, and
   **`test_parser_sanitize_contracts.py`** — project-root/base-directory handling, internal
   parser invariants, and sanitisation contracts.
-- **`test_parser_fail_loudly.py`** — a fail-loud sweep pinning config-path failures, stale
-  instance mapping, submodel cross-boundary handle validation, extend-path staleness, and empty
+- **`test_parser_fail_loudly.py`** — a fail-loud sweep pinning config-path failures,
+  submodel cross-boundary handle validation, extend-path staleness, and empty
   Polars code to *raise* rather than silently degrade.
 - **`test_expression_parser.py`** (~1480 lines) — the primary TDD suite: arithmetic/unary
   operator precedence, `when`/`then`/`otherwise`, horizontal functions, `cast`/`fill_null`/

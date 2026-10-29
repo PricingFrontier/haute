@@ -387,7 +387,7 @@ supplies pre-read bytes to authenticate exact caller content against concurrent 
    is its `out__<name>` or `in__<name>` handle.
    Rewrite every schema-owned incoming-frame reference from the public boundary
    name to the expanded physical name: exact selector fields,
-   `input_scenario_map` keys, instance `inputMapping` values, and every OUTPUT
+   `input_scenario_map` keys, `inputMapping` values, and every OUTPUT
    `outputMapping[].source_port`. A malformed referenced mapping fails with
    contextual `ParseError`; it is never retained as a stale logical name.
    A rename that collides on a target's input names or on an OUTPUT mapping

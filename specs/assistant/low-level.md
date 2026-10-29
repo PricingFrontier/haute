@@ -1924,8 +1924,7 @@ the turn that follows.
   `[{"id": "logic", "kind": "free_code", "code": "..."}]`.
   `edit_steps` keeps the same transitions: it only changes a list the node already
   holds, so it never switches a node between steps and code, and it is refused on a
-  code-mode node (edit its `code` instead), on a stepped-type node without a list, and on
-  an instance (edit its original instead).
+  code-mode node (edit its `code` instead) and on a stepped-type node without a list.
   After each operation's `with_config`, every key the model wrote must hold the written
   value in the materialised config (a key written as `null` must be absent; for
   `edit_steps`, `steps` must hold the edited list), and when the operation wrote `steps`

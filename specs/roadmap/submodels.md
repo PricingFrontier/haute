@@ -117,23 +117,25 @@ the code still holds node-level instances.
 2. Preview of any submodel from the canvas: one output at a time, each its
    source node and frame targeted as a qualified runtime node, as a drilled
    preview is.
-3. Reusing a node, type by type: the server transform that wraps a node in a
+3. Missing columns for instances, by public input, from schemas alone: the
+   walk's recorded schemas as SUB-R06 reads them, and the owner's frame
+   resolved without rows when the preview did not reach it. Flattening
+   carries each instance's shared bindings with the flattened graph, never in
+   node config. It applies to today's submodel instances, and the per-type
+   proof in phase 4 needs it.
+4. Reusing a node, type by type: the server transform that wraps a node in a
    one-node submodel (`POST /api/submodel/instance`) and Create Instance on
    plain nodes. A type moves to the wrap only once a one-node submodel of it
    with remapped inputs passes preview, trace, `haute run`, a standalone
    `pipeline.run()`, a codegen round trip and deploy, and the type's own job
    where it has one (training, a solve), with the multi-frame regression in
-   `tests/test_apiinput_multi_port_runtime.py`; until then the type keeps
-   today's node-level instance.
-4. Missing columns for instances, by public input, from schemas alone: the
-   walk's recorded schemas as SUB-R06 reads them, and the owner's frame
-   resolved without rows when the preview did not reach it. Flattening
-   carries each instance's shared bindings with the flattened graph, never in
-   node config.
+   `tests/test_apiinput_multi_port_runtime.py` rewritten for the one-node
+   submodel and passing in full, rows and missing-column warnings alike;
+   until then the type keeps today's node-level instance.
 5. Removal: the parser and config validation refuse node-level instances
    with the one-node submodel remediation, and the node-instance resolver,
    `build_instance_mapping`, instance codegen and their editor, assistant,
-   trace, cache and recovery paths go. A type that has not passed phase 3's
+   trace, cache and recovery paths go. A type that has not passed phase 4's
    proof by then is withdrawn from Create Instance and brought back as a
    decision. `docs/building-models/nodes/instances.md` becomes "Reusing a
    node" and `docs/building-models/nodes/submodel.md` describes an

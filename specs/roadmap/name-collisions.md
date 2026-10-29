@@ -43,7 +43,8 @@ shows the support-code collision under that frame's label field; setting an
 mapping editor; a submodel input port named like a utility helper shows it in the
 port editor. Fixing the name clears each.
 
-**Dependencies:** None.
+**Dependencies:** None. `SUB-R01` removes the instance mapping editor; if it lands
+first, that editor's case goes with it.
 
 **Evidence:** `src/haute/_executable_names.py::input_binding_violations`;
 `src/haute/_support_code_names.py::support_code_violations`;

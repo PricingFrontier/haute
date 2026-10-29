@@ -569,7 +569,7 @@ constant, and the load error once anything is read; a graph that reads none sign
 `lineage_cache_key()` signs, under the same name, the read constants of the lineage's relevant
 nodes resolved for the request's source. The reads come from
 `src/haute/_global_constants.py::graph_constant_reads`, over each node's executed
-configuration (an instance's original). Node snapshots, seed plans and data points sign the
+configuration. Node snapshots, seed plans and data points sign the
 graph fingerprint of a lineage subgraph, which carries the constants, so each signs exactly its
 lineage's reads; deploy schema keys sign them through the graph fingerprint. Runtime graph
 input, input snapshots, model contracts and graph structure exclude the class.

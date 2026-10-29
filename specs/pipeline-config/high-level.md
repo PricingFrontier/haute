@@ -428,10 +428,9 @@ transform code (execution, chunk-local classification, projection, estimation, t
 sees the same program without knowing about steps and a stale `code` in a browser
 payload is overwritten on ingress; in-process config replacement uses the validated
 `GraphNode.with_config` helper rather than an unvalidated model copy so the invariant
-also holds after assistant and submodel operations. A stepped original transform
-addresses its inputs by their current edge names and never carries `inputMapping` (a
-config with both fails loudly); an instance of a stepped transform keeps its own
-`inputMapping`, and submodel flattening rewrites the input references inside a stepped
+also holds after assistant and submodel operations. A stepped transform addresses its
+inputs by their current edge names and never carries `inputMapping` (a config with both
+fails loudly), and submodel flattening rewrites the input references inside a stepped
 transform's steps instead of recording a mapping. When a polars sidecar is referenced,
 parsing loads it, renders its steps against the function's parameter names, and
 compares the result with the code extracted from the body before the node model is

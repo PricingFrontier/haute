@@ -322,8 +322,8 @@ reconciliation rather than dropping them or committing a second mutation.
 - **`refreshPreview(node, { rereadSource })`.** The preview frame's Refresh
   (and Ctrl/Cmd+Enter) passes `rereadSource: true`; a trace's re-preview does
   not. When `refreshRereadInput` (`utils/inputSnapshotSource.ts`) names an
-  input for the target — a structured Quote Input with an emitting table, or
-  the original of an instance of one — the target's preview request first runs
+  input for the target — a structured Quote Input with an emitting table —
+  the target's preview request first runs
   `ensureInputSnapshots([input], { force: true })`, which re-reads the file and
   rebuilds every table whether or not the file changed. It runs under that
   request: the loading panel shows the Quote Input preparation messages, with
@@ -406,8 +406,8 @@ reconciliation rather than dropping them or committing a second mutation.
    rebind/prune outcome (owned by `utils/apiInputPorts.ts`). For a frame
    rename, occurrence edges only rebind their external `sourceHandle` because
    the shared definition is already keyed by public port id. Ordinary targets
-   additionally migrate `input_scenario_map` keys and instance `inputMapping`
-   entries, and a coded ordinary polars transform whose input was renamed
+   additionally migrate `input_scenario_map` keys, `inputMapping` entries and a
+   Quote Response's `outputMapping[].source_port`, and a coded ordinary polars transform whose input was renamed
    records the binding `inputMapping[<old name>] = <new name>` (identity
    entries are dropped, an emptied mapping is removed): a rename never edits
    `config.code`, so the transform's parameter names and body stay exactly
@@ -617,9 +617,7 @@ reconciliation rather than dropping them or committing a second mutation.
     executable input name as a stable logical name in
     `inputMapping={logical_name: new_edge_name}`. A repeated split updates the
     existing mapping value instead of nesting or renaming the logical key;
-    existing unrelated entries are preserved. Existing instance mappings have
-    matching values rewritten to the new edge name but are not synthesized
-    when absent. Input names are derived through the same `edgeInputName`
+    existing unrelated entries are preserved. Input names are derived through the same `edgeInputName`
     contract as connection validation, including API-frame and collapsed
     submodel public-output-label identities; callers supply the current submodel
     definitions needed to resolve those boundaries. An unresolved or malformed
