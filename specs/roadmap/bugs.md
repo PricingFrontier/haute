@@ -9,10 +9,10 @@ submodel files.
 `BUG-21`, `BUG-24` and `BUG-26` were found on 5 October 2026 while checking the deployment
 guides against the CI/CD files `haute init` generates: as generated, those files fail before a
 first container release succeeds, or cache nothing on GitLab. The guides give the manual step
-that works today for each, and drop it when the package lands. `BUG-27` to
+that works today for each, and drop it when the package lands. `BUG-28` to
 `BUG-30`, found the same day, are text that no longer matches the behaviour it
-describes: the CLI's help, the offset tooltip, a tuned t-boost run's summary and the
-t-boost starter parameters in the modelling UI specification. `BUG-40` to `BUG-43`
+describes: the offset tooltip, a tuned t-boost run's summary and the t-boost starter
+parameters in the modelling UI specification. `BUG-40` to `BUG-43`
 come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md): the hosted
 Databricks app's boot and build script, the UC transport's clients, the storage binding's
 unknown keys and a quadratic schema resolution in banding; `BUG-44` and `BUG-45`, from the
@@ -26,7 +26,6 @@ same review, are the Databricks browsing errors and the non-atomic first append.
 | BUG-21 | Planned | P2 | The generated smoke and impact steps work for the generic container target once its endpoint addresses are set. |
 | BUG-24 | Decision | P1 | Container targets log in to their registry before `haute deploy` pushes, and GitLab container deploys run where Docker is available. |
 | BUG-26 | Planned | P3 | The generated GitLab pipeline reuses uv's package cache between runs. |
-| BUG-27 | Planned | P3 | `haute --help` describes Haute without tying it to Databricks. |
 | BUG-28 | Planned | P2 | The offset tooltip names every loss that treats the offset as an exposure, and the losses that take no offset. |
 | BUG-29 | Planned | P2 | A tuned t-boost run's summary says its published model is the winning trial's fit, not a refit. |
 | BUG-30 | Planned | P3 | The modelling UI specification lists the t-boost starter parameters and readiness issues the editor has. |
@@ -116,22 +115,6 @@ caching note in `docs/deployment/ci/gitlab.md` loses its workaround.
 **Dependencies:** None.
 
 **Evidence:** `src/haute/_scaffold.py::gitlab_ci_yml`.
-
-### BUG-27 — `haute --help` names Haute's real scope
-**Why:** The CLI group's help text, which `haute --help` prints, reads "Haute -
-Open-source pricing engine for insurance teams on Databricks.", while the package
-metadata, the README and the docs describe a pricing engine with Databricks as one of
-five deploy targets and an optional extra.
-
-**Plan:** Make the `cli` docstring match the package description, "Haute - Open-source
-pricing engine for insurance teams".
-
-**Acceptance:** `haute --help` prints the package description; a CLI test pins it to
-`pyproject.toml`'s `description`.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/cli/__init__.py::cli`; `pyproject.toml` (`description`).
 
 ### BUG-28 — The offset tooltip matches the families' offset rules
 **Why:** The info icon beside Model Training's **Offset column (optional)** says the
