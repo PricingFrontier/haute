@@ -98,6 +98,7 @@ from haute._trace_enrichment import (
     enrich_scenario_expansion,
 )
 from haute._trace_enrichment import enrich_steps as _enrich_steps
+from haute._trace_enrichment import input_source_entry as _input_source_entry
 from haute._trace_lineage import ColumnRead, JoinInputs, ValueLineage, trace_value_lineage
 from haute._trace_waterfall import build_waterfall_from_steps
 from haute._types import REQUEST_INPUT_NODE_TYPES
@@ -1494,8 +1495,10 @@ def _execute_trace_core(
             source_handles=source_frames_of,
             join_inputs=join_inputs,
         )
+        traced_steps = steps
         steps = _prune_to_column_relevance(steps, column, parents_of, node_map, lineage)
         _attach_derivations(steps, lineage, node_map, formula_names)
+        _attach_input_sources(steps, traced_steps, column, lineage, node_map, formula_names)
 
     # A node not traced above a seed was never computed for this trace, so no
     # schema says whether it bears on a traced column: it is always reported.
@@ -2117,6 +2120,94 @@ def _attach_derivations(
             )
             for column in step.contributed_columns
         ]
+
+
+# Levels of input sources below a formula's own, as the trace panel's tree shows them.
+_INPUT_SOURCE_DEPTH = 3
+
+
+def _attach_input_sources(
+    steps: Sequence[TraceStep],
+    traced_steps: Sequence[TraceStep],
+    column: str,
+    lineage: ValueLineage,
+    node_map: dict[str, Any],
+    preamble_ns: dict[str, Any] | None,
+) -> None:
+    """Name the node behind every value a kept step's formula for *column* read.
+
+    The lineage's reads say which node computed each value a column read, as
+    a step's ``derivations`` do: the formula's own reads and those of its
+    chain's entries. A read of the step's own value (an earlier assignment
+    the chain shows, a model's prediction) and a read no single node supplied
+    (no source, several, or unknown) name none. Each named node's entry
+    follows its own reads the same way, *_INPUT_SOURCE_DEPTH* levels deep.
+    *traced_steps* are every step of the trace, the pruned ones included.
+    """
+    by_id = {step.node_id: step for step in traced_steps}
+    entries: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def sources(node_id: str, computed: Sequence[str], depth: int) -> dict[str, Any]:
+        found: dict[str, Any] = {}
+        for computed_column in computed:
+            for read in lineage.column_reads(node_id, computed_column) or ():
+                if read.column in found or len(read.sources) != 1:
+                    continue
+                (source,) = read.sources
+                if source.node_id == node_id:
+                    continue
+                key = (source.node_id, source.column)
+                if key not in entries:
+                    entries[key] = _input_source_entry(
+                        by_id.get(source.node_id),
+                        source.node_id,
+                        source.column,
+                        node_map,
+                        preamble_ns,
+                    )
+                entry = dict(entries[key])
+                if depth < _INPUT_SOURCE_DEPTH:
+                    nested = sources(source.node_id, [source.column], depth + 1)
+                    if nested:
+                        entry["input_sources"] = nested
+                found[read.column] = entry
+        return found
+
+    for step in steps:
+        expression = step.expression
+        calculation = step.calculation
+        if (
+            column not in step.contributed_columns
+            or not isinstance(calculation, dict)
+            or not isinstance(expression, dict)
+            or not expression.get("expression_text")
+            or expression.get("expression_type") == "opaque"
+        ):
+            continue
+        chain = calculation.get("expression_chain")
+        computed = [column]
+        if isinstance(chain, list):
+            computed.extend(
+                entry["target_column"]
+                for entry in chain
+                if isinstance(entry, dict) and entry.get("target_column") != column
+            )
+        try:
+            input_sources = sources(step.node_id, computed, 0)
+        except Exception as exc:
+            logger.warning(
+                "input_sources_failed",
+                node_id=step.node_id,
+                column=column,
+                error=str(exc),
+                error_type=type(exc).__name__,
+                exc_info=True,
+            )
+            calculation.setdefault("error", f"input_sources build failed: {exc}")
+            calculation.setdefault("error_type", type(exc).__name__)
+            continue
+        if input_sources:
+            calculation["input_sources"] = input_sources
 
 
 def _reads_payload(reads: tuple[ColumnRead, ...] | None) -> list[dict[str, Any]] | None:

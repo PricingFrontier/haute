@@ -125,8 +125,8 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the nineteen packages delivered or settled since (thirteen by 28
-October 2026, six more on 29 October) have been removed from the sections below; the coverage table keeps the
+The findings of the twenty packages delivered or settled since (thirteen by 28
+October 2026, seven more on 29 October) have been removed from the sections below; the coverage table keeps the
 original counts.
 
 ## Validation — 25 October 2026
@@ -230,10 +230,6 @@ these are the Majors still open.
 - **The optimiser's MLflow log writes the complete result artifact without the
   finiteness gate the save applies** (Major, `OPT-R01`): a missing defence layer
   on a pricing artifact, since the status poll corrects the UI path.
-- **A trace's input sources name the nearest step in declaration order, not
-  the node whose value the row carries** (Major, `TRACE-R01`; reproduced): on a
-  join with a shared non-key column the join side is shown as the source of a
-  base-side value, flipping with node order.
 - **`.over(` anywhere in a node's code types every column of the node as a
   window** (Major, `TRACE-R02`; reproduced): `y = a * 2` is shown as "rank of x
   over g" with the right value.
@@ -342,7 +338,6 @@ production:
 | Modelling | MDL-3, MDL-9, MDL-11, MDL-16, MDL-20, MDL-21 | `MOD-R05` |
 | Modelling | MDL-2, MDL-18, MDL-22 | `MOD-R06` |
 | Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
-| Tracing | TRC-1 | `TRACE-R01` |
 | Tracing | TRC-2, TRC-3, TRC-4 | `TRACE-R02` |
 | Tracing | TRC-8, TRC-9, TRC-10, TRC-14 | `TRACE-R03` |
 | Tracing | TRC-5, TRC-6, TRC-7, TRC-11, TRC-12, TRC-13 | `TRACE-R04` |

@@ -91,9 +91,9 @@ class ColumnRead:
 class ValueLineage:
     """The nodes a traced value's lineage reaches, and what each step computes for it.
 
-    ``reads`` maps a node and a column it contributes to the columns that
-    column was computed from, or to ``None`` when the walk could not tell
-    which inputs it read.
+    ``reads`` maps a node and a column it computes for the value (a helper it
+    dropped included) to the columns that column was computed from, or to
+    ``None`` when the walk could not tell which inputs it read.
     """
 
     reached: frozenset[str]
@@ -226,13 +226,11 @@ def trace_value_lineage(
         return resolved[key]
 
     reads: dict[str, dict[str, tuple[ColumnRead, ...] | None]] = {}
-    for node_id, shown_columns in contributed.items():
-        node_reads = local_reads[node_id]
+    for node_id, node_reads in local_reads.items():
         reads[node_id] = {}
-        for shown_column in shown_columns:
-            local = node_reads.get(shown_column, [])
+        for computed, local in node_reads.items():
             if local is None:
-                reads[node_id][shown_column] = None
+                reads[node_id][computed] = None
                 continue
             sources: dict[str, set[ColumnSource]] = {}
             for reference, kind in local:
@@ -242,7 +240,7 @@ def trace_value_lineage(
                     sources.setdefault(reference, set()).add(
                         ColumnSource(node_id, reference, before_code=kind == "before_code")
                     )
-            reads[node_id][shown_column] = tuple(
+            reads[node_id][computed] = tuple(
                 ColumnRead(
                     reference,
                     tuple(sorted(found, key=lambda s: (s.node_id, s.column, s.before_code))),

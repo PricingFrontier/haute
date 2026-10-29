@@ -15,42 +15,12 @@ from the [25 October 2026 codebase review](codebase-review-2026-10-25.md).
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| TRACE-R01 | Planned | P2 | A formula's input sources name the node whose value the traced row carries, resolved through the value lineage, never the nearest step in declaration order. |
 | TRACE-R02 | Planned | P2 | A step's expression type, description, referenced columns and rename detail come from the located expression's syntax tree, never from regular expressions over the node's whole code. Explanations use statement-time scalar bindings and preserve unary grouping and quoted literals in backend and browser formatting. |
 | TRACE-R03 | Planned | P2 | A parent row proven by carried values is matched strictly or omitted, a banding coercion that fails is an error marker, an unnameable edge is reported, and a failed comparison names its real cause. |
 | TRACE-R04 | Planned | P3 | The unreachable partial-trace path, the test-only correlation branch, the dead helper, the stale comments and the three duplicated mechanisms are gone. |
 | TRACE-R05 | Planned | P2 | The trace panel shows an additive waterfall step with its own operator, the clicked column's conditional or opaque card shows its value, export failures say their cause, a power renders as a power, omission notes are chosen by code, and the panel's test-only helpers are gone. |
 
 ## Planned improvements
-
-### TRACE-R01 — Input sources from the value lineage
-**Why:** `calculation.input_sources` names, for each column a formula reads, the
-nearest step in list order whose schema diff added or modified that column, with
-no ancestry or value check, so on a join whose two sides share a non-key column
-the join side is shown as the source of a base-side value and the attribution
-flips with node declaration order (probed: `calc.x` is 10.0 from A while
-`input_sources["x"]` names B with 1000.0; declaring B first names A). The
-lineage's `derivations[].reads` is right both ways, and `_pass_through_origin`
-and the lineage's `computed_by` already do the graph- and value-aware walk; the
-low-level specification describes the list-order algorithm, so it and the code
-both contradict the high-level rule that relevance follows the value's whole
-lineage.
-
-**Plan:** Resolve each read through the lineage's column reads (or
-`_pass_through_origin`'s single-parent same-value walk) and drop the list-order
-scan, or retire `input_sources` in favour of `derivations[].reads` so one
-mechanism explains inputs; correct the specification; add the probe's join shape
-as a test.
-
-**Acceptance:** On the probe graph `input_sources["x"]` names A with 10.0
-whatever the declaration order; one mechanism explains a formula's inputs.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_trace_enrichment.py::_build_input_sources`;
-`src/haute/_trace_enrichment.py::_pass_through_origin`;
-`src/haute/_trace_lineage.py::computed_by`;
-`frontend/src/trace/InputSourceTree.tsx`.
 
 ### TRACE-R02 — Expression facts from the located expression
 **Why:** `evaluate_expression` decides "window" by the substring `.over(`

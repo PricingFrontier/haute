@@ -7,8 +7,8 @@
 | `src/haute/trace.py` | Public facade and orchestrator. `execute_trace()` entry point, `TraceStep`/`TraceOmission`/`TraceResult` dataclasses, the trace execution cache (`_cache`, `TRACE_CACHE_MAX_BYTES`), row/omission assembly, column-relevance pruning, provenance, and JSON serialisation (`trace_result_to_dict`). Re-exports expression-parser and node-type enricher names as public convenience imports; `_trace_enrichment.py` owns its dependencies directly. |
 | `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. It imports the shared row JSON converter from `src/haute/_json_safe.py` (owned by [json-shredding](../json-shredding/low-level.md)) imported locally as `_jsonify_row` rather than owning a second converter; the module owns `SchemaDiff` computation, dtype-robust Polars match-expression construction (`_typed_value_match_expr`), exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, shared by the single-frame and multi-frame paths), multi-frame per-edge parent resolution (`_resolve_multi_frame_parent`), and the backward-walk driver `_correlate_rows_posthoc`. |
 | `src/haute/_python_syntax.py` | Cross-component dependency owned by [codegen](../codegen/low-level.md): tracing consumes its LibCST-derived exact method-call names and positions; it does not mutate trace source. |
-| `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), canonical instance-aware code selection (`_effective_node_code`), row-lineage-type classification (`detect_row_lineage_type`, from node type and operation alone), and the per-step dispatch walk (`enrich_steps`) that drives expression parsing/evaluation (with a pre-assignment-value guard for self-referential columns), intra-node chain analysis, recursive upstream input-source derivation, rename detection, and node-type dispatch for every `TraceStep`. |
-| `src/haute/_trace_lineage.py` | The traced value's lineage. `trace_value_lineage()` walks a column trace's demand back from the target over the enriched steps and returns a `ValueLineage`: the nodes it reaches (step relevance and omission relevance), the columns each step contributes, and what each contributed column read (`reads`: per column, `ColumnRead` entries naming every node, as a `ColumnSource`, that computed the value read). |
+| `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), canonical instance-aware code selection (`_effective_node_code`), row-lineage-type classification (`detect_row_lineage_type`, from node type and operation alone), the per-step dispatch walk (`enrich_steps`) that drives expression parsing/evaluation (with a pre-assignment-value guard for self-referential columns), intra-node chain analysis, rename detection, and node-type dispatch for every `TraceStep`, and the input-source entry (`input_source_entry`: how one node computed a value a formula read). |
+| `src/haute/_trace_lineage.py` | The traced value's lineage. `trace_value_lineage()` walks a column trace's demand back from the target over the enriched steps and returns a `ValueLineage`: the nodes it reaches (step relevance and omission relevance), the columns each step contributes, and what each column a step computes for the value read (`reads`: per column, a helper the step dropped included, `ColumnRead` entries naming every node, as a `ColumnSource`, that computed the value read). |
 | `src/haute/_trace_waterfall.py` | Waterfall assembly for sequential multiplicative/additive rating chains. `WaterfallEntry`/`WaterfallResult` dataclasses, the value-derived `build_waterfall_from_steps()` traced-path driver, and the C8 arithmetic-reconciliation guards. |
 
 ## Key types and data structures
@@ -280,8 +280,12 @@ continuation is never cached: every click proves again.
     `_attach_derivations()` then gives each kept step its `derivations`:
     `column_derivation()` (`_trace_enrichment.py`) evaluates the step's formula for
     each contributed column with the traced column's own machinery (`_formula_fields`,
-    shared with `_build_input_sources`), skipping a step read from a snapshot no
-    recompute reproduced, and the lineage supplies what the column read. While
+    shared with `input_source_entry`), skipping a step read from a snapshot no
+    recompute reproduced, and the lineage supplies what the column read.
+    `_attach_input_sources()` then gives each kept step that shows a formula for the
+    traced column it contributes (an `expression` with text that is not opaque: a
+    formula its code assigns, or a banding factor) its `calculation.input_sources`, from
+    the same reads (*Input sources* below). While
     deriving a column the walk notes each reference as this node's own value (an
     earlier assignment, or a generated column read before the code), a generated
     value the code later rewrote (`before_code`), or an input; an input is resolved
@@ -689,21 +693,9 @@ its public facade.
    target the chain assigns once. `execute_trace` passes enrichment the compiled preamble
    namespace (cached per process) over any caller-supplied `preamble_ns`, so formulas resolve the
    names the node code ran with.
-4. Recursively derives `input_sources` for every referenced column
-   (`_build_input_sources`, depth-limited to 3, cycle-guarded via a
-   `(node_id, column)` visited set) — for each reference, finds the nearest
-   upstream step that created/modified it, parses/evaluates its formula (with a
-   banding-specific branch that reuses `enrich_banding`'s factor detail instead
-   of generic expression parsing), and recurses into *its* references. When the
-   parse finds no expression text for the column, the step's code demonstrably does
-   not assign it (a model's prediction beside `with_columns` transform steps): the
-   source carries the value the step produced, as for a step with no code. Code the
-   parser cannot read keeps its text as an opaque expression and is still evaluated,
-   so a column such code brings in (a join, say) can still report
-   `expression_not_located`.
-5. Detects renames (`.rename({...})` or a pure `.with_columns(new=pl.col(old))`)
+4. Detects renames (`.rename({...})` or a pure `.with_columns(new=pl.col(old))`)
    and builds a rename chain by walking backward through prior steps.
-6. Dispatches node-type enrichment by `node_type` (`ratingStep`, `banding`,
+5. Dispatches node-type enrichment by `node_type` (`ratingStep`, `banding`,
    `modelScore`, `scenarioExpander`, `liveSwitch`, `optimiserApply`) into
    `step.node_detail`; for `banding`, additionally attaches lineage
    (`_attach_banding_lineage`) directly into `step.expression`/`step.calculation`
@@ -725,13 +717,47 @@ its public facade.
    by enrichment. A traced value is compared in the kind its breakpoints share
    (`_match_interval_rule` reads a date or date-and-time input as the runtime's
    `banding_comparison_expr` does), so a date band the engine chose is credited.
-7. Classifies `step.row_lineage_type` via `detect_row_lineage_type()`, using the
+6. Classifies `step.row_lineage_type` via `detect_row_lineage_type()`, using the
    node type first (source nodes and constants → `"created"`, `liveSwitch` →
    `"selected"`, `edgeJoin` → `"joined"`, `scenarioExpander` → `"expanded"`,
    `optimiserApply` → `"aggregated"` — checked before any code-sniffing because
    config-driven nodes carry no literal operation), then a code-sniffed
    `operation_type` (`_sniff_operation_type`), falling back to `"passthrough"`.
    Trace frames are limited or row-scoped, so frame heights never decide a label.
+
+### Input sources (`_attach_input_sources`, `trace.py`)
+
+A step's `calculation.input_sources` maps each column its formula for the traced column
+read from the node's inputs to the node that computed the value it read, taken from the
+lineage's reads (`ValueLineage.column_reads`) — the mechanism that gives `derivations`
+their `reads`, so the two never disagree. The formula's own reads and those of each
+intra-node chain entry (`calculation.expression_chain`) are taken in that order, the first
+read of a column kept:
+
+- a read with exactly one source in another node names that node. Its entry
+  (`input_source_entry`, `_trace_enrichment.py`) carries its `node_id` and `node_name` and
+  how it computed the column: a banding factor's detail; the formula its code assigns the
+  column (`_effective_node_code`, then `parse_expression`), evaluated on its row by
+  `_formula_fields`; or, when its code does not assign the column (a model's prediction
+  beside `with_columns` transform steps, a loaded column), the value it produced. Code the
+  parser cannot read keeps its text as an opaque expression and is still evaluated, so a
+  column such code brings in (a join, say) can still report `expression_not_located`. A
+  step read from a snapshot no recompute reproduced gives only the value it held there with
+  its `snapshot_generation_id`, and a node the trace could not correlate only its name.
+  The entry's own `input_sources` follow that node's reads of the column the same way, to
+  three levels below the formula's own entries.
+- a read whose source is the step itself is the step's own value — an earlier assignment
+  the chain shows, or a column a rule of the node computed (a model's prediction) — and
+  has no entry.
+- a read with no source, with several (a coalesced full-join key, a column several
+  parents hold) or with unknown reads (`None`: a formula the lineage could not read) has no
+  entry: no single node supplied the value, and naming one would explain a value the
+  formula never read.
+
+A failure deriving one entry is that entry's `error`/`error_type` (logged
+`input_source_derivation_failed`); any other failure building a step's sources is its
+calculation's `error` (`input_sources build failed: ...`, logged `input_sources_failed`).
+Each node's entry is derived once per trace.
 
 ### `build_waterfall_from_steps()` (`_trace_waterfall.py`)
 
@@ -903,8 +929,8 @@ snapshot deterministically.
   such parent whose edge's frame has it, and to every such parent when that frame is
   unknown. An unresolved node that the walk reaches depends on every input column, so
   every attempted ancestor above it stays relevant.
-- **`instanceOf` code resolution appears in three independent places**
-  (`enrich_steps`, `_build_input_sources`, `_build_rename_chain`) — a cloned
+- **`instanceOf` code resolution goes through `_effective_node_code`**
+  (`enrich_steps`, `input_source_entry`, the lineage's `_Derivation`) — a cloned
   node instance whose own code lacks `.with_columns(` borrows the *original*
   node's code so the step that structurally created a column gets the correct
   expression, not a blank one.
@@ -1018,7 +1044,11 @@ integration/regression suites:
   source of a generated column the code reassigns, a value reassigned unchanged under
   every-column demand read from the step that assigned it, rating and banding rules
   never reading their own output, and join reads resolving to both sides of a
-  coalesced full-join key and to an uncorrelated join side.
+  coalesced full-join key and to an uncorrelated join side. Its input-source tests pin
+  a formula below a join whose two sides share a non-key column naming the base side,
+  with the value the row carries, in either declaration order; a chain's intermediate
+  read through to the upstream input it read, with no entry of its own; and a read
+  several nodes may have supplied giving no entry.
 - **`tests/test_trace_api.py`** — the `POST /api/pipeline/trace` HTTP layer via
   FastAPI `TestClient`: request validation, response shape, serialisation, and
   error-status mapping. Explicitly deferred to `test_trace_integration.py` for

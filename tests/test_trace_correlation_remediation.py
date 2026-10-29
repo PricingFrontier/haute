@@ -2,23 +2,20 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from types import SimpleNamespace
 
 import polars as pl
 import pytest
 
 from haute._json_safe import non_finite_float_sentinel, row_to_json_safe
 from haute._trace_correlation import (
-    SchemaDiff,
     _CandidateIndicesState,
     _find_matching_row,
     _jsonify_row,
     _match_rows_vectorized,
     _RowMatchStatus,
 )
-from haute._trace_enrichment import _build_input_sources
 from haute.errors import TraceCorrelationUnsupportedError
-from haute.trace import TraceStep, _find_target_row_index
+from haute.trace import _find_target_row_index
 
 
 @pytest.mark.parametrize(
@@ -256,150 +253,3 @@ def test_trace_row_serialization_is_the_preview_json_safe_boundary() -> None:
 
     assert _jsonify_row is row_to_json_safe
     assert _jsonify_row(row) == row_to_json_safe(row)
-
-
-def _enrichment_step(
-    node_id: str,
-    *,
-    added: tuple[str, ...] = (),
-    modified: tuple[str, ...] = (),
-    input_values: dict[str, object] | None = None,
-    output_values: dict[str, object] | None = None,
-) -> TraceStep:
-    return TraceStep(
-        node_id=node_id,
-        node_name=node_id,
-        node_type="polars",
-        schema_diff=SchemaDiff(
-            columns_added=list(added),
-            columns_removed=[],
-            columns_modified=list(modified),
-            columns_passed=[],
-        ),
-        input_values=input_values or {},
-        output_values=output_values or {},
-    )
-
-
-def test_enrichment_completed_result_memo_reuses_sibling_concern(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import haute._trace_enrichment as enrichment
-
-    producer = _enrichment_step(
-        "producer",
-        added=("derived",),
-        input_values={"raw": 2},
-        output_values={"derived": 4},
-    )
-    left = _enrichment_step("left", input_values={"derived": 4})
-    right = _enrichment_step("right", input_values={"derived": 4})
-    steps = [producer, left, right]
-    node_map = {
-        "producer": SimpleNamespace(
-            data=SimpleNamespace(config={"code": "df = df.with_columns(derived=pl.col('raw')*2)"})
-        ),
-        "left": SimpleNamespace(data=SimpleNamespace(config={})),
-        "right": SimpleNamespace(data=SimpleNamespace(config={})),
-    }
-    calls = 0
-
-    def parse_expression(_code, _column):
-        return SimpleNamespace(expression_text="raw * 2", referenced_columns=[])
-
-    def evaluate_expression(_code, _column, _values, *, preamble_ns=None, row=None):
-        nonlocal calls
-        del preamble_ns, row
-        calls += 1
-        return SimpleNamespace(substituted_text="2 * 2", result_value=4, not_computable_reason=None)
-
-    monkeypatch.setattr(enrichment, "parse_expression", parse_expression)
-    monkeypatch.setattr(enrichment, "evaluate_expression", evaluate_expression)
-    monkeypatch.setattr(enrichment, "enrich_banding", lambda *_args, **_kwargs: {})
-    memo: dict[tuple[object, ...], dict[str, object]] = {}
-
-    first = _build_input_sources(
-        ["derived"],
-        left,
-        steps,
-        node_map,
-        None,
-        completed_memo=memo,
-        frame_identity=(("producer", "", 1),),
-    )
-    second = _build_input_sources(
-        ["derived"],
-        right,
-        steps,
-        node_map,
-        None,
-        completed_memo=memo,
-        frame_identity=(("producer", "", 1),),
-    )
-
-    assert first == second
-    assert first is not second
-    assert calls == 1
-
-
-def test_enrichment_failures_are_not_memoized(monkeypatch: pytest.MonkeyPatch) -> None:
-    import haute._trace_enrichment as enrichment
-
-    producer = _enrichment_step("producer", added=("derived",), output_values={"derived": 4})
-    consumer = _enrichment_step("consumer", input_values={"derived": 4})
-    node_map = {
-        "producer": SimpleNamespace(data=SimpleNamespace(config={"code": "broken"})),
-        "consumer": SimpleNamespace(data=SimpleNamespace(config={})),
-    }
-    calls = 0
-
-    def fail_evaluate(*_args, **_kwargs):
-        nonlocal calls
-        calls += 1
-        raise RuntimeError("evaluation failed")
-
-    monkeypatch.setattr(
-        enrichment,
-        "parse_expression",
-        lambda *_args: SimpleNamespace(expression_text="broken", referenced_columns=[]),
-    )
-    monkeypatch.setattr(enrichment, "evaluate_expression", fail_evaluate)
-    monkeypatch.setattr(enrichment, "enrich_banding", lambda *_args, **_kwargs: {})
-    memo: dict[tuple[object, ...], dict[str, object]] = {}
-
-    for _ in range(2):
-        result = _build_input_sources(
-            ["derived"],
-            consumer,
-            [producer, consumer],
-            node_map,
-            None,
-            completed_memo=memo,
-        )
-        assert result["derived"]["error_type"] == "RuntimeError"
-
-    assert calls == 2
-    assert memo == {}
-
-
-def test_enrichment_active_path_cycle_is_structured_not_memoized() -> None:
-    producer = _enrichment_step("producer", added=("derived",), output_values={"derived": 4})
-    consumer = _enrichment_step("consumer", input_values={"derived": 4})
-    node_map = {
-        "producer": SimpleNamespace(data=SimpleNamespace(config={})),
-        "consumer": SimpleNamespace(data=SimpleNamespace(config={})),
-    }
-    memo: dict[tuple[object, ...], dict[str, object]] = {}
-
-    result = _build_input_sources(
-        ["derived"],
-        consumer,
-        [producer, consumer],
-        node_map,
-        None,
-        completed_memo=memo,
-        active_path=(("producer", "derived"),),
-    )
-
-    assert result["derived"]["error_type"] == "TraceEnrichmentCycle"
-    assert memo == {}
