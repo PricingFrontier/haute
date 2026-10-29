@@ -295,7 +295,6 @@ production:
 | Execution engine | EXE-3 | `EXEC-R16` (Decision) |
 | Execution engine | EXE-4, EXE-5, EXE-6, EXE-7, EXE-8, EXE-9, EXE-15, STA-6, STA-7, the preamble `sys.path` edit | `EXEC-R17` |
 | IO layer | CIO-5, CIO-11 | `IO-R06` |
-| IO layer | CIO-8, CIO-9, CIO-10 | `IO-R07` |
 | IO layer | CIO-6, CIO-7 | `IO-R08` |
 | Background jobs | WRK-2 | `ROAD-WORKER-06` |
 | Background jobs | WRK-5, WRK-6, WRK-11, WRK-14 | `ROAD-WORKER-07` |

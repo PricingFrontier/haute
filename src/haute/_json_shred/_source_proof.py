@@ -12,7 +12,9 @@ mtime), which every write moves. Where the platform has no native revision the
 token is the file's stat, trusted only for a file last modified at least
 :data:`SETTLE_SECONDS` before it was observed; a younger file is proved again
 on every use, because a same-size rewrite inside the filesystem's timestamp
-granularity keeps its size and mtime.
+granularity keeps its size and mtime. A POSIX revision whose change time is a
+whole second comes from such a coarse clock, so it is trusted only once
+settled as well.
 """
 
 from __future__ import annotations
@@ -53,6 +55,9 @@ class SourceChangedError(OSError, RuntimeError):
 _WINDOWS_EPOCH_OFFSET_100NS = 116_444_736_000_000_000
 
 
+_WHOLE_SECOND_NS = 1_000_000_000
+
+
 @dataclass(frozen=True, slots=True)
 class _StrongFileRevision:
     """A file generation token that detects changes hidden from size/mtime."""
@@ -61,6 +66,30 @@ class _StrongFileRevision:
     size: int
     mtime_ns: int
     change_token: int
+
+    @property
+    def coarse(self) -> bool:
+        """Whether this is a POSIX change time in whole seconds.
+
+        A Windows USN moves on every write, and a POSIX change time on every
+        write its filesystem's clock can tell apart. A filesystem that stamps
+        whole seconds keeps the revision through a same-size rewrite within
+        that second.
+        """
+        return not isinstance(self.file_identity[1], bytes) and not (
+            self.change_token % _WHOLE_SECOND_NS
+        )
+
+    def settled(self) -> bool:
+        """Whether a proof made under this revision may be reused.
+
+        A coarse revision is trusted, as a stat is, only once the file has gone
+        :data:`SETTLE_SECONDS` without a change; any other always is.
+        """
+        if not self.coarse:
+            return True
+        changed_ns = max(self.mtime_ns, self.change_token)
+        return time.time() - changed_ns / _WHOLE_SECOND_NS >= SETTLE_SECONDS
 
 
 class _WindowsFileBasicInfo(ctypes.Structure):
@@ -271,7 +300,7 @@ def observe_freshness(path: Path) -> Freshness:
     """
     revision = _strong_file_revision(path)
     if revision is not None:
-        return Freshness(revision, reusable=True)
+        return Freshness(revision, reusable=revision.settled())
     observed = path.stat()
     _warn_revision_unavailable_once(path)
     return Freshness(
@@ -371,13 +400,14 @@ def file_signature(path: Path) -> FileSignature:
 def _signature(path: Path) -> FileSignature:
     """Prove *path*: from its durable record when that names the current revision.
 
-    Only a proof made under a native revision is recorded, and a record is
-    reused only while the file still has exactly that revision, so a new
+    Only a proof made under a settled native revision is recorded, and a record
+    is reused only while the file still has exactly that revision, so a new
     process skips the complete read of an unchanged file. Without a native
-    revision the file is hashed and nothing is read or written.
+    revision, or under one that has not settled, the file is hashed and nothing
+    is read or written.
     """
     revision = _strong_file_revision(path)
-    if revision is None:
+    if revision is None or not revision.settled():
         observed = path.stat()
         return FileSignature(
             size=int(observed.st_size),
@@ -452,7 +482,11 @@ def clear_file_signatures() -> None:
 
 # ---------------------------------------------------------- durable records
 
-_PROOF_RECORD_SCHEMA_VERSION = 1
+_PROOF_RECORD_SCHEMA_VERSION = 2
+# Schema 1 records predate the settle rule for coarse revisions: one naming a
+# coarse revision may have been written before the file settled, so only a
+# schema 1 record of a revision that is never coarse is still trusted.
+_LEGACY_PROOF_RECORD_SCHEMA_VERSION = 1
 _PROOF_RECORD_KEYS = frozenset(
     {"schema_version", "path", "revision", "hash_algo", "digest", "size", "mtime_ns"}
 )
@@ -548,7 +582,9 @@ def _parse_proof_record(raw: bytes, path: Path) -> tuple[_StrongFileRevision, Fi
     if (
         revision is None
         or not _is_int(record["schema_version"])
-        or record["schema_version"] != _PROOF_RECORD_SCHEMA_VERSION
+        or record["schema_version"]
+        not in (_PROOF_RECORD_SCHEMA_VERSION, _LEGACY_PROOF_RECORD_SCHEMA_VERSION)
+        or (record["schema_version"] == _LEGACY_PROOF_RECORD_SCHEMA_VERSION and revision.coarse)
         or record["path"] != str(path)
         or record["hash_algo"] != HASH_ALGO
         or not _is_lower_hex(record["digest"], _DIGEST_LENGTH)

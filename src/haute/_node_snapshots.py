@@ -1472,12 +1472,15 @@ class NodeSnapshotStore(SourceCacheStore):
         if identity.provider != NODE_OUTPUT_PROVIDER:
             super().clear(identity)
             return
+        slot, _signature = NodeSnapshotSlot.from_identity(identity)
         retired: list[Path] = []
         try:
             with self._coordination.lease_lock:
-                self._pointer_path(identity).unlink(missing_ok=True)
-                self._prune_identity_locked(identity)
-                retired.extend(self._retire_non_current_locked(identity.digest))
+                index = self._read_slot_index(slot)
+                retired.extend(self._retire_identities_locked(index, [identity.digest]))
+                if index["pinned_identity"] == identity.digest:
+                    index["pinned_identity"] = None
+                self._write_slot_index_locked(slot, index)
         finally:
             self._delete_retired(retired)
 
@@ -1510,33 +1513,51 @@ class NodeSnapshotStore(SourceCacheStore):
         costs the scan its files at the next re-cache or clear, so the `with`
         discipline at every call site matters.
 
-        A signature whose generation survived stays *indexed and unpointed*.
+        A signature whose generation survived stays *indexed and unpointed*
+        (`_retire_identities_locked`).
+        """
+        return self._retire_identities_locked(
+            index, [digest for digest in index["identities"] if digest != identity.digest]
+        )
+
+    def _retire_identities_locked(
+        self, index: dict[str, Any], digests: Sequence[str]
+    ) -> list[Path]:
+        """Unpoint each identity, retire its unheld generations, and unindex the emptied ones.
+
+        Publication, `clear_slot` and `clear` all retire this way. An identity
+        whose generation survives, because a reader still holds it or an open
+        Windows handle refused its rename, stays *indexed and unpointed*.
         Dropping it from the index would strand that generation where nothing
         can find it: `clear_slot` walks the index, the retired sweep only knows
         `.retired-*`, and the holder may die without ever releasing — leaving a
         node showing two datasets and a Clear that cannot remove one, which is
-        the very promise this policy exists to keep. Indexed and unpointed, the
-        next publish and any `clear_slot` retry it.
+        the very promise the one-dataset policy exists to keep. Indexed and
+        unpointed, the next publish, Clear or budget check retries it, and
+        `_release_node_lease` prunes it when it retires the last generation.
+        Mutates *index*, which the caller writes. Caller holds the lease lock.
         """
         retired: list[Path] = []
-        for digest in [d for d in index["identities"] if d != identity.digest]:
+        for digest in digests:
             (self.inputs_root / digest / "current.json").unlink(missing_ok=True)
             retired.extend(self._retire_non_current_locked(digest))
-            if self._generations_remaining_locked(digest):
-                continue
-            del index["identities"][digest]
+            if not self._generations_remaining_locked(digest):
+                index["identities"].pop(digest, None)
         return retired
 
     def clear_slot(self, slot: NodeSnapshotSlot) -> None:
-        """Remove every identity of *slot* and its pin; leased generations retire on release."""
+        """Remove every identity of *slot* and its pin; leased generations retire on release.
+
+        An identity whose generation survives stays indexed and unpointed until
+        a later retirement removes it (`_retire_identities_locked`).
+        """
         retired: list[Path] = []
         try:
             with self._coordination.lease_lock:
                 index = self._read_slot_index(slot)
-                for identity_digest in index["identities"]:
-                    (self.inputs_root / identity_digest / "current.json").unlink(missing_ok=True)
-                    retired.extend(self._retire_non_current_locked(identity_digest))
-                self._slot_index_path(slot).unlink(missing_ok=True)
+                retired.extend(self._retire_identities_locked(index, list(index["identities"])))
+                index["pinned_identity"] = None
+                self._write_slot_index_locked(slot, index)
         finally:
             self._delete_retired(retired)
 
@@ -1738,7 +1759,6 @@ class NodeSnapshotStore(SourceCacheStore):
             retired: list[Path] = []
             try:
                 with self._coordination.lease_lock:
-                    superseded_id = self._current_generation_id(identity.digest)
                     final_dir = self._generation_dir(identity.digest, generation_id)
                     slot, _signature = NodeSnapshotSlot.from_identity(identity)
                     index = self._read_slot_index(slot)
@@ -1792,16 +1812,9 @@ class NodeSnapshotStore(SourceCacheStore):
                     try:
                         retired.extend(self._retire_superseded_signatures_locked(index, identity))
                         self._write_slot_index_locked(slot, index)
-                        if superseded_id is not None and superseded_id != generation_id:
-                            superseded_dir = self._generation_dir(identity.digest, superseded_id)
-                            if superseded_dir.is_dir() and not self._has_live_holders_locked(
-                                superseded_dir
-                            ):
-                                path = self._retire_generation_locked(
-                                    identity.digest, superseded_id
-                                )
-                                if path is not None:
-                                    retired.append(path)
+                        # The generation this replaced, and any of this identity a
+                        # deferred retirement or Clear left unpointed, unless held.
+                        retired.extend(self._retire_non_current_locked(identity.digest))
                     except BaseException:
                         # Ownership has not reached the caller: release the
                         # publisher's lease before surfacing the failure.

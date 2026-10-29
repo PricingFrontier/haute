@@ -142,7 +142,12 @@ freshness token whatever asks.
 
 `_source_proof.observe_freshness(path)` reads the native revision (Windows: volume serial,
 128-bit file id, USN, size and last-write time through `FSCTL_READ_FILE_USN_DATA`; POSIX:
-device, inode, ctime, size and mtime). Without one it returns the stat tuple
+device, inode, ctime, size and mtime). The revision is reusable when it has settled
+(`_StrongFileRevision.settled`): always for a Windows USN, which moves on every write, and
+for a POSIX ctime with a sub-second part; a POSIX ctime that is a whole second (a filesystem
+stamping whole seconds, where a same-size rewrite within that second keeps the revision) is
+reusable only once the later of its mtime and ctime is at least `SETTLE_SECONDS` old.
+Without a revision it returns the stat tuple
 `("stat", dev, ino, size, mtime_ns, ctime_ns)`, reusable only when the mtime is at least
 `SETTLE_SECONDS` (2.0) old, and logs `source_revision_unavailable` once per path. A missing
 file raises `FileNotFoundError`. `file_signature(path)` is a `StatGatedCache` of
@@ -151,20 +156,20 @@ file raises `FileNotFoundError`. `file_signature(path)` is a `StatGatedCache` of
 
 ### Durable source proofs
 
-A content signature proved under a native revision is also recorded on disk, so a new
-process reuses it instead of reading the whole file again. One record per resolved source
+A content signature proved under a settled native revision is also recorded on disk, so a
+new process reuses it instead of reading the whole file again. One record per resolved source
 path lives at `<project root>/.haute_cache/source_proofs/<name>.json`, where `<name>` is the
 SHA-256 hex of `os.path.normcase(<resolved path>)` and the project root is
 `haute._sandbox._get_project_root()`, read through `_source_proof._proof_record_root()`.
 
-A record (`schema_version` 1) is `canonical_json` bytes written through
+A record (`schema_version` 2) is `canonical_json` bytes written through
 `_file_ops.atomic_write_bytes`. It has exactly these keys at each level; a missing or extra
 key, or a value of the wrong type, makes it invalid. Integers are checked with
 `type(x) is int`, so a `bool` is not an integer here.
 
 | Key | Type and rule |
 |---|---|
-| `schema_version` | int, `== 1` |
+| `schema_version` | int, `== 2`, or `== 1` for a revision that is not coarse (below) |
 | `path` | str, the case-preserved resolved path; must equal the path being proved |
 | `revision.kind` | `"windows_usn_v1"` or `"posix_ctime_v1"` |
 | `revision.file_identity` | 2-item list: `[volume serial or st_dev (int >= 0), file id]`; the file id is a 32-char lowercase hex string of the 128-bit id, not all zero, for `windows_usn_v1`, and an int inode > 0 for `posix_ctime_v1` |
@@ -176,6 +181,13 @@ key, or a value of the wrong type, makes it invalid. Integers are checked with
 | `size` | int, `== revision.size` |
 | `mtime_ns` | int, `== revision.mtime_ns` |
 
+Schema 2 records are written only under a settled revision. A schema 1 record predates the
+settle rule for coarse revisions: one naming a coarse revision may have been written before
+its file settled, while a same-size rewrite within that second kept the revision, so it is
+rejected and the file proved again; one naming any other revision (a Windows USN, a
+sub-second POSIX ctime) was always settled and is still read, so the upgrade re-proves only
+the files of filesystems that stamp whole seconds.
+
 Records are read and written only by the `file_signature` loader, so only on an in-process
 miss, inside the freshness-gated load below. The loader reads the native revision once and
 then:
@@ -183,11 +195,13 @@ then:
 | Situation | Outcome | Log |
 |---|---|---|
 | No native revision | Hash; no record is read or written (the settled-stat rule is in-process only) | `source_revision_unavailable`, once per path |
+| A native revision that has not settled | Hash; no record is read or written | none |
 | No record file | Hash, then write | none |
 | Record unreadable (an `OSError` other than `FileNotFoundError`) | Hash, then try to write | `source_proof_record_rejected`, `reason="unreadable"` |
 | Record does not parse, breaks the contract, or names another path or algorithm | Hash, then overwrite | `source_proof_record_rejected`, `reason="invalid"` |
 | Valid record naming a different revision | Hash, then overwrite | none |
 | Valid record naming the current revision | Return its signature without hashing | none |
+| A schema 1 record naming a coarse revision (a POSIX ctime that is a whole second) | Hash, then overwrite | `source_proof_record_rejected`, `reason="invalid"` |
 | The write fails (`OSError`) | Return the fresh signature; no new record is published and any previous one remains, which its revision already refuses | `source_proof_record_write_failed` |
 
 A record is written only when the revision read before the hash is still the file's
@@ -586,7 +600,8 @@ input, input snapshots, model contracts and graph structure exclude the class.
 - LRU oversized rejection retains a previous same-key entry.
 - Freshness-gated caches never exceed `max_entries` after a completed insertion.
 - A proof or loaded value is never reused across a moved freshness token, and a token without
-  a native revision is reused only for a settled file.
+  a native revision, or a POSIX revision whose ctime is a whole second, is reused only for a
+  settled file.
 - Loader failure never stores a value or strands an idle load gate.
 - An API Input's status, build and clear validate the same v2 schema as execution, and
   its status is ready only when every emitting table's snapshot is.
@@ -720,6 +735,12 @@ cache lifecycle changes.
   non-promoting reads, and concurrency.
 - `tests/test_stat_gated_cache.py` covers hit/reload, LRU bounds, single flight, moving
   gates, exceptions, clear, and load-gate reclamation.
+- `tests/test_source_freshness.py` covers the freshness observation, the shared signature
+  and its durable records; a POSIX revision whose ctime is a whole second is reusable only
+  once settled (a USN that is a multiple of a second always), and on a filesystem stamping
+  whole seconds a same-size rewrite within the second of a proof is proved again once
+  settled, the first proof having been neither cached nor recorded; a schema 1 record is
+  still reused for a sub-second revision and rejected, the file re-proved, for a coarse one.
 - `tests/test_input_cache_route.py` covers an API Input's status before and after a build,
   the capped worker build and its refresh, stale tables after a source change, clearing
   (and its refusal while building), the per-table building probe, worker failure, and

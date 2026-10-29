@@ -315,6 +315,8 @@ _OBJECT_VALUED_ARGUMENTS: frozenset[str] = frozenset(
         "delta_merge_options",
         "pyarrow_options",
         "sinked_paths_callback",
+        # A pyiceberg catalog object, which locates the table: JSON cannot build one.
+        "catalog",
     }
 )
 _SINK_EXECUTION_OWNED: frozenset[str] = frozenset({"lazy", "engine", "optimizations"})

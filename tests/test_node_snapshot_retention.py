@@ -480,6 +480,50 @@ def test_a_deferred_eviction_stays_indexed_and_a_later_budget_check_retires_it(
     assert not (store.inputs_root / ".node-slots" / f"{slot.digest}.json").exists()
 
 
+@pytest.mark.parametrize("recapture", ["s1", "s2"])
+@pytest.mark.parametrize("clear", ["slot", "identity"])
+def test_a_deferred_clear_stays_indexed_and_the_slots_next_capture_retires_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clear: str, recapture: str
+) -> None:
+    """Clear keeps an identity indexed while a generation of it remains, as publication does.
+
+    Unindexed, the generation would be found only by the budget pass; indexed and
+    unpointed, the slot's next publication or Clear retires it, whether that capture
+    has the cleared signature again or a new one. Clear still drops the pin, so that
+    next capture is not pinned by an explicit build the user cleared.
+    """
+    store = NodeSnapshotStore(tmp_path)
+    slot = _slot(tmp_path)
+    identity = slot.identity("s1")
+    with _publish(store, identity, pl.DataFrame({"a": [1]}), explicit=True):
+        pass
+    generation_dir = _current_dir(store, identity)
+    index_path = store.inputs_root / ".node-slots" / f"{slot.digest}.json"
+
+    # A Windows handle still open inside the generation blocks the rename.
+    with monkeypatch.context() as blocked:
+        blocked.setattr(store, "_retire_generation_locked", lambda *_args: None)
+        if clear == "slot":
+            store.clear_slot(slot)
+        else:
+            store.clear(identity)
+
+    assert store.slot_status(slot, "s1").state == "missing"
+    assert generation_dir.is_dir()
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    assert list(index["identities"]) == [identity.digest]
+    assert index["pinned_identity"] is None
+
+    replacement = slot.identity(recapture)
+    with _publish(store, replacement, pl.DataFrame({"a": [2]})) as publication:
+        assert publication.generation is not None
+        assert publication.generation.retention == "automatic"
+
+    assert not generation_dir.exists()
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    assert list(index["identities"]) == [replacement.digest]
+
+
 def _equal_captures(
     store: NodeSnapshotStore, tmp_path: Path, names: str
 ) -> tuple[list[SourceCacheIdentity], int]:

@@ -219,7 +219,10 @@ exclusive lock that process holds on its token file, so retirement never removes
 generation another live process reads, and a dead owner's marker is removed. Retirement
 renames a generation out of selection under the lock and deletes its files afterwards, as it
 does for an input snapshot. Clear removes a slot's identities, pointers, and pin but never a
-generation another operation still leases; that generation retires when released. A reader may lease a named
+generation another operation still leases; that generation retires when released. Until it
+does, as when an open Windows handle refuses its rename, its identity stays in the slot's
+index, unpointed, as publication keeps a signature it superseded, so the slot's next
+publication or Clear retires it. A reader may lease a named
 generation, current or not, so a spawned worker reads exactly the generation its parent
 leased.
 

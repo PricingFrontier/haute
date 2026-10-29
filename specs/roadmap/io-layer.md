@@ -15,7 +15,6 @@ continues from the September 2026 review's packages, which are retired.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | IO-R06 | Planned | P3 | A snapshot build validates its generation outside the store-wide lease lock, and the cache-usage endpoint stops walking every generation per preview. |
-| IO-R07 | Planned | P3 | A clear keeps a deferred generation indexed, the POSIX revision applies the settle rule on coarse clocks, and `catalog` is excluded from config by decision. |
 | IO-R08 | Planned | P3 | The supervised-build mechanism exists once, and the IO layer's write-only fields are gone. |
 
 ## Planned improvements
@@ -41,32 +40,6 @@ part reader); a repeated usage call within the interval reads no generation.
 **Evidence:** `src/haute/_source_cache.py::SourceCacheStore` (the validation inside
 `with self._lease_lock`); `src/haute/_node_snapshots.py` (publication after the lock);
 `src/haute/routes/cache.py::cache_usage`; `src/haute/_node_snapshots.py::NodeSnapshotStore.usage`.
-
-### IO-R07 — Clear, settle and exclusion rules
-**Why:** `clear_slot` and `clear` drop a slot's index even when a generation's retirement
-was deferred by a Windows `PermissionError`, leaving an unpointed, unindexed generation
-that only the budget pass finds, while publication keeps such an identity indexed on
-purpose; the specification's "Clear and pin" and "Publication" sections disagree. On
-POSIX the native revision is `st_ctime_ns`, whose granularity is the filesystem's, and the
-two-second settle rule never applies to a regular file, so a same-size rewrite within one
-tick on a coarse-clock filesystem keeps the cached proof. `catalog` is config-expressible
-for `scan_iceberg` and `sink_iceberg` although it is a location-bearing object argument
-that JSON cannot construct; it is unreachable while `pyiceberg` is absent.
-
-**Plan:** Keep an identity indexed while generations remain in both clears; apply the
-settle rule to a POSIX revision whose timestamps are whole seconds; add `catalog` to the
-object-valued or remote-IO argument exclusions.
-
-**Acceptance:** A deferred clear leaves the generation indexed and the next sweep retires
-it; a coarse-clock rewrite within a tick is re-proved after the settle; `catalog` is
-absent from `registry_capabilities()`.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_node_snapshots.py::NodeSnapshotStore.clear_slot`;
-`src/haute/_node_snapshots.py::NodeSnapshotStore.clear`;
-`src/haute/_json_shred/_source_proof.py::observe_freshness`;
-`src/haute/_polars_io_registry.py::registry_capabilities`.
 
 ### IO-R08 — One supervised build, no write-only fields
 **Why:** The supervised-build mechanism (parent-chosen generation and staging token,

@@ -87,7 +87,9 @@ relationship is recorded in `specs/ownership.toml`.
   reused across processes from its durable record
   ([caching](../caching/low-level.md#durable-source-proofs)). Reuse follows the one freshness guarantee in the
   [caching](../caching/low-level.md) specification: a native revision where the platform has
-  one, otherwise a stat trusted only for a file modified at least two seconds earlier,
+  one (a POSIX revision whose ctime is a whole second, from a filesystem stamping whole
+  seconds, only once settled), otherwise a stat trusted only for a file modified at least two
+  seconds earlier,
   because a filesystem stamps mtimes at its own granularity and a same-size rewrite inside
   that window would otherwise keep a stale signature (git's racy-index rule).
   `signed_source_files` names the files `source_signature` hashes: the files a `file`
@@ -516,8 +518,10 @@ generations to their owners when readable. Inventory takes no lock and mutates n
   retention in the slot index, renames staging to the generation, seeds the verified memo,
   creates the publisher's marker and in-process count, then commits the pointer. Indexing
   before exposure keeps interrupted candidates discoverable; an existing slot pin protects
-  the previous current data until commit. It retires the superseded generation when no live marker holds
-  it. **One dataset per slot.** It then retires every *other* signature the slot index
+  the previous current data until commit. It then retires every generation of the identity
+  other than the new current one that no live marker holds: the one it replaced, and any a
+  deferred retirement or Clear left unpointed, so recapturing the same signature completes
+  a deferred Clear. **One dataset per slot.** It then retires every *other* signature the slot index
   lists, by `clear_slot`'s mechanics — drop the pointer so nothing selects that signature
   again, then retire its generations — and drops each from the index. A node therefore holds
   one dataset, and a re-cache after an edit replaces what was there rather than adding a
@@ -537,8 +541,13 @@ generations to their owners when readable. Inventory takes no lock and mutates n
 - **Retention.** Neither explicit nor automatic datasets are removed to admit another
   dataset. Pins and last-used metadata remain available, but do not control storage limits.
 - **Clear and pin.** `clear_slot(slot)` removes every indexed identity's pointer, retires
-  each unheld generation, and deletes the index; `clear(identity)` does the same for one
-  identity. `pin(identity)` pins a slot to an identity that has a current generation.
+  each unheld generation, and drops the slot's pin; `clear(identity)` does the same for one
+  identity, dropping the pin when it names that identity. Both unindex an identity only once
+  no generation of it remains (`_retire_identities_locked`, which publication's
+  supersession shares): one a reader holds, or whose rename an open Windows handle refused,
+  stays indexed and unpointed, so the slot's next publication or Clear, or the budget
+  check, retires it, and the index file goes when it lists no identity. `pin(identity)`
+  pins a slot to an identity that has a current generation.
 - **Retirement.** Every retirement in the store, an input snapshot's included
   (`SourceCacheStore._retire_generation_locked`), renames the generation directory under
   the lease lock to `.retired-<hex>` beside `generations/`; the files are deleted after the
@@ -757,7 +766,10 @@ is no eager dataframe or collect-then-write fallback.
   against the remote-IO, object-valued, and execution-owned exclusions, and an argument only
   the committed schema has would otherwise stay on offer while resting on whatever
   deprecation shim still accepts it. Rejection names the version boundary when
-  `haute._polars_io_schema.retired_argument_names()` explains the miss.
+  `haute._polars_io_schema.retired_argument_names()` explains the miss. Iceberg's `catalog`
+  (`scan_iceberg`, `sink_iceberg`) is object-valued: a pyiceberg catalog object locates the
+  table and JSON cannot construct one, so it is excluded and absent from
+  `registry_capabilities()`, like `storage_options`.
 - The registry supplies each node's source/target fields positionally — one leading argument
   for a path or inline source and for every output target, two (query, uri) for a database
   input — so a Polars release inside the specifier may append or rename later parameters but
@@ -990,7 +1002,8 @@ failure sections above are the maintained answers.
   refused with the preview remedy.
 - `tests/test_polars_io_registry.py`, `tests/test_polars_io_interface_contracts.py`, and
   `tests/test_bounded_sink_contract.py` cover registry/schema drift, validation, engine
-  gates, and partitioned sink publication.
+  gates, and partitioned sink publication; Iceberg's `catalog` is offered by no mode of
+  `registry_capabilities()`.
 - `tests/test_io.py`, `tests/test_data_io_nodes.py`, `tests/test_data_io_roundtrips.py`, and
   `tests/test_json_read_documented.py` cover format dispatch, generated-node integration,
   declared schemas, projections, round trips, and bounded-memory policy.
@@ -1099,7 +1112,9 @@ failure sections above are the maintained answers.
   by an automatic capture and replaced by an explicit build),
   the automatic-capture budget (the least recently leased evicted first; pinned, leased
   and input generations never; an explicit build evicting nothing; the re-checks under
-  the lease lock; a deferred eviction staying indexed until a later check retires it;
+  the lease lock; a deferred eviction staying indexed until a later check retires it, and
+  a deferred `clear_slot` or `clear` staying indexed, unpointed and unpinned until the
+  slot's next capture, of the same signature or another, retires it;
   unclassifiable generations counted and kept; the default and configured budget; a
   store fault never failing the capture, and a misconfigured budget failing it with its
   lease released) and `usage()`,

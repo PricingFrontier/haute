@@ -86,12 +86,16 @@ revision (Windows volume, file id and USN; POSIX device, inode and ctime, with s
 mtime), which every write moves, including a same-size rewrite that restores the mtime.
 Where the platform has no native revision the token is the file's stat, trusted only for a
 file last modified at least two seconds before it was observed; a younger file is proved again
-on every use. A file's content signature (`xxh64:<digest>:<size>`) is hashed once per
+on every use. A POSIX ctime is only as fine as the filesystem's clock, and one that stamps
+whole seconds keeps the revision through a same-size rewrite within that second, so a POSIX
+revision whose ctime is a whole second is trusted, like a stat, only once the file has
+settled. A file's content signature (`xxh64:<digest>:<size>`) is hashed once per
 unchanged token and shared by every consumer in the process, so one edit costs one hash. A
 proof made under a native revision is also recorded on disk in the project's `.haute_cache`,
 so a restarted server reuses it while that exact revision holds instead of reading the whole
-file again; a proof made under the stat fallback lives only in process memory, so without a
-native revision a fresh process proves each file once.
+file again; a proof made under the stat fallback, or under a revision that has not settled,
+lives only in process memory, so without a native revision a fresh process proves each file
+once.
 
 A structured (JSON, JSONL, NDJSON, XML) API Input's emitting tables are input
 snapshots in the same store as Data Input snapshots, one per table: automatic
