@@ -97,7 +97,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P3 | Copied Explore node B receives cached result.node_id A for the same producer/card. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual pivot service/cache. Numbers are correct; browser stores them under B, so no numerical cross-node corruption claim. |
 | P2 | Training status discards eight recorded tuning progress fields. | [MOD-R08](modelling.md#mod-r08--training-status-carries-the-progress-the-worker-records) | Real JobStore and async status route. Cancel response has the same omission by source inspection. |
 | P2 | Shared-flight operation TimeoutError is mistaken for a polling timeout; completed work spins until cancellation. | [ROAD-WORKER-09](background-jobs-api.md#road-worker-09--completed-operation-timeouts-are-terminal-failures) | Real SharedFlights and LatestWinsQueue with controlled failure/cancellation. |
-| P2 | Initial bind publishes second/second-save after a branch change but records unpublished first. | [BUG-47](bugs.md#bug-47--initial-storage-binding-records-the-published-branch) | Real local Git transport/bare remote; only volume IO and timing substituted. UC shares the ignored snapshot by source inspection. |
 | P1 | Project utility junction points outside: GET reads and PUT changes the outside Python file. | [API-R07](server-api.md#api-r07--utility-files-written-like-project-files), extended | Actual Windows junction and route operations in temporary directories; only project discovery injected. |
 | P2 | Push rejection names origin; after dropdown changes, its Catch up/Spin off submits backup. | [GIT-R18](git-integration.md#git-r18--recovery-acts-on-the-remote-named-by-its-dialog) | Actual component/ApiError/response parser, both actions, with the remote changed mid-push. Spin off sets local work aside on a branch; a real wrong-remote mutation was not executed. |
 | P2 | Returning from a failed directory to a cached parent leaves the error hiding the files. | [FNED-R02](frontend-node-editors.md#fned-r02--drafts-in-step-with-the-document-errors-with-their-detail), extended | Actual FileBrowser and settings cache, list transport substituted. |
@@ -277,7 +276,6 @@ adds a finding group or changes the 42-group count.
 | typed allowed-values onto older form | Duplicate **WB-38**. |
 | closing return / Unicode line splitting | Duplicates **PCFG-R17**, **PCFG-R18**. |
 | replacement decoding | Duplicate **PCFG-R10**, which explicitly covers sidecar/source replacement decoding before save. |
-| Databricks append | Duplicate **BUG-45**. |
 | dirty delete / broken pairs | Duplicates **GIT-R03**, **GIT-R16**. |
 | recurring Git failures/compensation | The named failure-surfacing concern is **GIT-R02**; duplicate compensation mechanisms are **GIT-R05**. These broad notes do not establish any additional specific exception path. |
 | non-SQLite form insertion | Duplicate **WB-10** for non-SQLite form insertion (the scratch spelling WB-R10 is not another package). The note gives no additional concrete database defect. |
@@ -288,7 +286,6 @@ adds a finding group or changes the 42-group count.
 | CLI/init/deploy existing gaps | Duplicates **DEP-R11** for impact alignment, **DEP-R12A** for build ownership, **DEP-R09** for dependency closure, and **CLI-R01**, **CLI-R04**, **CLI-R06** for init overwrite, TOML mutation and hook behavior. The scratch shorthand DEP-R12 predates its split; generic CLI errors/eager reads name no additional concrete case. |
 | inactive source-switch branch | Duplicate **EXEC-R14**. |
 | Literal-only chunked selects | Duplicate **EXEC-R09**; the deployed request-order witness is included in its accepted extension above. |
-| Submodel source conservation | Duplicate **BUG-19** for dropped authored statements; no additional unspecified conservation failure is claimed. |
 | Model diagnostic weights | Duplicate **MOD-R05**. |
 | Hosted sign-in headers | Duplicate **WB-25**; separate local Host-boundary finding remains WB-39. |
 | Asynchronous assistant tool blocking | Duplicate **ASSIST-57**. |
@@ -325,7 +322,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | local app Host boundary | **WB-39**. |
 | save/repair Git transaction gap | **GIT-R17**. |
 | pyfunc classifier output shape | **MSC-11**. |
-| initial binding restart branch | **BUG-47**. |
 | literal select row proof | **EXEC-R09**. |
 | multi-frame node-instance full preview | **SUB-R06** after requested split; formerly bundled SUB-R01. |
 | predicted output signature dtype | **MOD-R09** after requested split; formerly bundled MOD-R05. |
