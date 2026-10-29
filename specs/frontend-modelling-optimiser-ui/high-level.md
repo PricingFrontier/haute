@@ -407,7 +407,7 @@ settings; inline arrow-based, role/final-selection-aware monotonic controls; the
 interaction editors against the shared dtype-class and expression-grammar fixtures; unset-only algorithm selection, read-only selected-algorithm
 context, and the absence of an in-place change action; mutually exclusive fixed/tuned Params
 bodies, arbitrary params JSON round trips, valid fixed/search-space autosave, compact default
-draft presentation, CatBoost's starter `one_hot_max_size`, the run
+draft presentation, CatBoost's starter `one_hot_max_size`, t-boost's eight starter parameters, the run
 summary's categorical encoding, invalid/non-object/reserved-key draft persistence without Apply/Revert or
 inline warnings, selected-strategy click-time validation, and GPU task-type merge; plain setup-tab
 labels, click-time-only aggregate validation beneath Train, authoritative bounded live-history
@@ -659,10 +659,17 @@ this discrete solve a positive λ can sit beside positive slack.
   interaction is a score table over its two axes, or one line per cell of its column axis.
   All are additive link-scale term scores, never labelled as SHAP. A traced EBM prediction lists one contribution per term, an interaction
   as one row.
-- A t-boost node starts with `n_trees` 4000 and `max_interaction_order` 3 in its parameters and
-  no other key, so every other setting is t-boost's own recommended recipe; its starter search
-  space varies `learning_rate`, `max_interaction_order` and `lambda_`. Its readiness issue
-  `tboost-n-trees` mirrors the backend's `n_trees` rule on Parameters.
+- A t-boost node starts with eight parameters: `n_trees` 4000, `max_interaction_order` 3,
+  `n_bags` 8, `interaction_gain_hurdle` 2, `prune` true, `prune_main_effects` true,
+  `band_tolerance` 0.75 and `graduate` true. All but `prune_main_effects` are t-boost's own
+  defaults (its unset `graduate` graduates too), written out so the node shows that bagging,
+  pruning, banding and graduation are on; `prune_main_effects` is the one starter value that
+  differs from t-boost's default, so pruning may drop main effects as well as interactions.
+  Every other setting is t-boost's own recommended recipe. Its starter search space varies
+  `learning_rate`, `max_interaction_order` and `lambda_`. Two readiness issues mirror the
+  backend's rules on Parameters: `tboost-n-trees` when `n_trees` is not a positive whole
+  number, and `tboost-prune-main-effects` when `prune_main_effects` is true with `prune` set
+  to false or with a monotonicity constraint in the Features pane.
 - A t-boost result adds a Tables tab: the model's rating tables ranked by importance, with the
   base value. Every table shows as a table by default, with a Table/Chart switch. A main
   effect's table lists its cells (level groups, or numeric intervals such as `(25, 40]` after

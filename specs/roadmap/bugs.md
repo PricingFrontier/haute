@@ -9,10 +9,9 @@ submodel files.
 `BUG-21` and `BUG-24` were found on 5 October 2026 while checking the deployment
 guides against the CI/CD files `haute init` generates: as generated, those files fail before a
 first container release succeeds. The guides give the manual step that works today for each,
-and drop it when the package lands. `BUG-28` to
-`BUG-30`, found the same day, are text that no longer matches the behaviour it
-describes: the offset tooltip, a tuned t-boost run's summary and the t-boost starter
-parameters in the modelling UI specification. `BUG-40` to `BUG-43`
+and drop it when the package lands. `BUG-28` and
+`BUG-29`, found the same day, are text that no longer matches the behaviour it
+describes: the offset tooltip and a tuned t-boost run's summary. `BUG-40` to `BUG-43`
 come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md): the hosted
 Databricks app's boot and build script, the UC transport's clients, the storage binding's
 unknown keys and a quadratic schema resolution in banding; `BUG-44` and `BUG-45`, from the
@@ -27,7 +26,6 @@ same review, are the Databricks browsing errors and the non-atomic first append.
 | BUG-24 | Decision | P1 | Container targets log in to their registry before `haute deploy` pushes, and GitLab container deploys run where Docker is available. |
 | BUG-28 | Planned | P2 | The offset tooltip names every loss that treats the offset as an exposure, and the losses that take no offset. |
 | BUG-29 | Planned | P2 | A tuned t-boost run's summary says its published model is the winning trial's fit, not a refit. |
-| BUG-30 | Planned | P3 | The modelling UI specification lists the t-boost starter parameters and readiness issues the editor has. |
 | BUG-40 | Planned | P2 | The hosted Databricks app installs the wheel and its pinned dependencies from a lock at boot, and its build script takes the app name as a parameter. The build selects its current wheel rather than a stale lexicographic match. |
 | BUG-41 | Planned | P3 | The UC volume transport builds one workspace client per process. |
 | BUG-42 | Decision | P3 | The storage binding record either rejects unknown keys or is named as the exception to the canonical-only policy. |
@@ -140,27 +138,6 @@ wording and a tuned EBM result with it.
 
 **Evidence:** `frontend/src/panels/modelling/SummaryTab.tsx` (the tuning line);
 `src/haute/modelling/_tuning.py::tuning_final_projection`.
-
-### BUG-30 — The modelling UI specification lists the t-boost starter parameters
-**Why:** The specification says a new t-boost node starts with `n_trees` 4000 and
-`max_interaction_order` 3 "and no other key", with `tboost-n-trees` as its readiness
-issue. The editor writes eight keys (adding `n_bags`, `interaction_gain_hurdle`, `prune`,
-`prune_main_effects`, `band_tolerance` and `graduate`) and also raises
-`tboost-prune-main-effects` when pruning main effects meets a monotonicity constraint or
-`prune` set to false.
-
-**Plan:** Update the specification's t-boost bullet to the eight starter keys and both
-readiness issues, noting that `prune_main_effects` is the one starter value that differs
-from t-boost's own default.
-
-**Acceptance:** The specification and `TBOOST_DEFAULT_PARAMS` list the same keys and
-values, and the readiness issues match `trainingObjective.ts`.
-
-**Dependencies:** None.
-
-**Evidence:** `specs/frontend-modelling-optimiser-ui/high-level.md` (Behaviour, t-boost);
-`frontend/src/panels/ModellingConfig.tsx` (`TBOOST_DEFAULT_PARAMS`);
-`frontend/src/utils/trainingObjective.ts` (the t-boost readiness issues).
 
 ### BUG-40 — The hosted app boots from a lock
 **Why:** Every boot of the hosted Databricks app force-reinstalls the vendored wheel and
