@@ -9,11 +9,11 @@ submodel files.
 `BUG-21` and `BUG-24` were found on 5 October 2026 while checking the deployment
 guides against the CI/CD files `haute init` generates: as generated, those files fail before a
 first container release succeeds. The guides give the manual step that works today for each,
-and drop it when the package lands. `BUG-40` to `BUG-43`
+and drop it when the package lands. `BUG-40` to `BUG-42`
 come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md): the hosted
-Databricks app's boot and build script, the UC transport's clients, the storage binding's
-unknown keys and a quadratic schema resolution in banding; `BUG-44` and `BUG-45`, from the
-same review, are the Databricks browsing errors and the non-atomic first append.
+Databricks app's boot and build script, the UC transport's clients and the storage binding's
+unknown keys; `BUG-44` and `BUG-45`, from the same review, are the Databricks browsing
+errors and the non-atomic first append.
 
 ## Priorities
 
@@ -25,7 +25,6 @@ same review, are the Databricks browsing errors and the non-atomic first append.
 | BUG-40 | Planned | P2 | The hosted Databricks app installs the wheel and its pinned dependencies from a lock at boot, and its build script takes the app name as a parameter. The build selects its current wheel rather than a stale lexicographic match. |
 | BUG-41 | Planned | P3 | The UC volume transport builds one workspace client per process. |
 | BUG-42 | Decision | P3 | The storage binding record either rejects unknown keys or is named as the exception to the canonical-only policy. |
-| BUG-43 | Planned | P3 | Banding factors resolve the plan's schema once instead of once per factor. |
 | BUG-44 | Planned | P2 | A Databricks browsing failure (an expired token, a missing catalog, a missing permission) is answered with a message naming the cause instead of the sanitized 500. |
 | BUG-45 | Planned | P2 | A first `append` to a Databricks table that does not yet exist either creates and fills it in one statement or leaves nothing behind when the insert fails. |
 | BUG-46 | Planned | P2 | Rating a source column named value is either faithfully represented or refused before the editor overwrites its levels. |
@@ -160,21 +159,6 @@ by name.
 
 **Evidence:** `src/haute/_project_storage.py::StorageBinding`; `specs/README.md`;
 `specs/hosted-project-storage/high-level.md`.
-
-### BUG-43 — Banding factors resolve the schema once
-**Why:** `apply_banding_factors` calls `collect_schema()` on the growing lazy plan once per
-breakpoint factor, the quadratic pattern `_apply_rating_step_outputs` avoids by threading
-one schema through its loop.
-
-**Plan:** Resolve the schema once and update it per factor as the rating step does.
-
-**Acceptance:** A banding node with many factors resolves its schema once (a counting
-test); results unchanged.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_rating.py::apply_banding_factors`;
-`src/haute/_rating.py::_apply_rating_step_outputs`.
 
 ### BUG-44 — Databricks browsing failures name their cause
 **Why:** The four browsing routes call the SDK with no handler, so an expired PAT, a
