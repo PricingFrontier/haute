@@ -1,5 +1,5 @@
 import type { Edge, Node, XYPosition } from "@xyflow/react"
-import { isSteppedTransformConfig, renameStepInputs } from "./polarsStepInputs"
+import { isSteppedTransformConfig, renameStepInputs, steppedSurfaceAllowsInputReferences } from "./polarsStepInputs"
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 import { appEdge, appNode, selectOnlyNode } from "./flowElements"
@@ -386,7 +386,8 @@ function assertDownstreamInputMappingCanBeRewritten(
     throw new Error("Cannot rewrite a malformed inputMapping; expected an object")
   }
   const hasInputMapping = isPlainObject(rawInputMapping)
-  const shouldCreateMapping = target.data.nodeType === NODE_TYPES.POLARS && !config.instanceOf
+  // A Transform's or Load File's code names its inputs, so it keeps the old name.
+  const shouldCreateMapping = steppedSurfaceAllowsInputReferences(String(target.data.nodeType)) && !config.instanceOf
   if (!hasInputMapping && !shouldCreateMapping) return
 
   let matchedOldCurrentInput = false
@@ -430,7 +431,7 @@ function rewriteDownstreamInputMapping(
     throw new Error("Cannot rewrite a malformed inputMapping; expected an object")
   }
   const hasInputMapping = isPlainObject(rawInputMapping)
-  const shouldCreateMapping = node.data.nodeType === NODE_TYPES.POLARS && !config.instanceOf
+  const shouldCreateMapping = steppedSurfaceAllowsInputReferences(String(node.data.nodeType)) && !config.instanceOf
   if (!hasInputMapping && !shouldCreateMapping) return node
 
   const inputMapping = hasInputMapping ? rawInputMapping : {}

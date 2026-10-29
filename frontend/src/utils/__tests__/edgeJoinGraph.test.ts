@@ -340,7 +340,35 @@ describe("insertEdgeJoinNode", () => {
     })
   })
 
-  it("does not add inputMapping to a non-Polars downstream node", () => {
+  it("adds inputMapping to a downstream Load File, whose code names its inputs", () => {
+    const target: Node = {
+      ...node("loader"),
+      type: NODE_TYPES.EXTERNAL_FILE,
+      data: {
+        label: "Loader",
+        nodeType: NODE_TYPES.EXTERNAL_FILE,
+        config: { code: "df = df.join(a, on='k')" },
+      },
+    }
+    const result = insertEdgeJoinNode({
+      nodes: [node("a"), target, node("lookup")],
+      edges: [edge("e-a-loader", "a", "loader")],
+      targetEdgeId: "e-a-loader",
+      connection: { source: "lookup" },
+      position: { x: 0, y: 0 },
+      idFactory: () => "edgeJoin_1",
+    })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const finalized = finalizeInsertion(result, "Edge_Join_1")
+    expect(finalized.nodes.find((n) => n.id === "loader")?.data.config).toEqual({
+      code: "df = df.join(a, on='k')",
+      inputMapping: { a: "Edge_Join_1" },
+    })
+  })
+
+  it("does not add inputMapping to a downstream node that does not name its inputs", () => {
     const target: Node = {
       ...node("output"),
       type: NODE_TYPES.OUTPUT,

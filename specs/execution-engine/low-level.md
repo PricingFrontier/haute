@@ -1896,8 +1896,9 @@ present a structural or schema result as execution evidence.
   whole graph) reports as `missing` the columns the original's incoming edges carry
   that the instance's do not, read from the walk's recorded schemas rather than a
   materialised frame, so a source the preview did not materialise still counts. A
-  request input emits one frame per table, and its edge carries the frame its
-  `sourceHandle` names, never the bundle; an edge naming no frame the source emits
+  request input emits one frame per table it declares, and its edge carries the
+  declared schema of the frame its `sourceHandle` names (the schema the walk reports
+  for that frame), never the bundle; an edge naming no table the input declares
   carries none, even from a one-frame source. Its consumer reports that binding as
   its own failure when it runs, and the warnings never choose a frame for it.
 - **`topo_sort_ids`** is insertion-order deterministic (via `graphlib.TopologicalSorter`),

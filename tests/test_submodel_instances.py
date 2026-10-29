@@ -947,8 +947,14 @@ def test_flatten_keeps_the_input_names_a_load_file_childs_code_reads(tmp_path: P
             GraphEdge(id="r", source="rates", target="loader"),
         ],
     )
-    # A node instance of the loader reads the original's names through it.
-    copy = _node("copy", NodeType.EXTERNAL_FILE, label="Copy", config={"instanceOf": "loader"})
+    # A node instance of the loader reads the original's names through it; its
+    # mapping is keyed by those names.
+    copy = _node(
+        "copy",
+        NodeType.EXTERNAL_FILE,
+        label="Copy",
+        config={"instanceOf": "loader", "inputMapping": {"policies": "policies", "rates": "rates"}},
+    )
     definition = _definition(
         graph=PipelineGraph(nodes=[loader, copy], edges=[]),
         input_ports=[
@@ -1000,11 +1006,18 @@ def test_flatten_keeps_the_input_names_a_load_file_childs_code_reads(tmp_path: P
                 {"k": 2, "x": 20, "rate": 2.0, "premium": 120.0},
             ]
         )
-    # Dissolved and saved, the loader's function takes the names its code reads.
+    # Dissolved and saved, the loader's function takes the names its code reads,
+    # and its instance maps those names to its own inputs.
     generated = graph_to_code_multi(flattened, pipeline_name="main")["main.py"]
     assert (
         "def Loader(policies: pl.LazyFrame, rates: pl.LazyFrame, *, obj) -> pl.LazyFrame:\n"
         "    df = policies\n"
+    ) in generated
+    assert (
+        "@pipeline.instance(\n"
+        '    of="Loader", inputMapping={"policies": "Policy_table", "rates": "Rate_table"}\n'
+        ")\n"
+        "def Copy(Policy_table, Rate_table): ...\n"
     ) in generated
 
 

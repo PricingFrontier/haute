@@ -40,7 +40,10 @@ from haute._cache import (
 )
 from haute._data_points import DataPointResolver
 from haute._env import int_env
-from haute._execute_lazy import lineage_preparation_order
+from haute._execute_lazy import (
+    _declared_api_input_frame_schema_items,
+    lineage_preparation_order,
+)
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_utils import REQUEST_INPUT_KINDS
@@ -1492,23 +1495,22 @@ def _execute_graph_core(
         schema_warnings: dict[str, list[SchemaWarning]] = {}
 
         def _delivered_column_names(edge: GraphEdge) -> set[str]:
-            """The columns *edge* carries into its target, from the walk's schemas.
+            """The columns *edge* carries into its target, as this run reports them.
 
-            A request input emits one frame per table and an edge carries the
-            one its ``sourceHandle`` names, never the bundle. An edge naming no
-            frame the source emits carries none here: its consumer reports that
-            binding when it runs, and no other frame stands in for it.
+            A request input emits one frame per table it declares, and an edge
+            carries the one its ``sourceHandle`` names, never the bundle: the
+            declared schema the walk reports for that frame. An edge naming no
+            table the input declares carries none, even from a one-frame input:
+            its consumer reports that binding when it runs, and no other frame
+            stands in for it. A source this run did not report carries none.
             """
-            if edge.sourceHandle is None:
-                if str(node_map[edge.source].data.nodeType) in REQUEST_INPUT_KINDS:
-                    return set()
-            else:
-                frame_schema = frame_cols.get((edge.source, edge.sourceHandle))
-                if frame_schema is not None:
-                    return {name for name, _dtype in frame_schema}
-            # A multi-frame source has no flat schema of its own, so a handle
-            # naming none of its frames finds nothing here either.
-            return {name for name, _dtype in output_cols.get(edge.source, [])}
+            source = node_map[edge.source]
+            if str(source.data.nodeType) not in REQUEST_INPUT_KINDS:
+                return {name for name, _dtype in output_cols.get(edge.source, [])}
+            if edge.sourceHandle is None or edge.source not in output_cols:
+                return set()
+            frame = _declared_api_input_frame_schema_items(source).get(edge.sourceHandle)
+            return {name for name, _dtype in frame or ()}
 
         def _input_column_names(node_id: str) -> set[str]:
             return {
