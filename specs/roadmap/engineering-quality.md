@@ -10,7 +10,7 @@ specified in
 [23 September 2026 codebase review](codebase-review-2026-09-23.md). The
 `ENGQ-CI` packages come from the 30 September 2026 CI duration study: per-test
 timings from diagnostic PR #279 (run 36769548458) and the sharded lanes of
-PR #280. `ENGQ-CI06`, `ENGQ-R06` and `ENGQ-R07` to `ENGQ-R11` come from the
+PR #280. `ENGQ-CI06` and `ENGQ-R07` to `ENGQ-R11` come from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md), which also added
 evidence to `ENGQ-R01` and `ENGQ-R05`.
 
@@ -24,7 +24,6 @@ evidence to `ENGQ-R01` and `ENGQ-R05`.
 | ENGQ-R01 | Planned | P3 | Production code that nothing calls, or only tests call, is removed. |
 | ENGQ-R05 | Planned | P3 | Tests are organised by component and behaviour, not by coverage campaign. |
 | ENGQ-CI06 | Planned | P3 | Haute's own workflows pin every action by commit. |
-| ENGQ-R06 | Planned | P3 | The build hook fails with the install hint when Node is missing instead of guessing a machine path. |
 | ENGQ-R07 | Planned | P2 | Every gate runs on every run: a red coverage shard fails the coverage gate instead of skipping it, the documentation site builds strictly on every pull request, the warnings filter holds in the exploration lane and in ledger evidence, and the two safety-critical coverage lists agree with each other and the specification. Core-only dependency smoke stays free of optional extras and cannot pass with every test skipped. |
 | ENGQ-R08 | Planned | P2 | The suite exercises what production runs: a representative route slice under the process execution mode, the production preparation-join bound, a flaky browser test made visible, and fixture git commands that fail loudly. |
 | ENGQ-R09 | Planned | P3 | The write-sandbox ratchet moves: the observe census is recorded and may not grow, modules with an empty census become strict, the system temp directory is a stated gap or no longer allowed, and the lint allowlist is keyed by site. |
@@ -268,22 +267,6 @@ lint step fails on a tag pin.
 
 **Evidence:** `.github/workflows/ci.yml`; `.github/workflows/release.yml`;
 `.github/workflows/container-smoke.yml`.
-
-### ENGQ-R06 — The build hook fails like the CLI
-**Why:** When Node is not on `PATH`, the build hook falls back to
-`C:\Program Files\nodejs\npm.cmd` and prepends that directory to `PATH`, the
-machine-layout fallback the CLI's `_npm` helper deliberately removed because it
-hides the real problem.
-
-**Plan:** Fail with the same install hint as the CLI.
-
-**Acceptance:** A build without Node on `PATH` stops with the hint; no path under
-`Program Files` appears in the hook.
-
-**Dependencies:** None.
-
-**Evidence:** `hatch_build.py::_npm`; `hatch_build.py::_node_env`;
-`src/haute/cli/_helpers.py::_npm`.
 
 ### ENGQ-R07 — Every gate runs on every run
 **Why:** The `backend-coverage-gate` job has no `if:` and the shard's coverage artifact is

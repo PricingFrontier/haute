@@ -521,6 +521,52 @@ def test_run_uses_safe_text_decoding_and_timeout(
 
     assert run.call_args.kwargs["errors"] == "replace"
     assert run.call_args.kwargs["timeout"] == 900
+    assert "env" not in run.call_args.kwargs
+
+
+def _cli_install_hint(missing: str) -> str:
+    """The message the CLI fails with when *missing* is not on PATH."""
+    import click
+
+    from haute.cli import _helpers
+
+    def which(name: str) -> str | None:
+        return None if name == missing else f"/usr/bin/{name}"
+
+    helper = _helpers._node_env if missing == "node" else _helpers._npm
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(_helpers.shutil, "which", which)
+        with pytest.raises(click.ClickException) as raised:
+            helper()
+    return raised.value.message
+
+
+@pytest.mark.parametrize("missing", ["node", "npm"])
+def test_explicit_build_without_node_on_path_stops_with_the_cli_install_hint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, missing: str
+) -> None:
+    module = _load_hatch_build(monkeypatch)
+    _seed_frontend_inputs(tmp_path)
+    monkeypatch.setenv("HAUTE_BUILD_FRONTEND", "1")
+    monkeypatch.setattr(
+        module.shutil,
+        "which",
+        lambda name: None if name == missing else f"/usr/bin/{name}",
+    )
+    run = Mock()
+    monkeypatch.setattr(module.subprocess, "run", run)
+
+    with pytest.raises(RuntimeError) as raised:
+        _hook(module, tmp_path).initialize("standard", {})
+
+    assert str(raised.value) == _cli_install_hint(missing)
+    run.assert_not_called()
+
+
+def test_build_hook_guesses_no_machine_install_path() -> None:
+    source = (Path(__file__).resolve().parents[1] / "hatch_build.py").read_text(encoding="utf-8")
+
+    assert "Program Files" not in source
 
 
 def test_run_translates_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

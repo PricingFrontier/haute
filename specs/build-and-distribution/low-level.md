@@ -10,7 +10,7 @@
 | `.python-version` | Pins the checkout's selected Python interpreter version for version-manager tooling. |
 | `.gitattributes` | Enforces LF checkout normalisation, including byte-sensitive JSON test fixtures, so generated and golden-file inputs are stable across platforms. |
 | `uv.lock` | Locks the repository's Python dependency resolution used by the build, docs, and quality workflows. |
-| `hatch_build.py` | Defines `FrontendBuildHook`: inventories and fingerprints production inputs, validates the generated input/output manifests and every local output dependency of the builder's page and the underwriter app's (`_APP_PAGE`, through `_require_pages_ready`), explicitly rebuilds embedded frontend assets, resolves npm, and turns failed prerequisites/commands into runtime errors. |
+| `hatch_build.py` | Defines `FrontendBuildHook`: inventories and fingerprints production inputs, validates the generated input/output manifests and every local output dependency of the builder's page and the underwriter app's (`_APP_PAGE`, through `_require_pages_ready`), explicitly rebuilds embedded frontend assets, resolves Node and npm from PATH (failing with the CLI's install hint when either is missing), and turns failed prerequisites/commands into runtime errors. |
 | `src/haute/__init__.py` | Defines the installed package's public import surface, which is the package root selected for wheel distribution. |
 | `src/haute/py.typed` | PEP 561 marker declaring that the installed `haute` package ships type information. |
 | `frontend/package.json` | Declares the private frontend's pinned Node/npm engines, locked-toolchain commands, production build (`tsc -b && vite build && vite build --config vite.app.config.ts`, the builder's page then the underwriter app's), the app's development server (`dev:app`), explicit contract generation/check commands, and build-time dependencies. Ajv, json-schema-to-typescript, and esbuild are exact-pinned development generators, not production runtime dependencies. |
@@ -155,10 +155,11 @@ package input validated by `hatch_build.py`, not hand-edited source.
   malformed, escaping, dangling, or incomplete output graph and for an absent,
   malformed, unreadable, or mismatched input manifest. It names the explicit
   rebuild opt-in where rebuilding can repair the state.
-- `_npm()` raises `RuntimeError` if npm is not on PATH and the known Windows
-  location is unavailable. `_run()` supplies an environment from
-  `FrontendBuildHook._node_env()` (prepending the known Windows Node.js directory
-  when `node` is not on PATH), uses replacement decoding, applies the
+- `_npm()` resolves Node and npm from `PATH` only and raises `RuntimeError`
+  with the CLI's install hint (`src/haute/cli/_helpers.py::_node_env` and
+  `_npm` give the same words) when either is missing; it never guesses a
+  machine install path, which would hide that Node is not on `PATH`. `_run()`
+  inherits the caller's environment, uses replacement decoding, applies the
   package-build timeout, prints subprocess stdout/stderr, and raises
   `RuntimeError` on a non-zero return code or timeout; the missing-output sanity
   check does the same.
@@ -190,7 +191,9 @@ package input validated by `hatch_build.py`, not hand-edited source.
   absent/corrupt/mismatched input manifests, direct and transitive/dynamic
   missing output assets, manifest-key/path/schema failures, path escapes,
   validation mode, explicit-build skip/rebuild behavior, unconditional locked
-  installation, safe subprocess decoding and timeout translation, the atomic
+  installation, safe subprocess decoding and timeout translation, a build
+  without Node or npm on `PATH` stopped with the CLI's install hint before any
+  command runs, the atomic
   input-manifest publication failure branch
   (`tests/test_hatch_build.py::test_atomic_proof_publication_failure`: a failed
   temporary-file replace raises `RuntimeError` naming the destination, leaves no

@@ -390,7 +390,6 @@ production:
 | Bugs | PM-47 | `BUG-42` (Decision) |
 | Bugs | PM-49 | `BUG-43` |
 | Engineering quality | PM-29 (Haute's own workflows) | `ENGQ-CI06` |
-| Engineering quality | PM-48 | `ENGQ-R06` |
 | Engineering quality | PM-50 | `ENGQ-R01` (evidence added) |
 | Engineering quality | the campaign-named test modules recounted | `ENGQ-R05` (evidence added) |
 | Workbench UI | FWB-1, FWB-6, FWB-8, FWB-9 | `WB-35` |
