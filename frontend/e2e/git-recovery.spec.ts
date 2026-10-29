@@ -115,7 +115,10 @@ test.describe("a project left on an earlier version outside Haute", () => {
     await newBranchName(page).fill("motor pricing")
     await useThisBranch(page).click()
     await expect(
-      toast(page, "Could not set working branch: 'motor pricing' can't be used as a branch name."),
+      toast(
+        page,
+        "Could not set working branch: 'motor pricing' can't be used as a branch name: it contains a space.",
+      ),
     ).toBeVisible()
     await expect(chooser(page)).toBeVisible()
     await expect(newBranchName(page)).toHaveValue("motor pricing")
