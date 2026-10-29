@@ -178,27 +178,38 @@ no alias or migration shim; direct test callers use the same current contract.
   bound again) makes it opaque too, and `evaluate_expression` reports `unresolved_name: <name>`
   for the first such name the expression reads instead of computing with a stale binding or a
   preamble value of the same name.
-- **A value changed in place is unknown from there on**: a statement can change a value without
-  binding its name again. A store or delete through a subscript or attribute (`d["k"] = v`,
-  `d["k"] += v`, `del d["k"]`, `obj.a = v`), an augmented assignment (`items += [x]`), a `pop`,
-  `popitem` or `setdefault` call anywhere, and a method called on its own line that changes one
-  of Python's containers (`d.update(...)`, `cols.append(x)`, on any name, a preamble's too) or is
-  called on a value the code bound make the name it reaches unknown, at any depth of the
-  statement (inside a loop body too). A method called alone on a name the code never bound
-  (`pl.Config.set_tbl_rows(5)`) is not a change. A name a function, lambda or comprehension
-  binds for itself (a parameter, a local) is that scope's own, so changing it there changes
-  nothing outside; a function changing a name it does not bind changes that name, counted at
-  the function's definition. A change inside a function the value is passed to
-  (`shuffle(cols)`) is not followed.
-- **Names that may hold the same value go unknown together**: a binding shares a value with
-  every name the code bound that its value reads, and with any name its value is or holds as it
-  stands (`alias = RATES`, `outer = {"k": d}`, `merged = {**defaults}`), in either direction and
-  through further bindings: an element read out may itself be a container (`rate = d["A"]`), and
-  a copy keeps its original's nested values (`dict(d)`). Only a binding whose value is a number,
-  string or other immutable literal, with subscripts of literals read (`rate = d["A"]` where
-  `d["A"]` is a number), shares nothing. Binding a name again at the top level takes it out of
-  its group; a name a block may bind shares with what it may get there and still with what it
-  held, since the block may not run.
+- **A value changed in place makes every value that could change unknown**: a statement can
+  change a value without binding its name again, and which other names hold that value is not
+  something the table can follow (aliases, containers holding containers, copies, `match`
+  captures, function locals). So when a statement changes a value in place, every name the code
+  bound whose value could change becomes unknown from there on, the changed one with it; only a
+  number, string or other immutable literal (subscripts of literals read, so `rate = d["A"]`
+  with `d["A"]` a number) and a Polars expression that read only such values (Polars copies
+  what an expression reads when it is built; one holding a `lambda` or reading a name still can
+  change) keep their values. After such a change, evaluation also treats a preamble value read
+  by a later formula as unknown when it could have been changed: anything but a number, string,
+  date or time, a tuple of those, a Polars expression, a module, a class or a function. Code
+  with no change in place is untouched by this; code with one used to be traced with stale
+  values, so a refusal there is the conservative answer.
+- **What counts as a change in place**: a store or delete through a subscript or attribute
+  (`d["k"] = v`, `d["k"] += v`, `del d["k"]`, `obj.a = v`); an augmented assignment unless it is
+  arithmetic on a number or a string (`factor += 0.1` binds a new value, `items += [x]` and
+  `items *= 2` change the list); a `pop`, `popitem` or `setdefault` call anywhere; a method
+  called on its own line that changes one of Python's containers (`update`, `append`,
+  `extend`, `insert`, `remove`, `clear`, `sort`, `reverse`, `add`, `discard`, the set updates),
+  on any name, or any method called on its own line on a value the code bound; and a call
+  passing a value to a function the code defines that changes its parameter, directly or
+  through another such function. A hit on a value that cannot change (`expr.alias("z")` alone
+  on a closed Polars expression) is no change. The scan reaches every depth of a statement
+  (a loop body, a function body); a name a function, lambda, class or comprehension binds for
+  itself counts only when a binding of it there reads a value from outside, so a helper
+  changing its own list or parameter changes nothing until it is called, while decorators,
+  defaults and base classes run where they are written. A change made by a function the code
+  does not define (`random.shuffle(cols)`, a preamble helper) is not followed: that is the
+  boundary of what reading the code can see.
+- **Every way of binding a name counts**: besides assignments, a `match` capture,
+  `except ... as e` and a walrus inside a simple assignment's value bind their names, so a name
+  they bind is unknown afterwards.
 - **A formula sees the changes of its own statement**: a `with_columns`/`select` call inside
   `if`/`for`/`while`/`try`/`with`/`match`, or in a statement that changes a value in place
   (`with_columns(a=pl.lit(d.pop("k")), y=...)`), takes the bindings in force after that whole

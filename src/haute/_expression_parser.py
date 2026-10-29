@@ -16,7 +16,9 @@ import copy
 import datetime as _dt
 import json
 import math
+import numbers
 import re
+import types
 from collections.abc import Collection, Iterator, Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -1005,6 +1007,11 @@ def _names_assigned_by(node: ast.AST) -> set[str]:
     if isinstance(node, ast.Name):
         return set() if isinstance(node.ctx, ast.Load) else {node.id}
     names: set[str] = set()
+    # A match capture and ``except ... as e`` name what they bind as text.
+    if isinstance(node, (ast.MatchAs, ast.MatchStar, ast.ExceptHandler)) and node.name:
+        names.add(node.name)
+    if isinstance(node, ast.MatchMapping) and node.rest:
+        names.add(node.rest)
     for child in ast.iter_child_nodes(node):
         names |= _names_assigned_by(child)
     return names
@@ -1058,6 +1065,7 @@ _CHANGING_METHODS = frozenset(
         "symmetric_difference_update",
     }
 )
+_POLARS_NAMES = frozenset({"pl", "polars"})
 
 
 def _base_name(node: ast.AST) -> str | None:
@@ -1093,72 +1101,52 @@ def _scope_locals(scope: ast.AST) -> set[str]:
     return set()
 
 
-def _changed_base(node: ast.AST, bound: Collection[str]) -> str | None:
-    """The name whose value *node* itself may change in place, if any."""
-    if isinstance(node, (ast.Subscript, ast.Attribute)) and isinstance(
-        node.ctx, (ast.Store, ast.Del)
-    ):
-        return _base_name(node.value)
-    if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
-        return node.target.id
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-        if node.func.attr in _CHANGING_METHODS_WITH_RESULTS:
-            return _base_name(node.func.value)
-        return None
-    if (
-        isinstance(node, ast.Expr)
-        and isinstance(node.value, ast.Call)
-        and isinstance(node.value.func, ast.Attribute)
-    ):
-        called_on = _base_name(node.value.func.value)
-        if node.value.func.attr in _CHANGING_METHODS or called_on in bound:
-            return called_on
-    return None
+def _scope_parts(scope: ast.AST) -> tuple[list[ast.AST], list[ast.AST]]:
+    """The parts of a scope evaluated where it is written, and the parts that run in it.
 
-
-def _names_changed_in_place(
-    node: ast.AST, bound: Collection[str], local: frozenset[str] = frozenset()
-) -> set[str]:
-    """The names whose value *node* may change without binding them again.
-
-    A store or delete through a subscript or attribute (``d["k"] = v``,
-    ``del d["k"]``, ``obj.a = v``), an augmented assignment, a ``pop``,
-    ``popitem`` or ``setdefault`` call, and a method called on its own line
-    that changes a container (``d.update(...)``) or is called on a value the
-    code bound (one of *bound*), anywhere in *node*. A method called alone on
-    a name the code never bound (``pl.Config.set_tbl_rows(5)``) is no change.
-    A name a function, lambda or comprehension binds for itself (a parameter,
-    a local) is that scope's own: changing it there changes nothing outside.
+    Decorators, defaults and base classes run when the definition does; a
+    comprehension's first iterable is read where the comprehension is.
     """
-    if isinstance(node, _OWN_SCOPES):
-        local = local | _scope_locals(node)
-    names: set[str] = set()
-    base = _changed_base(node, bound)
-    if base is not None and base not in local:
-        names.add(base)
-    for child in ast.iter_child_nodes(node):
-        names |= _names_changed_in_place(child, bound, local)
-    return names
+    written: list[ast.AST]
+    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        args = scope.args
+        written = [*args.defaults, *(default for default in args.kw_defaults if default)]
+        if isinstance(scope, ast.Lambda):
+            return written, [scope.body]
+        return [*scope.decorator_list, *written], list(scope.body)
+    if isinstance(scope, ast.ClassDef):
+        written = [*scope.decorator_list, *scope.bases, *(kw.value for kw in scope.keywords)]
+        return written, list(scope.body)
+    if isinstance(scope, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+        first, *rest = scope.generators
+        made = [scope.key, scope.value] if isinstance(scope, ast.DictComp) else [scope.elt]
+        return [first.iter], [first.target, *first.ifs, *rest, *made]
+    return [], []
 
 
-def _held_names(node: ast.AST) -> set[str]:
-    """The names whose value *node* is or holds as it stands (``a``, ``[a]``, ``{**a}``)."""
-    parts: list[ast.expr]
-    if isinstance(node, ast.Name):
-        return {node.id}
-    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-        parts = node.elts
-    elif isinstance(node, ast.Dict):
-        parts = node.values
-    elif isinstance(node, ast.IfExp):
-        parts = [node.body, node.orelse]
-    elif isinstance(node, ast.BoolOp):
-        parts = node.values
-    elif isinstance(node, (ast.NamedExpr, ast.Starred)):
-        parts = [node.value]
-    else:
-        return set()
-    return set().union(*(_held_names(part) for part in parts))
+def _called_roots(tree: ast.AST) -> set[int]:
+    """The names *tree* calls, directly or through attributes (``len``, ``np`` in ``np.log(x)``)."""
+    roots: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            while isinstance(func, ast.Attribute):
+                func = func.value
+            if isinstance(func, ast.Name):
+                roots.add(id(func))
+    return roots
+
+
+def _value_names(tree: ast.AST, bound: Collection[str] = ()) -> set[str]:
+    """The names *tree* reads as values: not a function it calls, unless *bound* binds it."""
+    called = _called_roots(tree)
+    return {
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name)
+        and isinstance(node.ctx, ast.Load)
+        and (id(node) not in called or node.id in bound)
+    }
 
 
 def _literal_value(node: ast.AST) -> object:
@@ -1175,30 +1163,54 @@ def _immutable(value: object) -> bool:
     return value is None or isinstance(value, (bool, int, float, complex, str, bytes))
 
 
-def _names_held_by(value: ast.AST, resolved: ast.AST, bound: set[str]) -> set[str]:
-    """The names a binding to *value* (*resolved* through the table) may share a value with.
-
-    A number, string or other immutable literal shares nothing (``rate = d["A"]``
-    with ``d["A"]`` a number). Anything else may hold what a name it reads holds,
-    an element that is itself a container or a shallow copy's values, so it shares
-    with every name the code bound that it reads, and with any name it is or
-    holds as it stands (``alias = RATES``, ``{**defaults}``).
-    """
+def _immutable_literal(node: ast.AST) -> object | None:
+    """The value of *node* when it is a literal nothing can change in place, else ``None``."""
     try:
-        if _immutable(_literal_value(resolved)):
-            return set()
+        value = _literal_value(node)
     except (ValueError, TypeError, KeyError, IndexError, SyntaxError, RecursionError):
-        pass  # not a literal the table can read: it may share
-    read = {
-        node.id
-        for node in ast.walk(value)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-    }
-    return (read & bound) | _held_names(value)
+        return None  # not a literal the table can read
+    return value if value is not None and _immutable(value) else None
+
+
+def _builds_polars_expression(node: ast.AST) -> bool:
+    """Whether *node* evaluates to a Polars expression (``pl.col("x") * 2``)."""
+    if isinstance(node, (ast.Call, ast.Attribute, ast.Subscript)):
+        root: ast.AST = node
+        while isinstance(root, (ast.Call, ast.Attribute, ast.Subscript)):
+            root = root.func if isinstance(root, ast.Call) else root.value
+        return isinstance(root, ast.Name) and root.id in _POLARS_NAMES
+    if isinstance(node, ast.BinOp):
+        return _builds_polars_expression(node.left) or _builds_polars_expression(node.right)
+    if isinstance(node, ast.UnaryOp):
+        return _builds_polars_expression(node.operand)
+    if isinstance(node, ast.Compare):
+        return any(_builds_polars_expression(part) for part in (node.left, *node.comparators))
+    if isinstance(node, ast.BoolOp):
+        return any(_builds_polars_expression(part) for part in node.values)
+    if isinstance(node, ast.IfExp):
+        return _builds_polars_expression(node.body) and _builds_polars_expression(node.orelse)
+    return False
+
+
+def _cannot_change(resolved: ast.AST) -> bool:
+    """Whether no change in place can reach the value *resolved* stands for.
+
+    An immutable literal, or a Polars expression that read only literals:
+    Polars copies the values an expression reads when it is built. One that
+    holds a function (``map_elements(lambda v: v * d["A"])``) or reads a name
+    can still see a change.
+    """
+    if _immutable_literal(resolved) is not None:
+        return True
+    return (
+        _builds_polars_expression(resolved)
+        and not any(isinstance(node, ast.Lambda) for node in ast.walk(resolved))
+        and _value_names(resolved) <= _POLARS_NAMES
+    )
 
 
 def _possible_bindings(node: ast.AST) -> Iterator[tuple[set[str], ast.AST]]:
-    """The names *node* may bind in the code's own scope, each with the value it may get."""
+    """The names *node* may bind in its own scope, each with the value it may get."""
     if isinstance(node, _OWN_SCOPES):
         return
     if isinstance(node, ast.Assign):
@@ -1211,93 +1223,209 @@ def _possible_bindings(node: ast.AST) -> Iterator[tuple[set[str], ast.AST]]:
         yield _names_assigned_by(node.optional_vars), node.context_expr
     elif isinstance(node, ast.NamedExpr):
         yield {node.target.id}, node.value
+    elif isinstance(node, ast.Match):
+        for case in node.cases:
+            yield _names_assigned_by(case.pattern), node.subject
     for child in ast.iter_child_nodes(node):
         yield from _possible_bindings(child)
 
 
-class _SharedValues:
-    """Which names may hold the same value, as far as the code's bindings show.
+class _Scope:
+    """A function's, lambda's, class's or comprehension's own names.
 
-    A binding puts its name in the group of every name it may share a value
-    with, merging their groups; binding the name again for certain takes it
-    out and leaves the rest of its group together, while a binding that may
-    not run keeps it in its old group too.
+    A change to one of them reaches outside the scope only when the name may
+    hold a value from outside: a binding of it in the scope reads one, directly
+    or through another such name. A parameter holds whatever a call passes, so
+    a change to it counts where the function is called (``_mutating_functions``).
     """
 
-    def __init__(self) -> None:
-        self._groups: dict[str, int] = {}
-        self._made = 0
+    def __init__(self, scope: ast.AST, outer: _Scope | None, bound: Collection[str]) -> None:
+        self._outer = outer
+        self._own = _scope_locals(scope)
+        params = (
+            _parameter_names(scope.args)
+            if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+            else set()
+        )
+        if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bindings = [binding for stmt in scope.body for binding in _possible_bindings(stmt)]
+        elif isinstance(scope, ast.Lambda):
+            bindings = []
+        else:
+            comprehension = cast(ast.ListComp, scope)
+            bindings = [
+                (_names_assigned_by(each.target), each.iter) for each in comprehension.generators
+            ]
+        self._outside: set[str] = set()
+        while True:
+            grown = {
+                target
+                for targets, value in bindings
+                if any(
+                    name not in self._own or name in self._outside
+                    for name in _value_names(value, bound)
+                )
+                for target in (targets & self._own) - params
+            } - self._outside
+            if not grown:
+                break
+            self._outside |= grown
 
-    @property
-    def names(self) -> Collection[str]:
-        return self._groups.keys()
+    def owns(self, name: str) -> bool:
+        return name in self._own or (self._outer is not None and self._outer.owns(name))
 
-    def bind(self, name: str, held: Collection[str]) -> None:
-        groups = {self._group(other) for other in held}
-        merged = min(groups) if groups else self._new_group()
-        for other, group in self._groups.items():
-            if group in groups:
-                self._groups[other] = merged
-        self._groups[name] = merged
+    def counts(self, name: str) -> bool:
+        """Whether a change to *name* here can reach a value outside the scope."""
+        if name in self._own:
+            return name in self._outside
+        return self._outer is None or self._outer.counts(name)
 
-    def join(self, name: str, held: Collection[str]) -> None:
-        """Let *name* hold any of *held*'s values or still its own."""
-        self.bind(name, {name, *held})
 
-    def sharing(self, names: Collection[str]) -> set[str]:
-        """*names* and every name in the group of one of them."""
-        groups = {self._groups[name] for name in names if name in self._groups}
-        return set(names) | {name for name, group in self._groups.items() if group in groups}
+def _changed_bases(
+    node: ast.AST, table: Mapping[str, ast.AST], bound: Collection[str], mutating: Collection[str]
+) -> list[str]:
+    """The names whose value *node* itself may change in place."""
+    if isinstance(node, (ast.Subscript, ast.Attribute)) and isinstance(
+        node.ctx, (ast.Store, ast.Del)
+    ):
+        base = _base_name(node.value)
+        return [] if base is None else [base]
+    if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
+        # Augmenting a number or a string binds a new value; only a container
+        # changes in place (``items += [x]``, ``items *= 2``).
+        step = _immutable_literal(_substitute_names_in_ast(node.value, table))
+        repeats = isinstance(node.op, ast.Mult) and isinstance(step, int)
+        return [] if step is not None and not repeats else [node.target.id]
+    if isinstance(node, ast.Call):
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr in _CHANGING_METHODS_WITH_RESULTS:
+                base = _base_name(node.func.value)
+                return [] if base is None else [base]
+        elif isinstance(node.func, ast.Name) and node.func.id in mutating:
+            passed = [*node.args, *(keyword.value for keyword in node.keywords)]
+            return [base for base in map(_base_name, passed) if base is not None]
+        return []
+    if (
+        isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+    ):
+        called_on = _base_name(node.value.func.value)
+        if called_on is not None and (
+            node.value.func.attr in _CHANGING_METHODS or called_on in bound
+        ):
+            return [called_on]
+    return []
 
-    def _group(self, name: str) -> int:
-        if name not in self._groups:
-            self._groups[name] = self._new_group()
-        return self._groups[name]
 
-    def _new_group(self) -> int:
-        self._made += 1
-        return self._made
+def _names_changed_in_place(
+    node: ast.AST,
+    table: Mapping[str, ast.AST],
+    bound: Collection[str],
+    mutating: Collection[str],
+    scope: _Scope | None = None,
+) -> set[str]:
+    """The names whose value *node* may change without binding them again.
+
+    A store or delete through a subscript or attribute (``d["k"] = v``,
+    ``del d["k"]``, ``obj.a = v``), an augmented assignment that is not
+    arithmetic on a number or a string, a ``pop``, ``popitem`` or
+    ``setdefault`` call, a call passing a value to a function of the code that
+    changes its parameter (one of *mutating*), and a method called on its own
+    line that changes a container (``d.update(...)``) or is called on a value
+    the code bound (one of *bound*), anywhere in *node*. A hit on a value
+    nothing can change (a number, a closed Polars expression) is no change.
+    A name a function, lambda, class or comprehension binds for itself is
+    that scope's own (see ``_Scope``).
+    """
+    if isinstance(node, _OWN_SCOPES):
+        written, inner = _scope_parts(node)
+        own_scope = _Scope(node, scope, bound)
+        names: set[str] = set()
+        for part in written:
+            names |= _names_changed_in_place(part, table, bound, mutating, scope)
+        for part in inner:
+            names |= _names_changed_in_place(part, table, bound, mutating, own_scope)
+        return names
+    names = set()
+    for base in _changed_bases(node, table, bound, mutating):
+        if scope is not None and not scope.counts(base):
+            continue
+        known = base in table and (scope is None or not scope.owns(base))
+        if known and _cannot_change(table[base]):
+            continue
+        names.add(base)
+    for child in ast.iter_child_nodes(node):
+        names |= _names_changed_in_place(child, table, bound, mutating, scope)
+    return names
+
+
+def _mutating_functions(tree: ast.Module) -> frozenset[str]:
+    """The functions *tree* defines that change in place a value passed to them.
+
+    A function changes a parameter itself, or passes it to another such
+    function.
+    """
+    functions = [
+        node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    mutating: set[str] = set()
+    while True:
+        found = {
+            function.name
+            for function in functions
+            if function.name not in mutating
+            and any(
+                base in _parameter_names(function.args)
+                for stmt in function.body
+                for node in ast.walk(stmt)
+                for base in _changed_bases(
+                    node, {}, _scope_locals(function) | _parameter_names(function.args), mutating
+                )
+            )
+        }
+        if not found:
+            return frozenset(mutating)
+        mutating |= found
 
 
 def _bind_statement(
     stmt: ast.stmt,
     table: dict[str, ast.AST],
     unprovable: set[str],
-    shared: _SharedValues,
+    mutating: Collection[str],
 ) -> bool:
     """Fold one top-level statement into the names the code has bound.
 
     A simple assignment binds its value with the names it reads resolved as
     they stand, so a later rebinding never changes it; a binding that reads a
     name whose value is unknown is unknown too. Any other assignment (inside
-    control flow, augmented, unpacking) leaves its names unknown, and a value
-    changed in place leaves unknown every name that may hold it. Returns
-    whether the statement changed a value in place.
+    control flow, augmented, unpacking, a match capture) leaves its names
+    unknown. A value changed in place may be one any name holds, so every
+    name whose value could change goes unknown with it. Returns whether the
+    statement changed a value in place.
     """
-    bound = {*table, *unprovable, *shared.names}
+    changed = _names_changed_in_place(stmt, table, {*table, *unprovable}, mutating)
+    if changed:
+        reached = [name for name, value in table.items() if not _cannot_change(value)]
+        for name in {*changed, *reached}:
+            table.pop(name, None)
+            unprovable.add(name)
     binding = _simple_binding(stmt)
-    if binding is None:
-        # A name the statement may bind may hold what it gets there, or still
-        # what it held before.
-        for names, value in _possible_bindings(stmt):
-            held = _names_held_by(value, _substitute_names_in_ast(value, table), bound)
-            for name in names:
-                shared.join(name, held)
-    changed = _names_changed_in_place(stmt, bound)
-    for name in shared.sharing(changed):
-        table.pop(name, None)
-        unprovable.add(name)
     if binding is None:
         for name in _names_assigned_by(stmt):
             table.pop(name, None)
             unprovable.add(name)
         return bool(changed)
     name, value = binding
+    # A walrus in the value binds its name too.
+    for inner in _names_assigned_by(value):
+        table.pop(inner, None)
+        unprovable.add(inner)
     if _is_df_assignment(value):
         return bool(changed)
     resolved = _substitute_names_in_ast(value, table)
     table[name] = resolved
-    shared.bind(name, _names_held_by(value, resolved, bound))
     # The names as written count too: an unknown binding the value reads is
     # replaced by its expression, which no longer names it.
     if any(
@@ -1314,9 +1442,10 @@ def _bind_statement(
 @lru_cache(maxsize=256)
 def _calls_with_bindings(
     code: str,
-) -> tuple[tuple[ast.Call, int | None, dict[str, ast.AST], frozenset[str]], ...]:
+) -> tuple[tuple[ast.Call, int | None, dict[str, ast.AST], frozenset[str], bool], ...]:
     """Every ``with_columns``/``select`` call of *code* in execution order, with
-    the names bound before its statement and those whose value there is unknown.
+    the names bound before its statement, those whose value there is unknown,
+    and whether a value was changed in place before it.
 
     A call inside a block (``if``, ``for``, ...), or in a statement that changes
     a value in place, takes the bindings after that statement, so whatever the
@@ -1328,17 +1457,19 @@ def _calls_with_bindings(
     calls = _find_with_columns_calls(tree)
     indices = [_statement_index(stmts, call) for call, _lineno in calls]
     wanted = set(indices)
-    snapshots: dict[int, tuple[dict[str, ast.AST], frozenset[str]]] = {}
+    mutating = _mutating_functions(tree)
+    snapshots: dict[int, tuple[dict[str, ast.AST], frozenset[str], bool]] = {}
     table: dict[str, ast.AST] = {}
     unprovable: set[str] = set()
-    shared = _SharedValues()
+    after_change = False
     for index in range(len(stmts) + 1):
         stmt = stmts[index] if index < len(stmts) else None
-        snapshot = (dict(table), frozenset(unprovable)) if index in wanted else None
-        changed = stmt is not None and _bind_statement(stmt, table, unprovable, shared)
+        snapshot = (dict(table), frozenset(unprovable), after_change) if index in wanted else None
+        changed = stmt is not None and _bind_statement(stmt, table, unprovable, mutating)
+        after_change = after_change or changed
         if snapshot is not None:
             if changed or isinstance(stmt, _BLOCK_STATEMENT_TYPES):
-                snapshot = (dict(table), frozenset(unprovable))
+                snapshot = (dict(table), frozenset(unprovable), after_change)
             snapshots[index] = snapshot
     return tuple((call, lineno, *snapshots[index]) for (call, lineno), index in zip(calls, indices))
 
@@ -1544,6 +1675,9 @@ class _Definition:
     symbol_table: dict[str, ast.AST]
     unprovable: frozenset[str]
     bound_name: str | None
+    # A value was changed in place before the expression ran, so a preamble
+    # value it reads may not be the one the preamble bound.
+    after_change: bool
 
     def unknown_name(self, unknown: Collection[str]) -> str | None:
         """The first name the expression reads whose value is not known, if any.
@@ -1583,12 +1717,14 @@ def _find_definition(code: str, target_column: str) -> _Definition | None:
     its own statement. *code* must parse.
     """
     best: _Definition | None = None
-    for call, _lineno, table, unprovable in _calls_with_bindings(code):
+    for call, _lineno, table, unprovable, after_change in _calls_with_bindings(code):
         for expr_node, alias_name, line, bound in _extract_expressions_from_with_columns(
             call, table
         ):
             if alias_name == target_column:
-                best = _Definition(expr_node, line, {} if bound else table, unprovable, bound)
+                best = _Definition(
+                    expr_node, line, {} if bound else table, unprovable, bound, after_change
+                )
     return best
 
 
@@ -1650,7 +1786,7 @@ def _parse_expression_impl(code: str, target_column: str) -> ParsedExpression | 
     )
 
 
-def _substitute_names_in_ast(node: ast.AST, table: dict[str, ast.AST]) -> ast.AST:
+def _substitute_names_in_ast(node: ast.AST, table: Mapping[str, ast.AST]) -> ast.AST:
     """*node* with every name *table* binds replaced by its value, as a new tree.
 
     Each substituted value keeps the source position of the name it replaces,
@@ -1856,6 +1992,19 @@ def _evaluate_expression_impl(
     evaluation_ns = {name: value for name, value in namespace.items() if name not in unprovable}
     traced_row = _native_row(row_values) if row is None else row
     node = None if resolved is None else _inline_global_constants(resolved, constant_values)
+    if unknown is None and node is not None and definition is not None and definition.after_change:
+        # After a change in place, a preamble value the code could have changed
+        # is not known to be the one the preamble bound.
+        unknown = next(
+            (
+                sub.id
+                for sub in ast.walk(node)
+                if isinstance(sub, ast.Name)
+                and sub.id in namespace
+                and _may_change(namespace[sub.id])
+            ),
+            None,
+        )
     computed = (
         _RowValue(reason="expression_not_located")
         if node is None
@@ -1885,6 +2034,28 @@ def _evaluate_expression_impl(
         dimmed_branches=branches.get("dimmed_branches", []),
         nested_branches=branches.get("nested_branches", []),
     )
+
+
+def _may_change(value: object) -> bool:
+    """Whether node code could change *value* in place.
+
+    Not a number, string, date or time, a tuple of those, a Polars expression,
+    a module, a class or a function; anything else may hold what code changed.
+    """
+    if isinstance(value, (tuple, frozenset)):
+        return any(_may_change(item) for item in value)
+    unchangeable = (
+        str,
+        bytes,
+        numbers.Number,
+        _dt.date,
+        _dt.time,
+        _dt.timedelta,
+        pl.Expr,
+        types.ModuleType,
+        type,
+    )
+    return not (value is None or isinstance(value, unchangeable) or callable(value))
 
 
 def _inline_global_constants(node: ast.AST, values: Mapping[str, Any]) -> ast.AST:
@@ -2204,7 +2375,7 @@ def assignment_phases(code: str, target_column: str) -> AssignmentPhases | None:
         _cached_parse(code)
     except SyntaxError:
         return None
-    calls = [_call_writes(call, table) for call, _line, table, _ in _calls_with_bindings(code)]
+    calls = [_call_writes(call, table) for call, _line, table, *_ in _calls_with_bindings(code)]
     target_calls = [
         index for index, (names, _unknown) in enumerate(calls) if target_column in names
     ]
@@ -2479,7 +2650,7 @@ def _parse_expression_chain_impl(code: str, target_column: str) -> list[ParsedEx
     parsed_by_col: dict[str, ParsedExpression] = {}
     refs_by_col: dict[str, list[str]] = {}
 
-    for wc_call, _lineno, symbol_table, _unprovable in _calls_with_bindings(code_wrapped):
+    for wc_call, _lineno, symbol_table, *_ in _calls_with_bindings(code_wrapped):
         exprs = _extract_expressions_from_with_columns(wc_call, symbol_table)
         for expr_node, alias_name, ln, bound in exprs:
             if alias_name is None:

@@ -13,6 +13,7 @@ pass as the parser is built out.
 from __future__ import annotations
 
 import math
+from datetime import date
 from types import SimpleNamespace
 
 import polars as pl
@@ -23,6 +24,7 @@ import pytest
 # ---------------------------------------------------------------------------
 from haute._expression_parser import (
     AssignmentPhases,
+    _may_change,
     assignment_phases,
     evaluate_expression,
     parse_expression,
@@ -1880,6 +1882,53 @@ class TestValuesChangedInPlace:
                 'factor = 1.0\nRATES.update({"A": 2.0})\n' + _TIMES_A.format("RATES"),
                 "RATES",
             ),
+            (
+                "factors = [1.0, 2.0]\ndef helper(factors=factors.pop(0)):\n    pass\n"
+                'df = df.with_columns(y=pl.col("x") * factors[0])',
+                "factors",
+            ),
+            (
+                'factors = {"A": {"rate": 1.0}}\nif True:\n    alias = factors\n'
+                '    rate = alias["A"]\n    rate["rate"] = 2.0\n'
+                'df = df.with_columns(y=pl.col("x") * factors["A"]["rate"])',
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\nouter = (alias := factors)\nalias["A"] = 2.0\n'
+                + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\nouter = {}\nouter["k"] = factors\nouter["k"]["A"] = 2.0\n'
+                + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\nmatch factors:\n    case alias:\n        alias["A"] = 2.0\n'
+                + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\ndef bump():\n    local = factors\n    local["A"] = 2.0\n'
+                "bump()\n" + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\ndef helper(d):\n    d.update({"A": 2.0})\n'
+                "helper(factors)\n" + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\n'
+                'expr = pl.col("x").map_elements(lambda v: v * factors["A"])\n'
+                'factors["A"] = 2.0\ndf = df.with_columns(y=expr)',
+                "expr",
+            ),
+            (
+                "factor = 1.0\nmatch 2.0:\n    case factor:\n        pass\n"
+                'df = df.with_columns(y=pl.col("x") * factor)',
+                "factor",
+            ),
         ],
         ids=[
             "subscript",
@@ -1905,6 +1954,15 @@ class TestValuesChangedInPlace:
             "unpacked-into-a-dict",
             "changed-in-a-function",
             "a-preamble-container-method",
+            "a-default-argument",
+            "an-element-of-an-alias-made-in-a-block",
+            "a-walrus-in-a-binding",
+            "stored-into-a-container",
+            "a-match-capture",
+            "a-function-local-alias",
+            "passed-to-a-function-that-changes-it",
+            "a-lambda-in-a-polars-expression",
+            "rebound-by-a-match-capture",
         ],
     )
     def test_the_value_is_reported_not_guessed(self, code: str, unknown: str) -> None:
@@ -1933,11 +1991,6 @@ class TestValuesChangedInPlace:
                 20.0,
             ),
             (
-                'alias = {"A": 1.0}\nfactors = alias\nfactors = {"A": 2.0}\nalias["A"] = 5.0\n'
-                + _TIMES_A.format("factors"),
-                20.0,
-            ),
-            (
                 "factor = 2.0\nif True:\n    other = 1\n"
                 '    df = df.with_columns(y=pl.col("x") * factor)',
                 20.0,
@@ -1947,14 +2000,29 @@ class TestValuesChangedInPlace:
                 '    factors.update({"A": 2.0})\n' + _TIMES_A.format("factors"),
                 10.0,
             ),
+            (
+                'factors = {"A": 1.0}\nexpr = pl.col("x") * factors["A"]\n'
+                'factors["A"] = 2.0\ndf = df.with_columns(y=expr)',
+                10.0,
+            ),
+            (
+                'factors = {"A": 2.0}\nfactor = 1.0\nfactor += 0.5\n' + _TIMES_A.format("factors"),
+                20.0,
+            ),
+            (
+                'expr = pl.col("x") * 2.0\nexpr.alias("z")\ndf = df.with_columns(y=expr)',
+                20.0,
+            ),
         ],
         ids=[
             "read-before-the-change",
             "a-function-call",
             "a-method-on-a-name-the-code-never-bound",
-            "an-alias-bound-again",
             "a-block-that-leaves-the-name-alone",
             "a-function-changing-its-own-parameter",
+            "a-polars-expression-built-before-the-change",
+            "arithmetic-on-a-number",
+            "a-method-alone-on-a-polars-expression",
         ],
     )
     def test_a_value_the_code_did_not_change_keeps_it(self, code: str, value: float) -> None:
@@ -1962,3 +2030,61 @@ class TestValuesChangedInPlace:
 
         assert result.not_computable_reason is None
         assert result.result_value == value
+
+    def test_a_preamble_value_after_a_change_is_reported_not_guessed(self) -> None:
+        # ``alias`` holds the preamble's dict; the change through it reaches
+        # ``RATES`` though the code never names it in a change.
+        code = 'alias = RATES\nalias["A"] = 2.0\n' + _TIMES_A.format("RATES")
+
+        result = evaluate_expression(code, "y", {"x": 10.0}, preamble_ns={"RATES": {"A": 1.0}})
+
+        assert result.result_value is None
+        assert result.not_computable_reason == "unresolved_name: RATES"
+
+    def test_a_preamble_number_after_a_change_still_computes(self) -> None:
+        code = (
+            'factors = {"A": 1.0}\nfactors["A"] = 2.0\ndf = df.with_columns(y=pl.col("x") * RATE)'
+        )
+
+        result = evaluate_expression(code, "y", {"x": 10.0}, preamble_ns={"RATE": 2.0})
+
+        assert result.not_computable_reason is None
+        assert result.result_value == 20.0
+
+    @pytest.mark.parametrize(
+        ("value", "may_change"),
+        [
+            (math, False),
+            (math.floor, False),
+            (SimpleNamespace, False),
+            (pl.col("x"), False),
+            (2.5, False),
+            ("text", False),
+            (date(2026, 1, 1), False),
+            ((1, "a"), False),
+            (None, False),
+            ({"A": 1.0}, True),
+            ([1.0], True),
+            ({1.0}, True),
+            (SimpleNamespace(rate=1.0), True),
+            ((1, [2]), True),
+        ],
+        ids=[
+            "module",
+            "function",
+            "class",
+            "polars-expression",
+            "number",
+            "string",
+            "date",
+            "tuple-of-scalars",
+            "none",
+            "dict",
+            "list",
+            "set",
+            "object",
+            "tuple-holding-a-list",
+        ],
+    )
+    def test_what_a_change_can_reach(self, value: object, may_change: bool) -> None:
+        assert _may_change(value) is may_change
