@@ -15,6 +15,11 @@ export default function useProjectDirty(): boolean {
   return canvas || form
 }
 
+/** `useProjectDirty` read now, outside a component: a toolbar undo's switch asks it. */
+export function isProjectDirty(): boolean {
+  return useGraphStore.getState().dirty || useWorkbenchStore.getState().formDirty
+}
+
 /**
  * After a switch the user chose over the form's unsaved edits: read the file again, so
  * the destination's form shows rather than the edits they discarded (the form store keeps

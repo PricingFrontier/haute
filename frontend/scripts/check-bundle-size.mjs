@@ -188,7 +188,12 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // (41.7 -> 42.5 KiB) and the workbench validators (14.7 -> 15.1 KiB); the editor's index
 // grows 170.1 -> 170.3 KiB, the initial bundle 299.6 KiB. From 1,717.0 KiB it is
 // 1,720.4 KiB; 1,722 KiB restores about 1.6 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1722
+// The git integration work beside them (the panel's guards before a tree change, a failed
+// history read with Retry, one context menu and one relative-time rule for every panel, and
+// broken pairs reported with their Repair; GitPanel 19.2 KiB, the editor's index 170.3 ->
+// 170.6 KiB, the initial bundle 299.6 -> 300.0 KiB, inside its 300 KiB) brings it to
+// 1,722.3 KiB; 1,724 KiB restores about 1.7 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1724
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

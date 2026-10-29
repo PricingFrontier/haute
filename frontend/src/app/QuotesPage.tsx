@@ -29,7 +29,8 @@ import { apiErrorMessage } from "../api/errors"
 import type { WorkbenchAppQuote } from "../api/types"
 import { inModalDialog, isFormControl } from "../hooks/keyboardTargets"
 import useToastStore from "../stores/useToastStore"
-import { fullTime, listColumns, listValue, relativeTime } from "./quoteValues"
+import { relativeTime } from "../utils/relativeTime"
+import { fullTime, listColumns, listValue } from "./quoteValues"
 import { followLink, navigate, newQuotePath, quotePath, quotesPath, quotesQueryOf } from "./route"
 import { BUTTON, Collapsible, FILL_BUTTON, FILL_STYLE, ICON_BUTTON, StageChip } from "./ui"
 import useAppStore from "./useAppStore"
@@ -362,7 +363,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                       {quote.assignee === principal ? "You" : quote.assignee}
                     </td>
                     <td className="px-2 whitespace-nowrap" style={{ color: "var(--text-secondary)" }} title={`${fullTime(quote.last_saved_at)} by ${quote.last_saved_by}`}>
-                      {relativeTime(quote.last_saved_at)}
+                      {relativeTime(new Date(quote.last_saved_at))}
                     </td>
                     <td className="px-2" onClick={(event) => event.stopPropagation()}>
                       <span className="flex justify-end gap-0.5 opacity-0 group-focus-within/row:opacity-100 group-hover/row:opacity-100">

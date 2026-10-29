@@ -213,6 +213,7 @@ vi.mock("../api/client", () => ({
     working_branch: null,
     current_branch: "",
     head_sha: null,
+    broken_pairs: [],
   })),
 }))
 

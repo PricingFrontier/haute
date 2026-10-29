@@ -67,7 +67,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | Priority | Trigger and observed consequence | Owning package | Evidence strength |
 |---|---|---|---|
 | P1 | An IDE save after assistant plan verification is overwritten by apply; the rename and post-save verification still succeed. | [ASSIST-61](assistant.md#assist-61--keep-the-authenticated-revision-through-commit) | Real temporary pipeline and transactional save; deterministic edit before commit. |
-| P1 | A concurrent milestone captures the Python from an in-flight save before its referenced configuration exists. | [GIT-R17](git-integration.md#git-r17--pipeline-saves-share-the-git-transaction-boundary) | Real Git repository, save and milestone with a barrier between artifact writes; both operations succeed. |
 | P2 | Two independent API Input edits before identity resolution completes retain only the second edit. | [FSH-R10](frontend-shared.md#fsh-r10--retain-edits-during-input-identity-resolution) | Actual controller: expected `[false, false]`, received `[true, false]`; `onUpdateNode` surfaces the superseded edit as an error toast. |
 | P1 | Cancellation of A finishes after B starts; A's reply retires B or publishes A's result under B's calculation identity. | [FSH-R11](frontend-shared.md#fsh-r11--cancellation-replies-belong-to-one-job) | Two pivot hook/store probes. Training has the same source pattern but was not separately executed. |
 | P1 | Inference for `first.json` returns after the user selected `second.json` and added a table; old path/tables are written back. | [FNED-R06](frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft) | Actual API Input editor with delayed inference response. |
@@ -129,29 +128,6 @@ Decisive sites: `PipelineApplicationService._prepare_apply`, `_commit` and
 in `src/haute/_workbench_app.py`; `handle_app_serve` in `src/haute/cli/_app.py`.
 The save service already has a conflict precondition, and
 `LocalTrustedHostMiddleware` already implements the local Host boundary.
-
-### Save and Git milestone
-
-The witness starts with a real temporary Git repository and working/ledger
-branch pair. Assistant Apply adds a banding node and its edge. The ordinary save
-is paused at `_write_config_files`, after Python has been written. A concurrent
-real `commit_milestone` succeeds before the save resumes. Its tree contains only
-`.gitignore` and `main.py`; that Python references `config/banding/Bands.json`.
-After resuming, Apply succeeds with two operations and the working files include
-that config and `main.haute.json`. The config was not part of the milestone.
-
-The probe controls only timing; save and Git behaviour are real. The root-level
-fixture uses the same `pipeline_folder=None` as its route. The measured result
-is an incomplete milestone, not a measured branch-switch or restore failure.
-Those operations take the same separate Git lock and must be considered when
-closing the save transaction boundary. `routes/_helpers.py::project_write`
-already holds both locks for other project mutations.
-Independent review also identified scoped node saves and repair-apply writers
-as sharing the gap through `_commit_repair_plan`, outside `SavePipelineService`.
-The main session verified those call sites and expanded `GIT-R17` to include
-their transactions and regressions. Those variants are source-supported; the
-executed interleaving above uses the full save transaction. Submodel
-create/dissolve are in-memory transforms whose persistence uses explicit Save.
 
 ### Evaluation
 
@@ -265,8 +241,7 @@ adds a finding group or changes the 42-group count.
 | typed allowed-values onto older form | Duplicate **WB-38**. |
 | closing return / Unicode line splitting | Duplicates **PCFG-R17**, **PCFG-R18**. |
 | replacement decoding | Duplicate **PCFG-R10**, which explicitly covers sidecar/source replacement decoding before save. |
-| dirty delete / broken pairs | Duplicates **GIT-R03**, **GIT-R16**. |
-| recurring Git failures/compensation | The named failure-surfacing concern is **GIT-R02**; duplicate compensation mechanisms are **GIT-R05**. These broad notes do not establish any additional specific exception path. |
+| recurring Git failures/compensation | Duplicate compensation mechanisms are **GIT-R05**. These broad notes do not establish any additional specific exception path. |
 | non-SQLite form insertion | Duplicate **WB-10** for non-SQLite form insertion (the scratch spelling WB-R10 is not another package). The note gives no additional concrete database defect. |
 | sandbox project globals | Duplicate **PCFG-R04**. |
 | match/type-alias support binding | Duplicate **PCFG-R19**. This does not settle the separate Polars module-alias shape candidate. |
@@ -301,7 +276,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | failed new solve identity | **FSH-R12**. |
 | malformed connect extraction | **PCFG-R20**. |
 | keyword-only defaults | **PCFG-R21**. |
-| save/repair Git transaction gap | **GIT-R17**. |
 | pyfunc classifier output shape | **MSC-11**. |
 | literal select row proof | **EXEC-R09**. |
 | predicted output signature dtype | **MOD-R09** after requested split; formerly bundled MOD-R05. |

@@ -29,8 +29,12 @@ conversion in the routes).
     - `GitGuardrailError(GitDomainError)` — guardrail block → HTTP 403.
     - `GitTransactionError(GitDomainError)` — the primary mutation and at least one
       compensating rollback step both failed.
-    - `GitHistoryReadError(GitDomainError)` — historical archive/extraction/parsing could
-      not produce a trustworthy pipeline graph.
+    - `GitHistoryReadError(GitDomainError)` — history git could not read (a milestone list
+      or a range of saves), or historical archive/extraction/parsing could not produce a
+      trustworthy pipeline graph.
+    - `GitRemoteUnavailableError(GitDomainError)` — a deliberate remote read (inspection, the
+      expected default's fetch, Catch up's and Spin off's refresh) or push could not reach
+      the remote: a timeout, a launch failure, or a non-zero exit that is not a refusal.
     - `GitPushRejectedError(GitDomainError)` — carries a `GitPushRejection`; constructed
       only by `_push_rejection()`.
     - `GitMilestoneForkError(GitDomainError)` — carries a `GitMilestoneFork`; constructed
@@ -42,10 +46,16 @@ conversion in the routes).
 `branch_category(branch)` classifies any branch name into `"protected" | "ledger" |
 "working"` by checking membership in `_protected_branches()` first, then the ledger-suffix
 pattern; anything else is a working-branch candidate. `is_eligible_working_branch` and
-`_assert_eligible_working` build on this classification. `_assert_eligible_working`, which
-every path naming a new branch runs (create, adopt-create, undelete), first refuses a name
-git cannot use as a branch (a space, `..`, a trailing `/` or `.lock`, `@`) with a
-`GitDomainError` saying so in words, before any git command can fail on it.
+`_assert_eligible_working` build on this classification. `_assert_eligible_working` first
+refuses a name `_branch_name_problem` finds git cannot use. That check names the first rule
+broken, in words: empty; `HEAD` or `@`; a leading `-` or `/`; a space or a control
+character; `~ ^ : ? * [ \`; `..`, `@{` or `//`; a trailing `/`, `.lock` or `.`; a part
+starting with `.` or ending in `.lock`. The refusal is a `GitDomainError`, "'<name>' can't be
+used as a branch name: <rule>. Use letters, numbers, dashes and slashes.". A name the analyst
+types (create, adopt-create, undelete under its own or another name) also passes
+`_assert_new_branch_name` first: the same rules, then `git check-ref-format --branch` as the
+authority, a name it refuses that the rules let through answering "git does not accept it as
+a branch name". Both run before any git command can fail on the name.
 
 **Content-addressed cache keys**: every `@lru_cache`-decorated inner function
 (`_merge_base_cached`, `_is_ancestor_cached`, `_first_parent_spine_cached`,
@@ -75,8 +85,26 @@ decoding, or binary output use the overloaded `_run_git_process` adapter. The ad
 returns an immutable typed result (`str` output by default, `bytes` when `binary=True`) and
 translates only `subprocess.TimeoutExpired` into the core-owned
 `_GitProcessTimeoutError`; operating-system and Unicode failures retain their native types
-so each domain preserves its established fail/degrade policy. Domain modules never receive
-the `subprocess` module or construct a raw process call themselves.
+so each domain preserves its established fail/degrade policy. It launches through
+`_run_process_group` with closed stdin, and at the timeout kills every process the command
+started before draining the output pipes (`_communicate_until`). On POSIX the processes share
+a new session, so none has a controlling terminal, and `killpg` kills its process group. On
+Windows git starts suspended (`CREATE_SUSPENDED`), joins a job object of its own
+(`_job_holding`) and only then runs, so everything it starts belongs to the job, a child whose
+parent already exited included, and `TerminateJobObject` ends them all. The job is not killed
+when its handle closes, so a credential cache git starts outlives a command that finishes;
+a git process the job cannot hold is killed before it runs, an `OSError` like a launch
+failure. A transport's children therefore never outlive the deadline or hold its pipes open,
+which Windows' pipe reader threads would otherwise wait on with the repository lock held. Text output is decoded as UTF-8 with the caller's error policy and universal newlines.
+Domain modules never receive the `subprocess` module or construct a raw process call
+themselves.
+
+**Remote environment (`_remote_env(cwd)`).** Every deliberate remote command, best-effort
+or strict, runs with `GIT_TERMINAL_PROMPT=0` and `SSH_ASKPASS_REQUIRE=never`. When the
+analyst has configured no ssh transport (`_ssh_command_configured`: `GIT_SSH_COMMAND` or
+`GIT_SSH` in the environment, or `git config --get core.sshCommand` at the command's working
+directory), it sets `GIT_SSH_COMMAND` to `ssh -oBatchMode=yes -oConnectTimeout=10`. A
+configured transport is left as Git would run it, in Git's precedence, with nothing appended.
 
 **Per-clone state files** (`_git_state.py`), all siblings under `<project_root>/.haute/`:
 `state.json` (`{"workingBranch": str}`), `prefs.json` (flat dict, currently one key:
@@ -125,6 +153,18 @@ invariant-violating), `"divergent"` (attached HEAD is on neither the recorded br
 its ledger), or `"ready"`. This read is total for missing and invalid repository metadata;
 transport/server failures remain non-200 responses.
 
+**`GitWorkingBranchResponse.broken_pairs`** lists, in every state once a repository is
+present, each pair a crash split (`_broken_pairs`, read from the same one `for-each-ref`
+listing as `eligible_branches`), as `GitBrokenPair {kind, ledger, working}`. A ledger is a
+local branch `<W>-save` whose `<W>` does not exist, `<W>` being a name a working branch may
+have (protected names and names git cannot use are left out).
+- **`half-archived`:** an archived working branch the old two-step archive moved without
+  its ledger stands beside it. That is `archive/<W>`, or the dated `archive/<W>-<YYYYMMDD>`
+  or `archive/<W>-<YYYYMMDD>-<n>` the archive chose when the name was taken, with no ledger
+  of its own and history the ledger continues (their merge base has the archived tip's tree,
+  as `check_invariants` requires of a pair). Exactly one such branch: `working` names it.
+- **`orphan-ledger`:** no such branch, or more than one. `working` is the missing `<W>`.
+
 **HTTP contracts.** Every handler is synchronous `def`, so FastAPI runs git subprocess work
 in its thread pool. Request bodies are the named Pydantic models; omitted fields take the
 defaults shown. Query bounds are enforced by FastAPI and invalid input uses its standard 422
@@ -148,6 +188,7 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 | `POST /api/git/undelete` | `GitUndeleteRequest {id,as_name=null}`: a trash entry, rebuilt under its branch name or *as_name* | `GitUndeleteResponse {status="restored",branch}`, the name it was rebuilt under |
 | `GET /api/git/working-branches` | None | `GitWorkingBranchesResponse {current?,branches:[GitManagedBranch...],deleted:[GitDeletedBranch {id,branch,deleted_at,was_archived}...]}`, `deleted` newest first |
 | `POST /api/git/restore` | `GitRestoreRequest {branch}` | `GitRestoreResponse {restored_as}` |
+| `POST /api/git/repair-pair` | `GitRepairPairRequest {ledger}`: a ledger readiness lists in `broken_pairs` | `GitRepairPairResponse {working,ledger}`, the whole pair's names; a ledger that is no longer part of a broken pair is 400, nothing changed |
 | `POST /api/git/working-branches` | `GitCreateWorkingBranchRequest {name,at=null,move=false,switch=false}` | `GitCreateWorkingBranchResponse {working_branch,moved,switched,last_save_sha?}`; `move` and `switch` together are 400 |
 | `GET /api/git/prefs` | None | `GitPrefs {skip_switch_confirm=false}` |
 | `POST /api/git/prefs` | `GitPrefs {skip_switch_confirm=false}` | The persisted `GitPrefs` |
@@ -161,10 +202,13 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 
 ## Control flow
 
-**Save.** `commit_save(paths, working, cwd, message)` → `resolve_ledger(working)` (find-or-
+**Save.** `commit_save(paths, working, cwd, message)` → `_assert_no_git_op_in_progress`
+(a pathspec commit would otherwise fail with git's "cannot do a partial commit during a
+merge") → `resolve_ledger(working)` (find-or-
 lazily-spawn the ledger at the working branch's current tip, checkout if not already
 current) → `git status --porcelain -- <paths>` to check anything in *paths* actually
-changed (idempotent no-op returns `None`) → `git add -- <paths>` → `git diff --cached --name-only --no-renames HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full, are what the default message names) → `git commit -m <msg> --
+changed (idempotent no-op returns `None`; a status git cannot answer raises `GitError`,
+never reads as no change) → `git add -- <paths>` → `git diff --cached --name-only --no-renames HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full, are what the default message names) → `git commit -m <msg> --
 <paths>` (pathspec-scoped, so it commits only those paths' working-tree state regardless of
 what else the user may have pre-staged) → returns the new SHA. Every path reaches Git as a
 `:(literal)` pathspec, so a filename holding `*`, `?` or `[` names only itself, as in the
@@ -191,6 +235,18 @@ Nested calls such as `commit_milestone` → `commit_save` → `resolve_ledger` r
 lock. Pure Git history/object readers do not acquire the engine lock, but every clone-state
 reader in `_git_state.py` acquires it for the file read so it cannot overlap an atomic state
 transaction.
+
+The project's writers hold the same lock across their whole transaction:
+`SavePipelineService.save` (the canvas save, a save with persisted submodels, the assistant's
+Apply and undo) from its base-revision check through every artifact write, the rollback of a
+failed one, stale-config cleanup and the ledger capture, and
+`_pipeline_repair._commit_repair_plan` (a node-scoped save and every repair apply) from its
+revision and artifact re-checks through staging, verification and rollback. Both run in a
+worker thread entered after the project's `save_lock`, the order `project_write` uses; no
+holder of the repository lock waits for `save_lock`, so the order cannot deadlock, and the
+capture's `commit_save` re-enters the lock its save already holds. A milestone, restore or
+switch that arrives during a save therefore waits for it and then sees all of its artifacts,
+or, after a failed save's rollback, none of them.
 
 **The tree fence (`_rewrite_tree(*args, cwd)`).** Every command that rewrites the working
 tree runs through it. These are the checkouts in `resolve_ledger`, `set_working_branch`,
@@ -227,6 +283,7 @@ returns readiness; otherwise it raises `GitFilesInUseError`. Its route runs unde
 
 **Milestone.** `commit_milestone(message, project_root, version_label, cwd, allow_fork,
 pipeline_folder)` → reads the recorded working branch from `_git_state.read_working_branch` →
+refuses a git operation in progress (`_assert_no_git_op_in_progress`) →
 unless `allow_fork`, calls `divergence_state(working)` (local-refs-only, no fetch) and raises
 `GitMilestoneForkError` if the leg is `"behind"` or `"diverged"` → before the merge,
 `_residual_tracked_changes` enumerates every modified path already tracked by Git, and
@@ -375,9 +432,18 @@ alongside an unborn HEAD (only reachable via `checkout --orphan` outside haute).
 foreign `git init` repo). The index is cleared (`git rm -r -f -q --cached --ignore-unmatch
 -- .`) so pre-staged content can't bypass the seed gate, then `git ls-files --others
 --exclude-standard -- <_SEED_PATHSPECS>` lists what's both permitted (the pathspec allow-
-list) and not `.gitignore`d (the deny gate); matched files are added with `:(literal)`
-prefixes so a filename containing glob characters can't re-expand the pathspec. An empty
-result still commits (`--allow-empty`) to establish the root. A `git commit` failure whose
+list) and not `.gitignore`d (the deny gate). `_outside_environments` then drops every file
+under a folder below the top level that holds a Python environment's marker
+(`_ENVIRONMENT_MARKERS`: `pyvenv.cfg`, `conda-meta/history`, listed with `ls-files --others`
+and no ignore rules, since a rule hiding the marker need not hide the environment's files),
+whatever the folder is called; a marker at the top level is the project folder itself and
+drops nothing. More than `_SEED_FILE_LIMIT` (1,000)
+files left is refused with a `GitDomainError` before staging, naming the count and the
+top-level folder holding most of them: "The first version of this project would hold <n>
+files, <m> of them in '<folder>/'. That is more than a project holds: move that folder out of
+the project or add it to .gitignore, then try again." The matched files are added with
+`:(literal)` prefixes so a filename containing glob characters can't re-expand the pathspec.
+An empty result still commits (`--allow-empty`) to establish the root. A `git commit` failure whose
 stderr mentions missing author identity is translated to a `GitDomainError` steering the
 user to set identity first; anything else re-raises as a plain `GitError`. The whole
 *post-seed pair-creation* path (branch checkout, ledger spawn, state write) is wrapped so any
@@ -400,7 +466,9 @@ read once per request with `for-each-ref`. The paginated milestone endpoint defa
 newest 20 entries, while `commit_context` explicitly reads the complete first-parent
 milestone spine so commits older than that display window are still classified and anchored
 correctly. It reads the target's ancestor set in batched commands, derives fold points from
-the already returned parent columns, and never launches one subprocess per milestone.
+the already returned parent columns, and never launches one subprocess per milestone. The
+milestones' parents come from one `rev-list --parents --no-walk=unsorted --stdin` with the
+SHAs on stdin, so a branch of any length stays within Windows' 32,767-character command line.
 
 **Graph topology (`graph_topology`).** Reads every working pair's tip via one
 `for-each-ref` call (`_list_branches_with_tips`), then for each branch reads its full
@@ -423,13 +491,16 @@ resolve specifically through `refs/heads/<working>`; an optional ledger likewise
 when `refs/heads/<ledger>` resolves, so a corrupted state value cannot reinterpret `HEAD`, a
 tag, or another revision expression as a branch. Push then performs a strict `git ls-remote
 --symref` inspection of the selected
-remote using a prompt-proof environment (`GIT_TERMINAL_PROMPT=0`, SSH `BatchMode=yes` with a
-connection timeout) plus the process timeout. Unlike a best-effort poll, this helper must
+remote using the noninteractive remote environment (`_remote_env`) and process launcher, with
+`_FETCH_TIMEOUT_SECONDS` as its deadline. Unlike a best-effort poll, this helper must
 preserve three outcomes: a successful advertisement with object refs, a successful
 advertisement with zero object refs, and failure. An unborn symbolic `HEAD` without an
-object SHA does not make the remote non-empty; any advertised branch or tag does. Timeout,
-`OSError`, non-zero exit (including authentication/network failure), or malformed/unreadable
-output raises and aborts before any push.
+object SHA does not make the remote non-empty; any advertised branch or tag does. A timeout,
+launch `OSError` or non-zero exit (authentication or network failure included) raises
+`GitRemoteUnavailableError` with `_refresh_failed`'s message, "Could not refresh '<remote>'.
+Check your connection or credentials and try again.", the words Catch up and Spin off use;
+stderr goes to the `git_remote_inspection_failed` log line. Output that does not decode or
+parse raises a sanitized `GitError`. Either aborts before any push.
 
 Advertisement parsing accepts only a `HEAD` symref to a Git-valid `refs/heads/*` target and
 non-zero 40- or 64-hex object IDs attached to `HEAD` or Git-valid fully qualified refs; every
@@ -476,8 +547,9 @@ touching the network between them:
    The create-only lease's empty expected value can never authorize updating an existing
    default. If a concurrent writer creates that ref at the exact validated `default_sha`, Git
    reports it up to date and bootstrap continues, because the required merge target is
-   already identical. A different-SHA concurrent default fails the lease. That failure, like
-   every other failure of this push, is a sanitized `GitError` that never goes through
+   already identical. A different-SHA concurrent default fails the lease (`(stale info)`),
+   answered "'<remote>' changed while Haute was publishing to it, so nothing was published.
+   Push again." Every failure of this push goes through `_push_failed`, never through
    `_push_rejection`, and nothing from this call is published.
 2. The working/ledger pair, with exactly the established-remote pair command below. Labels
    reachable from the pair travel with it, including labels on default commits the working
@@ -509,9 +581,14 @@ the pinned-SHA pair refspecs `<working_sha>:refs/heads/<working>
 pair push never names the default and never carries a lease. No path supplies `--force`, a
 force refspec, or a lease that expects an existing object. Every push subprocess runs through
 `_run_push`, with the prompt-proof remote environment and a hard `_PUSH_TIMEOUT_SECONDS`
-ceiling; `TimeoutExpired` and process-launch `OSError` are converted to sanitized `GitError`
-failures (for a bootstrap's pair push, to `GitBootstrapIncompleteError`), after which the
-repository mutation lock is released. The working/ledger pair is always atomic, so one pair
+ceiling; `TimeoutExpired` and process-launch `OSError` become `GitRemoteUnavailableError`,
+"Could not push to '<remote>'. Check your connection or credentials and try again." (for a
+bootstrap's pair push, `GitBootstrapIncompleteError`), after which the repository mutation
+lock is released. A push's other non-zero exit, outside the structured rejection below, goes
+through `_push_failed`: `[remote rejected]` (a hook or branch rule) answers "'<remote>'
+refused the push, so nothing was published and your work is unchanged. The Haute server log
+has its reason, for example a branch rule or missing write access.", the lease's `(stale
+info)` the message above, and anything else the could-not-push message. The working/ledger pair is always atomic, so one pair
 ref never lands without the other. A bootstrap default-push rejection, including a
 different-SHA default winning the create-only race, follows a safe non-409 push-failure path
 and is never misreported as working/ledger divergence. A
@@ -563,9 +640,10 @@ failure propagates: an unreachable remote never reads as adoptable.
 
 **Fast-forward (`fast_forward_pair`).** Requires HEAD to currently be on the ledger (refuses
 detached states) and a clean tracked tree. Fetches and prunes the configured remote
-namespace, then aborts with `GitDomainError` if that required refresh times out, cannot
-launch, exits non-zero, or shows that either managed remote leg is missing; transport
-failure and a deleted working/ledger branch have distinct user-facing refusals. No cache
+namespace, then aborts if that required refresh times out, cannot launch or exits non-zero
+(`GitRemoteUnavailableError`, the refresh message) or shows that either managed remote leg is
+missing (`GitDomainError`); transport failure and a deleted working/ledger branch have
+distinct user-facing refusals. No cache
 wipe, merge, or ref update may run on stale or incomplete tracking refs. It then requires
 EVERY leg to be `"behind"` or already synced — any `"ahead"`/`"diverged"` leg refuses
 outright (the user must reconcile via `branch_away` instead; this function never merges).
@@ -575,8 +653,9 @@ CAS fails, the ledger and working tree reset to their captured tip. A failed res
 reported as `GitTransactionError`, never as a clean refusal or success.
 
 **Branch away (`branch_away`).** The reconciliation path when a remote fork is detected.
-It first fetches and prunes the configured remote namespace, aborting with `GitDomainError`
-on any transport/process failure before choosing an aside name or mutating refs. This
+It first fetches and prunes the configured remote namespace, aborting with
+`GitRemoteUnavailableError` (the refresh message) on any transport/process failure before
+choosing an aside name or mutating refs. This
 authoritative snapshot lets an absent optional ledger remain a successful fetch while
 removing a deleted tracking ref; an absent working branch is then a distinct domain
 refusal. It renames the current pair to a unique dated aside name
@@ -590,7 +669,10 @@ back, and restores HEAD) on any `GitError`/`OSError`; incomplete compensation ra
 `GitTransactionError`.
 
 **Archive/delete active pair.** HEAD detaches at the working branch's tip, its last
-milestone, through the tree fence. A confirmed delete forces it over a dirty tree. The
+milestone, through the tree fence. A confirmed delete forces it over a dirty tree; an archive
+or an unconfirmed delete refuses tracked changes first, with `_switch_away_if_active`'s
+"You have unsaved changes on this branch. Save or discard them before archiving it." (or
+"deleting it"), and the tree is left as it was. The
 ledger's later saves stay with the archived ledger or the trash pins. HEAD never moves to
 another branch, so the analyst is not left on a default branch's unrelated files. Archive
 moves the pair with one `update-ref --stdin` transaction: it creates `archive/<X>` and its
@@ -598,7 +680,8 @@ ledger at their tips and deletes `<X>` and its ledger with their tips as expecte
 Un-archive (`restore_working_pair`) is the same transaction the other way.
 
 **Delete / trash (`delete_working_pair` / `undelete_working_pair`).** Delete refuses on
-unmerged ledger saves unless `confirm=True`. It then:
+unmerged ledger saves, and on the active pair's tracked changes, unless `confirm=True`. It
+then:
 1. takes a fresh entry id;
 2. pins both tips under it, plain refs outside `refs/heads` that shield the objects from gc;
 3. writes the tombstone;
@@ -617,13 +700,38 @@ records the tombstone again, so the entry stays restorable. The restored pair
 is NOT auto-adopted as the working branch. `working_branches()` lists the tombstones, newest
 first, as `deleted`.
 
+**Repair (`repair_working_pair(ledger, project_root, cwd)`).** Under the repository lock it
+reads the pair again (`_broken_pair`) and refuses a ledger that is not part of a broken pair
+("'<ledger>' is not part of a broken branch."). It changes refs only, so HEAD, the files and
+clone state stay as they are.
+- A `half-archived` pair is finished as the archive would have moved it: one `update-ref
+  --stdin` transaction creates `<archived>-save` at the ledger's tip and deletes the ledger
+  with that tip as its expected value.
+- An `orphan-ledger` gets its working branch back with `create refs/heads/<W> <milestone>`
+  in one transaction. *Milestone* is the ledger's last milestone (`_ledger_last_milestone`),
+  the commit its saves were recorded on. Walking the ledger's first-parent chain back from
+  its tip, it is the first commit that is a merge (a milestone, or the anchoring milestone of
+  a branch started at a save), has no parent (the root), or lies on the first-parent chain
+  of a local branch that is not a save ledger (the default branch's commit a branch was
+  started at). Those chains come from one `rev-list --first-parent --stdin` of the branches'
+  tips; with no such branch there is none. Another ledger's chain is no evidence: after Spin
+  off a copy the set-aside ledger shares the saves before the fork.
+- What the working branch's lost milestones held stays in the ledger's saves, which read as
+  pending until the next Commit folds them into one milestone. A save is never taken for a
+  milestone: saves have one parent and lie on no other branch's first-parent chain. That
+  includes restore saves, sweep saves and saves replayed by Create & Move.
+
 **Historical extraction (`src/haute/_git_history.py::archive_commit` / `src/haute/routes/_helpers.py::commit_pipeline_graph`).** Bounded extraction is owned by `archive_commit`, while the parse step `commit_pipeline_graph` is owned by [server-api](../server-api/low-level.md). `ls-tree` first
 enumerates the selected commit and filters to `haute.toml`, Python modules, Haute sidecars,
-and files below `config/` or `prompts/`; `git archive` receives only those literal paths.
-Tar extraction is implemented with Python-3.11-compatible regular-file/directory handling
-and validates the complete member list before writing. It rejects traversal, unsupported
+and files below `config/` or `prompts/`; `git archive` receives only those literal paths,
+which take no stdin, so `_path_batches` splits them into batches whose command lines stay
+within `_ARCHIVE_COMMAND_BUDGET` (24,000 characters, under Windows' 32,767) and every batch
+is archived before any is extracted. Tar extraction is implemented with
+Python-3.11-compatible regular-file/directory handling and validates the complete member list
+of every batch before writing. It rejects traversal, unsupported
 members, more than `_HISTORY_ARCHIVE_MAX_MEMBERS = 10_000` entries, and cumulative
-regular-file size above `_HISTORY_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024`. Malformed or
+regular-file size above `_HISTORY_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024`, both counted over
+all the batches. Malformed or
 over-limit tar data raises `GitHistoryReadError`. Parsing reads only the requested
 `source_file` (contained to the extracted tree); a file absent at that commit or one that fails to parse raises the same typed failure rather than returning
 `PipelineGraph()`. Temporary
@@ -653,11 +761,15 @@ without replacing a successfully parsed response with a cleanup error.
 - **Concurrent git mutations are serialized per repository** — FastAPI may run synchronous
   handlers on different worker threads, but only one can cross a repository's mutation
   boundary. Successful saves cannot be orphaned by an interleaved checkout, and state-file
-  read/merge/write transactions cannot lose sibling updates.
+  read/merge/write transactions cannot lose sibling updates. A pipeline save or repair holds
+  that boundary through its artifact writes, so a concurrent milestone never records a
+  pipeline whose Python references a configuration file the save had not written yet.
 - **A slow / credential-walled remote** — routine readiness, branch, history, graph, and
-  remote-list reads never perform network I/O. Every deliberate remote read disables terminal/SSH prompts
-  (`GIT_TERMINAL_PROMPT=0`, SSH `BatchMode=yes`). Fetch/inspection subprocesses use
-  `_FETCH_TIMEOUT_SECONDS`; the publication subprocess uses `_PUSH_TIMEOUT_SECONDS`.
+  remote-list reads never perform network I/O. Every deliberate remote read runs through
+  `_remote_env` and `_run_process_group`: no stdin, no terminal, no prompt, and a transport
+  of the analyst's own run as configured. Fetch/inspection subprocesses use
+  `_FETCH_TIMEOUT_SECONDS`; the publication subprocess uses `_PUSH_TIMEOUT_SECONDS`; at either
+  deadline the whole process tree goes.
   Explicit Push inspection/publication, expected-default fetch, Catch up, and Spin off a
   copy are strict: timeout, launch failure, non-zero exit, or unreadable output refuses the
   operation and must never be reclassified as a zero-ref remote or successful refresh.
@@ -710,8 +822,9 @@ including the final push subprocess, explicitly catch timeout/OS failures and co
 required refresh failures to a Git error.
 
 Push-time remote inspection is not a polling helper and never degrades. It logs unsafe raw
-stderr server-side, returns only hand-authored safe detail when a specific domain condition
-is known, and otherwise follows the sanitized `GitError` path. Authentication, network,
+stderr server-side and answers a transport failure with `GitRemoteUnavailableError`'s
+hand-written message, hand-authored detail for a known domain condition, and the sanitized
+`GitError` path for an advertisement it cannot read. Authentication, network,
 timeout, launch, or advertisement-parse failure occurs before refspec submission and leaves
 HEAD, local branch/tag refs, the index, working tree, and `.haute` state unchanged; it must
 not be converted into an empty-remote bootstrap. A later authoritative default fetch may
@@ -744,8 +857,10 @@ process failures, and precise ref-movement races deterministic.
 - **`tests/test_git_engine.py`** — the primary unit suite for the Git facade and domain
   modules, organized into
   focused test classes covering: slugification, branch-category naming, ledger
-  resolve/spawn, `commit_save` (including idempotent-no-op saves and a
-  filename with glob characters committing only itself), the milestone sweep of the pipeline
+  resolve/spawn, `commit_save` (including idempotent-no-op saves, a
+  filename with glob characters committing only itself, a save during a merge refused with
+  the reason and a status check git cannot answer raising), a typed branch name refused
+  naming each rule and git deciding one the rules let through, the milestone sweep of the pipeline
   folder (a new file there recorded, a new file outside it, an ignored file, `__pycache__/`,
   `.haute_build/`, bytecode and the names the Files panels hide left out, and a file over the
   limit refusing the Commit by name),
@@ -756,7 +871,9 @@ process failures, and precise ref-movement races deterministic.
   capture of a save made with no working branch chosen (warned and left uncaptured) and
   in a project with no repository (nothing owed), the unborn-repo seed path and its
   gitignore-guard
-  interaction (`TestSeedGitignoreGuards`, `TestSetWorkingBranchUnbornNonDefault`), version
+  interaction (`TestSeedGitignoreGuards`, `TestSetWorkingBranchUnbornNonDefault`; a venv,
+  an env and a conda environment left out of the root commit whatever their names, and a
+  seed over the limit refused naming its folder), version
   restore (`TestRestoreVersion`: a pending save, a milestone and a folded save restored as
   one save on the same branch with later saves kept, files changed, deleted and added since
   put back, untracked files, `.haute/` and `outputs/` untouched and caches wiped,
@@ -767,7 +884,8 @@ process failures, and precise ref-movement races deterministic.
   expansion, the branch manager (archive/delete/undelete/restore; a name deleted, made
   again and deleted again keeping both entries, undelete under another name, the cap
   dropping the oldest entry's pins, a legacy bare-name tombstone restored, the active pair
-  detached at its last milestone), request-path no-fetch
+  detached at its last milestone, an unconfirmed delete of it keeping a dirty tree),
+  request-path no-fetch
   guarantees,
   the tree fence (`TestTreeFence`: a checkout that exits 0 with a file left stale put back
   and refused by name, a failed fast-forward's written files put back, a put-back that
@@ -800,14 +918,32 @@ process failures, and precise ref-movement races deterministic.
   partial publication for a tags-only or non-empty
   missing-default remote, unrelated history, malformed advertisement, remote-only tag
   auto-follow during a refused preflight,
-  inspection/auth/timeout failure, or any ref rejection.
+  inspection/auth/timeout failure, or any ref rejection; an unreachable remote answered with the
+  refresh message, a push transport failure with the could-not-push message, a hook that
+  declines the push and a lost create-only lease each answered in words.
+- **`tests/test_git_remote_transport.py`** — real remote commands over `ssh://` through a
+  fake ssh script, on every platform (CI's platform smoke runs it on Windows and macOS): a
+  transport configured as `GIT_SSH_COMMAND`, `core.sshCommand` or `GIT_SSH` inspects and
+  publishes with nothing added to its arguments, conflicting OpenSSH options reach it as
+  written, a hanging transport and its child are ended within the deadline with the refresh
+  message for Push and Catch up, a child its transport left behind, still holding the
+  output pipe, is ended too, and a transport asking for a password cannot wait for one.
 - **`tests/test_git_improvements.py`** — focused roadmap regressions for the shared
   repository lock (including cached lookup, `git init` identity stability, and weak-registry
   eviction), concurrent real saves, lock-scoped atomic clone-state updates,
   seven-state readiness, locale-stable Git execution, NUL-delimited history fields,
   batched commit context, merge-replay refusal, network-free remote listing, targeted
   historical extraction, archive member/byte ceilings, typed archive/parse failures, and
-  Windows cleanup retries.
+  Windows cleanup retries; commit context over 1,000 milestones and the extraction of a
+  commit with 40,000 characters of paths, every command line launched within Windows' limit,
+  and the member ceiling counted across batches with nothing written.
+- **`tests/test_save_git_serialization.py`** — real saves and repairs against a real
+  repository, each paused between two artifact writes while a milestone or restore runs on
+  another thread: the Git action cannot take the repository lock until the save is done,
+  then records the complete artifact set, which loads as the saved graph; a write failure
+  injected at the pause rolls back before the waiting milestone proceeds, which then records
+  none of the save. It covers the full save, a node-scoped config change and a reset that
+  rewrites a pipeline and its configuration.
 - **`tests/test_git_lifecycle_improvements.py`** — failure-injection coverage for
   adopting an existing pair, deleting the only active pair, partial fast-forward,
   archive state replacement, archive restore, undelete, and explicit incomplete-

@@ -125,8 +125,8 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the thirty-three packages delivered or settled since (thirteen by 28
-October 2026, twenty more on 29 October) have been removed from the sections below; the coverage table keeps the
+The findings of the thirty-eight packages delivered or settled since (thirteen by 28
+October 2026, twenty-five more on 29 October) have been removed from the sections below; the coverage table keeps the
 original counts.
 
 ## Validation — 25 October 2026
@@ -145,7 +145,6 @@ target dependency resolution. The component roadmaps now carry the resulting pla
 | `DEP-R11` | Check every response batch before positional pairing; require explicit first-deploy intent or authoritative absence, never infer absence from an outage. |
 | `DEP-R09` | Resolve and verify dependency locks for each target Python/platform and extras. |
 | `WB-10` | Shipped SQLite already has atomic insert-if-absent. Require a real selected-engine concurrency test and correct transaction recovery. |
-| `GIT-R02` | Preserve configured SSH commands and Git precedence; use process-level noninteractive execution, deadlines and transport cleanup. Appended OpenSSH options do not reliably override earlier ones. |
 
 The build-directory work is split into `DEP-R12A` (P2, isolated owned bundles
 and cleanup) and `DEP-R12B` (P3, project-scoped schema caching). Unnamed stale artifacts
@@ -332,9 +331,6 @@ production:
 | Modelling | MDL-2, MDL-18, MDL-22 | `MOD-R06` |
 | Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
 | Tracing | TRC-8, TRC-9, TRC-10, TRC-14 | `TRACE-R03` |
-| Git integration | GIT-3, GIT-4, GIT-5, GIT-8, GIT-9 | `GIT-R02` |
-| Git integration | GIT-6, GIT-7 | `GIT-R03` |
-| Git integration | GIT-2 | `GIT-R04` |
 | Git integration | GIT-12, GIT-13 | `GIT-R05` |
 | Git integration | GIT-14 | `GIT-R06` (Decision) |
 | Assistant | ASA-1, ASA-2, ASA-7, ASA-13 | `ASSIST-54` |
@@ -360,8 +356,6 @@ production:
 | Frontend optimiser | FOX-1, FOX-2, FOX-3 | `FMOU-R04` |
 | Frontend optimiser | FOX-4, FOX-5, FOX-6, FOX-8, FOX-10 (optimiser part) | `FMOU-R05` |
 | Frontend Explore | FOX-7, FOX-9, FOX-10 (Explore part), FOX-11, FOX-12 | `EDA-R03` |
-| Git UI | FTG-2, FTG-3, FTG-7, FTG-8, FTG-14, FTG-17, FTG-19, FTG-22 | `GIT-R07` |
-| Git UI | FTG-9, FTG-12 | `GIT-R08` |
 | Assistant UI | FTG-5, FTG-18, FTG-20 | `ASSIST-60` |
 | Sandbox security | PM-42 | `SBX-R04` |
 | Workbench | PM-45 | `WB-10` (selected server engine's atomic form insertion) |
@@ -415,10 +409,9 @@ fields the backend defaults (`EDA-R02`); the panel half of the GPU loss-history
 numbering and the GLM `best_iteration` (`MOD-R05`) and a second fabricated
 train-failure sentinel (`FSH-R06`); the browser's frontier
 generation fences that only ever see generation 0 (`OPT-R04`), the optimiser
-panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`) and
-`applyFrontierPointSummary`'s null handling (`FSH-R03`); typed branch names
-unvalidated in the UI (`GIT-R02`), the delete dialog's confirm flag (`GIT-R03`)
-and the trace route's 409 keyed on its code (`API-R06`); in the workbench UI and the app shell, the
+panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`),
+`applyFrontierPointSummary`'s null handling (`FSH-R03`) and the trace route's
+409 keyed on its code (`API-R06`); in the workbench UI and the app shell, the
 chart theme observer written twice (`EDA-R03`), the params-folder listing in the
 Allowed field (`FNED-R05`), knip's export-only symbols (`ENGQ-R01`), browser-locale dates (`FSH-R08`), the bootstrap without
 a deadline (`FSH-R05`), Ctrl+S inside a code box (`FSH-R07`), editor state inside
@@ -488,6 +481,6 @@ All probes live outside the repository and wrote nothing into it.
 | radon | 285 functions with cyclomatic complexity ≥ 20; 27 ≥ 50 (the largest in the optimiser service, the save service, the assistant tools and the RAM estimate). |
 | vulture (60 %) | 61 candidates; those confirmed unreferenced are in `EXEC-R17`, `IO-R08`, `ROAD-WORKER-08`, `DEP-R13`, `CLI-R05`, `API-R10`, `PCFG-R15` and `ENGQ-R01`. |
 | jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13`, `EXEC-R17`, `IO-R08`, `ROAD-WORKER-08`, `API-R09` and `PCFG-R15`. |
-| jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `FNED-R03`, `FNED-R05`, `FMOU-R05`, `EDA-R03`, `GIT-R08` and `FGC-R04`. |
+| jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `FNED-R03`, `FNED-R05`, `FMOU-R05`, `EDA-R03` and `FGC-R04`. |
 | knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted; every frontend reviewer found the hits used inside their own module, so they are over-exports under `ENGQ-R01`'s gate, not dead code. |
 | sweeps | 35 campaign-named test modules (`ENGQ-R05`). |

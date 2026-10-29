@@ -3,6 +3,7 @@
 from haute._git_archive import (
     archive_working_pair,
     delete_working_pair,
+    repair_working_pair,
     restore_working_pair,
     undelete_working_pair,
 )
@@ -17,6 +18,7 @@ from haute._git_core import (
     GitHistoryReadError,
     GitMilestoneForkError,
     GitPushRejectedError,
+    GitRemoteUnavailableError,
     GitTransactionError,
     _canonical_remote,
     _clear_content_caches,
@@ -126,6 +128,7 @@ __all__ = [
     "GitMilestoneForkError",
     "GitPushRejectedError",
     "GitPrefs",
+    "GitRemoteUnavailableError",
     "GitTransactionError",
     "_canonical_remote",
     "_clear_content_caches",
@@ -205,6 +208,7 @@ __all__ = [
     "resolve_ledger",
     "restore_version",
     "retry_interrupted",
+    "repair_working_pair",
     "restore_working_pair",
     "set_identity",
     "set_prefs",

@@ -1,7 +1,7 @@
 import { MessageSquare } from "lucide-react"
 
 import useAssistantStore from "../../stores/useAssistantStore"
-import { relativeTime } from "./relativeTime"
+import { relativeTime } from "../../utils/relativeTime"
 
 interface SessionListProps {
   currentSourceFile: string | null
@@ -87,7 +87,7 @@ export default function SessionList({ currentSourceFile }: SessionListProps) {
                 {session.title || "Untitled chat"}
               </span>
               <span className="block text-[10px]" style={{ color: "var(--text-muted)" }}>
-                {relativeTime(session.lastUsed)}
+                {relativeTime(new Date(session.lastUsed * 1000))}
                 {session.messageCount > 0 && ` · ${session.messageCount} messages`}
               </span>
             </span>

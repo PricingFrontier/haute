@@ -34,6 +34,9 @@ describe("helper bans", () => {
     ["export function formatMemory(b: number) { return `${b}` }", "formatBytes"],
     ["export const formatSize = (b: number) => `${b}`", "formatBytes"],
     ["export function formatElapsed(s: number) { return `${s}` }", "formatDuration"],
+    ["export function timeAgo(iso: string) { return iso }", "relativeTime"],
+    ["export const relativeTime = (seconds: number) => `${seconds}`", "relativeTime"],
+    ["export const formatRelativeTime = function (s: number) { return `${s}` }", "relativeTime"],
     ["export const isRecord = (v: unknown) => typeof v === 'object'", "isPlainObject"],
     ["export function asRecord(v: unknown) { return v as Record<string, unknown> }", "isPlainObject"],
     ["export function isPlainObject(v: unknown) { return typeof v === 'object' }", "isPlainObject"],
@@ -58,6 +61,7 @@ describe("helper bans", () => {
   it.each([
     ["src/utils/formatBytes.ts", "export function formatBytes(b: number) { return `${b}` }"],
     ["src/utils/formatValue.ts", "export function formatDuration(s: number) { return `${s}` }"],
+    ["src/utils/relativeTime.ts", "export function relativeTime(when: Date) { return `${when}` }"],
     ["src/types/guards.ts", "export function isPlainObject(v: unknown) { return typeof v === 'object' }"],
     ["src/utils/objectLiteral.ts", "export function isObjectLiteral(v: unknown) { return typeof v === 'object' }"],
     ["src/api/errors.ts", "export const text = (e: { detail?: string; message: string }) => e.detail || e.message"],

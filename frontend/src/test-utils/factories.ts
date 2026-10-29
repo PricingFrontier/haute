@@ -393,6 +393,7 @@ export function makeGitWorkingBranch(
     identity_set: true,
     user_name: null,
     user_email: null,
+    broken_pairs: [],
     ...overrides,
   }
 }

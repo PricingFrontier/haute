@@ -33,6 +33,7 @@ import QuestionDialog from "./components/QuestionDialog"
 import ToastContainer from "./components/Toast"
 import { ErrorBoundary } from "./components/ErrorBoundary"
 import ContextMenu from "./components/ContextMenu"
+import { reportBrokenPairs } from "./utils/brokenPairs"
 import { isEmptyCanvasAtPoint } from "./utils/canvasHitTest"
 import KeyboardShortcuts from "./components/KeyboardShortcuts"
 import BreadcrumbBar from "./components/BreadcrumbBar"
@@ -1020,7 +1021,12 @@ function FlowEditor() {
       addToast("success", `Restored ${justRestored} as a new save.`)
     }
     void loadGitReadiness().then((st) => {
-      if (!st || st.state === "ready" || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "interrupted") return
+      if (!st) return
+      const quiet = st.state === "ready" || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "interrupted"
+      // The branch chooser lists the pairs a crash split, with their Repair; when it does
+      // not open, they are reported here.
+      if (quiet || st.state === "divergent") reportBrokenPairs(st.broken_pairs)
+      if (quiet) return
       useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select")
     })
   }, [loadGitReadiness, addToast])

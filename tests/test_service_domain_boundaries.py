@@ -49,6 +49,7 @@ GIT_SERIALIZED_MUTATORS = {
     "haute._git_archive": {
         "archive_working_pair",
         "delete_working_pair",
+        "repair_working_pair",
         "restore_working_pair",
         "undelete_working_pair",
     },
@@ -153,6 +154,7 @@ def test_git_facade_is_declaration_only_and_public_imports_stay_stable() -> None
         "GitMilestoneForkError",
         "GitPrefs",
         "GitPushRejectedError",
+        "GitRemoteUnavailableError",
         "GitTransactionError",
         "adopt_cloned_lineage",
         "archive_commit",
@@ -181,6 +183,7 @@ def test_git_facade_is_declaration_only_and_public_imports_stay_stable() -> None
         "push_working_pair",
         "remote_holds_other_history",
         "remote_is_empty",
+        "repair_working_pair",
         "remote_push_urls",
         "remote_url",
         "restore_version",

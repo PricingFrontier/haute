@@ -11,7 +11,7 @@ import useQuestionStore, { confirmed } from "../stores/useQuestionStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
 import { formatBytes } from "../utils/formatBytes"
-import { formatRelativeTime } from "../utils/formatTime"
+import { relativeTime } from "../utils/relativeTime"
 
 const TITLES: Record<ProjectFilePlace, string> = { pipeline: "Pipeline files", local: "Local files" }
 /** The one local folder that takes files; outputs/ only downloads. */
@@ -403,7 +403,7 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
                     style={MUTED}
                     title={entry.modified !== null ? new Date(entry.modified * 1000).toLocaleString() : undefined}
                   >
-                    {entry.modified !== null ? formatRelativeTime(entry.modified, now) : ""}
+                    {entry.modified !== null ? relativeTime(new Date(entry.modified * 1000), now) : ""}
                   </span>
                   <span className="flex shrink-0 items-center opacity-0 group-hover:opacity-100 group-focus-within:opacity-100">
                     <a
