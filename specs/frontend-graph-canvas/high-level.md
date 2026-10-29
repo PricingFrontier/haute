@@ -269,10 +269,9 @@ candidate, with the error toast.
   in-flight graph commit before reading the graph snapshot, and abort visibly
   if an in-flight commit is rejected. They never persist the earlier graph and
   report success while the visible edit lands afterwards.
-- **Authored boundary ports survive the client.** `PipelineEdge` extends the React Flow edge shape
-  with optional `sourcePort`/`targetPort` fields used while a submodel occurrence occupies the
-  visible handle. Response parsing, edge normalisation, graph snapshots, and save payloads retain
-  those fields unchanged; they are persisted metadata, not React Flow presentation state.
+- **A boundary edge's port is its handle.** An edge into or out of a submodel occurrence names
+  the public port in its `in__<name>` or `out__<name>` handle; `PipelineEdge` carries no other
+  port field.
 - **Undo/redo** operates over a single stack that can hold either a graph
   snapshot or a version-control history entry, so a branch switch and a
   graph edit interleave and reverse in the order they actually happened.
@@ -459,9 +458,8 @@ candidate, with the error toast.
   load/switch use the same full-snapshot load action; a missing preamble or
   submodel collection becomes its canonical empty value, so no persisted
   field, saved baseline, or history entry can survive from the prior
-  document. Backend edge metadata that is not a React Flow UI-only field,
-  including authored submodel `sourcePort`/`targetPort`, remains present in
-  the captured save snapshot and outgoing graph payload. Non-editable
+  document. Backend edge metadata that is not a React Flow UI-only field
+  remains present in the captured save snapshot and outgoing graph payload. Non-editable
   module-level preserved blocks and `source_revision` live in request-facing
   refs alongside `sourceFileRef`: load records both, save sends the preserved
   blocks unchanged, and a successful save replaces the revision with the

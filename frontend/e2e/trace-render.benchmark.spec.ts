@@ -95,8 +95,6 @@ function pipelineResponse(): string {
         target_authored_id: "enriched",
         source_handle: null,
         target_handle: null,
-        source_port: null,
-        target_port: null,
         availability: "ready",
         source_span: null,
         diagnostic_ids: [],

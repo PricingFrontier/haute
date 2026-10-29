@@ -163,8 +163,6 @@ class _ResolvedRecoveryEdge:
     target_authored_id: str
     source_handle: str | None
     target_handle: str | None
-    source_port: str | None
-    target_port: str | None
     span: RecoverySourceSpan | None
     ordinal: int
 
@@ -491,8 +489,6 @@ def _unresolved_connection(
         target_authored_id=connection.target_authored_id,
         source_handle=connection.source_port,
         target_handle=connection.target_port,
-        source_port=connection.source_port,
-        target_port=connection.target_port,
         source_span=connection.span,
         diagnostic_ids=[diagnostic_id],
     )
@@ -795,8 +791,6 @@ def _build_recovery_graph(
         target_candidate = targets[0]
         source_handle = connection.source_port
         target_handle = connection.target_port
-        source_port: str | None = None
-        target_port: str | None = None
         if source_candidate.node_type == NodeType.SUBMODEL:
             if connection.source_port not in source_candidate.submodel_output_ports:
                 unresolved.append(
@@ -812,7 +806,6 @@ def _build_recovery_graph(
                     )
                 )
                 continue
-            source_port = connection.source_port
             source_handle = f"out__{connection.source_port}"
         if str(source_candidate.node_type) in REQUEST_INPUT_KINDS and not connection.source_port:
             # A Quote or Workbench Input emits a frame per table; a connect()
@@ -845,7 +838,6 @@ def _build_recovery_graph(
                     )
                 )
                 continue
-            target_port = connection.target_port
             target_handle = f"in__{connection.target_port}"
 
         explicit_pairs.add((source_candidate.recovery_id, target_candidate.recovery_id))
@@ -857,8 +849,6 @@ def _build_recovery_graph(
                 target_authored_id=target_authored_id,
                 source_handle=source_handle,
                 target_handle=target_handle,
-                source_port=source_port,
-                target_port=target_port,
                 span=connection.span,
                 ordinal=ordinal,
             )
@@ -940,8 +930,6 @@ def _build_recovery_graph(
                     target_authored_id=target_candidate.authored_id,
                     source_handle=None,
                     target_handle=None,
-                    source_port=None,
-                    target_port=None,
                     span=target_candidate.span,
                     ordinal=implicit_ordinal,
                 )
@@ -1106,8 +1094,6 @@ def _build_recovery_graph(
                 target_authored_id=edge.target_authored_id,
                 source_handle=edge.source_handle,
                 target_handle=edge.target_handle,
-                source_port=edge.source_port,
-                target_port=edge.target_port,
                 input_name=input_name,
                 availability=edge_availability,
                 source_span=edge.span,
@@ -1232,8 +1218,6 @@ def _canonical_snapshot(
             target_authored_id=edge.target,
             source_handle=edge.sourceHandle,
             target_handle=edge.targetHandle,
-            source_port=edge.sourcePort,
-            target_port=edge.targetPort,
             input_name=edge_input_name(
                 edge,
                 source_nodes[edge.source],

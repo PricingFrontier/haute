@@ -8,7 +8,8 @@ import { useState } from "react"
 import type { WorkbenchAppQuote } from "../api/types"
 import { halfWindowWidth, SidePanel } from "../haute-ui"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
-import { RELATION_TEXT as RELATION, eventText, fullTime, relativeTime } from "./quoteValues"
+import { relativeTime } from "../utils/relativeTime"
+import { RELATION_TEXT as RELATION, eventText, fullTime } from "./quoteValues"
 import { followLink, quotePath, revisionPath } from "./route"
 import { BUTTON, Collapsible } from "./ui"
 import useOpenQuoteStore, { busy, canEdit } from "./useOpenQuoteStore"
@@ -41,7 +42,7 @@ function NoteEditor({ quote }: { quote: WorkbenchAppQuote }) {
         style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
       />
       <div className="flex items-center gap-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
-        {quote.note_by !== null && quote.note_at !== null && <span title={fullTime(quote.note_at)}>By {quote.note_by}, {relativeTime(quote.note_at)}</span>}
+        {quote.note_by !== null && quote.note_at !== null && <span title={fullTime(quote.note_at)}>By {quote.note_by}, {relativeTime(new Date(quote.note_at))}</span>}
         <button type="button" className={`${BUTTON} ml-auto`} disabled={locked || working || note.trim() === quote.note} onClick={() => void change("note", { note: note.trim() }, quote)}>
           Save note
         </button>
@@ -119,7 +120,7 @@ export default function HistoryPanel() {
                       {quote.final_revision === each.number && <span style={{ color: "var(--quote-final-text)" }}>final</span>}
                       <span>{each.priced ? "priced" : "unpriced"}</span>
                       <span className="ml-auto truncate" title={fullTime(each.saved_at)}>
-                        {each.saved_by}, {relativeTime(each.saved_at)}
+                        {each.saved_by}, {relativeTime(new Date(each.saved_at))}
                       </span>
                     </li>
                   )
@@ -134,7 +135,7 @@ export default function HistoryPanel() {
                       {event.actor} {eventText(event)}
                     </span>
                     <span className="text-[11px]" style={{ color: "var(--text-muted)" }} title={fullTime(event.at)}>
-                      {relativeTime(event.at)}
+                      {relativeTime(new Date(event.at))}
                     </span>
                   </li>
                 ))}

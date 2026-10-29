@@ -177,8 +177,71 @@ no alias or migration shim; direct test callers use the same current contract.
   read such a name, directly or through another binding, and stays unknown when that name is
   bound again) makes it opaque too, and `evaluate_expression` reports `unresolved_name: <name>`
   for the first such name the expression reads instead of computing with a stale binding or a
-  preamble value of the same name. A value changed in place (`d["k"] = v`, `d.update(...)`) is
-  not followed: the table keeps the value as bound.
+  preamble value of the same name.
+- **A value changed in place makes every value that could change unknown**: a statement can
+  change a value without binding its name again, and which other names hold that value is not
+  something the table can follow (aliases, containers holding containers, copies, `match`
+  captures, function locals). So when a statement changes a value in place, every name the code
+  bound whose value could change becomes unknown from there on, the changed one with it; only a
+  number, string, `None` or other immutable literal (subscripts of literals read, so
+  `rate = d["A"]` with `d["A"]` a number) and a Polars expression that read only such values
+  keep their values. A Polars expression is one built by a `pl` expression builder (`pl.col`,
+  `pl.lit`, `pl.when` and the like, not `pl.Series` or `pl.DataFrame`) through methods other
+  than `.meta`, arithmetic or a single comparison, never `and`/`or`, which return an operand as
+  it is; Polars copies what an expression reads when it is built, but one holding a `lambda` or
+  reading a name can still change. After such a change, evaluation also treats a preamble value read
+  by a later formula as unknown when it could have been changed: anything but a number, string,
+  date or time, a tuple of those, a Polars expression, a module, a class or a function. Code
+  with no change in place is untouched by this; code with one used to be traced with stale
+  values, so a refusal there is the conservative answer.
+- **What counts as a change in place**: a store or delete through a subscript or attribute
+  (`d["k"] = v`, `d["k"] += v`, `del d["k"]`, `obj.a = v`), even through a value no name
+  reaches as written (`d.get("A")["k"] = v`); an augmented assignment (`items += [x]`,
+  `items += (x,)`); a `pop`, `popitem` or `setdefault` call anywhere; a method called on its
+  own line that changes one of Python's containers (`update`, `append`, `extend`, `insert`,
+  `remove`, `clear`, `sort`, `reverse`, `add`, `discard`, the set updates), on any value, or
+  any method called on its own line on a value the code bound, also in a comprehension run for
+  its effect; such a container method anywhere on a name that may hold a container, its result
+  used or not (`ordered = cols.sort()`; inside a function, any name from around it may); and
+  any use of a changing function. A hit on a name the code bound only ever to values that
+  cannot change is no change (`factor += 0.1` on a number, `expr.alias("z")` alone on a closed
+  Polars expression). The scan reaches every depth of a statement, a loop body and a class body
+  included.
+- **A function the code defines changes values when it is used**: a `def` or `lambda` whose body
+  changes a value in place, uses another such function or class, binds a name of the code again
+  (`global factor`, any binding form), or changes one of its own names that a binding there
+  could make a container (a parameter always can; `t += x` on `t = 0` cannot) is a changing
+  function. So are a class defining one or deriving from one (making or using an instance runs
+  it), every name bound to a value that refers to one (`run = bump`, `box = Box()`), and a
+  container one is put into (`handlers["bump"] = bump`, `handlers.append(bump)`). Its body runs
+  when it is used, so the change counts at every use that runs: a call by name, a call of a
+  class's method as an attribute (`box.bump()`; a module-level helper named like a Polars
+  method does not make every `.clip(...)` a use), handing it on (an alias, an argument, a
+  decorator, a `lambda` written where it is passed), and any call of a computed callee
+  (`handlers.get("bump")(d)`, `make()(d)`), which may be one. A use of a function that binds a name
+  of the code again binds that name again, a decorated one where it is defined (the decorator
+  may run it). A definition nobody uses changes nothing, nor does a use inside a function body
+  that never runs; decorators, defaults and base classes run where they are written. A change
+  made by a function the code does not define (`random.shuffle(cols)`, a preamble helper) is not
+  followed: that is the boundary of what reading the code can see.
+- **Reflection is not followed**: a reflective builtin (`exec`, `eval`, `compile`, `setattr`,
+  `delattr`, `globals`, `locals`, `vars`, `__import__`) used in code that runs, or by a function
+  of the code when it is used, may bind or change any name, so every name the code bound is
+  unknown from there on, and evaluation treats every preamble value a later formula reads as
+  unknown except a module, a class or a function. One inside a function nobody uses changes
+  nothing.
+- **Every way of binding a name counts**: besides assignments, a `match` capture,
+  `except ... as e`, a walrus inside a simple assignment's value and a walrus inside a
+  comprehension (which binds in the scope around it) bind their names, so a name they bind is
+  unknown afterwards. Whether a name may hold a value that can change counts every binding a
+  block may make, reads a binding's value without the names the block may bind (those may
+  hold something else by then), and treats a name bound with no value to read
+  (`except ... as e`) as able to hold anything, whatever else binds it.
+- **A formula sees the changes of its own statement**: a `with_columns`/`select` call inside
+  `if`/`for`/`while`/`try`/`with`/`match`, or in a statement that changes a value in place
+  (`with_columns(a=pl.lit(d.pop("k")), y=...)`), takes the bindings in force after that whole
+  statement, so a name it assigns or changes anywhere is unknown to the call, while names it
+  does not touch keep their values.
 - **Values are Polars' own**: integer overflow wraps as the column's dtype does, division and
   modulo by zero, Kleene `&`/`|`, rounding and NaN handling are whatever Polars computes on the
   row, because Polars computes them. A typed null propagates through every operation; a native

@@ -23,6 +23,7 @@ from haute._ast_helpers import (
     _is_submodel_authored_decorator,
 )
 from haute._cache import canonical_json
+from haute._git_lock import repository_mutation
 from haute._graph_builders import PipelineNodeSkeleton, _extract_decorated_node_skeletons
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute.errors import HauteError
@@ -979,8 +980,8 @@ def _connection_identity(
     return (
         connection.source_authored_id,
         connection.target_authored_id,
-        connection.source_port,
-        connection.target_port,
+        connection.source_handle,
+        connection.target_handle,
     )
 
 
@@ -998,8 +999,8 @@ def _removes_only(
         return counts
 
     def without_unresolved(snapshot: dict[str, Any]) -> dict[str, Any]:
-        # Edges compare by their ends: an edge from a submodel's output carries
-        # its port only while the definition fails to load.
+        # Edges compare by their ends: a removal is judged on which nodes it
+        # leaves connected.
         return {
             "nodes": sorted(snapshot["nodes"]),
             "edges": sorted((edge[0], edge[1]) for edge in snapshot["edges"]),
@@ -1035,7 +1036,19 @@ def _commit_repair_plan(
     project_root: Path,
     plan: PipelineRepairPlan,
 ) -> PipelineRepairApplyResponse:
-    """Apply exact server edits under the caller's save lock, with rollback."""
+    """Apply exact server edits under the caller's save lock, with rollback.
+
+    The re-checks, writes, verification and rollback hold the repository's Git
+    lock, so a milestone, restore or switch sees all of the repair or none of it."""
+    with repository_mutation(project_root):
+        return _commit_repair_edits(project_root=project_root, plan=plan)
+
+
+def _commit_repair_edits(
+    *,
+    project_root: Path,
+    plan: PipelineRepairPlan,
+) -> PipelineRepairApplyResponse:
     from haute.routes._save_pipeline import (
         _rollback_artifacts,
         _stage_artifact_delete,
@@ -1189,8 +1202,8 @@ def _recovery_snapshot(document: PipelineEditorDocument) -> dict[str, Any]:
                 (
                     edge.source_authored_id,
                     edge.target_authored_id,
-                    edge.source_port,
-                    edge.target_port,
+                    edge.source_handle,
+                    edge.target_handle,
                 )
                 for edge in graph.edges
             ],
@@ -1198,8 +1211,8 @@ def _recovery_snapshot(document: PipelineEditorDocument) -> dict[str, Any]:
                 (
                     edge.source_authored_id,
                     edge.target_authored_id,
-                    edge.source_port,
-                    edge.target_port,
+                    edge.source_handle,
+                    edge.target_handle,
                 )
                 for edge in graph.unresolved_connections
             ],

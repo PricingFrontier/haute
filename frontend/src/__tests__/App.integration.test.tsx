@@ -209,8 +209,10 @@ vi.mock("../api/client", async () => {
         identity_set: true,
         user_name: "Test User",
         user_email: "test@example.com",
+        broken_pairs: [],
       }),
     ),
+    repairBranchPair: vi.fn(() => Promise.resolve({ working: "pricing", ledger: "pricing-save" })),
     setWorkingBranch: vi.fn(() =>
       Promise.resolve({ working_branch: "dev", state: "ready", last_save_sha: null }),
     ),
@@ -862,6 +864,31 @@ describe("App integration - restoring a version", () => {
     fireEvent.click(await screen.findByTestId("restore-confirm"))
 
     await waitFor(() => expect(useGitStore.getState().status?.state).toBe("interrupted"))
+  })
+
+  it("reports a pair a crash split at startup, with the Repair that makes it whole", async () => {
+    vi.mocked(api.getWorkingBranch).mockResolvedValue(makeGitWorkingBranch({
+      working_branch: "dev", state: "ready", current_branch: "dev-save",
+      broken_pairs: [{ kind: "orphan-ledger", ledger: "pricing-save", working: "pricing" }],
+    }))
+    render(<App />)
+    await waitForAppReady()
+
+    const report = await waitFor(() => {
+      const toast = useToastStore.getState().toasts.find(
+        (t) => t.text === "Branch 'pricing' is missing, though its saves are kept.",
+      )
+      expect(toast).toMatchObject({ type: "error", action: { label: "Repair" } })
+      return toast
+    })
+    expect(useGitStore.getState().modal).toBeNull()
+
+    act(() => report?.action?.run())
+
+    await waitFor(() => expect(vi.mocked(api.repairBranchPair)).toHaveBeenCalledWith("pricing-save"))
+    await waitFor(() => expect(useToastStore.getState().toasts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "success", text: "Repaired pricing" }),
+    ])))
   })
 
   it("Save and Commit with files in use say to close them, not to choose a branch", async () => {

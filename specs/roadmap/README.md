@@ -36,7 +36,7 @@ records corrections to that audit's claims and proposed remedies.
 | [Frontend modelling and optimiser UI](frontend-modelling-optimiser-ui.md) | The specification as the editor is; an auto-range run that survives a save, percentage constraints kept as such, one point-request lifecycle; dispersion estimates bound to the initiating training draft | `FMOU-R04` |
 | [Frontend node editors](frontend-node-editors.md) | Editors that write what the engine reads, drafts in step with the document and errors with their detail, one copy of each picker and helper; grid rules the save refuses with a reason, positions and passthroughs in the subdirectories; cached-directory recovery and source-bound API Input inference and Data Input schemas | `FNED-R01` |
 | [Frontend shared](frontend-shared.md) | A save that keeps the browser in step after a reconnect, surfaced completion errors, aborted fetches, a bootstrap deadline; Ctrl+S saving what is being typed and creation fenced on structure; one copy of each store derivation and helper; the specification as the code is; the results store; independent edits during input resolution, job-bound cancellation replies, and failed solves retaining the identity of prior successful results | `FSH-R05` |
-| [Git integration](git-integration.md) | Git failures the analyst can act on, a dirty tree and a virtual environment at delete and seed, long argument lists through stdin, dead symbols and one compensation helper, hooks on automatic saves (a decision); a git panel that guards and reports every tree change; broken pairs reported with Repair; pipeline saves sharing the Git transaction boundary and push recovery retaining its remote | `GIT-R02` |
+| [Git integration](git-integration.md) | Dead symbols and one compensation helper, hooks on automatic saves (a decision); push recovery retaining its remote | `GIT-R18` |
 | [IO layer](io-layer.md) | Missing against corrupt generations, one path-anchoring rule, lock holds and usage cost, clear and settle rules, one supervised build | `IO-R04` |
 | [Model scoring](model-scoring.md) | Generic model-file suffixes, pyfunc files, loader errors that keep their meaning; pyfunc classifiers preserving separate labels and positive-class probabilities | `MSC-06` |
 | [Modelling](modelling.md) | Publication outside the lock, diagnostics measured as the fit was; adaptive low-memory fitting: exact chunked GLM, a low-memory boosted-tree mode (both awaiting a decision); feasible stratified allocation, recorded tuning progress reaching the browser, prediction-based MLflow signatures, and accurate model-card and PDP labels | `MOD-R03` |
@@ -47,7 +47,7 @@ records corrections to that audit's claims and proposed remedies.
 | [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
 | [Sandbox security](sandbox-security.md) | Every containment comparison through the one check; restricted joblib loading without a fallback | `SBX-R01` |
 | [Server API](server-api.md) | Client errors answered as client errors, utility files written like project files, a save that never round-trips the watcher, one copy of each route mechanism, bounded requests, no bytecode deletion at start; domain errors, generated browser contract; utility containment across junctions and symlinks, and module watching relative to the configured pipeline | `API-R07` |
-| [Submodels](submodels.md) | A Load File child keeping its second input across a boundary, dead rewrites and hidden-port fields, one parse per create; one reuse mechanism; node instances after multi-frame sources working in full preview, CLI and assistant preview | `SUB-R04` |
+| [Submodels](submodels.md) | One reuse mechanism | `SUB-R01` |
 | [t-boost](t-boost.md) | What rating-table models make possible: cell-level holdout A/E, unfolding into rating steps, model comparison with premium attribution, measured analyst adjustments (all awaiting a decision) | `TBOOST-02` |
 | [Tracing](tracing.md) | Proven matches kept strict | `TRACE-R03` |
 | [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's CI/CD: a merge to `main` takes form, pipeline and app, tested together, to staging and production; the quote store on the server (its engine awaiting IT); managing quotes in the app past the Quotes page: comparing revisions, outcomes, many quotes at once; exports from the app (awaiting a decision on formats); test quotes analysts keep and price again, built again after the first version was taken out (awaiting decisions); actions that fill the sheets from databases and APIs (awaiting decisions on auth and sources); the app's sign-in (a decision); typed-in allowed values (a decision) | `WB-08` |
@@ -60,8 +60,7 @@ dependencies, its size and the user-visible changes it makes. It owns only
 the order; the packages above own the work. The packages the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md) added, and the
 documentation packages from that day's check of the deployment guides, are not
-yet placed in its rounds, nor is `GIT-R16` from the 27 October
-review of going back to a version.
+yet placed in its rounds.
 
 ## Codebase review — 23 September 2026
 

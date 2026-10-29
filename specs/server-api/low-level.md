@@ -464,7 +464,11 @@ already showing that document drops the frame (see
 
 **Pipeline save (`SavePipelineService.save`)**, run inside the process-wide `save_lock` (an
 `asyncio.Lock`, so it serialises against concurrent submodel create/dissolve as well as
-concurrent plain saves, but does not coordinate another worker process):
+concurrent plain saves, but does not coordinate another worker process). In its worker
+thread the whole of steps 1–11 also holds the repository's `repository_mutation` lock that
+every Git mutation holds, entered after `save_lock` as `project_write` enters it, so a
+milestone, restore or switch never meets a half-written save
+([git-integration](../git-integration/low-level.md)):
 1. Flatten submodel occurrences and validate the singleton groups with
    `validate_singleton_groups` (at most one request input, `apiInput` or `workbenchInput`, and
    one response node, `output` or `workbenchOutput`; any number of `liveSwitch` nodes, each routed by the active source) across the resulting executable pipeline, then validate
@@ -1374,7 +1378,10 @@ bounded; the server writes the complete untruncated edits. The post-apply
 document is authoritative.
 
 Each apply route acquires `save_lock`, reloads the document and computes the
-complete plan under the lock; a stale revision is HTTP 409 before staging. Staged writes/deletes and
+complete plan under the lock; a stale revision is HTTP 409 before staging. `_commit_repair_plan`
+then holds the repository's `repository_mutation` lock from its revision and artifact
+re-checks through staging, verification and rollback, so a Git action never sees part of a
+repair or a node-scoped save. Staged writes/deletes and
 rollback reuse `_save_pipeline.py`'s touched-file and `Writer` primitives so
 each forward and rollback write participates in self-write suppression. After
 staging, recovery parsing must conserve the remaining source and the selected

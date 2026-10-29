@@ -169,8 +169,8 @@ class TestGitUndelete:
         res = client.post("/api/git/undelete", json={"id": entry_id, "as_name": "feat old"})
         assert res.status_code == 400
         assert res.json()["detail"] == (
-            "'feat old' can't be used as a branch name. "
-            "Use letters, numbers, dashes and slashes, with no spaces."
+            "'feat old' can't be used as a branch name: it contains a space. "
+            "Use letters, numbers, dashes and slashes."
         )
 
         res = client.post(
@@ -337,6 +337,17 @@ class TestGitCreateWorkingBranch:
             json={"name": "pricing/test-user/x", "move": True, "switch": True},
         )
         assert res.status_code == 400
+
+    def test_a_typed_name_git_cannot_use_is_refused_naming_the_rule(
+        self, client: TestClient
+    ) -> None:
+        self._adopt(client)
+        res = client.post("/api/git/working-branches", json={"name": "my branch"})
+        assert res.status_code == 400
+        assert res.json()["detail"] == (
+            "'my branch' can't be used as a branch name: it contains a space. "
+            "Use letters, numbers, dashes and slashes."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -708,6 +719,21 @@ class TestGitRemotesAndPush:
         assert response.json()["detail"] == _INTERNAL_ERROR_DETAIL
         assert "token-secret" not in response.text
 
+    def test_push_against_an_unreachable_remote_answers_the_refresh_message(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """Push reported a remote it could not reach as "Operation failed", while Catch up
+        and Spin off said why; it now says the same as they do."""
+        self._adopt(client)
+        _git(tmp_path, "remote", "add", "origin", str(tmp_path / "missing.git"))
+
+        res = client.post("/api/git/push", json={"remote": "origin"})
+
+        assert res.status_code == 400
+        assert res.json()["detail"] == (
+            "Could not refresh 'origin'. Check your connection or credentials and try again."
+        )
+
     def test_push_to_unknown_remote_returns_400(self, client: TestClient, tmp_path: Path) -> None:
         self._adopt(client)
         self._add_bare_remote(tmp_path)
@@ -993,6 +1019,29 @@ class TestWorkingBranchRoutes:
     def test_set_protected_refused_403(self, client: TestClient) -> None:
         res = client.post("/api/git/working-branch", json={"branch": "main"})
         assert res.status_code == 403
+
+    def test_a_broken_pair_is_reported_and_repaired(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        _git(tmp_path, "branch", "pricing-dev")
+        assert client.post("/api/git/working-branch", json={"branch": "pricing-dev"}).is_success
+        _git(tmp_path, "update-ref", "-d", "refs/heads/pricing-dev")
+
+        broken = client.get("/api/git/working-branch").json()["broken_pairs"]
+        assert broken == [
+            {"kind": "orphan-ledger", "ledger": "pricing-dev-save", "working": "pricing-dev"}
+        ]
+
+        res = client.post("/api/git/repair-pair", json={"ledger": "pricing-dev-save"})
+        assert res.status_code == 200
+        assert res.json() == {"working": "pricing-dev", "ledger": "pricing-dev-save"}
+        status = client.get("/api/git/working-branch").json()
+        assert status["broken_pairs"] == []
+        assert status["state"] == "ready"
+
+        again = client.post("/api/git/repair-pair", json={"ledger": "pricing-dev-save"})
+        assert again.status_code == 400
+        assert again.json()["detail"] == "'pricing-dev-save' is not part of a broken branch."
 
     def test_set_missing_branch_400(self, client: TestClient) -> None:
         res = client.post("/api/git/working-branch", json={"branch": "ghost"})

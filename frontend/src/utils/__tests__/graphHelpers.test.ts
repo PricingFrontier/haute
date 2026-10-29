@@ -118,7 +118,7 @@ describe("normalizeEdges", () => {
     expect(result[0].style).toEqual({ stroke: "red" })
   })
 
-  it("preserves authored submodel boundary ports", () => {
+  it("preserves submodel boundary handles", () => {
     const edges: PipelineEdge[] = [
       {
         id: "e1",
@@ -126,15 +126,13 @@ describe("normalizeEdges", () => {
         target: "submodel__scoring",
         sourceHandle: "out__priced",
         targetHandle: "in__score",
-        sourcePort: "quotes",
-        targetPort: "base",
       },
     ]
 
     const result = normalizeEdges(edges)
 
-    expect(result[0].sourcePort).toBe("quotes")
-    expect(result[0].targetPort).toBe("base")
+    expect(result[0].sourceHandle).toBe("out__priced")
+    expect(result[0].targetHandle).toBe("in__score")
   })
 
   it("does not mutate the original array", () => {

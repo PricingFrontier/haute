@@ -301,16 +301,21 @@ class TestPushAndFastForwardRaises:
         resolve_ledger(WORKING, cwd=repo)
         write_working_branch(repo, WORKING)
 
-    def test_push_transport_failure_raises_plain_giterror(self, repo: Path, tmp_path: Path) -> None:
+    def test_push_transport_failure_answers_the_refresh_message(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
         # A remote whose URL points nowhere fails with a transport error (NOT a
-        # non-fast-forward rejection), so push_working_pair raises a plain
-        # GitError rather than the structured push-rejection.
+        # non-fast-forward rejection), so push_working_pair says it could not reach
+        # the remote, in Catch up's words, rather than raising the structured rejection.
+        from haute._git import GitRemoteUnavailableError
+
         self._setup_pair(repo)
         _git(repo, "remote", "add", "origin", str(tmp_path / "does-not-exist.git"))
-        with pytest.raises(GitError) as exc:
+        with pytest.raises(GitRemoteUnavailableError) as exc:
             push_working_pair("origin", repo, cwd=repo)
-        # Not the structured rejection subclass — a bare transport GitError.
-        assert exc.type is GitError
+        assert str(exc.value) == (
+            "Could not refresh 'origin'. Check your connection or credentials and try again."
+        )
 
     def test_fast_forward_ref_resolve_failure_raises(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

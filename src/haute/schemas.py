@@ -1106,8 +1106,6 @@ class RecoveryPipelineEdge(BaseModel):
     target_authored_id: str = Field(min_length=1)
     source_handle: str | None = None
     target_handle: str | None = None
-    source_port: str | None = None
-    target_port: str | None = None
     input_name: str | None
     availability: PipelineElementAvailability
     source_span: RecoverySourceSpan | None = None
@@ -1127,8 +1125,6 @@ class RecoveryUnresolvedConnection(BaseModel):
     target_authored_id: str = Field(min_length=1)
     source_handle: str | None = None
     target_handle: str | None = None
-    source_port: str | None = None
-    target_port: str | None = None
     source_span: RecoverySourceSpan | None = None
     diagnostic_ids: list[str] = Field(min_length=1)
 
@@ -5153,6 +5149,16 @@ class GitStorageSync(BaseModel):
     message: str | None = None
 
 
+class GitBrokenPair(BaseModel):
+    # A working pair a crash split, which POST /api/git/repair-pair makes whole:
+    # "orphan-ledger" — the save ledger `ledger` lost its working branch `working`;
+    # "half-archived" — the archived working branch `working` lost its ledger, which is
+    # still the live `ledger`.
+    kind: Literal["orphan-ledger", "half-archived"]
+    ledger: str
+    working: str
+
+
 class GitWorkingBranchResponse(BaseModel):
     # The branch recorded against this clone in .haute/state.json, or None.
     working_branch: str | None = None
@@ -5188,6 +5194,8 @@ class GitWorkingBranchResponse(BaseModel):
     identity_set: bool = True
     user_name: str | None = None
     user_email: str | None = None
+    # Pairs a crash left in two parts, reported at startup for Repair.
+    broken_pairs: list[GitBrokenPair] = Field(default_factory=list)
 
 
 class GitBindStorageRequest(BaseModel):
@@ -5539,6 +5547,17 @@ class GitUndeleteRequest(BaseModel):
 class GitUndeleteResponse(BaseModel):
     status: str = "ok"
     branch: str
+
+
+class GitRepairPairRequest(BaseModel):
+    # The ledger of a broken pair, as readiness's `broken_pairs` names it.
+    ledger: str
+
+
+class GitRepairPairResponse(BaseModel):
+    # The whole pair after the repair: its working branch and its save ledger.
+    working: str
+    ledger: str
 
 
 class GitRemoteLeg(BaseModel):

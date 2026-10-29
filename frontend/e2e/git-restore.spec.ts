@@ -362,7 +362,7 @@ test.describe("starting a branch from a version", () => {
     await expect(forkCreate(page)).toBeDisabled()
 
     const refusals: [string, RegExp][] = [
-      ["motor pricing", /'motor pricing' can't be used as a branch name\. Use letters/],
+      ["motor pricing", /'motor pricing' can't be used as a branch name: it contains a space\. Use letters/],
       ["main", /'main' is a protected branch/],
       ["taken", /Branch 'taken' already exists/],
       ["taken-save", /'taken-save' ends in '-save', which Haute keeps for each branch's saves/],

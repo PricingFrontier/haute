@@ -41,8 +41,6 @@ describe("pipeline editor document contract", () => {
       target_authored_id: "b",
       source_handle: "drivers",
       target_handle: null,
-      source_port: null,
-      target_port: null,
       input_name: "drivers",
       availability: "ready",
       source_span: null,
@@ -116,8 +114,6 @@ describe("pipeline editor document contract", () => {
       target_authored_id: "b",
       source_handle: null,
       target_handle: null,
-      source_port: null,
-      target_port: null,
       source_span: null,
       diagnostic_ids: ["d1"],
     }]
@@ -147,9 +143,9 @@ describe("pipeline editor document contract", () => {
     expect(() => parsePipelineEditorDocument(missing)).toThrow(/unexpected or missing/)
     const infinity = document(); infinity.nodes[0].display_position.x = Infinity
     expect(() => parsePipelineEditorDocument(infinity)).toThrow(/finite/)
-    const badEdge = document(); badEdge.edges = [{ recovery_id: "edge:1", source_recovery_id: "missing", target_recovery_id: "node:a", source_authored_id: "x", target_authored_id: "a", source_handle: null, target_handle: null, source_port: null, target_port: null, input_name: null, availability: "blocked", source_span: null, diagnostic_ids: [], blocking_path: [] }]
+    const badEdge = document(); badEdge.edges = [{ recovery_id: "edge:1", source_recovery_id: "missing", target_recovery_id: "node:a", source_authored_id: "x", target_authored_id: "a", source_handle: null, target_handle: null, input_name: null, availability: "blocked", source_span: null, diagnostic_ids: [], blocking_path: [] }]
     expect(() => parsePipelineEditorDocument(badEdge)).toThrow(/missing recovery node/)
-    const badUnresolved = document(); badUnresolved.unresolved_connections = [{ recovery_id: "edge:unresolved", source_recovery_id: "missing", target_recovery_id: null, source_authored_id: "x", target_authored_id: "a", source_handle: null, target_handle: null, source_port: null, target_port: null, source_span: null, diagnostic_ids: ["d1"] }]
+    const badUnresolved = document(); badUnresolved.unresolved_connections = [{ recovery_id: "edge:unresolved", source_recovery_id: "missing", target_recovery_id: null, source_authored_id: "x", target_authored_id: "a", source_handle: null, target_handle: null, source_span: null, diagnostic_ids: ["d1"] }]
     expect(() => parsePipelineEditorDocument(badUnresolved)).toThrow(/missing recovery node/)
     const badSubmodel = document(); badSubmodel.submodels = { registered: { definition_id: "different", file: "modules/child.py", availability: "ready", diagnostic_ids: [], graph: { nodes: [], edges: [], unresolved_connections: [], submodels: null }, input_ports: [], output_ports: [] } }
     expect(() => parsePipelineEditorDocument(badSubmodel)).toThrow(/registry key/)

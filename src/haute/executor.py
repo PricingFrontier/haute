@@ -40,9 +40,13 @@ from haute._cache import (
 )
 from haute._data_points import DataPointResolver
 from haute._env import int_env
-from haute._execute_lazy import lineage_preparation_order
+from haute._execute_lazy import (
+    _declared_api_input_frame_schema_items,
+    lineage_preparation_order,
+)
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._graph_utils import REQUEST_INPUT_KINDS
 from haute._graph_walker import CollectPolicy, walk_graph
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._logging import get_logger
@@ -77,6 +81,7 @@ from haute._types import NodeData
 from haute._validation_error import HauteValidationError
 from haute.errors import PreambleError
 from haute.graph_utils import (
+    GraphEdge,
     NodeType,
     PipelineGraph,
     _prune_live_switch_edges,
@@ -1471,7 +1476,6 @@ def _execute_graph_core(
         # Pre-compute schema warnings for instance nodes by comparing the
         # columns available at the instance's inputs vs the original's inputs.
         node_map = graph.node_map
-        parents_of = graph.parents_of
         if target_preview_only and not include_schema_metadata:
             result_order = (
                 [target_node_id]
@@ -1490,26 +1494,38 @@ def _execute_graph_core(
 
         schema_warnings: dict[str, list[SchemaWarning]] = {}
 
-        def _cached_output_names(node_id: str) -> set[str]:
-            cached = output_cols.get(node_id)
-            if cached:
-                return {name for name, _dtype in cached}
-            df = eager_outputs.get(node_id)
-            return set(df.columns) if df is not None else set()
+        def _delivered_column_names(edge: GraphEdge) -> set[str]:
+            """The columns *edge* carries into its target, as this run reports them.
+
+            A request input emits one frame per table it declares, and an edge
+            carries the one its ``sourceHandle`` names, never the bundle: the
+            declared schema the walk reports for that frame. An edge naming no
+            table the input declares carries none, even from a one-frame input:
+            its consumer reports that binding when it runs, and no other frame
+            stands in for it. A source this run did not report carries none.
+            """
+            source = node_map[edge.source]
+            if str(source.data.nodeType) not in REQUEST_INPUT_KINDS:
+                return {name for name, _dtype in output_cols.get(edge.source, [])}
+            if edge.sourceHandle is None or edge.source not in output_cols:
+                return set()
+            frame = _declared_api_input_frame_schema_items(source).get(edge.sourceHandle)
+            return {name for name, _dtype in frame or ()}
+
+        def _input_column_names(node_id: str) -> set[str]:
+            return {
+                name
+                for edge in graph.edges
+                if edge.target == node_id
+                for name in _delivered_column_names(edge)
+            }
 
         for nid in result_order:
             ref = node_map[nid].data.config.get("instanceOf")
             if not ref or ref not in node_map:
                 continue
-            # Columns feeding into the original node
-            orig_input_cols: set[str] = set()
-            for pid in parents_of.get(ref, []):
-                orig_input_cols.update(_cached_output_names(pid))
-            # Columns feeding into the instance node
-            inst_input_cols: set[str] = set()
-            for pid in parents_of.get(nid, []):
-                inst_input_cols.update(_cached_output_names(pid))
-            missing = orig_input_cols - inst_input_cols
+            # Columns the original's inputs carry that the instance's do not.
+            missing = _input_column_names(ref) - _input_column_names(nid)
             if missing:
                 schema_warnings[nid] = [
                     SchemaWarning(column=c, status="missing") for c in sorted(missing)

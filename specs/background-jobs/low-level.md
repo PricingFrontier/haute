@@ -355,9 +355,15 @@ therefore cannot be bypassed by test or shutdown reset code.
 - `release(key, job_id)` — removes the active handle only if it's still owned by this
   `job_id` (a stale release from an already-superseded owner is a no-op, not an
   accidental release of a newer owner's key — same pattern as
-  `CancellableJobRegistry.release`).
+  `CancellableJobRegistry.release`), and notifies `_released`, a condition on the
+  coordinator's lock.
+- `wait_released(key, job_id, timeout)` — waits on `_released` for at most `timeout`
+  seconds until `job_id` no longer owns `key`. Returns whether it stopped owning it.
+  The coordinator never queues an `acquire`; a caller that knows the owner is
+  finishing waits through this before its own check.
 
-In practice (`_optimiser_service.py`), callers check `SingleFlightCoordinator.active`
+In practice (`_optimiser_service.py`), a start whose graph/node owner's job has already
+ended first waits for it through `wait_released`. Callers then check `SingleFlightCoordinator.active`
 themselves *before* calling `acquire`, under their own separate `_start_lock`, and
 raise their own typed HTTP 409 directly from that check — `acquire`'s own
 `SingleFlightConflictError` mostly guards against the acquire call itself racing

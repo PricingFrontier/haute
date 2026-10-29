@@ -67,7 +67,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | Priority | Trigger and observed consequence | Owning package | Evidence strength |
 |---|---|---|---|
 | P1 | An IDE save after assistant plan verification is overwritten by apply; the rename and post-save verification still succeed. | [ASSIST-61](assistant.md#assist-61--keep-the-authenticated-revision-through-commit) | Real temporary pipeline and transactional save; deterministic edit before commit. |
-| P1 | A concurrent milestone captures the Python from an in-flight save before its referenced configuration exists. | [GIT-R17](git-integration.md#git-r17--pipeline-saves-share-the-git-transaction-boundary) | Real Git repository, save and milestone with a barrier between artifact writes; both operations succeed. |
 | P2 | Two independent API Input edits before identity resolution completes retain only the second edit. | [FSH-R10](frontend-shared.md#fsh-r10--retain-edits-during-input-identity-resolution) | Actual controller: expected `[false, false]`, received `[true, false]`; `onUpdateNode` surfaces the superseded edit as an error toast. |
 | P1 | Cancellation of A finishes after B starts; A's reply retires B or publishes A's result under B's calculation identity. | [FSH-R11](frontend-shared.md#fsh-r11--cancellation-replies-belong-to-one-job) | Two pivot hook/store probes. Training has the same source pattern but was not separately executed. |
 | P1 | Inference for `first.json` returns after the user selected `second.json` and added a table; old path/tables are written back. | [FNED-R06](frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft) | Actual API Input editor with delayed inference response. |
@@ -87,7 +86,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P2 | Integer regression target yields a declared long MLflow output although the native pyfunc predicts floats. | [MOD-R09](modelling.md#mod-r09--output-signatures-describe-predictions) | Real small CatBoost fit and generated signature; no remote registry enforcement failure claimed. |
 | P2 | Haute classifier pyfunc's label/probability table is flattened to 40 values for 20 input rows. | [MSC-11](model-scoring.md#msc-11--pyfunc-classification-outputs-have-an-explicit-scoring-shape) | Real saved/loaded CatBoost pyfunc, feature contract and scoring adapter. Explicit pyfunc selection is affected; automatic native selection may avoid it. |
 | P3 | Model card loses its name to a metric, importance method labels disagree with families, and integer PDP labels do not match scored values. | [MOD-R05](modelling.md#mod-r05--diagnostics-measured-as-the-fit-was), extended | Real card generation and model diagnostic calculations; separate from the signature's P2 contract impact. |
-| P2 | Full preview of a node instance after a multi-frame request source reads `.columns` on a dict and fails. | [SUB-R06](submodels.md#sub-r06--multi-frame-sources-work-through-node-instances) | Real graph/executor: full preview fails, target-only succeeds. CLI/assistant use the same full-preview path by source inspection. |
 | P3 | Relationships target `__w=[10,20]` is overwritten by internal weight alias: means become `[1,1]`, strength 0. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual Parquet, data-point resolver and relationship service; ordinary-name equivalent requires means `[10,20]`, strength 1. |
 | P3 | Copied Explore node B receives cached result.node_id A for the same producer/card. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual pivot service/cache. Numbers are correct; browser stores them under B, so no numerical cross-node corruption claim. |
 | P2 | Training status discards eight recorded tuning progress fields. | [MOD-R08](modelling.md#mod-r08--training-status-carries-the-progress-the-worker-records) | Real JobStore and async status route. Cancel response has the same omission by source inspection. |
@@ -130,29 +128,6 @@ Decisive sites: `PipelineApplicationService._prepare_apply`, `_commit` and
 in `src/haute/_workbench_app.py`; `handle_app_serve` in `src/haute/cli/_app.py`.
 The save service already has a conflict precondition, and
 `LocalTrustedHostMiddleware` already implements the local Host boundary.
-
-### Save and Git milestone
-
-The witness starts with a real temporary Git repository and working/ledger
-branch pair. Assistant Apply adds a banding node and its edge. The ordinary save
-is paused at `_write_config_files`, after Python has been written. A concurrent
-real `commit_milestone` succeeds before the save resumes. Its tree contains only
-`.gitignore` and `main.py`; that Python references `config/banding/Bands.json`.
-After resuming, Apply succeeds with two operations and the working files include
-that config and `main.haute.json`. The config was not part of the milestone.
-
-The probe controls only timing; save and Git behaviour are real. The root-level
-fixture uses the same `pipeline_folder=None` as its route. The measured result
-is an incomplete milestone, not a measured branch-switch or restore failure.
-Those operations take the same separate Git lock and must be considered when
-closing the save transaction boundary. `routes/_helpers.py::project_write`
-already holds both locks for other project mutations.
-Independent review also identified scoped node saves and repair-apply writers
-as sharing the gap through `_commit_repair_plan`, outside `SavePipelineService`.
-The main session verified those call sites and expanded `GIT-R17` to include
-their transactions and regressions. Those variants are source-supported; the
-executed interleaving above uses the full save transaction. Submodel
-create/dissolve are in-memory transforms whose persistence uses explicit Save.
 
 ### Evaluation
 
@@ -233,7 +208,7 @@ adds a finding group or changes the 42-group count.
 | `src/haute/_builders.py` | **Unverified and underspecified.** No operation, arithmetic boundary or expected answer was recorded. A confirmation must first name a valid online/ratebook config and concrete scalar/vector inputs, then compare the actual builder/runtime result with a hand-computed expected answer. No completed reproduction or rebuttal was recorded. |
 | `src/haute/_json_shred/_inference_filter.py` native filter and inference walker | **Unverified.** Feed identical bounded nested/mixed arrays to native filtering and the Python inference path and compare complete inferred tables/types. Confirm a valid field/table lost or an invalid one invented, not merely different internal ordering. Accepted JSON-R07 concerns malformed ancestor skip accounting, not automatically this inference parity concern. |
 | `src/haute/_pipeline_revision.py` / `_sidecar.py` | **Unverified and underspecified.** Identify the exact serialized state/path case involved; edit it through a supported writer and show a stale revision accepted, or resolve two case spellings and demonstrate incorrect graph/artifact adoption. PCFG-R19 already owns capture/revision re-reads, but the note does not prove these unspecified variants duplicate it. |
-| `src/haute/_submodel_instances.py::rewrite_boundary_input_names` / Workbench Output bindings | **Source-screened for Workbench Output; otherwise unverified.** The output variant's target-table handles are not source executable input names, so a missing source-name rewrite is not shown to break that contract. A distinct Workbench Input variant requires a valid shared submodel/port rename whose real flattened runtime selects the wrong/missing frame. SUB-R04 owns Load File's second input, not every hypothesized workbench selector. |
+| `src/haute/_submodel_instances.py::rewrite_boundary_input_names` / Workbench Output bindings | **Source-screened for Workbench Output; otherwise unverified.** The output variant's target-table handles are not source executable input names, so a missing source-name rewrite is not shown to break that contract. A distinct Workbench Input variant requires a valid shared submodel/port rename whose real flattened runtime selects the wrong/missing frame. SUB-R04, since delivered, owned Load File's second input, not every hypothesized workbench selector. |
 | `_submodel_instances.py` merged support code / `_support_code_names.py` | **Ordinary strict-parse conflict is guarded; broader variant unverified.** A confirming case must pass strict parsing with two valid occurrence scopes and then show support-name rebinding after flatten/execution. Existing ordinary preamble rejection is not evidence that dynamic imports/all reuse scopes are safe; the note contains no such witness. |
 | `src/haute/modelling/_ebm.py` grouped categorical axis | **Unverified.** Fit/load a real EBM with multiple category labels sharing one bin; compare exported term labels/scores with native prediction for every grouped level. No completed reproduction or rebuttal was recorded. No GPU issue follows from this shared note. |
 | `src/haute/_rating.py` null-factor/miss handling | **Unverified contract question separate from accepted `value` collision.** Run a valid table containing a null level through ordinary lookup with each declared miss policy, compare with the specified null/missing behavior, and show an incorrect match/default/refusal. The note already says nulls are deliberately treated as misses; it does not prove that policy violates the contract. |
@@ -266,8 +241,7 @@ adds a finding group or changes the 42-group count.
 | typed allowed-values onto older form | Duplicate **WB-38**. |
 | closing return / Unicode line splitting | Duplicates **PCFG-R17**, **PCFG-R18**. |
 | replacement decoding | Duplicate **PCFG-R10**, which explicitly covers sidecar/source replacement decoding before save. |
-| dirty delete / broken pairs | Duplicates **GIT-R03**, **GIT-R16**. |
-| recurring Git failures/compensation | The named failure-surfacing concern is **GIT-R02**; duplicate compensation mechanisms are **GIT-R05**. These broad notes do not establish any additional specific exception path. |
+| recurring Git failures/compensation | Duplicate compensation mechanisms are **GIT-R05**. These broad notes do not establish any additional specific exception path. |
 | non-SQLite form insertion | Duplicate **WB-10** for non-SQLite form insertion (the scratch spelling WB-R10 is not another package). The note gives no additional concrete database defect. |
 | sandbox project globals | Duplicate **PCFG-R04**. |
 | match/type-alias support binding | Duplicate **PCFG-R19**. This does not settle the separate Polars module-alias shape candidate. |
@@ -302,10 +276,8 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | failed new solve identity | **FSH-R12**. |
 | malformed connect extraction | **PCFG-R20**. |
 | keyword-only defaults | **PCFG-R21**. |
-| save/repair Git transaction gap | **GIT-R17**. |
 | pyfunc classifier output shape | **MSC-11**. |
 | literal select row proof | **EXEC-R09**. |
-| multi-frame node-instance full preview | **SUB-R06** after requested split; formerly bundled SUB-R01. |
 | predicted output signature dtype | **MOD-R09** after requested split; formerly bundled MOD-R05. |
 | “PDP integer grids … pending contract test” | **MOD-R05**. The copied note belongs to `modelling/_metrics.py::compute_pdp`, not `_gpu.py` or `_shap.py`; it is not a separate unresolved GPU contract concern. |
 | completed TimeoutError retry loop | **ROAD-WORKER-09** after requested split; formerly bundled ROAD-WORKER-07. |
@@ -344,8 +316,8 @@ Before this follow-up, the documentation delta received **APPROVED** from a seco
 read-only Codex session of the **same model family** (`gpt-6-astra`, `xhigh`; thread
 `01a18333-1e39-7b51-ac2c-9fcf2f76843b`). It requested separate classifier label and
 probability assertions and a concrete P2 preview fix independent of reuse migration.
-The latter now belongs to SUB-R06; SUB-R01 retains its original P3 scope and must pass
-that regression. This was same-family review, not cross-family validation.
+The latter, since delivered, was split from SUB-R01, which retains its original P3 scope
+and must pass that regression. This was same-family review, not cross-family validation.
 
 The subsequent **cross-family review by Claude** checked the decisive code for all
 42 finding groups and reported no false positives; it did not check MOD-R05's integer

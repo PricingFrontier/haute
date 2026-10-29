@@ -6378,6 +6378,33 @@
       "title": "GitBranchAwayResponse",
       "type": "object"
     },
+    "GitBrokenPair": {
+      "properties": {
+        "kind": {
+          "enum": [
+            "orphan-ledger",
+            "half-archived"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "ledger": {
+          "title": "Ledger",
+          "type": "string"
+        },
+        "working": {
+          "title": "Working",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "ledger",
+        "working"
+      ],
+      "title": "GitBrokenPair",
+      "type": "object"
+    },
     "GitCiSecrets": {
       "properties": {
         "missing": {
@@ -7391,6 +7418,24 @@
       "title": "GitRemotesResponse",
       "type": "object"
     },
+    "GitRepairPairResponse": {
+      "properties": {
+        "ledger": {
+          "title": "Ledger",
+          "type": "string"
+        },
+        "working": {
+          "title": "Working",
+          "type": "string"
+        }
+      },
+      "required": [
+        "working",
+        "ledger"
+      ],
+      "title": "GitRepairPairResponse",
+      "type": "object"
+    },
     "GitRestoreResponse": {
       "properties": {
         "restored_as": {
@@ -7740,6 +7785,13 @@
     },
     "GitWorkingBranchResponse": {
       "properties": {
+        "broken_pairs": {
+          "items": {
+            "$ref": "#/$defs/GitBrokenPair"
+          },
+          "title": "Broken Pairs",
+          "type": "array"
+        },
         "current_branch": {
           "default": "",
           "title": "Current Branch",
@@ -7911,7 +7963,8 @@
         "eligible_branches",
         "identity_set",
         "user_name",
-        "user_email"
+        "user_email",
+        "broken_pairs"
       ],
       "title": "GitWorkingBranchResponse",
       "type": "object"
@@ -17912,6 +17965,9 @@
     "GitRemotesResponse": {
       "$ref": "#/$defs/GitRemotesResponse"
     },
+    "GitRepairPairResponse": {
+      "$ref": "#/$defs/GitRepairPairResponse"
+    },
     "GitRestoreResponse": {
       "$ref": "#/$defs/GitRestoreResponse"
     },
@@ -18193,6 +18249,7 @@
     "GitArchiveResponse",
     "GitDeleteBranchResponse",
     "GitUndeleteResponse",
+    "GitRepairPairResponse",
     "GitRemotesResponse",
     "GitPushResponse",
     "GitCiSecrets",
@@ -18304,6 +18361,7 @@
       "GitArchiveResponse",
       "GitDeleteBranchResponse",
       "GitUndeleteResponse",
+      "GitRepairPairResponse",
       "GitRemotesResponse",
       "GitPushResponse",
       "GitCiSecrets",

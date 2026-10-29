@@ -236,6 +236,10 @@ _GRAPH_NODE_SETUP_COORDINATION_TYPE = "optimiser_graph_node_setup"
 _FRONTIER_AUTO_RANGE_CANCELLED_STATUS = "cancelled"
 _FRONTIER_AUTO_RANGE_SUPERSEDED_STATUS = "superseded"
 _FRONTIER_AUTO_RANGE_TERMINAL_STATUSES = TERMINAL_REASONS
+# How long a start waits for a graph/node owner whose job has already ended to
+# exit (it records its metrics and returns its admission after the terminal
+# transition) before refusing with the conflict.
+_FINISHED_OWNER_EXIT_SECONDS = 5.0
 
 
 class _OptimiserSolveRunningJob(RunningJobFields):
@@ -1252,6 +1256,7 @@ class OptimiserSolveService:
         )
         setup_job_key = self._graph_node_setup_job_key(body.graph, body.node_id)
 
+        self._wait_out_finished_setup_owner(setup_job_key)
         with self._start_lock:
             self._check_no_concurrent_jobs()
             active_setup = self._active_graph_node_setup(setup_job_key)
@@ -2193,6 +2198,7 @@ class OptimiserSolveService:
         setup_job_key = self._graph_node_setup_job_key(body.graph, body.node_id)
         node, prepared = self._prepare_frontier_auto_range(body)
         config = prepared["config"]
+        self._wait_out_finished_setup_owner(setup_job_key)
         with self._start_lock:
             active = self._active_frontier_auto_range_start(setup_job_key)
             if active is not None:
@@ -2382,6 +2388,26 @@ class OptimiserSolveService:
             self._graph_node_setup_singleflight.release(key, job_id=active.job_id)
             return None
         return active
+
+    def _wait_out_finished_setup_owner(self, key: tuple[str, str, str]) -> None:
+        """Let a graph/node owner whose job has ended exit before the start's check.
+
+        A worker publishes its terminal state before it frees the graph/node, so
+        a caller that saw the job finish could otherwise meet a 409 from a job
+        that is over. A running owner is not waited for, and one still holding
+        the key when the wait ends is refused by the check as before.
+        """
+        active = self._graph_node_setup_singleflight.active(key)
+        if active is None:
+            return
+        job = self._store.get_job(active.job_id)
+        if job is None or job.get("status") == "running":
+            return
+        self._graph_node_setup_singleflight.wait_released(
+            key,
+            job_id=active.job_id,
+            timeout=_FINISHED_OWNER_EXIT_SECONDS,
+        )
 
     @staticmethod
     def _graph_node_setup_conflict(active: SingleFlightHandle) -> HTTPException:

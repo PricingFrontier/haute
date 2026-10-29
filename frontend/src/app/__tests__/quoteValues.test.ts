@@ -1,7 +1,7 @@
 /**
  * What the underwriter app works out of a quote's values (specs/workbench): one quote however
- * its blanks were left, a saved revision's price, the Quotes page's columns and values, how
- * long ago, what an event says, the values kept in the browser, a reference's rules, and a
+ * its blanks were left, a saved revision's price, the Quotes page's columns and values,
+ * what an event says, the values kept in the browser, a reference's rules, and a
  * creation kept in the tab until its answer comes.
  */
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -22,7 +22,6 @@ import {
   readDraft,
   readKeptCreation,
   referenceProblem,
-  relativeTime,
   savedPrice,
   valuesKey,
   writeDraft,
@@ -76,23 +75,6 @@ describe("the Quotes page's columns", () => {
     expect(listValue(column, null)).toBe("—")
     expect(listValue({ ...column, column: null }, true)).toBe("Yes")
     expect(listValue({ ...column, column: null }, "Acme")).toBe("Acme")
-  })
-})
-
-describe("relativeTime", () => {
-  const now = new Date("2026-10-12T12:00:00Z")
-  it.each([
-    ["2026-10-12T11:59:40Z", "just now"],
-    ["2026-10-12T11:50:00Z", "10m ago"],
-    ["2026-10-12T09:00:00Z", "3h ago"],
-    ["2026-10-11T10:00:00Z", "yesterday"],
-    ["2026-10-08T12:00:00Z", "4d ago"],
-  ])("says %s as %s", (iso, said) => {
-    expect(relativeTime(iso, now)).toBe(said)
-  })
-
-  it("says a date for anything older", () => {
-    expect(relativeTime("2026-09-01T12:00:00Z", now)).toMatch(/1|Sept|Sep/)
   })
 })
 

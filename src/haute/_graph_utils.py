@@ -80,33 +80,11 @@ def _edge_id(
     target: str,
     source_port: str | None = None,
     target_port: str | None = None,
-    *,
-    hidden_source_port: str | None = None,
-    hidden_target_port: str | None = None,
 ) -> str:
-    """Return a stable React Flow edge id for all persisted port metadata.
-
-    The common four-field form retains its historical IDs. Boundary edges can
-    additionally carry authored ports in ``sourcePort`` / ``targetPort`` while
-    ``sourceHandle`` / ``targetHandle`` hold synthetic submodel handles; those
-    hidden fields participate in the identity whenever present.
-    """
-    has_hidden_ports = hidden_source_port is not None or hidden_target_port is not None
-    if source_port is None and target_port is None and not has_hidden_ports:
+    """Return a stable React Flow edge id for an edge's endpoints and handles."""
+    if source_port is None and target_port is None:
         return f"e_{source}_{target}"
-    if has_hidden_ports:
-        payload = "\0".join(
-            (
-                source,
-                target,
-                source_port or "",
-                target_port or "",
-                hidden_source_port or "",
-                hidden_target_port or "",
-                "boundary",
-            )
-        ).encode()
-    elif target_port is None:
+    if target_port is None:
         payload = "\0".join((source, target, source_port or "")).encode()
     else:
         payload = "\0".join((source, target, source_port or "", target_port)).encode()
@@ -514,11 +492,14 @@ def resolve_orig_source_names(
     """Return logical input names that differ from the current edge names.
 
     For an instance, each name comes from the referenced original's incoming
-    edge.  For an ordinary Polars transform with ``inputMapping``, the mapping
-    preserves stable authored names across a parent-replacement rewrite.
+    edge.  For ordinary Transform or Load File code with ``inputMapping``, the
+    mapping preserves stable authored names across a parent-replacement rewrite.
 
     Returns ``None`` when no aliasing is required.
     """
+    # Imported here: the steps module reaches this one through user-code execution.
+    from haute._polars_steps import stepped_surface_allows_input_references
+
     ref = node.data.config.get("instanceOf")
     if ref:
         if ref not in node_map:
@@ -533,12 +514,15 @@ def resolve_orig_source_names(
             for edge in incoming_edges_by_target.get(ref, [])
         ]
         input_mapping = original.data.config.get("inputMapping")
-        if original.data.nodeType == "polars" and input_mapping is not None:
+        if (
+            stepped_surface_allows_input_references(original.data.nodeType)
+            and input_mapping is not None
+        ):
             return resolve_input_mapping_names(source_names, input_mapping)
         return source_names
 
     input_mapping = node.data.config.get("inputMapping")
-    if node.data.nodeType != "polars" or input_mapping is None:
+    if not stepped_surface_allows_input_references(node.data.nodeType) or input_mapping is None:
         return None
     source_names = [
         edge_input_name(

@@ -1,13 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
 import RemotePushControl from "../RemotePushControl"
 import { ApiError } from "../../api/client"
+import useGitStore from "../../stores/useGitStore"
+import useGraphStore from "../../stores/useGraphStore"
+import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
+import { makeGitWorkingBranch } from "../../test-utils/factories"
 
 const mockGetGitRemotes = vi.fn()
 const mockGitPush = vi.fn()
 const mockFastForward = vi.fn()
 const mockBranchAway = vi.fn()
 const mockSetCiSecrets = vi.fn()
+const mockGetWorkingBranch = vi.fn()
 const mockAddToast = vi.fn()
 
 // Spread the real module so `ApiError` (used for the 409 rejection path) stays
@@ -21,6 +27,8 @@ vi.mock("../../api/client", async () => {
     gitFastForward: (...a: unknown[]) => mockFastForward(...a),
     gitBranchAway: (...a: unknown[]) => mockBranchAway(...a),
     gitSetCiSecrets: (...a: unknown[]) => mockSetCiSecrets(...a),
+    // The readiness a catch-up or a spin-off reads again once it succeeded.
+    getWorkingBranch: (...a: unknown[]) => mockGetWorkingBranch(...a),
   }
 })
 
@@ -58,6 +66,7 @@ describe("RemotePushControl", () => {
       working_branch: "dev",
       set_aside_as: "dev-local-20260621",
     })
+    mockGetWorkingBranch.mockResolvedValue(makeGitWorkingBranch({ working_branch: "dev", state: "ready" }))
   })
 
   afterEach(cleanup)
@@ -602,6 +611,165 @@ describe("RemotePushControl", () => {
         expect(screen.queryByTestId("git-ci-secrets-missing")).not.toBeInTheDocument(),
       )
       expect(mockGitPush).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  // Catch up and Spin off a copy rewrite the project's files from the remote: like a
+  // switch, they ask first about unsaved edits in the canvas or the workbench's form.
+  describe("unsaved edits before Catch up and Spin off a copy", () => {
+    const behind = { status: "behind", ahead: 0, behind: 2 }
+    const diverged = { status: "diverged", ahead: 1, behind: 2 }
+    const rejectPushWith = (leg: typeof behind) => {
+      const rejection = {
+        status: "rejected_diverged",
+        remote: "origin",
+        working: leg,
+        ledger: leg,
+        message: "origin has changed - haute never force-pushes.",
+        is_rewrite: false,
+      }
+      mockGetGitRemotes.mockResolvedValue({ remotes: [remote()], working_branch: "dev" })
+      mockGitPush.mockRejectedValue(
+        new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), { detail: rejection }),
+      )
+    }
+    const pushToTheDialog = async () => {
+      await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())
+      fireEvent.click(screen.getByTestId("git-push-button"))
+    }
+    const CATCH_UP = "Save them before catching up? Catching up replaces the project's files with origin's."
+    const SPIN_OFF =
+      "Save them before spinning off a copy? Spinning off sets your version aside and replaces the project's files with origin's."
+
+    // Each way in: how it is set up and clicked, the request it sends, its question, and
+    // whether the question sits inside the rejection dialog.
+    const ways = [
+      {
+        name: "the standalone Catch up",
+        question: CATCH_UP,
+        request: mockFastForward,
+        inDialog: false,
+        setUp: () =>
+          mockGetGitRemotes.mockResolvedValue({
+            remotes: [remote({ working: behind, ledger: behind })],
+            working_branch: "dev",
+          }),
+        click: async () => {
+          fireEvent.click(await screen.findByTestId("git-catch-up-button"))
+        },
+      },
+      {
+        name: "the rejection dialog's Catch up",
+        question: CATCH_UP,
+        request: mockFastForward,
+        inDialog: true,
+        setUp: () => rejectPushWith(behind),
+        click: async () => {
+          await pushToTheDialog()
+          fireEvent.click(await screen.findByTestId("git-push-rejected-catch-up"))
+        },
+      },
+      {
+        name: "the rejection dialog's Spin off a copy",
+        question: SPIN_OFF,
+        request: mockBranchAway,
+        inDialog: true,
+        setUp: () => rejectPushWith(diverged),
+        click: async () => {
+          await pushToTheDialog()
+          fireEvent.click(await screen.findByTestId("git-push-rejected-branch-away"))
+        },
+      },
+    ]
+
+    afterEach(() => {
+      useGraphStore.setState({ dirty: false })
+      useWorkbenchStore.setState({ formDirty: false })
+      useWorkbenchFormStore.setState({ reload: useWorkbenchFormStore.getInitialState().reload })
+    })
+
+    describe.each(ways)("$name with unsaved canvas edits", ({ question, request, inDialog, setUp, click }) => {
+      beforeEach(() => {
+        setUp()
+        useGraphStore.setState({ dirty: true })
+      })
+
+      it("asks first, naming the remote whose files replace the project's, and Cancel sends nothing", async () => {
+        render(<RemotePushControl pendingSaveCount={0} onSave={vi.fn()} />)
+        await click()
+
+        const confirm = await screen.findByTestId("git-navigation-confirm")
+        expect(confirm).toHaveTextContent(`You have unsaved changes. ${question}`)
+        if (inDialog) {
+          expect(within(screen.getByTestId("git-push-rejected")).getByTestId("git-navigation-confirm")).toBe(confirm)
+        }
+        fireEvent.click(screen.getByTestId("git-navigation-cancel"))
+        expect(screen.queryByTestId("git-navigation-confirm")).not.toBeInTheDocument()
+        expect(request).not.toHaveBeenCalled()
+      })
+
+      it("Discard sends it, then drops the canvas's and the form's edits and reads the branch again", async () => {
+        const reload = vi.fn(async () => {})
+        useWorkbenchFormStore.setState({ reload })
+        useWorkbenchStore.setState({ formDirty: true })
+        const historyNonce = useGitStore.getState().historyNonce
+        render(<RemotePushControl pendingSaveCount={0} onSave={vi.fn()} />)
+        await click()
+
+        fireEvent.click(await screen.findByTestId("git-navigation-discard"))
+        await waitFor(() => expect(request).toHaveBeenCalledWith("origin"))
+        await waitFor(() => expect(reload).toHaveBeenCalledOnce())
+        expect(useGraphStore.getState().dirty).toBe(false)
+        await waitFor(() => expect(useGitStore.getState().historyNonce).toBe(historyNonce + 1))
+        expect(mockGetWorkingBranch).toHaveBeenCalled()
+      })
+
+      it("Save first saves, and only then sends it", async () => {
+        const onSave = vi.fn(async () => {
+          expect(request).not.toHaveBeenCalled()
+          return true
+        })
+        render(<RemotePushControl pendingSaveCount={0} onSave={onSave} />)
+        await click()
+
+        fireEvent.click(await screen.findByTestId("git-navigation-save"))
+        await waitFor(() => expect(request).toHaveBeenCalledWith("origin"))
+        expect(onSave).toHaveBeenCalledOnce()
+      })
+
+      it("keeps the edits when it fails", async () => {
+        request.mockRejectedValueOnce(new Error("ref locked on remote"))
+        render(<RemotePushControl pendingSaveCount={0} onSave={vi.fn()} />)
+        await click()
+
+        fireEvent.click(await screen.findByTestId("git-navigation-discard"))
+        await waitFor(() =>
+          expect(mockAddToast).toHaveBeenCalledWith("error", expect.stringContaining("ref locked on remote")),
+        )
+        expect(useGraphStore.getState().dirty).toBe(true)
+      })
+    })
+
+    it("catches up at once, asking nothing, while the project is clean", async () => {
+      ways[0].setUp()
+      render(<RemotePushControl pendingSaveCount={0} onSave={vi.fn()} />)
+      await ways[0].click()
+
+      await waitFor(() => expect(mockFastForward).toHaveBeenCalledWith("origin"))
+      expect(screen.queryByTestId("git-navigation-confirm")).not.toBeInTheDocument()
+    })
+
+    it("closing the rejection dialog drops the question open in it", async () => {
+      rejectPushWith(behind)
+      useGraphStore.setState({ dirty: true })
+      render(<RemotePushControl pendingSaveCount={0} onSave={vi.fn()} />)
+      await ways[1].click()
+      await screen.findByTestId("git-navigation-confirm")
+
+      fireEvent.keyDown(document, { key: "Escape" })
+      await waitFor(() => expect(screen.queryByTestId("git-push-rejected")).not.toBeInTheDocument())
+      expect(screen.queryByTestId("git-navigation-confirm")).not.toBeInTheDocument()
+      expect(mockFastForward).not.toHaveBeenCalled()
     })
   })
 })

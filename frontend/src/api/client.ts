@@ -41,6 +41,7 @@ import type {
   GitMilestonesResponse,
   GitLedgerSavesResponse,
   GitWorkingBranchesResponse,
+  GitRepairPairResponse,
   GitRestoreResponse,
   GitUndeleteResponse,
   GitCreateWorkingBranchResponse,
@@ -2242,6 +2243,14 @@ export function undeleteBranch(
   options?: { signal?: AbortSignal },
 ): Promise<GitUndeleteResponse> {
   return post<unknown>("/api/git/undelete", { id, as_name: asName }, options).then(async (data) => expectGeneratedContract("GitUndeleteResponse", (await gitValidators()).validateGitUndeleteResponse, data))
+}
+
+/** Make whole a pair a crash split, as readiness lists it in `broken_pairs`: refs only. */
+export function repairBranchPair(
+  ledger: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitRepairPairResponse> {
+  return post<unknown>("/api/git/repair-pair", { ledger }, options).then(async (data) => expectGeneratedContract("GitRepairPairResponse", (await gitValidators()).validateGitRepairPairResponse, data))
 }
 
 export function createWorkingBranch(

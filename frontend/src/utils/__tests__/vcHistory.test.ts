@@ -6,14 +6,19 @@
  *
  * Legs also toast and resync git state (status reload + history nonce) on
  * success, and toast + RETHROW on failure so the store can put the entry
- * back for a retry.
+ * back for a retry. A switch's legs replace the canvas and the form, so they
+ * ask about unsaved edits first.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest"
+import { waitFor } from "@testing-library/react"
 import { recordArchive, recordDelete, recordRestore, recordSwitch } from "../vcHistory"
 import useGraphStore from "../../stores/useGraphStore"
 import type { VcHistoryEntry } from "../../stores/useGraphStore"
 import useGitStore from "../../stores/useGitStore"
 import useToastStore from "../../stores/useToastStore"
+import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
+import { answerQuestion, asked } from "../../test-utils/question"
 
 const mockSetWorkingBranch = vi.fn()
 const mockArchive = vi.fn()
@@ -43,7 +48,9 @@ const toastTexts = () => useToastStore.getState().toasts.map((t) => [t.type, t.t
 
 beforeEach(() => {
   vi.clearAllMocks()
-  useGraphStore.setState({ undoStack: [], redoStack: [], vcBusy: false })
+  useGraphStore.setState({ undoStack: [], redoStack: [], vcBusy: false, dirty: false })
+  useWorkbenchStore.setState({ formDirty: false })
+  useWorkbenchFormStore.setState({ reload: useWorkbenchFormStore.getInitialState().reload })
   useGitStore.setState({ status: null, historyNonce: 0 })
   mockSetWorkingBranch.mockResolvedValue({})
   mockArchive.mockResolvedValue({ archived_as: "archive/x" })
@@ -67,6 +74,113 @@ describe("recordSwitch", () => {
 
     await entry.redo()
     expect(mockSetWorkingBranch).toHaveBeenLastCalledWith("experiment", false)
+  })
+})
+
+describe("a switch's legs with unsaved edits", () => {
+  beforeEach(() => {
+    useGraphStore.setState({ dirty: true })
+  })
+
+  it("a clean project switches without asking", async () => {
+    useGraphStore.setState({ dirty: false })
+    recordSwitch("demo", "experiment", vi.fn())
+
+    await lastEntry().undo()
+
+    expect(asked()).toBeNull()
+    expect(mockSetWorkingBranch).toHaveBeenCalledWith("demo", false)
+  })
+
+  it("an undo asks first; Cancel switches nothing, keeps the entry and reports nothing", async () => {
+    recordSwitch("demo", "experiment", vi.fn())
+    const entry = lastEntry()
+
+    useGraphStore.getState().undo()
+    await waitFor(() => expect(asked()).not.toBeNull())
+    expect(asked()).toMatchObject({
+      title: "Switch back to demo?",
+      text: "You have unsaved changes. Save them before changing branches?",
+      other: "Save first",
+      confirm: "Discard",
+      danger: true,
+    })
+    await answerQuestion(null)
+
+    await waitFor(() => expect(useGraphStore.getState().vcBusy).toBe(false))
+    expect(mockSetWorkingBranch).not.toHaveBeenCalled()
+    expect(useGraphStore.getState().undoStack).toEqual([entry])
+    expect(useGraphStore.getState().redoStack).toEqual([])
+    expect(toastTexts()).toEqual([])
+    expect(mockGetWorkingBranch).not.toHaveBeenCalled()
+    expect(useGraphStore.getState().dirty).toBe(true)
+  })
+
+  it("Discard switches, then drops the canvas's and the form's edits", async () => {
+    const reload = vi.fn(async () => {})
+    useWorkbenchFormStore.setState({ reload })
+    useWorkbenchStore.setState({ formDirty: true })
+    const onSave = vi.fn()
+    recordSwitch("demo", "experiment", onSave)
+
+    const undone = lastEntry().undo()
+    await waitFor(() => expect(asked()).not.toBeNull())
+    await answerQuestion("confirm")
+    await undone
+
+    expect(mockSetWorkingBranch).toHaveBeenCalledWith("demo", false)
+    expect(useGraphStore.getState().dirty).toBe(false)
+    expect(reload).toHaveBeenCalledOnce()
+    expect(onSave).not.toHaveBeenCalled()
+    expect(toastTexts()).toEqual([["success", "Switched back to demo"]])
+  })
+
+  it("keeps the edits when the switch chosen over them fails", async () => {
+    mockSetWorkingBranch.mockRejectedValueOnce(new Error("a file is held open"))
+    recordSwitch("demo", "experiment", vi.fn())
+
+    const failed = expect(lastEntry().undo()).rejects.toThrow("a file is held open")
+    await waitFor(() => expect(asked()).not.toBeNull())
+    await answerQuestion("confirm")
+
+    await failed
+    expect(useGraphStore.getState().dirty).toBe(true)
+    expect(toastTexts()).toEqual([["error", "Undo/redo failed: a file is held open"]])
+  })
+
+  it("a redo's Save first saves and then switches, asking again after a save that fails", async () => {
+    const onSave = vi.fn()
+      .mockResolvedValueOnce(false)
+      .mockImplementationOnce(async () => {
+        useGraphStore.setState({ dirty: false })
+        return true
+      })
+    recordSwitch("demo", "experiment", onSave)
+
+    const redone = lastEntry().redo()
+    await waitFor(() => expect(asked()?.title).toBe("Switch to experiment?"))
+    await answerQuestion("other")
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce())
+    await waitFor(() => expect(asked()).not.toBeNull())
+    expect(mockSetWorkingBranch).not.toHaveBeenCalled()
+
+    await answerQuestion("other")
+    await redone
+    expect(onSave).toHaveBeenCalledTimes(2)
+    expect(mockSetWorkingBranch).toHaveBeenCalledOnce()
+    expect(mockSetWorkingBranch).toHaveBeenCalledWith("experiment", false)
+  })
+
+  it("offers no Save first when there is no save to run", async () => {
+    recordSwitch("demo", "experiment")
+
+    const cancelled = expect(lastEntry().undo()).rejects.toThrow("cancelled")
+    await waitFor(() => expect(asked()).not.toBeNull())
+    expect(asked()?.other).toBeUndefined()
+    await answerQuestion(null)
+
+    await cancelled
+    expect(mockSetWorkingBranch).not.toHaveBeenCalled()
   })
 })
 

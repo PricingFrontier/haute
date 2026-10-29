@@ -1999,7 +1999,8 @@ see [the assistant evaluation](evaluation.md#tiers).
 - **[server-api](../server-api/high-level.md)** — the assistant router is included into the
   same FastAPI app (session middleware, sanitized-error conventions apply); request/response
   models live in the shared `schemas.py` contract module; mutations run under the shared
-  `save_lock` through the transactional save service; broadcasts publish the existing
+  `save_lock` through the transactional save service, which holds the repository's Git lock
+  for its transaction; broadcasts publish the existing
   `pipeline.document.update` event on the shared event bus; self-write marking prevents
   watcher feedback.
 - **[pipeline-config](../pipeline-config/high-level.md)** — the graph model the ops mutate

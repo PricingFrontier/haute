@@ -597,7 +597,7 @@ jobs:
           tests/test_ebm_family.py
           -q
 
-      - name: Cross-platform path, process isolation, spill, cache, and debt smoke
+      - name: Cross-platform path, process isolation, spill, cache, git transport, and debt smoke
         run: >
           uv run pytest
           tests/test_path_resolution.py
@@ -617,6 +617,7 @@ jobs:
           tests/test_json_direct_spill.py
           tests/test_api_input_table_snapshots.py
           tests/test_json_runtime_storage.py
+          tests/test_git_remote_transport.py
           -q
 
   # The documentation site builds strictly on every pull request, not only when a

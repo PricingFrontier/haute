@@ -16,7 +16,9 @@ from haute._git_core import (
     GitTransactionError,
     _assert_eligible_working,
     _assert_git_repo,
+    _assert_new_branch_name,
     _get_current_branch,
+    _list_branches_with_tips,
     _rev_parse,
     _rewrite_tree,
     _run_git,
@@ -24,12 +26,14 @@ from haute._git_core import (
     _serialized_mutation,
     _validate_ref_name,
     ledger_name,
+    working_name,
 )
-from haute._git_read_models import _has_unmerged_saves, _normalize_to_working
+from haute._git_read_models import _broken_pair, _has_unmerged_saves, _normalize_to_working
 from haute._logging import get_logger
 from haute.schemas import (
     GitArchiveResponse,
     GitDeleteBranchResponse,
+    GitRepairPairResponse,
     GitRestoreResponse,
     GitUndeleteResponse,
 )
@@ -41,6 +45,7 @@ __all__ = [
     "delete_working_pair",
     "undelete_working_pair",
     "restore_working_pair",
+    "repair_working_pair",
 ]
 
 
@@ -48,6 +53,7 @@ def _switch_away_if_active(
     working: str,
     ledger: str,
     project_root: Path,
+    action: str,
     cwd: Path | None = None,
     discard: bool = False,
 ) -> bool:
@@ -61,8 +67,9 @@ def _switch_away_if_active(
 
     When *discard* (a confirmed delete — the branch is going away anyway), a
     dirty tree is force-discarded with the checkout. Otherwise tracked
-    modifications refuse the move with actionable guidance, since a lossless
-    archive must not silently throw away volatile work (S12/S38)."""
+    modifications refuse the move with actionable guidance naming *action*
+    ("archiving", "deleting"), since an archive or an unconfirmed delete must not
+    silently throw away volatile work (S12/S38)."""
     from haute._git_state import read_working_branch
 
     recorded = read_working_branch(project_root)
@@ -75,7 +82,7 @@ def _switch_away_if_active(
             if ok and status.strip():
                 raise GitDomainError(
                     "You have unsaved changes on this branch. Save or discard "
-                    "them before archiving it."
+                    f"them before {action} it."
                 )
         milestone = _rev_parse(working, cwd=cwd) or _rev_parse(ledger, cwd=cwd)
         if milestone is None:
@@ -139,7 +146,7 @@ def archive_working_pair(
         previous_head = _run_git("rev-parse", "HEAD", cwd=cwd)
 
     try:
-        if _switch_away_if_active(working, ledger, project_root, cwd=cwd):
+        if _switch_away_if_active(working, ledger, project_root, "archiving", cwd=cwd):
             clear_working_branch(project_root)
         _move_pair(working, archived, working_tip, ledger_tip, cwd=cwd)
     except (GitError, OSError) as exc:
@@ -252,9 +259,11 @@ def delete_working_pair(
     ledger_pin = f"refs/haute/trash/{entry_id}/ledger"
 
     try:
-        # A confirmed delete is destructive by intent — discard a dirty tree
-        # along with the branch rather than refusing (S38).
-        if _switch_away_if_active(working, ledger, project_root, cwd=cwd, discard=True):
+        # A confirmed delete is destructive by intent — discard a dirty tree along
+        # with the branch (S38). Without confirmation a dirty tree refuses.
+        if _switch_away_if_active(
+            working, ledger, project_root, "deleting", cwd=cwd, discard=confirm
+        ):
             clear_working_branch(project_root)
         # Recovery net FIRST, refs second — a failure between the two remains
         # compensatable without making history unreachable.
@@ -342,6 +351,7 @@ def undelete_working_pair(
     if entry is None:
         raise GitDomainError("That deleted branch is no longer in the trash.")
     name = as_name.strip() if as_name is not None else trash_entry_branch(entry_id, entry)
+    _assert_new_branch_name(name, cwd=cwd)
     _validate_ref_name(name)
     working = _normalize_to_working(name)
     _assert_eligible_working(working)
@@ -417,3 +427,66 @@ def restore_working_pair(
     _move_pair(archived_working, restored, working_tip, ledger_tip, cwd=cwd)
     logger.info("working_pair_restored", restored=restored)
     return GitRestoreResponse(restored_as=restored)
+
+
+@_serialized_mutation
+def repair_working_pair(
+    ledger: str, project_root: Path, cwd: Path | None = None
+) -> GitRepairPairResponse:
+    """Make whole a pair a crash split, as readiness lists it in ``broken_pairs``.
+
+    A half-archived pair's archive is finished: the ledger moves beside its archived
+    working branch. An orphan ledger gets its working branch back at the ledger's last
+    milestone, the saves since then pending again for the next milestone. Each is one
+    ref transaction; HEAD, the files and clone state are left as they are."""
+    _assert_git_repo(cwd)
+    _validate_ref_name(ledger)
+    _, tips = _list_branches_with_tips(cwd=cwd)
+    pair = _broken_pair(ledger, tips, cwd)
+    if pair is None:
+        raise GitDomainError(f"'{ledger}' is not part of a broken branch.")
+    ledger_tip = tips[ledger]
+    if pair.kind == "half-archived":
+        archived_ledger = ledger_name(pair.working)
+        _run_git(
+            "update-ref",
+            "--stdin",
+            cwd=cwd,
+            input_text=(
+                f"create refs/heads/{archived_ledger} {ledger_tip}\n"
+                f"delete refs/heads/{ledger} {ledger_tip}\n"
+            ),
+        )
+        logger.info("working_pair_repaired", kind=pair.kind, working=pair.working)
+        return GitRepairPairResponse(working=pair.working, ledger=archived_ledger)
+    milestone = _ledger_last_milestone(ledger, tips, cwd)
+    _run_git(
+        "update-ref",
+        "--stdin",
+        cwd=cwd,
+        input_text=f"create refs/heads/{pair.working} {milestone}\n",
+    )
+    logger.info("working_pair_repaired", kind=pair.kind, working=pair.working, at=milestone[:8])
+    return GitRepairPairResponse(working=pair.working, ledger=ledger)
+
+
+def _ledger_last_milestone(ledger: str, tips: dict[str, str], cwd: Path | None) -> str:
+    """The commit *ledger*'s saves were recorded on.
+
+    Walking its first-parent chain back from the tip: the first commit that is a merge (a
+    milestone, or the anchoring milestone of a branch started at a save), has no parent,
+    or lies on the first-parent chain of a local branch that is not a save ledger (where a
+    branch started on the default branch). A save is none of these: one parent, and on no
+    branch's chain but a ledger's (another ledger shares them after Spin off a copy)."""
+    others = "".join(f"{tip}\n" for name, tip in tips.items() if working_name(name) is None)
+    on_other_chains = (
+        set(_run_git("rev-list", "--first-parent", "--stdin", cwd=cwd, input_text=others).split())
+        if others
+        else set()
+    )
+    chain = _run_git("rev-list", "--first-parent", "--parents", tips[ledger], cwd=cwd)
+    for line in chain.splitlines():
+        sha, *parents = line.split()
+        if len(parents) != 1 or sha in on_other_chains:
+            return sha
+    raise GitError(f"the first-parent chain of {ledger} ends without a root")

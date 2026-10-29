@@ -16,11 +16,14 @@ import {
 } from "../api/client"
 import type { GitDeletedBranch, GitManagedBranch } from "../api/types"
 import useGitStore from "../stores/useGitStore"
-import useProjectDirty, { discardCanvasEdits, discardFormEdits } from "../hooks/useProjectDirty"
+import useDirtyNavigation from "../hooks/useDirtyNavigation"
+import { discardCanvasEdits, discardFormEdits } from "../hooks/useProjectDirty"
 import useToastStore from "../stores/useToastStore"
 import { recordArchive, recordDelete, recordRestore, recordSwitch } from "../utils/vcHistory"
 import { apiErrorMessage } from "../api/errors"
+import BrokenPairs from "./BrokenPairs"
 import Tooltip from "./Tooltip"
+import BackdropMenu, { MenuItem } from "./BackdropMenu"
 import GitNavigationConfirm from "./GitNavigationConfirm"
 
 interface BranchManagerProps {
@@ -52,7 +55,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
   const historyNonce = useGitStore((s) => s.historyNonce)
   const commitNonce = useGitStore((s) => s.commitNonce)
   const addToast = useToastStore((s) => s.addToast)
-  const dirty = useProjectDirty()
+  const navigation = useDirtyNavigation(onSave)
 
   const [newBranch, setNewBranch] = useState("")
   const [busy, setBusy] = useState<string | null>(null)
@@ -69,7 +72,6 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
   const [confirmMove, setConfirmMove] = useState<string | null>(null)
   const [archiveDirty, setArchiveDirty] = useState<GitManagedBranch | null>(null)
   const [dontAskSwitch, setDontAskSwitch] = useState(false)
-  const [dirtyNavigation, setDirtyNavigation] = useState<(() => void) | null>(null)
 
   // Persisted "don't ask again" for switching (loaded once; whole-environment).
   const [skipSwitchConfirm, setSkipSwitchConfirm] = useState(false)
@@ -177,10 +179,13 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
   // canvas via the websocket sync, and the completed switch is recorded as an
   // undoable history entry.
   const switchNow = (b: GitManagedBranch, dontAsk: boolean) => {
-    guardNavigation(() => {
+    navigation.guard(() => {
       if (dontAsk) {
         setSkipSwitchConfirm(true)
-        void setGitPrefs({ skip_switch_confirm: true }).catch(() => {})
+        // The switch goes ahead; a choice not saved is asked again next time, so say so.
+        void setGitPrefs({ skip_switch_confirm: true }).catch((err: unknown) => {
+          addToast("error", `Couldn't save "Don't ask again" on this machine: ${apiErrorMessage(err, "unknown error")}`)
+        })
       }
       setConfirmSwitch(null)
       setDontAskSwitch(false)
@@ -190,7 +195,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
         discardCanvasEdits()
         await discardFormEdits()
         addToast("success", `Switched to ${b.name}`)
-        if (from !== null) recordSwitch(from, b.name)
+        if (from !== null) recordSwitch(from, b.name, onSave)
       })
     })
   }
@@ -198,11 +203,6 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
   const onSwitchClick = (b: GitManagedBranch) => {
     if (skipSwitchConfirm) switchNow(b, false)
     else setConfirmSwitch(b)
-  }
-
-  const guardNavigation = (proceed: () => void) => {
-    if (dirty) setDirtyNavigation(() => proceed)
-    else proceed()
   }
 
   // -- archive / delete / restore --------------------------------------------
@@ -221,7 +221,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
         if (!b.is_current) recordArchive(b.name, res.archived_as)
       }, { reloadOnDone: b.is_current })
     }
-    if (b.is_current) guardNavigation(archive)
+    if (b.is_current) navigation.guard(archive)
     else archive()
   }
 
@@ -314,20 +314,9 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
             </div>
           )}
 
-          {dirtyNavigation && (
-            <GitNavigationConfirm
-              onCancel={() => setDirtyNavigation(null)}
-              onDiscard={() => { const proceed = dirtyNavigation; setDirtyNavigation(null); proceed() }}
-              onSave={async () => {
-                try {
-                  if (!await (onSave?.() ?? Promise.resolve(false))) return
-                  const proceed = dirtyNavigation
-                  setDirtyNavigation(null)
-                  proceed?.()
-                } catch { /* Saving failed; leave the choice visible. */ }
-              }}
-            />
-          )}
+          {navigation.confirm && <GitNavigationConfirm {...navigation.confirm} />}
+
+          <BrokenPairs />
 
           {/* Current branch — boxed, at the top. Dimmer when not the peeked one. */}
           {current && (
@@ -512,7 +501,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
                 </button>
                 <button
                   data-testid="branch-manager-confirm-move-go"
-                  onClick={() => guardNavigation(() => { void doCreate(confirmMove, true) })}
+                  onClick={() => navigation.guard(() => { void doCreate(confirmMove, true) })}
                   className="px-2.5 py-1 text-[12px] font-semibold rounded-md"
                   style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
                 >
@@ -594,10 +583,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
               style={{ background: "var(--danger-soft-faint)", border: "1px solid var(--danger-soft-strong)" }}
             >
               <span className="text-[12px]" style={{ color: "var(--text-primary)" }}>
-                Permanently delete <span className="font-mono">{confirmDelete.name}</span> and its history?
-                {deleteLoss(confirmDelete) && (
-                  <> This also discards {deleteLoss(confirmDelete)}.</>
-                )}
+                Delete <span className="font-mono">{confirmDelete.name}</span>? {deleteOutcome(confirmDelete)}
                 {confirmDelete.is_current && <> You&apos;ll be returned to the branch chooser.</>}
               </span>
               <div className="flex justify-end gap-2">
@@ -608,7 +594,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
                   data-testid="branch-manager-confirm-delete"
                   onClick={() => {
                     const branch = confirmDelete
-                    if (branch.is_current) guardNavigation(() => { void doDelete(branch) })
+                    if (branch.is_current) navigation.guard(() => { void doDelete(branch) })
                     else void doDelete(branch)
                   }}
                   className="px-2.5 py-1 text-[12px] font-semibold rounded-md"
@@ -626,71 +612,61 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
           (restore replaces archive on archived rows). Actions route through
           the same handlers as the row buttons, dialogs included. */}
       {rowMenu && (
-        <>
-          <div
-            className="fixed inset-0 z-40"
-            onClick={() => setRowMenu(null)}
-            onContextMenu={(e) => { e.preventDefault(); setRowMenu(null) }}
-          />
-          <div
-            data-testid="branch-manager-row-menu"
-            className="fixed z-50 rounded-md py-1 shadow-lg text-[12px]"
-            style={{ left: rowMenu.x, top: rowMenu.y, background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
+        <BackdropMenu
+          testId="branch-manager-row-menu"
+          x={rowMenu.x}
+          y={rowMenu.y}
+          title={rowMenu.b.name}
+          onClose={() => setRowMenu(null)}
+        >
+          <MenuItem
+            testId="branch-manager-row-menu-select"
+            icon={GitBranch}
+            onClick={() => { onPeek?.(rowMenu.b.name); setRowMenu(null) }}
           >
-            <div className="px-3 py-1 font-mono text-[10px] max-w-[220px] truncate" style={{ color: "var(--text-muted)" }}>
-              {rowMenu.b.name}
-            </div>
-            <button
-              data-testid="branch-manager-row-menu-select"
-              onClick={() => { onPeek?.(rowMenu.b.name); setRowMenu(null) }}
-              className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
-              style={{ color: "var(--text-primary)" }}
-            >
-              <GitBranch size={12} style={{ color: "var(--accent)" }} /> Select (view history)
-            </button>
-            {!rowMenu.b.is_archived && !rowMenu.b.is_current && (
-              <button
-                data-testid="branch-manager-row-menu-switch"
-                onClick={() => { const b = rowMenu.b; setRowMenu(null); onSwitchClick(b) }}
-                disabled={anyBusy}
-                className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)] disabled:opacity-40"
-                style={{ color: "var(--text-primary)" }}
-              >
-                <ArrowRightLeft size={12} style={{ color: "var(--accent)" }} /> Switch to this branch
-              </button>
-            )}
-            {!rowMenu.b.is_archived ? (
-              <button
-                data-testid="branch-manager-row-menu-archive"
-                onClick={() => { const b = rowMenu.b; setRowMenu(null); onArchiveClick(b) }}
-                disabled={anyBusy}
-                className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)] disabled:opacity-40"
-                style={{ color: "var(--text-primary)" }}
-              >
-                <Archive size={12} style={{ color: "var(--warning)" }} /> Archive
-              </button>
-            ) : (
-              <button
-                data-testid="branch-manager-row-menu-restore"
-                onClick={() => { const b = rowMenu.b; setRowMenu(null); void restore(b) }}
-                disabled={anyBusy}
-                className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)] disabled:opacity-40"
-                style={{ color: "var(--text-primary)" }}
-              >
-                <RotateCcw size={12} style={{ color: "var(--branch-restore-text)" }} /> Restore
-              </button>
-            )}
-            <button
-              data-testid="branch-manager-row-menu-delete"
-              onClick={() => { const b = rowMenu.b; setRowMenu(null); setConfirmDelete(b) }}
+            Select (view history)
+          </MenuItem>
+          {!rowMenu.b.is_archived && !rowMenu.b.is_current && (
+            <MenuItem
+              testId="branch-manager-row-menu-switch"
+              icon={ArrowRightLeft}
+              onClick={() => { const b = rowMenu.b; setRowMenu(null); onSwitchClick(b) }}
               disabled={anyBusy}
-              className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)] disabled:opacity-40"
-              style={{ color: "var(--danger)" }}
             >
-              <Trash2 size={12} /> Delete
-            </button>
-          </div>
-        </>
+              Switch to this branch
+            </MenuItem>
+          )}
+          {!rowMenu.b.is_archived ? (
+            <MenuItem
+              testId="branch-manager-row-menu-archive"
+              icon={Archive}
+              iconColor="var(--warning)"
+              onClick={() => { const b = rowMenu.b; setRowMenu(null); onArchiveClick(b) }}
+              disabled={anyBusy}
+            >
+              Archive
+            </MenuItem>
+          ) : (
+            <MenuItem
+              testId="branch-manager-row-menu-restore"
+              icon={RotateCcw}
+              iconColor="var(--branch-restore-text)"
+              onClick={() => { const b = rowMenu.b; setRowMenu(null); void restore(b) }}
+              disabled={anyBusy}
+            >
+              Restore
+            </MenuItem>
+          )}
+          <MenuItem
+            testId="branch-manager-row-menu-delete"
+            icon={Trash2}
+            danger
+            onClick={() => { const b = rowMenu.b; setRowMenu(null); setConfirmDelete(b) }}
+            disabled={anyBusy}
+          >
+            Delete
+          </MenuItem>
+        </BackdropMenu>
       )}
     </div>
   )
@@ -703,12 +679,16 @@ function deletedWhen(iso: string): string {
   return when.toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
 }
 
-/** Human phrase for what a delete throws away beyond the lineage itself. */
-function deleteLoss(b: GitManagedBranch): string | null {
-  const parts: string[] = []
-  if (b.has_uncommitted_changes) parts.push("your uncommitted edits")
-  if (b.has_unmerged_saves) parts.push("saves not yet in a milestone")
-  return parts.length ? parts.join(" and ") : null
+/**
+ * What a delete does, as its dialog says it: the server keeps both of the branch's refs in
+ * the trash, so the branch and its saves can be restored, while the current branch's
+ * project changes since the last save are discarded with the checkout away.
+ */
+function deleteOutcome(b: GitManagedBranch): string {
+  const kept = b.has_unmerged_saves
+    ? "It goes to Deleted, with its saves not yet in a milestone, and can be restored from there."
+    : "It goes to Deleted and can be restored from there."
+  return b.has_uncommitted_changes ? `${kept} The project's changes since the last save are lost.` : kept
 }
 
 function BranchRow({

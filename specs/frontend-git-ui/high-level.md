@@ -84,7 +84,10 @@ highlighted box headed "Saves since the last milestone (n)", then the milestone 
 reveal the individual saves folded into it. Milestones and saves each carry: a version
 label or "init" tag, message, short SHA with a tooltip, a relative time, a view (read-only
 compare) affordance, and — when a branch was spawned from that exact point — clickable
-branch chips ("fork links") back to the spawned branch.
+branch chips ("fork links") back to the spawned branch. The relative time follows the rule
+every panel shares: "just now" under a minute, then whole minutes, hours and days ago
+("5m ago", "3h ago", "2d ago") below a week, then the day and month, with the year when it
+is not this year; `CommitBreadcrumb` reads its time the same way.
 
 On the user's own (non-peeked) branch every row also carries "Start a branch from this
 version", and every row except the current version carries "Restore this version". The
@@ -117,9 +120,13 @@ list doesn't show (the server's refusal opens it). The manager has a "Create" / 
 control. Peeking (viewing
 another branch's history) never switches the working branch; switching, archiving,
 deleting, and restoring do, each behind role-appropriate confirmation (switch has a
-persistable "don't ask again"; delete always confirms and names what it discards;
-archiving the current branch with tracked project changes not yet saved redirects to
-"commit a milestone first" instead of proceeding). A row's badges read "not saved" (project
+persistable "don't ask again", and a preference that cannot be saved is reported in an
+error toast while the switch goes ahead; archiving the current branch with tracked project
+changes not yet saved redirects to "commit a milestone first" instead of proceeding).
+Delete always confirms. A delete keeps the branch in the trash, so the dialog says it goes
+to Deleted and can be restored from there, with its saves not yet in a milestone when it
+has some, and names the one thing it loses: on the current branch, the project's changes
+since the last save, which the delete discards. A row's badges read "not saved" (project
 files changed since the last save) and "saves to commit" (saves not yet in a milestone). A switch or Create & Move that would replace
 unsaved edits, in the canvas or the workbench's form, always requires Cancel, Discard, or
 Save first; the persisted
@@ -127,18 +134,37 @@ preference to skip clean switch confirmation never bypasses this dirty-work guar
 Current-branch archive and delete
 use the same guard before their mutation/reload path, including when the branch also has
 saved work awaiting a milestone. Save first must complete successfully before the Git
-mutation starts.
+mutation starts, and a Cancel while it saves drops the mutation.
 
 An in-app switch reloads no page. The server publishes the new branch's documents and form
 once the switch has answered. When the analyst chose Discard, the switch drops the canvas's
 edits and asks for the document again only after it succeeds, so a failed switch keeps them.
 
+The toolbar's Undo or Redo of a switch is a switch too, and asks the same question about
+unsaved edits before it checks out the other branch. The git panel may be closed, so the
+page's question dialog asks it: "Switch back to <branch>?" (Undo) or "Switch to <branch>?"
+(Redo), with Cancel, Save first and Discard. Cancel leaves the entry on the toolbar's undo
+stack to try again; Save first saves the edits on the branch being left and asks again if
+the save fails; Discard drops them once the switch has succeeded, as an in-panel switch does.
+
 Known gap: the startup chooser adopting an existing branch from an unset project also
 checks out that branch's files, and a Save queued behind it meets them.
 
+**Broken branches.** A branch a crash left in two parts (the readiness's `broken_pairs`,
+[git-integration](../git-integration/high-level.md)) reads as "Branch '<name>' is missing,
+though its saves are kept." or "Archiving '<name>' stopped part way: its saves were not
+archived with it.", each with a Repair. The branch manager lists them above the branches,
+and so does the branch chooser when it opens at startup. When startup opens no chooser
+(the project is ready, interrupted or divergent), each is reported in an error toast,
+which stays until dismissed, with its Repair. Repair toasts its outcome and reads the
+readiness, the branch list and the history again. A Repair in the chooser that leaves the
+project ready answers the chooser as choosing a branch does, running the save or commit it
+was opened for.
+
 **Modals.** `WorkingBranchModal` gates first use (and any save attempted with no working
 branch set): choose among eligible branches or create one, optionally set git identity
-inline. Startup opens it when the project is unset, invalid or detached.
+inline. Startup opens it when the project is unset, invalid or detached. On an invalid
+project it lists every reason the readiness gives, one per line, not only the first.
 
 On a detached project, left on an earlier version by a checkout outside Haute:
 - it starts on "Create new branch…";
@@ -195,6 +221,16 @@ branch-count toast remains. On a non-fast-forward rejection the control shows an
 recovery modal: fast-forward catch-up when the fork is behind-only, or "spin off a copy"
 (never a local merge) when it has genuinely diverged.
 
+Catch up and Spin off a copy rewrite the project's files from the remote, so, like a
+switch, both pass the dirty-project guard: with unsaved edits in the canvas or the
+workbench's form, the standalone Catch up button and the rejection dialog's actions first
+ask "Save them before catching up?" or "Save them before spinning off a copy?", naming the
+remote whose files replace the project's (the question sits inside the rejection dialog
+when that is open, and closing the dialog drops it). Cancel sends nothing, Discard goes
+ahead, and Save first goes ahead only once the save has succeeded. Once either succeeds,
+the edits chosen over are dropped as after a switch, and the readiness, the branch list
+and the history are read again.
+
 A Push to a GitHub repository also reports the deploy's secrets there
 ([cli](../cli/high-level.md)). When the Push set some, a success toast says `Set <n> deploy
 secret(s) on <repository> from .env`; when a first publication could not set them, or could
@@ -209,13 +245,17 @@ nothing: the secrets may be managed by someone without the editor.
 - A plain save never changes the panel's selection; a milestone commit does (selects the
   new milestone), but only when viewing the current branch's own history.
 - Peeking a branch never mutates working-tree state; only "switch" (branch manager /
-  lane context menu), "Start a branch from this version" and Create & Move perform a real
-  checkout, and only "restore this version" rewrites the files on the current branch.
+  lane context menu, and the toolbar's undo or redo of one), "Start a branch from this
+  version" and Create & Move perform a real checkout, and only "restore this version",
+  Catch up and Spin off a copy rewrite the files on the current branch. Each of them asks
+  first when the canvas or the workbench's form holds unsaved edits.
 - The rail's row list and the graph payload are fetched independently and may transiently
   disagree; the rail withholds rendering rather than mislabel rows during that window
   (see Failure model).
 - Right-clicking any history row always calls `preventDefault` — the browser's native
-  context menu never appears over the panel.
+  context menu never appears over the panel. An open menu, or the fork-naming step, sits
+  over a full-window backdrop: a click on it closes the menu, and so does a right-click,
+  which also calls `preventDefault`.
 
 ## Design rationale
 
@@ -253,6 +293,13 @@ if it does not match one of those contracts, the formatter uses the plain error 
 instead of displaying raw JSON. Consequently protected-branch, duplicate-label, ledger,
 and dirty-state messages authored by the backend survive every relevant toast and inline
 banner.
+
+**One menu, one guard, one clock.** The panel's right-click menus (row, rail dot, rail
+lane) and the branch manager's row menu are one primitive (`BackdropMenu`), whose backdrop
+the fork-naming step uses too; the panel and the branch manager guard unsaved edits through
+one hook (`useDirtyNavigation`); and every relative time in the app comes from one function
+(`utils/relativeTime.ts`, owned by [frontend-shared](../frontend-shared/low-level.md)). A
+copy could drift in its dismissal, its Save-first sequence or its wording, so none is kept.
 
 **Peek is separate from working-branch state.** `peekBranch` lives in `useGitStore` (not
 component state) specifically so the toolbar indicator can return the panel to "current"
@@ -294,7 +341,9 @@ empty remote. The UI reads `default_branch`; it never hardcodes `main`.
   behaviour, not for ownership of the frontend transport.
 - Depends on shared chrome — see [frontend-shared](../frontend-shared/high-level.md):
   `PanelShell` (the sliding panel frame), `ModalShell` (modal frame/backdrop/focus),
-  `Tooltip`, `ConfigCheckbox`, and the toast store (`useToastStore`).
+  `Tooltip`, `ConfigCheckbox`, the toast store (`useToastStore`), and the page's question
+  (`useQuestionStore`, drawn by `QuestionDialog`), which asks the toolbar undo's and redo's
+  unsaved-edits question for a switch.
 - Depends on `useGraphStore` (owned by
   [frontend-graph-canvas](../frontend-graph-canvas/high-level.md)) for `pushVcEntry` —
   recording branch switch/archive/restore/delete as undoable history entries
@@ -328,7 +377,11 @@ are not the user's data, and **mutations**, which always surface an error.
 - **History reads** (`getMilestones`, `getPendingSaves`) on the
   panel's main `refresh()` path show an error toast on failure — this is the user's saved
   work, so a failure is not silent — but a *superseded* refresh's failure is dropped
-  without a toast (the newer refresh owns reporting). Shared branch-list loads
+  without a toast (the newer refresh owns reporting). The failure also stays in the panel:
+  with no history rows on screen, the panel shows the error and a Retry in place of "No
+  milestones yet", so after the toast fades a transport failure never reads as a branch
+  with no milestones. The next refresh, Retry's or any other, clears it; a superseded
+  refresh's failure never shows. Shared branch-list loads
   (`loadBranches()`, calling `getWorkingBranches`) record failure in `branchesError`
   rather than toasting on the history path.
 - **Graph topology fetch** is explicitly best-effort: it is caught separately from the
@@ -357,5 +410,5 @@ are not the user's data, and **mutations**, which always surface an error.
 
 **Shared switch policy, separate entry points.** `GitPanel.performSwitch` and
 `BranchManager.switchNow` remain separate mutations for the rail lane menu and branch manager,
-but both use the same dirty-navigation confirmation component, Save-first callback, and Git
-error formatter.
+but both guard through `useDirtyNavigation` (one confirmation component, one Save-first
+sequence) and use the same Git error formatter.

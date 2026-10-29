@@ -19,6 +19,7 @@ from haute._git_core import (
     GitDomainError,
     GitError,
     GitPushRejectedError,
+    GitRemoteUnavailableError,
     GitTransactionError,
     _assert_git_repo,
     _assert_no_git_op_in_progress,
@@ -289,7 +290,7 @@ def fetch_bundle_refs(bundle: Path, namespace: str, cwd: Path | None = None) -> 
             str(bundle),
             f"+refs/heads/*:refs/remotes/{namespace}/*",
             cwd=cwd or Path.cwd(),
-            env=_remote_env(),
+            env=_remote_env(cwd),
             timeout=_CLONE_TIMEOUT_SECONDS,
         )
     except _GitProcessTimeoutError as exc:
@@ -488,7 +489,7 @@ def _ls_remote_version_tags(remote: str, cwd: Path | None = None) -> dict[str, s
             remote,
             "refs/tags/version/*",
             cwd=cwd or Path.cwd(),
-            env=_remote_env(),
+            env=_remote_env(cwd),
             timeout=_FETCH_TIMEOUT_SECONDS,
         )
     except (_GitProcessTimeoutError, OSError, UnicodeError):
@@ -539,6 +540,37 @@ def _tag_collisions(remote: str, working: str, cwd: Path | None = None) -> list[
     return collisions
 
 
+def _refresh_failed(remote: str) -> GitRemoteUnavailableError:
+    """A deliberate read of *remote* that failed: the words Push, Catch up and Spin off share."""
+    return GitRemoteUnavailableError(
+        f"Could not refresh '{remote}'. Check your connection or credentials and try again."
+    )
+
+
+def _could_not_push(remote: str) -> GitRemoteUnavailableError:
+    return GitRemoteUnavailableError(
+        f"Could not push to '{remote}'. Check your connection or credentials and try again."
+    )
+
+
+def _push_failed(remote: str, stderr: str) -> GitDomainError:
+    """Why a push failed for something other than diverged history, in the analyst's words."""
+    if "(stale info)" in stderr:
+        # The bootstrap's create-only lease: the default appeared since inspection. The
+        # next push finds an established remote, so this passes like a transport failure.
+        return GitRemoteUnavailableError(
+            f"'{remote}' changed while Haute was publishing to it, so nothing was published. "
+            "Push again."
+        )
+    if "[remote rejected]" in stderr:
+        return GitDomainError(
+            f"'{remote}' refused the push, so nothing was published and your work is "
+            "unchanged. The Haute server log has its reason, for example a branch rule or "
+            "missing write access."
+        )
+    return _could_not_push(remote)
+
+
 def _inspect_remote(remote: str, cwd: Path | None = None) -> tuple[set[str], str | None, bool]:
     """Strictly inspect one remote; empty means a successful zero-object advertisement."""
     heads, head_target, object_refs = _read_advertisement(remote, cwd=cwd)
@@ -555,16 +587,20 @@ def _read_advertisement(
             "--symref",
             remote,
             cwd=cwd or Path.cwd(),
-            env=_remote_env(),
+            env=_remote_env(cwd),
             timeout=_FETCH_TIMEOUT_SECONDS,
         )
     except _GitProcessTimeoutError as exc:
-        raise GitError("git ls-remote timed out") from exc
-    except (OSError, UnicodeError) as exc:
-        raise GitError("git ls-remote failed") from exc
+        logger.warning("git_remote_inspection_timed_out", remote=remote)
+        raise _refresh_failed(remote) from exc
+    except OSError as exc:
+        logger.warning("git_remote_inspection_failed", remote=remote, error=str(exc))
+        raise _refresh_failed(remote) from exc
+    except UnicodeError as exc:
+        raise GitError("unreadable git ls-remote advertisement") from exc
     if result.returncode != 0:
         logger.warning("git_remote_inspection_failed", remote=remote, stderr=result.stderr.strip())
-        raise GitError(result.stderr.strip() or "git ls-remote failed")
+        raise _refresh_failed(remote)
     heads: set[str] = set()
     head_target: str | None = None
     object_refs: dict[str, str] = {}
@@ -712,19 +748,22 @@ def _fetch_expected_default(remote: str, branch: str, cwd: Path | None = None) -
                 remote,
                 f"refs/heads/{branch}:{destination}",
                 "--quiet",
+                errors="replace",
                 cwd=cwd or Path.cwd(),
-                env=_remote_env(),
+                env=_remote_env(cwd),
                 timeout=_FETCH_TIMEOUT_SECONDS,
             )
     except _GitProcessTimeoutError as exc:
-        raise GitError("git fetch timed out") from exc
-    except (OSError, UnicodeError) as exc:
-        raise GitError("git fetch failed") from exc
+        logger.warning("git_default_fetch_timed_out", remote=remote, branch=branch)
+        raise _refresh_failed(remote) from exc
+    except OSError as exc:
+        logger.warning("git_default_fetch_failed", remote=remote, branch=branch, error=str(exc))
+        raise _refresh_failed(remote) from exc
     if result.returncode != 0:
         logger.warning(
             "git_default_fetch_failed", remote=remote, branch=branch, stderr=result.stderr.strip()
         )
-        raise GitError(result.stderr.strip() or "git fetch failed")
+        raise _refresh_failed(remote)
     sha = _rev_parse(destination, cwd=cwd)
     if sha is None:
         raise GitError("fetched default branch did not resolve")
@@ -743,15 +782,15 @@ def _run_push(
             *refspecs,
             errors="replace",
             cwd=cwd or Path.cwd(),
-            env=_remote_env(),
+            env=_remote_env(cwd),
             timeout=_PUSH_TIMEOUT_SECONDS,
         )
     except _GitProcessTimeoutError as exc:
         logger.warning("git_push_timed_out", remote=remote, refs=refspecs)
-        raise GitError("git push timed out") from exc
+        raise _could_not_push(remote) from exc
     except OSError as exc:
         logger.warning("git_push_launch_failed", remote=remote, refs=refspecs, error=str(exc))
-        raise GitError("git push failed") from exc
+        raise _could_not_push(remote) from exc
 
 
 def _create_remote_default(
@@ -774,7 +813,7 @@ def _create_remote_default(
     if result.returncode != 0:
         stderr = result.stderr.strip()
         logger.warning("git_push_failed", remote=remote, refs=[refspec], stderr=stderr)
-        raise GitError(stderr or "git push failed")
+        raise _push_failed(remote, stderr)
 
 
 def _bootstrap_incomplete(
@@ -895,7 +934,7 @@ def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) 
             # non-zero when the connection drops after the remote applied the refs.
             refused = "[remote rejected]" in stderr
             raise _bootstrap_incomplete(remote, default, refused=refused)
-        raise GitError(stderr or "git push failed")
+        raise _push_failed(remote, stderr)
 
     pushed = ([default] if bootstrapping else []) + [working] + ([ledger] if ledger_exists else [])
     # X3 robustness (§6.8): record the tips we just published so rewrite detection
@@ -950,9 +989,7 @@ def fast_forward_pair(
     with _fetch_exec_lock:
         refreshed = _fetch_refs(remote, cwd=cwd)
     if not refreshed:
-        raise GitDomainError(
-            f"Could not refresh '{remote}'. Check your connection or credentials and try again."
-        )
+        raise _refresh_failed(remote)
     return fast_forward_pair_from_tracking(remote, project_root, cwd=cwd)
 
 
@@ -1168,9 +1205,7 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
     with _fetch_exec_lock:
         refreshed = _fetch_refs(remote, cwd=cwd)
     if not refreshed:
-        raise GitDomainError(
-            f"Could not refresh '{remote}'. Check your connection or credentials and try again."
-        )
+        raise _refresh_failed(remote)
     remote_w = _rev_parse(f"refs/remotes/{remote}/{working}", cwd=cwd)
     if remote_w is None:
         raise GitDomainError(

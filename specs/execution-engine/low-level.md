@@ -1880,8 +1880,10 @@ present a structural or schema result as execution evidence.
   raises `ConfigError` instead of falling back to greedy first-fit — the code
   docstring notes a prior greedy implementation could silently swap two inputs and
   produce a clean-looking but wrong run.
-- **A non-instance Polars `inputMapping` preserves authored input identity across
-  parent replacement.** `resolve_orig_source_names` derives the current input names
+- **A non-instance Transform or Load File `inputMapping` preserves authored input
+  identity across parent replacement.** Both are the surfaces whose code names its
+  inputs (`stepped_surface_allows_input_references`), and an instance of either
+  resolves its original's logical names through the original's mapping the same way. `resolve_orig_source_names` derives the current input names
   from the node's incoming edges, validates the mapping as a one-to-one
   `{logical_name: current_edge_name}` relation, and returns logical names in current
   edge order. `_exec_user_code` therefore exposes both the current binding and the
@@ -1889,6 +1891,16 @@ present a structural or schema result as execution evidence.
   mappings raise `ConfigError`; they never fall back positionally. Instance nodes
   retain the existing original-node mapping path and take precedence over this
   ordinary-transform behaviour.
+- **An instance's missing-column warnings compare the frames its edges carry.** For
+  each node with an `instanceOf`, every preview (full, target-only, a run of the
+  whole graph) reports as `missing` the columns the original's incoming edges carry
+  that the instance's do not, read from the walk's recorded schemas rather than a
+  materialised frame, so a source the preview did not materialise still counts. A
+  request input emits one frame per table it declares, and its edge carries the
+  declared schema of the frame its `sourceHandle` names (the schema the walk reports
+  for that frame), never the bundle; an edge naming no table the input declares
+  carries none, even from a one-frame source. Its consumer reports that binding as
+  its own failure when it runs, and the warnings never choose a frame for it.
 - **`topo_sort_ids`** is insertion-order deterministic (via `graphlib.TopologicalSorter`),
   so callers must pass `node_ids` as an
   insertion-ordered sequence, never a `set`, or tie-break order becomes

@@ -143,8 +143,12 @@ Expansion is a pure transform per instance:
    upstream parent identity. Rewrite cloned child configs through that map.
    Also rewrite remaining parent consumers from the selected occurrence's
    public output port name to the qualified runtime output source. When
-   this changes the physical name of an ordinary Polars input, preserve the
-   public logical name with `inputMapping`. An unbound, ambiguous, or otherwise stale declared reference
+   this changes the physical name of an input that a Transform's or a Load
+   File's free code reads by name, preserve the public logical name with
+   `inputMapping` (the same `stepped_surface_allows_input_references` rule that
+   makes steps on those surfaces have their references rewritten instead), so a
+   Load File child reading its second input by name runs after expansion as it
+   did before grouping. An unbound, ambiguous, or otherwise stale declared reference
    is an error. Unregistered opaque fields are unchanged, never guessed.
 4. Expand each input binding to the port's ordered targets and each output
    binding from the port's single source, preserving authored endpoint handles
@@ -252,8 +256,9 @@ supplies pre-read bytes to authenticate exact caller content against concurrent 
 1. Resolve and validate the complete definition registry, every `SUBMODEL`
    occurrence, unique alias, parent edge endpoint, public-port handle, and the
    at-most-one parent binding invariant for each input port before constructing
-   output. `target_instance_id` selects exactly one occurrence; no target
-   selects all.
+   output, once: `resolve_submodel_instances` returns the resolved occurrences,
+   which `expand_submodel_instances` takes rather than validating again.
+   `target_instance_id` selects exactly one occurrence; no target selects all.
 2. For each selected canonical occurrence, clone definition nodes using
    delimiter-safe ids derived from `(instanceId, localNodeId)` and add the
    occurrence position to each definition-local position. Do not attach
@@ -265,7 +270,9 @@ supplies pre-read bytes to authenticate exact caller content against concurrent 
 4. Clone internal edges with qualified endpoints. Expand each incoming parent
    binding to the selected input port's ordered targets and each outgoing
    binding from the selected output port's one source, preserving authored
-   endpoint handles and all hidden-port components in deterministic edge ids.
+   endpoint handles in deterministic edge ids. An edge's identity is its four
+   fields: source, target and their two handles; a boundary edge's public port
+   is its `out__<name>` or `in__<name>` handle.
    Rewrite every schema-owned incoming-frame reference from the public boundary
    name to the expanded physical name: exact selector fields,
    `input_scenario_map` keys, instance `inputMapping` values, and every OUTPUT
@@ -279,7 +286,7 @@ supplies pre-read bytes to authenticate exact caller content against concurrent 
    two entries share `output_path` and `source_port` with different
    `source_column`.
 5. Remove only selected occurrence nodes and their incident boundary edges.
-   Deduplicate exact six-field edge identities (by construction, no selected
+   Deduplicate exact four-field edge identities (by construction, no selected
    occurrence endpoint remains after rewriting incident edges), and merge definition support code once. A
    definition preamble is appended only when its stripped line block is not
    already contained (whole-line, contiguous) in the merged parent preamble —
@@ -319,8 +326,7 @@ supplies pre-read bytes to authenticate exact caller content against concurrent 
    graph. Internal positions are therefore occurrence-local.
 7. Create one typed `SubmodelDefinition` and one `SUBMODEL` occurrence whose
    config is exactly `{definitionId, alias}`. Rewire parent edges only through
-   `in__<name>`/`out__<name>` handles, preserving still-hidden authored
-   ports in both edge data and deterministic ids. Remaining parent consumers
+   `in__<name>`/`out__<name>` handles. Remaining parent consumers
    keep the input name they were authored with: the public output port name
    becomes the physical input. If that changes the name, the previous name
    is recorded as the logical name through `inputMapping`, with schema-owned
@@ -337,8 +343,9 @@ Acquires `save_lock`, runs the body in a threadpool:
    request-validation envelope. Require a non-blank `source_file` in the
    route, resolve the parent safely, load its current ready editor document,
    and compare the raw-artifact `source_revision` retained by the editor. The
-   route then parses a canonical graph only for the transform. A mismatch raises
-   `HTTPException(409, <reload message>)` before any graph transform.
+   route parses no pipeline beyond that document: it transforms the submitted
+   graph. A mismatch raises `HTTPException(409, <reload message>)` before any
+   graph transform.
 2. Compute `sm_filename = f"{_sanitize_func_name(body.name.strip())}.py"`; if
    `is_windows_reserved_filename(sm_filename)`, raise `HTTPException(400,
    <specific message>)` before touching `create_submodel_graph` at all.
@@ -377,9 +384,9 @@ Acquires `save_lock` and runs the body in a threadpool:
 1. Request validation requires a current revision, source file, and one
    non-empty unpadded `instance_id`.
 2. Load the current ready editor document only to compare its raw-artifact
-   revision with `base_revision`, then parse the current parent strictly for
-   canonical validation. The submitted graph is the editor state being transformed,
-   including unsaved newly created definitions.
+   revision with `base_revision`; the parent is not parsed again. The submitted
+   graph is the editor state being transformed, including unsaved newly created
+   definitions, and `flatten_graph` validates it.
 3. Resolve the selected definition from the submitted graph, copy submitted
    support code, and call
    `flatten_graph(..., target_instance_id=instance_id)`. Only the selected
@@ -537,8 +544,10 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
   deletion; dissolve from an unsaved submitted definition; and persisted,
   pipeline-scoped drill-down/path failures.
 - `tests/test_submodel_route_contracts.py` — focused end-to-end response and
-  revision contracts, scoped persisted drill-down, create no-clobber, and the
-  invariant that dissolve exposes no file-lifecycle compatibility state.
+  revision contracts, scoped persisted drill-down, create no-clobber, the
+  invariant that dissolve exposes no file-lifecycle compatibility state, and a
+  count of strict parent parses: none for create and dissolve, one for
+  drill-down.
 - `tests/test_submodel.py` — public flatten/codegen integration, including
   per-child source generation, child preamble and preserved-block round trips,
   compilable parent output, parsing, and request/response model contracts.
@@ -558,8 +567,11 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
 - `tests/test_submodel_instances.py` — canonical definition and occurrence
   validation, parse/codegen round trips, public-port expansion, targeted
   flattening, shared-definition retention, OUTPUT source-port migration across
-  a public boundary, and explicit rejection of missing identity or malformed
-  topology.
+  a public boundary, one validation per flatten (a count of
+  `resolve_submodel_instances` calls), a Load File child (and a node instance of it) reading its
+  renamed second input by name with the rows it gave before grouping and its
+  dissolved function named by those inputs, and explicit rejection of missing
+  identity or malformed topology.
 - `tests/test_flattening_dedup.py` — parity between parser-driven flattening
   and the shared `flatten_graph` implementation, including single-node,
   multi-node, chained, nested, and hierarchical-then-flat cases.

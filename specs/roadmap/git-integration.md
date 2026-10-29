@@ -8,131 +8,17 @@ the remote handling, and the git panel that drives them. Current behaviour is
 specified in [the git-integration specification](../git-integration/high-level.md)
 and [the git UI](../frontend-git-ui/high-level.md). These
 packages come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md).
-`GIT-R16` comes from a review on 27 October 2026 of going
-back to an earlier version (one Codex and two Fable reviews, every finding checked at
-its source), after an analyst restoring a version on the test project took six Move
-and return cycles and made and deleted two branches between 13:14 and 13:36.
-`GIT-R17` comes from the [28 October functional review](codebase-review-2026-10-28.md).
+`GIT-R18` comes from the [28 October functional review](codebase-review-2026-10-28.md).
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| GIT-R02 | Planned | P2 | Every git failure the analyst can act on is answered with its reason: an invalid typed branch name, a push or fetch that times out or fails authentication, an unreadable history, a save during an in-progress git operation, and an SSH command of the user's own. |
-| GIT-R03 | Planned | P2 | Deleting the active pair without confirmation keeps a dirty tree, and the first commit never seeds a virtual environment. |
-| GIT-R04 | Planned | P3 | Commit context and historical extraction pass their SHAs and paths through stdin, so a long branch or a large commit does not fail on Windows' command-line limit. |
 | GIT-R05 | Planned | P3 | The git modules carry no dead symbols, one free-name finder and one compensation helper. |
 | GIT-R06 | Decision | P3 | Automatic ledger saves either skip the project's git hooks or the specification says they run them. |
-| GIT-R07 | Planned | P2 | Every tree-changing action in the git UI passes the dirty-project guard and names what changes, a failed history read shows an error rather than an empty branch, a failed preference save is reported, and the dialogs say what the server does. |
-| GIT-R08 | Planned | P3 | The git panel has one context menu, one dirty-navigation wrapper and one relative-time rule. |
-| GIT-R16 | Planned | P3 | A working branch left without its ledger, or half archived, is reported at startup with a Repair that leaves a whole pair. |
-| GIT-R17 | Planned | P1 | A milestone or tree mutation cannot interleave with a pipeline save and capture or replace only part of its artifact set. |
 | GIT-R18 | Planned | P2 | A rejected push's Catch up and Spin off actions stay bound to that rejection's remote. |
 
 ## Planned improvements
-
-### GIT-R02 — Git failures the analyst can act on
-**Why:** A typed branch name git refuses but `_validate_ref_name` admits (a
-space, `..`, `.lock`, a leading `.`, `//`, a trailing `/`, `@{`) is answered
-"Operation failed. Check the server logs for details." (probed with seven such
-names), while the stricter `check-ref-format --branch` validation exists and is
-used only by push. A push whose remote inspection or default-branch fetch times
-out, fails authentication or cannot launch is answered the same sanitized text,
-while Catch up and Spin off report the identical failure as "Could not refresh
-'origin'. Check your connection or credentials and try again." `_remote_env`
-sets `GIT_SSH_COMMAND` unconditionally, so a user's `core.sshCommand`, `GIT_SSH`
-or `GIT_SSH_COMMAND` (a specific key, a jump host) is discarded and an SSH remote
-that works in the shell fails in Haute with the sanitized message. An unreadable
-history (`git log` failing for a resolved tip) is returned as an empty,
-successful milestone list. Saves and milestones do not check for an in-progress
-merge, rebase or cherry-pick, so every canvas save then fails with the sanitized
-"cannot do a partial commit during a merge" while restore, catch-up and spin-off
-refuse with the hand-written reason. `commit_save` reads a failed `git status` as
-"nothing changed" and returns no save, so a failing status check skips the capture
-without a word.
-
-**Plan:** Validate typed names with `git check-ref-format --branch` and raise
-`GitDomainError` naming the rule; raise `GitDomainError` with the refresh
-message for inspection, fetch and push timeouts, launch failures and non-zero
-exits, keeping stderr in the log. Preserve the configured `core.sshCommand`, `GIT_SSH`
-or `GIT_SSH_COMMAND` and Git's precedence; set Haute's default OpenSSH command only
-when none is configured. Do not append OpenSSH flags to arbitrary commands: the first
-OpenSSH option wins, and a wrapper or Plink can use different syntax. Prevent prompts
-at the process boundary with closed stdin (`DEVNULL`), no controlling terminal where
-supported, `GIT_TERMINAL_PROMPT=0` and disabled OpenSSH askpass. Apply an outer deadline
-to inspection, fetch and push, and clean up the launched transport process tree on
-timeout, including on Windows. A custom transport must obey the noninteractive
-contract; an outer deadline bounds a transport that hangs rather than proving it
-honours OpenSSH environment settings. Let the history error propagate; call
-`_assert_no_git_op_in_progress` at the top of
-`commit_save` and `commit_milestone`, and let a failed status check in `commit_save`
-raise rather than return no save.
-
-**Acceptance:** `my branch` is refused naming the rule; a push against an
-unreachable remote answers the refresh message. Behavioural subprocess tests show a
-configured command reaches Git unchanged, including conflicting OpenSSH options and
-a non-OpenSSH wrapper; the wrapper receives no injected OpenSSH flags. A prompting or
-hanging fake transport is terminated with its children within the deadline and reports
-the refresh message. A corrupt object store
-answers an error, not an empty list; a save during a merge answers the
-in-progress message; a save whose status check fails answers an error.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_git_core.py::_validate_ref_name`;
-`src/haute/_git_core.py::_validate_managed_working_branch`;
-`src/haute/_git_core.py::_remote_env`;
-`src/haute/_git_core.py::_assert_no_git_op_in_progress`;
-`src/haute/_git_remote.py::_inspect_remote`;
-`src/haute/_git_remote.py::_fetch_expected_default`;
-`src/haute/_git_remote.py::push_working_pair`;
-`src/haute/_git_history.py::working_milestones`;
-`src/haute/_git_transactions.py::commit_save`.
-
-### GIT-R03 — A dirty tree and a virtual environment
-**Why:** `delete_working_pair` passes `discard=True` to the switch-away whenever
-the active pair is deleted, including with `confirm=False`; `confirm` guards
-only unmerged ledger saves, so the API contract alone does not protect
-uncommitted edits (the UI always confirms after a dialog naming the loss). The
-unborn-repo seed stages every `*.py` under the root that `.gitignore` does not
-exclude, and the guard excludes only `.venv/`, so a project with `venv/`, `env/`
-or `node_modules/` commits that tree into the permanent root commit, which the
-specification places outside rollback; `haute init` does not run `git init`, so
-this seed is the normal first-branch path.
-
-**Plan:** Pass `discard=confirm` and refuse a dirty tree without confirmation
-with the archive's unsaved-changes error; exclude directories holding
-`pyvenv.cfg` (or add `venv/`, `env/`, `node_modules/` and `site-packages/` to
-the guard entries) and refuse an implausibly large seed naming the directory.
-
-**Acceptance:** `delete_working_pair(confirm=False)` on a dirty tree is refused
-with the tree intact; a project with `venv/` seeds without it.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_git_archive.py::delete_working_pair`;
-`src/haute/_git_setup.py::_SEED_PATHSPECS`;
-`src/haute/_gitignore_guard.py::GITIGNORE_GUARD_ENTRIES`.
-
-### GIT-R04 — Long argument lists through stdin
-**Why:** `_milestone_fold_points` spreads every milestone SHA of the first-parent
-spine into one `git rev-list` argv and `archive_commit` spreads every selected
-path, so on Windows `GET /api/git/commit-context/{sha}` fails with a 500 once
-the working branch has about 790 milestones and `GET /api/git/show/{sha}` fails
-when a commit's paths exceed about 32K characters (probed: `WinError 206` at
-32,814 characters).
-
-**Plan:** Feed the SHAs through `git rev-list --stdin` (byte-mode stdin as
-`_run_git(input_text=...)` already does) and archive the whole commit, letting
-the validated extractor skip non-artifact members, or chunk the path list.
-
-**Acceptance:** A branch with 1,000 milestones answers commit context on
-Windows; a commit with 40K characters of paths is shown.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_git_history.py::_milestone_fold_points`;
-`src/haute/_git_history.py::archive_commit`; `src/haute/_git_core.py::_run_git`.
 
 ### GIT-R05 — Dead symbols, one free-name finder, one compensation helper
 **Why:** `PROTECTED_BRANCHES` is only re-exported (`DEFAULT_PROTECTED_BRANCHES`
@@ -179,130 +65,6 @@ save.
 `src/haute/_git_transactions.py::commit_milestone`;
 `src/haute/_scaffold.py::pre_commit_hook`.
 
-### GIT-R07 — The git UI guards and reports every tree change
-**Why:** Catch up and Spin off a copy update the working tree from one click
-with no confirmation and without the dirty-project guard every other tree-changing action has, so unsaved
-in-memory canvas and form edits meet the change unannounced (the server refuses
-a dirty tracked tree, so what is exposed is the in-memory state); the toolbar's
-undo and redo of a branch switch check out the other branch with no guard and
-without discarding the form's edits. After a history fetch fails the panel shows
-"No milestones yet" once the toast fades, so a transport failure reads as an
-empty branch. "Don't ask again on this machine" swallows a failed preference
-save, so the prompt returns next time with no explanation. The delete dialog
-says "Permanently delete" for a trash-preserving delete the toolbar can undo; an
-`invalid` readiness state shows only its first error.
-
-**Plan:** Route Catch up, Spin off and the undo legs through the dirty-navigation
-guard with a confirm naming what changes, then discard the form's edits on
-success; keep a load error in the history hook and render it with Retry; report
-the preference failure; word the delete as recoverable; list every error.
-
-**Acceptance:** Catch up with unsaved canvas edits asks first; a history fetch
-failure shows an error with Retry, not the empty state; a failed preference save
-toasts.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/components/RemotePushControl.tsx`;
-`frontend/src/utils/vcHistory.ts`; `frontend/src/panels/git/useGitHistory.ts`;
-`frontend/src/components/BranchManager.tsx`;
-`frontend/src/components/WorkingBranchModal.tsx`.
-
-### GIT-R08 — One menu, one wrapper, one clock
-**Why:** The fixed-backdrop context menu is written five times across the git
-panel and the branch manager, the dirty-navigation wrapper (guard plus the
-confirm dialog's save-then-proceed block) twice verbatim, and relative time five
-times across the git panel, the breadcrumb, the assistant and two utilities with
-three different rules ("400d ago" never stops; the assistant switches to a date
-after seven days; the shared formatter after a day).
-
-**Plan:** A `ContextMenu` primitive, a `useDirtyNavigation(onSave)` hook, and
-one `relativeTime` in `utils/` imported by every site.
-
-**Acceptance:** One copy of each; the same timestamp reads the same in every
-panel.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/GitPanel.tsx`;
-`frontend/src/components/BranchManager.tsx`;
-`frontend/src/components/CommitBreadcrumb.tsx`;
-`frontend/src/panels/assistant/relativeTime.ts`;
-`frontend/src/utils/formatTime.ts`.
-
-### GIT-R16 — Broken pairs reported with Repair
-**Why:** Delete and archive used to move a pair's two refs one step at a time, so a
-crash between the steps could leave an orphan ledger (`x-save` with no `x`) or a
-half-archived pair (`archive/x` beside `x-save`). Both now move in one ref
-transaction, but a pair broken before that stays broken. Create, undelete and
-restore refuse such a name, and nothing checks pair health at startup. This is
-inferred: no broken pair has been seen.
-
-**Plan:**
-- A startup check lists orphan ledgers and half-archived pairs.
-- Repair finishes a half-done archive, and makes the missing working branch of an
-  orphan ledger at the ledger's last milestone.
-
-**Acceptance:** An orphan `x-save` and an `archive/x` beside `x-save` are both
-reported at startup, and Repair leaves each a whole pair.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_git_archive.py::archive_working_pair`;
-`src/haute/_git_transactions.py::check_invariants`;
-`src/haute/_git_read_models.py::working_branch_status`.
-
-### GIT-R17 — Pipeline saves share the Git transaction boundary
-**Why:** Normal pipeline saves and assistant Apply hold `save_lock`, while Git
-mutations hold `repository_mutation`. The save writes Python, configs and
-sidecars before acquiring the Git lock for ledger capture. A real temporary
-repository probe paused a save after writing a new banding node's Python and
-before its config, then committed a milestone concurrently. Both operations
-succeeded. The milestone contained `main.py` referencing
-`config/banding/Bands.json`, but not that config; the later save contained it.
-The milestone therefore cannot reproduce the saved pipeline. Tree-switch and
-restore interleavings share the missing fence, but were not separately measured.
-Scoped node saves and repair-apply routes also take only `save_lock`; they write
-through `_commit_repair_plan`, bypassing `SavePipelineService`. Their exposure
-is source-supported, not a separately executed race.
-
-**Plan:** Put the complete save operation, including authenticated reads,
-revision checks, artifact writes, rollback, stale cleanup and ledger capture,
-inside the same repository critical section as Git mutations. Keep the
-existing project-save lock and consistent lock ordering; reuse the arrangement
-in `project_write` rather than introducing another independent lock. Cover
-normal saves (including persisted submodels), assistant Apply/undo, scoped node
-saves and all repair-apply writers through `_commit_repair_plan`, without
-re-acquiring a non-reentrant project lock. Submodel create/dissolve themselves
-are in-memory transforms; explicit pipeline Save persists those changes. Keep
-their existing revision checks, without inventing a new write path for them.
-This repository fence does not
-replace the external-edit revision check in `ASSIST-61`.
-
-**Acceptance:** A deterministic regression pauses a real pipeline save between
-Python and config writes, starts a concurrent milestone and proves the
-milestone cannot complete from the partial state. After the save resumes, the
-milestone's complete artifact set loads successfully and matches the saved
-graph. A failed save rolls back before a waiting Git mutation proceeds; a
-tree-switch/restore cannot split the save across branches. Existing save and
-assistant operations complete without lock-order deadlocks.
-Exercise both writer families: the full save transaction and the scoped/repair
-transaction, including a scoped config change and a repair changing multiple
-artifacts. For each, verify a concurrent milestone observes no partial writes
-and an injected write failure rolls back before that milestone can proceed.
-
-**Dependencies:** None; coordinate the assistant save boundary with `ASSIST-61`.
-
-**Evidence:** `src/haute/routes/_save_pipeline.py::SavePipelineService.save`;
-`src/haute/routes/pipeline.py::save_pipeline`;
-`src/haute/routes/pipeline.py::scoped_node_save`;
-`src/haute/_pipeline_repair.py::_commit_repair_plan`;
-`src/haute/_pipeline_repair_actions.py::apply_scoped_node_save`;
-`src/haute/assistant/_application.py::PipelineApplicationService.apply`;
-`src/haute/routes/_helpers.py::project_write`;
-`src/haute/_git_core.py::_serialized_mutation`;
-`src/haute/_git_transactions.py::commit_milestone`.
-
 ### GIT-R18 — Recovery acts on the remote named by its dialog
 
 **Why:** While Push to origin is pending, the remote select remains editable. Switching it to
@@ -320,7 +82,9 @@ mutable dropdown after confirmation.
 is submitted or the stale dialog is explicitly refused. The dialog and action always name the
 same remote. Existing dirty-document and branch protections still apply.
 
-**Dependencies:** `GIT-R07` owns dirty-document guards; it does not authenticate this remote identity.
+**Dependencies:** None. Catch up and Spin off ask about unsaved edits first, naming the remote
+the action submits, so that question must follow whichever remote this package binds the
+actions to.
 
 **Evidence:** `frontend/src/components/RemotePushControl.tsx::RemotePushControl.doCatchUp`;
 `frontend/src/components/RemotePushControl.tsx::RemotePushControl.doBranchAway`;

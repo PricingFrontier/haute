@@ -135,7 +135,7 @@ describe("Explore summary cards", () => {
     expect(card).toHaveTextContent("1,234")
     expect(card).toHaveTextContent("pricing")
     expect(card).toHaveTextContent("prep_1")
-    expect(card).toHaveTextContent("5 min ago")
+    expect(card).toHaveTextContent("5m ago")
     expect(card).not.toHaveTextContent("Columns")
   })
 
