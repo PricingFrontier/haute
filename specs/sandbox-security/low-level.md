@@ -428,8 +428,8 @@ reaches node code exactly as the preamble made it.
   accepted; plus the check's own policy (NUL byte, absolute input, resolution).
 - `tests/test_write_sandbox_guard.py` and `tests/test_write_sandbox_lint.py` — prove
   restricted tests cannot write outside their per-test roots and statically enforce
-  guarded filesystem APIs. `tests/_write_sandbox.py::STRICT_FILES` is the maintained
-  converted-module index, and the CI `platform-smoke` lane exercises this guard on
+  guarded filesystem APIs. The `strict` list in `tests/write_sandbox.toml` is the
+  maintained converted-module index, and the CI `platform-smoke` lane exercises this guard on
   supported operating systems.
 - Caller-level I/O/cache/executor regressions cover input/output traversal, symlink
   swaps, malformed cache digest/generation identifiers, staging-path containment,

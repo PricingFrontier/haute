@@ -1,0 +1,110 @@
+name: Write-Sandbox Survey
+
+# The monthly pass of the test write-sandbox ratchet (tests/_write_sandbox.py).
+# The suite runs with the sandbox forced strict, and
+# scripts/write_sandbox_promotions.py names each test module that passed whole
+# under strict but still runs in observe mode. The lane is red while any remain:
+# a failure finds-or-creates a `sandbox-watch` issue, the pass that moves them
+# into `strict` in tests/write_sandbox.toml makes the next run green, and a green
+# run on `main` closes the issue. Failing tests under strict are the survey's
+# data, not its verdict: a module with one stays in observe mode.
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_fail:
+        description: "Fail deliberately to prove the alarm path rings"
+        type: boolean
+        default: false
+  schedule:
+    # 05:11 UTC on the 1st of each month, offset from the other lanes
+    # (performance 02:43 on the 1st; the Monday lanes end with mutation at 05:00).
+    - cron: "11 5 1 * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  write-sandbox-survey:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # uv is pinned exactly, like the rest of the development tooling; this
+      # value is repeated in every workflow and must move together (grep
+      # `setup-uv` across .github/workflows/).
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          version: "0.8.22"
+          python-version: "3.12"
+
+      - run: uv sync --group dev --locked
+
+      - name: Forced failure (alarm-path test)
+        if: inputs.force_fail
+        run: |
+          echo "force_fail input set - failing deliberately to exercise the alarm step"
+          exit 1
+
+      # Red tests are expected here; the next step fails the lane when the
+      # report is missing or holds no test cases.
+      - name: Run the suite with the write sandbox forced strict
+        env:
+          HAUTE_TEST_WRITE_SANDBOX: strict
+        run: >
+          uv run pytest tests/ -q -n 4 --timeout=60 --timeout-method=signal
+          --junitxml=.cache/junit/strict-survey.xml -o junit_family=xunit1
+          || true
+
+      - name: Name the modules that can join the strict set
+        run: uv run python scripts/write_sandbox_promotions.py .cache/junit/strict-survey.xml
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: write-sandbox-survey-junit
+          path: .cache/junit/
+          retention-days: 30
+
+      - name: Raise the alarm (find-or-create sandbox-watch issue)
+        if: failure() && (github.event_name == 'schedule' || inputs.force_fail)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Monthly write-sandbox survey has modules to make strict"
+          body="Test modules pass whole under the strict write sandbox but still run in observe mode, or the survey itself failed. Run: ${RUN_URL}
+
+          The run's summary lists the modules; add them to \`strict\` in tests/write_sandbox.toml. Reproduce locally (from the repository root):
+              HAUTE_TEST_WRITE_SANDBOX=strict uv run pytest tests/<module> -q"
+          gh label create sandbox-watch --color FBCA04 --force \
+            --description "Automated: monthly write-sandbox survey"
+          existing="$(gh issue list --state open --label sandbox-watch \
+            --search "in:title \"${title}\"" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body "Still red: ${RUN_URL}"
+          else
+            gh issue create --title "${title}" --label sandbox-watch --body "${body}"
+          fi
+
+      # Main only: a green dispatch on a branch does not prove main's strict set caught up.
+      - name: Stand down the alarm (close the sandbox-watch issue)
+        if: success() && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Monthly write-sandbox survey has modules to make strict"
+          existing="$(gh issue list --state open --label sandbox-watch \
+            --search "in:title \"${title}\"" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue close "${existing}" --comment "No module left to make strict: ${RUN_URL}"
+          fi

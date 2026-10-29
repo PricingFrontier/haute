@@ -327,6 +327,11 @@ Out of scope:
   run, and the runtime guard catches computed destinations no static scan can
   resolve. The guard advertises its root in the environment so an external
   permission gate can scope "run the tests" without parsing test internals.
+  The census, the lint allowlist and the strict set are a ratchet, so each list
+  in it moves one way: the census is recorded on every coverage run and may not
+  grow by a class of write, the lint allowlist names sites rather than counts,
+  and a monthly survey run strict names the modules ready to join the strict
+  set.
 
 ## Assistant evaluation
 

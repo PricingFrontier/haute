@@ -1,0 +1,622 @@
+# The test write-sandbox ratchet (tests/_write_sandbox.py). Each list only moves
+# one way, and a test or the coverage gate fails when it would move the other.
+
+# Test files whose every test runs strict. The monthly write-sandbox survey
+# (.github/workflows/write-sandbox-survey.yml) names the files that pass under
+# strict and can join.
+strict = [
+    "test_adversarial_inputs.py",
+    "test_algorithm_descriptors.py",
+    "test_analysis_results.py",
+    "test_api_contract_generation.py",
+    "test_api_contracts.py",
+    "test_api_input_table_snapshots.py",
+    "test_apiinput_flat_output_dry_run.py",
+    "test_apiinput_multi_port_runtime.py",
+    "test_artifact_paths.py",
+    "test_assistant_application.py",
+    "test_assistant_assets.py",
+    "test_assistant_build_plan.py",
+    "test_assistant_catalog.py",
+    "test_assistant_config.py",
+    "test_assistant_integration.py",
+    "test_assistant_loop.py",
+    "test_assistant_prompt_golden.py",
+    "test_assistant_providers.py",
+    "test_assistant_recipes.py",
+    "test_assistant_routes.py",
+    "test_ast_return_boundaries.py",
+    "test_ave.py",
+    "test_backend_frontend_contracts.py",
+    "test_banding.py",
+    "test_banding_claims.py",
+    "test_banding_config_coverage.py",
+    "test_banding_stats.py",
+    "test_binary_classification_contract.py",
+    "test_boundary_operator_equivalence.py",
+    "test_bounded_collect_contracts.py",
+    "test_bounded_sink_contract.py",
+    "test_bug_regressions.py",
+    "test_bugfixes.py",
+    "test_builder_edge_cases.py",
+    "test_bundle6_trust_model_cleanup.py",
+    "test_cache_fingerprint_injectivity.py",
+    "test_cache_identity_contract.py",
+    "test_cache_nodes_routes.py",
+    "test_cache_unification.py",
+    "test_caching_correctness.py",
+    "test_caching_off.py",
+    "test_candidate_run.py",
+    "test_capture_projection.py",
+    "test_cardinality.py",
+    "test_catboost_training_demand.py",
+    "test_charts.py",
+    "test_check_critical_coverage.py",
+    "test_check_write_sandbox_census.py",
+    "test_chunk_local_classifier.py",
+    "test_chunk_whitelist_proofs.py",
+    "test_chunked_writes.py",
+    "test_ci_secrets.py",
+    "test_cli.py",
+    "test_cli_architecture.py",
+    "test_cli_ci.py",
+    "test_cli_deploy.py",
+    "test_cli_fail_loudly.py",
+    "test_cli_helpers.py",
+    "test_cli_impact_gaps.py",
+    "test_cli_lint.py",
+    "test_cli_no_shadow.py",
+    "test_cli_serve.py",
+    "test_cli_smoke.py",
+    "test_cli_status.py",
+    "test_cli_train.py",
+    "test_cli_ux.py",
+    "test_code_extraction_coverage.py",
+    "test_code_extraction_roundtrip.py",
+    "test_codegen.py",
+    "test_codegen_builders_contracts.py",
+    "test_codegen_contract_keyword.py",
+    "test_codegen_docstring_roundtrip.py",
+    "test_codegen_execution_equivalence.py",
+    "test_codegen_fail_loudly.py",
+    "test_codegen_injection.py",
+    "test_codegen_input_identity.py",
+    "test_codegen_layout.py",
+    "test_codegen_roundtrip_property.py",
+    "test_collect_changed_snapshots.py",
+    "test_collect_engines.py",
+    "test_column_contracts_adoption.py",
+    "test_column_lineage.py",
+    "test_column_lineage_properties.py",
+    "test_column_renames.py",
+    "test_commit6_port_aware_edges.py",
+    "test_compute_needed_columns.py",
+    "test_config_field_roundtrip.py",
+    "test_config_io.py",
+    "test_config_io_gaps.py",
+    "test_config_validation.py",
+    "test_container.py",
+    "test_container_smoke_script.py",
+    "test_contract_error_adapter.py",
+    "test_coverage_gaps.py",
+    "test_cpu_performance.py",
+    "test_cpu_performance_json_pools.py",
+    "test_cpu_performance_startup.py",
+    "test_data_io_config_contract.py",
+    "test_databricks_credentials.py",
+    "test_databricks_endpoints.py",
+    "test_databricks_output.py",
+    "test_databricks_routes_auth.py",
+    "test_databricks_serving.py",
+    "test_dataframe_input_fingerprints.py",
+    "test_decoupling_contracts.py",
+    "test_dependency_audit.py",
+    "test_deploy_config.py",
+    "test_deploy_container.py",
+    "test_deploy_dispatch.py",
+    "test_deploy_expected_output_validation.py",
+    "test_deploy_identity_parity.py",
+    "test_deploy_mlflow_credentials.py",
+    "test_deploy_mlflow_gaps.py",
+    "test_deploy_project_modules.py",
+    "test_deploy_request_rows.py",
+    "test_deploy_scorer_coverage.py",
+    "test_deploy_submodels.py",
+    "test_deploy_utils.py",
+    "test_discovery.py",
+    "test_docs_accuracy.py",
+    "test_dry_fixes.py",
+    "test_dry_refactors.py",
+    "test_edge_join.py",
+    "test_editor_name_allocation.py",
+    "test_env_lazy_accessors.py",
+    "test_error_detail_sanitization.py",
+    "test_errors.py",
+    "test_event_bus_gaps.py",
+    "test_executable_names.py",
+    "test_execute_lazy.py",
+    "test_execute_lazy_contract_coverage.py",
+    "test_execute_lazy_paths.py",
+    "test_execution_context.py",
+    "test_execution_profile_semantics.py",
+    "test_executor_builders.py",
+    "test_executor_critical_edges.py",
+    "test_executor_edge_cases.py",
+    "test_executor_mut_witnesses.py",
+    "test_explore_charts.py",
+    "test_explore_pivot_routes.py",
+    "test_explore_pivots.py",
+    "test_explore_relationships.py",
+    "test_explore_round_trip.py",
+    "test_export_receipts.py",
+    "test_expression_parity_properties.py",
+    "test_expression_parser.py",
+    "test_expression_parser_advanced.py",
+    "test_expression_parser_chain.py",
+    "test_expression_parser_coverage.py",
+    "test_expression_parser_w3_fixes.py",
+    "test_extract_column_refs.py",
+    "test_feature_contract.py",
+    "test_feature_contract_identity.py",
+    "test_feature_validation_cache.py",
+    "test_flatten.py",
+    "test_flattening_dedup.py",
+    "test_formats_route.py",
+    "test_frame_profile.py",
+    "test_frontend_backend_contract.py",
+    "test_frontend_bundle_budget_ci.py",
+    "test_frontend_e2e_server.py",
+    "test_frontier_point_summary.py",
+    "test_git_content_caches.py",
+    "test_git_helpers.py",
+    "test_git_improvements.py",
+    "test_git_lifecycle_improvements.py",
+    "test_git_rollback_coverage.py",
+    "test_git_routes.py",
+    "test_git_routes_pydantic.py",
+    "test_git_state_coverage.py",
+    "test_gitignore_guard.py",
+    "test_glm_integration.py",
+    "test_glm_terms.py",
+    "test_global_constants_runs.py",
+    "test_gpu_fit_cancel.py",
+    "test_graph_input_identity.py",
+    "test_graph_shape_contracts.py",
+    "test_graph_utils.py",
+    "test_graph_walker.py",
+    "test_hashing.py",
+    "test_hatch_build.py",
+    "test_host_binding.py",
+    "test_host_memory.py",
+    "test_hosted.py",
+    "test_impact.py",
+    "test_incomplete_config_loadability.py",
+    "test_inference_cache.py",
+    "test_inference_identifier_labels.py",
+    "test_infrastructure_contracts.py",
+    "test_input_cache_route.py",
+    "test_input_preparation.py",
+    "test_input_providers.py",
+    "test_io.py",
+    "test_job_lifecycle.py",
+    "test_job_lifecycle_properties.py",
+    "test_job_store.py",
+    "test_join_orders.py",
+    "test_json_cache_coverage_uplift.py",
+    "test_json_direct_spill.py",
+    "test_json_read_documented.py",
+    "test_json_runtime_storage.py",
+    "test_json_shred_mut_infer.py",
+    "test_json_shred_mut_parser.py",
+    "test_json_shred_mut_records.py",
+    "test_json_shred_mut_shred.py",
+    "test_json_shred_mut_stragglers.py",
+    "test_json_shred_mut_validity.py",
+    "test_json_shred_mutation_witnesses.py",
+    "test_json_shred_native_revision_mutation.py",
+    "test_json_shred_parallel.py",
+    "test_json_shred_properties.py",
+    "test_json_shred_publication_mutation.py",
+    "test_json_shred_runtime_control_mutation.py",
+    "test_json_shred_signature_mutation.py",
+    "test_json_shred_stream_mutation.py",
+    "test_jsonpath_canonical.py",
+    "test_lineage_preview_cache.py",
+    "test_lint_pins.py",
+    "test_local_security.py",
+    "test_logging.py",
+    "test_lru_cache.py",
+    "test_materialisation_calibration.py",
+    "test_mem_helpers.py",
+    "test_memory_messages.py",
+    "test_memory_smoke_script.py",
+    "test_meta_marker_coverage.py",
+    "test_metrics.py",
+    "test_metrics_gini_ties.py",
+    "test_mlflow_databricks_credentials.py",
+    "test_mlflow_destination_cache.py",
+    "test_mlflow_destination_config.py",
+    "test_mlflow_io_real_pyfunc.py",
+    "test_mlflow_model_cache_key_contract.py",
+    "test_mlflow_routes.py",
+    "test_mlflow_settings.py",
+    "test_model_cache_observability.py",
+    "test_model_card.py",
+    "test_model_explainability.py",
+    "test_model_export.py",
+    "test_model_score_codegen.py",
+    "test_model_scorer_feature_order_lookup.py",
+    "test_model_scorer_feature_projection.py",
+    "test_model_source.py",
+    "test_modelling_export.py",
+    "test_modelling_golden.py",
+    "test_modelling_loud_errors.py",
+    "test_multi_frame_end_to_end.py",
+    "test_mutation_sharding.py",
+    "test_name_violation_documents.py",
+    "test_native_memory_limit.py",
+    "test_node_builder.py",
+    "test_node_code_trust_boundary.py",
+    "test_node_config_recovery.py",
+    "test_node_data_routes.py",
+    "test_node_reference_docs.py",
+    "test_node_snapshot_cross_process.py",
+    "test_node_snapshot_signature.py",
+    "test_non_canonical_input.py",
+    "test_optimiser_apply.py",
+    "test_optimiser_apply_artifacts.py",
+    "test_optimiser_apply_trace_enrichment.py",
+    "test_optimiser_auto_range_stage.py",
+    "test_optimiser_golden.py",
+    "test_optimiser_io.py",
+    "test_optimiser_level_tie_properties.py",
+    "test_optimiser_ratebook_apply_agreement.py",
+    "test_optional_dependency_extras.py",
+    "test_output_assembler.py",
+    "test_output_assembler_mutation_witnesses.py",
+    "test_output_destinations.py",
+    "test_output_nest_example_contract.py",
+    "test_output_nested_roundtrip.py",
+    "test_output_schema_only.py",
+    "test_package_smoke_check.py",
+    "test_parent_watch.py",
+    "test_parser.py",
+    "test_parser_conservation.py",
+    "test_parser_fail_loudly.py",
+    "test_parser_helpers.py",
+    "test_parser_internals.py",
+    "test_parser_project_layout.py",
+    "test_parser_roundtrip.py",
+    "test_parser_sanitize_contracts.py",
+    "test_parser_submodels.py",
+    "test_partial_failure.py",
+    "test_path_case_audit.py",
+    "test_path_resolution.py",
+    "test_path_traversal_advanced.py",
+    "test_perf_suite_script.py",
+    "test_performance_docs.py",
+    "test_pipeline.py",
+    "test_pipeline_index_cache.py",
+    "test_pipeline_read_json_route.py",
+    "test_pipeline_revision.py",
+    "test_pipeline_route_parity.py",
+    "test_pipeline_route_supersession.py",
+    "test_pipeline_runtime_path_validation.py",
+    "test_pipeline_settings.py",
+    "test_polars_backend_strategy_contract.py",
+    "test_polars_dtypes.py",
+    "test_polars_environment.py",
+    "test_polars_io_interface_contracts.py",
+    "test_polars_io_registry.py",
+    "test_polars_operations.py",
+    "test_polars_selectors.py",
+    "test_polars_steps.py",
+    "test_polars_steps_catalogue.py",
+    "test_polars_steps_corpus.py",
+    "test_port_aware_executor.py",
+    "test_preserve_markers.py",
+    "test_preview_admission.py",
+    "test_preview_cache_byte_awareness.py",
+    "test_preview_cache_hint.py",
+    "test_preview_cache_regressions.py",
+    "test_preview_client_disconnect.py",
+    "test_preview_json_serialization.py",
+    "test_preview_snapshot_seeding.py",
+    "test_preview_submodel_outputs.py",
+    "test_price_contour_guard.py",
+    "test_process_memory.py",
+    "test_project_files_routes.py",
+    "test_project_gaps.py",
+    "test_project_layout.py",
+    "test_project_python.py",
+    "test_project_root.py",
+    "test_project_storage.py",
+    "test_project_write.py",
+    "test_projection_aware_admission.py",
+    "test_projection_lineage_integration.py",
+    "test_projection_planner.py",
+    "test_projection_recompute_facts.py",
+    "test_quote_book.py",
+    "test_ram_estimate.py",
+    "test_ratebook_collar.py",
+    "test_rating.py",
+    "test_rating_dtype_contract.py",
+    "test_rating_hand_calculated.py",
+    "test_rating_key_agreement.py",
+    "test_rating_levels.py",
+    "test_rating_miss_fail_loud.py",
+    "test_rating_step.py",
+    "test_rating_step_config_coverage.py",
+    "test_read_user_text.py",
+    "test_reference_pipeline.py",
+    "test_registry_contracts.py",
+    "test_rename_stable_binding.py",
+    "test_report_flaky_browser_tests.py",
+    "test_request_frame.py",
+    "test_request_supersession.py",
+    "test_route_helpers.py",
+    "test_route_helpers_contracts.py",
+    "test_routes_error_handling.py",
+    "test_routes_hygiene.py",
+    "test_row_local_operation_registrations.py",
+    "test_row_order.py",
+    "test_row_order_parity.py",
+    "test_run_perf_suite.py",
+    "test_runtime_input_fingerprint_mlflow.py",
+    "test_rustystats_algorithm.py",
+    "test_safety.py",
+    "test_safety_critical_lists.py",
+    "test_sandbox.py",
+    "test_sandbox_coverage_gaps.py",
+    "test_sanitize_parity_fixture.py",
+    "test_save_incomplete_transform.py",
+    "test_save_pipeline_integrity.py",
+    "test_save_precondition_properties.py",
+    "test_scaffold.py",
+    "test_scalar_array_and_inference.py",
+    "test_scenario_expander.py",
+    "test_scenario_fanout_sink.py",
+    "test_scenario_propagation.py",
+    "test_schema_snapshots.py",
+    "test_schemas.py",
+    "test_scoring_metamorphic_properties.py",
+    "test_scoring_path_unified.py",
+    "test_scoring_prep_perf.py",
+    "test_secret_surface.py",
+    "test_security_gaps.py",
+    "test_serialization_invariants.py",
+    "test_served_haute.py",
+    "test_server_concurrency.py",
+    "test_service_domain_boundaries.py",
+    "test_shap_diagnostics.py",
+    "test_shared_flights.py",
+    "test_sidecar_golden.py",
+    "test_sink.py",
+    "test_small_module_contracts.py",
+    "test_snapshot_legacy_layout.py",
+    "test_snapshot_seeding.py",
+    "test_source_cache.py",
+    "test_source_cache_cross_process.py",
+    "test_spec_corpus_inventory.py",
+    "test_standalone_nodes.py",
+    "test_starter_pipeline_e2e.py",
+    "test_stat_gated_cache.py",
+    "test_state_transitions.py",
+    "test_storage_routes.py",
+    "test_streaming_collect_contract.py",
+    "test_submodel.py",
+    "test_submodel_endpoint_properties.py",
+    "test_submodel_identity.py",
+    "test_submodel_instances.py",
+    "test_submodel_occurrence_names.py",
+    "test_submodel_ops.py",
+    "test_submodel_outport_invariant.py",
+    "test_submodel_persistence.py",
+    "test_submodel_port_names.py",
+    "test_submodel_route_contracts.py",
+    "test_support_code_names.py",
+    "test_target_task_gate.py",
+    "test_tboost_family.py",
+    "test_test_debt.py",
+    "test_test_isolation.py",
+    "test_timeout_helper_contracts.py",
+    "test_topo.py",
+    "test_topo_contracts.py",
+    "test_trace.py",
+    "test_trace_api.py",
+    "test_trace_banding_lineage.py",
+    "test_trace_cache_byte_awareness.py",
+    "test_trace_calculation_hero.py",
+    "test_trace_correlation_remediation.py",
+    "test_trace_coverage.py",
+    "test_trace_display_edge_cases.py",
+    "test_trace_edge_join.py",
+    "test_trace_enrichment.py",
+    "test_trace_evidence_contract.py",
+    "test_trace_fail_loudly.py",
+    "test_trace_fidelity_contract.py",
+    "test_trace_golden.py",
+    "test_trace_hero_tdd.py",
+    "test_trace_identical_rows.py",
+    "test_trace_integration.py",
+    "test_trace_matches_preview.py",
+    "test_trace_multi_frame.py",
+    "test_trace_row_scope_lookup.py",
+    "test_trace_snapshot_seeding.py",
+    "test_trace_value_lineage.py",
+    "test_trace_w4_fixes.py",
+    "test_trace_waterfall.py",
+    "test_train_config_builder.py",
+    "test_train_evaluation_config.py",
+    "test_train_service_helpers_coverage.py",
+    "test_training_catboost_projection.py",
+    "test_training_lorenz_nonfinite.py",
+    "test_training_null_target_fused_split.py",
+    "test_training_preparation_glm_terms.py",
+    "test_training_preparation_worker.py",
+    "test_training_response_evaluation.py",
+    "test_training_seeding.py",
+    "test_types.py",
+    "test_uc_create_only_qualification.py",
+    "test_ui_contract_golden.py",
+    "test_user_exec_imports.py",
+    "test_utility_routes.py",
+    "test_v2_codec_and_shred.py",
+    "test_v2_object_nesting_inference.py",
+    "test_verify_pypi_release.py",
+    "test_wide_integers.py",
+    "test_workbench_app_quotes.py",
+    "test_workbench_config.py",
+    "test_workbench_form.py",
+    "test_workbench_output.py",
+    "test_workbench_params.py",
+    "test_workbench_routes.py",
+    "test_workbench_tables.py",
+    "test_workbench_visibility.py",
+    "test_worker_isolation.py",
+    "test_worker_protocol.py",
+    "test_workflow_coverage.py",
+    "test_write_sandbox_guard.py",
+    "test_write_sandbox_lint.py",
+    "test_write_sandbox_promotions.py",
+]
+
+# Layer 2's allowlist: each not-yet-converted file and the fingerprints of the
+# write sites tests/test_write_sandbox_lint.py flags in it. Converting a site
+# deletes its fingerprint; a new site prints its fingerprint for review here.
+[lint]
+# Mostly writes through cache-dir/model-dir helper call results the static
+# taint cannot resolve, plus a handful of genuine system-temp users. The
+# runtime census (layer 3 observe mode) is the ground truth for which of
+# these actually escape the sandbox at run time.
+"tests/test_algorithms_coverage.py" = [
+    "478fb2eeb7affd56",  # TestGPUOnIterationPath.test_gpu_fit_error_is_reraised
+    "50449bfb7cc038fb",  # TestGPUOnIterationPath.test_gpu_with_on_iteration_creates_tempdir_and_polls
+    "8463a0c400408741",  # TestGPUOnIterationPath.test_gpu_with_on_iteration_creates_tempdir_and_polls.fake_fit
+]
+"tests/test_deploy.py" = [
+    "d2f2018ff6fb11d7",  # _write_cached_model
+]
+# The temp directory is created by the code under test
+# (``_batch_scoring.py``'s ``tempfile.mkdtemp``, which takes no ``dir=``),
+# so the tests can only write into and clean up the path it hands back.
+"tests/test_deploy_batch_scoring.py" = [
+    "4fd3db11fc19a451",  # TestBatchCleanupFailsLoud.test_cleanup_failure_wins_over_a_handled_child_failure
+    "6063e1a9570d888f",  # TestBatchCleanupFailsLoud.test_plan_cleanup_raises_when_no_primary_error_is_in_flight
+    "a8676e3b33af72f9",  # TestBatchCleanupFailsLoud.test_successful_batch_reports_a_cleanup_failure_as_500
+    "2757297892208164",  # TestScoreBatchWorkerInProcess.test_worker_classifies_failures_and_leaves_no_result_file
+]
+"tests/test_deploy_scorer_artifact_cache.py" = [
+    "0c8017f85e158b34",  # TestStatGateInvalidation.test_model_content_rewrite_triggers_reload
+]
+"tests/test_executor.py" = [
+    "5eb04a0e0380b13c",  # TestPreambleLockConcurrency.test_concurrent_pipeline_import_keeps_active_utility_path
+    "fe2e2b54a3009600",  # TestPreambleLockConcurrency.test_concurrent_pipeline_import_keeps_active_utility_path
+]
+"tests/test_file_ops.py" = [
+    "9775b6c3000a513a",  # TestWriterEdgeCases.test_concurrent_writers_final_state_is_one_of_two._run
+    "e69548dcb9dd26d6",  # TestWriterEdgeCases.test_mixed_write_text_and_write_bytes_last_wins
+    "aac9ce3e491a59e7",  # TestWriterEdgeCases.test_mixed_write_text_and_write_bytes_last_wins
+    "41c77caf1121906d",  # TestWriterEdgeCases.test_multiple_writes_last_wins
+    "05d7b2c06d6d82b5",  # TestWriterEdgeCases.test_multiple_writes_last_wins
+    "7e420c9a42ce974c",  # TestWriterEdgeCases.test_multiple_writes_last_wins
+    "d72c74ac94e192a9",  # TestWriterEdgeCases.test_writer_overwrites_existing_target
+    "5ee76e693b3ba20f",  # TestWriterEdgeCases.test_writer_parent_missing_raises
+    "fd167f31c63d08e8",  # TestWriterFailure.test_exception_inside_with_does_not_write
+    "81153296c9775e63",  # TestWriterFailure.test_exception_inside_with_preserves_existing_target
+    "8aadbd38c419aea6",  # TestWriterHappyPath.test_happy_path_write_bytes
+    "f479b1b969d946cc",  # TestWriterHappyPath.test_happy_path_write_text
+    "d5b186c55dc40149",  # TestWriterHappyPath.test_target_not_visible_until_exit
+    "92e6be36598d8292",  # TestWriterSelfWriteCallback.test_mark_self_write_called_before_rename
+    "e9e24675abe9781e",  # TestWriterSelfWriteCallback.test_mark_self_write_called_with_target_path
+    "4bff08813433fea4",  # TestWriterSelfWriteCallback.test_mark_self_write_default_is_none
+    "a8bae940e8149a4b",  # TestWriterSelfWriteCallback.test_mark_self_write_none_no_crash
+    "d7d6c96e2efd3ec9",  # TestWriterSelfWriteCallback.test_mark_self_write_not_called_on_exception
+]
+"tests/test_git_graph.py" = [
+    "db8ac21fbaf9acd7",  # TestForkAttachments.test_crystallized_fork_at_pending_save_does_not_steal_the_working_spine
+    "50c4bd6f8c6a4a11",  # TestForkAttachments.test_crystallized_fork_at_pending_save_does_not_steal_the_working_spine
+    "d727f317ca386d04",  # TestForkAttachments.test_fork_one_milestone_ahead_does_not_steal_the_working_spine
+    "0edd7661b7395fd3",  # TestForkAttachments.test_fork_one_milestone_ahead_does_not_steal_the_working_spine
+    "0877b3f0c65d7b9d",  # TestForkAttachments.test_two_roots_forest
+]
+"tests/test_graph_fingerprint_cached.py" = [
+    "bd80551d67fe7edf",  # TestUtilityFileContentHashMemo._make_utility_package
+]
+# These writes resolve through isolated project/cache helper paths. The
+# static scanner intentionally cannot infer taint through those helpers;
+# the runtime sandbox census verifies that they remain under tmp_path.
+"tests/test_load_v2_api_source.py" = [
+    "968b3c9ed3c49f0b",  # test_a_read_stays_on_its_leased_generation_across_a_rebuild
+]
+# Cache-key contract tests write through _artifact_cache_path(tmp_path / ...)
+# results: tmp_path-rooted, but the static taint cannot see through the
+# helper call.
+"tests/test_mlflow_io.py" = [
+    "e3a8abef5db2df64",  # TestLoadMlflowModelFastCache.test_disk_cache_hit_for_native_run_artifact_skips_mlflow_resolution
+    "a45b565659956df9",  # TestLoadMlflowModelFastCache.test_fast_path_cache_hit_for_run_with_artifact
+    "c512b49a673d33ee",  # TestModelCache.test_cache_hit
+    "250cb0f7464ed816",  # TestResolveArtifactLocal.test_cache_hit_returns_local_path
+]
+"tests/test_mlflow_io_concurrency.py" = [
+    "3dd8d3c6324aa291",  # TestArtifactDiskIdentity.test_direct_resolve_marks_run_active_during_cache_hit_and_eviction
+    "e2d46fc7884764d1",  # TestArtifactDiskIdentity.test_direct_resolve_marks_run_active_during_cache_hit_and_eviction
+    "5cdedecf6da2b68c",  # TestArtifactDiskIdentity.test_eviction_rechecks_active_runs_before_deleting_candidate
+    "d05099961dc2ad85",  # TestArtifactDiskIdentity.test_eviction_rechecks_active_runs_before_deleting_candidate
+    "5a9e9c6bf999fb7c",  # TestArtifactDiskIdentity.test_eviction_skips_run_directory_with_model_load_in_flight
+    "8f65abbc6d479bf3",  # TestArtifactDiskIdentity.test_eviction_skips_run_directory_with_model_load_in_flight
+    "f76161771aaf1138",  # TestArtifactDiskIdentity.test_eviction_tombstones_before_delete_without_blocking_new_run_users
+    "d5973af1e64436e8",  # TestArtifactDiskIdentity.test_eviction_tombstones_before_delete_without_blocking_new_run_users
+    "258d8011c4075dce",  # TestArtifactDiskIdentity.test_fast_disk_cache_path_marks_run_active_before_probe
+    "95e755ce9e349b0b",  # TestArtifactDiskIdentity.test_restart_load_ignores_poisoned_same_basename_cache_entry
+    "b30e540854bd032b",  # TestLockAcquisitionRaces.test_fast_path_falls_through_when_file_vanishes_while_waiting
+    "37e566c8fd185b7c",  # TestLockAcquisitionRaces.test_fast_path_waiter_reuses_model_cached_while_waiting
+]
+"tests/test_model_score_executor.py" = [
+    "22ee01c87b75519b",  # TestResolveArtifactLocal.test_disk_cache_hit
+]
+"tests/test_optimiser_service_coverage.py" = [
+    "b1b7eb7ff66a2261",  # test_load_ratebook_factors_rejects_corrupt_parquet
+    "8f44369b7dd8987c",  # test_load_rejects_corrupt_parquet
+]
+# ``main()`` regenerates the checked-in compatibility corpus offline; it
+# never runs under pytest.
+"tests/test_polars_compatibility_corpus.py" = [
+    "36deca66f83d7778",  # main
+]
+"tests/test_polars_utils.py" = [
+    "a492c980180bfa30",  # TestAtomicWriteEdgeCases.test_cleans_up_temp_on_exception
+]
+"tests/test_server.py" = [
+    "3b25eb4acbb3cdbc",  # TestServerPipelineDiscoveryHelpers.test_discovered_pipeline_paths_filters_non_pipeline_python
+]
+"tests/test_submodel_routes.py" = [
+    "001032abfbb1ed71",  # TestDissolveSubmodel.test_dissolve_retains_configured_pipeline_module_until_save
+    "ce825b9940410349",  # TestGetSubmodel.test_get_uses_configured_pipeline_root
+    "c3924fa7d594ba21",  # TestGetSubmodel.test_get_uses_configured_pipeline_root
+]
+
+# The observe-mode census: each class of write outside the sandbox that a
+# coverage run still records, and why. scripts/check_write_sandbox_census.py
+# names the classes and fails the coverage gate on a class not listed here, or
+# on a listed class no run recorded.
+[census]
+
+[census."repo:.haute_cache"]
+reason = """\
+    Production code keeps its cache and logs under the project's .haute_cache \
+    (training's memory log, the deploy output-schema cache, the runtime spill \
+    store and its storage budget), and observe-mode tests leave the project \
+    root at the repository root."""
+
+[census."repo:mlruns"]
+reason = """\
+    MLflow's default tracking store is ./mlruns: tests that log a run or score \
+    a registered model without pointing MLflow at a sandbox store create it \
+    under the repository root."""
+
+[census."runner-temp:_runner_file_commands"]
+reason = """\
+    The coverage scripts and the CLI's impact report append a job summary to \
+    $GITHUB_STEP_SUMMARY, which on a runner is the summary file of the step \
+    running the tests."""

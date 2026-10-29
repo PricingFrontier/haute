@@ -1,6 +1,6 @@
 """Self-tests for the write-sandbox runtime guard (layer 3).
 
-This module is listed in ``tests/_write_sandbox.STRICT_FILES``, so every test
+This module is listed in ``strict`` in ``tests/write_sandbox.toml``, so every test
 here runs under the strict guard — the placement assertions below are live
 proof that strict mode is what the suite actually applies, not a simulation.
 This file is also part of the CI ``platform-smoke`` lane's explicit list:
@@ -10,9 +10,11 @@ Windows, and the guard must hold there too.
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -191,3 +193,103 @@ def test_census_dump_load_summarize_roundtrip(haute_scratch: Path) -> None:
     lines = ws.summarize(loaded)
     assert len(lines) == 2
     assert any("/x/shared" in line and "t::one" in line for line in lines)
+
+
+def _summarise_run(config: SimpleNamespace) -> None:
+    """Run the session's terminal-summary hook, the one that writes the census."""
+    from tests import conftest
+
+    reporter = SimpleNamespace(config=config, section=lambda *_: None, line=lambda *_: None)
+    conftest.pytest_terminal_summary(reporter)
+
+
+def test_the_run_writes_its_census_where_the_coverage_gate_reads_it(
+    haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    row = ws.Violation(nodeid="t::one", api="open", path="/x/shared", detail="mode='w'")
+    out = haute_scratch / "census" / "census-shard1.json"
+    monkeypatch.setattr(ws, "VIOLATIONS", [row])
+    monkeypatch.delenv(ws.ENV_CENSUS_DIR, raising=False)  # this session's own spool
+    monkeypatch.setenv(ws.ENV_CENSUS_OUT, str(out))
+    monkeypatch.setenv("RUNNER_TEMP", str(haute_scratch / "runner-temp"))
+
+    _summarise_run(SimpleNamespace())
+
+    record = json.loads(out.read_text(encoding="utf-8"))
+    assert record["version"] == ws.CENSUS_VERSION
+    assert record["writes"] == [row.__dict__]
+    assert record["roots"] == {
+        "repo": _real(_REPO_ROOT),
+        "home": _real(Path.home()),
+        "runner-temp": _real(haute_scratch / "runner-temp"),
+    }
+
+
+def test_a_run_that_recorded_nothing_still_writes_its_census(
+    haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = haute_scratch / "census-shard1.json"
+    monkeypatch.setattr(ws, "VIOLATIONS", [])
+    monkeypatch.delenv(ws.ENV_CENSUS_DIR, raising=False)
+    monkeypatch.setenv(ws.ENV_CENSUS_OUT, str(out))
+    monkeypatch.delenv("RUNNER_TEMP", raising=False)
+
+    _summarise_run(SimpleNamespace())
+
+    record = json.loads(out.read_text(encoding="utf-8"))
+    assert record["writes"] == []
+    assert set(record["roots"]) == {"repo", "home"}
+
+
+def test_an_xdist_worker_leaves_the_census_to_the_controller(
+    haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = haute_scratch / "census-shard1.json"
+    monkeypatch.setattr(ws, "VIOLATIONS", [])
+    monkeypatch.delenv(ws.ENV_CENSUS_DIR, raising=False)
+    monkeypatch.setenv(ws.ENV_CENSUS_OUT, str(out))
+
+    _summarise_run(SimpleNamespace(workerinput={}))
+
+    assert not out.exists()
+
+
+# ---------------------------------------------------------------------------
+# What strict mode lets through besides the test's tmp_path
+# ---------------------------------------------------------------------------
+
+
+def test_strict_mode_lets_the_test_write_its_own_source_proof_store(
+    source_proof_records: Path,
+) -> None:
+    # The harness keeps the store outside tmp_path, which a test may list.
+    source_proof_records.mkdir(parents=True, exist_ok=True)
+    record = source_proof_records / "record.json"
+    record.write_text("{}", encoding="utf-8")
+    assert record.read_text(encoding="utf-8") == "{}"
+
+
+def test_strict_mode_lets_a_widened_root_test_write_its_source_cache(
+    _widen_sandbox_root: Path,
+) -> None:
+    probe = _widen_sandbox_root / "probe.txt"
+    probe.write_text("cached", encoding="utf-8")
+    assert probe.read_text(encoding="utf-8") == "cached"
+
+
+def test_strict_mode_does_not_widen_to_the_runs_base_directory(tmp_path: Path) -> None:
+    sibling = tmp_path.parent / f"{tmp_path.name}-sibling.txt"
+    with pytest.raises(ws.OutOfSandboxWriteError):
+        open(sibling, "w", encoding="utf-8")  # write-sandbox: deliberate
+    assert not sibling.exists()
+
+
+def test_multiprocessing_shared_memory_is_not_a_test_write() -> None:
+    from multiprocessing import heap
+
+    # On Linux each arena is a file under /dev/shm, unlinked at once.
+    arena = heap.Arena(4096)
+    assert arena.size == 4096
+    assert ws._is_multiprocessing_arena("/dev/shm/pym-12-abcd1234")
+    assert not ws._is_multiprocessing_arena("/dev/shm/haute-cache")
+    assert not ws._is_multiprocessing_arena("/tmp/pym-12-abcd1234")
