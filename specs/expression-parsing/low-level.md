@@ -180,18 +180,30 @@ no alias or migration shim; direct test callers use the same current contract.
   preamble value of the same name.
 - **A value changed in place is unknown from there on**: a statement can change a value without
   binding its name again. A store or delete through a subscript or attribute (`d["k"] = v`,
-  `d["k"] += v`, `del d["k"]`, `obj.a = v`), an augmented assignment (`items += [x]`), a method
-  called on its own line on a value the code bound (`d.update(...)`, `cols.append(x)`), and a
-  `pop`, `popitem` or `setdefault` call anywhere make the name it reaches unknown, at any depth of
-  the statement (inside a loop body too). So does every name that may hold the same value: one
-  bound to it (`alias = d`) or to a list, tuple, set or dict holding it (`outer = {"k": d}`), in
-  either direction and through further such bindings. A copy (`dict(d)`) or a value read out
-  before the change (`rate = d["A"]`) is a different value and stays known. A change inside a
-  function the value is passed to (`shuffle(cols)`) is not followed.
-- **A formula inside a block reads the block's changes**: a `with_columns`/`select` call inside
-  `if`/`for`/`while`/`try`/`with`/`match` takes the bindings in force after the whole block, so a
-  name the block assigns or changes anywhere is unknown to it, while names the block does not
-  touch keep their values.
+  `d["k"] += v`, `del d["k"]`, `obj.a = v`), an augmented assignment (`items += [x]`), a `pop`,
+  `popitem` or `setdefault` call anywhere, and a method called on its own line that changes one
+  of Python's containers (`d.update(...)`, `cols.append(x)`, on any name, a preamble's too) or is
+  called on a value the code bound make the name it reaches unknown, at any depth of the
+  statement (inside a loop body too). A method called alone on a name the code never bound
+  (`pl.Config.set_tbl_rows(5)`) is not a change. A name a function, lambda or comprehension
+  binds for itself (a parameter, a local) is that scope's own, so changing it there changes
+  nothing outside; a function changing a name it does not bind changes that name, counted at
+  the function's definition. A change inside a function the value is passed to
+  (`shuffle(cols)`) is not followed.
+- **Names that may hold the same value go unknown together**: a binding shares a value with
+  every name the code bound that its value reads, and with any name its value is or holds as it
+  stands (`alias = RATES`, `outer = {"k": d}`, `merged = {**defaults}`), in either direction and
+  through further bindings: an element read out may itself be a container (`rate = d["A"]`), and
+  a copy keeps its original's nested values (`dict(d)`). Only a binding whose value is a number,
+  string or other immutable literal, with subscripts of literals read (`rate = d["A"]` where
+  `d["A"]` is a number), shares nothing. Binding a name again at the top level takes it out of
+  its group; a name a block may bind shares with what it may get there and still with what it
+  held, since the block may not run.
+- **A formula sees the changes of its own statement**: a `with_columns`/`select` call inside
+  `if`/`for`/`while`/`try`/`with`/`match`, or in a statement that changes a value in place
+  (`with_columns(a=pl.lit(d.pop("k")), y=...)`), takes the bindings in force after that whole
+  statement, so a name it assigns or changes anywhere is unknown to the call, while names it
+  does not touch keep their values.
 - **Values are Polars' own**: integer overflow wraps as the column's dtype does, division and
   modulo by zero, Kleene `&`/`|`, rounding and NaN handling are whatever Polars computes on the
   row, because Polars computes them. A typed null propagates through every operation; a native

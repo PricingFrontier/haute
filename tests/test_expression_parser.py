@@ -1838,6 +1838,48 @@ class TestValuesChangedInPlace:
                 '    df = df.with_columns(y=pl.col("x") * factors["A"])',
                 "factors",
             ),
+            (
+                'factors = {"A": 1.0}\nalias = factors\nif False:\n    alias = {}\n'
+                'alias["A"] = 2.0\n' + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\nif True:\n    alias = factors\nalias["A"] = 2.0\n'
+                + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                "factors = [1.0, 2.0]\ndf = df.with_columns(\n"
+                "    popped=pl.lit(factors.pop(0)),\n"
+                '    y=pl.col("x") * factors[0],\n)',
+                "factors",
+            ),
+            (
+                'factors = {"A": {"rate": 1.0}}\nrate = factors["A"]\n'
+                'factors["A"]["rate"] = 2.0\n'
+                'df = df.with_columns(y=pl.col("x") * rate["rate"])',
+                "rate",
+            ),
+            (
+                'factors = {"A": {"rate": 1.0}}\nmine = dict(factors)\n'
+                'mine["A"]["rate"] = 2.0\n'
+                'df = df.with_columns(y=pl.col("x") * factors["A"]["rate"])',
+                "factors",
+            ),
+            (
+                'inner = {"A": 1.0}\ndefaults = {"k": inner}\nouter = {**defaults}\n'
+                'inner["A"] = 2.0\ndf = df.with_columns(y=pl.col("x") * outer["k"]["A"])',
+                "outer",
+            ),
+            (
+                'factors = {"A": 1.0}\ndef bump():\n    factors["A"] = 2.0\nbump()\n'
+                + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factor = 1.0\nRATES.update({"A": 2.0})\n' + _TIMES_A.format("RATES"),
+                "RATES",
+            ),
         ],
         ids=[
             "subscript",
@@ -1855,6 +1897,14 @@ class TestValuesChangedInPlace:
             "augmented-list",
             "rebound-in-the-formula-block",
             "changed-in-the-formula-block",
+            "rebound-in-a-block-that-may-not-run",
+            "an-alias-made-in-a-block",
+            "changed-by-the-formula-statement",
+            "a-container-read-out",
+            "a-shallow-copy",
+            "unpacked-into-a-dict",
+            "changed-in-a-function",
+            "a-preamble-container-method",
         ],
     )
     def test_the_value_is_reported_not_guessed(self, code: str, unknown: str) -> None:
@@ -1876,11 +1926,6 @@ class TestValuesChangedInPlace:
                 'df = df.with_columns(y=pl.col("x") * rate)',
                 10.0,
             ),
-            (
-                'factors = {"A": 2.0}\nmine = dict(factors)\nmine["A"] = 5.0\n'
-                + _TIMES_A.format("factors"),
-                20.0,
-            ),
             ('factors = {"A": 2.0}\nprint(factors)\n' + _TIMES_A.format("factors"), 20.0),
             (
                 "factor = 2.0\npl.Config.set_tbl_rows(5)\n"
@@ -1897,14 +1942,19 @@ class TestValuesChangedInPlace:
                 '    df = df.with_columns(y=pl.col("x") * factor)',
                 20.0,
             ),
+            (
+                'factors = {"A": 1.0}\ndef helper(factors):\n'
+                '    factors.update({"A": 2.0})\n' + _TIMES_A.format("factors"),
+                10.0,
+            ),
         ],
         ids=[
             "read-before-the-change",
-            "a-copy-changed",
             "a-function-call",
             "a-method-on-a-name-the-code-never-bound",
             "an-alias-bound-again",
             "a-block-that-leaves-the-name-alone",
+            "a-function-changing-its-own-parameter",
         ],
     )
     def test_a_value_the_code_did_not_change_keeps_it(self, code: str, value: float) -> None:
