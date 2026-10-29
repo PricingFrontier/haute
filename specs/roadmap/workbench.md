@@ -29,9 +29,9 @@ and rules named once and used by many sheets were offered and not taken. Fields 
 columns with conditions of their own, not taken that day, were asked for on 2026-10-22;
 cells shown row by row through "this row" tests were offered again and not taken.
 
-`WB-37` and `WB-38` come from the [25 October 2026 codebase
-review](codebase-review-2026-10-25.md): what the review found in the Workbench view and
-the underwriter app in the browser.
+`WB-38` comes from the [25 October 2026 codebase
+review](codebase-review-2026-10-25.md): what the review found in the Workbench view's
+Allowed field.
 
 `WB-41` finishes moving the form into the pipeline folder, the folder of named files the
 workbench specification describes. The owner chose on 28 October 2026 that the
@@ -51,7 +51,6 @@ Workbench nodes stop keeping copies of the tables in a pull request after the fo
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-28 | Planned | P3 | A condition tests a field against another field, text within text, and a date against another date give or take a number of days. |
 | WB-29 | Planned | P3 | A component that takes nothing typed, or a section or a sheet holding only such components, shows by conditions on the price, applied after it so the price never decides what is priced. |
-| WB-37 | Planned | P3 | The column key, the refusal predicate, the 409 detail reader, the empty visibility constants, the half-window width, the collapsible group and the pricing basis each exist once in the workbench and the app. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
 | WB-41 | Planned | P2 | The Workbench Input and Workbench Output read their tables from the form folder instead of keeping copies, so a schema change shows once in a pull request and no copy can fall out of step. |
 
@@ -491,40 +490,6 @@ sides.
 table named as a fault); `src/haute/_workbench_visibility.py::_tested_column` (input tables
 alone); `src/haute/_workbench_tables.py::sample_quote` (the hidden columns the quote leaves
 out).
-
-### WB-37 — One copy of each workbench helper
-**Why:** The `tableId:columnId` key that looks, Order rows, the Columns list, the
-condition select, the draft's places and the window's fields are looked up by is
-hand-spelled in six places while `columnKey` is exported and already imported by two
-others; the format is load-bearing, so a change to it breaks lookups silently. The
-`refused` predicate (status under 500) is defined twice verbatim; the 409 detail is
-unwrapped by hand in two stores while `api/errors.ts` has an unexported reader; the
-empty visibility and locked constants, the half-window panel width, a collapsible titled
-group and the pricing basis expression (`basisOf` exists but two stores inline it) are
-each written two or three times; `adopted` is a module-level mutable in a component
-file. From the [25 October 2026 codebase review](codebase-review-2026-10-25.md) (FWB-4,
-FWB-5, FAP-14).
-
-**Plan:** Import `columnKey` everywhere and delete the private copies. Export
-`apiErrorRefused` and `apiErrorRawDetail` from `api/errors.ts` and use them in both
-stores. Export the empty constants from `useSheetValues.ts`. One `halfWindowWidth`
-helper, one `Collapsible` in `app/ui.tsx`, `basisOf` called from `useQuoteValues` and the
-preview store, `adopted` moved into the open-quote store.
-
-**Acceptance:** One definition of each by grep; the workbench and app tests pass
-unchanged.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/utils/sheetVisibility.ts::columnKey`,
-`frontend/src/workbench/ShowWhenEditor.tsx`, `frontend/src/workbench/panel/FieldOrder.tsx`,
-`frontend/src/workbench/panel/lookParts.tsx`, `frontend/src/workbench/sheet/fieldCells.ts`,
-`frontend/src/app/quoteValues.ts::basisOf`, `frontend/src/app/useNewQuoteStore.ts`,
-`frontend/src/app/useOpenQuoteStore.ts`, `frontend/src/api/errors.ts::rawDetailRecord`,
-`frontend/src/workbench/useSheetValues.ts`, `frontend/src/stores/useWorkbenchPreviewStore.ts`,
-`frontend/src/app/NewQuoteWindow.tsx`, `frontend/src/app/HistoryPanel.tsx`,
-`frontend/src/app/QuotesPage.tsx`, `frontend/src/workbench/PropertiesPanel.tsx`,
-`frontend/src/workbench/SchemaPane.tsx`.
 
 ### WB-38 — Allowed values typed into an older form
 **Why:** The Allowed field carries a branch for "values typed in, as an older form holds

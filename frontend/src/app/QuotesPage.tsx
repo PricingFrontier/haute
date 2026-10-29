@@ -12,8 +12,6 @@ import {
   ArchiveRestore,
   BadgeCheck,
   Calculator,
-  ChevronDown,
-  ChevronRight,
   CircleDashed,
   Copy,
   FileText,
@@ -33,7 +31,7 @@ import { inModalDialog, isFormControl } from "../hooks/keyboardTargets"
 import useToastStore from "../stores/useToastStore"
 import { fullTime, listColumns, listValue, relativeTime } from "./quoteValues"
 import { followLink, navigate, newQuotePath, quotePath, quotesPath, quotesQueryOf } from "./route"
-import { BUTTON, FILL_BUTTON, FILL_STYLE, ICON_BUTTON, StageChip } from "./ui"
+import { BUTTON, Collapsible, FILL_BUTTON, FILL_STYLE, ICON_BUTTON, StageChip } from "./ui"
 import useAppStore from "./useAppStore"
 import useNewQuoteStore from "./useNewQuoteStore"
 import useQuoteListStore from "./useQuoteListStore"
@@ -80,26 +78,6 @@ function RailItem({ icon: Icon, label, count, picked, onPick, testId }: { icon: 
         {count ?? ""}
       </span>
     </button>
-  )
-}
-
-/** A collapsible group of the rail. */
-function RailGroup({ title, children }: { title: string; children: React.ReactNode }) {
-  const [open, setOpen] = useState(true)
-  return (
-    <div className="flex flex-col gap-0.5">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        aria-expanded={open}
-        className="flex h-6 items-center gap-1 px-1 text-[10px] font-semibold tracking-wider uppercase"
-        style={{ color: "var(--text-muted)" }}
-      >
-        {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-        {title}
-      </button>
-      {open && children}
-    </div>
   )
 }
 
@@ -210,7 +188,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
   return (
     <div className="flex min-h-0 flex-1" data-testid="quotes-page">
       <nav aria-label="Lists" className="flex w-[200px] shrink-0 flex-col gap-3 overflow-y-auto p-2" style={{ borderRight: "1px solid var(--chrome-border)", background: "var(--bg-panel)" }}>
-        <RailGroup title="Quotes">
+        <Collapsible title="Quotes">
           {VIEWS.map((each) => (
             <RailItem
               key={each.view}
@@ -222,8 +200,8 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
               onPick={() => go({ view: each.view, stage: null, assignee: null })}
             />
           ))}
-        </RailGroup>
-        <RailGroup title="Stage">
+        </Collapsible>
+        <Collapsible title="Stage">
           {STAGES.map((each) => (
             <RailItem
               key={each.stage}
@@ -235,7 +213,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
               onPick={() => go({ stage: query.stage === each.stage ? null : each.stage })}
             />
           ))}
-        </RailGroup>
+        </Collapsible>
       </nav>
 
       <main className="flex min-w-0 flex-1 flex-col" aria-label="Quotes">

@@ -13,6 +13,7 @@ import type { Condition, ConditionGroup, FormSpec, RowsCondition, RowTest, Schem
 import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, QuietAction, ValidatedTextField, wholeNumber } from "../components/form"
 import { parseTypedNumber } from "../utils/sheetValues"
 import {
+  columnKey,
   CONDITION_TESTS,
   COUNT_TESTS,
   conditionFault,
@@ -64,7 +65,6 @@ const KINDS: ReadonlyArray<{ value: ListKind; label: string }> = [
   ...TOTALS,
 ]
 
-const columnKey = (tableId: string, columnId: string) => `${tableId}:${columnId}`
 /** A table's rows' place in the column select, never a column's key, whose `:` between its ids no id holds. */
 const rowsKey = (tableId: string) => `${tableId}#rows`
 const label = (column: SchemaColumn) => column.label || readableName(column.name)

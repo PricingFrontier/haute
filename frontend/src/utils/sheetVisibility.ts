@@ -8,7 +8,7 @@
  */
 import type { Condition, ConditionGroup, FieldRef, FormSchema, FormSpec, RowCount, RowsCondition, RowTest, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen } from "../api/types"
 import { QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, sheetColumns } from "./quoteIdentity"
-import { filled, isDay, parseTypedNumber, parseTypedWhole, presetRows, quoteTyped, rowFilled, withPresetRows, type RowsByTable } from "./sheetValues"
+import { filled, isDay, parseTypedNumber, parseTypedWhole, presetRows, quoteTyped, rowFilled, valuesBasis, withPresetRows, type RowsByTable } from "./sheetValues"
 
 export type ConditionTest = Condition["op"]
 export type CountTest = RowCount["op"]
@@ -523,6 +523,14 @@ export function sheetVisibility(spec: FormSpec, rows: RowsByTable): SheetVisibil
   }
   return visibility
 }
+
+/**
+ * What a pricing of `rows` on `spec`'s sheets is for (`valuesBasis`): the schema, the columns
+ * the sheets hide for those values, `hidden` when they were read already, and the values. A
+ * price for another basis is out of date.
+ */
+export const basisOf = (spec: FormSpec, rows: RowsByTable, hidden: ReadonlySet<string> = sheetVisibility(spec, rows).hidden): string =>
+  valuesBasis(spec.schema, hidden, rows)
 
 /** The schema without `columns` (by `columnKey`). */
 function withoutColumns(schema: FormSchema, columns: ReadonlySet<string>): FormSchema {

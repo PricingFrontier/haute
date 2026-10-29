@@ -10,8 +10,8 @@ import type { FormSpec, SchemaColumn, WorkbenchAppQuote, WorkbenchAppQuoteEvent 
 import type { SamplePrice } from "../stores/useWorkbenchPricingStore"
 import { canonicalJson } from "../utils/canonicalJson"
 import { formatValue } from "../utils/formatValue"
-import { formattedNumber, valuesBasis } from "../utils/sheetValues"
-import { sheetVisibility } from "../utils/sheetVisibility"
+import { formattedNumber } from "../utils/sheetValues"
+import { basisOf, columnKey } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS, QUOTE_DETAILS_ID, readableName, type QuoteDetailName, type SampleRow } from "../utils/workbenchForm"
 
 export type Values = Record<string, SampleRow[]>
@@ -48,8 +48,6 @@ export function onSheets(form: FormSpec, values: Values): Values {
 /** A page drawn for another release than the one serving it: 409 without a code of the store's. */
 export const releaseMoved = (error: unknown): boolean => apiErrorStatus(error) === 409 && apiErrorCode(error) === null
 
-const placeKey = (tableId: string, columnId: string): string => `${tableId}:${columnId}`
-
 /** Where each value of `values` sits on `form`'s sheets, by `tableId:columnId`, named `table.column`. */
 export function cellPlaces(form: FormSpec, values: Values): Record<string, string> {
   const places: Record<string, string> = {}
@@ -57,7 +55,7 @@ export function cellPlaces(form: FormSpec, values: Values): Record<string, strin
     for (const row of values[table.id] ?? []) {
       for (const columnId of Object.keys(row)) {
         const column = table.columns.find((candidate) => candidate.id === columnId)
-        if (column !== undefined) places[placeKey(table.id, columnId)] = `${table.name}.${column.name}`
+        if (column !== undefined) places[columnKey(table.id, columnId)] = `${table.name}.${column.name}`
       }
     }
   }
@@ -70,16 +68,12 @@ export function lostPlaces(values: Values, kept: Values, places: Readonly<Record
   for (const [tableId, rows] of Object.entries(normalisedValues(values))) {
     rows.forEach((row, index) => {
       for (const columnId of Object.keys(row)) {
-        if (kept[tableId]?.[index]?.[columnId] === undefined) lost.add(places[placeKey(tableId, columnId)] ?? `${tableId}.${columnId}`)
+        if (kept[tableId]?.[index]?.[columnId] === undefined) lost.add(places[columnKey(tableId, columnId)] ?? `${tableId}.${columnId}`)
       }
     })
   }
   return [...lost]
 }
-
-/** The basis the sheets read `values` on `form` for: a price for another is out of date. */
-export const basisOf = (form: FormSpec, values: Values): string =>
-  valuesBasis(form.schema, sheetVisibility(form, values).hidden, values)
 
 /** The price a saved revision shows on `form`: its tables, for its values as they are. */
 export function savedPrice(

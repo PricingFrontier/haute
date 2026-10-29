@@ -4,6 +4,7 @@ import { type ReactNode, useState } from "react"
 import type { CollectionWidget, FieldRef, FormSpec, TableInputWidget } from "../../api/types"
 import { ConfigCheckbox, EditorLabel, FIELD_CLASS, INPUT_STYLE, LabelledRow, QuietAction, SelectRow, ValidatedTextField, wholeNumber } from "../../components/form"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import { columnKey } from "../../utils/sheetVisibility"
 import {
   COLUMN_WIDTH_MAX,
   COLUMN_WIDTH_MIN,
@@ -147,7 +148,7 @@ export function ColumnLooks({ form, widget, headings, sized }: { form: FormSpec;
   return (
     <div className="flex flex-col gap-0.5 rounded-md p-1" style={{ border: "1px solid var(--border)", background: "var(--bg-elevated)" }}>
       {widget.fields.map((field) => {
-        const key = `${field.table}:${field.column}`
+        const key = columnKey(field.table, field.column)
         const label = fieldLabel(fieldColumn(form, field))
         const look = columnLook(widget, field)
         const opened = open.has(key)
@@ -215,7 +216,7 @@ function ColumnLookFields({
       <ColourRow beside label="Fill" name={`${label}'s fill`} value={look.cell_color} update={colour("cell_color")} />
       <ColourRow beside label="Font" name={`${label}'s font`} value={look.font_color} update={colour("font_color")} />
       <SelectRow label="Align" name={`${label}'s align`} value={look.align} choices={ALIGNS} onChange={(align) => set({ align })} />
-      {sized && <WidthRow testId={`column-width-${field.table}:${field.column}`} value={look.width} onCommit={(width) => set({ width })} />}
+      {sized && <WidthRow testId={`column-width-${columnKey(field.table, field.column)}`} value={look.width} onCommit={(width) => set({ width })} />}
       <LabelledRow>
         <ConfigCheckbox label="Bold" checked={look.bold} onChange={(bold) => set({ bold })} />
       </LabelledRow>

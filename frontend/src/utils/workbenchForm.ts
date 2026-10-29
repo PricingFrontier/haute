@@ -43,9 +43,10 @@ import {
 } from "./sheetGeometry"
 import { IDENTITY_COLUMNS, IDENTITY_NAMES, identityCount, isIdentityColumn, QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, sheetColumns } from "./quoteIdentity"
 import { canonicalJson } from "./canonicalJson"
-import { cellProblem, filled, isDay, newQuoteValues, parseTypedNumber, presetColumn, pricedRows, valuesBasis, type PricedRows, type RowsByTable } from "./sheetValues"
+import { cellProblem, filled, isDay, newQuoteValues, parseTypedNumber, presetColumn, pricedRows, type PricedRows, type RowsByTable } from "./sheetValues"
 import {
   ALWAYS,
+  basisOf,
   columnKey,
   conditionFault,
   fieldKey,
@@ -59,7 +60,6 @@ import {
   leafConditions,
   listColumns,
   neverShown,
-  sheetVisibility,
   testLabel,
   TOTALS,
   type ColumnTest,
@@ -646,7 +646,7 @@ export interface ShownField {
 
 /** The fields a component shows, each with its column in `schema`, in the component's order; a Heading shows none. */
 export const shownFields = (schema: FormSchema, widget: Widget): ShownField[] =>
-  showsFields(widget) ? widget.fields.map((field) => ({ key: `${field.table}:${field.column}`, found: fieldColumn({ schema }, field) })) : []
+  showsFields(widget) ? widget.fields.map((field) => ({ key: columnKey(field.table, field.column), found: fieldColumn({ schema }, field) })) : []
 
 /** The input tables a Table's grid takes rows of, in its order: those of the many-row columns it shows that are typed into. */
 export const gridInputTables = (fields: readonly ShownField[]): SchemaTable[] => [
@@ -1713,14 +1713,14 @@ export const setTableRows = (spec: FormSpec, widgetId: string, rows: number): Fo
 const bases = new WeakMap<FormSpec, string>()
 
 /**
- * What pricing the sample depends on, as one string to compare (`valuesBasis`): the schema,
+ * What pricing the sample depends on, as one string to compare (`basisOf`): the schema,
  * the columns the sheets hide as the sample sets them, and the sample. A sheet laid out
  * differently prices the same, while a condition that hides or shows a column does not.
  */
 export function pricingBasis(spec: FormSpec): string {
   let basis = bases.get(spec)
   if (basis === undefined) {
-    basis = valuesBasis(spec.schema, sheetVisibility(spec, spec.sample).hidden, spec.sample)
+    basis = basisOf(spec, spec.sample)
     bases.set(spec, basis)
   }
   return basis

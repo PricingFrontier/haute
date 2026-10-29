@@ -8,13 +8,13 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import type { FormSpec } from "../api/types"
 import ModalShell from "../components/ModalShell"
 import { ModalFormHeader } from "../components/ModalForm"
+import { NOTHING_LOCKED } from "../stores/useWorkbenchPreviewStore"
 import { cellKey } from "../utils/sheetValues"
-import type { SheetVisibility } from "../utils/sheetVisibility"
 import { COLLECTION_OPTIONS, QUOTE_DETAILS_ID, type SampleValue } from "../utils/workbenchForm"
 import { FieldBoxes } from "../workbench/sheet/FieldBoxes"
 import { NO_MARKS, fieldLabel } from "../workbench/sheet/fieldCells"
 import { sheetColours } from "../workbench/sheet/sheetColours"
-import { SheetValuesContext, type SheetValues } from "../workbench/useSheetValues"
+import { NO_VISIBILITY, SheetValuesContext, type SheetValues } from "../workbench/useSheetValues"
 import { navigate, quotePath, useAppRoute } from "./route"
 import useAppStore from "./useAppStore"
 import useNewQuoteStore, { REFERENCE_COLUMN, windowFields, windowProblems, type NewQuoteWindow as Shown } from "./useNewQuoteStore"
@@ -24,9 +24,6 @@ const QUIET_STYLE = { color: "var(--text-secondary)" }
 const OTHER_STYLE = { color: "var(--text-primary)", border: "1px solid var(--border)" }
 const YES_STYLE = { background: "var(--structure-action)", color: "var(--text-on-accent)" }
 
-// The window's fields are a Collection of their own: these only fill the sheet's shape.
-const NO_VISIBILITY: SheetVisibility = { pages: new Set(), sections: new Set(), widgets: new Set(), fields: new Set(), hidden: new Set() }
-const NOTHING_LOCKED: ReadonlySet<string> = new Set()
 /** The window's one row is set cell by cell: there are no rows to add or delete. */
 const KEEP_ROWS = () => {}
 

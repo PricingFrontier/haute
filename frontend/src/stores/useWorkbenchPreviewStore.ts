@@ -9,8 +9,7 @@
  */
 import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
-import { valuesBasis } from "../utils/sheetValues"
-import { columnKey, quoteEligible, sheetVisibility } from "../utils/sheetVisibility"
+import { basisOf, columnKey, quoteEligible } from "../utils/sheetVisibility"
 import { withCell, type SampleRow, type SampleValue } from "../utils/workbenchForm"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
 import { pricingLoop } from "./pricingLoop"
@@ -69,7 +68,8 @@ interface WorkbenchPreviewState {
 /** The pricing asked for last; an answer to an earlier one is dropped. */
 const asked = latest()
 
-const NOTHING_LOCKED: ReadonlySet<string> = new Set()
+/** No column locked: every cell takes typing. */
+export const NOTHING_LOCKED: ReadonlySet<string> = new Set()
 
 const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => {
   const priceOnce = async () => {
@@ -81,7 +81,7 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => {
       set({ price: null, error: null })
       return
     }
-    const basis = valuesBasis(form.schema, sheetVisibility(form, quote).hidden, quote)
+    const basis = basisOf(form, quote)
     if (price !== null && price.basis === basis) return
     const attempt = asked.take()
     set({ pricing: true, error: null })

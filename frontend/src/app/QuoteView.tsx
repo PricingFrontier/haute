@@ -31,13 +31,13 @@ import useToastStore from "../stores/useToastStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
 import { canonicalJson } from "../utils/canonicalJson"
-import { quoteEligible } from "../utils/sheetVisibility"
+import { basisOf, quoteEligible } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS, QUOTE_DETAILS_ID } from "../utils/workbenchForm"
 import PageTabs from "../workbench/PageTabs"
 import SheetCanvas from "../workbench/SheetCanvas"
 import AppHeader from "./AppHeader"
 import HistoryPanel from "./HistoryPanel"
-import { basisOf, fullTime, relativeTime, valuesKey } from "./quoteValues"
+import { fullTime, relativeTime, valuesKey } from "./quoteValues"
 import { followLink, navigate, newQuotePath, quotePath, revisionPath, setLeaveGuard, type AppRoute } from "./route"
 import { BUTTON, Menu, Notice, ReleaseNotice, StageChip, type MenuItem } from "./ui"
 import useAppStore from "./useAppStore"
@@ -50,9 +50,6 @@ const RELATION_LABEL = { duplicate: "Duplicate", renewal: "Renewal", alternative
 
 /** The quote_details column that names a quote, typed in the bar. */
 const NAME_COLUMN = QUOTE_DETAILS.quote_name
-
-/** A quote just made, on the sheets already: its address is moved to without opening it again. */
-let adopted: string | null = null
 
 /** Save the open quote. */
 async function saveOpen(): Promise<void> {
@@ -68,7 +65,6 @@ async function makeAsked(from: QuoteOrigin): Promise<void> {
   const asked = window.location.href
   const made = await useOpenQuoteStore.getState().openNew(from)
   if (made === null || window.location.href !== asked) return
-  adopted = made.id
   await navigate(quotePath(made.id), { replace: true, force: true })
 }
 
@@ -104,16 +100,12 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
   useEffect(() => {
     // A question asked about the quote the page has left is nobody's now.
     useQuestionStore.getState().answer(null)
-    const open = useOpenQuoteStore.getState()
     if (route.page === "new") {
       // A quote under a new reference is made in the New quote window, over the Quotes page.
       if (route.from?.relation === "alternative") void makeAsked(route.from)
       return
     }
-    // Just made as an alternative: it is on the sheets already.
-    const justSaved = adopted === route.id && route.revision === null && open.quote?.id === route.id
-    adopted = null
-    if (!justSaved) void open.openQuote(route.id, route.revision)
+    void useOpenQuoteStore.getState().openRouted(route.id, route.revision)
     // The route's key says all of it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeKey])

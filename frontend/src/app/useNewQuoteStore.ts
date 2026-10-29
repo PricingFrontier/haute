@@ -12,11 +12,12 @@
  */
 import { create } from "zustand"
 import { carryAppQuote, createAppQuote, type QuoteSource } from "../api/app"
-import { apiErrorCode, apiErrorMessage, apiErrorStatus } from "../api/errors"
+import { apiErrorCode, apiErrorMessage, apiErrorRawDetail, apiErrorRefused } from "../api/errors"
 import type { FormSpec } from "../api/types"
 import useToastStore from "../stores/useToastStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import { cellKey, cellProblem, newQuoteValues } from "../utils/sheetValues"
+import { columnKey } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS, QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, type SampleRow, type SampleValue, type ShownField } from "../utils/workbenchForm"
 import { latest } from "../utils/latest"
 import {
@@ -117,7 +118,7 @@ export function windowFields(form: FormSpec): ShownField[] {
   const reference = table.columns.find((column) => column.id === REFERENCE_COLUMN)
   const typed = table.columns.filter((column) => !QUOTE_DETAILS_MANAGED.has(column.id))
   const columns = [...(reference === undefined ? [] : [{ ...reference, required: true }]), ...typed]
-  return columns.map((column) => ({ key: `${table.id}:${column.id}`, found: { table, column } }))
+  return columns.map((column) => ({ key: columnKey(table.id, column.id), found: { table, column } }))
 }
 
 /**
@@ -148,16 +149,8 @@ function creationValues(base: Values, details: SampleRow): Values {
 
 /** The quote holding a reference, as a `reference_taken` refusal names it. */
 function takenBy(error: unknown): { quoteId: string; label: string } | null {
-  const raw = typeof error === "object" && error !== null && "rawDetail" in error ? (error as { rawDetail?: unknown }).rawDetail : null
-  if (typeof raw !== "object" || raw === null) return null
-  const { quote_id: quoteId, label } = raw as { quote_id?: unknown; label?: unknown }
+  const { quote_id: quoteId, label } = apiErrorRawDetail(error) ?? {}
   return typeof quoteId === "string" && typeof label === "string" ? { quoteId, label } : null
-}
-
-/** The server refused what was sent, a status below 500, so nothing of it was written. */
-const refused = (error: unknown): boolean => {
-  const status = apiErrorStatus(error)
-  return status !== null && status < 500
 }
 
 /** Where the creation is kept in this tab; null before the release is read. */
@@ -225,7 +218,7 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
       const opened = here() === sentFrom && (await navigate(quotePath(answer.quote.id), { force: savedAsNew })) === "moved"
       if (!opened && !savedAsNew) useToastStore.getState().addToast("success", `Made ${answer.quote.label}`)
     } catch (error: unknown) {
-      if (refused(error)) {
+      if (apiErrorRefused(error)) {
         // Refused, it was not made and never will be: the window takes typing again, saying why.
         if (key !== null) forgetCreation(key)
         const moved = releaseMoved(error)

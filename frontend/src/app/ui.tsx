@@ -1,9 +1,9 @@
 /**
  * The underwriter app's small pieces (specs/workbench), at Haute's density: a quote's stage
  * as a chip, a one-line notice with its actions, the notice of a page drawn for an earlier
- * release, and a menu behind a button.
+ * release, a titled part that folds, and a menu behind a button.
  */
-import { AlertTriangle, ChevronDown, Info, X, type LucideIcon } from "lucide-react"
+import { AlertTriangle, ChevronDown, ChevronRight, Info, X, type LucideIcon } from "lucide-react"
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import type { WorkbenchAppQuote } from "../api/types"
 import { STAGE_LABEL } from "./quoteValues"
@@ -86,6 +86,27 @@ export function ReleaseNotice({ kept }: { kept: boolean }) {
       This page was drawn for an earlier release of the app.{" "}
       {kept ? "Reload it to carry on: your changes stay in this browser." : "Reload it to carry on. What is typed here is not kept."}
     </Notice>
+  )
+}
+
+/** A titled part, open until its title is pressed, its count beside the title when given. */
+export function Collapsible({ title, count, children }: { title: string; count?: number; children: ReactNode }) {
+  const [open, setOpen] = useState(true)
+  return (
+    <section className="flex flex-col gap-1" aria-label={title}>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        className="flex h-6 items-center gap-1 px-1 text-[10px] font-semibold tracking-wider uppercase"
+        style={{ color: "var(--text-muted)" }}
+      >
+        {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+        {title}
+        {count !== undefined && <span className="ml-1 tabular-nums">{count}</span>}
+      </button>
+      {open && children}
+    </section>
   )
 }
 

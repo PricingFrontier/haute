@@ -14,11 +14,11 @@
 import { createContext, useContext, useMemo, useState } from "react"
 import type { FormSchema, FormSpec, Page } from "../api/types"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
-import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
+import useWorkbenchPreviewStore, { NOTHING_LOCKED } from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { previewBasis, usePricingContext, type SamplePrice } from "../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore, { activePage } from "../stores/useWorkbenchViewStore"
-import { newQuoteValues, quoteProblems, valuesBasis, withPresetRows, type RowsByTable } from "../utils/sheetValues"
-import { quoteEligible, quotedSchema, sheetVisibility, type SheetVisibility } from "../utils/sheetVisibility"
+import { newQuoteValues, quoteProblems, withPresetRows, type RowsByTable } from "../utils/sheetValues"
+import { basisOf, quoteEligible, quotedSchema, sheetVisibility, type SheetVisibility } from "../utils/sheetVisibility"
 import { withSampleCell, withSampleRows, type SampleRow, type SampleValue } from "../utils/workbenchForm"
 
 export interface SheetValues {
@@ -54,10 +54,13 @@ export function useSheetValues(): SheetValues {
 
 const NO_PROBLEMS: Readonly<Record<string, string>> = {}
 const NO_ROWS: RowsByTable = {}
-// Before the form is read nothing draws a sheet; these only fill the shape.
-const NO_VISIBILITY: SheetVisibility = { pages: new Set(), sections: new Set(), widgets: new Set(), fields: new Set(), hidden: new Set() }
+/**
+ * Nothing shown and nothing hidden: the visibility of values not read yet, and of what draws
+ * fields apart from any sheet, the New quote window.
+ */
+export const NO_VISIBILITY: SheetVisibility = { pages: new Set(), sections: new Set(), widgets: new Set(), fields: new Set(), hidden: new Set() }
+// Before the form is read nothing draws a sheet; this only fills the shape.
 const NO_SCHEMA: FormSchema = { tables: [] }
-const NOTHING_LOCKED: ReadonlySet<string> = new Set()
 const TYPE_NOTHING = () => {}
 
 const sameMembers = (a: ReadonlySet<string>, b: ReadonlySet<string>): boolean => a.size === b.size && [...a].every((id) => b.has(id))
@@ -185,7 +188,7 @@ export function useQuoteValues(active = true): SheetValues {
   // As the server counts typing: what the sheets show, the details the app sets and the defaults aside.
   const typed = useMemo(() => !readOnly && form !== null && quoteEligible(form, quote, locked), [readOnly, form, quote, locked])
   const problems = useMemo(() => (typed ? quoteProblems(quoted, rows) : NO_PROBLEMS), [typed, quoted, rows])
-  const basis = useMemo(() => (schema === null ? "" : valuesBasis(schema, visibility.hidden, quote)), [schema, visibility, quote])
+  const basis = useMemo(() => (form === null ? "" : basisOf(form, quote, visibility.hidden)), [form, visibility, quote])
   return useMemo<SheetValues>(
     () => ({ rows, setCell, setRows, price, basis, problems, visibility, quoted, readOnly, locked }),
     [rows, setCell, setRows, price, basis, problems, visibility, quoted, readOnly, locked],
