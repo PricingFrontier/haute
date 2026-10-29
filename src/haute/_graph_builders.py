@@ -308,10 +308,10 @@ def _build_edges(
         for param in edge_params:
             if param in node_names and param != node_info["func_name"]:
                 pair = (param, node_info["func_name"])
-                # A duplicated parameter name (reachable via the regex
-                # fallback, e.g. ``def f(a, a)``) would otherwise emit two
-                # GraphEdges sharing the same id ``e_a_f``. Dedupe here so the
-                # edge id stays unique.
+                # A duplicated parameter name (``ast.parse`` accepts
+                # ``def f(a, a)``; the signature check refuses it later) would
+                # otherwise emit two GraphEdges sharing the same id ``e_a_f``.
+                # Dedupe here so the edge id stays unique.
                 if pair not in explicit_edges and pair not in seen_implicit:
                     seen_implicit.add(pair)
                     edges.append(

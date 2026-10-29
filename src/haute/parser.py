@@ -243,7 +243,7 @@ def parse_pipeline_source_with_name_violations(
         _read_global_constants_bytes: The same override for the global
             constants file the constructor names. Defaults to reading it.
     """
-    # Canonical consumers must never receive a regex-recovered graph.
+    # Invalid syntax is refused: canonical consumers never receive a recovered graph.
     try:
         tree = ast.parse(source)
     except SyntaxError as exc:

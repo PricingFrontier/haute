@@ -1,7 +1,6 @@
 """Parser and codegen hardening contracts for safe generated identifiers.
 
-Two tightly-scoped fixes to ``src/haute/_graph_utils.py`` and
-``src/haute/_ast_helpers.py``:
+Two tightly-scoped fixes, to ``src/haute/_graph_utils.py`` and to codegen:
 
 * **#123 ``_sanitize_func_name`` non-ASCII preservation.**
   Today the sanitiser strips every non-ASCII character, which means
@@ -267,8 +266,3 @@ class TestDuplicateSanitizedNamesRaise:
         message = str(excinfo.value)
         assert label_a in message, f"ParseError does not name {label_a!r}: {message}"
         assert label_b in message, f"ParseError does not name {label_b!r}: {message}"
-
-
-# ---------------------------------------------------------------------------
-# #125 — _extract_function_bodies tree-optional → required
-# ---------------------------------------------------------------------------

@@ -16,7 +16,6 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 | PCFG-R08 | Planned | P3 | Editor-only state travels beside the node config, not inside it. |
 | PCFG-R09 | Planned | P3 | A node type is declared in one place. |
 | PCFG-R12 | Planned | P2 | A save keeps every authored comment, or reports the ones it would drop before it proceeds. |
-| PCFG-R15 | Planned | P3 | The five duplicated mechanisms and the stale comments are gone. |
 | PCFG-R16 | Decision | P3 | The `earlier` step spelling is either dropped or named as the one allowed recogniser of old generated code. |
 | PCFG-R19 | Planned | P3 | The file-to-recovery-graph pass is written once, for a pipeline file and a submodel file alike. |
 | PCFG-R21 | Planned | P1 | A parse/save round trip preserves supported keyword-only bindings or refuses an unsupported signature before losing it. |
@@ -139,8 +138,8 @@ types.
 ### PCFG-R08 — Editor state leaves the node config
 **Why:** Transient editor and runtime state is stored inside the node config:
 in the browser `_columns`, `_nodeId`, `_schemaWarnings`, `_availableColumns`,
-`_instance` and step errors; on the backend `_load_error`, `_steps_error`,
-`_steps_discarded` and `_discarded_sidecar`. It is then stripped again by
+`_instance` and step errors; on the backend `_steps_error`, `_steps_discarded`
+and `_discarded_sidecar`. It is then stripped again by
 exclusion lists in the browser's config hash, the backend cache-field
 classification, the sidecar allowlist and code generation.
 
@@ -213,31 +212,6 @@ pipeline file, so a comment check built beside it covers both.
 `src/haute/_ast_helpers.py::_function_body_source`;
 `src/haute/_ast_helpers.py::unkept_module_statements`.
 
-### PCFG-R15 — Dead branches, dead paths, clones and stale comments
-**Why:** Five mechanisms are written more than once: the
-load-document-at-revision preamble (four times), the single-`df`-assignment check
-(twice), the receiver call-chain walk (five), the module-level constructor scan
-(three) and the preserve-marker scanner (two). Comments and three specifications
-still describe the deleted regex recovery and a codegen that post-edits source, and
-name functions nothing calls.
-
-**Plan:** One helper per duplicated mechanism; align the
-comments and the codegen and expression-parsing specifications with the AST-only
-loader.
-
-**Acceptance:** vulture and the quoted greps show none of the named symbols
-unreferenced; jscpd reports none of the pairs; the specifications name no function
-that does not exist.
-
-**Dependencies:** `ENGQ-R01` owns dead code outside this component; `PCFG-R09` owns
-the per-type branching that remains.
-
-**Evidence:** `src/haute/parser.py`;
-`src/haute/_ast_helpers.py`; `src/haute/_graph_builders.py`;
-`src/haute/_pipeline_repair.py`; `src/haute/_pipeline_repair_actions.py`;
-`src/haute/_code_extraction.py`; `src/haute/_parser_submodels.py`;
-`specs/codegen/low-level.md`; `specs/expression-parsing/high-level.md`.
-
 ### PCFG-R16 — The `earlier` step spelling
 **Why:** The parser recognises the renderer's earlier call spelling so bodies saved
 by an older Haute keep their steps; the canonical-only policy in `specs/README.md`
@@ -274,10 +248,11 @@ the server-api specification.
 **Acceptance:** jscpd reports no clone between the two passes; the recovery tests pass
 unchanged apart from a stated diagnostic order.
 
-**Dependencies:** `PCFG-R15` owns the first pass's clones.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_pipeline_recovery.py::_recover_submodel_snapshot`;
 `src/haute/_pipeline_recovery.py::_load_readable_pipeline_editor_document`.
+
 ### PCFG-R21 — Node signatures retain their configuration bindings
 
 **Why:** The parser retains keyword-only names temporarily but drops defaults and the canonical

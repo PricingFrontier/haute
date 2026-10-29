@@ -74,29 +74,12 @@ from tests.conftest import write_node_config
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
 # ===========================================================================
-# Item #18 — Silent config-path recovery on Windows
+# Item #18 — A missing config fails loudly
 # ===========================================================================
 #
-# Current behaviour: when ``load_node_config``
-# fails with ``FileNotFoundError`` / ``json.JSONDecodeError`` / ``OSError`` /
-# ``ValueError``, the code logs a warning and silently falls back to scanning
-# every config folder for a file named ``{func_name}.json``.  If that scan
-# also fails, it writes an empty config with a ``_load_error`` marker.
-#
-# Problems:
-#   1. A genuinely missing config is masked by the recovery scan — users
-#      never learn the real path is wrong.
-#   2. If the recovery scan finds an unrelated file with the same name in a
-#      different folder, the wrong config is silently loaded for the node.
-#   3. The ``_load_error`` marker is inconsistently respected by downstream
-#      code paths, producing subtle divergence between parse and save.
-#
-# After the fix:
-#   - A missing config raises ``ConfigError`` with the original path and a
-#     remediation hint.
-#   - The recovery scan is either removed outright OR opt-in via an explicit
-#     kwarg (e.g. ``recover_mangled_paths=True``); it is never silent.
-#   - No ``_load_error`` marker is written on disk.
+# A ``config=`` path that does not load raises ``ConfigError`` naming the
+# path, with a remediation hint. Nothing scans the other config folders for
+# a file of the node's name, and nothing stands an empty config in for it.
 # ===========================================================================
 
 

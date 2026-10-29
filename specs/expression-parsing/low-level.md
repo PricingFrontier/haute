@@ -283,11 +283,10 @@ no alias or migration shim; direct test callers use the same current contract.
   scanned for fragments. The strict parser turns its `SyntaxError` into a contextual
   `ParseError`, and editor recovery presents it as a source-only document carrying the located
   syntax error, with no canvas.
-- **Preamble boundaries are alias-aware**: a valid module uses AST statement line spans to stop
-  before an aliased or multiline `Pipeline(...)` construction; neutral syntax recovery parses
-  recoverable import lines independently, including comma-separated names and trailing comments,
-  so both `import haute as <alias>` and `from haute import Pipeline as <alias>` preserve the same
-  user preamble without capturing the constructor.
+- **Preamble boundaries are alias-aware**: AST statement line spans stop the preamble before an
+  aliased or multiline `Pipeline(...)` construction, so both `import haute as <alias>` and
+  `from haute import Pipeline as <alias>` preserve the same user preamble without capturing the
+  constructor.
 - **A pipeline file's submodel imports are generated code**: `is_submodel_import` recognises an
   import from `modules` in any spelling, and preamble extraction leaves out the lines of every
   such statement in a pipeline file, wherever it sits, because codegen rewrites the imports
@@ -391,9 +390,9 @@ no alias or migration shim; direct test callers use the same current contract.
   entries beside the graph instead, for the editor document loader. A folder-backed node with no matching `config=` kwarg raises `ConfigError` through
   `_sidecar_required_error`, consistently with other sidecar configuration failures.
 - **`SyntaxError` from `ast.parse`** at the top of `parse_pipeline_source` is converted into a
-  contextual `ParseError`; strict callers never receive syntax-recovered graph output. The editor
-  recovery service may independently parse a neutral function fragment and represent a broken
-  fragment as an unavailable recovery node with an attributed diagnostic.
+  contextual `ParseError`; strict callers never receive a recovered graph. The editor recovery
+  service presents such a file as a source-only document carrying that error, and a node of a
+  valid file that does not resolve as an unavailable recovery node with an attributed diagnostic.
 - **`parse_expression`/`_parse_expression_impl`**: the *only* deliberate bare `except Exception` in
   the expression parser, converting any internal failure into an `"opaque"` `ParsedExpression`
   carrying the original source text. Documented in the function's docstring as an intentional,
@@ -500,8 +499,6 @@ Tests live under `tests/`, split by concern:
 Strategy is unit + scenario-regression plus the generated single-row differential above.
 Known coverage gaps:
 
-- The neutral syntax-recovery scanner is exercised only against curated malformed-input scenarios, not
-  randomly-generated broken Python source.
 - The property covers documented single-row forms only; malformed calls and not-row-local forms
   are pinned by example, not generated.
 - A multi-row sub-expression inside a formula (a condition comparing with a mean, say) is

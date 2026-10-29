@@ -1504,16 +1504,6 @@ class TestGlobalConstantsFile:
         assert isinstance(constants[0].value, float)
         assert '"value": 1.0' in global_constants_json(constants)
 
-    def test_load_reads_the_file_and_lets_a_missing_file_raise(self, tmp_path: Path) -> None:
-        from haute._config_io import load_global_constants
-
-        path = tmp_path / "global_constants.json"
-        with pytest.raises(FileNotFoundError):
-            load_global_constants(path)
-        path.write_text(self.CANONICAL, encoding="utf-8")
-
-        assert len(load_global_constants(path)) == 5
-
     @pytest.mark.parametrize(
         ("payload", "message"),
         [

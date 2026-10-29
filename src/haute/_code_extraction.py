@@ -488,7 +488,7 @@ def is_declaration_body(body_source: str) -> bool:
 class MatcherResult(NamedTuple):
     """Where the user code starts in a cleaned body.
 
-    ``start_idx`` is the first index in ``cleaned_lines`` that is user
+    ``start_idx`` is the first index of the cleaned lines that is user
     code (everything before it is generated). ``return_vars`` are
     variables whose trailing ``return <var>`` is generated.
     """

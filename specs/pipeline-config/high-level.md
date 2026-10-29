@@ -89,7 +89,7 @@ pipeline file.
 
 **Strict parsing and editor recovery.** `parse_pipeline_file()` and
 `parse_pipeline_source()` are strict canonical entry points: Python syntax, decorator,
-configuration, contract, topology, and submodel failures raise and no regex-recovered graph
+configuration, contract, topology, and submodel failures raise and no recovered graph
 can reach execution, lint, code generation, Save verification, CI, or deploy. Editor loading
 uses a separate recovery entry point and separate models. It first records authored node and
 connection skeletons with source spans, then resolves known nodes independently. An expected

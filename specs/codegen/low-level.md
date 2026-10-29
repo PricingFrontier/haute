@@ -118,7 +118,7 @@
    list, translate parent boundary handles only to declared public port names,
    derive child-boundary parameters from sanitised public input port names and downstream names from sanitised public output port names, and emit one explicit
    `pipeline.submodel(<module>.submodel, name)` registration per occurrence (with `instance_of=owner_name` for copies), with the pipeline's
-   `from modules import ...` (`_submodel_import`) naming every definition's module. Parent `connect` calls refer to aliases
+   `from modules import ...` (`submodel_import_statement`) naming every definition's module. Parent `connect` calls refer to aliases
    plus public port names; synthetic `in__`/`out__` handles never enter source.
    Finally `_assert_emitted_files_parse` validates every emitted file.
 
@@ -470,7 +470,7 @@ empty code.
 | Contract computation hits `OSError` or an `mlflow.*` exception | degraded, with a `contract_emit_offline_on_error` warning, to the offline parse-time contract (`_config_builder.resolve_parse_time_contract`); a Model Score annotation keeps any declared inputs, and the keyword is omitted when nothing the parser cannot derive remains | `codegen._derive_contract_for_codegen` |
 | Contract computation hits `ConfigError` | `ConfigError` (propagated) — except the `MlflowDestinationUnconfigured` marker: a MODEL_SCORE node whose explicit `mlflow_destination` is merely not configured on the authoring machine is environmental, so the annotation degrades to the offline parse-time contract with a warning (the executor resolves the same destination at run time and fails loudly there); every other `MlflowConfigError` (unknown key, rejected SDK mode) still propagates | `codegen._derive_contract_for_codegen` |
 | Contract computation hits a non-infra exception (`TypeError`, `KeyError`, `HauteError` incl. `ContractMismatchError`) | propagated unchanged | `codegen._derive_contract_for_codegen` |
-| `inputs_by_parent` ambiguous key collision | `ParseError` | `codegen._format_contract_source` |
+| `inputs_by_parent` ambiguous key collision | `ParseError` | `codegen._contract_value` |
 | Function names or occurrence aliases equal ignoring case across root graph + submodels (exact duplicates included); a reserved or built-in function name; a reserved input binding | `ParseError` (every violation listed, each naming its nodes and module) | `codegen.check_executable_names` → `_executable_names.executable_name_violations` |
 | Duplicate derived input names among one node's incoming edges | `ParseError` (target node + colliding input name) | `codegen.graph_to_code_multi` (per-edge input-name assembly) |
 | An `apiInput` edge carrying no `source_port`/`sourceHandle` (only reachable via a hand-edited file — the editor cannot create one) | `ParseError` naming the edge and source node | `codegen.graph_to_code_multi` (per-edge input-name assembly) |

@@ -484,15 +484,6 @@ def parse_global_constants(
     return constants
 
 
-def load_global_constants(path: Path) -> list[GlobalConstant]:
-    """Read and validate one pipeline's global constants file.
-
-    An ``OSError`` (a missing or unreadable file) propagates to the caller,
-    which decides how a declared file that cannot be read is reported.
-    """
-    return parse_global_constants(path.read_bytes())
-
-
 def global_constants_json(constants: Sequence[GlobalConstant]) -> str:
     """Serialise *constants* as the canonical file, in order, as node configs are written."""
     entries = []

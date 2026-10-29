@@ -303,7 +303,6 @@ production:
 | Server API | SRV-6, SRV-7, SRV-8, SRV-13, SRV-15 | `API-R09` |
 | Server API | SRV-10, SRV-12, SRV-14, SRV-16, SRV-17 | `API-R10` |
 | Pipeline config | PCF-3 | `PCFG-R12` |
-| Pipeline config | PCF-4, PCF-9, PCF-10, PCF-12 | `PCFG-R15` |
 | Pipeline config | PCF-13 | `PCFG-R16` (Decision) |
 | Pipeline config | PCR-8 | `PCFG-R19` |
 | Optimiser | OPR-1, OPR-8, OPR-12 | `OPT-R01` |
@@ -457,8 +456,8 @@ All probes live outside the repository and wrote nothing into it.
 | Tool | Result |
 |---|---|
 | radon | 285 functions with cyclomatic complexity ≥ 20; 27 ≥ 50 (the largest in the optimiser service, the save service, the assistant tools and the RAM estimate). |
-| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `EXEC-R17`, `IO-R08`, `ROAD-WORKER-08`, `DEP-R13`, `CLI-R05`, `API-R10`, `PCFG-R15` and `ENGQ-R01`. |
-| jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13`, `EXEC-R17`, `IO-R08`, `ROAD-WORKER-08`, `API-R09` and `PCFG-R15`. |
+| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `EXEC-R17`, `IO-R08`, `ROAD-WORKER-08`, `DEP-R13`, `CLI-R05`, `API-R10` and `ENGQ-R01`. |
+| jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13`, `EXEC-R17`, `IO-R08`, `ROAD-WORKER-08` and `API-R09`. |
 | jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `FNED-R03`, `FNED-R05`, `FMOU-R05`, `EDA-R03` and `FGC-R04`. |
 | knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted; every frontend reviewer found the hits used inside their own module, so they are over-exports under `ENGQ-R01`'s gate, not dead code. |
 | sweeps | 35 campaign-named test modules (`ENGQ-R05`). |
