@@ -7,9 +7,7 @@ RAM estimates, operator measurements at the monthly `10m` scale, and worker
 baselines. Current behaviour and memory-policy decisions are specified in
 [the execution engine](../execution-engine/high-level.md), with dtype and cache
 contracts in [the IO layer](../io-layer/low-level.md) and
-[caching](../caching/low-level.md). The
-[Polars 2 review](polars-2-review-2026-10-17.md) is the dated migration report,
-not the current implementation backlog.
+[caching](../caching/low-level.md).
 
 New capabilities beyond the migration—the `Map` dtype as a column type Haute
 carries, and quantile and rank binning—remain deferred.

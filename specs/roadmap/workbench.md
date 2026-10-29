@@ -14,10 +14,7 @@ the app saves quotes to on the server; how underwriters manage their quotes in t
 exports from the app; test quotes analysts keep and price again; and the actions
 that fill the sheets from databases and APIs.
 
-`WB-25` takes on what is left of the [review of 15 October
-2026](workbench-review-2026-10-15.md) of what pull requests #303 to #309 built: the app's
-sign-in, which waits on the Azure work. It names the review's findings it closes
-(`FB-n`), and the review holds their evidence.
+`WB-25` is the app's sign-in, which waits on the Azure work.
 
 `WB-28` and `WB-29` give the Show when of a sheet, a section, a component and a field
 more to test: other fields, text within text, dates apart and the price. A Table's column
@@ -433,11 +430,8 @@ changed at a time).
 ### WB-25 — The app's sign-in
 **Why:** The app trusts the Easy Auth headers because `release.json` names the host, so a
 container reached without Easy Auth in front signs in whoever names themselves, with edit
-rights when no edit role is set (FB-9, from the
-[review](workbench-review-2026-10-15.md)). The owner takes it up with the Azure work in the
-next pull request. The review's FB-10 is decided as the app works now: the underwriter
-ticks `is_renewal` while quoting (Renew opens the quote with it ticked), and the server
-records the relation, not the column.
+rights when no edit role is set. The owner takes it up with the Azure work in the next pull
+request.
 
 **Plan:** The decision first, recorded here before a slice: a startup check that the
 host's sign-in is in front, or an explicit trust setting the operator sets, refusing the
@@ -448,8 +442,7 @@ misconfiguration either way.
 **Dependencies:** None.
 
 **Evidence:** `src/haute/_workbench_app.py::create_app` (the principal read from the
-headers when the release names its host); `frontend/src/app/useOpenQuoteStore.ts::openNew`
-(`asRenewal`, the browser's tick).
+headers when the release names its host).
 
 ### WB-28 — Other values to test against
 **Why:** A condition tests a column against values typed into the condition. It cannot

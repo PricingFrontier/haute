@@ -6,8 +6,9 @@ use. It looked for defects, inconsistencies, duplicated and dead code,
 over-complicated and fragile solutions, and anything else that could cause
 trouble in production, with particular attention to the deployment and serving
 code. It is a dated supporting report: it records the method, its limits, the
-evidence and the probes, and maps every finding to the roadmap package that
-tracks it. It owns no work; the component roadmaps carry the plans.
+evidence and the probes, and maps every open finding to the roadmap package that
+tracks it; findings whose packages were delivered have been removed. It owns no
+work; the component roadmaps carry the plans.
 
 ## Method
 
@@ -124,6 +125,9 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
+The findings of the thirteen packages delivered or settled since (by 28 October
+2026) have been removed from the sections below; the coverage table keeps the
+original counts.
 
 ## Validation — 25 October 2026
 
@@ -136,37 +140,26 @@ target dependency resolution. The component roadmaps now carry the resulting pla
 |---|---|
 | `EXEC-R17` | Keep same-size/same-mtime utility freshness and support deferred imports while scoping `sys.path`; bytecode invalidation is a correctness defence. |
 | `EXEC-R13` | Measure actual RSS at a readiness handshake; native VMS, private-commit and cgroup baselines are different accounting. Preserve startup supervision. |
-| `MOD-R01` | Enforce fitted, term-typed categorical domains and an explicit null policy at the shared loaded-model/scorer boundary, including after serialisation. |
 | `PCFG-R18` | Normalise syntactic whitespace using token boundaries; preserve indentation and multiline literal contents. |
 | `FSH-R07`, `API-R08`, `FSH-R05` | Recover a save only from complete canonical saved-content equality, retain newer dirty edits, and distinguish intended other-tab broadcasts from watcher duplicates and self-echoes. |
-| `DEP-R05` | Separate container inference from MLflow's public signature enforcement; reuse checked input rules with lossless conversions and explicit typed-null behaviour. |
 | `DEP-R11` | Check every response batch before positional pairing; require explicit first-deploy intent or authoritative absence, never infer absence from an outage. |
-| `DEP-R06`, `DEP-R09`, `BUG-40` | Resolve and verify dependency locks for each target Python/platform and extras. pandas is already declared but must be pinned in the pyfunc runtime. |
-| `JSON-R01` | Use persisted array paths for XML singleton normalisation and path-specific inference; the streaming build has no separate validation census. |
-| `WB-10` | Absorb the duplicate server-engine concurrency work from `WB-34`; shipped SQLite already has atomic insert-if-absent. Require a real selected-engine concurrency test and correct transaction recovery. |
+| `DEP-R09`, `BUG-40` | Resolve and verify dependency locks for each target Python/platform and extras. |
+| `WB-10` | Shipped SQLite already has atomic insert-if-absent. Require a real selected-engine concurrency test and correct transaction recovery. |
 | `JSON-R02` | Keep the throughput issue and remove the whole-file delay claim: decoded records are yielded incrementally. |
 | `GIT-R02` | Preserve configured SSH commands and Git precedence; use process-level noninteractive execution, deadlines and transport cleanup. Appended OpenSSH options do not reliably override earlier ones. |
 
-`DEP-R08` is P1 because the registry maximum can select another job's model and change
-prices. The build-directory work is split into `DEP-R12A` (P2, isolated owned bundles
+The build-directory work is split into `DEP-R12A` (P2, isolated owned bundles
 and cleanup) and `DEP-R12B` (P3, project-scoped schema caching). Unnamed stale artifacts
 are an isolation/disclosure concern; the loader reads manifest-named artifacts.
 Concurrent builds can interfere with named artifacts, so reassess the isolation
 priority if shared-checkout concurrency is an advertised deployment workflow.
 
-After validation the owner decided that an unseen categorical value is never refused
-or reported: each library scores it through its own mechanism, as the modelling
-specification's "Unseen categorical values" states, and contracts carry no category
-lists. That replaces the fitted-domain enforcement and null policy the table above
-planned.
-
-The roadmap chooses complete canonical content comparison for save recovery, retains
-MLflow's public signature and typed-null input behaviour, uses explicit CLI intent for
-an HTTP first deployment, and excludes the saving socket while retaining fingerprint
-guards. XML normalisation belongs at the schema-aware record-to-shred boundary. These
-are planned rules to specify and test in the component specifications before code
-changes. WB-10's server-engine choice remains with the project's IT team; the audit
-does not choose one or present its generic branch as a current SQLite release defect.
+The roadmap chooses complete canonical content comparison for save recovery, uses
+explicit CLI intent for an HTTP first deployment, and excludes the saving socket while
+retaining fingerprint guards. These are planned rules to specify and test in the
+component specifications before code changes. WB-10's server-engine choice remains
+with the project's IT team; the audit does not choose one or present its generic
+branch as a current SQLite release defect.
 
 The follow-up plan review also required the dependency gate to preserve the existing
 minimal scoring container. DEP-R09 verifies the selected runtime closure with explicit
@@ -174,14 +167,11 @@ accounting for Haute's intentionally omitted non-scoring requirements; it does n
 require installing the editor/training stacks merely to pass an unrestricted metadata
 check. The full pyfunc and hosted-app profiles keep their full dependency checks.
 
-Root validation probes reproduced stale glob signatures after a file rewrite, dropped
-declared child rows, XML singleton/list disagreement, literal-select row multiplication,
-malformed test-quote configuration disabling the gate, mismatched impact-row acceptance,
-same-line return extraction loss, stale utility bytecode, lossy strict float-to-int
-casting and multiline-string changes from line trimming. A public MLflow probe confirmed
-signature enforcement before the model adapter. The SSH option probe used `ssh -G`
-without a network connection. These probes support the named cases, not every subclaim
-in every package.
+Root validation probes reproduced literal-select row multiplication, malformed
+test-quote configuration disabling the gate, mismatched impact-row acceptance,
+same-line return extraction loss, stale utility bytecode and multiline-string changes
+from line trimming. The SSH option probe used `ssh -G` without a network connection.
+These probes support the named cases, not every subclaim in every package.
 
 No cloud deployment or full backend/frontend suite was run for validation. Linux
 memory backends, server-database concurrency and unexecuted browser behaviour remain
@@ -191,36 +181,11 @@ unconfirmed-reachability qualification. Maintenance packages and product decisio
 are not automatically first-release blockers. Release priority is assessed per
 package, independently of the original finding count.
 
-## The Criticals and the Majors
+## The open Majors
 
-- **A glob or folder Data Input is invisible to the freshness proofs** (Critical,
-  `IO-R03`). `source_signature` answers `"missing"` for a path that is not one
-  file and the runtime fingerprint answers `{"exists": False}`, so the snapshot's
-  signature and the live one are always equal and the snapshot is fresh forever.
-  Reproduced: three rows summing to 60, one file rewritten, the live scan gives
-  2028 while the snapshot stays fresh. A parquet glob also cannot be deployed
-  (it is "direct", then refused as absent) while a CSV glob's stale snapshot is
-  bundled.
-- **A value that is not a list at a declared array key yields no child rows, no
-  skip count and no error** (Critical, `JSON-R01`; reproduced in the build walk
-  and in the deployed request path). XML's singleton rule makes it routine: a
-  quote with one `<driver>` loses its driver row while a quote with two keeps
-  both, and the inferred schema for such a file fails its own build.
-- **A container's served flat Quote Input is typed by inference, not by the manifest**
-  (Major, `DEP-R05`): `30` and `30.0` give different dtypes, a `null` gives a
-  Null column, so a cast, a Banding level or a categorical feature can differ
-  from the dry run. The public MLflow path enforces its logged signature first;
-  equivalent unchecked inference there was not established by validation.
-- **The Databricks model's environment pins three distributions** (Major,
-  `DEP-R06`): the model engines resolve at Model Serving build time, which the
-  container path refuses for exactly this reason.
-- **Most MLflow-sourced models deploy without their training contract** (Major,
-  `DEP-R07`): the bundler looks only for a bare contract file beside the
-  download; the served scorer runs unchecked while the editor binds the run's
-  contract.
-- **A concurrent registration can select another job's model** (`DEP-R08`, now P1):
-  the deploy searches for the maximum registered version instead of using the version
-  returned by its own `log_model` call.
+Both Criticals, and the Majors whose packages were delivered, have been removed;
+these are the Majors still open.
+
 - **`haute init --force` overwrites the analyst's pipeline, utility code, tests
   and form** (Major, `CLI-R01`), and a first `init` deletes a root `main.py` it
   did not write.
@@ -266,14 +231,6 @@ package, independently of the original finding count.
 - **The optimiser's MLflow log writes the complete result artifact without the
   finiteness gate the save applies** (Major, `OPT-R01`): a missing defence layer
   on a pricing artifact, since the status poll corrects the UI path.
-- **A GLM prices an unseen or null categorical level as the reference level**
-  (Major, `MOD-R01`; reproduced): the GLM contract records no fitted levels and
-  the scorer knows no GLM categoricals, so a new region code or a typo at
-  scoring time is a silently base-level price. The package is P1.
-- **Cancelling a dispersion estimate during preparation cancels nothing**
-  (Major, `MOD-R02`): the token is registered after preparation, so the job
-  reads `cancelled` and frees the running slot while the preparation child
-  keeps running under the job's budget.
 - **A trace's input sources name the nearest step in declaration order, not
   the node whose value the row carries** (Major, `TRACE-R01`; reproduced): on a
   join with a shared non-key column the join side is shown as the source of a
@@ -281,10 +238,6 @@ package, independently of the original finding count.
 - **`.over(` anywhere in a node's code types every column of the node as a
   window** (Major, `TRACE-R02`; reproduced): `y = a * 2` is shown as "rank of x
   over g" with the right value.
-- **Move, Catch up and Spin off a copy delete the project's `outputs/` folder**
-  (Major, `GIT-R01`, a decision): the specification lists it among the wiped
-  caches, but it is the documented local folder of analyst results, which git
-  cannot restore.
 - **The assistant's SDK clients are built without the validated endpoint**
   (Major, `ASSIST-54`): `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` in the
   server's environment redirects the key, the prompt and project material to a
@@ -306,9 +259,6 @@ package, independently of the original finding count.
   `FNED-R04`): the save validator accepts a blank band name, a blank categorical
   value or a repeated value, the sidecar writer refuses them, and the writer's
   error has no HTTP handler.
-- **The Train pane's VRAM figure is rescaled from the wrong row basis, the Lift
-  tab's Gini is recomputed in the browser, and the Gamma GLM family writes the
-  wrong default metric** (three Majors, `FMOU-R01`, `FMOU-R02`).
 - **Saving the pipeline cancels an auto-range run in flight, and a percentage
   constraint is shown as "at least 0" and rewritten as an absolute bound on
   edit** (two Majors, `FMOU-R04`).
@@ -323,11 +273,10 @@ package, independently of the original finding count.
 
 ## Design choices the review asks the owner to confirm
 
-Four behaviours are specified and implemented as specified, and the review
+Three behaviours are specified and implemented as specified, and the review
 still puts them in front of the owner because of what they can cost in
 production:
 
-- A move, catch-up or spin-off wipes `outputs/` (`GIT-R01`).
 - The assistant's dry run executes model-produced Python in the server process
   (the planned preamble, free-code steps and node bodies are compiled and run
   for their schemas, and a planned Load File's pickle is deserialised) before
@@ -342,10 +291,6 @@ production:
 
 | Area | Findings | Package |
 |---|---|---|
-| Deploy | PM-13, PM-14, PM-26 | `DEP-R05` |
-| Deploy | PM-22 | `DEP-R06` |
-| Deploy | PM-12 | `DEP-R07` |
-| Deploy | PM-23, PM-24, PM-28 | `DEP-R08` |
 | Deploy | PM-16 | `DEP-R09` |
 | Deploy | PM-1, PM-2, PM-5 | `DEP-R10` |
 | Deploy | PM-37, PM-38 | `DEP-R11` |
@@ -369,7 +314,6 @@ production:
 | Execution engine | STA-4, STA-5, STA-8 | `EXEC-R15` |
 | Execution engine | EXE-3 | `EXEC-R16` (Decision) |
 | Execution engine | EXE-4, EXE-5, EXE-6, EXE-7, EXE-8, EXE-9, EXE-15, STA-6, STA-7, the preamble `sys.path` edit | `EXEC-R17` |
-| IO layer | CIO-1 | `IO-R03` |
 | IO layer | CIO-2, CIO-3 | `IO-R04` |
 | IO layer | CIO-4 | `IO-R05` |
 | IO layer | CIO-5, CIO-11 | `IO-R06` |
@@ -399,19 +343,14 @@ production:
 | Optimiser | OPR-4, OPR-5, OPR-6, OPR-7 | `OPT-R03` |
 | Optimiser | OPR-2 | `OPT-R04` (Decision) |
 | Optimiser | OPR-9, OPR-10, OPR-11 | `OPT-R05` |
-| Modelling | MDL-1 | `MOD-R01` |
-| Modelling | MDL-14, MDL-15, MDL-19 | `MOD-R02` |
 | Modelling | MDL-24 | `MOD-R03` |
-| Modelling | MDL-4, MDL-5, MDL-6, MDL-17, MDL-25 | `MOD-R04` |
 | Modelling | MDL-3, MDL-9, MDL-11, MDL-16, MDL-20, MDL-21 | `MOD-R05` |
 | Modelling | MDL-2, MDL-18, MDL-22 | `MOD-R06` |
-| Model scoring | MDL-12, MDL-23 | `MSC-08` |
 | Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
 | Tracing | TRC-1 | `TRACE-R01` |
 | Tracing | TRC-2, TRC-3, TRC-4 | `TRACE-R02` |
 | Tracing | TRC-8, TRC-9, TRC-10, TRC-14 | `TRACE-R03` |
 | Tracing | TRC-5, TRC-6, TRC-7, TRC-11, TRC-12, TRC-13 | `TRACE-R04` |
-| Git integration | GIT-1 | `GIT-R01` (Decision) |
 | Git integration | GIT-3, GIT-4, GIT-5, GIT-8, GIT-9 | `GIT-R02` |
 | Git integration | GIT-6, GIT-7 | `GIT-R03` |
 | Git integration | GIT-2 | `GIT-R04` |
@@ -425,7 +364,6 @@ production:
 | Assistant | ASB-1, ASB-2, ASB-10, ASB-12 | `ASSIST-57` |
 | Assistant | ASB-4, ASB-5, ASB-6, ASB-8, ASB-9 | `ASSIST-58` |
 | Assistant | ASB-3, ASB-7, ASB-11 | `ASSIST-59` |
-| JSON shredding | JSN-1, JSN-3 | `JSON-R01` |
 | JSON shredding | JSN-2 | `JSON-R02` |
 | JSON shredding | JSN-4, JSN-5, JSN-8, JSN-9 | `JSON-R03` |
 | JSON shredding | JSN-6, JSN-7 | `JSON-R04` |
@@ -445,8 +383,6 @@ production:
 | Frontend shared | FSB-7, FSB-8, FSB-11 | `FSH-R09` |
 | Frontend node editors | FNB-1, FNB-2, FNB-3, FNB-5, FNB-13 | `FNED-R04` |
 | Frontend node editors | FNB-4, FNB-6, FNB-7, FNB-8, FNB-9, FNB-10, FNB-11, FNB-12, FNB-14, FNB-15 | `FNED-R05` |
-| Frontend modelling | FMD-1, FMD-2, FMD-4, FMD-5, FMD-12 | `FMOU-R01` |
-| Frontend modelling | FMD-3, FMD-6 | `FMOU-R02` |
 | Frontend modelling | FMD-7, FMD-8, FMD-9, FMD-10, FMD-11, FMD-13, FMD-14, FMD-15 | `FMOU-R03` |
 | Frontend optimiser | FOX-1, FOX-2, FOX-3 | `FMOU-R04` |
 | Frontend optimiser | FOX-4, FOX-5, FOX-6, FOX-8, FOX-10 (optimiser part) | `FMOU-R05` |
@@ -494,9 +430,7 @@ validators and branches (`PCFG-R07`, `PCFG-R09`); name-violation reporting
 files (`BUG-19`); the test-only config helpers and event-bus hooks (`ENGQ-R01`);
 the optimiser's unshown solve-memory forecast (`OPT-W02`) and its frontier
 points without convergence traces (`OPT-PC04`); the optimiser's job registries
-not cancelled at shutdown (`ROAD-WORKER-06`); MLflow-sourced models scored
-without their training contract in the preview, batch and trace paths as well
-as in deploy (`DEP-R07`, whose plan already names the editor); the test-only
+not cancelled at shutdown (`ROAD-WORKER-06`); the test-only
 `_compute_schema_hash` and the training facade (`ENGQ-R01`); the cost of the
 training test modules (`ENGQ-CI03`); fits that exceed their budget
 (`MOD-M01`, `MOD-M02`); the trace route's status by message prefix and its
@@ -518,8 +452,7 @@ list (`PCFG-R08`), the results store's optimiser logic (`FSH-R03`) and the dead
 (`ENGQ-R01`); the editors' unused barrel and unlisted `@lezer/highlight`
 (`ENGQ-R01`), Banding's `_prevRules` stash (`PCFG-R08`), the path-grammar
 mirrors, which agree construct for construct (`JSON-R04`), the Edge Join
-editor's `coalesce` (`JSON-R03`), the API Input label rule (`NAME-09`) and the
-contract path no editor sets (`DEP-R07`, `MSC-08`); the dead
+editor's `coalesce` (`JSON-R03`) and the API Input label rule (`NAME-09`); the dead
 `submodelGraphFromMetadata` and two dead duplicate exports in the hooks and
 utilities (`ENGQ-R01`), and the sheet-visibility fault on an output condition
 (`WB-29`); Banding's `_id` and the step error string inside the config
@@ -530,10 +463,9 @@ tuned-refit wording and the t-boost starters (`BUG-28`, `BUG-29`, `BUG-30`), and
 a second fabricated train-failure sentinel (`FSH-R06`); the browser's frontier
 generation fences that only ever see generation 0 (`OPT-R04`), the optimiser
 panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`) and
-`applyFrontierPointSummary`'s null handling (`FSH-R03`); the move dialog not
-naming `outputs/` (`GIT-R01`), typed branch names unvalidated in the UI
-(`GIT-R02`), the delete dialog's confirm flag (`GIT-R03`) and the trace route's
-409 keyed on its code (`API-R06`); in the workbench UI and the app shell, the
+`applyFrontierPointSummary`'s null handling (`FSH-R03`); typed branch names
+unvalidated in the UI (`GIT-R02`), the delete dialog's confirm flag (`GIT-R03`)
+and the trace route's 409 keyed on its code (`API-R06`); in the workbench UI and the app shell, the
 chart theme observer written twice (`EDA-R03`), the params-folder listing in the
 Allowed field (`FNED-R05`), knip's export-only symbols (`ENGQ-R01`), the fault on
 an output-table condition (`WB-29`), the browser's 90 s pricing timeout past the
@@ -550,13 +482,6 @@ generated scaffold workflows (`BUG-21`, `BUG-24`, `BUG-26`).
 
 ## Verdicts that changed or stayed open
 
-- **PM-13 downgraded from Major to Minor.** The generated `app.py` admits an
-  execution context before framing the request and never releases it when
-  `pl.DataFrame(rows)` raises. A probe held 199 unreleased admissions and every
-  further admission was still granted, so the leak is hygiene (contexts,
-  telemetry), not a denial of service.
-- **CIO-1 kept Critical** after the main session reproduced it independently of
-  the reviewer's probe.
 - **STA-1 rated Major in the ledger, P1 as a package.** The shape is narrow (a
   `select` that reads no input column) but the consequence is a cached
   generation with the wrong row count, read as fresh.
@@ -566,18 +491,9 @@ generated scaffold workflows (`BUG-21`, `BUG-24`, `BUG-26`).
 - **PCR-1 rated Major in the ledger, P1 as a package.** The trigger is a
   hand-written one-line body, but the loss of authored code is silent and the
   next save makes it permanent.
-- **MDL-1 rated Major in the ledger, P1 as a package.** The reviewer rated it
-  Major because it needs a value absent from training and the low-level
-  specification deliberately keeps declared domains apart from observed values;
-  the package is P1 because the result is a silently wrong price for a routine
-  production event.
 - **EXE-11 kept Minor, reachability unconfirmed.** The positional binding after
   a dropped name is real; whether the canvas or codegen can emit a request-input
   edge with a null handle was not shown.
-- **A workbench question closed as sound.** The workbench reviewer asked whether
-  the app's price route returns Int64 values beyond 2^53 as JSON numbers, which
-  the browser would round; `to_json_safe` returns such integers as strings, so
-  the browser's exact whole-number handling holds end to end.
 - **WRK-1 proportion noted.** The 51 MiB gap is a fifth of a 256 MiB budget and
   a small fraction of a multi-GiB one; the package is P2.
 
@@ -587,11 +503,9 @@ All probes live outside the repository and wrote nothing into it.
 
 | Probe | What it showed |
 |---|---|
-| glob freshness reproduction | A parquet glob Data Input validates and scans (3 rows, sum 60); after one file is rewritten the scan gives 2028 while the signature stays `"missing"` and the status `fresh`. |
 | fan-out cache peak | Display walk with the fan-out cache: 610 MB peak; without: 329–365 MB; with Polars CSE off: 318–340 MB; identical results. |
 | column-free select | `classify_chunk_local_polars_code` accepts `source.select(pl.lit(1).alias("one"))`; native height 1, input-sliced write under three parts: height 3. |
 | estimate widths | Widened graph estimate 48,000 bytes, equal to the plain graph; actual widened input 4,016,000 bytes. |
-| admission leak | 199 unreleased deploy admissions, every one granted. |
 | watchdog baseline | Parent sample 2,154,496 bytes straight after start; child RSS after importing Polars and two haute modules 55,517,184 bytes. |
 | shutdown join | Main thread exits at 2.0 s with a 6 s child in flight; the process exits at 7.57 s (8 s child: 9.48 s). |
 | pool replacement | Worker pid changes after a child `ValueError`; after one forced start failure, two further requests on the slot fail with "its replacement did not start". |
@@ -602,8 +516,6 @@ All probes live outside the repository and wrote nothing into it.
 | dropped comments | Five comment kinds (a section, decorator-to-`def`, trailing, between functions, on `connect`) are absent after parse → `graph_to_code`; `unkept_module_statements` reports none. |
 | inline keywords | `@pipeline.constant(config=..., values=[...], colour="red")` parses to the sidecar's values with no warning; the regenerated decorator keeps only `config=`. |
 | corrupt parquet scan | `pl.scan_parquet` on a corrupt file returns a lazy frame; `collect_schema()` raises `ComputeError` (Polars 2.0.0). |
-| GLM unseen level | A Poisson GLM on levels A, B, C (RustyStats 0.9) predicts A, B, C, D, Z as 1.133071, 2.475292, 0.634106, 1.133071, 1.133071 and a null as 1.133071. |
-| Tweedie power | XGBoost trains `reg:tweedie` with `tweedie_variance_power=None` at 1.5; LightGBM trains with the `None` kept and its default applied. |
 | evaluation plan size | 2,000,000 rows, five folds: a 71 MB plan; the parent's reload takes 13.3 s with a 0.65 GB peak. |
 | same-line return | `extract_user_code("df = quotes.head(1); return df")` returns `''` for the Polars and hook kinds; `"a = 1\ndf = quotes.head(a); return df"` returns `'a = 1'`. |
 | reformat discards steps | A free-code step whose comment carries trailing spaces survives two saves; `ruff format` of the file then logs `polars_steps_discarded`. |
@@ -613,16 +525,12 @@ All probes live outside the repository and wrote nothing into it.
 | typed branch names | Seven names git refuses (`my branch`, `feat..x`, `feat.lock`, `.hidden`, `a//b`, `trail/`, `x@{1}`) pass `_validate_ref_name` and fail in `set_working_branch` with a plain `GitError`. |
 | argv limit | `git rev-parse` with 800 forty-character SHAs fails on Windows with `WinError 206` at 32,814 characters; 500 succeed. |
 | manifest timing | Five warm `capability_manifest()` calls: 47.3, 47.5, 48.6, 47.2, 47.2 ms, the same object each time. |
-| shred shape mismatch | Records with an object and a scalar at a declared `drivers[:]` key give two driver rows for four quotes and empty skip statistics; `shred_request` answers without raising; an XML quote with one `<driver>` loses it while a quote with two keeps both. |
 | root-array tokeniser | 167,103 records (41.9 MB): JSONL 0.18 s, root JSON array 7.60 s, `orjson.loads` of the whole file 0.66 s. |
 | date guessing | `['15/01/2024']` builds a `Date` series as 15 January and `['01/02/2024']` as 1 February; an ISO timestamp is refused. |
 | tz-aware pivot member | A member `2020-06-01T10:00:00+01:00` restored to an aware `datetime` compares against a `Datetime('μs', 'Europe/London')` column with `SchemaError`; a UTC column and a nanosecond column each match their row. |
 | client paths | Every `/api/...` literal in `frontend/src/api/*.ts` has a server route with the same method and body fields; eight server routes have no browser caller. |
 | formatter boundaries | `formatNumber(999999)` is "1000.0K", `formatBytes(1048575)` is "1024.0 KB"; `(1234.5).toLocaleString("de-DE")` is "1.234,5"; `Date.UTC(99, 0, 1)` reads as 1999. |
 | banding validator versus writer | A breakpoint rule with a blank label beside a valid rule passes `validate_banding_config` and `compact_banding_config_for_sidecar` raises `ConfigSettingError` ("breakpoint rule '40' requires label"), a `HauteValidationError` with no HTTP handler. |
-| browser Gini | The browser's trapezoid Gini over the 200-point downsampled Lorenz curve differs from the server's tie-aggregated Gini by about 1.2e-4 at n = 2,000, 20,000 and 200,000. |
-| percent display | `0.29 * 100` is `28.999999999999996`; 0.07, 0.14, 0.57 and 0.58 likewise; 0.20, 0.25 and 0.30 are exact. |
-| price-contour column order | `solve`, `apply_from_grid` and the quote-results schema emit `optimal_<c>` in config order; `ApplyOptimiser.apply` in sorted order, so both haute schemas match their own library path (no finding). |
 
 ## Mechanical metrics
 

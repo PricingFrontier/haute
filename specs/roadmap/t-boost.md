@@ -38,7 +38,7 @@ above what the consumer supports) is refused by name, never approximated.
 | TBOOST-06 | Decision | P3 | Each table's validation value is measured by removing it, so analysts can simplify the model with evidence. |
 | TBOOST-07 | Decision | P3 | Relativities are compared across validation folds and time windows to show which cells are stable. |
 | TBOOST-08 | Decision | P3 | The rating tables download as a workbook, rebased to the analyst's chosen base levels. |
-| TBOOST-09 | Decision | P3 | Training and scoring report how much exposure falls in cells, or carries categorical values, the model never saw in training. |
+| TBOOST-09 | Decision | P3 | Training and scoring report how much exposure falls in cells the model never saw in training. |
 | TBOOST-10 | Decision | P3 | t-boost's surviving interactions are offered as GLM interaction candidates beside the GLM's own relativities. |
 
 ## Planned improvements
