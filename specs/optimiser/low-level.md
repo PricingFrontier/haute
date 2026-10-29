@@ -48,7 +48,13 @@ in `optimiser.py`). Instance state:
   coordinator that rejects (409) overlap between solve setup and background auto-range setup.
   Worker runners hold its registration through a scoped `finally` release together with `_jobs`,
   so normal, exceptional, cancelled, and thread-start-failure paths cannot release only half of
-  the coordination state.
+  the coordination state. That release comes after the job's terminal transition, because the
+  runner still records its execution metrics and returns its admission. Before its conflict
+  check, each start therefore calls `_wait_out_finished_setup_owner`: an owner whose job has
+  already ended is given up to `_FINISHED_OWNER_EXIT_SECONDS` (5 s) to free the key through
+  `SingleFlightCoordinator.wait_released`. A caller that saw `completed` and starts the next
+  job at once is then not refused by a job that is over. A running owner is not waited for, and
+  an owner still holding the key when the wait ends gets the 409 as before.
 
 ### `SolveContext` (`src/haute/routes/_optimiser_solver.py`, frozen dataclass)
 
@@ -272,7 +278,8 @@ in `src/haute/routes/_optimiser_service.py`, which:
 2. Computes the ratebook factor-level display order up front
    (`_compute_ratebook_factor_level_order`; `{}` for online) and the required-column projection
    seed (`_optimiser_solve_required_columns_by_node`).
-3. Under `_start_lock`: rejects (409) if another blocking solve is already `running`
+3. After waiting out a finished graph/node owner (`_wait_out_finished_setup_owner`), under
+   `_start_lock`: rejects (409) if another blocking solve is already `running`
    (`_check_no_concurrent_jobs`) or if this exact graph+node already has an active setup/solve/
    auto-range job (`_active_graph_node_setup`); otherwise creates the job (`status: "running"`),
    registers a fresh `ExecutionCancellationToken` once in `_jobs` and acquires the graph/node
@@ -521,7 +528,8 @@ which validates config/mode (a 400 before any job exists), resolves `timeout`
 column demand once (`_optimiser_solve_required_columns_by_node`); the job and its worker take
 these as arguments and never recompute them.
 
-- `start_frontier_auto_range` — **background**: under `_start_lock`, idempotently
+- `start_frontier_auto_range` — **background**: after waiting out a finished graph/node owner
+  as `start()` does, under `_start_lock`, idempotently
   returns the existing job id if an auto-range job with the same graph fingerprint and node id is
   already running (unlike
   `start()`'s stricter conflict behaviour), otherwise creates a cancellable job, registers it,

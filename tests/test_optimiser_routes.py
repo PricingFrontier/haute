@@ -2442,6 +2442,82 @@ class TestEstimateRoute:
         assert solve_job["status"] == "running"
         assert len(store.list_jobs()) == 1
 
+    @staticmethod
+    def _auto_range_that_finishes(service, *, exit_after: float | None):
+        """A launcher whose worker publishes ``completed``, then frees the graph/node late.
+
+        Like the real worker, it still holds the graph/node after the terminal
+        transition (the real one records its metrics and returns its admission
+        first). It exits *exit_after* seconds later, or with ``None`` once the
+        returned ``exit_now`` is set.
+        """
+        finished = threading.Event()
+        exit_now = threading.Event()
+
+        def launch(body, job_id, *, setup_singleflight_key, **_kwargs):
+            def worker() -> None:
+                with service._job_ownership_scope(
+                    job_id, setup_singleflight_key=setup_singleflight_key
+                ):
+                    service._lifecycle.transition(job_id, to="completed", message="Completed")
+                    finished.set()
+                    exit_now.wait(exit_after)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        return launch, finished, exit_now
+
+    def test_solve_started_as_auto_range_completes_waits_for_its_worker_to_exit(self, scored_data):
+        """A caller that saw ``completed`` can start the next setup on that graph/node."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest, OptimiserSolveRequest
+
+        graph = _make_optimiser_graph(scored_data)
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        launch, finished, _exit_now = self._auto_range_that_finishes(service, exit_after=0.2)
+
+        with patch.object(service, "_launch_frontier_auto_range_background", launch):
+            auto_started = service.start_frontier_auto_range(
+                OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+            )
+        assert finished.wait(5)
+        assert store.require_job(auto_started.job_id)["status"] == "completed"
+
+        with patch.object(service, "_launch_setup_background", return_value=None):
+            solve_started = service.start(OptimiserSolveRequest(graph=graph, node_id="opt"))
+
+        assert store.require_job(solve_started.job_id)["status"] == "running"
+
+    def test_a_finished_owner_that_never_exits_still_conflicts(self, scored_data, monkeypatch):
+        """The wait for a finished owner is bounded; a worker that never exits keeps its 409."""
+        from haute.routes import _optimiser_service
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest, OptimiserSolveRequest
+
+        monkeypatch.setattr(_optimiser_service, "_FINISHED_OWNER_EXIT_SECONDS", 0.05)
+        graph = _make_optimiser_graph(scored_data)
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        launch, finished, exit_now = self._auto_range_that_finishes(service, exit_after=None)
+
+        with patch.object(service, "_launch_frontier_auto_range_background", launch):
+            service.start_frontier_auto_range(
+                OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+            )
+        assert finished.wait(5)
+
+        try:
+            with pytest.raises(HTTPException) as exc_info:
+                service.start(OptimiserSolveRequest(graph=graph, node_id="opt"))
+        finally:
+            exit_now.set()
+
+        assert exc_info.value.status_code == 409
+        assert "already running for this graph/node" in exc_info.value.detail
+
     def test_frontier_auto_range_cancel_marks_job_terminal(
         self,
         scored_data,
