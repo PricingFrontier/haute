@@ -50,7 +50,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/hooks/useSubmodelNavigation.ts` | `handleCreateSubmodel`/`handleDrillIntoSubmodel`/`handleBreadcrumbNavigate`/`handleDissolveSubmodel` — definition/occurrence-aware view-stack state machine, local embedded-definition drill/project, recursive authoritative identity resolution for canonical transform responses, layout, revision-preconditioned transform requests, and one atomic dirty history entry per create/dissolve. |
 | `frontend/src/utils/submodelViewGraph.ts` | Pure projection from one definition plus its occurrence bindings into collision-safe composite Input/Output nodes and definition-port boundary edges. Input rows retain the definition-wide binding slice so history restoration can restore parent connections atomically while active-occurrence external-node presentation remains local. `captureParentOutputState` and `restoreParentOutputState` retain output identities and affected parent consumer configs with output-boundary history. |
 | `frontend/src/utils/submodelDeletionPolicy.ts` | `withNativeDeletePolicy` applies the owner-aware React Flow deletion gate while preserving unchanged node identity. |
-| `frontend/src/utils/submodelRuntimeTarget.ts` | `encodeRuntimeIdPart`, `qualifiedRuntimeNodeId`, `resolveDrilledOccurrenceIdentity`, and `runtimeNodeIdForVisibleNode` validate drilled occurrence identity and derive backend runtime targets. |
+| `frontend/src/utils/submodelRuntimeTarget.ts` | `encodeRuntimeIdPart`, `qualifiedRuntimeNodeId`, `resolveDrilledOccurrenceIdentity`, and `runtimeNodeIdForVisibleNode` validate drilled occurrence identity and derive backend runtime targets. `submodelOutputPreview` resolves an occurrence's selected public output to its authoritative display name, qualified child target, frame and cache key, using `canonicalSubmodelBoundary` and `resolveSubmodelBoundaryNodes`. |
 | `frontend/src/utils/canonicalSubmodelBoundaryEditing.ts` | Pure definition-aware boundary transform. It validates canonical identity, maps the collapsed generic input gesture to an existing or newly allocated named public port, edits structured endpoints and opaque public-port ids, preserves boundary positions and authoritative projected identities, reattaches rebuilt edge identities, restores the definition-wide parent-input slice from history projections, preflights incidental interface changes against every bound occurrence, and gives the explicit Input-inspector removal path one coherent cascade across the public port, internal routes, identity map, and all occurrence bindings. |
 | `frontend/src/utils/submodelBoundaryEditing.ts` | Canonical boundary-edit orchestration that validates occurrence identity and delegates structured definition transforms to `canonicalSubmodelBoundaryEditing.ts`. |
 | `frontend/src/hooks/useSubmodelBoundaryEditing.ts` | Adapts canonical pure boundary transforms to the main-canvas generic submodel input, drilled React Flow connection/deletion events, and explicit Input-inspector port removal; accumulates identity-dependent gestures in one pending candidate, validates exact parent-handle identity coverage, and coordinates the history-aware atomic graph setter, `parentGraphRef`, error toasts, and undo/redo reconciliation. |
@@ -1577,9 +1577,7 @@ again through the editor and save paths.
     `graphRefreshingRef`-guarded deselection skip; node-click panel-open +
     preview fetch (including Optimiser debounce, modelling/explore
     preview, API-input-without-`tables[]` automatic-preview skip,
-    Data Output/output/submodel-port preview skip, a submodel occurrence
-    previewing its first output and another chosen from the frame selector
-    (two outputs of one child by their frames), same-node
+    Data Output/output/submodel-port preview skip, same-node
     re-click skip, rapid distinct
     selections); edge deletion; context menu singleton/submodel flags;
     drag-over/drop node creation from palette metadata.
@@ -1619,6 +1617,15 @@ again through the editor and save paths.
     node; well-formed JSON, the empty-string default, and non-object JSON
     (bare array/string) are each exercised explicitly.
 - **Pipeline API — `frontend/src/hooks/__tests__/`:**
+  - `frontend/src/hooks/__tests__/usePipelineAPI.submodelPreview.test.tsx` — owners
+    and instances preview their first declared output and another selected by output
+    name; two outputs of one child use distinct frames, cache entries and Refresh;
+    re-selection returns to the first output; supersession and output-specific errors;
+    no output makes no request; epoch recalculation, manual staleness, cache pinning
+    and deletion, public-handle schema preservation, and refusal of occurrence
+    recovery previews. `frontend/src/__tests__/App.integration.test.tsx` proves the
+    canvas click opens the output preview and exposes Refresh; the occurrence cases
+    in `frontend/src/hooks/__tests__/useTracing.test.ts` prove qualified target/frame tracing.
   - `frontend/src/hooks/__tests__/usePipelineAPI.test.ts` — initial load (cold-start retry policy,
     unmount abort, AbortError suppression, nullable-metadata tolerance,
     load-failure toast); save (success toast, dirty-during-in-flight-save

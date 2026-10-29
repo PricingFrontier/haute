@@ -53,7 +53,6 @@ const JSON_API_INPUT_SUFFIXES = [".json", ".jsonl", ".ndjson"] as const
 const NON_PREVIEWABLE_CLICK_TYPES = new Set<string>([
   NODE_TYPES.DATA_OUTPUT,
   NODE_TYPES.OUTPUT,
-  NODE_TYPES.SUBMODEL,
   NODE_TYPES.SUBMODEL_PORT,
 ])
 

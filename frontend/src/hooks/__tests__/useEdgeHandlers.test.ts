@@ -1423,7 +1423,6 @@ describe("useEdgeHandlers", () => {
   it.each([
     NODE_TYPES.DATA_OUTPUT,
     NODE_TYPES.OUTPUT,
-    NODE_TYPES.SUBMODEL,
     NODE_TYPES.SUBMODEL_PORT,
   ])("onNodeClick skips automatic preview for non-previewable node type %s", (nodeType) => {
     const params = makeParams()

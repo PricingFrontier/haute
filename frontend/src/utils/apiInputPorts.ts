@@ -242,6 +242,10 @@ type CanonicalSubmodelBoundary = {
   graph: SubmodelGraphLike
 }
 
+type SubmodelBoundaryNode = Pick<SimpleNode, "id"> & {
+  data: Pick<SimpleNode["data"], "nodeType" | "config">
+}
+
 /** Read a graph only from a complete canonical submodel definition. */
 export function submodelGraphFromMetadata(value: unknown): SubmodelGraphLike | undefined {
   if (!isSubmodelDefinition(value)) return undefined
@@ -251,8 +255,8 @@ export function submodelGraphFromMetadata(value: unknown): SubmodelGraphLike | u
   }
 }
 
-function canonicalSubmodelBoundary(
-  boundaryNode: SimpleNode,
+export function canonicalSubmodelBoundary(
+  boundaryNode: SubmodelBoundaryNode,
   submodels: SubmodelsLike,
 ): CanonicalSubmodelBoundary {
   const config = boundaryNode.data.config
@@ -283,7 +287,7 @@ function canonicalSubmodelBoundary(
  * endpoint. Canonical input ports may fan out.
  */
 export function resolveSubmodelBoundaryNodes(
-  boundaryNode: SimpleNode,
+  boundaryNode: SubmodelBoundaryNode,
   handle: string | null | undefined,
   direction: "in" | "out",
   submodels: SubmodelsLike,

@@ -2958,6 +2958,29 @@ describe("App integration - panel open/close", () => {
   })
 
   // A main canvas holding one submodel occurrence beside a plain node.
+  it("clicking a submodel previews its output and offers Refresh", async () => {
+    const occurrence = makeNode("pricing", "pricing", "submodel")
+    occurrence.data.config = { definitionId: "definition_pricing", alias: "pricing" }
+    occurrence.data._sourceHandleInputNames = { out__premium: "premium" }
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [occurrence], edges: [], submodels: { definition_pricing: {
+        definitionId: "definition_pricing", file: "modules/pricing.py",
+        graph: { nodes: [makeNode("rate", "Rate")], edges: [] }, inputPorts: [],
+        outputPorts: [{ name: "premium", source: { nodeId: "rate", handleId: null } }],
+      } },
+    }))
+    vi.mocked(api.previewNode).mockResolvedValue({ node_id: "submodel_runtime/pricing/rate", status: "ok",
+      columns: [{ name: "premium", dtype: "Int64" }], preview: [{ premium: 73 }], row_count: 1, column_count: 1 })
+    render(<App />)
+    await waitForAppReady()
+    fireEvent.click(await screen.findByTestId("rf__node-pricing"))
+    await waitFor(() => expect(api.previewNode).toHaveBeenCalledWith(expect.objectContaining({ nodeId: "submodel_runtime/pricing/rate" })))
+    const refresh = await screen.findByRole("button", { name: "Refresh" })
+    vi.mocked(api.previewNode).mockClear()
+    fireEvent.click(refresh)
+    await waitFor(() => expect(api.previewNode).toHaveBeenCalledWith(expect.objectContaining({ nodeId: "submodel_runtime/pricing/rate" })))
+  })
+
   function loadSubmodelCanvas(capabilities?: { can_mutate: boolean }): void {
     const occurrence = makeNode("pricing", "pricing", "submodel")
     occurrence.data.config = { definitionId: "definition_pricing", alias: "pricing" }

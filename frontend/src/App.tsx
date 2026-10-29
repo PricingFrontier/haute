@@ -279,7 +279,6 @@ function ActiveNodePreviewBody({
 }: Omit<ActiveNodePreviewProps, "run">) {
   const activeNodeType = activeNode ? effectiveNodeType(activeNode) : undefined
   const canRefresh = activeNode
-    && activeNodeType !== NODE_TYPES.SUBMODEL
     && activeNodeType !== NODE_TYPES.SUBMODEL_PORT
     && nodeData(activeNode)._loadAvailability !== "unavailable"
     && nodeData(activeNode)._loadAvailability !== "blocked"

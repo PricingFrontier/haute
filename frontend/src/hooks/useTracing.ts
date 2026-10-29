@@ -15,6 +15,7 @@ import { resolveGraphFromRefs } from "../utils/buildGraph"
 import {
   qualifiedRuntimeNodeId,
   runtimeNodeIdForVisibleNode,
+  submodelOutputPreview,
   type DrilledOccurrenceIdentity,
 } from "../utils/submodelRuntimeTarget"
 import {
@@ -368,6 +369,10 @@ export default function useTracing({
         current.graphSynchronized &&
         current.capabilities?.can_execute === true
     }
+    const output = nodeData(selectedNode).nodeType === NODE_TYPES.SUBMODEL
+      ? submodelOutputPreview(selectedNode, submodelsRef.current, previewFrame)
+      : undefined
+    if (output === null) return
     const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
     const requestId = traceRequestSeq.current + 1
     traceRequestSeq.current = requestId
@@ -400,7 +405,7 @@ export default function useTracing({
     traceCell({
       graph,
       row_index: rowIndex,
-      target_node_id: runtimeNodeIdForVisibleNode(
+      target_node_id: output?.nodeId ?? runtimeNodeIdForVisibleNode(
         nodes,
         selectedNode.id,
         activeSubmodelIdentity,
@@ -409,7 +414,7 @@ export default function useTracing({
       row_limit: rowLimit,
       source: activeSource,
       row_values: rowValues,
-      port_label: previewFrame,
+      port_label: output ? output.portLabel : previewFrame,
       seed_plan: (previewSeedPlan ?? []).map((entry) => ({
         node_id: entry.node_id,
         port_label: null,

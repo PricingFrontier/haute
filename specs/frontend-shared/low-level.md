@@ -201,6 +201,10 @@
   that is exempted from LRU eviction in the four caches trimmed by
   `trimCacheByRecency` and whose pivot entries are likewise exempted by
   `trimExplorePivotCache`.
+  Occurrence output previews use their `PreviewData.cacheKey` as the record key;
+  the data's `nodeId` still names the visible occurrence. Pinning protects that
+  occurrence's most recently touched output, and `clearNode` removes all of its
+  output previews and their recency records.
 - **`SettingsState.mlflow`**: `{status: "pending"|"ready"|"error",
   installed, importable, destinations, detail}` — populated from
   `GET /api/mlflow/destinations?probe=true`

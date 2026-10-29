@@ -1991,7 +1991,6 @@ describe("usePipelineAPI", () => {
   )
 
   it.each([
-    NODE_TYPES.SUBMODEL,
     NODE_TYPES.SUBMODEL_PORT,
   ])("fetchPreview skips backend preview for non-executable placeholder node type %s", async (nodeType) => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
@@ -2040,7 +2039,6 @@ describe("usePipelineAPI", () => {
   })
 
   it.each([
-    NODE_TYPES.SUBMODEL,
     NODE_TYPES.SUBMODEL_PORT,
   ])("refreshPreview skips backend preview for non-executable placeholder node type %s", async (nodeType) => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))

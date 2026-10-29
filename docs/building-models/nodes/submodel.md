@@ -22,6 +22,12 @@ A submodel's panel has no tabs. It shows:
 
 Double-click the node on the canvas to step inside. The input selectors remain editable on an instance; its internal definition is read-only.
 
+## Previewing outputs
+
+Click an owner or instance on the canvas to preview its first declared output. The preview uses that occurrence's inputs and shows the output's name. When it has several outputs, choose another from the preview's frame selector. Outputs from different frames of the same internal node show their respective rows.
+
+**Refresh** re-runs the output currently shown. Each output keeps its own cached preview and shows its own errors. Click a cell to trace that output and frame. A submodel with no public outputs has no preview. The Input and Output boundary nodes inside a submodel do not offer Refresh.
+
 ## Ports
 
 Input ports define what data flows into the submodel from the parent pipeline. An owner's outputs keep their public port names. An instance with one declared output names its frame after the instance, such as `rating_ie`. With several declared outputs, each frame is named `<instance>_<port>`, such as `rating_ie_premium`. Unconnected outputs count too. The card shows these executable names.

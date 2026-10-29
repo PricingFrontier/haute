@@ -49,6 +49,8 @@
 ## Key types and data structures
 
 - `PreviewData` in `frontend/src/panels/DataPreview.tsx` carries status, schema, preview rows,
+  an optional `cacheKey` for a submodel occurrence's individual output (its `nodeId`
+  remains the visible occurrence),
   optional frame schema/selection, execution diagnostics, and the response's `seed_plan`: the
   shared-snapshot generations the rows were computed from, each `seeded` (read instead of
   computing the node) or `captured` (computed and written by this preview). The table combines preview columns

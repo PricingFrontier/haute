@@ -729,7 +729,9 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
   `label=` and enforces the collision gate across occurrence aliases, recovery uses
   the alias only, and graph merge derives node label directly from the alias.
 - `tests/test_submodel_instances.py` — canonical definition and occurrence
-  validation, parse/codegen round trips, public-port expansion, targeted
+  validation; previews addressed by qualified child ids, including `port_label` for
+  two frames of one child, returning each occurrence's bound-input rows without cache
+  collisions; parse/codegen round trips, public-port expansion, targeted
   flattening, shared-definition retention, an instance bound to frames named
   otherwise than its public inputs, an instance's output named after it (each
   output `<instance>_<port>` when its definition declares several, an added

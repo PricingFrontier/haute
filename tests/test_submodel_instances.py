@@ -193,6 +193,45 @@ def test_instance_output_names_include_unconnected_declarations() -> None:
     )
 
 
+@pytest.mark.parametrize("frame", [None, "prices", "checks"])
+def test_preview_qualified_instance_output_uses_its_bound_inputs(frame: str | None) -> None:
+    from fastapi.testclient import TestClient
+
+    from haute.server import app
+
+    graph = _reuse_graph()
+    if frame is not None:
+        assert graph.submodels is not None
+        definition = graph.submodels["definition_scoring"]
+        definition.graph.node_map["finish"].data.config["code"] = (
+            "df = {'prices': scale, 'checks': scale.with_columns((pl.col('x') + 1).alias('x'))}"
+        )
+        definition.output_ports = [
+            SubmodelOutputPort(
+                name="premium", source=SubmodelEndpoint(node_id="finish", handle_id="prices")
+            ),
+            SubmodelOutputPort(
+                name="audit", source=SubmodelEndpoint(node_id="finish", handle_id="checks")
+            ),
+        ]
+        graph.node_map["consumer"].data.config["code"] = (
+            "df = pl.concat([premium, rating_ie_premium, rating_fr_premium])"
+        )
+    client = TestClient(app)
+    for occurrence, value in (("rating_ie", 20), ("rating_fr", 30), ("rating_ie", 20)):
+        response = client.post(
+            "/api/pipeline/preview",
+            json={
+                "graph": graph.model_dump(mode="json", by_alias=True),
+                "node_id": qualified_runtime_node_id(occurrence, "finish"),
+                "port_label": frame,
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "ok", response.text
+        assert response.json()["preview"] == [{"x": value + (frame != "prices")}]
+
+
 @pytest.mark.parametrize("target", [None, "rating_ie"])
 def test_instance_clones_and_their_consumers_keep_input_names(target: str | None) -> None:
     graph = _reuse_graph()

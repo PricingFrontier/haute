@@ -1,6 +1,43 @@
 import type { Node } from "@xyflow/react"
 import { nodeData, type SubmodelPortData } from "../types/node"
 import { NODE_TYPES } from "./nodeTypes"
+import { canonicalSubmodelBoundary, resolveSubmodelBoundaryNodes } from "./apiInputPorts"
+
+export interface SubmodelOutputPreview {
+  nodeId: string
+  portLabel: string | undefined
+  outputName: string
+  outputNames: string[]
+  cacheKey: string
+}
+
+/** Public output identity stays on screen; only its qualified source crosses the API. */
+export function submodelOutputPreview(
+  node: Node,
+  submodels: Record<string, unknown>,
+  chosenOutput?: string,
+): SubmodelOutputPreview | null {
+  const boundary = { id: node.id, data: nodeData(node) }
+  const { definition } = canonicalSubmodelBoundary(boundary, submodels)
+  const outputs = definition.outputPorts.map((port) => {
+    const outputName = nodeData(node)._sourceHandleInputNames?.[`out__${port.name}`]
+    if (typeof outputName !== "string" || !outputName) {
+      throw new Error(`Submodel ${node.id} output ${port.name} has no authoritative identity. Reload the pipeline.`)
+    }
+    return { port, outputName }
+  })
+  if (outputs.length === 0) return null
+  const selected = chosenOutput === undefined ? outputs[0] : outputs.find((output) => output.outputName === chosenOutput)
+  if (!selected) throw new Error(`Submodel ${node.id} has no output ${chosenOutput}. Select a declared output.`)
+  resolveSubmodelBoundaryNodes(boundary, `out__${selected.port.name}`, "out", submodels)
+  return {
+    nodeId: qualifiedRuntimeNodeId(node.id, selected.port.source.nodeId),
+    portLabel: selected.port.source.handleId ?? undefined,
+    outputName: selected.outputName,
+    outputNames: outputs.map((output) => output.outputName),
+    cacheKey: `submodel_output/${encodeRuntimeIdPart(node.id)}/${encodeRuntimeIdPart(selected.port.name)}`,
+  }
+}
 
 export interface DrilledOccurrenceIdentity {
   instanceId: string
