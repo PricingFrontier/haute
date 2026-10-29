@@ -113,17 +113,18 @@ The `registry` value is the address your IT team gave you for where Docker image
 
 ## Step 3: Give smoke and impact their endpoints
 
-The smoke and impact steps call the running staging and production services, so they need their addresses. Once IT runs them, add them to `haute.toml`:
+The smoke and impact steps call the running staging and production services, so they need their addresses. `haute init` writes both into `haute.toml` commented out; once IT runs the services, uncomment them and put in the real addresses:
 
 ```toml
 [ci.staging]
+endpoint_suffix = "-staging"
 endpoint_url = "https://motor-pricing-staging.example.com"
 
 [ci.production]
 endpoint_url = "https://motor-pricing.example.com"
 ```
 
-Without a production address, the impact step reports a first deployment instead of a comparison. The generated smoke and impact steps also pass `--endpoint-suffix "-staging"`, which `haute smoke` and `haute impact` accept only for Databricks, so they fail for this target until you remove that option from those two steps in your workflow file.
+Until the staging address is set, the smoke step stops with "No staging endpoint URL configured". Without a production address, the impact step reports a first deployment instead of a comparison.
 
 ---
 

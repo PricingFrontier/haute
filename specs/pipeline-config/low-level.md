@@ -380,7 +380,13 @@ any root `main.py` before writing `rating/main.py`.
 `[safety]` table names no `impact_dataset`: `haute impact` compares the test quotes until a
 portfolio sample is committed, and a commented example names a Parquet sample under
 tests/impact/, outside the gitignored `data/` (BUG-23: the old
-default named `data/portfolio_sample.parquet`, which CI never sees);
+default named `data/portfolio_sample.parquet`, which CI never sees). A container-based target's
+`haute smoke` and `haute impact` call the services at `[ci.staging]` and `[ci.production]`
+`endpoint_url`, which only IT can supply, so its `haute.toml` holds both commented out, the
+second in a `[ci.production]` table of its own (`_service_addresses`): until they are set,
+smoke stops with "No staging endpoint URL configured". Both commands refuse
+`--endpoint-suffix` for every target but Databricks, so only a Databricks project's generated
+smoke and impact steps pass it (`_verification_suffix_option`); every staging deploy step does;
 `starter_form(name)` renders the blank form `haute init --workbench` writes as the form
 folder's files, path to text, under the pipeline folder's `workbench/`
 ([workbench](../workbench/low-level.md)). `[server].host`, the optional

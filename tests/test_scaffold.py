@@ -1,6 +1,7 @@
 """Tests for haute._scaffold - template generation for ``haute init``."""
 
 import os
+import re
 import subprocess
 import tomllib
 from pathlib import Path
@@ -85,6 +86,20 @@ class TestHauteToml:
         result = haute_toml("motor", "databricks", "github")
         assert "[ci.staging]" in result
         assert 'endpoint_suffix = "-staging"' in result
+        assert "endpoint_url" not in result
+
+    @pytest.mark.parametrize("target", ["container", "azure-container-apps", "aws-ecs", "gcp-run"])
+    def test_a_container_target_writes_its_service_addresses_commented(self, target: str) -> None:
+        """BUG-21: smoke and impact call [ci.staging] and [ci.production] endpoint_url,
+        which only IT can fill in; until then they stop naming the missing address."""
+        result = haute_toml("motor", target, "github")
+
+        assert tomllib.loads(result)["ci"]["production"] == {}
+        assert "endpoint_url" not in tomllib.loads(result)["ci"]["staging"]
+        uncommented = result.replace("# endpoint_url = ", "endpoint_url = ")
+        ci = tomllib.loads(uncommented)["ci"]
+        assert ci["staging"]["endpoint_url"] == "https://motor-staging.example.com"
+        assert ci["production"]["endpoint_url"] == "https://motor.example.com"
 
     def test_azure_container_apps_contains_both_sections(self) -> None:
         result = haute_toml("motor", "azure-container-apps", "github")
@@ -1375,6 +1390,18 @@ class TestCiFiles:
         # The staging deploy, its smoke test and the impact analysis, all on the one suffix.
         assert text.count('--endpoint-suffix "-stg"') == 3
         assert "--endpoint-suffix" not in text.replace('--endpoint-suffix "-stg"', "")
+
+    @pytest.mark.parametrize("ci", ["github", "gitlab", "azure-devops"])
+    def test_container_smoke_and_impact_call_their_addresses_not_a_suffix(self, ci: str) -> None:
+        """BUG-21: both commands refuse --endpoint-suffix for a container target; they
+        read [ci.staging] and [ci.production] endpoint_url instead."""
+        text = "".join(ci_files("container", ci, staging_suffix="-stg").values())
+
+        steps = re.findall(r"uv run haute (smoke|impact)(.*)", text)
+        assert sorted(command for command, _ in steps) == ["impact", "smoke"]
+        assert [arguments for _, arguments in steps] == ["", ""]
+        # The staging deploy alone keeps the project's suffix.
+        assert text.count('--endpoint-suffix "-stg"') == 1
 
     @pytest.mark.parametrize("suffix", ["", "-st ag", '-stg" && curl evil', "-stäg"])
     def test_a_staging_suffix_that_cannot_name_an_endpoint_is_refused(self, suffix: str) -> None:

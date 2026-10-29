@@ -63,11 +63,11 @@ The `deploy-staging` stage runs `haute deploy --endpoint-suffix "-staging"`. On 
 
 ### 5. Smoke test (automatic)
 
-If deploy succeeds, the `smoke-test` stage runs `haute smoke --endpoint-suffix "-staging"` against an existing live staging endpoint. On Databricks the endpoint is already serving when it starts, since the deploy waited for it. On the generic container target it needs [the service addresses, without the suffix option](../targets/docker.md#step-3-give-smoke-and-impact-their-endpoints).
+If deploy succeeds, the `smoke-test` stage runs `haute smoke --endpoint-suffix "-staging"` against an existing live staging endpoint. On Databricks the endpoint is already serving when it starts, since the deploy waited for it. On the generic container target the stage runs `haute smoke`, which calls [the staging address in `haute.toml`](../targets/docker.md#step-3-give-smoke-and-impact-their-endpoints).
 
 ### 6. Impact analysis (automatic)
 
-If smoke succeeds, the `impact-analysis` stage runs `haute impact --endpoint-suffix "-staging"`, comparing existing staging and production endpoints on the [portfolio sample in the repository](../targets/databricks.md#what-each-setting-means), or on your test quotes when no sample is named. The report is saved as a **pipeline artifact** only when this command runs.
+If smoke succeeds, the `impact-analysis` stage runs `haute impact --endpoint-suffix "-staging"` (`haute impact`, at the addresses in `haute.toml`, on the generic container target), comparing existing staging and production endpoints on the [portfolio sample in the repository](../targets/databricks.md#what-each-setting-means), or on your test quotes when no sample is named. The report is saved as a **pipeline artifact** only when this command runs.
 
 ### 7. You review the impact report
 
@@ -219,8 +219,8 @@ Every job installs with `uv sync --frozen`, which needs the project's `uv.lock`:
     |---|---|---|
     | validate (the `lint` job) | `ruff check .`, `mypy .`, `pytest -v`, `haute lint`, `haute deploy --dry-run` | 10 min |
     | deploy-staging | `haute deploy --endpoint-suffix "-staging"` | 15 min |
-    | smoke-test | `haute smoke --endpoint-suffix "-staging"` | 10 min |
-    | impact-analysis | `haute impact --endpoint-suffix "-staging"` | 10 min |
+    | smoke-test | `haute smoke --endpoint-suffix "-staging"` (container: `haute smoke`) | 10 min |
+    | impact-analysis | `haute impact --endpoint-suffix "-staging"` (container: `haute impact`) | 10 min |
     | deploy-production | `haute deploy` + git tag | 15 min |
 
 ---

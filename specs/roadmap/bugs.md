@@ -6,10 +6,10 @@ Defects found outside a component's own roadmap work, kept here until they
 are fixed. `BUG-19`, found on 4 October 2026 while making standalone runs execute
 submodels, extends the check for statements a save would drop from the pipeline file to
 submodel files.
-`BUG-21` and `BUG-24` were found on 5 October 2026 while checking the deployment
-guides against the CI/CD files `haute init` generates: as generated, those files fail before a
-first container release succeeds. The guides give the manual step that works today for each,
-and drop it when the package lands. `BUG-40` and `BUG-42`
+`BUG-24` was found on 5 October 2026 while checking the deployment guides against the CI/CD
+files `haute init` generates: as generated, those files fail before a first container release
+succeeds. The guides give the manual step that works today, and drop it when the package
+lands. `BUG-40` and `BUG-42`
 come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md): the hosted
 Databricks app's boot and build script and the storage binding's unknown keys; `BUG-44` and
 `BUG-45`, from the same review, are the Databricks browsing errors and the non-atomic first
@@ -20,7 +20,6 @@ append.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | BUG-19 | Planned | P2 | A save never drops a statement written after a submodel file's constructor. |
-| BUG-21 | Planned | P2 | The generated smoke and impact steps work for the generic container target once its endpoint addresses are set. |
 | BUG-24 | Decision | P1 | Container targets log in to their registry before `haute deploy` pushes, and GitLab container deploys run where Docker is available. |
 | BUG-40 | Planned | P2 | The hosted Databricks app installs the wheel and its pinned dependencies from a lock at boot, and its build script takes the app name as a parameter. The build selects its current wheel rather than a stale lexicographic match. |
 | BUG-42 | Decision | P3 | The storage binding record either rejects unknown keys or is named as the exception to the canonical-only policy. |
@@ -50,28 +49,6 @@ line, and a save is refused with that location.
 
 **Evidence:** `src/haute/_pipeline_recovery.py::_unkept_statement_diagnostics`;
 `src/haute/_ast_helpers.py::unkept_module_statements`; `src/haute/codegen.py::_render_module`.
-
-### BUG-21 — Container smoke and impact steps reach their endpoints
-**Why:** The generated smoke and impact steps run `haute smoke --endpoint-suffix
-"-staging"` and `haute impact --endpoint-suffix "-staging"` for every target except the
-three build-and-push-only ones. For `container`, both commands refuse the option ("is
-only supported for Databricks") and need `[ci.staging] endpoint_url` instead, which
-`haute init` does not write, so those jobs fail on every run.
-
-**Plan:** Generate the container target's smoke and impact steps without the option,
-and write commented `[ci.staging] endpoint_url` and `[ci.production] endpoint_url`
-entries into its `haute.toml`, so the steps fail with the existing "No staging endpoint
-URL configured" message until IT supplies the addresses.
-
-**Acceptance:** Scaffold tests show the container workflows for every CI provider call
-smoke and impact without `--endpoint-suffix`; with `endpoint_url` set, `haute smoke`
-reaches the configured address.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_scaffold.py::github_deploy_yml`, `gitlab_ci_yml`,
-`azure_devops_yml`; `src/haute/cli/_smoke.py` and `src/haute/cli/_impact.py` (the suffix refusal);
-`src/haute/cli/_helpers.py::resolve_transport`.
 
 ### BUG-24 — Container deploys log in to their registry
 **Why:** For the container targets, `haute deploy` pushes with a plain `docker push`
