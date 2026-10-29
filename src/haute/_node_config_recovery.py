@@ -17,7 +17,11 @@ from typing import Any, Literal, get_args, get_origin, get_type_hints
 
 from haute._api_input_schema import ApiInputSchemaError, validate_v2_schema
 from haute._config_io import palette_default_config
-from haute._config_validation import _TYPED_DICT_BY_NODE_TYPE, validate_optimiser_input_selectors
+from haute._config_validation import (
+    _TYPED_DICT_BY_NODE_TYPE,
+    FORM_GIVEN_KEYS,
+    validate_optimiser_input_selectors,
+)
 from haute._contracts import Contract
 from haute._explore_charts import validate_explore_charts
 from haute._explore_overview import validate_explore_overview
@@ -47,7 +51,6 @@ from haute._types import (
     NodeType,
     RatingTable,
 )
-from haute._workbench_tables import WorkbenchTablesError, parse_workbench_tables
 from haute.errors import ConfigError
 from haute.modelling._descriptors import DESCRIPTORS
 from haute.modelling._train_config import (
@@ -132,8 +135,10 @@ def _field_hints(node_type: NodeType, raw: dict[str, Any]) -> dict[str, Any]:
         result["tables"] = list[RatingTable]
     if node_type is NodeType.CONSTANT:
         result["values"] = list[dict[str, Any]]
-    if node_type is NodeType.CONSTANT:
-        result["values"] = list[dict[str, Any]]
+    # A workbench node is given these from the form where it runs; a config holding them,
+    # as an earlier Haute's copies, has them removed as retired fields.
+    for key in FORM_GIVEN_KEYS.get(node_type, frozenset()):
+        result.pop(key, None)
     return result
 
 
@@ -390,11 +395,7 @@ def _validator_issues(
     node_type: NodeType, config: dict[str, Any], input_names: Sequence[str] | None
 ) -> list[RecoveryIssue]:
     try:
-        if node_type is NodeType.WORKBENCH_INPUT and "tables" in config:
-            parse_workbench_tables(config["tables"], owner="Workbench Input")
-        elif node_type is NodeType.WORKBENCH_OUTPUT and "tables" in config:
-            parse_workbench_tables(config["tables"], owner="Workbench Output")
-        elif node_type == NodeType.API_INPUT and "tables" in config:  # the Quote Input alone
+        if node_type == NodeType.API_INPUT and "tables" in config:  # the Quote Input alone
             validate_v2_schema(config)
         elif node_type is NodeType.DATA_INPUT:
             # Missing locators are completeness, not a recovery error.
@@ -431,7 +432,6 @@ def _validator_issues(
             )
     except (
         ApiInputSchemaError,
-        WorkbenchTablesError,
         OutputMappingSchemaError,
         PolarsIoConfigError,
         ConfigError,

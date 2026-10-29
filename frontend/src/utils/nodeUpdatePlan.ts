@@ -8,7 +8,6 @@ import {
   incomingEdgeInputNames,
 } from "./apiInputPorts"
 import { attachEditorEdgeIdentities } from "./editorIdentities"
-import { workbenchTablePorts } from "./workbenchTables"
 import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 import { renameStepInputs, steppedSurfaceAllowsInputReferences } from "./polarsStepInputs"
 import { isPlainObject } from "../types/guards"
@@ -105,14 +104,18 @@ function reconcileSourceEdges({
   if (isRequestInputType(data.nodeType)) {
     const config = (data.config ?? {}) as Record<string, unknown>
     const previousConfig = ((previousNode.data as Record<string, unknown>).config ?? {}) as Record<string, unknown>
-    const result = applyApiInputConfigChange({
-      nodeId,
-      nodeType: data.nodeType,
-      prevConfig: previousConfig,
-      nextConfig: config,
-      edges: graph.edges,
-      reservedLabels: reservedApiInputFrameLabels,
-    })
+    // A Workbench Input's ports are the tables the workbench store fetched, which no update
+    // of the node changes (specs/workbench): its connections are held to them as each
+    // fetch lands (`useWorkbenchConnections`).
+    const result = data.nodeType === NODE_TYPES.WORKBENCH_INPUT
+      ? { edges: graph.edges, rebound: [], removed: [] }
+      : applyApiInputConfigChange({
+        nodeId,
+        prevConfig: previousConfig,
+        nextConfig: config,
+        edges: graph.edges,
+        reservedLabels: reservedApiInputFrameLabels,
+      })
     if (!refreshSourceIdentity) {
       return { ok: true, edges: result.edges, rebound: result.rebound, removed: result.removed }
     }
@@ -131,19 +134,8 @@ function reconcileSourceEdges({
     }
   }
 
-  // A Workbench Output's connections land on its tables' ports, so one whose table the
-  // new tables lack goes with it (specs/workbench).
-  const tables = data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT
-    ? new Set(workbenchTablePorts(data.config as Record<string, unknown> | undefined))
-    : null
-  const tableless = tables === null
-    ? []
-    : graph.edges.filter((edge) => edge.target === nodeId && !tables.has(edge.targetHandle ?? ""))
-  const edges = tableless.length === 0 ? graph.edges : graph.edges.filter((edge) => !tableless.includes(edge))
-  const removed = tableless.map((edge) => ({ edge, sourceHandle: edge.sourceHandle ?? null }))
-
   if (previousNode.data.label === data.label) {
-    return { ok: true, edges, rebound: [], removed }
+    return { ok: true, edges: graph.edges, rebound: [], removed: [] }
   }
   if (!refreshSourceIdentity) {
     return {
@@ -152,7 +144,7 @@ function reconcileSourceEdges({
     }
   }
 
-  const outgoing = edges.filter((edge) => edge.source === nodeId)
+  const outgoing = graph.edges.filter((edge) => edge.source === nodeId)
   const refreshed = attachEditorEdgeIdentities(outgoing, [{ ...previousNode, data }])
   const refreshedById = new Map(refreshed.map((edge) => [edge.id, edge]))
   const rebound = outgoing
@@ -174,9 +166,9 @@ function reconcileSourceEdges({
     .filter((change) => change.from !== change.to)
   return {
     ok: true,
-    edges: edges.map((edge) => refreshedById.get(edge.id) ?? edge),
+    edges: graph.edges.map((edge) => refreshedById.get(edge.id) ?? edge),
     rebound,
-    removed,
+    removed: [],
   }
 }
 

@@ -58,30 +58,6 @@ describe("useGraphCommitController pending commits", () => {
     expect(resolver).toHaveBeenCalledOnce()
   })
 
-  it("refuses an API-input update whose isCurrent turns false while its identity resolves", async () => {
-    // The workbench's tables were fetched for one document; a newer one was adopted
-    // (the same file and revision, so the document identity is unchanged) and its
-    // own fetch failed. Releasing the old resolution must change nothing.
-    const node = makeNode("api", "apiInput")
-    const resolution = deferred<Node[]>()
-    const options = controllerOptions(node, () => resolution.promise)
-    const { result } = renderHook(() => useGraphCommitController(options))
-    let current = true
-
-    act(() => {
-      expect(result.current.onUpdateNode("api", { ...node.data }, { isCurrent: () => current })).toEqual({ ok: true })
-    })
-    const waiting = result.current.waitForPendingCommits()
-    current = false
-    await act(async () => {
-      resolution.resolve([node])
-      await expect(waiting).resolves.toMatchObject({ ok: false })
-    })
-
-    expect(options.commitGraph).not.toHaveBeenCalled()
-    expect(options.setSelectedNode).not.toHaveBeenCalled()
-  })
-
   it("registers API-input updates synchronously and waits for their commit", async () => {
     const node = makeNode("api", "apiInput")
     const resolution = deferred<Node[]>()
@@ -105,28 +81,38 @@ describe("useGraphCommitController pending commits", () => {
     expect(options.commitGraph).toHaveBeenCalledOnce()
   })
 
-  it("drops a Workbench Output's connections whose tables went, and says so", () => {
-    const table = (name: string) => ({ name, rows: "one", columns: [{ name: "premium", type: "float" }] })
-    const node = makeNode("response", "workbenchOutput", {
-      data: { label: "response", nodeType: "workbenchOutput", config: { tables: [table("pricing_output"), table("layers")] } },
+  it("drops a Quote Input's connections whose frames went, and says so", async () => {
+    const table = (label: string) => ({ path: `$[:].${label}`, label, emit: true, columns: [{ name: "c", selected: true }] })
+    const node = makeNode("quotes", "apiInput", {
+      data: {
+        label: "quotes",
+        nodeType: "apiInput",
+        config: { path: "quotes.json", tables: [table("policy"), table("drivers")] },
+        _sourceHandleInputNames: { policy: "policy", drivers: "drivers" },
+      },
     })
     const options = controllerOptions(node, async (nodes) => [...nodes])
-    const fill = (id: string, source: string, targetHandle: string): Edge =>
-      ({ id, source, target: "response", sourceHandle: null, targetHandle })
-    options.graphRef.current.nodes = [node, makeNode("priced"), makeNode("layered")]
-    options.graphRef.current.edges = [fill("e_priced", "priced", "pricing_output"), fill("e_layered", "layered", "layers")]
+    const frame = (id: string, sourceHandle: string, target: string): Edge =>
+      ({ id, source: "quotes", target, sourceHandle, targetHandle: null })
+    options.graphRef.current.nodes = [node, makeNode("priced"), makeNode("driven")]
+    options.graphRef.current.edges = [frame("e_policy", "policy", "priced"), frame("e_drivers", "drivers", "driven")]
     const { result } = renderHook(() => useGraphCommitController(options))
 
     act(() => {
-      expect(result.current.onUpdateNode("response", { ...node.data, config: { tables: [table("pricing_output")] } }))
-        .toEqual({ ok: true })
+      expect(result.current.onUpdateNode("quotes", {
+        ...node.data,
+        config: { path: "quotes.json", tables: [table("policy")] },
+      })).toEqual({ ok: true })
+    })
+    await act(async () => {
+      await expect(result.current.waitForPendingCommits()).resolves.toEqual({ ok: true })
     })
 
     const [, committedEdges] = options.commitGraph.mock.calls[0]
-    expect((committedEdges as Edge[]).map((edge) => edge.id)).toEqual(["e_priced"])
+    expect((committedEdges as Edge[]).map((edge) => edge.id)).toEqual(["e_policy"])
     expect(options.addToast).toHaveBeenCalledWith(
       "warning",
-      "Disconnected 1 edge from response: the table it filled no longer exists after your edit.",
+      "Disconnected 1 edge from quotes: the source frame no longer exists after your edit.",
     )
   })
 

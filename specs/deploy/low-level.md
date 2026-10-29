@@ -13,7 +13,7 @@
 | `src/haute/deploy/_request_rows.py` | How a deployed pipeline answers a request of several quotes: as one frame, in request order, or quote by quote. `prove_request_rows` walks the pruned graph from the request input to the response with `_FrameFacts` per edge (one row per quote, one row, or any rows; from the request; built only from what the deployment carries), each node by its type, each code box parsed by the column-lineage program parser (`_parse_program`, cardinality form) with every expression of a kept selection, column addition or null fill classified by `classify_row_local_expression`, and returns the refusals (`RowRefusal`: node, operation, effect), each a reason the batch cannot be one frame, and the joins to check (`LookupCheck`). `check_lookups` builds each checked side through `score_graph_lazy` over the bundled artefacts and runs the streaming duplicate check (or the one-row check for a cross join). `RequestRows` is the manifest record (`to_manifest`, `from_manifest`). `answers_quote_by_quote` routes a served request, and `check_answer_rows` and `check_quote_answer` are the count backstops of the two ways. `record_digests` and `copy_verified` bind the bundle to the digests resolution recorded. |
 | `src/haute/deploy/_scorer.py` | Runtime scoring engine (`omittable_request_columns`: each bundled model's log-link offset, read from the model bound to its bundled contract, that a request's input schema carries, the columns a quote may leave out; `score_graph`, `score_graph_lazy`, taking a frame or a `QuoteRequest`, the quotes as their records, which a Workbench Input and a Quote Input with tables read (`reads_records`; `quote_input_reads_tables`, its sample structured), a Quote Input's shredded into a frame per port by `shred_request`, and `request_rows`, the deployment's `RequestRows`, under which `score_graph` answers a multi-quote request as one frame (counting its answer) or quote by quote (`score_quote_by_quote`), or None, the default, for a dry run; every served caller passes the manifest's; `reads_one_quote_per_request`) shared by every deploy target; `NodeBuildHooks` interception for live-input injection and artefact-path remapping; stat-gated model/contract caches; execution admission. |
 | `src/haute/deploy/_project_modules.py` | Project-module resolution for the bundle (`resolve_project_modules`): the project-local `utility` package the preamble resolves, which deploy ships, and every other project-local static import, which validation refuses. |
-| `src/haute/deploy/_validators.py` | Pre-deploy validation (`validate_deploy`): structural checks + exactly one test-quote scoring pass, returning successful per-file results to its caller; golden test-quote parsing and expected-output tolerance comparison, walked into a Workbench Output's tables (`_first_mismatch`); `score_test_quotes`; `_workbench_form_errors`, each Workbench node's copy of its tables against the form in a project whose workbench is enabled; `price_test_quotes_live` (`LiveTestQuotes`), a file's cases priced one request each against a live endpoint by `haute smoke`, each expected output checked by `_response_errors` as `score_test_quotes` checks it; `response_changes` (`ResponseChange`), every place a priced response differs from an accepted one, both first rendered by `pruned_document` as a deployed pipeline renders a response (a request, which holds no null and no empty table, is unchanged by it), walked into objects and lists, a leaf compared by `_expected_value_matches`, which the underwriter app's check of a save's prices uses; `_load_test_quote_cases`, a test-quote JSON file's rows as `_TestQuoteCase`s through `test_quote_files` (`src/haute/deploy/_config.py`). |
+| `src/haute/deploy/_validators.py` | Pre-deploy validation (`validate_deploy`): structural checks + exactly one test-quote scoring pass, returning successful per-file results to its caller; golden test-quote parsing and expected-output tolerance comparison, walked into a Workbench Output's tables (`_first_mismatch`); `score_test_quotes`; `_workbench_form_errors`, the form the Workbench nodes took their tables from, as resolution kept it, held to the pipeline's sheets; `price_test_quotes_live` (`LiveTestQuotes`), a file's cases priced one request each against a live endpoint by `haute smoke`, each expected output checked by `_response_errors` as `score_test_quotes` checks it; `response_changes` (`ResponseChange`), every place a priced response differs from an accepted one, both first rendered by `pruned_document` as a deployed pipeline renders a response (a request, which holds no null and no empty table, is unchanged by it), walked into objects and lists, a leaf compared by `_expected_value_matches`, which the underwriter app's check of a save's prices uses; `_load_test_quote_cases`, a test-quote JSON file's rows as `_TestQuoteCase`s through `test_quote_files` (`src/haute/deploy/_config.py`). |
 | `src/haute/deploy/_utils.py` | Shared helpers: `get_user`, `get_haute_version`, `build_manifest` (the canonical deploy-manifest schema, `resolved.request_rows`, `resolved.artifact_digests` and `resolved.omittable_inputs`, the request columns a quote may leave out, written in), `artifact_file_name` (the one flat file a bundle stores an artefact under: its key, or for a node inside a submodel, whose runtime id holds `/`, the key's digest and file name, so two occurrences of one definition never share a file), `shipped_graph` (the pruned graph as the bundle carries it, every Workbench Input's `sample` left out, submodels' graphs included). |
 | `src/haute/deploy/_mlflow.py` | Databricks target: `deploy_to_mlflow`, `get_deploy_status`, MLflow signature building (each rendered dtype parsed by `_polars_dtypes.parse_rendered_dtype` and mapped by `rendered_dtype_mlflow_type_name`; a struct a `Map` of `AnyType` and a list an `Array` of its inner type, a table's column not required, since the Workbench Input's reader holds the request to the table's columns and leaves others unread where MLflow's typed object would refuse them), conda-env building (the served haute, `mlflow` and Polars pinned, `_pip_requirements`), Databricks Model Serving endpoint create/update and the wait until it serves the registered version, connectivity pre-check, the up-front check that every Databricks credential is set (`check_databricks_credentials`), and the MLflow destination check (`_resolve_mlflow_databricks`) that binds its logging and registry calls; the artefacts MLflow logs are staged by `copy_verified` into a temporary directory, so the model carries the bytes resolution checked. |
 | `src/haute/deploy/_databricks_serving.py` | The Databricks serving endpoint as deploy, `haute smoke` and `haute impact` reach it: the serving pair (`RATING_HOST_ENV` and `RATING_TOKEN_ENV`, read by `serving_credentials`, every missing one named) and the PAT client built from it alone (`serving_workspace_client`, through `pat_workspace_client`, whose empty profile name stops the SDK reading an ambient profile variable or config file); `wait_for_endpoint`, which polls until the endpoint is ready, not updating and serving the version asked for, and fails a failed or cancelled update with each served entity's state message and the tails of its build and server logs, or a wait past `SERVING_READY_TIMEOUT_SECONDS` with the last state; `workspace_user`, the check `haute ci secrets` makes of a host and token; and `refusal_reason`, a refused request's message with the decision of Databricks' resource gatekeeper when the response carries one (a deactivated workspace says only "please try again later"; the gatekeeper's error info, a deny reason of INACTIVE, is the real one), which deploy's refused endpoint changes and `haute smoke`'s failed endpoint check report. |
@@ -51,8 +51,9 @@
   `alias`, resolved `version` and `run_id`), `project_modules` (`ProjectModules`: the
   `utility` package directory or `utility.py` file to bundle, or `None`, and one message
   per project-local import the bundle does not carry), `artifact_digests` (artefact name →
-  the content digest recorded when it was collected) and `request_rows` (`RequestRows`).
-  It owns
+  the content digest recorded when it was collected), `request_rows` (`RequestRows`) and
+  `workbench_form` (the `FormDocument` the Workbench nodes took their tables from, read
+  once by resolution; `None` without a Workbench node). It owns
   an `_resources: ExitStack` released by idempotent `close()` (also implementing
   `__enter__`/`__exit__`), which `deploy()`/`deploy_resolved()` invoke in a
   `finally` to drop snapshot leases.
@@ -153,7 +154,14 @@
    `submodel_runtime/<occurrence>/<node>`, as `haute run` and the editor execute it, so a
    response, a request input or an artefact inside a submodel is found, bundled and scored
    like any other node; error if empty; `validate_singleton_groups(full_graph)` refuses a
-   second request input or response node, as save does.
+   second request input or response node, as save does. Then, with a Workbench node in it
+   (`haute._workbench_nodes.form_owner`), the form is read once (`read_project_form`, or the
+   caller's `form`, the one `haute app build` read for the release it ships) and every
+   Workbench node given its tables (`with_tables` of `workbench_tables(form.spec)`), a
+   disabled workbench, a folder that does not exist or a file that cannot be read raising
+   as the reader words it; a connection to a table the given tables do not have
+   (`connection_errors`) raises `DeployError` naming each, before the graph is pruned or run.
+   The form read is kept on `ResolvedDeploy` as its `workbench_form`.
 4. `find_output_node(full_graph)` — exactly one response node (`nodeType` `"output"` or
    `"workbenchOutput"`, `RESPONSE_NODE_TYPES`) or node with `config.output=True`, else
    `ValueError`.
@@ -398,15 +406,11 @@ undefined constant, or any constant while the constants file failed to load
 (`_global_constant_errors`, naming the constant or the file; a constant read only on a pruned
 branch needs no `live` value), adds every `project_modules` import message (a project-local
 import the bundle does not carry), rechecks the projected output-field invariant, checks
-a workbench project's Workbench nodes against its form (`_workbench_form_errors`: with
-a Workbench node in the pruned graph and `[workbench] enabled = true`, the form is read
-from its folder by `read_form_document`, a folder that does not exist refused, a form
-naming a table or column its schema does not hold refused through `unresolved_references`,
-naming each file, place and name, and each node's
-`tables` config compared with `input_tables` or `output_tables` of the form by
-`table_disagreements`, one error per node naming every difference and the Save that
-brings the copy up to date; a node's copy or a form that cannot be read is reported as
-its reader words it), then — if
+the form the Workbench nodes took their tables from against the pipeline
+(`_workbench_form_errors`, with `resolved.workbench_form` set: a table a column of the
+project's own keeps from the quote's identity refused through `identity_clashes`, and a
+form naming a table or column its schema does not hold refused through
+`unresolved_references`, naming each file, place and name), then — if
 `config.test_quotes_dir` is configured — requires an existing directory containing at
 least one `*.json` file and, for a Quote Input, pre-checks every quote's rows
 against the required input-schema columns (catching a missing column before scoring even
@@ -1110,12 +1114,13 @@ what they cover:
   gap-filling for branches not hit by the main suites (progress callbacks, artefact copy,
   version selection, build-dir cleanup-on-error for MLflow; unparseable test-quote files,
   guard clauses in `score_test_quotes`); `test_deploy_validators_gaps.py` also holds the
-  workbench form check: copies equal to the form pass, each kind of difference (a table
-  or column on one side only, rows per quote, a column's type, table and column order, an
-  output copy) is named with the Save that fixes it, a form folder that does not exist, a
-  file in it that is not JSON, a form naming a column its schema does not hold and a copy
-  not as the workbench writes it are reported, and a project whose workbench is off is not
-  checked.
+  workbench form check: a form that fits the pipeline passes, a connection out of a
+  Workbench Input or into a Workbench Output on a table the form does not have is named
+  (`connection_errors`), a table whose own column takes an identity name and a form naming
+  a column its schema does not hold are reported, and a pipeline without a Workbench node
+  reads no form. `tests/test_workbench_nodes.py` covers resolution's read: the bundle
+  carrying the form's tables and no sample, and a form folder that does not exist or a file
+  in it that is not JSON refused before anything is built.
 - **`test_deploy_scorer_artifact_cache.py`** — `StatGatedCache` behaviour specific to
   deploy: model loaded once per artefact across repeated scoring calls, cache
   invalidation on stat-gate (mtime/size) change, deploy artefact-path fingerprint

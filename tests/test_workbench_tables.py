@@ -168,8 +168,8 @@ def test_a_table_without_columns_is_not_a_port() -> None:
 _REFUSED = {
     "not a list": (
         None,
-        "The Workbench Input's tables are not as the workbench writes them (tables: Input "
-        "should be a valid list). Open the pipeline in the editor and save it.",
+        "The Workbench Input's tables are not as the workbench gives them (tables: Input "
+        "should be a valid list).",
     ),
     "a key the workbench does not write": (
         [{"name": "a", "rows": "one", "path": "$[:]"}],

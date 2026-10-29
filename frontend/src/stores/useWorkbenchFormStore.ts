@@ -322,10 +322,8 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
           addToast("success", `Saved → ${path}`)
           reportSaveCapture(saved)
           // The schema may have changed: the project save that this is the form step of
-          // fetches the tables afresh next, the one fetch that brings the Workbench Input's
-          // and Workbench Output's copies up to date before the pipeline is saved. A fetch
-          // of this save's own would publish a second update of each node, and a save
-          // waits for every update, the superseded one included.
+          // fetches the tables afresh next, so the Workbench Input's and Workbench
+          // Output's ports are the saved form's before the pipeline is saved.
           return true
         } catch (error: unknown) {
           if (isStaleRevision(error)) {

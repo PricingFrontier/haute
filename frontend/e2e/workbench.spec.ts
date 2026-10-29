@@ -4,8 +4,8 @@
  * while building as a new quote, the sample typed in Preview and priced live on the
  * pipeline open in the editor, with no Price or Clear, a column added to the schema, and
  * the project saved in one Save: the schema, the sheets and the sample to the files of the
- * pipeline folder's workbench/ folder and the pipeline after them, its Workbench Input's
- * copy carrying the column, both on the project's ledger.
+ * pipeline folder's workbench/ folder and the pipeline after them, its workbench nodes
+ * holding no copy of the tables, both on the project's ledger.
  */
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
@@ -39,9 +39,9 @@ const FORM_FILES: Record<string, unknown> = {
 
 const readFormFile = (path: string) => JSON.parse(readFileSync(resolve(FORM_FOLDER, path), "utf8"))
 
-/** The pipeline's copies of the schema's tables, as the editor keeps them. */
-const INPUT_TABLES = [{ name: "policy", rows: "one", columns: [{ name: "limit", type: "int" }, { name: "region", type: "str" }] }]
-const OUTPUT_TABLES = [{ name: "pricing", rows: "one", columns: [{ name: "premium", type: "float" }] }]
+/** A node's config file in the pipeline folder's config/. */
+const readNodeConfig = (folder: string, node: string) =>
+  JSON.parse(readFileSync(resolve(e2eProjectRoot, "rating", "config", folder, `${node}.json`), "utf8"))
 
 /** Switch the project's workbench on and write its form's files, as `haute init --workbench` and a save would. */
 function enableWorkbench(): void {
@@ -56,11 +56,12 @@ function enableWorkbench(): void {
 /**
  * Replace the scaffold's Quote Input and Quote Response with a workbench pipeline: a
  * Workbench Input whose policy table a Transform prices, filling a Workbench Output's
- * pricing table. Saved through the API, as a developer's own edits would be.
+ * pricing table. Saved through the API, as a developer's own edits would be. Neither
+ * workbench node's config holds anything: both read their tables from the form folder.
  */
 async function buildWorkbenchPipeline(page: Page): Promise<void> {
   const status = await page.evaluate(
-    async ({ inputTables, outputTables }) => {
+    async () => {
       const headers: Record<string, string> = { "Content-Type": "application/json" }
       const read = await fetch("/api/pipeline", { headers })
       if (!read.ok) throw new Error(`GET /api/pipeline ${read.status}`)
@@ -110,7 +111,7 @@ async function buildWorkbenchPipeline(page: Page): Promise<void> {
           id: "quote",
           type: "custom",
           position: { x: 60, y: 720 },
-          data: { label: "quote", description: "", nodeType: "workbenchInput", config: { tables: inputTables, sample: {} } },
+          data: { label: "quote", description: "", nodeType: "workbenchInput", config: {} },
         },
         {
           id: "premium",
@@ -127,7 +128,7 @@ async function buildWorkbenchPipeline(page: Page): Promise<void> {
           id: "response",
           type: "custom",
           position: { x: 700, y: 720 },
-          data: { label: "response", description: "", nodeType: "workbenchOutput", config: { tables: outputTables } },
+          data: { label: "response", description: "", nodeType: "workbenchOutput", config: {} },
         },
       )
       edges.push(
@@ -152,7 +153,6 @@ async function buildWorkbenchPipeline(page: Page): Promise<void> {
       if (!saved.ok) throw new Error(`POST /api/pipeline/save ${saved.status}: ${await saved.text()}`)
       return (await saved.json()).status as string
     },
-    { inputTables: INPUT_TABLES, outputTables: OUTPUT_TABLES },
   )
   expect(status).toBe("saved")
 }
@@ -233,27 +233,16 @@ test.describe("workbench", () => {
     await added.press("Tab")
 
     // Saved, the project in one Save: the schema, the sheet and the sample in the files of
-    // the folder the workbench reads, then the pipeline, its Workbench Input's copy carrying
-    // the column.
+    // the folder the workbench reads, then the pipeline.
     await page.getByRole("button", { name: "Save", exact: true }).click()
     await expect(page.getByTestId("toast-notification").filter({ hasText: "Saved → rating/workbench" })).toBeVisible()
     await expect(page.getByTestId("toast-notification").filter({ hasText: /Saved → rating[\\/]main\.py/ })).toBeVisible()
     expect(readFormFile("form.json").schema).toEqual(["quote_details", "policy", "pricing"])
     // The quote's reference and option lead the table without being written in its file.
     expect(readFormFile("schema/policy.json").columns.map((column: { name: string }) => column.name)).toEqual(["limit", "region", "excess"])
-    const copy = JSON.parse(readFileSync(resolve(e2eProjectRoot, "rating", "config", "workbench_input", "quote.json"), "utf8"))
-    expect(copy.tables.map((table: { name: string }) => table.name)).toEqual(["quote_details", "policy"])
-    expect(copy.tables[1]).toEqual({
-      name: "policy",
-      rows: "one",
-      columns: [
-        { name: "quote_reference", type: "str" },
-        { name: "quote_option", type: "int" },
-        { name: "limit", type: "int" },
-        { name: "region", type: "str" },
-        { name: "excess", type: "str" },
-      ],
-    })
+    // The column is in the form folder alone: neither workbench node's config file holds a copy.
+    expect(readNodeConfig("workbench_input", "quote")).toEqual({})
+    expect(readNodeConfig("workbench_output", "response")).toEqual({})
     // The Collection in the sheet's file, its fields by name, and its place in the sheet's layout.
     const savedSheet = readFormFile("sheets/sheet_1.json")
     expect(savedSheet.sections[0].components).toHaveLength(1)

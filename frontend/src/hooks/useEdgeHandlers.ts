@@ -148,8 +148,6 @@ type UseEdgeHandlersParams = {
   validateConnection?: (connection: Connection) => ConnectionValidationResult
   commitBoundaryConnection?: (connection: Connection) => boolean
   deleteBoundaryEdge?: (edgeId: string) => boolean
-  /** A node a palette drop created, once it is on the canvas. */
-  onNodeCreated?: (nodeId: string) => void
 }
 
 const edgeJoinFailureMessages: Record<EdgeJoinFailureReason, string> = {
@@ -188,7 +186,6 @@ export default function useEdgeHandlers({
   validateConnection,
   commitBoundaryConnection,
   deleteBoundaryEdge,
-  onNodeCreated,
 }: UseEdgeHandlersParams) {
   const addToast = useToastStore((s) => s.addToast)
   const activeEdgeJoinSourceRef = useRef<{
@@ -713,10 +710,9 @@ export default function useEdgeHandlers({
         setNodes((nds) => selectOnlyNode([...nds, resolvedNode], resolvedNode.id))
         setSelectedNode(resolvedNode)
         setLastSelectedId?.(resolvedNode.id)
-        onNodeCreated?.(resolvedNode.id)
       })
     },
-    [screenToFlowPosition, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast, refuseOccupiedSingleton, createNodeAfterIdentity, onNodeCreated],
+    [screenToFlowPosition, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast, refuseOccupiedSingleton, createNodeAfterIdentity],
   )
 
   return {

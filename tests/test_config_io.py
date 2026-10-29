@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -234,47 +235,69 @@ class TestSaveAndLoad:
         rel = _write_node_config_sidecar(NodeType.API_INPUT, "quotes", config, tmp_path)
         assert load_node_config(rel, base_dir=tmp_path) == config
 
-    def test_workbench_input_tables_survive_its_config_file(self, tmp_path):
-        from haute._workbench_input import workbench_table_labels
+    @pytest.mark.parametrize(
+        ("node_type", "config", "says"),
+        [
+            (
+                NodeType.WORKBENCH_INPUT,
+                {"tables": [], "sample": {}},
+                "workbenchInput config contains the removed tables and sample fields. A "
+                "Workbench Input reads its tables and sample from the form folder: delete them.",
+            ),
+            (
+                NodeType.WORKBENCH_INPUT,
+                {"sample": {}},
+                "workbenchInput config contains the removed sample field. A Workbench Input "
+                "reads its tables and sample from the form folder: delete it.",
+            ),
+            (
+                NodeType.WORKBENCH_OUTPUT,
+                {"tables": []},
+                "workbenchOutput config contains the removed tables field. A Workbench Output "
+                "reads its tables from the form folder: delete it.",
+            ),
+        ],
+        ids=["input", "input-sample", "output"],
+    )
+    def test_a_workbench_nodes_tables_never_reach_its_config_file(
+        self, tmp_path, node_type, config, says
+    ):
+        """A workbench node is given its tables, and a Workbench Input its sample, from the
+        form where it runs: a write holding them is refused, nothing written, and a file an
+        earlier Haute wrote with its copies is refused naming the keys (specs/workbench)."""
+        from haute.errors import ConfigError
 
-        config = {
-            "sample": {"policy_details": {"state": "NY"}},
-            "tables": [
-                {
-                    "name": "policy_details",
-                    "rows": "one",
-                    "columns": [{"name": "state", "type": "str"}],
-                }
-            ],
-        }
-        rel = _write_node_config_sidecar(NodeType.WORKBENCH_INPUT, "quote", config, tmp_path)
-        assert rel.as_posix() == "config/workbench_input/quote.json"
-        loaded = load_node_config(rel, base_dir=tmp_path)
-        assert loaded == config
-        assert workbench_table_labels(loaded) == ("policy_details",)
+        with pytest.raises(ConfigError, match=re.escape(says)):
+            _write_node_config_sidecar(node_type, "node", config, tmp_path)
+        rel = config_path_for_node(node_type, "node")
+        assert not (tmp_path / rel).exists()
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(json.dumps(config), encoding="utf-8")
+        with pytest.raises(ConfigError, match=re.escape(says)) as refused:
+            load_node_config(rel, base_dir=tmp_path)
+        assert refused.value.context["removed_config_keys"] == [
+            key for key in ("tables", "sample") if key in config
+        ]
+
+    def test_a_workbench_nodes_config_file_holds_nothing_of_the_form(self, tmp_path):
+        """A Workbench Input's or Output's config file holds no tables: it reads back as
+        written, `{}`."""
+        for node_type, name in (
+            (NodeType.WORKBENCH_INPUT, "quote"),
+            (NodeType.WORKBENCH_OUTPUT, "response"),
+        ):
+            rel = _write_node_config_sidecar(node_type, name, {}, tmp_path)
+            assert json.loads((tmp_path / rel).read_text(encoding="utf-8")) == {}
+            assert load_node_config(rel, base_dir=tmp_path) == {}
 
     def test_a_workbench_input_config_with_a_path_is_refused(self, tmp_path):
         """A Workbench Input reads no file, so its config declares no ``path``."""
         from haute.errors import ConfigError
 
-        config = {"path": "tests/quotes/example.json", "tables": []}
+        config = {"path": "tests/quotes/example.json"}
         with pytest.raises(ConfigError, match="'path'"):
             _write_node_config_sidecar(NodeType.WORKBENCH_INPUT, "quote", config, tmp_path)
         assert not (tmp_path / "config" / "workbench_input" / "quote.json").exists()
-
-    def test_workbench_output_tables_survive_its_config_file(self, tmp_path):
-        from haute._workbench_output import workbench_output_tables
-
-        config = {
-            "tables": [
-                {"name": "layers", "rows": "many", "columns": [{"name": "layer", "type": "int"}]}
-            ],
-        }
-        rel = _write_node_config_sidecar(NodeType.WORKBENCH_OUTPUT, "response", config, tmp_path)
-        assert rel.as_posix() == "config/workbench_output/response.json"
-        loaded = load_node_config(rel, base_dir=tmp_path)
-        assert loaded == config
-        assert [table.name for table in workbench_output_tables(loaded)] == ["layers"]
 
     def test_code_key_excluded_from_json(self, tmp_path):
         config = {"path": "model.pkl", "fileType": "pickle", "code": "df = obj.predict(df)"}

@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, cast
 import polars as pl
 from fastapi import HTTPException
 
+from haute._cache import canonical_json
 from haute._code_extraction import INCOMPLETE_STEPS_MESSAGE, INCOMPLETE_TRANSFORM_MESSAGE
 from haute._column_summary import (
     CATEGORICAL_COUNT_FIELD,
@@ -45,7 +46,9 @@ from haute._execution_context import (
     ExecutionContext,
     ExecutionProfile,
 )
+from haute._flatten import flatten_with_form_tables
 from haute._graph_utils import edge_input_name, executable_input_name
+from haute._hashing import content_hash_bytes
 from haute._interactive_workers import (
     InteractiveWorkerError,
     InteractiveWorkerStoppedError,
@@ -54,6 +57,7 @@ from haute._interactive_workers import (
     run_in_interactive_worker,
 )
 from haute._logging import get_logger
+from haute._path_resolution import current_runtime_project_root
 from haute._pipeline_settings import project_pipeline_settings
 from haute._polars_io_registry import PolarsIoConfigError
 from haute._sandbox import contained_path
@@ -68,6 +72,9 @@ from haute._submodel_instances import (
 from haute._types import GraphNode, NodeType, PipelineGraph
 from haute._user_exec import user_code_line
 from haute._validation_error import HauteValidationError
+from haute._workbench_config import WorkbenchError
+from haute._workbench_nodes import WORKBENCH_NODE_TYPES
+from haute._workbench_tables import WorkbenchTablesError
 from haute._worker_isolation import resolve_worker_memory_enforcement
 from haute.assistant._application import (
     CommittedVerificationError,
@@ -388,7 +395,7 @@ def _input_columns(
     """
 
     try:
-        flat = flatten_graph(graph)
+        flat = flatten_with_form_tables(graph, project_root=Path.cwd())
         inputs = _node_inputs(graph, flat, node)
     except Exception as exc:  # noqa: BLE001 - an unresolvable site discloses nothing
         logger.info("assistant_failure_schema_unresolved", node=node, error=type(exc).__name__)
@@ -427,7 +434,7 @@ def _schema_metadata_names(site: _FailureSite) -> set[str]:
     if site.own_output and site.input_name is None:
         try:
             output = _resolve_schema_outputs(
-                flatten_graph(site.graph),
+                flatten_with_form_tables(site.graph, project_root=Path.cwd()),
                 site.graph,
                 target=site.node,
                 preserve=frozenset({site.node}),
@@ -998,7 +1005,7 @@ def node_schema(source_file: str, node: str) -> dict[str, object]:
         if validation_error is not None:
             return validation_error
         project_revision = _project_revision(source_file, graph)
-        flat = flatten_graph(graph)
+        flat = flatten_with_form_tables(graph, project_root=Path.cwd())
         inputs = _node_inputs(graph, flat, node)
         occurrence = resolve_submodel_instances(graph).get(node)
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
@@ -1192,7 +1199,8 @@ class TurnContextError(HauteError):
 
 # The brief's resolved facts for the latest project revisions. A revision covers
 # the pipeline file, `haute.toml` and the capability hash, so an edit always
-# misses; a data file's header is read again only when the revision changes.
+# misses; a data file's header is read again only when the revision changes. The
+# tables the workbench nodes take from the form join the key (`_cached_brief_nodes`).
 _BRIEF_CACHE: OrderedDict[str, tuple[BriefNode, ...]] = OrderedDict()
 _BRIEF_CACHE_SIZE = 8
 _BRIEF_CACHE_LOCK = threading.Lock()
@@ -1236,15 +1244,14 @@ def _brief_frames(node: GraphNode, output: object) -> tuple[BriefFrame, ...]:
     )
 
 
-def _brief_nodes(graph: PipelineGraph) -> tuple[BriefNode, ...]:
+def _brief_nodes(graph: PipelineGraph, flat: PipelineGraph) -> tuple[BriefNode, ...]:
     """Every top-level node's brief entry, in graph order, resolved schema-only.
 
-    One engine call resolves every node. When it raises, each node resolves on
-    its own, so one broken node marks only itself unresolved and never puts its
-    error text in the brief.
+    One engine call resolves every node of *flat*, *graph* flattened for the brief
+    (:func:`_brief_flat`). When it raises, each node resolves on its own, so one broken
+    node marks only itself unresolved and never puts its error text in the brief.
     """
 
-    flat = flatten_graph(graph)
     flat_ids = frozenset(node.id for node in flat.nodes)
     outputs: Mapping[str, object] = {}
     try:
@@ -1354,16 +1361,32 @@ def _switch_scenarios(node: GraphNode) -> tuple[str, ...]:
     return tuple(sorted({value for value in routing.values() if isinstance(value, str)}))
 
 
+def _brief_flat(graph: PipelineGraph) -> PipelineGraph:
+    """*graph* flattened for the brief, its workbench nodes given the form's tables; when
+    the form cannot be read, flattened alone, so those nodes resolve unresolved, as any
+    broken node does, and every other node is still briefed."""
+
+    try:
+        return flatten_with_form_tables(graph, project_root=Path.cwd())
+    except (WorkbenchError, WorkbenchTablesError):
+        return flatten_graph(graph)
+
+
 def _cached_brief_nodes(graph: PipelineGraph, revision: str) -> tuple[BriefNode, ...]:
+    flat = _brief_flat(graph)
+    # The project revision does not cover the form folder the workbench nodes take their
+    # tables from, so the tables they were given key the brief beside it.
+    given = [node.data.config for node in flat.nodes if node.data.nodeType in WORKBENCH_NODE_TYPES]
+    key = f"{revision}:{content_hash_bytes(canonical_json(given).encode('utf-8'))}"
     with _BRIEF_CACHE_LOCK:
-        cached = _BRIEF_CACHE.get(revision)
+        cached = _BRIEF_CACHE.get(key)
         if cached is not None:
-            _BRIEF_CACHE.move_to_end(revision)
+            _BRIEF_CACHE.move_to_end(key)
             return cached
-    nodes = _brief_nodes(graph)
+    nodes = _brief_nodes(graph, flat)
     with _BRIEF_CACHE_LOCK:
-        _BRIEF_CACHE[revision] = nodes
-        _BRIEF_CACHE.move_to_end(revision)
+        _BRIEF_CACHE[key] = nodes
+        _BRIEF_CACHE.move_to_end(key)
         while len(_BRIEF_CACHE) > _BRIEF_CACHE_SIZE:
             _BRIEF_CACHE.popitem(last=False)
     return nodes
@@ -1379,7 +1402,10 @@ def _preview_error(graph: PipelineGraph, node: str) -> PreviewError:
 
     try:
         _resolve_schema_outputs(
-            flatten_graph(graph), graph, target=node, preserve=frozenset({node})
+            flatten_with_form_tables(graph, project_root=Path.cwd()),
+            graph,
+            target=node,
+            preserve=frozenset({node}),
         )
     except Exception as exc:  # noqa: BLE001 - the failure is what was asked for
         return PreviewError(
@@ -1654,7 +1680,7 @@ def _prepare_column_profile(
         if validation_error is not None:
             return validation_error
         project_revision = _project_revision(source_file, graph)
-        inputs = _node_inputs(graph, flatten_graph(graph), node)
+        inputs = _node_inputs(graph, flatten_with_form_tables(graph, project_root=Path.cwd()), node)
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
         return _error("profile_unavailable", _error_message(exc, operation="inspect_node"))
     if input_name is not None and all(item.name != input_name for item in inputs):
@@ -1691,7 +1717,7 @@ def _collect_column_profile(
     """
 
     try:
-        flat = flatten_graph(request.graph)
+        flat = flatten_with_form_tables(request.graph, project_root=current_runtime_project_root())
         if request.input_name is None:
             lazy_outputs = _resolve_frame_outputs(
                 flat,

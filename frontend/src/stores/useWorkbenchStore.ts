@@ -4,12 +4,16 @@
  * editor's or the workbench's), whether the form holds unsaved edits (mirrored from the
  * form store, a lazy chunk, for the editor's navigation guards), and the Workbench
  * Input's tables and sample quote and the Workbench Output's tables from the newest fetch
- * of GET /api/workbench/tables, which the git flows' save can wait for.
+ * of GET /api/workbench/tables, which are the nodes' ports and which the project's save
+ * waits for.
  */
 import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
 import { fetchWorkbenchStatus, fetchWorkbenchTables } from "../api/workbench"
+import { canonicalJson } from "../utils/canonicalJson"
 import type { WorkbenchTables } from "../utils/workbenchTables"
+import useGraphStore from "./useGraphStore"
+import useNodeDataStore from "./useNodeDataStore"
 import useToastStore from "./useToastStore"
 import { latest } from "../utils/latest"
 
@@ -47,7 +51,12 @@ interface WorkbenchState {
    * Fetch the workbench's tables and return the fetch's number, or null, fetching nothing,
    * while the workbench is not enabled. Only the newest fetch publishes: its tables, or one
    * error toast that leaves `tables` as it was. An older fetch that settles later is
-   * dropped, toast and all.
+   * dropped, toast and all. A workbench node is given its tables and sample wherever it
+   * runs, so they are its config, though nothing in the graph holds them: a fetch whose
+   * tables, sample or response tables differ from the last one's advances the graph's
+   * structural version and raises the node-data epoch, so every preview, recorded column and
+   * reader of node data is as stale as a config change makes it; a fetch that brings the
+   * same leaves them be.
    */
   refreshTables: () => number | null
   /**
@@ -60,6 +69,9 @@ interface WorkbenchState {
 
 // Fetches are numbered across the store's life, so a later one always has a larger number.
 const fetches = latest()
+/** What a fetch gives the workbench nodes, compared by content: the order of keys never reads as a change. */
+const given = (workbench: WorkbenchTables): string =>
+  canonicalJson([workbench.tables, workbench.sample, workbench.responseTables])
 /** The newest fetch's settlement: whether it published. */
 let settling: Promise<boolean> = Promise.resolve(true)
 
@@ -90,14 +102,20 @@ const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
       (response): boolean | Promise<boolean> => {
         // Superseded: the newer fetch's outcome is the one that counts.
         if (!fetches.is(fetch)) return settling
-        set({
-          tables: {
-            tables: response.tables,
-            sample: response.sample,
-            responseTables: response.response_tables,
-            fetch,
-          },
-        })
+        const previous = get().tables
+        const tables = {
+          tables: response.tables,
+          sample: response.sample,
+          responseTables: response.response_tables,
+          fetch,
+        }
+        set({ tables })
+        if (previous !== null && given(previous) !== given(tables)) {
+          // The graph's structure as every reader keys it: a preview, a recorded column, a
+          // job's staleness.
+          useGraphStore.getState().noteStructureOutsideGraph()
+          useNodeDataStore.getState().bumpEpoch()
+        }
         return true
       },
       (error: unknown): boolean | Promise<boolean> => {

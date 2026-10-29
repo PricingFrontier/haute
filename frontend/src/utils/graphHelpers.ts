@@ -90,6 +90,9 @@ function liveHandles(
 ): Set<string | null> {
   const type = nodeType(node)
 
+  // A workbench node's ports are the form's tables (`handleIsLive`): it has no other handle.
+  if (type === NODE_TYPES.WORKBENCH_INPUT || type === NODE_TYPES.WORKBENCH_OUTPUT) return new Set()
+
   if (isRequestInputType(type)) {
     if (direction === "target") return new Set()
     return new Set(authoritativeSourceHandles(node))
@@ -145,6 +148,26 @@ function liveHandles(
   return new Set([null, DEFAULT_TARGET_HANDLE])
 }
 
+/**
+ * Whether *handle* is live on *node* in *direction*. A workbench node's ports are the form's
+ * tables rather than anything the incoming graph holds, and the editor holds its
+ * connections to them as each fetch of the tables lands (`useWorkbenchConnections`), so
+ * any named one of its ports is live here.
+ */
+function handleIsLive(
+  node: Node,
+  direction: HandleDirection,
+  handle: string | null,
+  submodels: Readonly<Record<string, unknown>>,
+): boolean {
+  const type = nodeType(node)
+  const workbenchPort = direction === "source"
+    ? type === NODE_TYPES.WORKBENCH_INPUT
+    : type === NODE_TYPES.WORKBENCH_OUTPUT
+  if (workbenchPort && handle !== null) return true
+  return liveHandles(node, direction, submodels).has(handle)
+}
+
 function unavailableHandleReason(
   node: Node,
   direction: HandleDirection,
@@ -193,7 +216,7 @@ export function filterIncomingEdges(
     }
 
     const sourceHandle = normalizedHandle(edge.sourceHandle)
-    if (!liveHandles(sourceNode, "source", submodels).has(sourceHandle)) {
+    if (!handleIsLive(sourceNode, "source", sourceHandle, submodels)) {
       rejectedEdges.push({
         edge,
         reason: unavailableHandleReason(sourceNode, "source", sourceHandle, submodels),
@@ -202,7 +225,7 @@ export function filterIncomingEdges(
     }
 
     const targetHandle = normalizedHandle(edge.targetHandle)
-    if (!liveHandles(targetNode, "target", submodels).has(targetHandle)) {
+    if (!handleIsLive(targetNode, "target", targetHandle, submodels)) {
       rejectedEdges.push({
         edge,
         reason: unavailableHandleReason(targetNode, "target", targetHandle, submodels),

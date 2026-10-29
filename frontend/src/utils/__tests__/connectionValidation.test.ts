@@ -234,19 +234,16 @@ describe("connection validation", () => {
 })
 
 describe("a Workbench Output's tables", () => {
-  const workbenchOutput: SimpleNode = {
-    ...node("response", "response", NODE_TYPES.WORKBENCH_OUTPUT),
-    data: {
-      label: "response",
-      description: "",
-      nodeType: NODE_TYPES.WORKBENCH_OUTPUT,
-      config: {
-        tables: [
-          { name: "pricing_output", rows: "one", columns: [{ name: "premium", type: "float" }] },
-          { name: "layers", rows: "many", columns: [{ name: "layer", type: "int" }] },
-        ],
-      },
-    },
+  const workbenchOutput = node("response", "response", NODE_TYPES.WORKBENCH_OUTPUT)
+  // The newest fetch of the workbench's tables, whose response tables are its ports.
+  const workbench = {
+    tables: [],
+    sample: {},
+    responseTables: [
+      { name: "pricing_output", rows: "one" as const, columns: [{ name: "premium", type: "float" as const }] },
+      { name: "layers", rows: "many" as const, columns: [{ name: "layer", type: "int" as const }] },
+    ],
+    fetch: 1,
   }
   const priced = node("priced", "priced")
   const layered = node("layered", "layered")
@@ -258,8 +255,14 @@ describe("a Workbench Output's tables", () => {
     sourceHandle: null,
     targetHandle: "pricing_output",
   }]
-  const connect = (source: string, targetHandle: string | null, edges: Edge[] = []) =>
-    validatePipelineConnection({ source, target: workbenchOutput.id, sourceHandle: null, targetHandle }, nodes, edges)
+  const connect = (source: string, targetHandle: string | null, edges: Edge[] = [], fetched: typeof workbench | null = workbench) =>
+    validatePipelineConnection(
+      { source, target: workbenchOutput.id, sourceHandle: null, targetHandle },
+      nodes,
+      edges,
+      undefined,
+      fetched,
+    )
   const refused = (message: string) => ({ ok: false, reason: { kind: "invalid-connection", message } })
 
   it("takes a connection on a table's port", () => {
@@ -270,6 +273,8 @@ describe("a Workbench Output's tables", () => {
   it("refuses a connection on no table, on a filled table, or from a node that fills another", () => {
     expect(connect(priced.id, null)).toEqual(refused("Connect to one of response's tables"))
     expect(connect(priced.id, "renamed")).toEqual(refused("Connect to one of response's tables"))
+    // Before the first fetch lands it has no port.
+    expect(connect(priced.id, "pricing_output", [], null)).toEqual(refused("Connect to one of response's tables"))
     expect(connect(layered.id, "pricing_output", filled)).toEqual(
       refused("pricing_output is already filled by priced"),
     )

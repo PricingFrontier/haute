@@ -8,6 +8,7 @@ import { NODE_TYPES, nodeTypeColors, nodeTypeLabels } from "../../utils/nodeType
 import { DEFAULT_TARGET_HANDLE } from "../../utils/flowHandles"
 import { apiInputFrameLabels } from "../../utils/apiInputPorts"
 import useSettingsStore from "../../stores/useSettingsStore"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { STATUS_COLORS } from "../../theme/colors"
 
 const EDGE_JOIN_HANDLE_SUPPRESS_CLASS = "edge-join-handle--suppress-hover"
@@ -572,30 +573,60 @@ describe("PipelineNode", () => {
     expect(targetHandle).not.toBeNull()
   })
 
-  it("gives a Workbench Output a target port per table, and no other handle", () => {
-    const { container } = renderNode({
-      label: "response",
-      nodeType: NODE_TYPES.WORKBENCH_OUTPUT,
-      config: {
-        tables: [
-          { name: "pricing_output", rows: "one", columns: [{ name: "premium", type: "float" }] },
-          { name: "layers", rows: "many", columns: [{ name: "layer", type: "int" }] },
-        ],
-      },
+  describe("a workbench node's ports, the tables the workbench store fetched", () => {
+    const table = (name: string, columns: { name: string; type: "int" | "float" | "str" }[] = [{ name: "x", type: "int" }]) =>
+      ({ name, rows: "one" as const, columns })
+    const fetched = (tables: ReturnType<typeof table>[], responseTables: ReturnType<typeof table>[]) =>
+      useWorkbenchStore.setState({ tables: { tables, sample: {}, responseTables, fetch: 1 } })
+    afterEach(() => useWorkbenchStore.setState({ tables: null }))
+
+    it("gives a Workbench Input a source port per input table with a column, and follows each fetch", () => {
+      fetched([table("policy_details"), table("notes", []), table("equipment")], [table("pricing_output")])
+      // The server sends no handle identities for a Workbench Input: its config holds no tables.
+      const { container } = renderNode({
+        label: "quote",
+        nodeType: NODE_TYPES.WORKBENCH_INPUT,
+        config: {},
+        _sourceHandleInputNames: {},
+      })
+
+      expect(sourceHandles(container).map((handle) => handle.getAttribute("data-handleid"))).toEqual([
+        "policy_details",
+        "equipment",
+      ])
+      expect(container.querySelector(".react-flow__handle-left")).toBeNull()
+
+      act(() => fetched([table("equipment")], []))
+      expect(sourceHandles(container).map((handle) => handle.getAttribute("data-handleid"))).toEqual(["equipment"])
     })
 
-    const ports = [...container.querySelectorAll(".react-flow__handle-left")]
-    expect(ports.map((port) => port.getAttribute("data-handleid"))).toEqual(["pricing_output", "layers"])
-    expect(screen.getByTestId("input-connector[1]:response")).toHaveAttribute("data-handleid", "layers")
-    expect(screen.getByTestId("workbench-output-body-label-layers")).toHaveTextContent("layers")
-    expect(container.querySelector(".react-flow__handle-right")).toBeNull()
-    expect(screen.queryByText("inputs")).not.toBeInTheDocument()
-  })
+    it("gives a Workbench Input no port before the first fetch lands", () => {
+      const { container } = renderNode({ label: "quote", nodeType: NODE_TYPES.WORKBENCH_INPUT, config: {}, _sourceHandleInputNames: {} })
+      expect(sourceHandles(container)).toEqual([])
+      expect(screen.getByText("No emitted frames")).toBeInTheDocument()
+    })
 
-  it("says a Workbench Output without tables has none, with no port", () => {
-    const { container } = renderNode({ label: "response", nodeType: NODE_TYPES.WORKBENCH_OUTPUT, config: { tables: [] } })
-    expect(screen.getByText("No tables")).toBeInTheDocument()
-    expect(container.querySelector(".react-flow__handle")).toBeNull()
+    it("gives a Workbench Output a target port per response table, and no other handle", () => {
+      fetched([table("policy_details")], [
+        table("pricing_output", [{ name: "premium", type: "float" }]),
+        table("layers", [{ name: "layer", type: "int" }]),
+      ])
+      const { container } = renderNode({ label: "response", nodeType: NODE_TYPES.WORKBENCH_OUTPUT, config: {} })
+
+      const ports = [...container.querySelectorAll(".react-flow__handle-left")]
+      expect(ports.map((port) => port.getAttribute("data-handleid"))).toEqual(["pricing_output", "layers"])
+      expect(screen.getByTestId("input-connector[1]:response")).toHaveAttribute("data-handleid", "layers")
+      expect(screen.getByTestId("workbench-output-body-label-layers")).toHaveTextContent("layers")
+      expect(container.querySelector(".react-flow__handle-right")).toBeNull()
+      expect(screen.queryByText("inputs")).not.toBeInTheDocument()
+    })
+
+    it("says a Workbench Output without tables has none, with no port", () => {
+      fetched([table("policy_details")], [])
+      const { container } = renderNode({ label: "response", nodeType: NODE_TYPES.WORKBENCH_OUTPUT, config: {} })
+      expect(screen.getByText("No tables")).toBeInTheDocument()
+      expect(container.querySelector(".react-flow__handle")).toBeNull()
+    })
   })
 
   it("explore nodes are sink-only on the canvas", () => {

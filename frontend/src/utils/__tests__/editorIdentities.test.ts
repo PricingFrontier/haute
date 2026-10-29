@@ -151,6 +151,23 @@ describe("editor identity resolution", () => {
     )).toThrow(/edge.*stale.*authoritative/i)
   })
 
+  it("asks no handle identities for a Workbench Input and names each of its edges by its handle", () => {
+    // Its ports are the form's tables, which its config does not hold.
+    const workbench = node("wb_in", "Quote", "workbenchInput")
+    expect(buildEditorIdentityRequest([workbench], {}, RESERVED).nodes[0].source_handles).toEqual([])
+
+    const resolved = { ...workbench, data: { ...workbench.data, _sourceHandleInputNames: {} } }
+    const edges = attachEditorEdgeIdentities(
+      [{ id: "policy-edge", source: "wb_in", target: "target", sourceHandle: "policy_details" }],
+      [resolved],
+    )
+    expect(edges[0].data?._inputName).toBe("policy_details")
+    expect(() => attachEditorEdgeIdentities(
+      [{ id: "bare-edge", source: "wb_in", target: "target", sourceHandle: null }],
+      [resolved],
+    )).toThrow(/bare-edge.*authoritative/i)
+  })
+
   it("resolves a graph as one immutable operation", async () => {
     const nodes = [node("source", "class", "polars")]
     const edges = [{ id: "edge", source: "source", target: "target" }]

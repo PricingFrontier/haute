@@ -1090,8 +1090,12 @@ class SavePipelineService:
 
     @staticmethod
     def _validate_declared_config_keys(graph: PipelineGraph) -> None:
-        """Refuse a config key its node type does not declare, which a write would lose."""
-        from haute._config_validation import reject_unrecognized_config_keys
+        """Refuse a config key its node type does not declare, which a write would lose, and
+        a workbench node's tables or sample, which it is given from the form, never saved."""
+        from haute._config_validation import (
+            reject_form_given_keys,
+            reject_unrecognized_config_keys,
+        )
 
         graphs = [graph, *SavePipelineService._iter_embedded_submodel_graphs(graph)]
         for scoped_graph in graphs:
@@ -1100,6 +1104,7 @@ class SavePipelineService:
                     reject_unrecognized_config_keys(
                         node.data.nodeType, node.data.config, node_label=node.data.label
                     )
+                    reject_form_given_keys(node.data.nodeType, node.data.config)
                 except ConfigError as exc:
                     raise HTTPException(
                         status_code=400, detail=f"{exc.message} Nothing was saved."
@@ -1116,6 +1121,8 @@ class SavePipelineService:
         Names are global across the pipeline and its submodels (see
         :meth:`_validate_executable_names`); the Quote Input's own name
         is exempt, since its explicit connection already covers that edge.
+        A Workbench Input holds no tables, being given the form's where it
+        runs, so the tables its connections take are the ones checked.
         """
         scoped = [
             graph,
@@ -1132,19 +1139,21 @@ class SavePipelineService:
             for node in scoped_graph.nodes:
                 if node.data.nodeType not in REQUEST_INPUT_NODE_TYPES:
                     continue
-                tables = node.data.config.get("tables")
-                if not isinstance(tables, list):
-                    continue
+                if node.data.nodeType is NodeType.WORKBENCH_INPUT:
+                    kind = "Workbench Input"
+                    labels = [
+                        edge.sourceHandle for edge in scoped_graph.edges if edge.source == node.id
+                    ]
+                else:
+                    tables = node.data.config.get("tables")
+                    if not isinstance(tables, list):
+                        continue
+                    kind = "Quote Input"
+                    labels = [
+                        table.get("label") if isinstance(table, dict) else None for table in tables
+                    ]
                 own_name = _sanitize_func_name(node.data.label)
-                # A Workbench Input's tables carry their port as `name`, a Quote Input's
-                # as `label`.
-                kind, key = (
-                    ("Workbench Input", "name")
-                    if node.data.nodeType is NodeType.WORKBENCH_INPUT
-                    else ("Quote Input", "label")
-                )
-                for table in tables:
-                    label = table.get(key) if isinstance(table, dict) else None
+                for label in labels:
                     if not isinstance(label, str) or label == own_name:
                         continue
                     clashing = labels_by_name.get(label)

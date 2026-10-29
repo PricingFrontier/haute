@@ -23,6 +23,7 @@ import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useNodeDataStore from "../stores/useNodeDataStore"
 import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
 import useUIStore from "../stores/useUIStore"
+import useWorkbenchStore from "../stores/useWorkbenchStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
 import { findFirstInvalidEdgeJoin, formatEdgeJoinValidationIssue } from "../utils/edgeJoinValidation"
 import { effectiveNodeType, nodeData } from "../types/node"
@@ -34,8 +35,8 @@ import {
   type PipelineLoadStatus,
 } from "../types/pipelineDocument"
 import { type ColumnFingerprintInput } from "../utils/columnFingerprint"
-import { authoritativeSourceHandles } from "../utils/apiInputPorts"
-import { workbenchTablePorts } from "../utils/workbenchTables"
+import { requestInputSourceHandles } from "../utils/apiInputPorts"
+import { workbenchNodePorts, type WorkbenchTables } from "../utils/workbenchTables"
 import {
   runtimeNodeIdForVisibleNode,
   type DrilledOccurrenceIdentity,
@@ -125,19 +126,27 @@ function nodeLabel(node: Node): string {
   return String(node.data.label || node.id)
 }
 
-function previewPortLabel(node: Node, chosenFrame?: string): string | undefined {
+/**
+ * The frame a node's preview is of: *workbench*, the newest fetch of the workbench's
+ * tables, gives a workbench node its ports.
+ */
+function previewPortLabel(
+  node: Node,
+  workbench: WorkbenchTables | null,
+  chosenFrame?: string,
+): string | undefined {
   const data = nodeData(node)
   // A Workbench Output's tables are its frames: its preview is of the table last
   // chosen in it while that is still one of its tables, else of its first.
   if (data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT) {
-    const ports = workbenchTablePorts(data.config)
+    const ports = workbenchNodePorts(data.nodeType, workbench)
     return chosenFrame !== undefined && ports.includes(chosenFrame) ? chosenFrame : ports[0]
   }
   if (!isRequestInputType(data.nodeType)) return undefined
-  return authoritativeSourceHandles({
+  return requestInputSourceHandles({
     id: node.id,
     data,
-  })[0]
+  }, workbench)[0]
 }
 
 type ColumnDef = ColumnFingerprintInput[number]
@@ -472,7 +481,7 @@ export default function usePipelineAPI({
   // recalculation and selection preview that table again.
   const chosenFrames = useRef(new Map<string, string>())
   const portLabelFor = useCallback(
-    (node: Node) => previewPortLabel(node, chosenFrames.current.get(node.id)),
+    (node: Node) => previewPortLabel(node, useWorkbenchStore.getState().tables, chosenFrames.current.get(node.id)),
     [],
   )
   const fetchPreviewImmediateRef = useRef<
@@ -1426,7 +1435,7 @@ export default function usePipelineAPI({
     const edgeJoinIssue = findFirstInvalidEdgeJoin(n, e, {
       structuralVersion: useGraphStore.getState().structuralVersion,
       activeSource: useSettingsStore.getState().activeSource,
-    })
+    }, useWorkbenchStore.getState().tables)
     if (edgeJoinIssue) {
       addToast("error", `Cannot save: ${formatEdgeJoinValidationIssue(edgeJoinIssue)}`)
       return false

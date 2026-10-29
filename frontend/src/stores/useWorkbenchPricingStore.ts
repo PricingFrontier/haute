@@ -75,8 +75,11 @@ export function usePricingContext(): string {
   return contextKey(pricingContext())
 }
 
-/** Prices a sample, given the tables, sample and response tables Haute takes from the form. */
-export type Pricer = (workbench: WorkbenchTablesResponse) => Promise<PricedSample>
+/**
+ * Prices a form's sample, given the form and the tables, sample and response tables Haute
+ * takes from it.
+ */
+export type Pricer = (form: FormSpec, workbench: WorkbenchTablesResponse) => Promise<PricedSample>
 
 /** What pricing a form's values gave, with those values as the server typed them. */
 export interface PricedValues extends PricedSample {
@@ -101,11 +104,12 @@ export interface SamplePrice extends PricedValues {
 
 /**
  * Price a form's values on the pipeline: the tables, sample and response tables the
- * server takes from the form (`POST /api/workbench/tables`), then the pricer on them.
+ * server takes from the form (`POST /api/workbench/tables`), then the pricer on the form
+ * and them.
  */
 async function priceForm(form: FormSpec, pricer: Pricer): Promise<PricedValues> {
   const workbench = await fetchWorkbenchFormTables(form)
-  const { tables } = await pricer(workbench)
+  const { tables } = await pricer(form, workbench)
   return { tables, sample: workbench.sample }
 }
 

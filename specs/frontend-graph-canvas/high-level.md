@@ -45,8 +45,9 @@ Out of scope (owned by neighbouring components, linked where they exist):
   state.
 - Background job polling.
 - The workbench's tables and the Workbench Input and Workbench Output node types —
-  [workbench](../workbench/high-level.md). The editor shell keeps their copies current
-  through `useWorkbenchTables`.
+  [workbench](../workbench/high-level.md). Their ports are the tables the workbench store
+  fetched, and the editor shell removes their connections to tables a fetch no longer has
+  through `useWorkbenchConnections`.
 - Backend submodel occurrence, public-port, and endpoint behavior —
   [submodels](../submodels/high-level.md). This component owns only browser
   navigation and endpoint consumption.

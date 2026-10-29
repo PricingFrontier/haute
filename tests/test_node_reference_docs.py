@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 import yaml
 
-from haute._config_validation import VALID_KEYS
+from haute._config_validation import FORM_GIVEN_KEYS, VALID_KEYS
 from haute._types import NodeType
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -97,6 +97,19 @@ _SETTINGS_TABLE = re.compile(
 )
 
 
+def _pipeline_file_stored(text: str) -> list[str]:
+    """The "Stored as" cells of a page's "In the pipeline file" table, one per setting."""
+    section = _PIPELINE_FILE_SECTION.search(text)
+    if section is None:
+        return []
+    body = "\n".join(line.removeprefix("    ") for line in section.group(1).splitlines()) + "\n"
+    return [
+        re.split(r"(?<!\\)\|", row.strip().strip("|"))[-1].strip()
+        for table in _SETTINGS_TABLE.findall(body)
+        for row in table.splitlines()
+    ]
+
+
 def _pipeline_file_keys(text: str) -> list[str]:
     """The top-level config keys a page's "In the pipeline file" table stores settings as.
 
@@ -106,17 +119,11 @@ def _pipeline_file_keys(text: str) -> list[str]:
     that starts with prose describes where else a setting lives, such as a
     connection's ``target_port``.
     """
-    section = _PIPELINE_FILE_SECTION.search(text)
-    if section is None:
-        return []
-    body = "\n".join(line.removeprefix("    ") for line in section.group(1).splitlines()) + "\n"
     keys: list[str] = []
-    for table in _SETTINGS_TABLE.findall(body):
-        for row in table.splitlines():
-            stored = re.split(r"(?<!\\)\|", row.strip().strip("|"))[-1].strip()
-            match = re.match(r"`([^`]+)`", stored)
-            if match:
-                keys.append(re.split(r"[\[.]", match.group(1), maxsplit=1)[0])
+    for stored in _pipeline_file_stored(text):
+        match = re.match(r"`([^`]+)`", stored)
+        if match:
+            keys.append(re.split(r"[\[.]", match.group(1), maxsplit=1)[0])
     return keys
 
 
@@ -160,10 +167,13 @@ def test_a_commented_out_navigation_entry_is_not_listed() -> None:
 def test_the_pipeline_file_table_names_only_accepted_config_keys(
     node_type: NodeType, page: str
 ) -> None:
-    documented = _pipeline_file_keys((NODE_REFERENCE / page).read_text(encoding="utf-8"))
+    text = (NODE_REFERENCE / page).read_text(encoding="utf-8")
 
-    assert documented, f"{page} has no In the pipeline file table"
-    assert sorted(set(documented) - VALID_KEYS[node_type]) == []
+    assert _pipeline_file_stored(text), f"{page} has no In the pipeline file table"
+    # A workbench node is given its tables from the form wherever it runs, so a page that
+    # says its sidecar stores them is wrong: its table says where they live, in prose.
+    stored = VALID_KEYS[node_type] - FORM_GIVEN_KEYS.get(node_type, frozenset())
+    assert sorted(set(_pipeline_file_keys(text)) - stored) == []
 
 
 def test_the_table_parser_reads_nested_keys_and_escaped_pipes_and_skips_prose() -> None:

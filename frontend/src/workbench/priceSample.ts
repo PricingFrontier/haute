@@ -1,51 +1,57 @@
 /**
  * A sample priced on the pipeline open in the editor (specs/workbench): the Workbench
  * Output's tables as its preview shows them, every table from one run of the pipeline, in
- * one preview asking for them all. The document's top-level workbench nodes run
- * with the tables and sample the form gives, in this request alone, as a fetch gives them
- * copies; a Workbench Input inside a submodel keeps its copy, and the document itself is
- * left alone. A pipeline without a top-level Workbench Input, which alone is given the
- * sheets' values, is refused, saying what to replace or move.
+ * one preview asking for them all. The document goes as the editor holds it, with the
+ * form the view holds, whose tables and sample every Workbench Input and Workbench Output
+ * of that request takes, at the top level or inside a submodel, in place of the form
+ * folder's. A pipeline without a Workbench Input, which alone is given the sheets' values,
+ * is refused, saying what to replace or add.
  */
 import { previewNode } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
-import type { GraphPayload, WorkbenchTablesResponse } from "../api/types"
+import type { FormSpec, GraphPayload, WorkbenchTablesResponse } from "../api/types"
+import { submodelGraphFromMetadata } from "../utils/apiInputPorts"
 import { NODE_TYPES } from "../utils/nodeTypes"
-import { WORKBENCH_COPY_PATCHES, workbenchTablePorts, type PricedSample } from "../utils/workbenchTables"
+import { workbenchTablePorts, type PricedSample } from "../utils/workbenchTables"
 
 /** The preview route's most rows: a quote's many-row tables fit. */
 const ROW_LIMIT = 10_000
 
 export async function priceSample(
   graph: GraphPayload,
+  form: FormSpec,
   workbench: WorkbenchTablesResponse,
   source: string,
 ): Promise<PricedSample> {
-  const copies = { tables: workbench.tables, sample: workbench.sample, responseTables: workbench.response_tables }
-  const nodes = graph.nodes.map((node) => {
-    const config = (node.data.config ?? {}) as Record<string, unknown>
-    const patch = WORKBENCH_COPY_PATCHES[String(node.data.nodeType)]?.(config, copies) ?? null
-    return patch === null ? node : { ...node, data: { ...node.data, config: { ...config, ...patch } } }
-  })
-  const output = nodes.find((node) => node.data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT)
+  const output = graph.nodes.find((node) => node.data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT)
   if (output === undefined) {
     throw new Error(
       "The pipeline has no Workbench Output: add one from the palette and connect a frame to each of its tables.",
     )
   }
-  // Only a top-level Workbench Input is given the sheets' values: without one every value
-  // typed would price alike, so nothing is priced.
+  // Only a Workbench Input is given the sheets' values: without one every value typed
+  // would price alike, so nothing is priced.
+  const nodes = [
+    ...graph.nodes,
+    ...Object.values(graph.submodels ?? {}).flatMap((definition) => submodelGraphFromMetadata(definition)?.nodes ?? []),
+  ]
   if (!nodes.some((node) => node.data.nodeType === NODE_TYPES.WORKBENCH_INPUT)) {
     throw new Error(
       nodes.some((node) => node.data.nodeType === NODE_TYPES.API_INPUT)
         ? "The pipeline reads its quotes from a Quote Input, which the sheets never fill: replace it with a Workbench Input."
-        : "The pipeline has no Workbench Input at its top level, so the sheets reach nothing: add one, or move the one inside a submodel out of it.",
+        : "The pipeline has no Workbench Input, so the sheets reach nothing: add one.",
     )
   }
-  const priced = { ...graph, nodes }
-  const labels = workbenchTablePorts(output.data.config as Record<string, unknown> | undefined)
+  const labels = workbenchTablePorts(workbench.response_tables)
   if (labels.length === 0) return { tables: {} }
-  const result = await previewNode({ graph: priced, nodeId: output.id, rowLimit: ROW_LIMIT, source, portLabels: labels })
+  const result = await previewNode({
+    graph,
+    nodeId: output.id,
+    rowLimit: ROW_LIMIT,
+    source,
+    portLabels: labels,
+    workbenchForm: form,
+  })
     // The server's reason, such as a sample that does not fit, rather than its status.
     .catch((error: unknown) => {
       throw new Error(apiErrorMessage(error))

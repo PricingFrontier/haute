@@ -1,8 +1,9 @@
 """The Workbench Input: a quote's tables, read as dataframes (specs/workbench).
 
-Its ``tables`` are a copy of the workbench's input tables and its ``sample`` the sample quote
-typed while building, as a request holds one: each table under its name, an object for a
-one-row table and a list of objects for a many-row one. It reads no file and walks no JSON
+Its ``tables`` are the workbench's input tables and its ``sample`` the sample quote typed
+while building, given from the form wherever it runs (``haute._workbench_nodes``), the sample
+as a request holds one: each table under its name, an object for a one-row table and a list
+of objects for a many-row one. It reads no data file and walks no JSON
 path: the quote's shape is the tables'. :func:`read_quote` gives one frame per port, each
 column typed as declared, and refuses a part of the quote that is not of its table's shape
 or a value that is not of its column's type, naming it. Without a request, in editor runs
@@ -249,7 +250,7 @@ def workbench_table_frames(
 ) -> dict[str, pl.LazyFrame]:
     """A Workbench Input's frames without a request: its sample's rows, typed as declared.
 
-    The sample, the copy of the quote the workbench supplies, is read as a request is, so
+    The sample, the quote the workbench's form gives, is read as a request is, so
     the sample prices as the quote it stands for would when deployed: a many-row table it
     does not hold has no rows, and a one-row table its one row of nulls. While there is no
     sample (none, or nothing typed in it), every table is one row of nulls, the
