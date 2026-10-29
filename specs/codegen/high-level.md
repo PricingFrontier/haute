@@ -273,10 +273,14 @@ Out of scope (owned by neighbouring components):
   output) therefore saves the refreshed annotation instead of a stale one the
   post-save parse check rejects. The keyword is rendered with the rest of the
   decorator; no generated source is edited after the fact.
-- **Instance mappings are persisted.** An instance is a declaration whose
-  decorator carries `of=...` and its explicit `inputMapping=...`. Parsing
-  therefore restores the mapping metadata needed for a later graph edit or save
-  instead of relying on name heuristics after the first reload.
+- **Instances are submodel registrations.** An instance of a node or of a submodel
+  is an occurrence of a definition: its definition module is emitted once, each
+  occurrence is one `pipeline.submodel(<module>.submodel, "<name>"[, instance_of=...])`
+  registration, and its input mapping is its connections,
+  `pipeline.connect("<frame>", "<name>", target_port="<input>")`, so parsing restores
+  every binding without name heuristics. A linked node (a one-node definition) is
+  emitted as the module holding that one node; its consumers' parameters read it under
+  its occurrence's name. No node declaration carries `of=`.
 - **Polars transforms bind inputs by name only.** A `polars` node's function
   parameters are its logical inputs, one per incoming edge in edge order; `df` is
   purely the output variable and is never pre-bound to an input. The body is the

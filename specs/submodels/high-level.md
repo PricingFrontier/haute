@@ -11,7 +11,14 @@ group's internals, or ungroup it back into the parent at any time.
 
 Submodels exist purely as a **code-organisation and GUI-navigation** concept.
 Execution, tracing, and deployment never reason about submodel boundaries —
-they operate on a single flat graph with the boundaries dissolved. This
+they operate on a single flat graph with the boundaries dissolved.
+
+A definition is also the unit of reuse. An **instance** applies a definition's
+logic to another set of inputs, through an explicit input mapping: an instance
+of a submodel reuses the group, and an instance of a single node reuses that
+node, which becomes a **linked node**, an occurrence of a one-node definition
+drawn on the canvas as the node itself. There is no other reuse mechanism:
+node-level instances are refused. This
 component owns both sides of that representation boundary: constructing the hierarchical
 (collapsed) form and flattening one or all occurrences back into executable graph nodes.
 
@@ -24,13 +31,15 @@ In scope:
 - Resolving a submodel's `.py` file relative to the active pipeline directory,
   and the `modules/<name>.py` convention by which a pipeline imports a definition
   module, shared with the parser and codegen (`src/haute/_submodel_paths.py`).
-- The pure, I/O-free graph transform that extracts selected nodes out of a
-  `PipelineGraph` into a new submodel (`src/haute/routes/_submodel_ops.py`).
+- The pure, I/O-free graph transforms that extract selected nodes out of a
+  `PipelineGraph` into a new submodel and wrap one node in a one-node
+  definition for Create Instance (`src/haute/routes/_submodel_ops.py`).
 - Flattening one named submodel or every submodel into a flat execution graph, including boundary
   handle consumption, edge-join target-role restoration, and edge deduplication
   (`src/haute/_flatten.py`).
-- The three HTTP endpoints that expose creation, drill-down, and dissolution
-  to the GUI: `POST /api/submodel/create`, `GET /api/submodel/{definition_id}`,
+- The four HTTP endpoints that expose creation, a node's Create Instance,
+  drill-down, and dissolution to the GUI: `POST /api/submodel/create`,
+  `POST /api/submodel/instance`, `GET /api/submodel/{definition_id}`,
   `POST /api/submodel/dissolve` (`src/haute/routes/submodel.py`).
 
 Out of scope (owned elsewhere, linked where relevant):
@@ -156,11 +165,13 @@ explicit remove action: it retires the selected public input together with all
 of its internal routes and every parent binding across occurrences as one
 undoable definition edit. Every collapsed
 occurrence presents one generic `inputs` socket rather than one socket per
-public frame. Multiple parent edges may share that socket. Each drop uses the
-upstream frame's authoritative executable name to select a declared public port;
-an owner mints a port named after that identity (suffixing `_2`, `_3` on
-collision across both directions) when it is new, while a copy may bind only
-names already present in the shared definition. The stored edge targets the canonical named `in__<name>` handle,
+public frame (a linked node instead shows its node's own input sockets; see
+Reuse). Multiple parent edges may share that socket. Each drop binds a declared
+public port by the binding rule under Reuse: an owner binds the port named like
+the upstream frame's authoritative executable name, or mints one named after it
+(suffixing `_2`, `_3` on collision across both directions) when none is; an
+instance binds the port named like the frame, else the one port it has not
+bound, else the port the user picks, and never mints one. The stored edge targets the canonical named `in__<name>` handle,
 but every such handle is visually co-located at the one generic socket. The
 named frames are exposed only after drill-in, where the Input boundary renders
 them as a multi-frame output and each may be routed to one or more child targets.
@@ -182,7 +193,7 @@ remove-connection wording. A read-only occurrence shows the same list without
 removal controls. New
 public output ports are added in the drilled view by wiring a child output to
 the Output boundary. Instance copies retain the generic parent socket and
-read-only drill-down.
+read-only drill-down; a linked node has neither (see Reuse).
 
 Flattening expands each occurrence independently. Runtime node ids are
 qualified from immutable `(instanceId, localNodeId)` values and retain a
@@ -313,7 +324,8 @@ must resolve the original pipeline-owned sidecars.
   files are retained. The transform response reports only the transformed
   graph, unchanged source revision, and selected instance/definition identity;
   it exposes no file-deletion compatibility state.
-- **Selection validity.** A submodel must contain at least 2 unique node ids,
+- **Selection validity.** A grouped submodel must contain at least 2 unique node ids
+  (a one-node definition comes only from Create Instance),
   every requested id must exist in the submitted graph, and duplicates are an
   invalid client request rather than an instruction to coalesce entries. A
   stale id rejects the entire operation; creation never silently groups a
@@ -328,7 +340,8 @@ must resolve the original pipeline-owned sidecars.
 - **GUI creation is selection-based.** There is no submodel entry in the node palette or GUI
   library picker: the create endpoint only extracts an existing selection from the current graph.
   Existing occurrences expose **Create instance**, which creates an unbound
-  occurrence of the same definition without copying a file. Source files can
+  occurrence of the same definition without copying a file; a plain node's
+  Create Instance wraps it in a one-node definition (see Reuse). Source files can
   also hand-author explicit reusable registrations: `from modules import <module>`, then one
   `pipeline.submodel(<module>.submodel, "<name>")` per occurrence.
 - **Windows-reserved names are rejected up front.** A submodel name that would
@@ -359,13 +372,81 @@ must resolve the original pipeline-owned sidecars.
   expansion of the owner still merges each definition preamble exactly once,
   and a partial line overlap (`import a` vs `import ab`) never suppresses a
   genuinely new line. Create then dissolve reaches a stable representation.
-- **Writes are serialised and freshness-checked.** Both create and dissolve acquire the same shared
-  lock used by the manual pipeline save endpoint while reading the persisted
+- **Writes are serialised and freshness-checked.** Create, a node's Create Instance and dissolve
+  acquire the same shared lock used by the manual pipeline save endpoint while reading the persisted
   revision and computing a transform. Before transforming anything,
   each route compares `base_revision` with the editor document's deterministic
   raw-artifact revision of the current parent and referenced child state. A mismatch returns
   `409`. A successful transform leaves that revision unchanged. The lock is process-local
   and is not a multi-worker filesystem lock.
+
+### Reuse: instances of nodes and submodels (normative)
+
+A submodel groups nodes that form one process. An **instance** reuses logic on
+another set of inputs: an instance of a submodel is another occurrence of its
+definition, and an instance of a single node is another occurrence of a
+one-node definition. There is no other reuse mechanism: `@pipeline.instance`,
+an `of=` keyword on a node decorator and an `instanceOf` on an ordinary node are
+refused (see Failure model), and nothing migrates them. `inputMapping` on a
+plain Transform or Load File is not reuse: it keeps the names its code reads
+across a rewire.
+
+- **An instance's input mapping is its incoming edges.** Each parent edge into
+  an occurrence names the public input it feeds in its `in__<name>` handle, so
+  an instance may bind any upstream frame to any of its definition's public
+  inputs, at most one frame each. The edge set is the whole mapping; there is
+  no separate mapping field. Flattening binds each public input's targets to
+  its edge's frame and keeps the names the definition's code reads
+  (`inputMapping` on Transform and Load File code, renamed step references),
+  as it does for every occurrence.
+- **Binding a dropped connection.** A connection dropped on an instance binds
+  the public input named like the incoming frame's executable name; failing
+  that, the one public input the instance has not bound; failing that, the
+  editor asks which of its unbound inputs the connection feeds. A drop on an
+  instance whose every public input is bound is refused, naming the instance.
+  An instance never mints a public input. The owner binds a public input named
+  like the frame, or mints one named after it, which on a linked node targets
+  its one node. No path pairs inputs by position or by substring.
+- **The input mapping in the panel.** Every occurrence's panel lists its
+  definition's public inputs, each with the connection that feeds it on this
+  occurrence, or "not connected". Choosing another of the occurrence's
+  connections re-targets that edge to the input as one undoable edit, leaving
+  the input it fed unbound. An unbound input is an ordinary editing state: the
+  nodes it targets run without it and report what their code misses, as an
+  unconnected node does.
+- **Missing columns.** For each public input that an instance and its owner
+  both bind, the instance reports, as `missing` schema warnings, the columns
+  the owner's frame carries that the instance's does not, read from the walk's
+  recorded schemas as for any node. A linked instance shows them in its panel;
+  a submodel instance on the nodes the input targets.
+- **Linked nodes.** An occurrence of a definition whose graph holds exactly one
+  node is a linked node. The canvas draws it as that node's card, with the
+  occurrence's name and a link mark, and the node's own input and output
+  sockets (an Edge Join's `base` and `join` sockets each bind the public input
+  that targets that role). It has no drill-in. Clicking it previews the node as
+  a qualified runtime target. The owner's panel is the node's own editor, and
+  its edits change the shared definition, so every instance follows; an
+  instance's panel shows the same editor read-only, with "Instance of <owner>",
+  its input mapping and its missing columns. A linked node's output is named
+  by its occurrence's name, as an ordinary node's output is by its label: a
+  consumer reads the owner and an instance under different names, and renaming
+  either renames its frame downstream, coded consumers keeping their code
+  through `inputMapping` as for any rename. Duplicate gives an unlinked plain
+  copy of the node. Unlink, offered on an owner no instance references,
+  dissolves it into a plain node under the linked node's name and position.
+- **Create Instance.** On a submodel occurrence it places another occurrence
+  of the definition, as described above. On a plain node it wraps the node in
+  place in a one-node definition: the definition and its module take the
+  node's name (`modules/<name>.py`, suffixed `_2`, `_3` while a module of that
+  name exists under any casing); the owner occurrence keeps the node's name,
+  position and connections, each incoming frame becoming a public input named
+  as the node read it and its output the one public output; and an unbound
+  instance, named as a submodel copy is (`<name>_2`), is placed beside it.
+  It is one undoable editor transform through `POST /api/submodel/instance`,
+  written only by Save, as grouping is. It is offered on every node type a
+  definition can hold, apart from the document-wide singletons (`apiInput`,
+  `workbenchInput`, `output`, `workbenchOutput`) and the Source Switch, and
+  only in the parent view.
 
 ## Design rationale
 
@@ -402,6 +483,14 @@ must resolve the original pipeline-owned sidecars.
   stored in its submodel metadata, the file its import names. There is no global
   name-only fallback. The GUI and the actually executed pipeline therefore open the
   same file.
+- **One reuse mechanism.** Node-level instances paired inputs by name, then by
+  substring, then by position; a pipeline holding one did not run as plain
+  Python; and every engine and editor layer had to carry them on a second
+  path. Submodel instances bind named public inputs explicitly, run standalone
+  and expand through the one flatten path. Making a node's instance an
+  occurrence of a one-node definition, drawn as the node, keeps what node
+  instances did (the same logic on other inputs, edits followed everywhere)
+  on that machinery, and gives every instance an explicit input mapping.
 - **Nesting is disallowed by construction, not by convention.** Rejecting any
   selection that includes a submodel occurrence keeps the occurrence model,
   the `in__`/`out__` handle scheme, and the flatten pass single-level;
@@ -449,7 +538,8 @@ must resolve the original pipeline-owned sidecars.
   occurrence's `out__<name>` handle through the referenced definition to
   that public output's internal `{nodeId, handleId}` data source. Its parent
   input name is the sanitised public output port name, independent of the
-  occurrence alias and number of outputs. See
+  occurrence alias and number of outputs, except for a linked node, whose
+  output is named by its occurrence (see Reuse). See
   [frontend-node-editors](../frontend-node-editors/high-level.md)
   for chip derivation and [codegen](../codegen/high-level.md) for the backend
   rule.
@@ -533,6 +623,23 @@ must resolve the original pipeline-owned sidecars.
   of the import when no other registration uses it. No recovery action rewrites any of them.
 - Save refuses with `400` a graph whose definition file is not a `modules/<name>.py` module,
   before writing anything.
+- Create Instance on a document-wide singleton, a Source Switch, a node in a
+  drilled definition or a node that does not exist is refused before any
+  transform: `400` from `POST /api/submodel/instance` with the reason, or the
+  editor's visible refusal before a request. The route shares create's
+  `source_file` and `base_revision` checks (`400`, `409`), and the module it
+  derives passes the same read-only no-clobber preflight.
+- A connection dropped on an instance whose every public input is bound is
+  refused in the editor, naming the instance; no edge is added.
+- A pipeline file that registers a node with `@pipeline.instance`, gives a node
+  decorator `of=`, or whose node config carries `instanceOf` on anything but a
+  submodel occurrence fails to parse with a `ParseError` naming the removed form
+  and its replacement: the node in its own module `modules/<name>.py`,
+  registered as `pipeline.submodel(<name>.submodel, "<original>")` and
+  `pipeline.submodel(<name>.submodel, "<instance>", instance_of="<original>")`,
+  with each input bound by `pipeline.connect(..., target_port="<input>")`. The
+  editor shows that node unavailable with the message; nothing migrates it. The
+  live `Pipeline` has no `instance` decorator.
 - The live `Pipeline.submodel()` raises `TypeError` when given a file path, naming the
   import form, or anything else that is not a `haute.Submodel`, such as the imported module
   itself. A definition module that defines no `submodel` fails with Python's own

@@ -132,7 +132,7 @@ the imports, one blank line, for a pipeline with submodels its `submodel_import`
 `Pipeline(...)`/`Submodel(...)` construction (an empty `description` is
 omitted), any preserved blocks (`_emit_preserved_block`, wrapped in
 `# haute:preserve-start/-end` markers), then each node function preceded by two
-blank lines (original nodes in emission order, then instance nodes), the
+blank lines (in emission order), the
 submodel registration calls, and the `pipeline.connect(...)`/
 `submodel.connect(...)` calls under the `# Wire nodes together` comment
 (deduped when `dedup_connects=True`). The module ends with exactly one newline.
@@ -205,13 +205,12 @@ fresh markers.
 
 Every builder except `_gen_transform` describes a configured node.
 
-- **Declaration** (`_configured_node`, and `_instance_to_code` for an instance): no user code. Parameters are the node's
+- **Declaration** (`_configured_node`): no user code. Parameters are the node's
   input names without annotations, there is no return annotation, and the body
   is `...` — or the docstring alone when the node has a description, since a
   docstring is already a complete body. API Input, Data Output, Edge Join,
   Banding, Output, Live Switch, Modelling, Optimiser, Optimiser Apply and
-  Constant nodes are always declarations; so is an instance node, whose
-  decorator carries `of=` and its `inputMapping=`.
+  Constant nodes are always declarations.
 - **Hook** (`_configured_node`): a Data Input, Rating Step, Model Score, Scenario Expander or
   Explore node whose config carries code or steps. The first parameter is
   `df: pl.LazyFrame` in place of the first input (a Data Input has only `df`),
@@ -229,8 +228,7 @@ Every builder except `_gen_transform` describes a configured node.
   validates a transform's, so a standalone run binds the frames positionally to
   the names its code reads. As for a transform, the parser reconstructs its
   implicit edges through that mapping (`_graph_builders._edge_param_names_for_node`),
-  never from a node that shares a logical name, and an instance of either is
-  generated against its original's logical names.
+  never from a node that shares a logical name.
 - The code-accepting builders raise `ConfigError` for an input named `df`.
 - Removed `dataSource`/`dataSink` enum values, decorators, templates, and
   extractor aliases have no compatibility path. Round trips preserve the

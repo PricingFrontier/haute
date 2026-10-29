@@ -634,11 +634,9 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   state as chips) and read/write `input_scenario_map` by that same `name` — two frames from one
   API input are two distinct map keys, individually routable for the first time. A frame
   rename's atomic commit updates every name-referencing config in the same pass that rebinds
-  the edges: `input_scenario_map` keys on downstream live-switches, instance `inputMapping`
-  **values** on downstream instance nodes, and instance `inputMapping` **keys** on every node
-  whose `instanceOf` references an affected *original* (the original's input names are the
-  mapping keys, so renaming a frame feeding the original would otherwise stale-key every
-  instance). The commit is **preflighted**: before anything mutates, every affected target's
+  the edges: `input_scenario_map` keys on downstream live-switches and `inputMapping` values
+  on downstream Transform and Load File nodes. An instance's input mapping is its edges'
+  `in__<name>` handles, which a frame rename does not change. The commit is **preflighted**: before anything mutates, every affected target's
   post-rename input-name set is checked for duplicates (the new name colliding with another
   input already on that target), and a collision rejects the entire rename with an inline
   error naming the target and the colliding name — no config, edge, or mapping mutation
@@ -921,6 +919,17 @@ preview/train/cache/schema/publication actions behind the App-level capability f
 Created read-only submodel instances retain the normal inert editor presentation, and all read-only
 update handlers reject calls.
 
+**Occurrence panels.** Every submodel occurrence's panel lists its definition's public
+inputs under INPUTS, each with a selector of the occurrence's incoming connections (shown by
+their frame names) or "not connected"; choosing a connection re-targets that edge to the
+input, as one undoable edit, and an input left without one shows "not connected". The
+selector is live on an instance, whose definition is otherwise read-only. A linked node's
+panel is its node's own editor (the node type's tabs) instead of the submodel summary: on
+the owner it edits the definition's one node, and every instance follows; on an instance it
+renders read-only under "Instance of <owner>", with the INPUTS selectors and MISSING
+COLUMNS (the `missing` schema warnings its preview reported, one per column). An owner that
+no instance references offers **Unlink**.
+
 ## Minimal unavailable-node removal implementation
 
 `NodePanel` renders the repair affordance only for an `unavailable` recovery
@@ -931,13 +940,15 @@ Known unavailable ordinary nodes offer `Recover settings` as the primary action
 and `Reset node` as the destructive alternative, except an Edge Join, which offers no
 Reset: a new join has no keys, and a join without keys cannot be written. A node whose
 connections are wrong (a `node_topology_invalid` diagnostic) offers neither, since
-rebuilding its settings cannot mend them; removal stays. Submodels, instances, unknown
-types and blocked nodes cannot reset or recover. The editor does not open an
+rebuilding its settings cannot mend them; removal stays. Submodels (linked nodes included),
+unknown types and blocked nodes cannot reset or recover; a node refused for a removed
+node-level instance form (`@pipeline.instance`, `of=`, `instanceOf`) offers removal only,
+with the parser's message naming the linked-node form. The editor does not open an
 unavailable submodel's definition, so that submodel's inspector lists the
 definition's unavailable nodes (`submodels[config.definitionId]`) under
 "Unavailable nodes in this submodel", each with its diagnostics, `Recover settings`
 and `Reset node` for a known ordinary node, and `Remove node` for any of them (an
-unknown decorator or an instance has nothing to rebuild), all submitted with that
+unknown decorator has nothing to rebuild), all submitted with that
 node's own `_recoveryId` and `_sourceFile` (the submodel's file). `PipelineRepairTarget.action` chooses the dialog
 transport and confirmation labels. Reset explicitly warns that settings/custom
 code are replaced and configuration may be needed; recover explains that valid

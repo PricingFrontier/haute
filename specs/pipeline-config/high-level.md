@@ -177,11 +177,13 @@ occurrences of one definition each run its nodes under their own names.
 replaced it, and for anything else that is not a `haute.Submodel`, such as the imported
 module itself, naming `<module>.submodel`; a module that defines no `submodel` fails with
 Python's own `AttributeError` when the pipeline file is imported.
-`@pipeline.instance` registrations are not executable on this live-object surface: the
-decorator records an internal instance marker, and `run()`/`score()` raise `ExecutionError`
-before calling the node regardless of whether `instanceOf` or `inputMapping` is empty. Static
-codegen may resolve an instance into a concrete generated function; the live registry may not
-silently treat an unresolved instance as an ordinary Polars node.
+There are no node-level instances: `Pipeline` has no `instance` decorator, and the parser
+refuses `@pipeline.instance(...)` and an `of=` keyword on any node decorator with a message
+naming the replacement. A node is reused as a linked node, an occurrence of a one-node
+definition in its own `modules/<name>.py`, registered once for the original and once per
+instance (`instance_of="<original>"`), with each instance's inputs bound by
+`connect(..., target_port="<input>")`; `run()` and `score()` execute those occurrences as they
+do any submodel's.
 
 `run()` takes the source to run under as the keyword `source`, which it requires: a bare
 `run()` raises `TypeError` before any node runs, naming the sources the pipeline's

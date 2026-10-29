@@ -63,6 +63,21 @@ copies no internal graph or file, starts with no bindings, and participates in t
 undo/redo snapshot. It is available only in the parent view; nesting remains
 unsupported.
 
+A plain node is reused the same way, as a **linked node** (an occurrence of a
+one-node definition; see
+[submodels](../submodels/high-level.md#reuse-instances-of-nodes-and-submodels-normative)).
+Its **Create instance** sends `POST /api/submodel/instance` with the node, the
+graph and the document's revision, and commits the returned graph (the node
+wrapped in place, an unbound instance beside it) as one undo step, as a
+grouping is committed. A linked node is drawn as its node's card, with the
+occurrence's name, a link mark and the node's own sockets, and has no
+drill-in: clicking it previews the node and opens its editor, the owner's
+editable (its edits change the shared definition) and an instance's read-only
+with "Instance of <owner>", its input mapping and its missing columns.
+Duplicate on a linked node gives an unlinked plain copy of its node, and
+**Unlink**, offered on an owner that no instance references, turns it back
+into a plain node.
+
 Each occurrence owns its label, position, selection, and incident edges.
 One identity per submodel occurrence: the occurrence node id is its name
 (`node.id == data.label == config.alias`). Renaming an occurrence renames its
@@ -83,7 +98,13 @@ be dissolved while instances reference it.
 Submodel cards render only declared public ports. Handles are
 `in__<name>`/`out__<name>` and labels come from the port name; internal
 child ids are neither rendered nor accepted as parent endpoints. Each canonical
-input handle accepts at most one parent binding. A connection
+input handle accepts at most one parent binding. A connection dropped on an
+instance's inputs socket binds by the submodels binding rule: the public input
+named like the incoming frame, else the one input the instance has not bound,
+else the input the user picks from a list shown at the drop; a drop on an
+instance whose every input is bound is refused with a message naming it. An
+occurrence's panel lists its public inputs with the connection feeding each,
+and choosing another connection re-targets the edge. A connection
 between occurrences is allowed only output-public-port to input-public-port.
 Stale, missing, wrong-direction, or internal-child handles are blocked with an
 actionable error rather than repaired heuristically.
@@ -196,7 +217,7 @@ candidate, with the error toast.
   name truncates with the full name available as a tooltip. Frame labels
   use the same semibold primary-text typography as node names.
 - **Visual state.** Nodes show: a selection border; a dashed border for
-  submodel instances; a "LIVE" badge on live-switch nodes when the active
+  submodel instances, and a link mark on linked nodes; a "LIVE" badge on live-switch nodes when the active
   data source is live; one run-status dot that is green for a clean success,
   yellow for a successful run with an execution or schema warning, red for an
   error, and pulsing while running; a standalone yellow warning dot only when
@@ -313,20 +334,18 @@ candidate, with the error toast.
   it as one atomic undo step. Duplicating offsets the copy's position and is a
   no-op for singleton node types (the request inputs, Quote Input and Workbench Input,
   which share one slot, and the response nodes, Quote Response and Workbench Output, which
-  share another). Generic Duplicate is unavailable for reusable-submodel occurrences,
-  and the handler directs callers to Create Instance. The palette, duplicate,
+  share another). Generic Duplicate is unavailable for a submodel occurrence of a
+  multi-node definition, and the handler directs callers to Create Instance; on a
+  linked node it gives an unlinked plain copy of its node. The palette, duplicate,
   paste, instance, and context-menu paths consume the same singleton metadata,
   matching the backend save invariant. Create Instance also refuses a Source
   Switch, which routes by its own input names; the instance guard lives in the shared
   handler rather than in each caller's enabled-state check, so a new entry
   point cannot reach an unguarded path. Creating an
-  instance of an ordinary node stamps `config.instanceOf` at the ORIGINAL id —
-  instancing an existing instance yields a sibling pointing at the same
-  original, never a chain, because instance resolution does not walk chains.
-  A selected instance whose pointer is dangling, type-mismatched, self-pointing,
-  or itself points to another instance is rejected explicitly; the client does
-  not walk or repair invalid chains.
-  Creating an instance of a canonical `SUBMODEL` instead retains only its
+  instance of an ordinary node wraps it into a linked node through
+  `POST /api/submodel/instance` (above); no ordinary node carries
+  `config.instanceOf`. Creating an instance of a canonical `SUBMODEL`, a linked
+  node included, retains only its
   `definitionId`, allocates a fresh immutable node id and collision-free alias,
   labels the copy with its alias,
   copies presentation defaults, and starts with no boundary bindings as one undo

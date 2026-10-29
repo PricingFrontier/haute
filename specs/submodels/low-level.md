@@ -8,8 +8,8 @@
 | `src/haute/_submodel_paths.py` | Validate route-level names, resolve recorded submodel references relative to the active pipeline directory, enforce project containment, and return typed malformed/outside-project errors plus the directory used as config base; `submodel_source_key` is the resolved-file identity by which the parser and recovery group registrations; `definition_pipeline_dir` turns a definition file's path into its `pipeline_dir` and `is_pipeline_dir` validates one. `SUBMODEL_PACKAGE` (`"modules"`) is the package beside a pipeline that holds its definition modules: `submodel_module_file` is the file `from modules import <name>` imports, `modules/<name>.py`, and `submodel_module_name` the name a definition file imports as, raising `MalformedSubmodelPathError` for a file that is not directly in `modules/` or whose name is not a canonical identifier as a node's is (ASCII letters, digits and underscores, not starting with a digit), is a keyword, starts with two underscores or is a Python built-in. |
 | `src/haute/_pipeline_revision.py` | Build deterministic canonical-graph revisions and the separate raw-artifact editor-document revision used by recovery-aware compare-and-swap. |
 | `src/haute/_flatten.py` | Public flatten/dissolve entry point: validates and expands canonical occurrences through `_submodel_instances.py`. `flatten_executable_graph` is the entry every route running a browser graph uses: it refuses a graph with an executable-name violation (codegen naming rule) before flattening, while internal flattening (a staged dissolve, save) uses `flatten_graph`, since a partly dissolved graph repeats a shared definition's child names. |
-| `src/haute/routes/_submodel_ops.py` | Pure (no I/O) graph transform: extract selected nodes out of a `PipelineGraph` into a new submodel, producing the updated parent graph and submodel metadata. |
-| `src/haute/routes/submodel.py` | FastAPI router (`/api/submodel/*`): transform-only `POST /create` and `POST /dissolve`, plus read-only persisted `GET /{definition_id}`. It validates the current parent revision and maps failures without writing files. |
+| `src/haute/routes/_submodel_ops.py` | Pure (no I/O) graph transforms: extract selected nodes out of a `PipelineGraph` into a new submodel, and, for a plain node's Create Instance, wrap one node in place in a one-node definition and place an unbound instance beside it; each produces the updated parent graph and submodel metadata. |
+| `src/haute/routes/submodel.py` | FastAPI router (`/api/submodel/*`): transform-only `POST /create`, `POST /instance` and `POST /dissolve`, plus read-only persisted `GET /{definition_id}`. It validates the current parent revision and maps failures without writing files. |
 
 Related but external to this component:
 - `src/haute/_parser_submodels.py` ([expression-parsing](../expression-parsing/low-level.md)) — reads
@@ -159,7 +159,8 @@ Expansion is a pure transform per instance:
 
 Create-instance and remove-instance are I/O-free graph operations. Creation
 normalises the selected source to its owner and persists that id in
-`instanceOf`. Dissolve is addressed only by immutable `instance_id` and expands
+`instanceOf`. A plain node's Create Instance first wraps the node in a one-node
+definition through `POST /api/submodel/instance` (below). Dissolve is addressed only by immutable `instance_id` and expands
 exactly that occurrence. Dissolving an owner while any unselected instance
 references it is rejected; instances must be dissolved first.
 Removing the last occurrence does not by itself delete the
@@ -179,6 +180,76 @@ restore the interface, its parent connections, and their original positions
 together. Parent edge order is persisted state — the dirty fingerprint
 compares it and codegen emits `connect` calls in it — so a restored binding
 returns to its own position rather than to the end of the parent edge list.
+
+### Linked nodes and instance bindings (normative)
+
+An instance's input mapping is the set of parent edges into it: an edge's
+`in__<name>` target handle names the public input it binds, and each public
+input is bound at most once per occurrence (the existing invariant). Nothing
+else records a mapping.
+
+**Binding rule.** The browser binds a connection dropped on an instance's
+generic inputs socket (`connectCanonicalSubmodelInputFromParentConnection`,
+validated by `validatePipelineConnection`) to the first of:
+
+1. the public input whose name equals the incoming frame's executable name
+   (`edgeInputName`), refused when this occurrence has already bound it;
+2. the one public input this occurrence has not bound;
+3. the unbound public input the user picks from the editor's list of them.
+
+A drop on an instance whose every public input is bound is refused with
+"Every input of <name> is connected", and no edge is added. An instance never
+mints a public input. An owner binds by name or mints a public input named
+after the frame (suffixing `_2`, `_3` across both directions); on a linked node
+the minted input's one target is its node. A linked node's role socket (an
+Edge Join's `base` or `join`) binds the public input that targets that role
+directly. No step pairs by position or substring.
+
+**Re-targeting.** An occurrence panel's input mapping changes an edge's target
+handle to the chosen input's `in__<name>`. A connection moved onto an input
+that another connection binds unbinds that other connection, in the same
+undoable edit. Removing a connection unbinds its input, and the public input
+stays declared.
+
+**Linked nodes.** A definition whose `graph` holds exactly one node is a
+one-node definition, and each of its occurrences is a linked node. Its input
+ports each target that node, with the node's own handle (an Edge Join's `base`
+or `join`), and it has one output port sourced from the node when the node
+produces a frame (none for an Explore, Model Training or Optimiser node).
+
+- **Output name.** `edge_input_name` names an edge from a linked node by the
+  occurrence's sanitised name, as an ordinary node's edge is named by its
+  label, rather than by the public output port name, and the browser's
+  `edgeInputName` agrees. Renaming a linked occurrence therefore renames its
+  frame for its consumers, and the rename reconciles their bindings as an
+  ordinary rename does.
+- **Preview and trace target.** The editor targets a linked node as
+  `qualified_runtime_node_id(<occurrence>, <node id>)` on the parent graph, as
+  it targets a drilled child, and shows the result as the occurrence's.
+- **Editing.** The owner's panel edits the definition's one node: each config
+  edit replaces that node's config in `submodels[definitionId].graph` as one
+  undoable definition edit. An instance's panel is read-only apart from its
+  input mapping.
+- **Duplicate** gives a plain node holding a copy of the definition node's
+  config, under a fresh name, as duplicating an ordinary node does.
+- **Unlink** is `flatten_graph(graph, target_instance_id=<owner>)` on an owner
+  that no instance references, the expanded node taking the occurrence's name
+  as its label, at the occurrence's position. Save then derives the
+  removed definition and deletes its managed module, as for any dissolve.
+
+**Missing columns.** Flattening carries each instance occurrence's owner with
+the flattened graph, never in node config. The executor's schema-warning pass
+compares, for each public input that an instance and its owner both bind, the
+columns the owner's bound edge carries with those the instance's carries (from
+the walk's recorded schemas; a request input's edge carries the declared frame
+its handle names), and reports the difference as `missing` warnings on each of
+the instance's nodes that input targets.
+
+**Removed node-level instances.** No graph node but a `SUBMODEL` occurrence
+carries `instanceOf`. The parser refuses `@pipeline.instance(...)` and an `of=`
+keyword on any node decorator, config validation refuses `instanceOf` on every
+other node type, and the editor's recovery shows such a node unavailable with
+the parser's message. `Pipeline` has no `instance` method.
 
 Existing test suites cover multi-instance occurrences across backend and frontend boundaries:
 
@@ -358,6 +429,35 @@ Acquires `save_lock`, runs the body in a threadpool:
    parent_file=body.source_file, source_revision=current_graph.source_revision,
    graph=result.graph with that same revision)`. No file changes until Save.
 
+### `POST /api/submodel/instance` (a plain node's Create Instance)
+
+Acquires `save_lock` and runs the body in a threadpool, as create does:
+
+1. Require a non-blank `source_file`, load the current ready editor document
+   and compare its raw-artifact revision with `base_revision` (`409` on a
+   mismatch). The parent is not parsed.
+2. Refuse with `400` and the reason a `node_id` absent from the submitted
+   graph, a submodel occurrence (its instance is the browser's own transform),
+   a document-wide singleton or a Source Switch.
+3. Name the definition after the node's executable name, suffixed `_2`, `_3`
+   until no definition in the graph and no module in the pipeline's `modules/`
+   folder has that name under any casing.
+4. Wrap: the definition's graph is the node at local position (0, 0) with its
+   config unchanged. Each incoming frame becomes a public input named by the
+   executable name the node read it under (the name grouping gives a crossing
+   edge), targeting the node with the edge's target handle, and the node's
+   output, when it has one, becomes one public output. The owner occurrence is
+   named by the node's executable name (its id, label and alias) and placed at
+   the node's position, and the node's parent edges are re-targeted to
+   `in__<name>` and re-sourced from `out__<name>`; consumers keep their input
+   names, since a linked node's output is named by its occurrence.
+5. Place an instance of the definition with `instanceOf` the owner, named and
+   positioned as the browser names and places a submodel copy (`<name>_2`,
+   collision-free), with no bindings.
+6. Run the read-only module no-clobber preflight for the definition's module
+   and return the graph, the owner and instance names, the definition id and
+   the unchanged `source_revision`. Nothing is written until Save.
+
 ### `GET /api/submodel/{definition_id}?source_file=<parent>` (`get_submodel` -> `_get_submodel_blocking`)
 
 Acquires `save_lock` and runs in a threadpool:
@@ -465,6 +565,12 @@ scalar input selectors follow renamed edges. A collision refuses the entire edit
   definition ids for every canonical child path present in both the persisted
   and submitted registries. A different id for the same path is a `409`, not
   an unchanged definition or an implicit migration.
+- **A one-node definition is a linked node wherever it comes from.** Grouping
+  needs two nodes, so it comes from a node's Create Instance or a hand-authored
+  file, and either is drawn and named as a linked node.
+- **A linked owner is anchored like any owner.** It cannot be raw-deleted, and
+  Unlink is refused while an instance references it; its instances delete as
+  copies do.
 
 ## Error handling
 
@@ -496,6 +602,9 @@ scalar input selectors follow renamed edges. A collision refuses the entire edit
 | Null handle on an inbound edge targeting a selected submodel | `ParseError` with definition/instance/edge context | `flatten_graph` raises through `resolve_submodel_instances` (matching `_port_name`); the transform returns no graph and touches no files. |
 | Missing or wrong-prefixed public handle, undeclared port id, or invalid definition endpoint passed to `flatten_graph` | `ParseError` with definition/instance/edge context | `_submodel_instances` validation; the transform returns no graph and touches no files. |
 | Sanitised node-name collision | `HTTPException(400, <specific collision detail>)` | `SavePipelineService` validation, before writes. |
+| Create Instance on a missing node, a submodel occurrence, a document-wide singleton or a Source Switch | `HTTPException(400, <reason>)` | `POST /api/submodel/instance`, before the transform. |
+| A connection dropped on an instance whose every public input is bound | Refused in the editor, naming the instance; no edge is added | The browser's binding rule. |
+| `@pipeline.instance(...)`, an `of=` keyword on a node decorator, or `instanceOf` on a node that is not an occurrence | `ParseError` naming the removed form, whose `remediation` is the linked-node form | The parser and config validation; the editor shows the node unavailable with the message, and nothing migrates it. |
 | Any write step in the later explicit Save transaction fails (config write, sidecar write, module delete) | Best-effort rollback by `SavePipelineService`, original error re-raised | The server's unexpected-exception handler produces `500 {"detail": _INTERNAL_ERROR_DETAIL}`; a failed compensating operation is logged and can leave partial state. See [server-api](../server-api/high-level.md). |
 | Child is hand-authored/shared, ownership is ambiguous, or reference audit is incomplete | Later explicit Save retains the source and sidecar | Uncertainty never authorises deletion. |
 
@@ -538,7 +647,9 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
   nodes selected, one submodel node selected, one submodel node mixed with a
   regular node).
 - `tests/test_submodel_routes.py` — full FastAPI `TestClient` coverage of all
-  three endpoints against an isolated `tmp_path` cwd: invalid selections and
+  four endpoints against an isolated `tmp_path` cwd: a node's Create Instance
+  wrapping it in place and placing an unbound instance, its refusals, revision
+  check and module-name suffixing; invalid selections and
   revision preconditions; read-only create no-clobber; transform-only
   create/dissolve without codegen, parent writes, sidecar writes, or child
   deletion; dissolve from an unsaved submitted definition; and persisted,
@@ -566,7 +677,10 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
   the alias only, and graph merge derives node label directly from the alias.
 - `tests/test_submodel_instances.py` — canonical definition and occurrence
   validation, parse/codegen round trips, public-port expansion, targeted
-  flattening, shared-definition retention, OUTPUT source-port migration across
+  flattening, shared-definition retention, an instance bound to frames named
+  otherwise than its public inputs, a linked node's output named by its
+  occurrence and renamed with it, an instance's missing columns, Unlink
+  restoring the plain node, OUTPUT source-port migration across
   a public boundary, one validation per flatten (a count of
   `resolve_submodel_instances` calls), a Load File child (and a node instance of it) reading its
   renamed second input by name with the rows it gave before grouping and its
@@ -593,7 +707,9 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
   another spelling of the import, an unused import, an unimported module, a module named
   like a built-in).
 - `frontend/src/utils/__tests__/submodelBoundaryEditing.test.ts` — boundary
-  connection editing, input-port removal, and parent-binding cleanup.
+  connection editing, input-port removal, parent-binding cleanup, and an
+  instance's binding rule (by name, the one unbound input, the user's pick, the
+  refusal when every input is bound) and re-targeting from the panel.
 - `frontend/src/utils/__tests__/submodelDeletionPolicy.test.ts` — deletion
   policy guarding definition owners and instance copies.
 - `frontend/src/utils/__tests__/submodelViewGraph.test.ts` — submodel view graph

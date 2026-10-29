@@ -791,9 +791,7 @@ it on the reading node instead of aborting the walk, and every other run propaga
   or `..` segments.
 - **`ExecutionError`** (`haute.errors`) — a hook returning something other than a frame; a
   source called with input frames; live node arity mismatch; multiple explicit output
-  nodes; ambiguous terminal nodes; multiple or ambiguous `score()` seed sources; unresolved
-  `@pipeline.instance` registrations in the standalone executor (identified by the decorator's
-  internal marker even when `instanceOf`/`inputMapping` are empty); a bare-frame `score()`
+  nodes; ambiguous terminal nodes; multiple or ambiguous `score()` seed sources; a bare-frame `score()`
   seed against a source with two or more distinct connected `source_port`s; a dict seed whose
   keys do not exactly match the distinct connected ports (missing and unknown port names are
   both listed in the message — a one-port source accepts only the exact one-key dict); and a
