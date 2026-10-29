@@ -190,8 +190,11 @@ jobs:
           .unlocked/bin/python -m pytest $(grep -v '^#' scripts/core_test_files.txt)
           -q -n 4 --timeout=60 --timeout-method=signal
 
+      # As in the other monitoring lanes: the schedule, or a dispatch that asks
+      # to prove the alarm rings. A manual dispatch run to check a fix does not
+      # page anyone when it fails.
       - name: Raise the alarm (find-or-create dependency-watch issue)
-        if: failure()
+        if: failure() && (github.event_name == 'schedule' || inputs.force_fail)
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

@@ -384,6 +384,7 @@ class TestEveryProductionCallerPassesTree:
                 calls.append(node)
         return calls
 
+    @pytest.mark.meta
     def test_all_callers_pass_tree(self) -> None:
         """Every production call site must either pass ``tree=<expr>`` as
         a kwarg OR supply a second positional argument.  Either form

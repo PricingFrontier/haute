@@ -12,6 +12,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -20,6 +21,11 @@ import polars as pl
 from haute._local_security import SESSION_TOKEN_COOKIE, ensure_local_session_token_env
 from haute.cli._helpers import _node_env, _npm
 from haute.cli._init_cmd import InitConfig, handle_init
+
+try:
+    from scripts.init_smoke import kill_process_tree
+except ModuleNotFoundError:  # Direct ``python scripts/run_frontend_e2e_server.py`` execution.
+    from init_smoke import kill_process_tree  # type: ignore[import-not-found,no-redef]
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = REPO_ROOT / "frontend"
@@ -420,7 +426,9 @@ def _reset_project_dir() -> None:
     _assert_under_repo(E2E_PROJECT_DIR)
     if E2E_PROJECT_DIR.exists():
 
-        def _retry_remove_readonly(func: object, path: str, _exc_info: object) -> None:
+        def _retry_remove_readonly(
+            func: Callable[[str], object], path: str, _exc_info: object
+        ) -> None:
             Path(path).chmod(stat.S_IWRITE)
             func(path)
 
@@ -812,6 +820,11 @@ def _serve_readiness() -> None:
 
 def _terminate_process(proc: subprocess.Popen[bytes]) -> None:
     if proc.poll() is not None:
+        return
+    if sys.platform == "win32":
+        # The npm launcher's Node child survives terminate() on Windows and
+        # keeps holding Vite's port, so the whole tree goes.
+        kill_process_tree(proc)
         return
     proc.terminate()
     try:

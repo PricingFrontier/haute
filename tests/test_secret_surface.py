@@ -25,6 +25,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from tests._source_files import source_files
 
 _SRC = Path(__file__).parent.parent / "src" / "haute"
@@ -179,6 +181,7 @@ def _is_secret_env_name(value: str) -> bool:
     return _name_looks_secret(value)
 
 
+@pytest.mark.meta
 def test_secret_env_name_references_are_reviewed() -> None:
     findings: set[tuple[str, str]] = set()
     for path in source_files(_SRC):

@@ -578,7 +578,13 @@ warn_unused_configs = true
 warn_unused_ignores = true
 warn_redundant_casts = true
 disallow_untyped_defs = true
-exclude = ["tests/", "docs/"]
+# scripts/ holds the CI gates and is checked beside the package (`mypy src/haute/
+# scripts/`); its modules are `scripts.<name>`, as the tests import them, so the
+# package bases are explicit and the package is found under src/.
+mypy_path = "src"
+explicit_package_bases = true
+# Point-in-time benchmark programs, kept as evidence rather than maintained.
+exclude = ["tests/", "docs/", "scripts/benchmarks/"]
 
 [[tool.mypy.overrides]]
 # The assistant's example pipelines are saved pipeline files, not library code:

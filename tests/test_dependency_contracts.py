@@ -71,6 +71,7 @@ def test_pandas_floor_and_cap_cover_the_pyfunc_conversion_boundary() -> None:
     assert _cap(requirement) <= Version("3"), "pandas cap must exclude pandas 3"
 
 
+@pytest.mark.meta
 def test_polars_requirement_is_polars_2() -> None:
     """Haute is built for Polars 2: every collect names its engine, every join it
     builds states its row order, and the I/O catalogue, the compatibility corpus and
@@ -98,6 +99,7 @@ def test_openai_floor_constructs_a_client_with_current_httpx() -> None:
     assert _cap(_project_requirement("openai")) == Version("3")
 
 
+@pytest.mark.meta
 def test_price_contour_guard_specifier_is_the_declared_dependency() -> None:
     """The runtime guard enforces exactly the range the package metadata declares.
 
@@ -143,6 +145,7 @@ def _setup_uv_pins(workflow_text: str) -> list[str | None]:
     return pins
 
 
+@pytest.mark.meta
 def test_every_workflow_pins_the_same_uv_version() -> None:
     """``uv`` is the tool every other pin runs through, so it is pinned exactly.
 
@@ -380,6 +383,7 @@ def _subset_files() -> list[Path]:
     ]
 
 
+@pytest.mark.meta
 def test_unlocked_lane_installs_every_dev_package_the_core_subset_needs() -> None:
     """The unlocked-resolve lane's hand-kept tooling list covers what the subset needs.
 

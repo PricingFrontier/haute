@@ -7,7 +7,10 @@ import re
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
+
+pytestmark = pytest.mark.meta
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -84,17 +87,23 @@ def test_frontend_ci_checks_the_bundle_budget_after_building() -> None:
 
 def test_frontend_ci_jobs_run_exactly_the_frontend_preflight_scripts() -> None:
     jobs = _workflow()["jobs"]
-    preflight = _read(REPO_ROOT / "scripts" / "preflight.sh").splitlines()
-    preflight_scripts = _npm_scripts(
-        [line for line in preflight if line.strip().startswith("if (cd frontend && npm run ")]
+    bash = _read(REPO_ROOT / "scripts" / "preflight.sh").splitlines()
+    bash_scripts = _npm_scripts(
+        [line for line in bash if line.strip().startswith("if (cd frontend && npm run ")]
+    )
+    powershell = _read(REPO_ROOT / "scripts" / "preflight.ps1").splitlines()
+    powershell_scripts = _npm_scripts(
+        [line for line in powershell if line.strip().startswith("& npm run ")]
     )
 
     ci_scripts = _npm_scripts(
         _run_lines(jobs["frontend-static"]) + _run_lines(jobs["frontend-tests"])
     )
 
-    assert "test:coverage" in preflight_scripts
-    assert sorted(ci_scripts) == sorted(preflight_scripts)
+    assert "test:coverage" in bash_scripts
+    assert sorted(ci_scripts) == sorted(bash_scripts)
+    # The Windows preflight is held to the same list, so it cannot drift alone.
+    assert sorted(ci_scripts) == sorted(powershell_scripts)
 
 
 def test_preflight_builds_frontend_before_checking_bundle_budget() -> None:

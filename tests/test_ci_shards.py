@@ -406,6 +406,7 @@ def _shard_count(job: dict[str, Any]) -> int | None:
     return counts.pop() if counts else None
 
 
+@pytest.mark.meta
 def test_every_sharded_ci_job_runs_each_of_its_shards_once() -> None:
     sharded = {}
     for name, job in _ci_jobs().items():
@@ -418,6 +419,7 @@ def test_every_sharded_ci_job_runs_each_of_its_shards_once() -> None:
     assert set(sharded) == {"backend-coverage-shard", "backend-compat", "browser-e2e"}
 
 
+@pytest.mark.meta
 def test_the_coverage_gate_combines_exactly_the_coverage_shards() -> None:
     jobs = _ci_jobs()
     shards = _shard_count(jobs["backend-coverage-shard"])
@@ -442,6 +444,7 @@ def test_the_coverage_gate_combines_exactly_the_coverage_shards() -> None:
     assert combined == [[f".coverage.shard{index}" for index in range(1, shards + 1)]]
 
 
+@pytest.mark.meta
 def test_the_refresh_recipe_downloads_the_coverage_shards_junit_artifacts() -> None:
     uploads = [
         step["with"]["name"]

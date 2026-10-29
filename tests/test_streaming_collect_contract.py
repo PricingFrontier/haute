@@ -26,6 +26,7 @@ DIRECT_STREAMING_COLLECT = re.compile(
 )
 
 
+@pytest.mark.meta
 @pytest.mark.parametrize("relative_path", BOUNDED_COLLECT_CALLERS)
 def test_bounded_callers_route_streaming_collect_through_helper(relative_path: Path) -> None:
     """Bounded backend paths should use streaming_collect, not bare Polars collect."""
@@ -35,6 +36,7 @@ def test_bounded_callers_route_streaming_collect_through_helper(relative_path: P
     assert "streaming_collect(" in source
 
 
+@pytest.mark.meta
 def test_production_code_has_no_direct_streaming_collect_calls_outside_helper() -> None:
     """All production streaming collects route through the profiled helper."""
     offenders: list[str] = []

@@ -39,6 +39,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from io import BufferedWriter
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -104,7 +105,8 @@ def _run_step(
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+        port: int = sock.getsockname()[1]
+        return port
 
 
 def _venv_bin(venv_dir: Path, name: str) -> Path:
@@ -240,7 +242,9 @@ def _check_endpoints(base_url: str) -> None:
     _log("file-listing endpoint sees the probe file (config-to-data wiring ok)")
 
 
-def _start_server(haute_exe: Path, project_dir: Path, port: int, token: str, log_path: Path):
+def _start_server(
+    haute_exe: Path, project_dir: Path, port: int, token: str, log_path: Path
+) -> tuple[subprocess.Popen[bytes], BufferedWriter]:
     env = os.environ.copy()
     env["HAUTE_LOCAL_SESSION_TOKEN"] = token
     # Keep the smoke hermetic against ambient shell state: an inherited
@@ -248,7 +252,10 @@ def _start_server(haute_exe: Path, project_dir: Path, port: int, token: str, log
     # tokenless-rejection assertion into a confusing failure.
     env.pop("HAUTE_DISABLE_LOCAL_SESSION_AUTH", None)
     env.pop("HAUTE_TRUSTED_HOSTS", None)
-    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if IS_WINDOWS else 0
+    if sys.platform == "win32":
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        creationflags = 0
     log_file = log_path.open("wb")
     server = subprocess.Popen(
         [str(haute_exe), "serve", "--no-browser", "--port", str(port)],
@@ -261,13 +268,13 @@ def _start_server(haute_exe: Path, project_dir: Path, port: int, token: str, log
     return server, log_file
 
 
-def _kill_server_tree(server: subprocess.Popen[bytes]) -> None:
-    """Hard-kill the server and its children.
+def kill_process_tree(server: subprocess.Popen[bytes]) -> None:
+    """Hard-kill a process and every process it started.
 
-    On Windows the ``haute`` entry point is a launcher exe whose python
-    child would survive a plain ``Popen.kill()`` (TerminateProcess does not
-    cascade), leaving a live server holding the port and the scratch dir —
-    ``taskkill /T`` fells the whole tree. POSIX needs only the process.
+    On Windows a launcher (the ``haute`` entry point, npm) starts a child that
+    would survive a plain ``Popen.kill()`` (TerminateProcess does not cascade),
+    leaving it holding the port and the scratch dir — ``taskkill /T`` fells the
+    whole tree. POSIX needs only the process. The browser e2e server reuses it.
     """
     if server.poll() is not None:
         return
@@ -301,14 +308,14 @@ def _wait_for_shutdown_marker(log_path: Path) -> bool:
 def _stop_server(server: subprocess.Popen[bytes], log_path: Path) -> None:
     if server.poll() is not None:
         raise SmokeError(f"server died before shutdown (exit code {server.returncode})")
-    if IS_WINDOWS:
+    if sys.platform == "win32":
         server.send_signal(signal.CTRL_BREAK_EVENT)
     else:
         server.send_signal(signal.SIGTERM)
     try:
         returncode = server.wait(timeout=SERVER_SHUTDOWN_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as error:
-        _kill_server_tree(server)
+        kill_process_tree(server)
         raise SmokeError(
             f"server did not shut down within {SERVER_SHUTDOWN_TIMEOUT_SECONDS}s of the signal"
         ) from error
@@ -394,7 +401,7 @@ def main() -> int:
             _check_endpoints(base_url)
             _stop_server(server, log_path)
         except Exception:
-            _kill_server_tree(server)
+            kill_process_tree(server)
             raise
         finally:
             log_file.close()

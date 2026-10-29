@@ -546,6 +546,7 @@ EXPECTED_VIOLATIONS: dict[str, int] = {
 }
 
 
+@pytest.mark.meta
 @pytest.mark.timeout(180)
 def test_write_apis_derive_from_scratch_fixture() -> None:
     # The full-corpus AST scan is slow and load-sensitive under `-n 4` +

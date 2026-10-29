@@ -7,6 +7,10 @@ import sys
 import tomllib
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.meta
+
 ROOT = Path(__file__).resolve().parents[1]
 DOC_PATH = ROOT / "docs" / "PERFORMANCE_CHECKS.md"
 PERFORMANCE_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "performance.yml"

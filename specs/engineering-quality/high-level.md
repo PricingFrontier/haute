@@ -184,9 +184,9 @@ Out of scope:
   source-specific critical-coverage ratchet. ESLint treats useless assignments,
   discarded caught-error context, unsafe hook refs, state updates in effects, and
   job-polling loops or intervals outside the shared poller, and local copies of
-  the shared error-text, formatting and object-guard helpers as errors; thirteen
-  pre-existing file/rule pairs remain visible as narrow config
-  exceptions until their owning changes land.
+  the shared error-text, formatting and object-guard helpers as errors; the
+  pre-existing file/rule pairs `frontend/eslint.config.js` lists remain visible
+  as narrow config exceptions until their owning changes land.
 - Execution-strategy diagnostics, Explore chart configuration and the API
   responses of each converted module group use a two-stage, reviewed contract
   pipeline. Canonical domain Pydantic models emit one committed JSON Schema
@@ -206,8 +206,9 @@ Out of scope:
   compatibility project rather than a visual oracle. User-reported canvas
   defects receive the smallest regression at the owning tier before a fix.
 - Scheduled dependency, frontend-order, property-exploration and container-smoke lanes are
-  deliberately non-PR monitoring checks: on eligible failures they create or update a labelled
-  GitHub issue carrying diagnostic/reproduction context. Mutation and
+  deliberately non-PR monitoring checks: on a scheduled failure, or a dispatch asked to prove
+  the alarm rings (`force_fail`), they create or update a labelled GitHub issue carrying
+  diagnostic/reproduction context. Mutation and
   performance workflows likewise operate through maintained scripts/artifacts.
 - Python performance reports use schema 4, recording deterministic workload and
   profile descriptors, environment versions, independent resource counters,

@@ -563,6 +563,7 @@ def test_explicit_build_without_node_on_path_stops_with_the_cli_install_hint(
     run.assert_not_called()
 
 
+@pytest.mark.meta
 def test_build_hook_guesses_no_machine_install_path() -> None:
     source = (Path(__file__).resolve().parents[1] / "hatch_build.py").read_text(encoding="utf-8")
 
@@ -578,6 +579,7 @@ def test_run_translates_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
         module.FrontendBuildHook()._run(["npm", "ci"], tmp_path)
 
 
+@pytest.mark.meta
 def test_node_and_npm_toolchain_is_exactly_pinned_across_workflows() -> None:
     root = Path(__file__).resolve().parents[1]
     package = json.loads((root / "frontend" / "package.json").read_text(encoding="utf-8"))
@@ -596,6 +598,7 @@ def test_node_and_npm_toolchain_is_exactly_pinned_across_workflows() -> None:
     assert set(workflow_versions) == {"22.14.0"}
 
 
+@pytest.mark.meta
 def test_vite_defines_app_version_from_package_metadata_without_fallback() -> None:
     root = Path(__file__).resolve().parents[1]
     source = (root / "frontend" / "vite.config.ts").read_text(encoding="utf-8")
@@ -606,6 +609,7 @@ def test_vite_defines_app_version_from_package_metadata_without_fallback() -> No
     assert 'appVersion = versionMatch ? versionMatch[1] : "0.1.0"' not in source
 
 
+@pytest.mark.meta
 def test_mlflow_is_core_and_databricks_extra_only_adds_databricks_sdks() -> None:
     root = Path(__file__).resolve().parents[1]
     with (root / "pyproject.toml").open("rb") as handle:

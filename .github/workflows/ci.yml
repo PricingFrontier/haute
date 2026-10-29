@@ -173,7 +173,7 @@ jobs:
           fi
 
       - name: Mypy
-        run: uv run mypy src/haute/
+        run: uv run mypy src/haute/ scripts/
 
       # Guards the DECLARATION layer only — the lockfile is the supply-chain
       # control and `uv sync --locked` / `npm ci` already enforce it everywhere.

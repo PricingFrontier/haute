@@ -10,7 +10,7 @@ specified in
 [23 September 2026 codebase review](codebase-review-2026-09-23.md). The
 `ENGQ-CI` packages come from the 30 September 2026 CI duration study: per-test
 timings from diagnostic PR #279 (run 36769548458) and the sharded lanes of
-PR #280. `ENGQ-CI06` and `ENGQ-R09` to `ENGQ-R11` come from the
+PR #280. `ENGQ-CI06`, `ENGQ-R09` and `ENGQ-R11` come from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md), which also added
 evidence to `ENGQ-R01` and `ENGQ-R05`.
 
@@ -24,7 +24,6 @@ evidence to `ENGQ-R01` and `ENGQ-R05`.
 | ENGQ-R05 | Planned | P3 | Tests are organised by component and behaviour, not by coverage campaign. |
 | ENGQ-CI06 | Planned | P3 | Haute's own workflows pin every action by commit. |
 | ENGQ-R09 | Planned | P3 | The write-sandbox ratchet moves: the observe census is recorded and may not grow, modules with an empty census become strict, the system temp directory is a stated gap or no longer allowed, and the lint allowlist is keyed by site. |
-| ENGQ-R10 | Planned | P3 | Repository-health hygiene: file-reading tests carry the `meta` marker, the specification's bundle and lint numbers are read from their files, `mypy` covers `scripts/`, the package smoke derives its version prefixes, the Windows preflight is held in step, the dependency alarm fires on schedule only, and the e2e server stops its Node child on Windows. |
 | ENGQ-R11 | Decision | P2 | Mutation witnesses cover the rating step and deploy scoring, the modules whose silent failure changes a price, or the specification says why the three JSON-boundary targets suffice. |
 
 ## Planned improvements
@@ -261,44 +260,6 @@ swapped violation.
 **Evidence:** `tests/_write_sandbox.py::STRICT_FILES`, `tests/conftest.py`,
 `tests/test_write_sandbox_lint.py::EXPECTED_VIOLATIONS`,
 `specs/engineering-quality/low-level.md`.
-
-### ENGQ-R10 — Repository-health hygiene
-**Why:** The `meta` marker exists so file-reading repository-health checks do not fail
-identically on all six compatibility shards, yet only three modules carry it; the two
-heaviest scans (the debt scan and the write-sandbox lint, each with a 180 s timeout) and
-four other file readers run on every shard, so one stale summary turns seven jobs red.
-The specification states bundle ceilings of 285 and 1,581 KiB and "thirteen" lint
-exceptions while the checker's defaults are 298 and 1,703 KiB and the config has twelve;
-no test pins either. `mypy` excludes `scripts/` (12,486 annotated lines of CI gates) and
-the test helpers. The package smoke hand-copies engine version prefixes the dependency
-caps already state. The CI/preflight parity test reads `preflight.sh` only, so
-`preflight.ps1` can drift unnoticed. The unlocked-resolve alarm fires on any failure
-rather than on schedule or `force_fail` as the other monitoring lanes do. The e2e server
-script stops Vite with `terminate()` on the npm launcher, which on Windows leaves the Node
-child holding the port. From the [25 October 2026 codebase
-review](codebase-review-2026-10-25.md) (ENG-3, ENG-9, ENG-11, ENG-12, ENG-13, ENG-14,
-ENG-15).
-
-**Plan:** `pytestmark = pytest.mark.meta` on the pure file readers and per-test marks in
-the two mixed modules, with an assertion that every test importing the scanners is
-marked. Replace the specification's hard numbers with references to the files, or pin
-them with a test. Add `scripts/` to the `mypy` invocation. Derive the smoke's expected
-versions from the project's specifiers. Parse `preflight.ps1` in the parity test. Use the
-shared alarm condition. Reuse the tree-kill helper on `win32`.
-
-**Acceptance:** The compatibility lanes deselect every file-reading check; the
-specification carries no number the files contradict; `mypy scripts/` passes in CI; a
-cap bump needs no script edit; a drift between the two preflight scripts fails the parity
-test.
-
-**Dependencies:** None.
-
-**Evidence:** `pyproject.toml`, `tests/test_test_debt.py`, `tests/test_write_sandbox_lint.py`,
-`tests/test_docs_accuracy.py`, `frontend/scripts/check-bundle-size.mjs`,
-`frontend/eslint.config.js`, `specs/engineering-quality/low-level.md`,
-`scripts/package_smoke_check.py`, `tests/test_frontend_bundle_budget_ci.py`,
-`scripts/preflight.ps1`, `.github/workflows/dependencies.yml`,
-`scripts/run_frontend_e2e_server.py::_terminate_process`, `scripts/init_smoke.py`.
 
 ### ENGQ-R11 — Mutation witnesses for the price-changing modules
 **Why:** The safety-critical list has 35 modules but mutation witnesses cover three

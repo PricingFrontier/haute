@@ -29,6 +29,7 @@ from haute.execution import dataframe_graph_input_fingerprint
 from tests._source_files import source_files
 
 
+@pytest.mark.meta
 def test_json_digest_encoders_use_canonical_json_except_persisted_feature_contract() -> None:
     """Raw ``json.dumps`` may not feed a digest for transient cache identity."""
     source_root = Path(__file__).parents[1] / "src" / "haute"

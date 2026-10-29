@@ -12,7 +12,7 @@
 | `specs/ownership.toml` | Machine-checked ledger for files shared by multiple Module maps or explicit cross-component prose ownership claims; records the single primary owner and all consumer components. |
 | `.pre-commit-config.yaml` | Runs Ruff fix/format plus local mypy and frontend typecheck/lint hooks on relevant source changes. |
 | `.github/workflows/ci.yml` | Defines PR/main CI jobs: canary, install/package smoke, dependency floors, static/type checks, duration-balanced coverage shards and their gate (which runs whatever the shards' result and fails explicitly when one did not pass), duration-balanced compatibility shards, the process-mode route slice (`backend-process-mode`), the 3.14 probe, performance, the core-only and extras-installed optional-dependency lanes, platform, the strict documentation build (`docs-build`), mutation-config, frontend static and test lanes, and two browser E2E shards. Branch protection, outside this repository workflow file, determines which checks are required for merge. |
-| `.github/workflows/dependencies.yml` | Runs the weekly/manual fresh unlocked-resolve monitor plus the locked Python/frontend advisory gate, the latter daily as well as on manual dispatch, main lock-policy changes, and relevant PRs; retains failed reports and raises/updates dependency-watch issues on every non-pull-request failure, and closes a lane's issue when that lane next passes on `main` (`locked-advisory-all-clear` for the audit), since both lanes are deterministic for a given index or advisory feed. |
+| `.github/workflows/dependencies.yml` | Runs the weekly/manual fresh unlocked-resolve monitor plus the locked Python/frontend advisory gate, the latter daily as well as on manual dispatch, main lock-policy changes, and relevant PRs; retains failed reports and raises/updates dependency-watch issues (the unlocked lane on a scheduled failure or a dispatch with `force_fail`, as the other monitoring lanes do; the audit on every non-pull-request failure), and closes a lane's issue when that lane next passes on `main` (`locked-advisory-all-clear` for the audit), since both lanes are deterministic for a given index or advisory feed. |
 | `.github/workflows/frontend-shuffle.yml` | Runs the scheduled/manual shuffled Vitest monitor and raises/updates shuffle-watch issues with its seed on eligible failures. A green night never closes one: one passing seed does not prove an order dependence gone, so the fix's author closes it. |
 | `.github/workflows/property-exploration.yml` | Runs the weekly/manual wide-budget Hypothesis lane (HAUTE_PROPERTY_EXAMPLES over `scripts/property_test_files.txt`, with the warnings plugin loaded so a RuntimeWarning fails it) and raises/updates property-watch issues on eligible failures. A green week never closes one: the fix pins the counterexample as an `@example`, and its author closes it. |
 | `.github/workflows/container-smoke.yml` | Runs the weekly/manual container deployment smoke lane (process smoke check, Docker image build, run, /health and /quote verification) and raises/updates container-watch issues on eligible failures, closing the issue when the lane next passes on `main`. |
@@ -23,7 +23,7 @@
 | `frontend/scripts/generate-api-contracts.mjs` | Pinned schema-to-browser generator: selects each contract's exact transitive definition closure, compiles every contract root into one TypeScript declaration module (property-level titles dropped, so a nested definition is declared once and an unrelated addition never renames an alias; objects are closed; array length bounds stay in the validators rather than becoming tuple types; a schema that says nothing of its type, pydantic's `Any`, is declared `unknown` through `untypedAsUnknown` rather than an object), emits constants, and bundles self-contained Ajv standalone ESM validator modules, one per pilot, one per converted response module group with one validator export per response and one per request group with one per request body (a group compiles one schema holding every definition its responses reach, so a shared definition compiles once), so Explore validation remains lazy. The eager execution validator co-exports its schema-version literal while Explore-only option constants remain in the lazy contract module. Its check mode compares every output byte without writing. |
 | `frontend/scripts/generate-api-contracts.test.mjs` | Isolated generator contract: regenerates outside the repository dependency tree, imports both standalone validators without runtime Ajv, and proves that independently staling every generated output makes check mode fail without modifying the file. |
 | `frontend/src/generated/api-contracts.schema.json`, `frontend/src/generated/api-contracts.generated.ts`, `frontend/src/generated/api-contracts.constants.generated.ts`, `frontend/src/generated/api-contracts.execution-strategy-diagnostic.validators.mjs`, `frontend/src/generated/api-contracts.execution-strategy-diagnostic.validators.d.mts`, `frontend/src/generated/api-contracts.explore-charts.validators.mjs`, `frontend/src/generated/api-contracts.explore-charts.validators.d.mts`, and one `frontend/src/generated/api-contracts.<group>.validators.mjs`/`.d.mts` pair per converted response module group | Committed generated contract bundle, static declarations, lazy Explore constants, and split standalone runtime validators; the execution validator and declaration also export its schema version. They are reviewed build inputs, never edited by hand or regenerated at application runtime. |
-| `frontend/eslint.config.js` | Defines blocking browser TypeScript/React ESLint rules (including `no-restricted-syntax` bans outside tests: `for (;;)`, `while (true)` and `setInterval`, which keep job polling in `hooks/jobPollingController.ts`, and local copies of the error-text, byte and duration formatting, and object-guard helpers, each exempt only in its owning module), thirteen explicit pre-existing file/rule exceptions, generated-report ignores, and underscore-prefixed intentionally-unused names. |
+| `frontend/eslint.config.js` | Defines blocking browser TypeScript/React ESLint rules (including `no-restricted-syntax` bans outside tests: `for (;;)`, `while (true)` and `setInterval`, which keep job polling in `hooks/jobPollingController.ts`, and local copies of the error-text, byte and duration formatting, and object-guard helpers, each exempt only in its owning module), the explicit pre-existing file/rule exceptions it lists, generated-report ignores, and underscore-prefixed intentionally-unused names. |
 | `frontend/vitest.config.ts` | Configures the Vitest unit-test environment, setup, source/test selection, coverage reporting, and blocking 80/75/80/80 global thresholds. |
 | `frontend/playwright.config.ts` | Configures serial browser E2E projects, retries, artifacts, and readiness-managed local E2E server. |
 | `frontend/e2e/browserInteractions.ts` | Shared Playwright helpers for app-level modifier shortcuts, React Flow submodel double-click dispatch, and waiting for the canvas viewport to settle after the initial fit or a reveal glide. |
@@ -74,9 +74,9 @@
 | `scripts/e2e_scoring_models.py` | Trains small GLM, XGBoost and CatBoost-classifier model files into the e2e project, through the editor's training path, for `frontend/e2e/model-scoring.spec.ts`. |
 | `scripts/generate_api_contracts.py` | Deterministically composes the execution-strategy diagnostic and Explore chart root models (validation mode), the request models of each request group (`REQUEST_CONTRACT_GROUPS`, validation mode, as a route reads a body, listed under `x-haute-request-groups`) and the converted response models of each module group (`RESPONSE_CONTRACT_GROUPS`, serialization mode with every sent field required) into one Draft 2020-12 JSON Schema bundle (a serialization-mode definition that differs from a pilot's validation-mode one of the same name is emitted as `<Name>Output`, with its references rewritten; a response root is never renamed), fixes the recursive finite-JSON definition, drops OpenAPI's `discriminator` keyword from a tagged union (its `oneOf` branches carry the tag as a `const`; Ajv in strict mode refuses the keyword), and atomically writes or byte-checks the committed frontend source artifact. |
 | `scripts/extract_polars_io.py` | Extracts the Polars I/O argument schema by introspection, and with `--diff` reports installed-versus-committed drift as a non-failing Markdown freshness summary. |
-| `scripts/init_smoke.py` | Builds/installs or consumes a wheel in a fresh environment, initialises a project, serves it headlessly, exercises an authenticated endpoint, and shuts it down. |
+| `scripts/init_smoke.py` | Builds/installs or consumes a wheel in a fresh environment, initialises a project, serves it headlessly, exercises an authenticated endpoint, and shuts it down; `kill_process_tree` fells a launcher and its children (`taskkill /T` on Windows), which the browser e2e server reuses. |
 | `scripts/memory_smoke.py` | Runs the maintained memory-safety smoke path. |
-| `scripts/package_smoke_check.py` | Validates an installed distribution's package/runtime expectations. |
+| `scripts/package_smoke_check.py` | Validates an installed distribution's package/runtime expectations, each model engine's installed version against the range the wheel's own requirements declare for the platform (`_assert_within_declared_range`), so a cap bump needs no edit here. |
 | `scripts/update_assistant_example_manifests.py` | Checks or explicitly refreshes closed content-addressed assistant example inventories; unsafe, duplicate, missing, and undeclared paths fail in both modes. |
 | `scripts/update_assistant_prompt_golden.py` | Cross-component dependency owned by [assistant](../assistant/low-level.md); checks, or with `--write` refreshes, the golden snapshot of the assistant's system prompt and provider tool schemas, failing with a unified diff per changed file. |
 | `scripts/preflight.ps1` | Windows preflight entry point for selected backend/frontend/init-smoke checks. |
@@ -84,7 +84,7 @@
 | `scripts/preflight.sh` | POSIX preflight entry point for selected backend/frontend/init-smoke checks. |
 | `scripts/regen_sanitize_parity_fixture.py` | Regenerates the retained backend compatibility golden when deliberately requested. |
 | `scripts/report_flaky_browser_tests.py` | Reads Playwright's JSON report and names each browser test that passed only on a retry, in the job summary and as a warning annotation; a missing report fails rather than reporting nothing. |
-| `scripts/run_frontend_e2e_server.py` | Generates the isolated browser fixture, then starts and readiness-signals its dedicated-port backend and Vite proxy for Playwright. |
+| `scripts/run_frontend_e2e_server.py` | Generates the isolated browser fixture, then starts and readiness-signals its dedicated-port backend and Vite proxy for Playwright; on Windows it stops each with `init_smoke.kill_process_tree`, since the npm launcher's Node child outlives a plain terminate on Vite's port. |
 | `scripts/run_mutation_pytest.py` | Runs a mutation witness command from a fresh synthetic project while retaining repository pytest configuration and placing pytest inputs in a sibling temporary boundary, so relative Haute runtime state cannot leak between mutants or alter path-confinement semantics. |
 | `scripts/run_mutation_suite.py` | Implements mutation target selection, work planning, shard execution, merge, and survival-threshold reporting. |
 | `scripts/run_perf_suite.py` | Runs bounded Python performance tests and writes schema-4 workload, environment, resource, wall-time, and per-test evidence artifacts. |
@@ -230,8 +230,9 @@
 - **Pytest configuration** constrains collection to `tests/`, has strict
   markers/configuration/xfails, excludes `perf` by default, and recognises
   `slow`, `perf`, `sandbox_strict`, `meta`, and `in_process` markers
-  (meta-marked repository-health modules are deselected from the Python
-  compatibility lanes in `.github/workflows/ci.yml`).
+  (meta-marked repository-health checks, which every test scanning the
+  repository's files must be, are deselected from the Python compatibility
+  lanes in `.github/workflows/ci.yml`).
 - **Test-file durations** in `scripts/test_file_durations.json` are
   `{"version": 1, "files": {"tests/<module>.py": seconds}}`: repository-relative
   POSIX module paths and finite non-negative seconds rounded to one decimal
@@ -274,7 +275,8 @@
    the full matrix and clean environments.
 2. `.github/workflows/ci.yml` synchronises the locked dev environment. Its
    canary runs Ruff then the manifest in `scripts/core_test_files.txt`; static
-   CI runs Ruff, mypy, and `HAUTE_BUILD_FRONTEND=1 uv build`.
+   CI runs Ruff, mypy over `src/haute/` and `scripts/` (the CI gates; the
+   point-in-time `scripts/benchmarks/` excepted), and `HAUTE_BUILD_FRONTEND=1 uv build`.
 3. Backend coverage runs the full test corpus on 3.12 in four file shards
    (`--shard=K/4`). Each shard uploads its coverage data file and a JUnit
    report, the input to `scripts/refresh_test_durations.py`, whether its tests
@@ -339,13 +341,12 @@
    developer already has Haute running; the harness and Playwright config
    validate and share those values.
    `frontend/scripts/check-bundle-size.mjs` counts the production entry and
-   modulepreload chunks against default ceilings of 285 KiB initial and
-   1,581 KiB total JavaScript gzip. The measured bundle is approximately
-   283.8 KiB initial and 1,571.1 KiB total. The Polars step builder accounts
-   for approximately 24.3 KiB of the aggregate total since the 1,350.2 KiB
-   baseline, with the editor interface in the existing lazy TransformEditor
-   chunk and no new dependency. Initial-path raises admit only
-   deliberate eager core and retain roughly 2 KiB of headroom, whereas an
+   modulepreload chunks against its default ceilings for initial and total
+   JavaScript gzip (`DEFAULT_MAX_INITIAL_JS_GZIP_KIB` and
+   `DEFAULT_MAX_TOTAL_JS_GZIP_KIB`), whose comments record the measured sizes
+   each ceiling leaves headroom over; this specification states no figure of
+   its own, so a raise is made in that file alone. Initial-path raises admit
+   only deliberate eager core and retain roughly 2 KiB of headroom, whereas an
    intentional lazy feature restores roughly 10 KiB of aggregate headroom.
    The Explore chart validator is a separate lazy artifact in the chart-config
    chunk rather than an entry modulepreload.
@@ -600,7 +601,9 @@
 - `tests/test_decoupling_contracts.py` — separation contracts for tracing, EventBus/file-watcher integration, and logging conventions.
 - `tests/test_dry_fixes.py` — DRY response/model inheritance and optimiser finalize contracts across online/ratebook/frontier paths.
 - `tests/test_dry_refactors.py` — shared exception hierarchy, dispatch-table parity, transport resolution, dead-code removal, typed-node lookup, and shared code compilation.
-- `tests/test_frontend_e2e_server.py` — browser-harness contracts for augmenting the blank scaffold with a complete, executable fixture graph.
+- `tests/test_frontend_e2e_server.py` — browser-harness contracts for augmenting the blank scaffold with a complete, executable fixture graph, and its process stop: the whole tree on Windows, `terminate()` elsewhere.
+- `tests/test_meta_marker_coverage.py` — every test that scans the repository's files (walks it through `source_files`, or runs a full-corpus debt or write-sandbox scan, itself or through a helper in its module) carries the `meta` marker, so the compatibility lanes leave it to the coverage lane; a test that builds the tree it walks is not a scan, and `BEHAVIOURAL_WALKS` names each walk that belongs to the behaviour under test, an unneeded entry failing.
+- `tests/test_package_smoke_check.py` — the package smoke's engine ranges come from the installed wheel's requirements: the installed engines are inside them, and a version past a cap or an undeclared distribution is refused.
 - `tests/test_performance_docs.py` — documentation contracts for Python/Polars/frontend/memory performance workflows and links.
 - `tests/test_property.py` — Hypothesis properties for sanitisation, topology, path resolution, banding/rating, codegen/parser round-trips, fingerprints, config, validation, and cache invariants.
 - `tests/test_repository_hygiene.py` — repository artifact/path (no tracked `node_modules/` directory or tool cache anywhere in the tree), dependency-import, subprocess, encoding, sanitizer, and persistence-path hygiene.
@@ -696,7 +699,10 @@
   `tests/test_memory_smoke_script.py`, `tests/test_frontend_bundle_budget_ci.py`,
   `tests/test_infrastructure_contracts.py`, `tests/test_docs_accuracy.py`, and
   `tests/test_spec_corpus_inventory.py`
-  cover important assurance tooling and repository-policy contracts. The
+  cover important assurance tooling and repository-policy contracts: among
+  them, the frontend CI jobs run exactly the npm scripts of both preflight
+  scripts (`preflight.sh` and `preflight.ps1`), and every monitoring lane raises
+  its alarm only on a scheduled failure or a dispatch with `force_fail`. The
   documentation-accuracy checks validate complete-document repository paths
   from a fail-loud versionable working-tree inventory (tracked plus untracked,
   with ignored files excluded) whose exact, suffix, and parent-path indexes are
