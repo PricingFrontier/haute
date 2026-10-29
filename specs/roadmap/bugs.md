@@ -11,9 +11,8 @@ files `haute init` generates: as generated, those files fail before a first cont
 succeeds. The guides give the manual step that works today, and drop it when the package
 lands. `BUG-40` and `BUG-42`
 come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md): the hosted
-Databricks app's boot and build script and the storage binding's unknown keys; `BUG-44` and
-`BUG-45`, from the same review, are the Databricks browsing errors and the non-atomic first
-append.
+Databricks app's boot and build script and the storage binding's unknown keys; `BUG-45`, from
+the same review, is the non-atomic first append.
 
 ## Priorities
 
@@ -23,7 +22,6 @@ append.
 | BUG-24 | Decision | P1 | Container targets log in to their registry before `haute deploy` pushes, and GitLab container deploys run where Docker is available. |
 | BUG-40 | Planned | P2 | The hosted Databricks app installs the wheel and its pinned dependencies from a lock at boot, and its build script takes the app name as a parameter. The build selects its current wheel rather than a stale lexicographic match. |
 | BUG-42 | Decision | P3 | The storage binding record either rejects unknown keys or is named as the exception to the canonical-only policy. |
-| BUG-44 | Planned | P2 | A Databricks browsing failure (an expired token, a missing catalog, a missing permission) is answered with a message naming the cause instead of the sanitized 500. |
 | BUG-45 | Planned | P2 | A first `append` to a Databricks table that does not yet exist either creates and fills it in one statement or leaves nothing behind when the insert fails. |
 | BUG-46 | Planned | P2 | Rating a source column named value is either faithfully represented or refused before the editor overwrites its levels. |
 | BUG-47 | Planned | P2 | The initial storage binding and restart marker name the branch actually published under the Git transaction. |
@@ -122,27 +120,6 @@ by name.
 
 **Evidence:** `src/haute/_project_storage.py::StorageBinding`; `specs/README.md`;
 `specs/hosted-project-storage/high-level.md`.
-
-### BUG-44 — Databricks browsing failures name their cause
-**Why:** The four browsing routes call the SDK with no handler, so an expired PAT, a
-missing catalog or a missing `USE SCHEMA` grant reaches the analyst as "Operation failed.
-Check the server logs for details."; the specification's module map says the route logs
-unexpected SDK messages before a generic 500 and its testing section claims coverage of
-the error responses, but the test file checks only that a 503 from the client factory
-passes through.
-
-**Plan:** Catch `databricks.sdk.errors.DatabricksError` once in a small wrapper used by
-the four routes and answer 4xx or 502 with a hand-written message naming
-`DATABRICKS_TOKEN` or the object; log the SDK text; add the test the specification claims.
-
-**Acceptance:** A `NotFound` from the catalog listing answers 404 naming the catalog; an
-`Unauthenticated` answers 401 naming the token variable.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/routes/databricks.py::list_databricks_catalogs`;
-`src/haute/routes/databricks.py::_get_databricks_client`;
-`tests/test_databricks_endpoints.py`.
 
 ### BUG-45 — An atomic first append
 **Why:** `load_statements` returns two statements for `append`, `CREATE TABLE IF NOT

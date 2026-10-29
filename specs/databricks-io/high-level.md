@@ -77,6 +77,11 @@ between batches. Connector failures retain their original exception as the cause
 logged with exception type and a credential-scrubbed message; public build state remains a
 stable `build_failed` response.
 
+A browsing failure the SDK raises is answered with its cause: refused credentials 401,
+naming the `.env` variables of the form in use; a missing grant 403, naming what was
+listed; a catalog or schema that does not exist 404, naming it; any other failure 502.
+The SDK's own text is logged, credentials scrubbed, never returned.
+
 A retry whose consumed-row position disagrees with locally received rows raises
 `FetchIntegrityError`. Zero rows with no schema also raise `FetchIntegrityError`. No failure
 publishes or replaces the previous source-cache generation.

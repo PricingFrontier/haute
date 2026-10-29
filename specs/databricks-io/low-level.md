@@ -122,7 +122,9 @@ secrets and providers stay in connector-call scope.
 
 `src/haute/routes/databricks.py` creates a Databricks `WorkspaceClient` and maps SDK objects into the
 shared warehouse/catalog/schema/table response models. Browsing does not fetch table data
-or publish snapshots.
+or publish snapshots. Each of the four routes lists inside `_browsing(subject, within=...)`,
+which yields `_get_databricks_client()`'s client and turns a `DatabricksError` raised while
+the listing is consumed (the SDK's listings are lazy) into `_browsing_failure`'s answer.
 
 ## Edge cases and invariants
 
@@ -149,8 +151,14 @@ write-output route maps it to 502 and `DatabricksConfigError` to 400.
 
 The input-cache worker logs `error_type` and a shared credential-scrubbed `error` for
 provider failures; raw error text is not copied to public responses. Browsing endpoints
-preserve deliberate `HTTPException` responses and log unexpected SDK messages before
-returning a generic 500.
+preserve deliberate `HTTPException` responses (the 503s for a missing SDK or missing
+credentials) and answer an SDK failure with a message written for it, by its class:
+`Unauthenticated` 401, naming `DATABRICKS_TOKEN`, or `DATABRICKS_CLIENT_ID` and
+`DATABRICKS_CLIENT_SECRET`, by the credential form `resolve_databricks_credentials`
+selects; `PermissionDenied` 403, naming what was listed; `NotFound` from a listing inside
+a catalog or schema 404, naming that catalog or schema; any other `DatabricksError` 502.
+Each is logged as `databricks_browsing_failed` with the error type and the SDK's text,
+the token and client secret scrubbed (`redact_sensitive_text`).
 
 ## Testing
 
@@ -168,7 +176,10 @@ returning a generic 500.
   the cleanup log, a chunk-write recipe carrying the casts, a pipeline write,
   destination identity, and worker error kinds.
 - `tests/test_databricks_endpoints.py` covers optional dependency/credential failures,
-  SDK mapping, and generic error responses for browsing.
+  SDK mapping, and the browsing error answers: a missing catalog and a missing schema
+  404 naming them, a refused token and a refused service principal 401 naming their
+  variables, a missing grant 403, and any other SDK failure 502 with its text logged,
+  the token scrubbed.
 - `tests/test_databricks_routes_auth.py` proves the browsing adapter consumes
   the shared resolution result for both auth modes and preserves normalised
   workspace hosts.
