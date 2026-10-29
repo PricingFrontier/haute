@@ -373,11 +373,12 @@ class TestGitlabCiYml:
         assert "timeout:" in result
 
     def test_caching(self) -> None:
+        """BUG-26: uv writes ``~/.cache/uv`` unless ``UV_CACHE_DIR`` names the kept path."""
         from haute._scaffold import gitlab_ci_yml
 
-        result = gitlab_ci_yml("databricks")
-        assert "cache:" in result
-        assert ".cache/uv" in result
+        document = yaml.safe_load(gitlab_ci_yml("databricks"))
+        (kept,) = document["default"]["cache"]["paths"]
+        assert document["variables"]["UV_CACHE_DIR"] == f"$CI_PROJECT_DIR/{kept}"
 
     def test_uv_version_pinned(self) -> None:
         from haute._scaffold import gitlab_ci_yml

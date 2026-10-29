@@ -6,10 +6,10 @@ Defects found outside a component's own roadmap work, kept here until they
 are fixed. `BUG-19`, found on 4 October 2026 while making standalone runs execute
 submodels, extends the check for statements a save would drop from the pipeline file to
 submodel files.
-`BUG-21`, `BUG-24` and `BUG-26` were found on 5 October 2026 while checking the deployment
+`BUG-21` and `BUG-24` were found on 5 October 2026 while checking the deployment
 guides against the CI/CD files `haute init` generates: as generated, those files fail before a
-first container release succeeds, or cache nothing on GitLab. The guides give the manual step
-that works today for each, and drop it when the package lands. `BUG-28` to
+first container release succeeds. The guides give the manual step that works today for each,
+and drop it when the package lands. `BUG-28` to
 `BUG-30`, found the same day, are text that no longer matches the behaviour it
 describes: the offset tooltip, a tuned t-boost run's summary and the t-boost starter
 parameters in the modelling UI specification. `BUG-40` to `BUG-43`
@@ -25,7 +25,6 @@ same review, are the Databricks browsing errors and the non-atomic first append.
 | BUG-19 | Planned | P2 | A save never drops a statement written after a submodel file's constructor. |
 | BUG-21 | Planned | P2 | The generated smoke and impact steps work for the generic container target once its endpoint addresses are set. |
 | BUG-24 | Decision | P1 | Container targets log in to their registry before `haute deploy` pushes, and GitLab container deploys run where Docker is available. |
-| BUG-26 | Planned | P3 | The generated GitLab pipeline reuses uv's package cache between runs. |
 | BUG-28 | Planned | P2 | The offset tooltip names every loss that treats the offset as an exposure, and the losses that take no offset. |
 | BUG-29 | Planned | P2 | A tuned t-boost run's summary says its published model is the winning trial's fit, not a refit. |
 | BUG-30 | Planned | P3 | The modelling UI specification lists the t-boost starter parameters and readiness issues the editor has. |
@@ -101,20 +100,6 @@ Docker, AWS ECS and Azure guides are removed.
 
 **Evidence:** `src/haute/deploy/_container.py::_check_docker_available` and the push;
 `src/haute/_scaffold.py::TARGETS` (secrets) and the workflow generators.
-
-### BUG-26 — The GitLab pipeline reuses uv's cache
-**Why:** The generated `.gitlab-ci.yml` caches `.cache/uv`, but uv keeps its cache in
-`~/.cache/uv` unless `UV_CACHE_DIR` says otherwise, so nothing is cached between runs.
-
-**Plan:** Set `UV_CACHE_DIR: "$CI_PROJECT_DIR/.cache/uv"` in the generated file's
-top-level `variables:`.
-
-**Acceptance:** A scaffold test shows the cache path and `UV_CACHE_DIR` agree; the
-caching note in `docs/deployment/ci/gitlab.md` loses its workaround.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_scaffold.py::gitlab_ci_yml`.
 
 ### BUG-28 — The offset tooltip matches the families' offset rules
 **Why:** The info icon beside Model Training's **Offset column (optional)** says the

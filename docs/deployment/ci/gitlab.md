@@ -192,6 +192,9 @@ Every job installs with `uv sync --frozen`, which needs the project's `uv.lock`:
       - impact-analysis
       - deploy-production
 
+    variables:
+      UV_CACHE_DIR: "$CI_PROJECT_DIR/.cache/uv"
+
     default:
       image: python:3.11
       cache:
@@ -204,7 +207,7 @@ Every job installs with `uv sync --frozen`, which needs the project's `uv.lock`:
 
 ??? info "Key features"
 
-    - **Caching** - the file keeps `.cache/uv` between runs, but uv writes its package cache elsewhere unless `UV_CACHE_DIR` points there, so add `UV_CACHE_DIR: "$CI_PROJECT_DIR/.cache/uv"` under a top-level `variables:` to make installs faster after the first run
+    - **Caching** - `UV_CACHE_DIR` puts uv's package cache in `.cache/uv`, which the file keeps between runs, so installs are faster after the first run
     - **`resource_group: deploy`** - staging, smoke, impact, and production jobs use the same resource group, which prevents two deploys from running at the same time
     - **`when: manual`** - the production job requires a manual click, so you always review before going live
     - **`allow_failure: false`** - the manual production job blocks the pipeline from showing as “passed” until you run it (so you don’t forget)

@@ -851,6 +851,10 @@ jobs:
 
 # ── GitLab CI ────────────────────────────────────────────────────────
 
+# The folder, under the project, that the GitLab pipeline keeps between runs and where
+# it tells uv to put its package cache. GitLab caches only paths inside the project.
+_GITLAB_UV_CACHE = ".cache/uv"
+
 
 def gitlab_ci_yml(
     target: str,
@@ -923,12 +927,17 @@ stages:
   - deploy-staging
 {verification_stages}  - deploy-production
 
+variables:
+  # uv keeps its package cache in ~/.cache/uv unless told otherwise; this points it
+  # at the folder the cache below keeps between runs.
+  UV_CACHE_DIR: "$CI_PROJECT_DIR/{_GITLAB_UV_CACHE}"
+
 default:
   image: python:3.11
   cache:
     key: uv-$CI_COMMIT_REF_SLUG
     paths:
-      - .cache/uv
+      - {_GITLAB_UV_CACHE}
   before_script:
     - pip install "uv>=0.5,<1" && uv sync --frozen
 

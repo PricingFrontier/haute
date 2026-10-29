@@ -402,7 +402,10 @@ placeholder, the example workspace; never a usable default such as an AWS region
 the step rather than tagging `deploy/vunknown`; Azure DevOps' production checkout sets
 `persistCredentials: true` so the tag push authenticates. A Databricks deploy job may run 60
 minutes and any other 15 (`_deploy_timeout_minutes`), longer than a Databricks deploy's wait
-for its endpoint. The release inputs that start a deploy are listed once
+for its endpoint. GitLab's file keeps `.cache/uv` between runs and sets `UV_CACHE_DIR` to
+`$CI_PROJECT_DIR/.cache/uv` in its top-level `variables:`, one path (`_GITLAB_UV_CACHE`), so
+uv writes its package cache where the cache is kept rather than in `~/.cache/uv`.
+The release inputs that start a deploy are listed once
 too (`_RELEASE_INPUT_DIRS`, the pipeline folder of `PIPELINE_FILE`, the file the
 scaffolded `haute.toml` names, which holds the form folder too, and the test quotes'
 folder, and `_RELEASE_INPUT_FILES`) and rendered by
