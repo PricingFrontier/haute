@@ -112,6 +112,20 @@ def contained_path(root: Path, path: str | Path) -> Path:
     return target
 
 
+def is_contained(root: Path, path: str | Path) -> bool:
+    """Whether :func:`contained_path` accepts *path* under *root*.
+
+    For a caller to which a path outside *root* is not an error but simply not
+    one of its own (an entry it skips). A NUL byte still raises
+    :class:`InvalidPathError`.
+    """
+    try:
+        contained_path(root, path)
+    except PathOutsideProjectError:
+        return False
+    return True
+
+
 def validate_project_path(path: str | Path) -> Path:
     """Resolve *path* (relative to the working directory) inside the project root.
 

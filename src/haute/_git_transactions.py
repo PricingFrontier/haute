@@ -174,6 +174,7 @@ def _refuse_unversionable(paths: list[str], pipeline_folder: str, project_root: 
     folder = PurePosixPath(pipeline_folder)
     too_large: list[str] = []
     for path in paths:
+        # not contained_path: git's repository-relative names, compared lexically
         if not PurePosixPath(path).is_relative_to(folder):
             continue
         target = project_root / path

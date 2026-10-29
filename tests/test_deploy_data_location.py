@@ -168,6 +168,16 @@ def test_outside_data_on_quote_path_refused(project: Path, name: str) -> None:
     assert "'rating'" in message
 
 
+def test_dotdot_out_of_the_pipeline_folder_refused(project: Path) -> None:
+    """A path that leaves the pipeline folder through ``..`` is outside it, too."""
+    _rates(project / "data" / "rates.parquet", {"N": 1.1, "S": 1.2})
+
+    with pytest.raises(DeployError, match="outside the pipeline folder") as raised:
+        _deploy(project, make_file_input_config("files/../../data/rates.parquet"))
+
+    assert "'rates'" in str(raised.value)
+
+
 @pytest.mark.parametrize("branch", ["training_path", "batch_path"])
 def test_outside_data_off_quote_path_ok(project: Path, branch: str) -> None:
     """Data outside the pipeline folder that the quote output does not read is not shipped.

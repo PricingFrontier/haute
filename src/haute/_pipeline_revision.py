@@ -8,6 +8,7 @@ from typing import Any
 
 from haute._cache import canonical_json
 from haute._hashing import content_hash, content_hash_bytes
+from haute._sandbox import is_contained
 from haute._submodel_paths import resolve_submodel_reference
 from haute._types import PipelineGraph
 
@@ -140,7 +141,7 @@ def pipeline_recovery_revision(
         if not role or not role.strip():
             raise ValueError("Recovery artifact roles must be non-empty.")
         path = raw_path.resolve()
-        if not path.is_relative_to(root):
+        if not is_contained(root, path):
             raise ValueError(
                 f"Recovery artifact escapes the project root: {_project_relative(path, root)}"
             )

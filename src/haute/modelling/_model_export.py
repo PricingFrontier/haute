@@ -20,6 +20,8 @@ from haute._path_resolution import (
     _reject_reserved_device_components,
 )
 from haute._project_layout import default_model_folder
+from haute._sandbox import contained_path
+from haute.errors import PathOutsideProjectError
 from haute.modelling._descriptors import DESCRIPTORS
 
 #: The native model file extension each algorithm trains to, from its descriptor.
@@ -56,10 +58,12 @@ def resolve_model_export_destination(
     _reject_reserved_device_components(raw_path, relative)
     if PureWindowsPath(text).drive and not relative.is_absolute():
         raise RuntimePathOutsideProjectError(f"Path {raw_path!r} resolves outside the project root")
-    root = project_root.resolve()
-    target = (root / relative).resolve()
-    if not target.is_relative_to(root):
-        raise RuntimePathOutsideProjectError(f"Path {raw_path!r} resolves outside the project root")
+    try:
+        target = contained_path(project_root, relative)
+    except PathOutsideProjectError:
+        raise RuntimePathOutsideProjectError(
+            f"Path {raw_path!r} resolves outside the project root"
+        ) from None
     return ModelExportDestination(
         path=target,
         display_path=text,

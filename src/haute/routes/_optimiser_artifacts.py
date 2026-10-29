@@ -31,6 +31,7 @@ from haute._artifact_housekeeping import (
 )
 from haute._logging import get_logger
 from haute._polars_utils import bounded_sink, read_parquet_metadata
+from haute._sandbox import is_contained
 from haute._types import SolveResultLike
 from haute.routes._job_store import register_artifact_cleaner
 
@@ -149,7 +150,7 @@ def _validate_server_owned_parquet_handle(
     directory = directory_input.resolve(strict=directory_input.exists())
     artifact_path = path_input.resolve(strict=path_input.exists())
 
-    if not directory.is_relative_to(root):
+    if not is_contained(root, directory):
         raise ValueError(f"{description} artifact directory is outside the artifact root.")
     if directory.parent != root or not directory.name.startswith(directory_prefix):
         raise ValueError(f"{description} artifact directory is invalid.")

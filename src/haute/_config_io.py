@@ -33,6 +33,7 @@ from haute._logging import get_logger
 from haute._rating_step_config import (
     normalise_rating_step_config,
 )
+from haute._sandbox import contained_path, is_contained
 from haute._types import (
     GLOBAL_CONSTANTS_FILE,
     GlobalConstant,
@@ -40,7 +41,7 @@ from haute._types import (
     NodeType,
     PipelineGraph,
 )
-from haute.errors import ConfigError
+from haute.errors import ConfigError, PathOutsideProjectError
 
 logger = get_logger(component="config_io")
 
@@ -255,14 +256,13 @@ def config_path_for_node(
         raise ValueError(
             f"Invalid node name {node_name!r}: must not contain path separators or '..'"
         )
-    rel = Path("config") / folder / f"{node_name}.json"
+    in_config = Path(folder) / f"{node_name}.json"
     if base_dir:
-        abs_path = (base_dir / rel).resolve()
-        config_root = (base_dir / "config").resolve()
-        if not abs_path.is_relative_to(config_root):
-            raise ValueError(f"Config path for {node_name!r} escapes config directory")
-        return abs_path
-    return rel
+        try:
+            return contained_path(base_dir / "config", in_config)
+        except PathOutsideProjectError:
+            raise ValueError(f"Config path for {node_name!r} escapes config directory") from None
+    return Path("config") / in_config
 
 
 # ---------------------------------------------------------------------------
@@ -284,11 +284,8 @@ def load_node_config(
     if not p.is_absolute() and base_dir:
         p = base_dir / p
     resolved = p.resolve()
-    # Validate path stays within project directory
-    if base_dir:
-        root = base_dir.resolve()
-        if not resolved.is_relative_to(root):
-            raise ValueError(f"Config path {config_path!r} resolves outside project root")
+    if base_dir and not is_contained(base_dir, resolved):
+        raise ValueError(f"Config path {config_path!r} resolves outside project root")
     config = _load_json_object(resolved)
     return _normalise_loaded_config(config, _config_node_type_from_path(resolved))
 

@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 
 from haute._git import GitHistoryReadError
 from haute._logging import get_logger
-from haute._sandbox import contained_path
+from haute._sandbox import contained_path, is_contained
 from haute.assistant import _loop, assistant_readiness
 from haute.assistant._catalog import tool_title
 from haute.assistant._config import AssistantConfig, resolve_assistant_config
@@ -63,7 +63,7 @@ def _sessions_storage_dir() -> Path:
 
     project_root = Path.cwd().resolve()
     storage = project_root / ".haute" / "assistant" / "sessions"
-    if not storage.resolve().is_relative_to(project_root):
+    if not is_contained(project_root, storage.resolve()):
         raise ConfigError("Assistant session storage must resolve inside the project root")
     return storage
 
