@@ -1139,7 +1139,10 @@ class TestLimitedPreviewTrace:
         assert "src" not in {step.node_id for step in result.steps}
         assert [omission.reason for omission in result.omissions] == ["row_scope_unproven"]
 
-    def test_code_addressing_its_input_through_input_mapping_traces_both_joins(self, tmp_path):
+    @pytest.mark.parametrize("node_type", ["polars", "externalFile"])
+    def test_code_addressing_its_input_through_input_mapping_traces_both_joins(
+        self, tmp_path, node_type
+    ):
         from haute._types import GraphNode, NodeData, NodeType
 
         frames = {
@@ -1168,6 +1171,12 @@ class TestLimitedPreviewTrace:
             "df = raw_rows\ndf = df.with_columns((pl.col('value') * 2).alias('value_doubled'))",
         )
         enriched.data.config["inputMapping"] = {"raw_rows": "Edge_Join_3"}
+        if node_type == "externalFile":
+            # Load File code names its inputs by edge name as a Transform's does.
+            lookup = tmp_path / "lookup.json"
+            lookup.write_text("{}")
+            enriched.data.nodeType = NodeType.EXTERNAL_FILE
+            enriched.data.config.update({"path": str(lookup), "fileType": "json"})
         nodes.append(enriched)
         graph = _g(
             {

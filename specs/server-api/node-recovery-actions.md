@@ -135,8 +135,7 @@ authored identity, since a recovery id carries an ordinal that renumbers once a 
 is gone; the commit holds the write to that preview. A removal can mend a submodel
 definition, so a definition is compared by its file's first registration path (the
 document keys it by that path while it fails to load and by its id once it loads), and an
-edge by its two ends (an edge from a submodel's output port carries the port only while the
-definition fails to load). The revision checks and rollback are the removal's. The nodes it
+edge by its two ends. The revision checks and rollback are the removal's. The nodes it
 joined are untouched. A parameter named after a Quote or Workbench Input itself, which no
 `connect()` binds to one of its tables, is its node's failure instead
 (`node_input_frame_missing`), which Recover settings rebinds.

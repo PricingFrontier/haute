@@ -31,16 +31,16 @@ import useToastStore from "../stores/useToastStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
 import { canonicalJson } from "../utils/canonicalJson"
-import { quoteEligible } from "../utils/sheetVisibility"
 import { relativeTime } from "../utils/relativeTime"
-import { QUOTE_DETAILS_ID } from "../utils/workbenchForm"
+import { basisOf, quoteEligible } from "../utils/sheetVisibility"
+import { QUOTE_DETAILS, QUOTE_DETAILS_ID } from "../utils/workbenchForm"
 import PageTabs from "../workbench/PageTabs"
 import SheetCanvas from "../workbench/SheetCanvas"
 import AppHeader from "./AppHeader"
 import HistoryPanel from "./HistoryPanel"
-import { basisOf, fullTime, valuesKey } from "./quoteValues"
+import { fullTime, valuesKey } from "./quoteValues"
 import { followLink, navigate, newQuotePath, quotePath, revisionPath, setLeaveGuard, type AppRoute } from "./route"
-import { BUTTON, Menu, Notice, StageChip, type MenuItem } from "./ui"
+import { BUTTON, Menu, Notice, ReleaseNotice, StageChip, type MenuItem } from "./ui"
 import useAppStore from "./useAppStore"
 import useNewQuoteStore from "./useNewQuoteStore"
 import useOpenQuoteStore, { busy, canEdit, readOnlyReason, type QuoteOrigin } from "./useOpenQuoteStore"
@@ -50,10 +50,7 @@ type QuoteRoute = Extract<AppRoute, { page: "new" } | { page: "quote" }>
 const RELATION_LABEL = { duplicate: "Duplicate", renewal: "Renewal", alternative: "Alternative" } as const
 
 /** The quote_details column that names a quote, typed in the bar. */
-const NAME_COLUMN = "qd_quote_name"
-
-/** A quote just made, on the sheets already: its address is moved to without opening it again. */
-let adopted: string | null = null
+const NAME_COLUMN = QUOTE_DETAILS.quote_name
 
 /** Save the open quote. */
 async function saveOpen(): Promise<void> {
@@ -69,7 +66,6 @@ async function makeAsked(from: QuoteOrigin): Promise<void> {
   const asked = window.location.href
   const made = await useOpenQuoteStore.getState().openNew(from)
   if (made === null || window.location.href !== asked) return
-  adopted = made.id
   await navigate(quotePath(made.id), { replace: true, force: true })
 }
 
@@ -105,16 +101,12 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
   useEffect(() => {
     // A question asked about the quote the page has left is nobody's now.
     useQuestionStore.getState().answer(null)
-    const open = useOpenQuoteStore.getState()
     if (route.page === "new") {
       // A quote under a new reference is made in the New quote window, over the Quotes page.
       if (route.from?.relation === "alternative") void makeAsked(route.from)
       return
     }
-    // Just made as an alternative: it is on the sheets already.
-    const justSaved = adopted === route.id && route.revision === null && open.quote?.id === route.id
-    adopted = null
-    if (!justSaved) void open.openQuote(route.id, route.revision)
+    void useOpenQuoteStore.getState().openRouted(route.id, route.revision)
     // The route's key says all of it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeKey])
@@ -511,16 +503,13 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
 
   const openNewest = async () => {
     if (quote === null) return
-    if (await navigate(quotePath(quote.id), { force: true })) void useOpenQuoteStore.getState().openQuote(quote.id, null)
+    // Moved to the quote's address, its route opens it; there already, nothing else will.
+    if ((await navigate(quotePath(quote.id), { force: true })) === "here") void useOpenQuoteStore.getState().openQuote(quote.id, null)
   }
 
   return (
     <>
-      {releaseChanged && (
-        <Notice tone="danger" testId="notice-release" actions={<button type="button" className={BUTTON} onClick={() => window.location.reload()}>Reload</button>}>
-          This page was drawn for an earlier release of the app. Reload it to carry on: your changes stay in this browser.
-        </Notice>
-      )}
+      {releaseChanged && <ReleaseNotice kept />}
       {conflict !== null && (
         <Notice
           tone="warning"

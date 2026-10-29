@@ -600,7 +600,7 @@ describe("SchemaEditor", () => {
 
   it("asks before removing a column or a table a condition tests, and takes the condition with it", async () => {
     const tested = form(POLICY, LAYERS)
-    const condition = { table: "t_policy", column: "c_state", op: "filled" as const, values: [] }
+    const condition = { table: "t_policy", column: "c_state", op: "filled" as const, values: [], field: null, days: 0 }
     tested.pages[0].show_when = { match: "all", conditions: [condition] }
     tested.pages[0].sections[0].widgets = [
       { id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "t_policy", column: "c_state" }], show_when: { match: "all", conditions: [] } },
@@ -623,7 +623,7 @@ describe("SchemaEditor", () => {
 
   it("asks before removing a column or a table an Import or an Export uses, and takes it out of them", async () => {
     const used = form(POLICY, LAYERS)
-    const condition = { table: "t_policy", column: "c_state", op: "filled" as const, values: [] }
+    const condition = { table: "t_policy", column: "c_state", op: "filled" as const, values: [], field: null, days: 0 }
     used.pages[0].show_when = { match: "all", conditions: [condition] }
     used.pages[0].sections[0].widgets = [
       { ...createWidget("import", { x: 0, y: 0, w: 160, h: 40 }), id: "w_in", table: "t_policy", column_names: [{ column: "c_state", name: "State" }] },
@@ -653,8 +653,8 @@ describe("SchemaEditor", () => {
 
   it("counts a section whose conditions test a column or a table in the confirmation, and takes those conditions out of it", async () => {
     const tested = form(POLICY, LAYERS)
-    const state = { table: "t_policy", column: "c_state", op: "filled" as const, values: [] }
-    const exposure = { table: "t_policy", column: "c_exposure", op: "above" as const, values: ["100"] }
+    const state = { table: "t_policy", column: "c_state", op: "filled" as const, values: [], field: null, days: 0 }
+    const exposure = { table: "t_policy", column: "c_exposure", op: "above" as const, values: ["100"], field: null, days: 0 }
     tested.pages[0].show_when = { match: "all", conditions: [state] }
     tested.pages[0].sections.push({ id: "section_2", title: "Section 2", height: 160, show_when: { match: "all", conditions: [state, exposure] }, widgets: [] })
     load(tested)

@@ -2574,6 +2574,8 @@ export interface ShowWhen {
  */
 export interface Condition {
   column: string;
+  days: number;
+  field: FieldRef | null;
   op:
     | 'ticked'
     | 'not_ticked'
@@ -2581,6 +2583,10 @@ export interface Condition {
     | 'empty'
     | 'equals'
     | 'not_equals'
+    | 'contains'
+    | 'not_contains'
+    | 'starts_with'
+    | 'ends_with'
     | 'one_of'
     | 'not_one_of'
     | 'above'
@@ -2589,6 +2595,13 @@ export interface Condition {
     | 'at_most';
   table: string;
   values: string[];
+}
+/**
+ * A schema column a widget shows, by table and column id, so a rename keeps it.
+ */
+export interface FieldRef {
+  column: string;
+  table: string;
 }
 /**
  * A many-row table's rows, by table id, passing all of its tests in the same row: any
@@ -2604,10 +2617,13 @@ export interface RowsCondition {
 }
 /**
  * A test a row of a many-row table must pass: a ``Condition``'s column, test and values,
- * its table the condition's that holds it.
+ * its table the condition's that holds it, and another column of the same row, by id, to
+ * test against.
  */
 export interface RowTest {
   column: string;
+  days: number;
+  field: string | null;
   op:
     | 'ticked'
     | 'not_ticked'
@@ -2615,6 +2631,10 @@ export interface RowTest {
     | 'empty'
     | 'equals'
     | 'not_equals'
+    | 'contains'
+    | 'not_contains'
+    | 'starts_with'
+    | 'ends_with'
     | 'one_of'
     | 'not_one_of'
     | 'above'
@@ -2718,13 +2738,6 @@ export interface ColumnLook {
   show_when: ShowWhen;
   table: string;
   width: number | null;
-}
-/**
- * A schema column a widget shows, by table and column id, so a rename keeps it.
- */
-export interface FieldRef {
-  column: string;
-  table: string;
 }
 /**
  * A Collection: boxes showing columns of one-row schema tables, ``columns`` across, with

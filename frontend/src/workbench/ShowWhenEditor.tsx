@@ -13,17 +13,22 @@ import type { Condition, ConditionGroup, FormSpec, RowsCondition, RowTest, Schem
 import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, QuietAction, ValidatedTextField, wholeNumber } from "../components/form"
 import { parseTypedNumber } from "../utils/sheetValues"
 import {
+  columnKey,
   CONDITION_TESTS,
   COUNT_TESTS,
   conditionFault,
+  DAYS_MAX,
   isGroup,
   isListCondition,
   isRowCount,
   isRowsCondition,
   isRowTotal,
   newCondition,
+  onPrice,
+  priceProblem,
   newRowTest,
   testableColumns,
+  testFields,
   testLabel,
   testsFor,
   TOTALS,
@@ -33,12 +38,14 @@ import {
   withConditionTest,
   withListKind,
   withTestColumn,
+  withTestField,
   type ColumnTest,
   type ConditionTest,
   type CountTest,
   type ListCondition,
   type ShowWhenEntry,
   type SingleCondition,
+  type TestField,
   type TotalKind,
 } from "../utils/sheetVisibility"
 import { fieldColumn, readableName } from "../utils/workbenchForm"
@@ -64,16 +71,31 @@ const KINDS: ReadonlyArray<{ value: ListKind; label: string }> = [
   ...TOTALS,
 ]
 
-const columnKey = (tableId: string, columnId: string) => `${tableId}:${columnId}`
 /** A table's rows' place in the column select, never a column's key, whose `:` between its ids no id holds. */
 const rowsKey = (tableId: string) => `${tableId}#rows`
 const label = (column: SchemaColumn) => column.label || readableName(column.name)
 const countValid = wholeNumber({ min: 0, unit: "rows" })
+/** Days added to another Date: a whole number, a minus sign taking them away, up to `DAYS_MAX` either way. */
+const daysValid = (text: string): string | null => {
+  const days = text.trim()
+  return /^[+-]?\d+$/.test(days) && Math.abs(Number(days)) <= DAYS_MAX ? null : `Enter a whole number of days from -${DAYS_MAX} to ${DAYS_MAX}.`
+}
 /** A total's number: blank, which its fault names, or a number as the sample's are typed. */
 const numberValid = (text: string): string | null => (text.trim() === "" || parseTypedNumber(text.trim()) !== null ? null : "Enter a number.")
+/** A number written with a thousands separator, `1,000` or `1,000,000.5`. */
+const GROUPED = /(?<![\d.])\d+(?:,\d{3})+(?:\.\d+)?(?!\d)/
+/** A number column's values, comma-separated: none with a thousands separator, which the split would cut in two. */
+const listedNumbersValid = (text: string): string | null => {
+  const grouped = GROUPED.exec(text)?.[0]
+  return grouped === undefined ? null : `Write ${grouped.replaceAll(",", "")}, not ${grouped}: a comma separates the values.`
+}
+/** Values typed comma-separated, each trimmed, the blanks dropped. */
+const splitValues = (text: string): string[] => text.split(",").map((value) => value.trim()).filter((value) => value !== "")
 
 /** The tables a condition can test: the input tables with a column to test. */
-const testable = (form: FormSpec): SchemaTable[] => form.schema.tables.filter((table) => testableColumns(table).length > 0)
+/** The tables a condition can test: the input tables with a column to test, and, on what takes nothing typed, the output tables too, tested on the price. */
+const testable = (form: FormSpec, priced: boolean): SchemaTable[] =>
+  form.schema.tables.filter((table) => (priced || table.role === "input") && testableColumns(table).length > 0)
 
 /** Whether a Show when's or a group's match sentence shows: with two or more conditions, or one while its match is a number. */
 const sentenceShown = (match: Match, count: number) => count > 1 || (count === 1 && typeof match === "number")
@@ -139,10 +161,13 @@ function MatchSentence({
 export function ShowWhenEditor({
   form,
   showWhen,
+  priced,
   onChange,
 }: {
   form: FormSpec
   showWhen: ShowWhen
+  /** What it is on takes nothing typed (`takesNothingTyped`), so its conditions may test the price. */
+  priced: boolean
   onChange: (next: ShowWhen) => void
 }) {
   const { conditions: entries, match } = showWhen
@@ -163,6 +188,7 @@ export function ShowWhenEditor({
           <GroupFrame
             key={index}
             form={form}
+            priced={priced}
             group={entry}
             name={`Group ${index + 1}`}
             onChange={(next) => replace(index, next)}
@@ -172,6 +198,7 @@ export function ShowWhenEditor({
           <ConditionRow
             key={index}
             form={form}
+            priced={priced}
             condition={entry}
             name={`Condition ${index + 1}`}
             onChange={(next) => replace(index, next)}
@@ -212,12 +239,14 @@ export function ShowWhenEditor({
 /** A group's conditions in a frame of their own, with its match, its own Add condition and a cross; removing its last condition removes it. */
 function GroupFrame({
   form,
+  priced,
   group,
   name,
   onChange,
   onRemove,
 }: {
   form: FormSpec
+  priced: boolean
   group: ConditionGroup
   name: string
   onChange: (next: ConditionGroup) => void
@@ -254,6 +283,7 @@ function GroupFrame({
         <ConditionRow
           key={index}
           form={form}
+          priced={priced}
           condition={condition}
           name={`${name} condition ${index + 1}`}
           onChange={(next) => setConditions(group.conditions.map((current, at) => (at === index ? next : current)))}
@@ -276,18 +306,20 @@ function GroupFrame({
 
 function ConditionRow({
   form,
+  priced,
   condition,
   name,
   onChange,
   onRemove,
 }: {
   form: FormSpec
+  priced: boolean
   condition: SingleCondition
   name: string
   onChange: (next: SingleCondition) => void
   onRemove: () => void
 }) {
-  const tables = testable(form)
+  const tables = testable(form, priced)
   const list = isListCondition(condition)
   const table = form.schema.tables.find((candidate) => candidate.id === condition.table)
   const found = list ? null : fieldColumn(form, condition)
@@ -304,7 +336,7 @@ function ConditionRow({
     }
   }
   const offered = choices.has(key)
-  const fault = conditionFault(form, condition)
+  const fault = conditionFault(form, condition) ?? (!priced && onPrice(form, condition) ? priceProblem(form, condition) : null)
   const marker = list ? ROWS_MARKER : found === null ? null : COLUMN_TYPES[found.column.type]
   const missing = list ? (table === undefined ? "Missing table" : `Rows of ${table.name}`) : found === null ? "Missing column" : label(found.column)
 
@@ -358,7 +390,9 @@ function ConditionRow({
         {list ? (
           <ListFields form={form} table={table} condition={condition} name={name} onChange={onChange} />
         ) : (
-          <ColumnFields column={found?.column ?? null} test={condition} name={name} onChange={(next: Condition) => onChange(next)} />
+          <div className="flex min-w-0 flex-1 flex-wrap items-start gap-1.5">
+            <ColumnFields form={form} tableId={condition.table} column={found?.column ?? null} test={condition} name={name} onChange={(next: Condition) => onChange(next)} />
+          </div>
         )}
       </div>
       {fault !== null && (
@@ -558,20 +592,28 @@ function RowTestFields({
           </button>
         )}
       </div>
-      <div className="flex items-start gap-1.5">
-        <ColumnFields column={column} test={test} name={name} onChange={onChange} />
+      <div className="flex flex-wrap items-start gap-1.5">
+        <ColumnFields form={form} tableId={table?.id ?? null} column={column} test={test} name={name} onChange={onChange} />
       </div>
     </div>
   )
 }
 
-/** A test of a column's value: its test and its value. */
+/**
+ * A test of a column's value: its test, what a test of one value is tested against while
+ * another field could be (`Against`), and its value, or, against a Date, the days added.
+ */
 function ColumnFields<T extends ColumnTest>({
+  form,
+  tableId,
   column,
   test,
   name,
   onChange,
 }: {
+  form: FormSpec
+  /** The tested column's table; null while it is gone. */
+  tableId: string | null
   column: SchemaColumn | null
   test: T
   name: string
@@ -579,6 +621,8 @@ function ColumnFields<T extends ColumnTest>({
 }) {
   const type = column?.type ?? "str"
   const tests = column === null ? [test.op] : testsFor(type)
+  const fields = column === null || tableId === null ? [] : testFields(form.schema, tableId, column)
+  const against = CONDITION_TESTS[test.op].values === "one" && (fields.length > 0 || test.field !== null)
   return (
     <>
       <select
@@ -594,8 +638,93 @@ function ColumnFields<T extends ColumnTest>({
           </option>
         ))}
       </select>
-      <ConditionValue condition={test} column={column} name={name} onChange={(values) => onChange({ ...test, values })} />
+      {against && <Against form={form} tableId={tableId} fields={fields} test={test} name={name} onChange={(field) => onChange(withTestField(test, field, type === "date"))} />}
+      {test.field === null ? (
+        <ConditionValue condition={test} column={column} name={name} onChange={(values) => onChange({ ...test, values })} />
+      ) : (
+        type === "date" && (
+          <span className="flex min-w-0 flex-1 items-start gap-1">
+            <ValidatedTextField
+              dataTestId={`${name}-days`}
+              ariaLabel={`${name} days`}
+              value={String(test.days)}
+              validate={daysValid}
+              onCommit={(text) => onChange({ ...test, days: Number(text.trim()) })}
+              containerClassName="w-20 shrink-0"
+              className={`${FIELD_CLASS} w-full tabular-nums`}
+              style={INPUT_STYLE}
+            />
+            <span className="pt-1 text-[11px]" style={{ color: "var(--text-secondary)" }}>
+              days
+            </span>
+          </span>
+        )
+      )}
     </>
+  )
+}
+
+/** Where the select of what a test is tested against keeps "Value": a `:`, which no id holds, so no column's key or id. */
+const VALUE = ":value"
+
+/**
+ * What a test of one value is tested against: Value, typed, or one of `fields`, by table;
+ * a field the test names that is no longer one of them kept in its place, not offered.
+ */
+function Against<T extends ColumnTest>({
+  form,
+  tableId,
+  fields,
+  test,
+  name,
+  onChange,
+}: {
+  form: FormSpec
+  tableId: string | null
+  fields: readonly TestField[]
+  test: T
+  name: string
+  onChange: (field: T["field"]) => void
+}) {
+  const { field } = test
+  // A one-row table's condition names its field by table and column, a test of a row by its column in the same row.
+  const rowTest = !("table" in test)
+  const keyOf = (choice: TestField): string => (rowTest ? choice.column.id : columnKey(choice.table.id, choice.column.id))
+  const current = field === null ? VALUE : typeof field === "string" ? field : columnKey(field.table, field.column)
+  const ref = field === null ? null : typeof field === "string" ? (tableId === null ? null : { table: tableId, column: field }) : field
+  const named = ref === null ? null : fieldColumn(form, ref)
+  const tables = [...new Map(fields.map((choice) => [choice.table.id, choice.table])).values()]
+  return (
+    <select
+      aria-label={`${name} against`}
+      value={current}
+      onChange={(event) => {
+        if (event.target.value === VALUE) return onChange(null as T["field"])
+        const chosen = fields.find((choice) => keyOf(choice) === event.target.value)
+        if (chosen === undefined) throw new Error(`"${event.target.value}" is not a field this test can be tested against`)
+        onChange((rowTest ? chosen.column.id : { table: chosen.table.id, column: chosen.column.id }) as T["field"])
+      }}
+      className={`${FIELD_CLASS} w-32 shrink-0`}
+      style={INPUT_STYLE}
+    >
+      <option value={VALUE}>Value</option>
+      {field !== null && !fields.some((choice) => keyOf(choice) === current) && (
+        <option value={current} disabled>
+          {named === null ? "Missing field" : label(named.column)}
+        </option>
+      )}
+      {tables.map((table) => (
+        <optgroup key={table.id} label={table.name}>
+          {fields
+            .filter((choice) => choice.table.id === table.id)
+            .map((choice) => (
+              <option key={choice.column.id} value={keyOf(choice)}>
+                {label(choice.column)}
+              </option>
+            ))}
+        </optgroup>
+      ))}
+    </select>
   )
 }
 
@@ -632,12 +761,27 @@ function ConditionValue({
         </div>
       )
     }
+    if (column?.type === "int" || column?.type === "float") {
+      return (
+        <ValidatedTextField
+          dataTestId={`${name}-values`}
+          ariaLabel={aria}
+          value={condition.values.join(", ")}
+          placeholder="Values, comma-separated"
+          validate={listedNumbersValid}
+          onCommit={(text) => onChange(splitValues(text))}
+          containerClassName="min-w-0 flex-1"
+          className={`${FIELD_CLASS} w-full tabular-nums`}
+          style={INPUT_STYLE}
+        />
+      )
+    }
     return (
       <CommittedTextField
         aria-label={aria}
         value={condition.values.join(", ")}
         placeholder="Values, comma-separated"
-        onCommit={(text) => onChange(text.split(",").map((value) => value.trim()).filter((value) => value !== ""))}
+        onCommit={(text) => onChange(splitValues(text))}
         className={`${FIELD_CLASS} flex-1`}
         style={INPUT_STYLE}
       />

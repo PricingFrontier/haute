@@ -170,7 +170,7 @@ export const hiddenPerilsForm = (): FormSpec => {
     fields: [{ table: "coverage", column: shown }],
     show_when: showWhen,
   })
-  const in1900: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "policy.year", op: "equals", values: ["1900"] }] }
+  const in1900: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "policy.year", op: "equals", values: ["1900"], field: null, days: 0 }] }
   addTo(form, grid("w_perils", "coverage.peril", 380, in1900))
   addTo(form, grid("w_limits", "coverage.limit", 520, ALWAYS))
   return form
@@ -231,7 +231,7 @@ export const coverForm = (): FormSpec => {
         columns: 2, ...COLLECTION_OPTIONS, column_looks: [], spacers: [],
       },
     ],
-    { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [] }] },
+    { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [], field: null, days: 0 }] },
   )
   return form
 }
@@ -250,7 +250,7 @@ export const sectionedForm = (): FormSpec => {
     section("s_flood", [{ ...grid, y: 16 }], {
       title: "Flood",
       height: 232,
-      show_when: { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [] }] },
+      show_when: { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [], field: null, days: 0 }] },
     }),
     section("s_notes", [note], { title: "Notes", height: 72 }),
   ]

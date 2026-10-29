@@ -2000,8 +2000,6 @@ def _canonical_snapshot_graph(
             target=edge.target_recovery_id,
             sourceHandle=edge.source_handle,
             targetHandle=edge.target_handle,
-            sourcePort=edge.source_port,
-            targetPort=edge.target_port,
         )
         for edge in edges
         if edge.source_recovery_id in selected_ids

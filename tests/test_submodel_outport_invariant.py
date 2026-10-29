@@ -95,7 +95,6 @@ def test_flatten_resolves_public_output_to_qualified_definition_endpoint() -> No
 
     assert len(rewired) == 1
     assert rewired[0].sourceHandle == "frame"
-    assert rewired[0].sourcePort is None
     assert result.submodels is None
 
 

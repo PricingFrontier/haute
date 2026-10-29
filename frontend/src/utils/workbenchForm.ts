@@ -43,9 +43,10 @@ import {
 } from "./sheetGeometry"
 import { IDENTITY_COLUMNS, IDENTITY_NAMES, identityCount, isIdentityColumn, QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, sheetColumns } from "./quoteIdentity"
 import { canonicalJson } from "./canonicalJson"
-import { cellProblem, filled, isDay, newQuoteValues, parseTypedNumber, presetColumn, pricedRows, valuesBasis, type PricedRows, type RowsByTable } from "./sheetValues"
+import { cellProblem, filled, isDay, newQuoteValues, parseTypedNumber, presetColumn, pricedRows, type PricedRows, type RowsByTable } from "./sheetValues"
 import {
   ALWAYS,
+  basisOf,
   columnKey,
   conditionFault,
   fieldKey,
@@ -59,7 +60,9 @@ import {
   leafConditions,
   listColumns,
   neverShown,
-  sheetVisibility,
+  onPrice,
+  priceProblem,
+  takesNothingTyped,
   testLabel,
   TOTALS,
   type ColumnTest,
@@ -436,8 +439,14 @@ const dropConditions = (draft: FormSpec, keep: (condition: SingleCondition) => S
   }
 }
 
-/** The ids of the columns of its table a condition tests: a one-row table's condition's own, or those a list's tests of a row and its total test. */
-const conditionColumns = (condition: SingleCondition): string[] => (isListCondition(condition) ? listColumns(condition) : [condition.column])
+/** The columns a condition tests, by table and column id: a one-row table's condition's own and the field it is tested against, or those of its table a list's tests of a row and its total test. */
+const conditionColumns = (condition: SingleCondition): FieldRef[] =>
+  isListCondition(condition)
+    ? listColumns(condition).map((column) => ({ table: condition.table, column }))
+    : [{ table: condition.table, column: condition.column }, ...(condition.field === null ? [] : [condition.field])]
+
+/** The ids of the tables a condition tests: its own, and the table of the field it is tested against. */
+const conditionTables = (condition: SingleCondition): string[] => [condition.table, ...conditionColumns(condition).map((field) => field.table)]
 
 /**
  * A condition without what it tests of a column: none for a one-row table's condition on
@@ -445,10 +454,15 @@ const conditionColumns = (condition: SingleCondition): string[] => (isListCondit
  * every row left with none going too, as it needs one.
  */
 function withoutColumn(condition: SingleCondition, tableId: string, columnId: string): SingleCondition | null {
+  if (!isListCondition(condition)) {
+    const { field } = condition
+    const tests = condition.table === tableId && condition.column === columnId
+    const against = field !== null && field.table === tableId && field.column === columnId
+    return tests || against ? null : condition
+  }
   if (condition.table !== tableId) return condition
-  if (!isListCondition(condition)) return condition.column === columnId ? null : condition
   if (isRowTotal(condition) && condition.column === columnId) return null
-  const where = condition.where.filter((test) => test.column !== columnId)
+  const where = condition.where.filter((test) => test.column !== columnId && test.field !== columnId)
   if (where.length === condition.where.length) return condition
   return isRowsCondition(condition) && where.length === 0 ? null : { ...condition, where }
 }
@@ -461,7 +475,7 @@ export const removeSchemaTable = (spec: FormSpec, id: string): FormSpec =>
   edit(spec, (draft) => {
     draft.schema.tables = draft.schema.tables.filter((table) => table.id !== id)
     dropFields(draft, (field) => field.table === id)
-    dropConditions(draft, (condition) => (condition.table === id ? null : condition))
+    dropConditions(draft, (condition) => (conditionTables(condition).includes(id) ? null : condition))
     for (const widget of allWidgets(draft)) dropButtonUses(widget, (table) => table === id, (field) => field.table === id)
     delete draft.sample[id]
   })
@@ -625,7 +639,9 @@ export const buttonUses = (spec: FormSpec, tableId: string, columnId?: string): 
 /** The sheets, sections and widgets whose conditions, or whose fields' conditions, are on a schema table, or test just one of its columns. */
 export const conditionUses = (spec: FormSpec, tableId: string, columnId?: string): (Page | Section | Widget)[] => {
   const uses = (showWhen: ShowWhen): boolean =>
-    leafConditions(showWhen).some((condition) => condition.table === tableId && (columnId === undefined || conditionColumns(condition).includes(columnId)))
+    leafConditions(showWhen).some((condition) =>
+      columnId === undefined ? conditionTables(condition).includes(tableId) : conditionColumns(condition).some((field) => field.table === tableId && field.column === columnId),
+    )
   return [...spec.pages, ...allSections(spec), ...allWidgets(spec)].filter(
     (holder) => uses(holder.show_when) || ("column_looks" in holder && holder.column_looks.some((look) => uses(look.show_when))),
   )
@@ -646,7 +662,7 @@ export interface ShownField {
 
 /** The fields a component shows, each with its column in `schema`, in the component's order; a Heading shows none. */
 export const shownFields = (schema: FormSchema, widget: Widget): ShownField[] =>
-  showsFields(widget) ? widget.fields.map((field) => ({ key: `${field.table}:${field.column}`, found: fieldColumn({ schema }, field) })) : []
+  showsFields(widget) ? widget.fields.map((field) => ({ key: columnKey(field.table, field.column), found: fieldColumn({ schema }, field) })) : []
 
 /** The input tables a Table's grid takes rows of, in its order: those of the many-row columns it shows that are typed into. */
 export const gridInputTables = (fields: readonly ShownField[]): SchemaTable[] => [
@@ -1281,10 +1297,10 @@ export function pasteWidget(spec: FormSpec, widget: Widget, sectionId: string): 
   dropShown(copy, gone)
   dropButtonUses(copy, (table) => !spec.schema.tables.some((candidate) => candidate.id === table), gone)
   const keep = (condition: SingleCondition): SingleCondition | null => {
-    if (!spec.schema.tables.some((table) => table.id === condition.table)) return null
+    if (!conditionTables(condition).every((tableId) => spec.schema.tables.some((table) => table.id === tableId))) return null
     let kept: SingleCondition | null = condition
-    for (const column of conditionColumns(condition)) {
-      if (kept !== null && gone({ table: condition.table, column })) kept = withoutColumn(kept, condition.table, column)
+    for (const field of conditionColumns(condition)) {
+      if (kept !== null && gone(field)) kept = withoutColumn(kept, field.table, field.column)
     }
     return kept
   }
@@ -1713,14 +1729,14 @@ export const setTableRows = (spec: FormSpec, widgetId: string, rows: number): Fo
 const bases = new WeakMap<FormSpec, string>()
 
 /**
- * What pricing the sample depends on, as one string to compare (`valuesBasis`): the schema,
+ * What pricing the sample depends on, as one string to compare (`basisOf`): the schema,
  * the columns the sheets hide as the sample sets them, and the sample. A sheet laid out
  * differently prices the same, while a condition that hides or shows a column does not.
  */
 export function pricingBasis(spec: FormSpec): string {
   let basis = bases.get(spec)
   if (basis === undefined) {
-    basis = valuesBasis(spec.schema, sheetVisibility(spec, spec.sample).hidden, spec.sample)
+    basis = basisOf(spec, spec.sample)
     bases.set(spec, basis)
   }
   return basis
@@ -1858,12 +1874,12 @@ export function widgetProblems(spec: FormSpec): WidgetProblem[] {
         if (grains.size > 1 || given.size > 1) problem("shows tables whose rows do not line up")
       }
     }
-    for (const message of conditionProblems(spec, widget, never)) problem(message)
+    for (const message of conditionProblems(spec, widget, never, takesNothingTyped(spec, widget))) problem(message)
     if (widget.type !== "tableInput" && widget.type !== "collection") continue
     for (const field of widget.fields) {
       const holder = { id: fieldKey(widget.id, field.table, field.column), show_when: fieldShowWhen(widget, field) }
       const label = columnLabel(fieldColumn(spec, field)?.column)
-      for (const message of conditionProblems(spec, holder, never, "fields")) {
+      for (const message of conditionProblems(spec, holder, never, takesNothingTyped(spec, field), "fields")) {
         problems.push({ widgetId: widget.id, message: `${name}'s field "${label}" ${message}` })
       }
     }
@@ -1973,7 +1989,7 @@ export const pageName = (page: Page): string => `Sheet "${page.title}"`
 export function pageProblems(spec: FormSpec): PageProblem[] {
   const never = neverShown(spec)
   return spec.pages.flatMap((page) =>
-    conditionProblems(spec, page, never).map((message) => ({ pageId: page.id, message: `${pageName(page)} ${message}` })),
+    conditionProblems(spec, page, never, takesNothingTyped(spec, page)).map((message) => ({ pageId: page.id, message: `${pageName(page)} ${message}` })),
   )
 }
 
@@ -1990,7 +2006,7 @@ export const sectionName = (section: Section): string => `Section "${section.tit
 export function sectionProblems(spec: FormSpec): SectionProblem[] {
   const never = neverShown(spec)
   return allSections(spec).flatMap((section) =>
-    conditionProblems(spec, section, never).map((message) => ({ sectionId: section.id, message: `${sectionName(section)} ${message}` })),
+    conditionProblems(spec, section, never, takesNothingTyped(spec, section)).map((message) => ({ sectionId: section.id, message: `${sectionName(section)} ${message}` })),
   )
 }
 
@@ -2018,6 +2034,8 @@ function conditionProblems(
   spec: FormSpec,
   holder: { id: string; show_when: ShowWhen },
   never: ReadonlyMap<string, SingleCondition>,
+  // What it is on takes nothing typed, so a condition on the price applies to it.
+  priced: boolean,
   hidingWith: "components" | "fields" = "components",
 ): string[] {
   const problems: string[] = []
@@ -2032,7 +2050,7 @@ function conditionProblems(
     }
   }
   for (const condition of leafConditions(holder.show_when)) {
-    const fault = conditionFault(spec, condition)
+    const fault = conditionFault(spec, condition) ?? (!priced && onPrice(spec, condition) ? priceProblem(spec, condition) : null)
     if (fault !== null) {
       problems.push(fault)
       continue
@@ -2070,11 +2088,14 @@ function conditionProblems(
         )
       }
     } else {
-      const name = fieldColumn(spec, waiting)?.column.name ?? waiting.column
+      // It waits on its column, and on the field it is tested against while it has one: either may be the one that cannot show again.
+      const named = (field: FieldRef): string => fieldColumn(spec, field)?.column.name ?? field.column
+      const waitedOn = waiting.field === null ? [waiting] : [waiting, waiting.field]
+      const absent = waitedOn.find((field) => !entered([columnKey(field.table, field.column)]))
       problems.push(
-        entered([columnKey(waiting.table, waiting.column)])
-          ? `waits on ${name}, which is only on ${hidingWith} that hide with it, so it could not show again once hidden`
-          : `waits on ${name}, which is on no Table or Collection`,
+        absent === undefined
+          ? `waits on ${waitedOn.map(named).join(" or ")}, which ${waitedOn.length > 1 ? "are" : "is"} only on ${hidingWith} that hide with it, so it could not show again once hidden`
+          : `waits on ${named(absent)}, which is on no Table or Collection`,
       )
     }
   }
@@ -2089,17 +2110,26 @@ function conditionProblems(
  */
 export function conditionText(spec: Pick<FormSpec, "schema">, condition: SingleCondition): string {
   if (isListCondition(condition)) return listText(spec, condition)
-  return testText(fieldColumn(spec, condition)?.column ?? null, condition)
+  const other = condition.field === null ? null : (fieldColumn(spec, condition.field)?.column ?? undefined)
+  return testText(fieldColumn(spec, condition)?.column ?? null, condition, other)
 }
 
 /** A column's label, or what stands for one gone. */
 const columnLabel = (column: SchemaColumn | null | undefined): string =>
   column === null || column === undefined ? "A missing column" : column.label || readableName(column.name)
 
-/** A test of a column read by its label: `Age is less than 25`. */
-function testText(column: SchemaColumn | null | undefined, test: ColumnTest): string {
+/** Days added to a Date, as a sentence says them: ` + 365 days`, ` - 1 day`, nothing for none. */
+const daysText = (days: number): string => (days === 0 ? "" : ` ${days > 0 ? "+" : "-"} ${Math.abs(days)} ${Math.abs(days) === 1 ? "day" : "days"}`)
+
+/**
+ * A test of a column read by its label: `Age is less than 25`, or, tested against another
+ * field (`other`, null while it names none and undefined while that is gone), by its label
+ * and its days: `Completion date is after Start date + 365 days`.
+ */
+function testText(column: SchemaColumn | null | undefined, test: ColumnTest, other: SchemaColumn | null | undefined): string {
   const words = testLabel(test.op, column?.type ?? "str")
   const text = `${columnLabel(column)} ${words}`
+  if (other !== null) return `${text} ${columnLabel(other)}${daysText(test.days)}`
   return test.values.length === 0 ? text : `${text} ${test.values.join(", ")}`
 }
 
@@ -2108,7 +2138,7 @@ function listText(spec: Pick<FormSpec, "schema">, condition: ListCondition): str
   const table = spec.schema.tables.find((candidate) => candidate.id === condition.table)
   const name = table?.name ?? "a missing table"
   const columnOf = (id: string) => table?.columns.find((column) => column.id === id)
-  const tests = condition.where.map((test) => testText(columnOf(test.column), test)).join(" and ")
+  const tests = condition.where.map((test) => testText(columnOf(test.column), test, test.field === null ? null : columnOf(test.field))).join(" and ")
   if (isRowsCondition(condition)) return `${tests} in ${condition.rows} row of ${name}`
   const where = condition.where.length === 0 ? "" : ` where ${tests}`
   if (isRowCount(condition)) return `Number of rows in ${name}${where} ${testLabel(condition.op, "int")} ${condition.count}`
@@ -2247,28 +2277,9 @@ function defaultProblem(column: SchemaColumn): string | null {
 // ── Haute's quote_details table ──────────────────────────────────────────
 
 export { QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED }
+export { QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, type QuoteDetailName } from "./quoteIdentity"
 /** Why another table under its name is refused, in the server's words (`QUOTE_DETAILS_REFUSAL` in `src/haute/_workbench_form.py`). */
 export const QUOTE_DETAILS_REFUSAL = "quote_details is Haute's own table of a quote's details: name yours otherwise"
-
-/** Its columns, in order, as id, name and type (`QUOTE_DETAILS_COLUMNS`), a quote's administration; their structure is fixed. */
-export const QUOTE_DETAILS_COLUMNS: ReadonlyArray<readonly [id: string, name: string, type: SchemaColumn["type"]]> = [
-  ["qd_reference", "quote_reference", "str"],
-  ["qd_option", "quote_option", "int"],
-  ["qd_quote_name", "quote_name", "str"],
-  ["qd_insured", "insured", "str"],
-  ["qd_broker", "broker", "str"],
-  ["qd_inception_date", "inception_date", "date"],
-  ["qd_expiry_date", "expiry_date", "date"],
-  ["qd_is_renewal", "is_renewal", "bool"],
-  ["qd_stage", "stage", "str"],
-  ["qd_assignee", "assignee", "str"],
-  ["qd_archived", "archived", "bool"],
-  ["qd_created_date", "created_date", "date"],
-  ["qd_created_by", "created_by", "str"],
-  ["qd_modified_date", "modified_date", "date"],
-  ["qd_modified_by", "modified_by", "str"],
-  ["qd_haute_version", "haute_version", "str"],
-]
 
 /** Why a table's own column keeps the quote's identity from it, in the server's words (`identity_clashes`). */
 const identityClash = (table: SchemaTable, column: SchemaColumn): string =>

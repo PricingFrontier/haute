@@ -21,14 +21,14 @@ import {
   type QuoteChangeFields,
   type QuoteRelation,
 } from "../api/app"
-import { apiErrorMessage, apiErrorStatus, isStaleRevision } from "../api/errors"
+import { apiErrorMessage, apiErrorRawDetail, apiErrorRefused, isStaleRevision } from "../api/errors"
 import type { FormSpec, WorkbenchAppQuote, WorkbenchAppQuoteHistoryResponse, WorkbenchAppQuoteResponse, WorkbenchAppQuoteRevision } from "../api/types"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
-import { quoteEligible } from "../utils/sheetVisibility"
+import { basisOf, quoteEligible } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, type SampleRow } from "../utils/workbenchForm"
 import { latest } from "../utils/latest"
-import { basisOf, cellPlaces, clearDraft, creationKey, draftKey, heldOperation, lostPlaces, onSheets, operationKey, readDraft, releaseMoved, releaseOperation, savedPrice, valuesKey, writeDraft, type Draft, type PendingWrite, type QuoteWrite, type Values } from "./quoteValues"
+import { cellPlaces, clearDraft, creationKey, draftKey, heldOperation, lostPlaces, onSheets, operationKey, readDraft, releaseMoved, releaseOperation, savedPrice, valuesKey, writeDraft, type Draft, type PendingWrite, type QuoteWrite, type Values } from "./quoteValues"
 import useAppStore from "./useAppStore"
 
 /** What a new quote is asked to be made from: a quote's revision, and how. */
@@ -82,11 +82,15 @@ interface OpenQuoteState {
   pending: PendingWrite | null
   history: WorkbenchAppQuoteHistoryResponse | null
   historyOpen: boolean
+  /** The alternative `openNew` just made and opened: on the sheets already, its address opens nothing again. */
+  adopted: string | null
   /**
    * Make an alternative of `from`, as the underwriter asks for it, and open it: the quote it
    * made, or null when it made none.
    */
   openNew: (from: QuoteOrigin) => Promise<WorkbenchAppQuote | null>
+  /** Open the quote a route names, unless it is the alternative just made, which it forgets either way. */
+  openRouted: (id: string, revision: number | null) => Promise<void>
   openQuote: (id: string, revision: number | null) => Promise<void>
   /** Save the values on the sheets, once their pricing settles, as the quote's next revision. */
   save: () => Promise<WorkbenchAppQuote | null>
@@ -130,6 +134,7 @@ const CLOSED: Closed = {
   recovered: null,
   pending: null,
   history: null,
+  adopted: null,
 }
 
 /** Why `quote` at this revision may not change. */
@@ -166,8 +171,7 @@ function installSheets(form: FormSpec): void {
 
 /** The quote as a 409 refusal carries it, when it does. */
 function conflictQuote(error: unknown): WorkbenchAppQuote | null {
-  const raw = typeof error === "object" && error !== null && "rawDetail" in error ? (error as { rawDetail?: unknown }).rawDetail : null
-  const quote = typeof raw === "object" && raw !== null && "quote" in raw ? (raw as { quote?: unknown }).quote : null
+  const quote = apiErrorRawDetail(error)?.quote
   return typeof quote === "object" && quote !== null && "id" in quote ? (quote as WorkbenchAppQuote) : null
 }
 
@@ -196,12 +200,6 @@ function takeAppDetails(form: FormSpec, saved: Values): void {
 function forgetSaved(key: string | null, sent: Values): void {
   const draft = key === null ? null : readDraft(key)
   if (key !== null && draft !== null && valuesKey(draft.values) === valuesKey(sent)) clearDraft(key)
-}
-
-/** The server refused what was sent, a status below 500, so nothing of it was written. */
-const refused = (error: unknown): boolean => {
-  const status = apiErrorStatus(error)
-  return status !== null && status < 500
 }
 
 /** Send `write`. */
@@ -233,7 +231,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
    */
   const writeFailed = (error: unknown): void => {
     failed(error)
-    if (refused(error)) letGo()
+    if (apiErrorRefused(error)) letGo()
     keepDraft()
   }
 
@@ -387,7 +385,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
           next = nextRevision()
           if (next === null) return repeated.quote
         } catch (error: unknown) {
-          if (!loads.is(session) || !refused(error)) throw error
+          if (!loads.is(session) || !apiErrorRefused(error)) throw error
           // Refused, so it never landed and never will: let go, and the values saved as asked.
           letGo()
           next = first()
@@ -496,18 +494,25 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
         } catch (error: unknown) {
           // Refused, it was not made and never will be: the next asks anew. Unanswered, it
           // may have been: the key stays held.
-          if (refused(error)) releaseOperation(held)
+          if (apiErrorRefused(error)) releaseOperation(held)
           throw error
         }
         releaseOperation(held)
         if (!loads.is(attempt)) return answer.quote
         show(answer, false)
-        set({ status: "ready", dropped })
+        set({ status: "ready", dropped, adopted: answer.quote.id })
         return answer.quote
       } catch (error: unknown) {
         if (loads.is(attempt)) set({ status: "error", loadError: apiErrorMessage(error) })
         return null
       }
+    },
+
+    openRouted: async (id, revision) => {
+      const { adopted, quote } = get()
+      set({ adopted: null })
+      if (adopted === id && revision === null && quote?.id === id) return
+      await get().openQuote(id, revision)
     },
 
     openQuote: async (id, revision) => {

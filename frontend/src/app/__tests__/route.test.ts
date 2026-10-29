@@ -54,13 +54,26 @@ describe("navigate", () => {
     await navigate("/", { force: true })
   })
 
-  it("moves the page and tells whoever reads the route", async () => {
-    const { result } = renderHook(() => useAppRoute())
+  it("moves the page and tells whoever reads the route, and says when it was there already", async () => {
+    let reads = 0
+    const { result } = renderHook(() => {
+      reads += 1
+      return useAppRoute()
+    })
     await act(async () => {
-      expect(await navigate("/quotes/abc")).toBe(true)
+      expect(await navigate("/quotes/abc")).toBe("moved")
     })
     expect(window.location.pathname).toBe("/quotes/abc")
     expect(result.current).toEqual({ page: "quote", id: "abc", revision: null })
+
+    const before = reads
+    const entries = window.history.length
+    await act(async () => {
+      expect(await navigate("/quotes/abc")).toBe("here")
+    })
+    // Nothing that follows the address hears of it.
+    expect(reads).toBe(before)
+    expect(window.history.length).toBe(entries)
   })
 
   it("asks the leave guard first, and stays when it says no, unless forced", async () => {
@@ -68,9 +81,9 @@ describe("navigate", () => {
     const guard = vi.fn(async () => false)
     setLeaveGuard(guard)
 
-    expect(await navigate("/")).toBe(false)
+    expect(await navigate("/")).toBe("kept")
     expect(window.location.pathname).toBe("/quotes/abc")
-    expect(await navigate("/", { force: true })).toBe(true)
+    expect(await navigate("/", { force: true })).toBe("moved")
     expect(window.location.pathname).toBe("/")
     expect(guard).toHaveBeenCalledTimes(1)
   })

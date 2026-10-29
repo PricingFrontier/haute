@@ -856,15 +856,27 @@ Out of scope:
   all, in a frame of its own with its own Add condition and a cross that removes it, as
   removing its last condition does. Each condition is a row of its
   column (a select of the one-row input tables' columns, by table, each by its label, and of
-  each many-row input table's rows, "Rows of" the table), its
+  each many-row input table's rows, "Rows of" the table, and, in the Show when of what takes
+  nothing typed, below, the output tables' columns and rows, tested on the price), its
   test (for True/false "is ticked" and "is not ticked"; for Text "equals", "does not
-  equal", "is one of", "is not one of", "is filled" and "is empty"; for a number those and
+  equal", "contains", "does not contain", "starts with", "ends with", "is one of", "is not
+  one of", "is filled" and "is empty"; for a number those but the four on text within text and
   "is greater than", "is at least", "is less than" and "is at most"; for a Date "is on",
   "is not on", "is after", "is on or after", "is before", "is on or before", "is filled"
   and "is empty"), its value, the control the column's cell is (a dropdown of the allowed
   values, a date picker, else a text field, committing on blur or Enter), or for "is one
   of" and "is not one of" a tick box per allowed value, or the values typed comma-separated
-  when the column allows any, and a cross that removes it. A condition on a table's rows
+  when the column allows any, a number's written without a thousands separator, which the
+  comma would split: "1,000" in a number column's list is refused, saying to write 1000,
+  and never read as 1 and 0; and a cross that removes it. A test of one value may take
+  another field of its column's type in place of a value typed: beside the test, while
+  there is such a field, a select of "Value" and those fields, a one-row input table's
+  columns by table, or, in a test of a row, the other columns of its table but the index;
+  a Date tested against another Date then takes a whole number of days added to that
+  date, a negative number taking them away, up to 36,500 either way, `completion_date`
+  "is after" `start_date` + 365 days. There is no test against today: a saved quote would
+  show other sheets, and be priced otherwise, on another day, so a date field on the
+  form stands in for it. A condition on a table's rows
   says which rows, Any row, Every row, Number of rows, or the Sum, Smallest, Largest or
   Average of a number column of the table other than its index, chosen beside it, then its
   tests of a row, all passing in the same row, each a column of the table other than its
@@ -873,11 +885,15 @@ Out of scope:
   test, a number's ("equals" to "is at most"), and a whole number of rows, 0 or more, or a
   number, typed into a field that refuses anything else.
   Choosing another column, for a condition or a test of a row, keeps
-  the test while the column's type takes it, else the type's first, and the values while
-  they fit the test. Choosing a table's rows starts Any row with a test of its first column
+  the test while the column's type takes it, else the type's first, the values while
+  they fit the test, and the field it is tested against while that is of the column's
+  type and not the column itself; a test that takes no value or several leaves the field
+  and its days. Choosing a table's rows starts Any row with a test of its first column
   but the index, or, for a condition on a column of the table, a test of that column as
-  the condition has it; choosing a one-row table's column for a condition on rows keeps its
-  test of that column, if it has one. Choosing Number of rows starts it at "is at least"
+  the condition has it, against the same field while that is another column of the table;
+  choosing a one-row table's column for a condition on rows keeps its test of that column,
+  if it has one, against the same column of the table, which a test of a row names alone.
+  Choosing Number of rows starts it at "is at least"
   1, a total at "is greater than" with no value, and Any row or Every row adds a test of the
   first column while there is none, each keeping the tests there are. While a condition's
   table has switched between one row and many since, its column select holds it, not
@@ -1176,10 +1192,16 @@ Out of scope:
   was loaded with. A page drawn for another
   revision or another release is refused (409), so a page loaded from an earlier release
   reloads rather than price on a newer contract or model, a release that changed the
-  model alone included. The request is built as Preview's pricing builds it and priced through the deployed
+  model alone included: the page says it was drawn for an earlier release and offers
+  Reload, with or without a quote store, an app without one saying that what is typed is
+  not kept. The request is built as Preview's pricing builds it and priced through the deployed
   pipeline's engine, one quote per request, off the server's event loop, under the deploy's
   admission limit and a timeout, and answered whole: each output table's rows, with the
-  request priced. `GET /api/app/release` and `GET /api/app/form` serve the release and the
+  request priced. The app prices at most a bounded number of quotes at once, four unless
+  `HAUTE_APP_PRICING_WORKERS` says otherwise, a save's pricing among them: a pricing past
+  its timeout is answered 504 but cannot be stopped, so it holds its place until it ends,
+  and a pricing asked for while every place is held is refused at once (503, `Retry-After`
+  saying when to try again) rather than queued behind them to time out too. `GET /api/app/release` and `GET /api/app/form` serve the release and the
   form; `GET /health` answers without sign-in, for the host's probes. Every other route
   needs the principal the host signed in. The identity follows `[workbench.app] host`:
   `azure-container-apps` reads the principal Azure's built-in authentication sets on each
@@ -1193,8 +1215,13 @@ Out of scope:
   since who may change quotes cannot be told. `haute app serve` builds a release of the
   project as it is saved and serves it on the analyst's machine, the principal the
   analyst's git identity, able to change quotes unless `--reader` signs them in as a
-  reader, so the sheets underwriters will see are checked before a merge. No credential
-  reaches the page.
+  reader, so the sheets underwriters will see are checked before a merge. Served so, the
+  app binds loopback and takes a request only for a loopback host (`localhost`,
+  `127.0.0.1` or `::1`, on any port) and only without forwarded metadata (`Forwarded` or
+  an `X-Forwarded-*` header), refusing any other (400) before it signs the request in:
+  loopback keeps other machines out, and the host keeps out a page of a site whose name
+  resolves to the analyst's machine, whose requests the browser counts as that page's own.
+  No credential reaches the page.
   Given a quote store, the app keeps the quotes saved in it, each revision's
   `quote_details` row in a table of its own (the quote store, below). A hosted app reads the store's SQLAlchemy URL from
   `HAUTE_QUOTE_STORE_URL`, which the host supplies at runtime, and does not start on a
@@ -1246,7 +1273,9 @@ Out of scope:
   reference, quote name, insured or broker (`ABC-1/2` matching that option alone, a
   reference matched however its letters are cased or composed), in Team an assignee to
   narrow it to, the order (newest saved, Reference, A to Z with each reference's options in
-  order, or insured) and New quote (`N`), which opens the new quote's window over the list. The list is a table at Haute's
+  order, or insured) and New quote (`N`), which opens the new quote's window over the list;
+  neither key acts from a control it is typed or picked in, so `N` in a select picks its
+  option. The list is a table at Haute's
   density, 50 quotes at a time with Load more, read from the quotes' `quote_details`: each
   quote's reference and option, `ABC-1/2`, its title (its quote name, else its insured,
   else its reference and option), its insured, broker and inception date under their columns'
@@ -1254,7 +1283,8 @@ Out of scope:
   relative, with the time on hover. Relative times in the app read as everywhere in Haute:
   "just now" under a minute, then minutes, hours and days ago ("5m ago", "3h ago", "2d
   ago") below a week, then the day and month, with the year when it is not this year. A row opens its quote, its reference a link of its
-  own; on hover or focus it offers Open, Duplicate, and Archive or Restore. The list,
+  own; on hover or focus it offers Open, Duplicate, and Archive or Restore, each reloading,
+  once answered, the list showing then, whichever list the underwriter has moved to. The list,
   stage, search, assignee and order are in the page's address, so Back returns to the
   list as it was. Loading shows placeholder rows, a failure says why with Retry, and an
   empty list says why: no quotes yet, with New quote; none matching, with Clear search;
@@ -1325,8 +1355,9 @@ Out of scope:
   it again and it is made once. A quote made from another names what it was made from and
   any value that no longer fits. Made, it is clean: left as it opened it keeps no draft and
   asks nothing on leaving, and one left with nothing typed stays a draft; an answer
-  arriving once the page moved on does not move it, and one who may only read quotes makes
-  none. The sheets take no typing and are not priced, and Save is
+  arriving once the page moved on does not move it, nor does leaving a quote whose unsaved
+  values the leave guard keeps, and a quote made where the page did not move says so,
+  "Made" and its label; one who may only read quotes makes none. The sheets take no typing and are not priced, and Save is
   off, while the quote is final, archived, shown at an earlier revision (at
   `/quotes/{id}/revisions/{n}`, with Open the newest) or saved on earlier sheets (opened
   on those sheets, with Move to current sheets, which carries its values onto the
@@ -1361,18 +1392,31 @@ Out of scope:
     text without the spaces around it, compared exactly; a tick box ticked or not, one
     never touched unticked; a number read as the sample's numbers are (a currency sign,
     separators and spaces allowed) and compared as a number; a date as the day it names;
-    and a cell blank or untouched as empty. Of the tests other than the ticks, an empty
-    value passes `empty`, `not_equals` and `not_one_of` alone, and a value not of its
-    column's type (text in a number column, or a tick left in a column since retyped)
-    `filled`, `not_equals` and `not_one_of` alone. A condition that cannot hold as written
-    never holds: one naming a column that is not in a one-row input table (gone, an output
-    table's or a many-row table's), a condition on rows naming a table that is not a
-    many-row input table, a test of a row naming a column that is not its table's or is its
-    index, a total of a column that is not a number column of its table other than its
+    and a cell blank or untouched as empty. Text within text compares as equals does:
+    `contains`, `starts_with` and `ends_with` pass a value holding the text tested for,
+    at its start or at its end, exactly, without the spaces around either. Of the tests
+    other than the ticks, an empty value passes `empty`, `not_equals`, `not_contains`
+    and `not_one_of` alone, and a value not of its column's type (text in a number
+    column, or a tick left in a column since retyped) `filled`, `not_equals`,
+    `not_contains` and `not_one_of` alone. A test against another field holds only while
+    that field shows too, as its own column must, so hiding still only hides more, and
+    reads the other field's value as it reads its own: one in a one-row table's first
+    row, or, in a test of a row, the same row's. A value there that is not one of its
+    type, blank among them, gives nothing to test against, which `not_equals` and
+    `not_contains` alone pass. A Date against another Date compares the day with that
+    day and its days added. A condition on an output column holds here whatever the price
+    (On the price, below). A condition that cannot hold as written
+    never holds: one naming a column that is not in a one-row table (gone, or a many-row
+    table's), a condition on rows naming a table that is not a many-row table, a test of a
+    row naming a column that is not its table's or is its index, a condition on an output
+    tested against another field, a total of a column that is not a number column of its table other than its
     index or against a value that is not a number, a test its column's type does not take, a number of
     values its test does not take (none for the ticks, `filled` and `empty`, at least one
     for `one_of` and `not_one_of`, else one), or a value its column could not hold (blank,
-    not a number, a fraction for an Integer, not a `YYYY-MM-DD` day).
+    not a number, a fraction for an Integer, not a `YYYY-MM-DD` day); a test against
+    another field that takes no value or several, that has values typed too, whose field
+    is not a column of a one-row input table (in a test of a row, of its table other than
+    its index) or not of its column's type; and days added but to another Date field.
   - **On a list.** A condition on a many-row input table's rows holds while each column it
     tests, and a total's column, is on a Table that shows it (for a count without tests,
     one of its table's columns other than the index), and its rows pass: any of the table's rows
@@ -1395,6 +1439,23 @@ Out of scope:
     section that shows while the cover is Comprehensive and either a driver is under 25 or
     the claims count is at least 2 needs all of the cover's condition and a group needing
     any of the other two.
+  - **On the price.** A condition on an output column, or on an output table's rows, tests
+    the price the sheets show, in the Show when of what takes nothing typed: a Heading, a
+    Chart, a Collection or a Table of output columns alone, a field of an output column,
+    or a section or a sheet holding only those. What shows is decided from the inputs
+    first, such conditions holding, so the price never decides what is priced; they are
+    then applied to the price the sheets show, the last one while a new one is on its way,
+    and, before the first and after a pricing that fails, every output read as empty,
+    hiding what holds them as any condition hides. An output's value is tested as a typed
+    one is (a number as a number, a tick as a tick), a many-row output table's rows as a
+    list's, against values typed alone, never another field, whether or not a component
+    that shows has the output. A Table of referral reasons shown while `referral_count` is
+    above 0 is hidden until a price gives a count above 0, and again once one gives none.
+    The server, which decides what a quote leaves out, holds them all, as they change
+    nothing there. One on what takes values typed, or on a section or a sheet holding such
+    a component, a Collection of input fields or a section holding one placed there later,
+    is a problem the view names, and is never applied: hiding by the price there would hide
+    values still priced.
   - **Fields.** A Table's column or a Collection's field with a Show when of its own hides
     by it as a component does, within its component: a Collection's fields after it close
     up, flowing on through its columns, a spacer going with the fields after it, up to the
@@ -1938,9 +1999,14 @@ Out of scope:
   the sample priced in Preview, the Workbench Input's copy and the app's quote all come
   from, and the view, which hides and shows as each value is typed, applies the same
   rules, the two held to one set of cases both test against.
+- **The price decides what shows, never what is priced.** A section of referral reasons
+  matters only once the price gives some, but the price is made of what the sheets show:
+  letting it hide what takes values would make what is priced depend on its own price. So
+  what takes values is decided from the inputs alone, and the price only hides what takes
+  nothing typed, after, where hiding changes nothing priced.
 - **Decided at once, by hiding.** Conditions test the values as typed, except that a
-  condition on a column no component that shows has never holds, so hiding only ever hides
-  more: starting from everything shown and hiding until nothing changes gives one answer
+  condition on a column no component that shows has, or tested against such a field,
+  never holds, so hiding only ever hides more: starting from everything shown and hiding until nothing changes gives one answer
   whatever the order of the sheets and components, a chain of conditions (a sheet shown by
   a box on a sheet shown by another box) is followed without being written twice, and no
   value the underwriter cannot see decides what they see.
@@ -1950,6 +2016,11 @@ Out of scope:
   nothing more and be harder to read and to lay out in the panel. Neither takes "none of
   these": a condition fails once its column hides, so "none" could come to hold as hiding
   went on and show something again, and hiding has to only ever hide more.
+- **Hiding, never reading a hidden value as empty.** Reading a hidden value as empty in
+  the form's dependency order would allow "none of", "at most", "exactly" and "not" over a
+  group, but let that order decide what shows; the rounds stay (decided 2026-10-20). Rules
+  named once and used by many sheets were offered then and not taken, nor were a Table's
+  cells shown row by row through "this row" tests, offered again on 2026-10-22.
 - **At least, never at most.** "At least 2 of these" says two or three of three boxes
   without writing out every pair as a group of its own. Neither takes "at most" or
   "exactly", for the reason neither takes "none": hiding a column makes fewer conditions
@@ -2209,11 +2280,6 @@ Out of scope:
 
 ## Failure model
 
-> NOTE: The local-principal app currently accepts foreign Host headers before
-> assigning the analyst's identity; loopback binding alone does not enforce the
-> browser request boundary. Local Host and forwarded-request enforcement is
-> tracked in [WB-39](../roadmap/workbench.md#wb-39--enforce-the-local-apps-request-boundary).
-
 - A `[workbench]` table that is not a table, lacks `enabled`, gives `enabled` something other
   than `true` or `false`, or holds any other key, and a `haute.toml` that cannot be read, is
   not UTF-8 text or cannot be parsed when a workbench route reads it, each fail that route
@@ -2311,6 +2377,11 @@ Out of scope:
   anything is typed, and nothing is refused. A pricing of the app's quote that fails shows
   "Pricing failed: …" in its bar and empties the output columns, as the sample's does, and
   a save then keeps the quote unpriced.
+- An app served by `haute app serve` refuses a request for a host that is not loopback, or
+  one carrying `Forwarded` or an `X-Forwarded-*` header, with 400 before it signs the
+  request in, so such a request reads, prices and changes nothing as the analyst, the
+  health check included. A hosted app is reached through its host's front, which sets
+  those headers, and is not held to it.
 - The schema editor refuses nothing: a problem is shown beside its table, and a save
   writes the form as it is. The tables route then answers the structured 422 for a table
   the pipeline cannot take, which the tables fetch shows as one toast, so the problem is
@@ -2318,11 +2389,12 @@ Out of scope:
 - A condition that cannot hold as written is refused nowhere: the form reads, saves and
   serves its tables with it, the condition never holds, so what it is on stays hidden and
   the values only hidden components or fields show are left out of the quote, and the view
-  names the problem on the sheet or component while building. A `show_when`, a condition or a
+  names the problem on the sheet or component while building. A condition on the price on
+  what takes values typed is named so too, and never applied. A `show_when`, a condition or a
   test the form's shape does not have (an unknown `op`, a `values` entry that is not text,
   a group with no conditions or with a group among them, a condition in any or every row
   with no test, a total that is not a sum, least, greatest or average, a count that is not a
-  whole number of 0 or more)
+  whole number of 0 or more, days that are not a whole number from -36,500 to 36,500)
   is a form that does not fit, refused as any other.
 - `GET /api/workbench/tables` answers 404 while the workbench is not enabled; the editor
   never asks then. Tables or response tables the pipeline cannot take, such as a table named

@@ -41,6 +41,7 @@ from haute._graph_utils import (
     resolve_input_mapping_names,
 )
 from haute._logging import get_logger
+from haute._polars_steps import stepped_surface_allows_input_references
 from haute._registry import NODE_REGISTRY
 from haute._source_layout import (
     INDENT,
@@ -670,7 +671,7 @@ def _node_functions(
         orig_id = instance_of_map[node.id]
         orig_src = node_sources.get(orig_id, [])
         original = node_by_id.get(orig_id)
-        if original is not None and original.data.nodeType == NodeType.POLARS:
+        if original is not None and stepped_surface_allows_input_references(original.data.nodeType):
             input_mapping = original.data.config.get("inputMapping")
             if input_mapping is not None:
                 orig_src = resolve_input_mapping_names(orig_src, input_mapping)

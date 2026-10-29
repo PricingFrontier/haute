@@ -79,8 +79,6 @@ export interface RecoveryEdge {
   target_authored_id: string
   source_handle: string | null
   target_handle: string | null
-  source_port: string | null
-  target_port: string | null
   input_name: string | null
   availability: PipelineElementAvailability
   source_span: SourceSpan | null
@@ -96,8 +94,6 @@ export interface UnresolvedConnection {
   target_authored_id: string
   source_handle: string | null
   target_handle: string | null
-  source_port: string | null
-  target_port: string | null
   source_span: SourceSpan | null
   diagnostic_ids: string[]
 }
@@ -383,8 +379,6 @@ function parseRecoveryEdge(value: unknown, field: string): RecoveryEdge {
     "target_authored_id",
     "source_handle",
     "target_handle",
-    "source_port",
-    "target_port",
     "input_name",
     "availability",
     "source_span",
@@ -415,8 +409,6 @@ function parseRecoveryEdge(value: unknown, field: string): RecoveryEdge {
     ),
     source_handle: nullableString(object, "source_handle", field),
     target_handle: nullableString(object, "target_handle", field),
-    source_port: nullableString(object, "source_port", field),
-    target_port: nullableString(object, "target_port", field),
     input_name: nullableString(object, "input_name", field),
     availability: expectStringLiteral(
       PARSER,
@@ -440,8 +432,6 @@ function parseUnresolvedConnection(value: unknown, field: string): UnresolvedCon
     "target_authored_id",
     "source_handle",
     "target_handle",
-    "source_port",
-    "target_port",
     "source_span",
     "diagnostic_ids",
   ])
@@ -461,8 +451,6 @@ function parseUnresolvedConnection(value: unknown, field: string): UnresolvedCon
     ),
     source_handle: nullableString(object, "source_handle", field),
     target_handle: nullableString(object, "target_handle", field),
-    source_port: nullableString(object, "source_port", field),
-    target_port: nullableString(object, "target_port", field),
     source_span: parseSpan(object.source_span, `${field}.source_span`),
     diagnostic_ids: stringArray(object.diagnostic_ids, `${field}.diagnostic_ids`),
   }
@@ -899,8 +887,6 @@ function adaptRecoveryGraph(
     },
     sourceHandle: edge.source_handle,
     targetHandle: edge.target_handle,
-    ...(edge.source_port === null ? {} : { sourcePort: edge.source_port }),
-    ...(edge.target_port === null ? {} : { targetPort: edge.target_port }),
   }))
   for (const connection of graph.unresolved_connections) {
     if (connection.source_recovery_id === null || connection.target_recovery_id === null) {

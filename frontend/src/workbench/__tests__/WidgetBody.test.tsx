@@ -711,7 +711,7 @@ describe("WidgetBody", () => {
 
   it("closes a Collection up in Preview around a field that hides, a spacer going with the fields after it, and fades the field while building, its eye naming its conditions", () => {
     const year = { table: "policy", column: "policy.year" }
-    const covered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [] }] }
+    const covered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [], field: null, days: 0 }] }
     const base = coverForm()
     const fields = [{ table: "policy", column: "policy.state" }, { table: "policy", column: "policy.cover" }, year]
     loadForm(setColumnLook(updateWidget(base, "w_boxes", { fields, spacers: [2] }), "w_boxes", year, { show_when: covered }))
@@ -764,7 +764,7 @@ describe("WidgetBody", () => {
   it("leaves a Table's column that hides out of its grid in Preview, transposed its line, its rows still moving with every table it shows", () => {
     const value = { table: "equipment", column: "equipment.value" }
     const note = { table: "extras", column: "extras.note" }
-    const covered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [] }] }
+    const covered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [], field: null, days: 0 }] }
     const base = coverForm()
     base.schema.tables.push(table("extras", "extras", { rows: "many", columns: [column("extras.item", "item", { key: true }), column("extras.note", "note")] }))
     let form = updateWidget(base, "w_grid", { fields: [{ table: "equipment", column: "equipment.item" }, value, note] })
@@ -1218,7 +1218,7 @@ describe("WidgetBody", () => {
 
   it("keeps a Table of output columns alone on its first field's rows in Preview while that field hides", () => {
     const premium = { table: "premiums", column: "premiums.premium" }
-    const covered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [] }] }
+    const covered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [], field: null, days: 0 }] }
     const form = coverForm()
     form.schema.tables.push(
       table("fees", "fees", { role: "output", rows: "many", columns: [column("fees.item", "item", { key: true }), column("fees.fee", "fee", { type: "float" })] }),

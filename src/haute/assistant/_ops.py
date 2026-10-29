@@ -1938,19 +1938,6 @@ def _edge_identity(edge: GraphEdge) -> tuple[str, str, str | None, str | None]:
     return (edge.source, edge.target, edge.sourceHandle, edge.targetHandle)
 
 
-def _complete_edge_identity(
-    edge: GraphEdge,
-) -> tuple[str, str, str | None, str | None, str | None, str | None]:
-    return (
-        edge.source,
-        edge.target,
-        edge.sourceHandle,
-        edge.targetHandle,
-        edge.sourcePort,
-        edge.targetPort,
-    )
-
-
 _Identity = TypeVar("_Identity", bound=tuple[Any, ...])
 
 
@@ -2038,8 +2025,8 @@ def _semantic_diff(
         "sidecar_changes": sidecar_changes,
     }
     complete_counts = {category: len(values) for category, values in complete_values.items()}
-    old_complete_edges = {_complete_edge_identity(edge) for edge in before.edges}
-    new_complete_edges = {_complete_edge_identity(edge) for edge in after.edges}
+    old_complete_edges = {_edge_identity(edge) for edge in before.edges}
+    new_complete_edges = {_edge_identity(edge) for edge in after.edges}
     complete_payload = {
         **complete_values,
         "complete_edges_added": _sorted_identities(new_complete_edges - old_complete_edges),

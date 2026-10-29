@@ -281,8 +281,9 @@ function isSteppedOrdinaryTransform(node: Node): boolean {
   return Array.isArray(config.steps)
 }
 
+/** A free-code original on a surface whose code names its inputs (a Transform, an External File). */
 function isCodedOrdinaryTransform(node: Node): boolean {
-  if (node.data.nodeType !== NODE_TYPES.POLARS) return false
+  if (!steppedSurfaceAllowsInputReferences(String(node.data.nodeType))) return false
   const config = (node.data.config ?? {}) as Record<string, unknown>
   if ("instanceOf" in config) return false
   // A stepped transform's `code` is the rendering of its steps; renames

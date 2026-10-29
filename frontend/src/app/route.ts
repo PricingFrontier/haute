@@ -102,15 +102,21 @@ export function setLeaveGuard(leaving: LeaveGuard | null): void {
   guard = leaving
 }
 
-/** Move to `path`, asking the leave guard first; false when it kept the page where it was. */
-export async function navigate(path: string, { replace = false, force = false } = {}): Promise<boolean> {
-  if (path === current) return true
-  if (!force && guard !== null && !(await guard())) return false
+/**
+ * Where `navigate` left the page: moved to the path, there already, so nothing that follows
+ * the address runs again, or kept where it was by the leave guard.
+ */
+export type Moved = "moved" | "here" | "kept"
+
+/** Move to `path`, asking the leave guard first. */
+export async function navigate(path: string, { replace = false, force = false } = {}): Promise<Moved> {
+  if (path === current) return "here"
+  if (!force && guard !== null && !(await guard())) return "kept"
   if (replace) window.history.replaceState({ place }, "", path)
   else window.history.pushState({ place: ++place }, "", path)
   notify()
   window.scrollTo?.(0, 0)
-  return true
+  return "moved"
 }
 
 /**

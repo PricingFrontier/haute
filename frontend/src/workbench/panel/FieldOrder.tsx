@@ -6,10 +6,11 @@ import { QuietAction } from "../../components/form"
 import useListReorder, { type RowDrag } from "../../hooks/useListReorder"
 import useRefocusAfterMove, { altArrowMove, type RefocusAfterMove } from "../../hooks/useRefocusAfterMove"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import { columnKey } from "../../utils/sheetVisibility"
 import { addSpacer, fieldColumn, moveInOrder, orderItems, readableName, removeSpacer, toggleField, type FieldsWidget } from "../../utils/workbenchForm"
 import { COLUMN_TYPES } from "../columnTypes"
 
-const fieldKey = (field: FieldRef) => `${field.table}:${field.column}`
+const fieldKey = (field: FieldRef) => columnKey(field.table, field.column)
 
 /**
  * The fields a component shows, in order, with a Collection's spacers among them and Add

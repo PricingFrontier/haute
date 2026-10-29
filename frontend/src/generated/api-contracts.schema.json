@@ -1219,6 +1219,24 @@
           "title": "Column",
           "type": "string"
         },
+        "days": {
+          "default": 0,
+          "maximum": 36500,
+          "minimum": -36500,
+          "title": "Days",
+          "type": "integer"
+        },
+        "field": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "op": {
           "enum": [
             "ticked",
@@ -1227,6 +1245,10 @@
             "empty",
             "equals",
             "not_equals",
+            "contains",
+            "not_contains",
+            "starts_with",
+            "ends_with",
             "one_of",
             "not_one_of",
             "above",
@@ -1253,7 +1275,9 @@
         "table",
         "column",
         "op",
-        "values"
+        "values",
+        "field",
+        "days"
       ],
       "title": "Condition",
       "type": "object"
@@ -13332,11 +13356,30 @@
     },
     "RowTest": {
       "additionalProperties": false,
-      "description": "A test a row of a many-row table must pass: a ``Condition``'s column, test and values,\nits table the condition's that holds it.",
+      "description": "A test a row of a many-row table must pass: a ``Condition``'s column, test and values,\nits table the condition's that holds it, and another column of the same row, by id, to\ntest against.",
       "properties": {
         "column": {
           "title": "Column",
           "type": "string"
+        },
+        "days": {
+          "default": 0,
+          "maximum": 36500,
+          "minimum": -36500,
+          "title": "Days",
+          "type": "integer"
+        },
+        "field": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Field"
         },
         "op": {
           "enum": [
@@ -13346,6 +13389,10 @@
             "empty",
             "equals",
             "not_equals",
+            "contains",
+            "not_contains",
+            "starts_with",
+            "ends_with",
             "one_of",
             "not_one_of",
             "above",
@@ -13367,7 +13414,9 @@
       "required": [
         "column",
         "op",
-        "values"
+        "values",
+        "field",
+        "days"
       ],
       "title": "RowTest",
       "type": "object"

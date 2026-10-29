@@ -11,6 +11,7 @@ import type { ChartThemeTokens } from "../panels/explore/chartOptions"
 import { formatChartNumber } from "./chartHelpers"
 import { formatValue } from "./formatValue"
 import { formattedNumber, parseTypedNumber, rowFilled, type PricedRows, type RowsByTable } from "./sheetValues"
+import { columnKey } from "./sheetVisibility"
 import {
   answeredOutputs,
   chartGrain,
@@ -103,8 +104,8 @@ export function sheetChartData(schema: FormSchema, widget: ChartWidget, values: 
   const category = widget.category === null ? null : fieldColumn({ schema }, widget.category)
   const label = lined(category) ? category : null
   // A column the quote leaves out: the sheets hide it, so it was never typed.
-  const quotedColumns = new Set(quoted.tables.flatMap((table) => table.columns.map((column) => `${table.id}:${column.id}`)))
-  const inQuote = ({ table, column }: Found): boolean => quotedColumns.has(`${table.id}:${column.id}`)
+  const quotedColumns = new Set(quoted.tables.flatMap((table) => table.columns.map((column) => columnKey(table.id, column.id))))
+  const inQuote = ({ table, column }: Found): boolean => quotedColumns.has(columnKey(table.id, column.id))
   // Priced values plotted, or rows named by priced values, are for other values once the basis moves on.
   const priced = plotted.some(({ table }) => table.role === "output") || label?.table.role === "output"
   const stale = price !== null && price.basis !== basis && priced
