@@ -25,7 +25,7 @@ import hashlib
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from fastapi import HTTPException
 
@@ -42,7 +42,10 @@ from haute._global_constants import (
 )
 from haute._graph_shape import validate_singleton_groups
 from haute._logging import get_logger
-from haute._pipeline_recovery import load_pipeline_editor_document
+from haute._pipeline_recovery import (
+    load_pipeline_editor_document,
+    pipeline_document_fingerprint,
+)
 from haute._sandbox import contained_path
 from haute._submodel_paths import (
     SUBMODEL_PACKAGE,
@@ -74,6 +77,14 @@ from haute.routes._helpers import (
 from haute.schemas import SavePipelineRequest, SavePipelineResponse
 
 logger = get_logger(component="server.pipeline.save")
+
+
+class CommittedDocument(NamedTuple):
+    """The editor document a save committed, dumped as live sync sends it."""
+
+    path: Path
+    payload: dict[str, Any]
+    fingerprint: str
 
 
 class StaleDocumentRevisionError(Exception):
@@ -343,6 +354,8 @@ class SavePipelineService:
             raise ValueError("pipeline_root must resolve inside project_root")
         self._precondition_identities: dict[str, str | None] | None = None
         self._identity_roots: tuple[Path, ...] = ()
+        # What the last successful save committed, for the route to publish.
+        self.committed: CommittedDocument | None = None
 
     def _require_base_revision(self, py_path: Path, base_revision: str | None) -> None:
         """Fail closed unless the client's base revision matches the on-disk document.
@@ -543,6 +556,7 @@ class SavePipelineService:
             source_revision = committed_document.source_revision
             if committed_document.load_status != "ready" or not source_revision:
                 raise RuntimeError("Committed pipeline did not produce a ready editor revision.")
+            committed_payload = committed_document.model_dump(mode="json", by_alias=True)
         except BaseException:
             self._rollback(touched)
             raise
@@ -566,10 +580,14 @@ class SavePipelineService:
 
         captured = self._capture_save_in_ledger(touched, removed, warnings, commit_message)
 
+        self.committed = CommittedDocument(
+            py_path, committed_payload, pipeline_document_fingerprint(committed_payload)
+        )
         return SavePipelineResponse(
             file=str(py_path.relative_to(self._root)),
             pipeline_name=body.name,
             source_revision=source_revision,
+            document_fingerprint=self.committed.fingerprint,
             warnings=warnings,
             **captured._asdict(),
         )
@@ -1977,6 +1995,8 @@ class SavePipelineService:
             if not stale_path.is_relative_to(self._pipeline_root):
                 continue
             if stale_path.is_file():
+                # The server's own deletion: the watcher must not re-parse for it.
+                mark_self_write(stale_path, deleted=True)
                 stale_path.unlink()
                 removed.append(stale_path)
                 logger.info("stale_config_removed", path=rel)

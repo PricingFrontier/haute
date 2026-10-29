@@ -11,11 +11,11 @@ import threading
 import time
 import weakref
 from collections import deque
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, NamedTuple, NoReturn, TypeVar
+from typing import TYPE_CHECKING, Any, NamedTuple, NoReturn, TypeVar
 
 from fastapi import HTTPException, WebSocket
 from starlette.concurrency import run_in_threadpool
@@ -38,6 +38,10 @@ from haute._sidecar import (
 from haute._submodel_paths import resolve_submodel_reference
 from haute.errors import ConfigError, ParseError
 from haute.graph_utils import GraphNode, NodeType, PipelineGraph, _sanitize_func_name
+from haute.hosted import FORWARDED_USER_SCOPE_KEY
+
+if TYPE_CHECKING:
+    from haute._event_bus import DocumentUpdateExclusion, PipelineDocumentUpdatePayload
 
 # The sidecar read schema lives in the core ``haute._sidecar`` module so editor
 # recovery never imports the web layer; routes keep importing it from here.
@@ -401,6 +405,9 @@ def watcher_is_paused() -> bool:
 # explicit lock below.
 ws_clients: set[WebSocket] = set()
 ws_clients_lock = threading.Lock()
+# Each client's connection id and owner (``connection_owner``), held under the same lock:
+# a save's broadcast of its own document leaves out the saving tab's socket by them.
+_ws_identities: dict[WebSocket, tuple[str, str | None]] = {}
 _WS_SEND_TIMEOUT_SECONDS = 1.0
 _ws_send_state_lock = threading.Lock()
 _ws_send_inflight: weakref.WeakSet[WebSocket] = weakref.WeakSet()
@@ -428,27 +435,42 @@ def _clear_ws_send_state(ws: WebSocket) -> None:
         _ws_send_pending.pop(ws, None)
 
 
-def ws_clients_add(ws: WebSocket) -> None:
-    """Thread-safe ``ws_clients.add(ws)``."""
+def connection_owner(scope: Mapping[str, Any]) -> str | None:
+    """The authorised session a request or socket belongs to: the platform user a hosted
+    proxy named (``PlatformProxyBoundary``), or ``None`` for the one local session."""
+    owner = scope.get(FORWARDED_USER_SCOPE_KEY)
+    return owner if isinstance(owner, str) else None
+
+
+def ws_clients_add(ws: WebSocket, *, connection_id: str, owner: str | None) -> None:
+    """Thread-safe ``ws_clients.add(ws)``, with the socket's connection id and owner."""
     with ws_clients_lock:
         ws_clients.add(ws)
+        _ws_identities[ws] = (connection_id, owner)
 
 
 def ws_clients_discard(ws: WebSocket) -> None:
     """Thread-safe ``ws_clients.discard(ws)``."""
     with ws_clients_lock:
         ws_clients.discard(ws)
+        _ws_identities.pop(ws, None)
     _clear_ws_send_state(ws)
 
 
-def ws_clients_snapshot() -> list[WebSocket]:
-    """Return a consistent snapshot of the current clients under the lock."""
+def ws_clients_snapshot(exclude: DocumentUpdateExclusion | None = None) -> list[WebSocket]:
+    """Return a consistent snapshot of the current clients under the lock, without the
+    one socket *exclude* names when its owner is the excluding save's."""
     with ws_clients_lock:
-        return list(ws_clients)
+        if exclude is None:
+            return list(ws_clients)
+        left_out = (exclude["connection_id"], exclude["owner"])
+        return [ws for ws in ws_clients if _ws_identities.get(ws) != left_out]
 
 
-async def broadcast(data: dict[str, Any]) -> None:
-    """Push a message to all connected WebSocket clients.
+async def broadcast(
+    data: dict[str, Any], *, exclude: DocumentUpdateExclusion | None = None
+) -> None:
+    """Push a message to all connected WebSocket clients, but the one *exclude* names.
 
     Iterates a lock-protected snapshot of ``ws_clients`` so concurrent
     connects/disconnects cannot corrupt the set.  Dead clients discovered
@@ -460,7 +482,7 @@ async def broadcast(data: dict[str, Any]) -> None:
         logger.error("broadcast_serialization_failed", error=str(exc))
         return
 
-    snapshot = ws_clients_snapshot()
+    snapshot = ws_clients_snapshot(exclude)
     if not snapshot:
         return
 
@@ -861,8 +883,39 @@ def save_sidecar(
     # for the primitive-level contract. Pinning tests:
     # TestSaveSidecar.test_writes_atomically_via_atomic_write_text and
     # tests/test_file_ops.py::TestAtomicWriteWindowsReaderContention.
-    atomic_write_text(sidecar, serialised + "\n")
+    content = serialised + "\n"
+    # The server's own write: the watcher must not take it for an external edit.
+    mark_self_write(sidecar, content=content.encode("utf-8"))
+    atomic_write_text(sidecar, content)
     return warnings
+
+
+def wire_source_file(path: Path) -> str:
+    """Return the project-relative source id used in WebSocket frames."""
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(Path.cwd().resolve()).as_posix()
+    except ValueError:
+        return str(resolved)
+
+
+def pipeline_document_update_payload(
+    path: Path,
+    document: dict[str, Any],
+    fingerprint: str,
+    *,
+    exclude: DocumentUpdateExclusion | None = None,
+) -> PipelineDocumentUpdatePayload:
+    """The ``pipeline.document.update`` event for *path*'s dumped editor *document*, with
+    the socket it leaves out, if any."""
+    payload: PipelineDocumentUpdatePayload = {
+        "document": document,
+        "document_fingerprint": fingerprint,
+        "source_file": wire_source_file(path),
+    }
+    if exclude is not None:
+        payload["exclude_connection"] = exclude
+    return payload
 
 
 def _project_relative_source_file(path: Path, project_root: Path) -> str:

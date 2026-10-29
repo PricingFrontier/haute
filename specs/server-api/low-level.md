@@ -257,7 +257,7 @@ when a path/query/body fails model validation):
 | `GET /api/pipeline` | No body | First discovered authored `PipelineEditorDocument`, irrespective of load status; a new empty ready document only when no authored document exists. Readable authored errors remain HTTP 200. The `x-haute-document-fingerprint` header carries `pipeline_document_fingerprint` of the returned document. |
 | `GET /api/pipeline/{name}` | Pipeline name path parameter | Named `PipelineEditorDocument`; a readable non-ready document is found by recovered metadata or file stem and remains HTTP 200. Carries the same `x-haute-document-fingerprint` header. |
 | `POST /api/pipeline/editor-identities` | `EditorIdentitiesRequest {nodes:[{node_id,label,node_type,source_handles}], graph?, allocate=false}` | `EditorIdentitiesResponse {identities:[{node_id,label,alias,collision,function_name,config_reference,default_input_name,source_handle_input_names}], violations}` in exact request order; public handles are sanitised server-side, each node's `label`/`alias` is its resolved name (allocated with `allocate`), `collision` is the naming rule's refusal of it (only with a naming context and without `allocate`), `violations` lists the naming context's name violations after the nodes are applied (`null` without one), and the operation writes no project state. |
-| `POST /api/pipeline/save` | `SavePipelineRequest {name="main", description="", graph={}, preamble=null, preserved_blocks=[], source_file="", sources=["live"], active_source="live", base_revision}`; `base_revision` is a required `RevisionToken | null` | `SavePipelineResponse {status="saved", file, pipeline_name, source_revision, warnings=[], git_sha=null, identity_required=false, uncaptured=[]}`, or `409` with a flat `detail` beginning `stale_document_revision:` when `base_revision` does not equal the on-disk `source_revision` (`null` versus an existing file, or a token versus a missing file, are mismatches) |
+| `POST /api/pipeline/save` | `SavePipelineRequest {name="main", description="", graph={}, preamble=null, preserved_blocks=[], source_file="", sources=["live"], active_source="live", base_revision, connection_id=null}`; `base_revision` is a required `RevisionToken | null`; an `active_source` not in `sources` is a 422 before anything is staged; `connection_id` names the saving tab's socket, left out of the route's broadcast of the saved document | `SavePipelineResponse {status="saved", file, pipeline_name, source_revision, document_fingerprint, warnings=[], git_sha=null, identity_required=false, uncaptured=[]}`, or `409` with a flat `detail` beginning `stale_document_revision:` when `base_revision` does not equal the on-disk `source_revision` (`null` versus an existing file, or a token versus a missing file, are mismatches) |
 | `POST /api/pipeline/read-json` | `ReadJsonRequest {path}` | `ReadJsonResponse`, a root JSON object (arrays/scalars are rejected) |
 | `POST /api/pipeline/polars-steps/render` | `PolarsStepsRenderRequest {steps:[object], input_names:[str], start:"input"|"frame"}` (`start` is required: `input` renders a transform's list, `frame` a surface whose `df` is already bound) | `PolarsStepsRenderResponse {ok, code, step_lines:[[start,end]], step_index, message}`; a step validation failure is `ok: false` with HTTP 200, an empty frame-mode list is `ok: true` with empty code, and the call touches no project state and executes no authored code |
 | `POST /api/pipeline/polars-steps/free-code-columns` | `PolarsFreeCodeColumnsRequest {node_id, steps:[object], input_names:[str], start:"input"|"frame", input_columns:{name:[ColumnInfo]}, frame_columns:[ColumnInfo]}` (all required; `node_id` keys supersession, `input_columns` holds the columns the editor knows for each input and names only `input_names`, `frame_columns` those of a frame-mode surface's `df` and must be empty in `input` mode) | `PolarsFreeCodeColumnsResponse {free_code_columns:[{step_index, columns:[ColumnInfo] or null, message}]}`: one entry per `free_code` step, in step order (none, without running anything, for a list with no `free_code` step); a list that does not render is 422 with the step's message. Each entry is the schema of `df` after that step, resolved by `_polars_steps.resolve_free_code_columns`, which executes the rendered lines up to the end of the step through `_exec_user_code` (no preamble) over empty `LazyFrame`s built from the supplied columns (each dtype rebuilt from its `str(dtype)` rendering by `_polars_dtypes.parse_rendered_dtype`) and reads `collect_schema()`. An entry whose code names an input with no supplied columns, whose frame-mode `df` has none, whose supplied dtype cannot be rebuilt, or whose execution or schema resolution raises has `columns: null` and a one-line `message`; a resolved entry has an empty `message`. The route admits a `PREVIEW_EAGER` context (operation `polars_free_code_columns`) and, in process mode, runs the resolution in the interactive worker pool under that budget (affinity and `_free_code_supersession` key `("polars_free_code_columns", node_id)`) with `timeout_seconds=FREE_CODE_COLUMNS_TIMEOUT_SECONDS` (5.0, read per call); a newer request for the same node stops the running one through `stop_reason` and a disconnected client does through `await_until_disconnected`, both answering 409 / 499. A worker timeout, memory limit, crash, remote or start failure, or an admission refusal is not an error: every `free_code` entry gets `columns: null` and one parent-authored message (`"The code did not finish within 5 seconds."` for a timeout). Thread mode runs it through `run_blocking_with_response_timeout` with the same deadline and returns the same timeout entries; the thread runs on, holding its admission until it ends |
@@ -304,7 +304,9 @@ The client sends `{"type":"resync","source_file":str,"document_schema_version":1
 "document_fingerprint"?:sha256}`; a resync whose `document_schema_version` is not the
 current literal `1` receives a `parse_error` frame naming the unsupported version, and
 plain text, malformed JSON, non-object JSON, and unknown message types are keep-alive
-no-ops. The server sends exactly three frame types: a complete
+no-ops. The server sends exactly four frame types: first, on every connection,
+`{"type":"sync_connection","connection_id":str}`, the id it gave that socket; then a
+complete
 `{"type":"pipeline_document_update","schema_version":1,"document":object,
 "document_fingerprint":sha256,"source_file":str,"origin"?:object}`,
 `{"type":"parse_error","error":str,"source_file":str}`, or
@@ -312,7 +314,10 @@ no-ops. The server sends exactly three frame types: a complete
 folder, named as the workbench's status names it, changed on disk (see [workbench](../workbench/low-level.md)). `origin` is present only on an
 update an assistant apply or undo published: `{"kind":"assistant","session_id":str,
 "change_id":str,"node_ids":[str]}` (see [assistant](../assistant/high-level.md)); the
-watcher and resyncs never send it.
+watcher and resyncs never send it. A save publishes its document update with
+`exclude_connection` (`{connection_id, owner}`), which the forwarder removes from the
+frame and hands to `broadcast`: the socket with that id is skipped only when its owner
+(the `PlatformProxyBoundary` user when hosted, `None` locally) is the save's.
 A matching document fingerprint produces no frame. Every fingerprint — in these frames, in a
 resync comparison, and in the load routes' `x-haute-document-fingerprint` header — is
 `pipeline_document_fingerprint`: SHA-256 over `canonical_json` of the document's JSON-mode,
@@ -386,7 +391,8 @@ inside the `if static_build_ready(STATIC_DIR)` block, and is absent entirely in 
 **`/ws/sync` connection.** Reject (close code 1008) if `websocket_rejection_reason` finds a
 problem with headers/query params (or if that check itself raises `AttributeError` — treated
 as "missing metadata", also rejected). Otherwise accept, register in `ws_clients` (lock-
-guarded), and loop `receive_text()` → `_handle_ws_sync_message`: a plain non-JSON string is a
+guarded) with a fresh `secrets.token_urlsafe` connection id and the scope's owner, send
+the `sync_connection` frame, and loop `receive_text()` → `_handle_ws_sync_message`: a plain non-JSON string is a
 no-op keep-alive; a JSON `{"type": "resync", ...}` runs `_prepare_ws_resync` in a thread pool
 (discover pipelines, hash-check the fingerprint, parse if changed) and replies only to the
 requesting socket — an unchanged fingerprint short-circuits to no reply at all. Disconnect
@@ -521,7 +527,8 @@ milestone, restore or switch never meets a half-written save
    and against each other, casefolded).
 8. Write the parent `.haute.json` position sidecar. For each child whose
    ownership passed step 3, write positions plus `managed_parent`. All sidecar
-   writes are transactional.
+   writes are transactional, and `save_sidecar` marks each one a self-write with the
+   bytes it commits.
 9. Stage deletion of any derived submodel source and
     its sibling `.haute.json` sidecar (skipping any that casefold-collide with a path this
     same save just wrote).
@@ -532,7 +539,8 @@ milestone, restore or switch never meets a half-written save
    staged delete); an external edit that landed mid-transaction is left in place and logged
    as `rollback_skipped_external_change`.
 11. Only after every write commits: delete stale config files (the diff from step 4, minus
-    what this save just wrote or protects), invalidate the pipeline index, and — if the
+    what this save just wrote or protects), each marked a self-write deletion first,
+    invalidate the pipeline index, and — if the
     project has a recorded git working branch — capture the save in the git ledger
     (`_git.commit_save`); `GitDomainError`/`GitError` become response warnings because the
     on-disk save already succeeded (if version capture was skipped because git lacks a
@@ -540,7 +548,10 @@ milestone, restore or switch never meets a half-written save
     other capture failure leaves it `false`; either way `uncaptured` names the files the
     capture left off the ledger), while an unexpected exception still propagates
     after the filesystem transaction and stale cleanup have committed. Return the
-    committed `source_revision` with the normal response fields.
+    committed `source_revision` and the committed document's fingerprint with the normal
+    response fields, keeping the committed document as `committed_document` for the
+    route, which publishes it (`pipeline_document_update_payload`) with the request's
+    `connection_id` excluded.
 
 **Executable graph request containment.** Before work starts, every route that
 executes or profiles a client-supplied graph confines it to the configured

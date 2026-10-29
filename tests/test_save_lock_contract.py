@@ -98,10 +98,11 @@ async def test_save_lock_holds_during_svc_save(monkeypatch: pytest.MonkeyPatch) 
     runs in a worker thread rather than on the async event-loop thread.
     """
     import threading
+    from pathlib import Path as _Path
 
     import httpx
 
-    from haute.routes._save_pipeline import SavePipelineService
+    from haute.routes._save_pipeline import CommittedDocument, SavePipelineService
     from haute.schemas import SavePipelineRequest, SavePipelineResponse
     from haute.server import app
 
@@ -120,11 +121,14 @@ async def test_save_lock_holds_during_svc_save(monkeypatch: pytest.MonkeyPatch) 
         # ValidationError inside the route's ``async with save_lock`` block
         # and surface as a 500 — masking whether the post-save half of the
         # route ever runs.  See haute.schemas.SavePipelineResponse.
+        # What a real save records for the route to publish.
+        self.committed = CommittedDocument(_Path("test.py"), {}, "fingerprint-test")
         return SavePipelineResponse(
             status="saved",
             file="test.py",
             pipeline_name="test",
             source_revision="revision-test",
+            document_fingerprint="fingerprint-test",
             warnings=[],
         )
 

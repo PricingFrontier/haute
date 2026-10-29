@@ -94,6 +94,7 @@ vi.mock("../../stores/useGraphStore.ts", () => {
 })
 
 import useWebSocketSync from "../../hooks/useWebSocketSync.ts"
+import { syncConnectionId } from "../../api/syncConnection.ts"
 import useGraphStore from "../../stores/useGraphStore.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore.ts"
@@ -234,6 +235,21 @@ describe("useWebSocketSync - partial failure rolls back consistently (#37)", () 
   // behaviour for the graph-apply step is still covered below via
   // `loadGraphSnapshot` throwing, which exercises the same try/catch/rollback
   // machinery through its actual reachable failure point.
+
+  it("keeps the connection id the server gave the socket until it closes", () => {
+    renderHook(() => useWebSocketSync(makeHookParams()))
+    act(() => { latestWS().onopen?.(new Event("open")) })
+
+    act(() => {
+      latestWS().onmessage?.(new MessageEvent("message", {
+        data: JSON.stringify({ type: "sync_connection", connection_id: "tab-1" }),
+      }))
+    })
+    expect(syncConnectionId()).toBe("tab-1")
+
+    act(() => { latestWS().onclose?.(new CloseEvent("close", { code: 1000 })) })
+    expect(syncConnectionId()).toBeNull()
+  })
 
   it("atomic snapshot failure leaves the previous graph untouched", async () => {
     const params = makeHookParams()

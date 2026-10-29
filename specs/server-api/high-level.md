@@ -135,7 +135,9 @@ the canvas is open. A background watcher (debounced 300ms) detects the change, r
 only the affected pipeline(s) into editor documents, and publishes a
 `pipeline.document.update` (or, for a document that cannot be loaded at all, a
 `parse.error`) event on an in-process event bus; a subscriber wired at import time turns
-that into a WebSocket frame broadcast to every connected canvas. The canvas can also
+that into a WebSocket frame broadcast to every connected canvas. A socket's first frame is
+`{"type": "sync_connection", "connection_id": ...}`, the id the server gave that connection,
+which the canvas sends with its saves. The canvas can also
 request a targeted resync over the same socket by sending
 `{"type": "resync", "source_file": ..., "document_schema_version": 1,
 "document_fingerprint": ...}`; the server replies only to that client, and skips the
@@ -149,9 +151,16 @@ has answered, the server invalidates the name→path index, then publishes every
 pipeline's document and the form's change, as the watcher would for an edit. Every open
 canvas follows a git action as it follows an IDE edit.
 
-Edits the server itself makes (via
-`/api/pipeline/save`) are tagged as self-writes so they never round-trip back through the watcher
-as a phantom external edit. A change to a `modules/*.py` file re-parses only the pipelines
+Edits the server itself makes are tagged as self-writes, each with the bytes it commits (or
+as a deletion), so they never round-trip back through the watcher as a phantom external
+edit: a save's source, module, config and `.haute.json` sidecar writes, and the stale config
+files it retires, publish nothing through the watcher. Instead the save route publishes the
+saved document once, with its fingerprint, to every other connected canvas, and returns the
+fingerprint to the saver. Each socket is told its own connection id when it opens; a save
+that names its tab's connection id leaves that one socket out of the broadcast, provided the
+socket belongs to the same authorised session as the save (the same platform user when
+hosted), so a canvas never receives an echo of its own save while every other tab of the
+pipeline learns of it. A change to a `modules/*.py` file re-parses only the pipelines
 that import it, `from modules import <name>`, for a registration; a pipeline whose imports or
 registrations the parser refuses is left out of that module-dependency index with a warning,
 rather than breaking it for every pipeline. A change to a `config/*.json` file re-parses every discovered pipeline (a
@@ -241,7 +250,8 @@ Editor documents carry `source_revision`, a deterministic digest over raw parent
 source bytes, every referenced node-config file, and every participating `.haute.json`
 sidecar, including role-qualified missing-file sentinels. The digest therefore remains
 available when canonical parsing or JSON decoding fails. Explicit Save returns the newly
-committed revision. Submodel create and dissolve use the current revision as an optimistic
+committed revision and the saved document's fingerprint. A save whose `active_source` is not
+one of its `sources` is refused with HTTP 422 before any file is staged. Submodel create and dissolve use the current revision as an optimistic
 precondition, return it unchanged, and perform no persistence, so a stale transform cannot
 be applied over a newer document.
 

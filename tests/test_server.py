@@ -8,6 +8,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import polars as pl
@@ -1895,7 +1896,11 @@ class TestWebSocketResync:
             asyncio.run(ws_sync(ws))  # type: ignore[arg-type]
 
         assert ws.accepted is True
-        assert [frame["type"] for frame in ws.frames] == ["pipeline_document_update"]
+        # The socket learns its connection id first, then gets its resync's answer.
+        assert [frame["type"] for frame in ws.frames] == [
+            "sync_connection",
+            "pipeline_document_update",
+        ]
 
     def test_keep_alive_text_is_ignored(self) -> None:
         import asyncio
@@ -1987,13 +1992,13 @@ class TestServerPipelineDiscoveryHelpers:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from haute.server import _wire_source_file
+        from haute.routes._helpers import wire_source_file
 
         monkeypatch.chdir(tmp_path)
         main = tmp_path / "main.py"
         main.write_text("import haute\n\npipeline = haute.Pipeline('main')\n")
 
-        assert _wire_source_file(main) == "main.py"
+        assert wire_source_file(main) == "main.py"
 
 
 class TestBroadcast:
@@ -2077,7 +2082,8 @@ class TestEventBusBroadcastBridge:
                     "type": "pipeline_document_update",
                     "document": {"nodes": []},
                     "source_file": "x.py",
-                }
+                },
+                exclude=None,
             )
 
         asyncio.run(_run())
@@ -2105,7 +2111,8 @@ class TestEventBusBroadcastBridge:
                 await asyncio.sleep(0)
 
             fake_broadcast.assert_awaited_once_with(
-                {"type": "parse_error", "error": "gone", "source_file": "x.py"}
+                {"type": "parse_error", "error": "gone", "source_file": "x.py"},
+                exclude=None,
             )
 
         asyncio.run(_run())
@@ -2119,7 +2126,7 @@ class TestEventBusBroadcastBridge:
     def test_logs_failed_broadcast_task(self) -> None:
         from haute.server import _broadcast_event_as_ws_message
 
-        async def _boom(frame: dict[str, object]) -> None:
+        async def _boom(frame: dict[str, object], **_kw: object) -> None:
             raise RuntimeError("ws boom")
 
         async def _run() -> None:
@@ -2158,7 +2165,7 @@ class TestEventBusBroadcastBridge:
 
         async def _run() -> list[dict[str, object]]:
             ws = _FakeWebSocket()
-            ws_clients_add(ws)  # type: ignore[arg-type]
+            ws_clients_add(ws, connection_id="tab", owner=None)  # type: ignore[arg-type]
             try:
                 default_bus.publish(
                     "pipeline.document.update",
@@ -2210,7 +2217,7 @@ class TestEventBusBroadcastBridge:
 
         async def _run() -> list[dict[str, object]]:
             ws = _FakeWebSocket()
-            ws_clients_add(ws)  # type: ignore[arg-type]
+            ws_clients_add(ws, connection_id="tab", owner=None)  # type: ignore[arg-type]
             try:
                 default_bus.publish(
                     "pipeline.document.update",
@@ -2317,7 +2324,7 @@ class TestFileWatcher:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         # awatch is imported locally inside _file_watcher via
@@ -2361,7 +2368,7 @@ class TestFileWatcher:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -2399,7 +2406,7 @@ class TestFileWatcher:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -2465,7 +2472,7 @@ class TestFileWatcher:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -2501,7 +2508,7 @@ class TestFileWatcher:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -2553,7 +2560,7 @@ class TestFileWatcher:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -2625,7 +2632,7 @@ def unique_node_y():
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -2685,7 +2692,7 @@ def node_x():
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -2731,7 +2738,7 @@ def node_x():
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         def _run_watcher(changes: list[tuple[Change, str]]) -> None:
@@ -2815,7 +2822,7 @@ def node_b():
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         async def _fake_awatch(*dirs, **kw):
@@ -2910,7 +2917,7 @@ def distinctive_node():
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -2971,7 +2978,7 @@ def distinctive_node():
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         loaded_paths: list[Path] = []
@@ -3028,7 +3035,7 @@ def distinctive_node():
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         loaded_paths: list[Path] = []
@@ -3596,7 +3603,7 @@ class TestFileWatcherRecoverySidecars:
             )
             yield [(Change.modified, str(sidecar))]
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -3691,7 +3698,7 @@ class TestFileWatcherJsonConfig:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -3739,7 +3746,7 @@ class TestFileWatcherJsonConfig:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -3794,7 +3801,7 @@ class TestFileWatcherJsonConfig:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -3867,7 +3874,7 @@ class TestFileWatcherJsonConfig:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         try:
@@ -3948,7 +3955,7 @@ class TestFileWatcherJsonConfig:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         try:
@@ -4013,7 +4020,7 @@ class TestFileWatcherModuleChange:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -4062,7 +4069,7 @@ class TestFileWatcherModuleChange:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         loaded_paths: list[Path] = []
@@ -4142,7 +4149,7 @@ class TestFileWatcherModuleChange:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         try:
@@ -4222,7 +4229,7 @@ class TestFileWatcherModuleChange:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         try:
@@ -4277,7 +4284,7 @@ class TestFileWatcherParseError:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -4336,7 +4343,7 @@ class TestFileWatcherParseError:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -4398,7 +4405,7 @@ class TestFileWatcherParseError:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -4458,7 +4465,7 @@ class TestFileWatcherFingerprintDedup:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         # Pre-clear the fingerprint cache
@@ -4795,7 +4802,7 @@ class TestFileWatcherRecovery:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -5563,3 +5570,182 @@ class TestBroadcastTreeChange:
         assert events == [
             ("parse.error", {"error": server.PIPELINE_NOT_IN_VERSION, "source_file": "gone.py"})
         ]
+
+
+# ---------------------------------------------------------------------------
+# A save never round-trips the watcher (specs/server-api, live sync)
+# ---------------------------------------------------------------------------
+
+
+def _input_node(node_id: str, label: str) -> dict:
+    return {
+        "id": node_id,
+        "type": "pipelineNode",
+        "position": {"x": 0, "y": 0},
+        "data": {
+            "label": label,
+            "nodeType": "dataInput",
+            "config": _file_input_config("data/input.parquet"),
+        },
+    }
+
+
+def _save_two_inputs(client: TestClient, **fields: Any) -> dict:
+    """Create ``two.py`` holding two Data Inputs, each with its config file."""
+    response = client.post(
+        "/api/pipeline/save",
+        json={
+            "name": "two",
+            "graph": {
+                "nodes": [_input_node("a", "rates"), _input_node("b", "claims")],
+                "edges": [],
+            },
+            "source_file": "two.py",
+            "base_revision": None,
+            **fields,
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _project_bytes(root: Path) -> dict[str, bytes]:
+    """Every project file a save can write, by path (data and dot-folders left out)."""
+    return {
+        str(path): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+        and not any(part.startswith(".") for part in path.relative_to(root).parts)
+        and path.relative_to(root).parts[0] != "data"
+    }
+
+
+class TestSaveNeverRoundTripsTheWatcher:
+    def test_every_file_a_save_writes_or_retires_publishes_nothing_through_the_watcher(
+        self, client: TestClient, pipeline_dir: Path
+    ):
+        """The changes a real save makes (here one removing a node, so its config file is
+        retired) are replayed into the watcher: none is published."""
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        first = _save_two_inputs(client)
+        before = _project_bytes(pipeline_dir)
+        second = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "two",
+                "graph": {"nodes": [_input_node("a", "rates")], "edges": []},
+                "source_file": "two.py",
+                "base_revision": first["source_revision"],
+            },
+        )
+        assert second.status_code == 200, second.text
+        after = _project_bytes(pipeline_dir)
+        changes = (
+            {(Change.added, path) for path in after.keys() - before.keys()}
+            | {(Change.deleted, path) for path in before.keys() - after.keys()}
+            | {(Change.modified, path) for path in before.keys() & after.keys()}
+        )
+        changes = {(kind, path) for kind, path in changes if before.get(path) != after.get(path)}
+        retired = [path for kind, path in changes if kind == Change.deleted]
+        assert any(path.endswith("claims.json") for path in retired)
+        assert any(path.endswith("two.haute.json") for _kind, path in changes)
+
+        async def _fake_awatch(*dirs, **kw):
+            yield changes
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
+            broadcast_calls.append(data)
+
+        with (
+            patch("watchfiles.awatch", _fake_awatch),
+            patch("haute.server.broadcast", _capture_broadcast),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
+        ):
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run_file_watcher_and_drain())
+            finally:
+                loop.close()
+
+        assert broadcast_calls == []
+
+    def test_the_other_tabs_get_the_saved_document_and_the_saving_tab_gets_no_echo(
+        self, client: TestClient, pipeline_dir: Path
+    ):
+        headers = {"origin": "http://localhost"}
+        with (
+            client.websocket_connect("/ws/sync", headers=headers) as saving_tab,
+            client.websocket_connect("/ws/sync", headers=headers) as other_tab,
+        ):
+            hello = saving_tab.receive_json()
+            assert hello["type"] == "sync_connection"
+            assert other_tab.receive_json()["type"] == "sync_connection"
+
+            saved = _save_two_inputs(client, connection_id=hello["connection_id"])
+
+            update = other_tab.receive_json()
+            assert update["type"] == "pipeline_document_update"
+            assert update["source_file"] == "two.py"
+            assert update["document_fingerprint"] == saved["document_fingerprint"]
+            assert "exclude_connection" not in update
+            # The saving tab's next frame answers a probe sent after the save, so no
+            # document update reached it before.
+            saving_tab.send_json(
+                {"type": "resync", "source_file": "missing.py", "document_schema_version": 1}
+            )
+            assert saving_tab.receive_json()["type"] == "parse_error"
+
+    def test_a_connection_of_another_owner_is_never_left_out(self) -> None:
+        from haute.routes import _helpers
+
+        class _Socket:
+            """A stand-in socket: the registry only keys on it."""
+
+        mine, theirs = _Socket(), _Socket()
+        with _helpers.ws_clients_lock:
+            saved_clients = set(_helpers.ws_clients)
+            _helpers.ws_clients.clear()
+        try:
+            _helpers.ws_clients_add(mine, connection_id="tab-1", owner="ana@example.com")  # type: ignore[arg-type]
+            _helpers.ws_clients_add(theirs, connection_id="tab-2", owner="ben@example.com")  # type: ignore[arg-type]
+
+            same_owner = _helpers.ws_clients_snapshot(
+                {"connection_id": "tab-1", "owner": "ana@example.com"}
+            )
+            other_owner = _helpers.ws_clients_snapshot(
+                {"connection_id": "tab-1", "owner": "ben@example.com"}
+            )
+        finally:
+            _helpers.ws_clients_discard(mine)  # type: ignore[arg-type]
+            _helpers.ws_clients_discard(theirs)  # type: ignore[arg-type]
+            with _helpers.ws_clients_lock:
+                _helpers.ws_clients.update(saved_clients)
+
+        assert same_owner == [theirs]
+        assert sorted(map(id, other_owner)) == sorted(map(id, [mine, theirs]))
+
+    def test_an_active_source_that_is_not_a_source_is_refused_before_anything_is_written(
+        self, client: TestClient, pipeline_dir: Path
+    ):
+        before = _project_bytes(pipeline_dir)
+
+        response = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "two",
+                "graph": {"nodes": [_input_node("a", "rates")], "edges": []},
+                "source_file": "two.py",
+                "sources": ["live"],
+                "active_source": "test_batch",
+                "base_revision": None,
+            },
+        )
+
+        assert response.status_code == 422
+        assert "active_source 'test_batch' is not one of the pipeline's sources" in response.text
+        assert _project_bytes(pipeline_dir) == before

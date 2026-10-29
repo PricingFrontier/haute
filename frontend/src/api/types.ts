@@ -392,6 +392,8 @@ export interface SavePipelineResponse {
    *  branch is configured. Updates the saved comparison anchor. */
   git_sha?: string | null
   source_revision: string
+  /** The saved document's fingerprint, as live sync names it. */
+  document_fingerprint: string
   /** True when version capture was skipped only because git has no commit
    *  identity. The app prompts for a name/email, then captures what was skipped. */
   identity_required?: boolean

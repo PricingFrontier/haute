@@ -558,7 +558,7 @@ beforeEach(() => {
 
   // Reset all api mocks to their default resolution (empty graph, success).
   vi.mocked(api.loadPipeline).mockReset().mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))
-  vi.mocked(api.savePipeline).mockReset().mockResolvedValue({ file: "pipeline.py", pipeline_name: "main", source_revision: "revision-test" })
+  vi.mocked(api.savePipeline).mockReset().mockResolvedValue({ file: "pipeline.py", pipeline_name: "main", source_revision: "revision-test", document_fingerprint: "fingerprint-saved" })
   vi.mocked(api.previewNode).mockReset().mockResolvedValue({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })
   vi.mocked(api.previewRecoveryNode).mockReset().mockResolvedValue({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })
   vi.mocked(api.applyRemoveUnavailableNode).mockReset()
@@ -1525,7 +1525,7 @@ describe("App integration - save pipeline", () => {
   })
 
   it("shows a success toast when savePipeline resolves", async () => {
-    vi.mocked(api.savePipeline).mockResolvedValueOnce({ file: "demo.py", pipeline_name: "demo", source_revision: "revision-test" })
+    vi.mocked(api.savePipeline).mockResolvedValueOnce({ file: "demo.py", pipeline_name: "demo", source_revision: "revision-test", document_fingerprint: "fingerprint-saved" })
     render(<App />)
     await waitForAppReady()
 

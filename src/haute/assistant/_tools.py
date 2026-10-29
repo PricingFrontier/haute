@@ -2393,7 +2393,7 @@ def _publish_document_update(
     """
 
     from haute._pipeline_recovery import pipeline_document_fingerprint
-    from haute.server import _wire_source_file
+    from haute.routes._helpers import wire_source_file
 
     document_payload = load_pipeline_editor_document(
         Path(source_file), project_root=Path.cwd()
@@ -2402,7 +2402,7 @@ def _publish_document_update(
     payload: PipelineDocumentUpdatePayload = {
         "document": document_payload,
         "document_fingerprint": fingerprint,
-        "source_file": _wire_source_file(Path(source_file)),
+        "source_file": wire_source_file(Path(source_file)),
     }
     if change is not None:
         payload["origin"] = {

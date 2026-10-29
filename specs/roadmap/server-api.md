@@ -14,7 +14,6 @@ come from the [23 September 2026 codebase review](codebase-review-2026-09-23.md)
 |---|---|---:|---|
 | API-R02 | Planned | P3 | Domain services raise domain errors; only routes speak HTTP. |
 | API-R03 | Planned | P2 | Every browser type and response parser is generated from the Pydantic models. |
-| API-R08 | Planned | P2 | A save never round-trips through the file watcher, and its request is validated before any file is staged. |
 | API-R09 | Planned | P3 | The repair routes, the admit-run-translate pattern, the path-resolution preludes and the two point-analysis services exist once each, and a save loads the pipeline once. |
 | API-R10 | Planned | P3 | Every free string and list in a request is bounded; the dead response fields and helpers are gone; the repair message and the `file` field say what is true. |
 | API-R11 | Planned | P2 | Editing an imported submodel under a nested configured pipeline reloads its importing documents. |
@@ -115,48 +114,6 @@ models to the generated set.
 `src/haute/schemas.py`; `tests/fixtures/ui_contracts`;
 `frontend/src/types/__tests__/guards.contract.test.ts`.
 
-### API-R08 — A save never round-trips the watcher
-**Why:** The `.haute.json` sidecar write (`save_sidecar` → `atomic_write_text`) and the
-post-commit stale-config unlink register no self-write marker, so every save round-trips
-through the file watcher as an external edit: the unmarked sidecar event files under the
-owning pipeline as dependency-triggered, which skips the byte-hash dedupe, reloads the
-document and broadcasts `pipeline.document.update` to every canvas, and a save that
-retires a config file re-parses and broadcasts every pipeline in the project. The
-specification says the server's own edits never round-trip. `active_source` is checked
-against `sources` only by the sidecar model after the `.py`, module and config files were
-staged, so a mismatch rolls everything back and surfaces as a pydantic error through the
-500 backstop. The save route itself publishes no `pipeline.document.update` and returns
-no document fingerprint, so a second tab of the same pipeline learns of a change only
-when its own save is refused 409, and the saving tab's next WebSocket resync carries a
-stale fingerprint (the browser half is `FSH-R05`). This package comes from the
-[25 October 2026 codebase review](codebase-review-2026-10-25.md).
-
-**Plan:** Mark the sidecar write (`mark_self_write(sidecar, content=bytes)` before the
-write, or a `Writer`) and the stale unlink (`mark_self_write(path, deleted=True)`);
-validate `active_source ∈ sources` on `SavePipelineRequest` (422) before any file is
-staged; publish the saved document with its fingerprint from the save route to the other
-clients and return the fingerprint to the saver. Carry the saving tab's socket
-connection id with the save and exclude that connection from the route's broadcast;
-retain the frontend fingerprint/snapshot guards for reconnects and in-flight saves.
-Scope the exclusion to the same authorised session and pipeline. Add a watcher test that a save,
-including one that removes a node, publishes no `pipeline.document.update` through the
-watcher.
-
-**Acceptance:** A save produces no watcher-originated document update; each other
-connected tab for that pipeline receives one route-originated update with the saved
-fingerprint. The saving tab applies no destructive self-echo in either HTTP/socket
-arrival order and, with `FSH-R05`, retains jobs, undo history and newer dirty edits
-across reconnect. A save retiring a config file triggers no watcher re-parse; a request
-whose `active_source` is not in `sources` is answered 422 with no file touched.
-
-**Dependencies:** Coordinate the server/client contract and two-tab tests with `FSH-R05`.
-
-**Evidence:** `src/haute/routes/_helpers.py::save_sidecar`;
-`src/haute/routes/_helpers.py::mark_self_write`;
-`src/haute/routes/_save_pipeline.py::SavePipelineService._write_sidecar`;
-`src/haute/routes/_save_pipeline.py::SavePipelineService._remove_stale_config_files`;
-`src/haute/server.py`; `src/haute/schemas.py::SavePipelineRequest`; `tests/test_server.py`.
-
 ### API-R09 — One copy of each route mechanism
 **Why:** The four repair-apply routes are near-identical (save lock, thread pool,
 `PipelineRepairError` → structured JSON, `OSError` → 409), differing in a log event name
@@ -239,6 +196,6 @@ importer contains the change. Cover added/deleted modules and a root-level pipel
 Python files still do not broadcast. Preserve self-write suppression and the save-echo
 contract.
 
-**Dependencies:** `API-R08` owns self-save echoes; share event classification without restoring those echoes.
+**Dependencies:** None. A save's own writes are self-writes the watcher skips; share event classification without bringing their echoes back.
 
 **Evidence:** `src/haute/server.py::_file_watcher`; `src/haute/server.py::_file_watcher._flush_once`; `src/haute/server.py::_file_watcher._flush_once`; watcher tests in `tests/test_server.py`.

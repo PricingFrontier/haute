@@ -1315,6 +1315,7 @@ export function parseSavePipelineResponse(value: unknown): SavePipelineResponse 
   const obj = expectPlainObject("parseSavePipelineResponse", value)
   return {
     source_revision: expectNonBlankString("parseSavePipelineResponse", obj.source_revision, "source_revision"),
+    document_fingerprint: expectNonBlankString("parseSavePipelineResponse", obj.document_fingerprint, "document_fingerprint"),
     status: optionalString("parseSavePipelineResponse", obj, "status", "saved"),
     file: expectString("parseSavePipelineResponse", obj.file, "field `file`"),
     pipeline_name: expectString("parseSavePipelineResponse", obj.pipeline_name, "field `pipeline_name`"),

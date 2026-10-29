@@ -133,6 +133,7 @@ describe("client runtime contracts", () => {
         source_file: "pricing.py",
         base_revision: null,
         preserved_blocks: [],
+        connection_id: null,
       }),
     ).rejects.toThrow(/parseSavePipelineResponse/i)
   })

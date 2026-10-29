@@ -150,6 +150,7 @@ function makeSavePipelineResponse() {
     file: "pipe.py",
     pipeline_name: "test",
     source_revision: "revision-save",
+    document_fingerprint: "fingerprint-save",
     warnings: [],
   }
 }
@@ -850,6 +851,7 @@ describe("endpoint contracts", () => {
       source_file: "pipe.py",
       base_revision: "rev-1",
       preserved_blocks: [],
+      connection_id: "tab-1",
     }
     await savePipeline(payload)
     const [url, opts] = mockFetch.mock.calls[0]
@@ -859,12 +861,14 @@ describe("endpoint contracts", () => {
     expect(body.name).toBe("test")
     expect(body.source_file).toBe("pipe.py")
     expect(body.base_revision).toBe("rev-1")
+    expect(body.connection_id).toBe("tab-1")
   })
 
   it("sends source-preservation concurrency metadata for pipeline and submodel writes", async () => {
     await savePipeline({
       name: "test", description: "desc", graph: dummyGraph, preamble: "",
       source_file: "pipe.py", base_revision: "rev-1", preserved_blocks: ["import polars as pl"],
+      connection_id: null,
     })
     await createSubmodel({
       name: "pricing", node_ids: ["n1"], graph: dummyGraph, preamble: "",

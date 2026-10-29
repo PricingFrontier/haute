@@ -1480,6 +1480,24 @@ class SavePipelineRequest(BaseModel):
             "that does not exist yet."
         ),
     )
+    connection_id: str | None = Field(
+        default=None,
+        max_length=64,
+        description=(
+            "The saving tab's live-sync connection, as its socket was told: the save's "
+            "broadcast of the saved document leaves that socket out."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _active_source_is_a_source(self) -> SavePipelineRequest:
+        # Refused before anything is staged, rather than by the sidecar model mid-save.
+        if self.active_source not in self.sources:
+            raise ValueError(
+                f"active_source {self.active_source!r} is not one of the pipeline's "
+                f"sources {self.sources!r}."
+            )
+        return self
 
 
 class SavePipelineResponse(SaveCapture):
@@ -1489,6 +1507,8 @@ class SavePipelineResponse(SaveCapture):
     file: str
     pipeline_name: str
     source_revision: RevisionToken
+    # The saved document's fingerprint, as live sync names it, for the saver to keep.
+    document_fingerprint: str
 
 
 # ---------------------------------------------------------------------------

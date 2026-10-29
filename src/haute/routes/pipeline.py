@@ -29,6 +29,7 @@ from haute._editor_identities import (
     resolve_editor_identity,
 )
 from haute._env import int_env
+from haute._event_bus import DocumentUpdateExclusion, default_bus
 from haute._execution_admission import (
     ExecutionAdmissionError,
     IsolatedExecutionBudget,
@@ -182,10 +183,12 @@ from haute.routes._contract_errors import (
 )
 from haute.routes._helpers import (
     _INTERNAL_ERROR_DETAIL,
+    connection_owner,
     discover_pipelines,
     load_pipeline_editor_document,
     lookup_pipeline_by_name,
     pipeline_dir,
+    pipeline_document_update_payload,
     raise_pipeline_not_found,
     save_lock,
 )
@@ -1160,7 +1163,7 @@ def _diagnostics_summary(diagnostics: Sequence[PipelineRecoveryDiagnostic], limi
 
 
 @router.post("/pipeline/save", response_model=SavePipelineResponse)
-async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
+async def save_pipeline(body: SavePipelineRequest, request: Request) -> SavePipelineResponse:
     """Save a graph: .py (source of truth) + config JSON + .haute.json (positions).
 
     When the graph contains submodels, multiple files are written via
@@ -1170,6 +1173,9 @@ async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
     ``routes/_helpers.py``) so this save is serialised against any
     concurrent ``/api/submodel/create`` or ``/api/submodel/dissolve``.
     See the lock definition for the full rationale + scope.
+
+    The save's own writes never reach the file watcher; the route publishes the saved
+    document to every other canvas instead, leaving out the saving tab's socket.
     """
     try:
         async with save_lock:
@@ -1195,7 +1201,25 @@ async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
                 project_root=project_root,
                 pipeline_root=pipeline_dir(),
             )
-            return await run_in_threadpool(svc.save, body)
+            response = await run_in_threadpool(svc.save, body)
+            committed = svc.committed
+            if committed is None:
+                raise RuntimeError("A save returned without the document it committed.")
+            exclude: DocumentUpdateExclusion | None = (
+                None
+                if body.connection_id is None
+                else {
+                    "connection_id": body.connection_id,
+                    "owner": connection_owner(request.scope),
+                }
+            )
+            default_bus.publish(
+                "pipeline.document.update",
+                pipeline_document_update_payload(
+                    committed.path, committed.payload, committed.fingerprint, exclude=exclude
+                ),
+            )
+            return response
     except StaleDocumentRevisionError as exc:
         # The client's document is behind the disk; nothing was written.
         # The detail keeps the repository's flat-string error shape and

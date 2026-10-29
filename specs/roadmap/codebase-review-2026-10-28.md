@@ -232,7 +232,7 @@ adds a finding group or changes the 42-group count.
 | uncontrolled Rating/pivot drafts | Duplicate **FNED-R02**. |
 | percentages and auto-range | Duplicate **FMOU-R04**. |
 | save flush, coarse graph creation fence, scoped edited marker | Duplicate **FSH-R07**. |
-| saved-document sync | Duplicate **FSH-R05**, with **API-R08** for server saved-document echo/fingerprint. |
+| saved-document sync | Duplicate **FSH-R05**. |
 | utility error wording | Duplicate **FGC-R04**; distinct accepted read/draft race remains FGC-R08. |
 | Scenario Steps coercion / Optimiser Apply alias mode | Duplicate **FNED-R01**. |
 | rating permissive numeric parsing / grids | Duplicate **FNED-R04**; grid/helper duplication belongs **FNED-R03/FNED-R05**. |

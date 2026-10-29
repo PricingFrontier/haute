@@ -320,7 +320,7 @@ pipeline.connect("source_c", "transform_c")
         async def _fake_awatch(*dirs: Any, **kw: Any) -> Any:
             yield fake_changes
 
-        async def _capture_broadcast(data: dict[str, Any]) -> None:
+        async def _capture_broadcast(data: dict[str, Any], **_kw: object) -> None:
             return None
 
         async def _run() -> None:

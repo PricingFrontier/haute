@@ -1007,6 +1007,8 @@ export function savePipeline(
     sources?: string[]
     active_source?: string
     preserved_blocks: string[]
+    /** The tab's live-sync connection: the save's broadcast leaves this tab out. */
+    connection_id: string | null
   },
   options?: MutationOptions,
 ): Promise<SavePipelineResponse> {

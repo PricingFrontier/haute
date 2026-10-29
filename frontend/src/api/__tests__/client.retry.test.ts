@@ -459,6 +459,7 @@ describe("retry: caller supplied policy", () => {
             source_file: "pipe.py",
             base_revision: null,
             preserved_blocks: [],
+            connection_id: null,
           },
           // @ts-expect-error retry policies are deliberately not exposed on
           // mutation helpers until a real idempotency-key contract exists.
@@ -649,6 +650,7 @@ describe("no retry: non-idempotent POST (default)", () => {
           source_file: "pipe.py",
           base_revision: null,
           preserved_blocks: [],
+          connection_id: null,
         }),
       ).rejects.toBeInstanceOf(TypeError)
 

@@ -65,23 +65,24 @@ runs on after the timeout. The session bootstrap uses a raw `fetch` with no
 deadline, so a server that accepts the connection but never answers leaves the
 page blank instead of reaching the failure screen.
 
-**Plan:** Return the saved document's fingerprint from the save, scoped-save,
-repair-apply and submodel routes and store it in `acknowledgeSave` (the server
-half, publishing the saved document to the other clients, is `API-R08`); call
+**Plan:** Store the fingerprint the save now returns in `acknowledgeSave`, and
+return and store the saved document's fingerprint from the scoped-save,
+repair-apply and submodel routes too (the save already publishes the saved
+document to the other tabs, leaving the saver's socket out); call
 `onComplete` and `onFail` inside a guard that reports the error and leaves no
 job record; pass an `AbortController` to the MLflow fetch; give the bootstrap a
 deadline and render the failure screen on timeout. Add a test: save, drop and
 reopen the socket, assert active jobs and undo history survive.
 
 **Acceptance:** A reconnect after a save produces no document frame and bumps
-no generation when the server document is still the saved version. Jointly with
-`API-R08`, test two tabs and both HTTP/socket arrival orders: the saver retains jobs,
+no generation when the server document is still the saved version. Test two tabs
+and both HTTP/socket arrival orders: the saver retains jobs,
 undo history and newer dirty edits, while the other tab receives one saved-document
 update. A throwing completion callback shows a toast and ends the job
 record; a timed-out MLflow fetch is aborted; a silent server reaches the
 bootstrap failure screen within the deadline.
 
-**Dependencies:** `API-R08` for the server's fingerprint and broadcast.
+**Dependencies:** None.
 
 **Evidence:** `frontend/src/stores/useDocumentStatusStore.ts::acknowledgeSave`;
 `frontend/src/hooks/usePipelineAPI.ts`; `frontend/src/hooks/useWebSocketSync.ts`;
@@ -180,7 +181,7 @@ next save uses the confirmed revision. Edits made during recovery remain dirty. 
 concurrent writer's different content and an older recovery response cannot acknowledge
 or replace a newer save. Layout-only and preserved-code changes participate in equality.
 
-**Dependencies:** `API-R08` for the server's saved-document fingerprint.
+**Dependencies:** None; the save returns the saved document's fingerprint.
 
 **Evidence:** `frontend/src/hooks/keyboardTargets.ts::saveCommittingField`;
 `frontend/src/hooks/keyboardTargets.ts::isTypingTarget`;
