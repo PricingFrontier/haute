@@ -316,7 +316,7 @@ describe("InputImportButton", () => {
 
   it("says when the input was last imported", async () => {
     renderImport(node("csv", "dataInput", csvConfig))
-    await waitFor(() => expect(screen.getByTestId("input-import").title).toMatch(/^Imported 2 min ago\./))
+    await waitFor(() => expect(screen.getByTestId("input-import").title).toMatch(/^Imported 2m ago\./))
   })
 })
 

@@ -125,8 +125,8 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the twenty-one packages delivered or settled since (thirteen by 28
-October 2026, eight more on 29 October) have been removed from the sections below; the coverage table keeps the
+The findings of the twenty-two packages delivered or settled since (thirteen by 28
+October 2026, nine more on 29 October) have been removed from the sections below; the coverage table keeps the
 original counts.
 
 ## Validation — 25 October 2026
@@ -374,7 +374,6 @@ production:
 | Frontend Explore | FOX-7, FOX-9, FOX-10 (Explore part), FOX-11, FOX-12 | `EDA-R03` |
 | Trace UI | FTG-1, FTG-4, FTG-6, FTG-10, FTG-11, FTG-13, FTG-15, FTG-16, FTG-21 | `TRACE-R05` |
 | Git UI | FTG-2, FTG-3, FTG-7, FTG-8, FTG-14, FTG-17, FTG-19, FTG-22 | `GIT-R07` |
-| Git UI | FTG-9, FTG-12 | `GIT-R08` |
 | Assistant UI | FTG-5, FTG-18, FTG-20 | `ASSIST-60` |
 | Sandbox security | PM-42 | `SBX-R04` |
 | Workbench | PM-44 | `WB-33` |
@@ -515,6 +514,6 @@ All probes live outside the repository and wrote nothing into it.
 | radon | 285 functions with cyclomatic complexity ≥ 20; 27 ≥ 50 (the largest in the optimiser service, the save service, the assistant tools and the RAM estimate). |
 | vulture (60 %) | 61 candidates; those confirmed unreferenced are in `EXEC-R17`, `IO-R08`, `ROAD-WORKER-08`, `DEP-R13`, `CLI-R05`, `API-R10`, `PCFG-R15` and `ENGQ-R01`. |
 | jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13`, `EXEC-R17`, `IO-R08`, `ROAD-WORKER-08`, `API-R09` and `PCFG-R15`. |
-| jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `FNED-R03`, `FNED-R05`, `FMOU-R05`, `EDA-R03`, `GIT-R08`, `WB-37` and `FGC-R04`. |
+| jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `FNED-R03`, `FNED-R05`, `FMOU-R05`, `EDA-R03`, `WB-37` and `FGC-R04`. |
 | knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted; every frontend reviewer found the hits used inside their own module, so they are over-exports under `ENGQ-R01`'s gate, not dead code. |
 | sweeps | 100 floating action tags in `.github/workflows` (`ENGQ-CI06`, `CLI-R06`); 35 campaign-named test modules (`ENGQ-R05`). |

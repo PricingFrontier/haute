@@ -21,7 +21,6 @@ and return cycles and made and deleted two branches between 13:14 and 13:36.
 | GIT-R05 | Planned | P3 | The git modules carry no dead symbols, one free-name finder and one compensation helper. |
 | GIT-R06 | Decision | P3 | Automatic ledger saves either skip the project's git hooks or the specification says they run them. |
 | GIT-R07 | Planned | P2 | Every tree-changing action in the git UI passes the dirty-project guard and names what changes, a failed history read shows an error rather than an empty branch, a failed preference save is reported, and the dialogs say what the server does. |
-| GIT-R08 | Planned | P3 | The git panel has one context menu, one dirty-navigation wrapper and one relative-time rule. |
 | GIT-R16 | Planned | P3 | A working branch left without its ledger, or half archived, is reported at startup with a Repair that leaves a whole pair. |
 | GIT-R18 | Planned | P2 | A rejected push's Catch up and Spin off actions stay bound to that rejection's remote. |
 
@@ -100,28 +99,6 @@ toasts.
 `frontend/src/utils/vcHistory.ts`; `frontend/src/panels/git/useGitHistory.ts`;
 `frontend/src/components/BranchManager.tsx`;
 `frontend/src/components/WorkingBranchModal.tsx`.
-
-### GIT-R08 — One menu, one wrapper, one clock
-**Why:** The fixed-backdrop context menu is written five times across the git
-panel and the branch manager, the dirty-navigation wrapper (guard plus the
-confirm dialog's save-then-proceed block) twice verbatim, and relative time five
-times across the git panel, the breadcrumb, the assistant and two utilities with
-three different rules ("400d ago" never stops; the assistant switches to a date
-after seven days; the shared formatter after a day).
-
-**Plan:** A `ContextMenu` primitive, a `useDirtyNavigation(onSave)` hook, and
-one `relativeTime` in `utils/` imported by every site.
-
-**Acceptance:** One copy of each; the same timestamp reads the same in every
-panel.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/GitPanel.tsx`;
-`frontend/src/components/BranchManager.tsx`;
-`frontend/src/components/CommitBreadcrumb.tsx`;
-`frontend/src/panels/assistant/relativeTime.ts`;
-`frontend/src/utils/formatTime.ts`.
 
 ### GIT-R16 — Broken pairs reported with Repair
 **Why:** Delete and archive used to move a pair's two refs one step at a time, so a

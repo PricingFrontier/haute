@@ -32,12 +32,13 @@ import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
 import { canonicalJson } from "../utils/canonicalJson"
 import { quoteEligible } from "../utils/sheetVisibility"
+import { relativeTime } from "../utils/relativeTime"
 import { QUOTE_DETAILS_ID } from "../utils/workbenchForm"
 import PageTabs from "../workbench/PageTabs"
 import SheetCanvas from "../workbench/SheetCanvas"
 import AppHeader from "./AppHeader"
 import HistoryPanel from "./HistoryPanel"
-import { basisOf, fullTime, relativeTime, valuesKey } from "./quoteValues"
+import { basisOf, fullTime, valuesKey } from "./quoteValues"
 import { followLink, navigate, newQuotePath, quotePath, revisionPath, setLeaveGuard, type AppRoute } from "./route"
 import { BUTTON, Menu, Notice, StageChip, type MenuItem } from "./ui"
 import useAppStore from "./useAppStore"
@@ -443,7 +444,7 @@ function QuoteLine() {
             {revision.number !== quote.latest && ` of ${quote.latest}`}
           </span>
           <span style={muted} title={fullTime(revision.saved_at)}>
-            Saved {relativeTime(revision.saved_at)} by {revision.saved_by}
+            Saved {relativeTime(new Date(revision.saved_at))} by {revision.saved_by}
           </span>
           <span style={muted}>
             {revision.tables === null || revision.tables === undefined
@@ -564,7 +565,7 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
             </>
           }
         >
-          You have changes to this quote from {relativeTime(recovered.keptAt)} that were not saved to the server.
+          You have changes to this quote from {relativeTime(new Date(recovered.keptAt))} that were not saved to the server.
           {quote !== null && recovered.version !== null && recovered.version !== quote.latest && " The quote has been saved since then."}
         </Notice>
       )}
@@ -580,7 +581,7 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
       )}
       {reason === "archived" && quote !== null && (
         <Notice tone="info" testId="notice-archived" actions={canEdit() && <button type="button" className={BUTTON} onClick={() => void change("restore", {}, quote)} disabled={working}>Restore</button>}>
-          Archived{quote.archived_by !== null && ` by ${quote.archived_by}`}{quote.archived_at !== null && ` ${relativeTime(quote.archived_at)}`}, read only. Restore it to change it.
+          Archived{quote.archived_by !== null && ` by ${quote.archived_by}`}{quote.archived_at !== null && ` ${relativeTime(new Date(quote.archived_at))}`}, read only. Restore it to change it.
         </Notice>
       )}
       {!canEdit() && (
@@ -590,7 +591,7 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
       )}
       {reason === "final" && quote !== null && quote.final_at !== null && (
         <Notice tone="info" testId="notice-final">
-          Final at revision {quote.final_revision}, marked by {quote.final_by} {relativeTime(quote.final_at)}. Reopen it, giving a reason, to change it.
+          Final at revision {quote.final_revision}, marked by {quote.final_by} {relativeTime(new Date(quote.final_at))}. Reopen it, giving a reason, to change it.
         </Notice>
       )}
       {moved && (

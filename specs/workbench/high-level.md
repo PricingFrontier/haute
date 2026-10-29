@@ -1251,7 +1251,9 @@ Out of scope:
   quote's reference and option, `ABC-1/2`, its title (its quote name, else its insured,
   else its reference and option), its insured, broker and inception date under their columns'
   labels on the sheets, the date as a day, its stage, who it is with and when it was saved,
-  relative, with the time on hover. A row opens its quote, its reference a link of its
+  relative, with the time on hover. Relative times in the app read as everywhere in Haute:
+  "just now" under a minute, then minutes, hours and days ago ("5m ago", "3h ago", "2d
+  ago") below a week, then the day and month, with the year when it is not this year. A row opens its quote, its reference a link of its
   own; on hover or focus it offers Open, Duplicate, and Archive or Restore. The list,
   stage, search, assignee and order are in the page's address, so Back returns to the
   list as it was. Loading shows placeholder rows, a failure says why with Retry, and an

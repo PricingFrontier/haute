@@ -4,7 +4,7 @@
 
 | File | Responsibility |
 | --- | --- |
-| `frontend/src/panels/GitPanel.tsx` | The Git side-panel view and user-action boundary: pending-save and milestone rows, graph-rail wiring, context menus, fork dialog, and row sub-components. Branch-history request identity and hydration are delegated to `useGitHistory`. |
+| `frontend/src/panels/GitPanel.tsx` | The Git side-panel view and user-action boundary: pending-save and milestone rows (each time by `relativeTime`), graph-rail wiring, the row, rail-dot and rail-lane context menus (`BackdropMenu`), the fork dialog (over a `MenuBackdrop`), the dirty-navigation guard (`useDirtyNavigation`), and row sub-components. Branch-history request identity and hydration are delegated to `useGitHistory`. |
 | `frontend/src/panels/git/useGitHistory.ts` | The single state authority for branch-scoped Git history: cache hydration, stale-while-revalidate fetching, request generations, nonce consumption, row selection, expansion, and branch replacement. It exposes a render-ready snapshot and event callbacks without render-time ref mutation or effect-driven synchronous state resets. |
 | `frontend/src/panels/gitPanelCache.ts` | Module-level session caches (`branchHistory`, `milestoneSaves`, whole-forest `graphCache`) with LRU eviction, feeding `useGitHistory`'s stale-while-revalidate hydration and unchanged-payload short-circuit. |
 | `frontend/src/panels/gitgraph/layout.ts` | Pure layout: `computeGitGraphLayout` turns a `GitGraphResponse` + the panel's row list into a `RailModel` (lanes, dots, curves, magnifiers, spawn stubs); `computeRailRuns` consolidates per-row cells into whole-length vertical line segments. No DOM, no fetch. |
@@ -14,10 +14,12 @@
 | `frontend/src/stores/gitBranchLoader.ts` | Lazily loaded branch-list request coordinator. It publishes results into `useGitStore` while delegating the in-flight/queued-refresh bookkeeping to `singleFlight.ts`, keeping branch-only client code out of the initial editor bundle. |
 | `frontend/src/stores/singleFlight.ts` | Shared resettable single-flight utility: request joining, the trailing-refresh queue (exactly one follow-up per active request, generation-anchored), and the stalled-request watchdog. Consumed by `useGitStore.ts` (working-branch status) and `gitBranchLoader.ts` (branch list). Test seam: both stores' `reset…ForTests` exports delegate to its `reset()`. |
 | `frontend/src/components/BranchIndicator.tsx` | Toolbar entry point: explicit repository/readiness/error labels with Retry (an `interrupted` clone's Retry calls `retryInterruptedGit` and reloads readiness), plus a ready branch-name button that opens the panel on the current branch. Truncated errors use the shared `Tooltip` to expose the full diagnostic on error hover or Retry focus; its function child places `aria-describedby` on Retry. |
-| `frontend/src/components/BranchManager.tsx` | Branch list/create/switch/archive/delete/restore, embedded in the Git panel; owns its own confirm dialogs and row context menu. Its Deleted section lists `deleted` from the branch listing with Restore (`undeleteBranch(id)`), and a "Restore as" name box when a live branch has the name. |
+| `frontend/src/components/BranchManager.tsx` | Branch list/create/switch/archive/delete/restore, embedded in the Git panel; owns its own confirm dialogs, its dirty-navigation guard (`useDirtyNavigation`) and its row context menu (`BackdropMenu`). Its Deleted section lists `deleted` from the branch listing with Restore (`undeleteBranch(id)`), and a "Restore as" name box when a live branch has the name. |
 | `frontend/src/hooks/useProjectDirty.ts` | `useProjectDirty`: whether the project holds unsaved edits, the canvas's (`useGraphStore`) or the workbench's form's (`useWorkbenchStore`'s `formDirty`, mirrored by the form store, a lazy chunk); what every navigation guard asks about. `discardFormEdits`: after a switch chosen over the form's unsaved edits has succeeded, the form read again (the form store imported then), so the destination's form shows; nothing while the form is as saved. `discardCanvasEdits`: after a switch chosen over the canvas's unsaved edits has succeeded, the canvas's edits dropped (`markSaved`, the sync banner cleared, `setGraphSynchronized(false)` so the answer applies even when the destination's document is the one last accepted) and a resync requested (`requestResync`), so the destination's pipeline shows; nothing while the canvas is as saved. |
-| `frontend/src/components/GitNavigationConfirm.tsx` | Shared clean/dirty navigation confirmation used by branch-manager and graph-lane switches plus Create & Move; dirty mode offers Cancel, Discard, and Save first. |
-| `frontend/src/components/CommitBreadcrumb.tsx` | `CommitBreadcrumb` (version-relative label for a comparison canvas) and `ComparisonDelta` (historic↔current commit-count chip). |
+| `frontend/src/hooks/useDirtyNavigation.ts` | `useDirtyNavigation(onSave)`: the one dirty-navigation guard of the git panel and the branch manager. `guard(proceed)` runs `proceed` at once while the project is clean (`useProjectDirty`), else opens the question: `confirm` is then the props each caller renders `GitNavigationConfirm` with (null while none is open), whose Cancel drops the action, Discard runs it, and Save first runs it only once `onSave()` has answered true; a save that answers false or throws keeps the question open. |
+| `frontend/src/components/GitNavigationConfirm.tsx` | The question `useDirtyNavigation` opens before a navigation would replace unsaved edits, placed by each caller (the git panel above its branch manager, the branch manager in its own section): Cancel, Discard, and Save first. |
+| `frontend/src/components/BackdropMenu.tsx` | The git surfaces' right-click menu: `MenuBackdrop`, a full-window layer under a menu or popover whose click closes it, as does a right-click, which calls `preventDefault`; `BackdropMenu`, that backdrop and, as its next sibling, the menu at the pointer (`testId`, an optional title line naming its branch, its items); `MenuItem`, one item's icon and label (`danger` for Delete). The git panel's row, rail-dot and rail-lane menus and the branch manager's row menu are `BackdropMenu`s; the fork naming step uses `MenuBackdrop` alone. |
+| `frontend/src/components/CommitBreadcrumb.tsx` | `CommitBreadcrumb` (version-relative label for a comparison canvas, its time by `relativeTime`) and `ComparisonDelta` (historic↔current commit-count chip). |
 | `frontend/src/components/MilestoneCommitModal.tsx` | Commit modal: required message (500-character maximum with visible validation) + version label form, and the 409 fork-warning override flow. |
 | `frontend/src/components/RestoreConfirmModal.tsx` | The save/discard/confirm prompt before a restore: reads `useGitStore.restoreTarget` for the target label and `useProjectDirty` (the canvas's or the workbench's form's unsaved edits) to decide single-confirm vs. save-or-discard, and locks buttons plus Escape/backdrop close (`busy`) once clicked while the caller performs the actual restore. |
 | `frontend/src/components/WorkingBranchModal.tsx` | Startup / save-gate branch-selection modal, with an inline git-identity sub-form. Its default choice is the checked-out branch when eligible, else the first eligible branch, else "Create new branch…"; on a `detached` status it is always "Create new branch…", with a line saying that an existing branch opens its latest save. |
@@ -205,11 +207,11 @@ with the name until it is changed, rather than in a toast, which would sit over 
 the window's right edge. On `res.switched` it does a full
 `window.location.reload()`, since the checkout replaces the working tree and the client
 can't safely reconcile in place. A parallel create instead just calls `refresh()`. Before
-any switch, switch-mode or move-mode create,
-`GitNavigationConfirm` is shown on the project's dirty state, the canvas's or the
-workbench's form's (`useProjectDirty`): clean navigation gets the ordinary
-confirmation, while dirty navigation requires an explicit discard or a successful
-caller-supplied `onSave()` result before mutation. `GitPanel.performSwitch` and
+any switch, switch-mode or move-mode create, the caller's `useDirtyNavigation` guard
+reads the project's dirty state, the canvas's or the workbench's form's
+(`useProjectDirty`): clean navigation goes ahead (after the branch manager's ordinary
+switch confirmation), while dirty navigation opens `GitNavigationConfirm` and requires an
+explicit discard or a successful caller-supplied `onSave()` result before mutation. `GitPanel.performSwitch` and
 `BranchManager.switchNow` both call `setWorkingBranch(branch, false)`, then
 `discardFormEdits` (the workbench's form read again when its unsaved edits were the ones
 discarded) and `recordSwitch` (pushing a `useGraphStore` VC undo entry) on success, while
@@ -323,6 +325,12 @@ or a failed push.
 - **Archived branches never burn a palette slot.** `colorIndexOf` recurses to an archived
   branch's `fork_of` parent's colour; the palette itself (`paletteOrder`) is computed only
   over non-archived branches in payload order.
+- **A menu's backdrop takes the next right-click.** Every `BackdropMenu`, and the fork
+  naming step's `MenuBackdrop`, closes on a click or a right-click on its backdrop, and the
+  right-click calls `preventDefault`, so a second right-click over an open menu never
+  shows the browser's menu. The naming step's backdrop ignores both while its create is
+  under way. The backdrop is the menu's previous sibling, at `z-40` under the menu's
+  `z-50`.
 - **Fork-menu availability while peeking.** The context menu always opens (never falls
   through to the browser menu) on any row, but while peeking it offers only "View
   side-by-side". Restore, Start a branch, New branch from here and "Move the later saves" only
@@ -335,8 +343,8 @@ or a failed push.
 - **`BranchManager`'s archive-vs-delete asymmetry.** Archive on the *current* branch with
   uncommitted tracked project changes redirects to a "commit a milestone first" prompt
   instead of proceeding. Before either current-branch archive or confirmed delete reaches
-  its API call/reload, `guardNavigation` separately protects unsaved in-memory edits, the
-  canvas's or the workbench's form's,
+  its API call/reload, its `useDirtyNavigation` guard separately protects unsaved in-memory
+  edits, the canvas's or the workbench's form's,
   with Cancel/Discard/Save-first. Delete remains enabled because its own dialog names
   branch-history loss (`deleteLoss()`), but that confirmation never bypasses the canvas
   guard.
@@ -500,7 +508,18 @@ Library component/unit tests (no e2e for this surface).
   save SHA, including while a comparison is open.
 - **`frontend/src/components/__tests__/CommitBreadcrumb.test.tsx`** — root/milestone collapse-to-anchor
   rendering, the non-milestone nearest-milestone→commit breadcrumb, and
-  `ComparisonDelta`'s singular/plural count text.
+  `ComparisonDelta`'s singular/plural count text. The breadcrumb's and the history rows'
+  times are pinned with every other panel's in
+  `frontend/src/__tests__/relativeTimeSurfaces.test.tsx` (one instant reads the same in
+  each).
+- **`frontend/src/components/__tests__/BackdropMenu.test.tsx`** — the menu primitive: the
+  menu at the pointer with its title line and items, the backdrop as its previous sibling
+  closing it on a click and on a right-click that is `preventDefault`ed, an item's click,
+  a disabled item, and `MenuBackdrop` alone.
+- **`frontend/src/hooks/__tests__/useDirtyNavigation.test.tsx`** — the guard: a clean
+  project runs the action at once with no question; a dirty one asks, Cancel dropping the
+  action, Discard running it, and Save first running it only after `onSave()` answers true
+  (false, a throw or no `onSave` keeping the question open).
 - **`frontend/src/components/__tests__/RestoreConfirmModal.test.tsx`** — the restore wording
   with the target's label, clean-canvas single-confirm calling `onConfirm(false)`,
   dirty-canvas save/discard button pair calling `onConfirm(true)`/`onConfirm(false)`

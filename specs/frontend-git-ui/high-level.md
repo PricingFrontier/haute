@@ -84,7 +84,10 @@ highlighted box headed "Saves since the last milestone (n)", then the milestone 
 reveal the individual saves folded into it. Milestones and saves each carry: a version
 label or "init" tag, message, short SHA with a tooltip, a relative time, a view (read-only
 compare) affordance, and — when a branch was spawned from that exact point — clickable
-branch chips ("fork links") back to the spawned branch.
+branch chips ("fork links") back to the spawned branch. The relative time follows the rule
+every panel shares: "just now" under a minute, then whole minutes, hours and days ago
+("5m ago", "3h ago", "2d ago") below a week, then the day and month, with the year when it
+is not this year; `CommitBreadcrumb` reads its time the same way.
 
 On the user's own (non-peeked) branch every row also carries "Start a branch from this
 version", and every row except the current version carries "Restore this version". The
@@ -215,7 +218,9 @@ nothing: the secrets may be managed by someone without the editor.
   disagree; the rail withholds rendering rather than mislabel rows during that window
   (see Failure model).
 - Right-clicking any history row always calls `preventDefault` — the browser's native
-  context menu never appears over the panel.
+  context menu never appears over the panel. An open menu, or the fork-naming step, sits
+  over a full-window backdrop: a click on it closes the menu, and so does a right-click,
+  which also calls `preventDefault`.
 
 ## Design rationale
 
@@ -253,6 +258,13 @@ if it does not match one of those contracts, the formatter uses the plain error 
 instead of displaying raw JSON. Consequently protected-branch, duplicate-label, ledger,
 and dirty-state messages authored by the backend survive every relevant toast and inline
 banner.
+
+**One menu, one guard, one clock.** The panel's right-click menus (row, rail dot, rail
+lane) and the branch manager's row menu are one primitive (`BackdropMenu`), whose backdrop
+the fork-naming step uses too; the panel and the branch manager guard unsaved edits through
+one hook (`useDirtyNavigation`); and every relative time in the app comes from one function
+(`utils/relativeTime.ts`, owned by [frontend-shared](../frontend-shared/low-level.md)). A
+copy could drift in its dismissal, its Save-first sequence or its wording, so none is kept.
 
 **Peek is separate from working-branch state.** `peekBranch` lives in `useGitStore` (not
 component state) specifically so the toolbar indicator can return the panel to "current"
@@ -357,5 +369,5 @@ are not the user's data, and **mutations**, which always surface an error.
 
 **Shared switch policy, separate entry points.** `GitPanel.performSwitch` and
 `BranchManager.switchNow` remain separate mutations for the rail lane menu and branch manager,
-but both use the same dirty-navigation confirmation component, Save-first callback, and Git
-error formatter.
+but both guard through `useDirtyNavigation` (one confirmation component, one Save-first
+sequence) and use the same Git error formatter.

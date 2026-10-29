@@ -4,13 +4,15 @@ import {
   Pencil, Plus, Minus, ArrowRightLeft, Copy, CornerDownRight, FileText, Eye, Undo2,
 } from "lucide-react"
 import PanelShell from "./PanelShell"
+import BackdropMenu, { MenuBackdrop, MenuItem } from "../components/BackdropMenu"
 import BranchManager from "../components/BranchManager"
 import GitNavigationConfirm from "../components/GitNavigationConfirm"
 import RemotePushControl from "../components/RemotePushControl"
 import Tooltip from "../components/Tooltip"
 import useToastStore from "../stores/useToastStore"
 import useGitStore from "../stores/useGitStore"
-import useProjectDirty, { discardCanvasEdits, discardFormEdits } from "../hooks/useProjectDirty"
+import useDirtyNavigation from "../hooks/useDirtyNavigation"
+import { discardCanvasEdits, discardFormEdits } from "../hooks/useProjectDirty"
 import { createWorkingBranch, setWorkingBranch } from "../api/client"
 import type { GitLedgerSave, GitFileChange } from "../api/types"
 import { computeGitGraphLayout, computeRailRuns, railWidth } from "./gitgraph/layout"
@@ -18,6 +20,7 @@ import type { RailModel, RailRow, RailRowGeom, RowDescriptor } from "./gitgraph/
 import { GraphRailCell, GraphRailHeader, GraphRailOverlay } from "./gitgraph/GraphCell"
 import { recordSwitch } from "../utils/vcHistory"
 import { apiErrorMessage } from "../api/errors"
+import { relativeTime } from "../utils/relativeTime"
 import { useGitHistory } from "./git/useGitHistory"
 
 /** Minimal graph-branch shape the in-row spawn chips need. */
@@ -112,7 +115,6 @@ function GitPanelBranchScope({
 }: GitPanelBranchScopeProps) {
   const addToast = useToastStore((s) => s.addToast)
   const loadStatus = useGitStore((s) => s.loadStatus)
-  const dirty = useProjectDirty()
   const setViewBranch = useGitStore((s) => s.setPeekBranch)
   const openComparison = useGitStore((s) => s.openComparison)
   const {
@@ -127,7 +129,7 @@ function GitPanelBranchScope({
     toggleExpand,
     selectSha: setSelectedSha,
   } = useGitHistory({ branchKey, peeking, historyNonce, commitNonce, addToast })
-  const [dirtyNavigation, setDirtyNavigation] = useState<(() => void) | null>(null)
+  const navigation = useDirtyNavigation(onSave)
   // Right-click "new branch from here" (S38): the anchor is the menu position +
   // fork point; the draft is the naming step once an option is picked.
   const [forkAnchor, setForkAnchor] = useState<
@@ -223,7 +225,7 @@ function GitPanelBranchScope({
 
   const requestForkSubmit = () => {
     // Opening the new branch replaces the canvas: unsaved edits are asked about first.
-    if (forkDraft && forkDraft.mode !== "parallel") guardNavigation(() => { void submitFork() })
+    if (forkDraft && forkDraft.mode !== "parallel") navigation.guard(() => { void submitFork() })
     else void submitFork()
   }
 
@@ -250,11 +252,6 @@ function GitPanelBranchScope({
     } finally {
       setSwitching(false)
     }
-  }
-
-  const guardNavigation = (proceed: () => void) => {
-    if (dirty) setDirtyNavigation(() => proceed)
-    else proceed()
   }
 
   // Open the read-only side-by-side comparison on a version (S11).
@@ -467,26 +464,7 @@ function GitPanelBranchScope({
         </div>
 
         {/* Branch manager (S19/S28: the Git panel hosts it) */}
-        {dirtyNavigation && (
-          <GitNavigationConfirm
-            onCancel={() => setDirtyNavigation(null)}
-            onDiscard={() => {
-              const proceed = dirtyNavigation
-              setDirtyNavigation(null)
-              proceed()
-            }}
-            onSave={async () => {
-              try {
-                if (!await (onSave?.() ?? Promise.resolve(false))) return
-                const proceed = dirtyNavigation
-                setDirtyNavigation(null)
-                proceed?.()
-              } catch {
-                // Saving failed; keep the choice visible.
-              }
-            }}
-          />
-        )}
+        {navigation.confirm && <GitNavigationConfirm {...navigation.confirm} />}
         <BranchManager selectedBranch={viewBranch ?? workingBranch} onPeek={setViewBranch} onSave={onSave} />
 
         {/* Save history — a distinct, inset section set apart from the branch
@@ -689,7 +667,7 @@ function GitPanelBranchScope({
                           <Tooltip label={HASH_TOOLTIP} side="bottom">
                             <span>{m.short_sha}</span>
                           </Tooltip>
-                          {" · "}{timeAgo(m.timestamp)}
+                          {" · "}{relativeTime(new Date(m.timestamp))}
                         </span>
                       </div>
                     </div>
@@ -782,67 +760,39 @@ function GitPanelBranchScope({
           items always render so the menu opens (never falls through to the
           browser menu) on every history row, peeking or not. */}
       {forkAnchor && (
-        <>
-          <div
-            className="fixed inset-0 z-40"
-            onClick={() => setForkAnchor(null)}
-            onContextMenu={(e) => { e.preventDefault(); setForkAnchor(null) }}
-          />
-          <div
-            data-testid="git-panel-fork-menu"
-            className="fixed z-50 rounded-md py-1 shadow-lg text-[12px]"
-            style={{ left: forkAnchor.x, top: forkAnchor.y, background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
+        <BackdropMenu testId="git-panel-fork-menu" x={forkAnchor.x} y={forkAnchor.y} onClose={() => setForkAnchor(null)}>
+          {!forkAnchor.peeking && (
+            <>
+              <MenuItem testId="git-panel-fork-switch" icon={GitBranch} onClick={() => startFork("switch")}>
+                Start a branch from this version
+              </MenuItem>
+              <MenuItem testId="git-panel-fork-here" icon={GitFork} onClick={() => startFork("parallel")}>
+                New branch from here, stay on this branch
+              </MenuItem>
+              {forkAnchor.canMove && (
+                <MenuItem testId="git-panel-fork-move" icon={ArrowRightLeft} onClick={() => startFork("move")}>
+                  Move the later saves to a new branch
+                </MenuItem>
+              )}
+            </>
+          )}
+          <MenuItem
+            testId="git-panel-menu-view"
+            icon={Eye}
+            onClick={() => { viewVersion(forkAnchor.sha, forkAnchor.label); setForkAnchor(null) }}
           >
-            {!forkAnchor.peeking && (
-              <>
-                <button
-                  data-testid="git-panel-fork-switch"
-                  onClick={() => startFork("switch")}
-                  className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
-                  style={{ color: "var(--text-primary)" }}
-                >
-                  <GitBranch size={12} style={{ color: "var(--accent)" }} /> Start a branch from this version
-                </button>
-                <button
-                  data-testid="git-panel-fork-here"
-                  onClick={() => startFork("parallel")}
-                  className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
-                  style={{ color: "var(--text-primary)" }}
-                >
-                  <GitFork size={12} style={{ color: "var(--accent)" }} /> New branch from here, stay on this branch
-                </button>
-                {forkAnchor.canMove && (
-                  <button
-                    data-testid="git-panel-fork-move"
-                    onClick={() => startFork("move")}
-                    className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
-                    style={{ color: "var(--text-primary)" }}
-                  >
-                    <ArrowRightLeft size={12} style={{ color: "var(--accent)" }} /> Move the later saves to a new branch
-                  </button>
-                )}
-              </>
-            )}
-            <button
-              data-testid="git-panel-menu-view"
-              onClick={() => { viewVersion(forkAnchor.sha, forkAnchor.label); setForkAnchor(null) }}
-              className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
-              style={{ color: "var(--text-primary)" }}
+            View side-by-side
+          </MenuItem>
+          {forkAnchor.canRestore && (
+            <MenuItem
+              testId="git-panel-menu-restore"
+              icon={Undo2}
+              onClick={() => { restoreVersion(forkAnchor.sha, forkAnchor.label); setForkAnchor(null) }}
             >
-              <Eye size={12} style={{ color: "var(--accent)" }} /> View side-by-side
-            </button>
-            {forkAnchor.canRestore && (
-              <button
-                data-testid="git-panel-menu-restore"
-                onClick={() => { restoreVersion(forkAnchor.sha, forkAnchor.label); setForkAnchor(null) }}
-                className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
-                style={{ color: "var(--text-primary)" }}
-              >
-                <Undo2 size={12} style={{ color: "var(--accent)" }} /> Restore this version
-              </button>
-            )}
-          </div>
-        </>
+              Restore this version
+            </MenuItem>
+          )}
+        </BackdropMenu>
       )}
 
       {/* Right-click menu on a rail milestone dot: the commit actions. */}
@@ -850,69 +800,51 @@ function GitPanelBranchScope({
         const m = milestones.find((e) => e.sha === dotMenu.sha)
         const label = m ? m.version_label || m.message : dotMenu.sha.slice(0, 7)
         return (
-          <>
-            <div className="fixed inset-0 z-40" onClick={() => setDotMenu(null)} onContextMenu={(e) => { e.preventDefault(); setDotMenu(null) }} />
-            <div
-              data-testid="git-graph-dot-menu"
-              className="fixed z-50 rounded-md py-1 shadow-lg text-[12px]"
-              style={{ left: dotMenu.x, top: dotMenu.y, background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
+          <BackdropMenu testId="git-graph-dot-menu" x={dotMenu.x} y={dotMenu.y} onClose={() => setDotMenu(null)}>
+            <MenuItem
+              testId="git-graph-dot-menu-view"
+              icon={Eye}
+              onClick={() => { viewVersion(dotMenu.sha, label); setDotMenu(null) }}
             >
-              <button
-                data-testid="git-graph-dot-menu-view"
-                onClick={() => { viewVersion(dotMenu.sha, label); setDotMenu(null) }}
-                className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
-                style={{ color: "var(--text-primary)" }}
-              >
-                <Eye size={12} style={{ color: "var(--accent)" }} /> View side-by-side
-              </button>
-            </div>
-          </>
+              View side-by-side
+            </MenuItem>
+          </BackdropMenu>
         )
       })()}
 
       {/* Right-click menu on a rail lane line: the branch actions. */}
       {laneMenu && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setLaneMenu(null)} onContextMenu={(e) => { e.preventDefault(); setLaneMenu(null) }} />
-          <div
-            data-testid="git-graph-lane-menu"
-            className="fixed z-50 rounded-md py-1 shadow-lg text-[12px]"
-            style={{ left: laneMenu.x, top: laneMenu.y, background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
+        <BackdropMenu
+          testId="git-graph-lane-menu"
+          x={laneMenu.x}
+          y={laneMenu.y}
+          title={laneMenu.branch}
+          onClose={() => setLaneMenu(null)}
+        >
+          <MenuItem
+            testId="git-graph-lane-menu-switch"
+            icon={ArrowRightLeft}
+            onClick={() => { const b = laneMenu.branch; setLaneMenu(null); navigation.guard(() => { void performSwitch(b) }) }}
+            disabled={switching || laneMenu.branch === workingBranch}
           >
-            <div className="px-3 py-1 font-mono text-[10px] max-w-[220px] truncate" style={{ color: "var(--text-muted)" }}>
-              {laneMenu.branch}
-            </div>
-            <button
-              data-testid="git-graph-lane-menu-switch"
-              onClick={() => { const b = laneMenu.branch; setLaneMenu(null); guardNavigation(() => { void performSwitch(b) }) }}
-              disabled={switching || laneMenu.branch === workingBranch}
-              className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)] disabled:opacity-40"
-              style={{ color: "var(--text-primary)" }}
-            >
-              <ArrowRightLeft size={12} style={{ color: "var(--accent)" }} /> Switch to this branch
-            </button>
-            <button
-              data-testid="git-graph-lane-menu-view"
-              onClick={() => { setViewBranch(laneMenu.branch === workingBranch ? null : laneMenu.branch); setLaneMenu(null) }}
-              disabled={laneMenu.branch === (viewBranch ?? workingBranch)}
-              className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)] disabled:opacity-40"
-              style={{ color: "var(--text-primary)" }}
-            >
-              <Eye size={12} style={{ color: "var(--accent)" }} /> View this branch
-            </button>
-          </div>
-        </>
+            Switch to this branch
+          </MenuItem>
+          <MenuItem
+            testId="git-graph-lane-menu-view"
+            icon={Eye}
+            onClick={() => { setViewBranch(laneMenu.branch === workingBranch ? null : laneMenu.branch); setLaneMenu(null) }}
+            disabled={laneMenu.branch === (viewBranch ?? workingBranch)}
+          >
+            View this branch
+          </MenuItem>
+        </BackdropMenu>
       )}
 
       {/* Naming step for the fork, hidden while the unsaved-edits question is open
           (its overlay would cover the question) and back with the name on Cancel. */}
-      {forkDraft && !dirtyNavigation && (
+      {forkDraft && !navigation.confirm && (
         <>
-          <div
-            className="fixed inset-0 z-40"
-            onClick={() => !forking && setForkDraft(null)}
-            onContextMenu={(e) => { e.preventDefault(); if (!forking) setForkDraft(null) }}
-          />
+          <MenuBackdrop onDismiss={() => { if (!forking) setForkDraft(null) }} />
           <div
             ref={forkDialogRef}
             data-testid="git-panel-fork-dialog"
@@ -1017,7 +949,7 @@ function SaveRow({
           <Tooltip label={HASH_TOOLTIP} side="bottom">
             <span>{save.short_sha}</span>
           </Tooltip>
-          {" · "}{timeAgo(save.timestamp)}
+          {" · "}{relativeTime(new Date(save.timestamp))}
         </span>
       </div>
       {save.files.length > 0 && (
@@ -1216,15 +1148,4 @@ function RestoreVersionButton({
       <Undo2 size={12} />
     </span>
   )
-}
-
-function timeAgo(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime()
-  const mins = Math.floor(diff / 60000)
-  if (mins < 1) return "just now"
-  if (mins < 60) return `${mins}m ago`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.floor(hours / 24)
-  return `${days}d ago`
 }

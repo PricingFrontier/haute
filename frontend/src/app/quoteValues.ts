@@ -1,8 +1,8 @@
 /**
  * What the underwriter app works out of a quote's values (specs/workbench): whether two sets
  * of values are the same quote, the price a saved revision shows on the sheets, the
- * quote_details columns the Quotes page lists and how each value shows in them, how long
- * ago a moment was, and the values kept in the browser until they are saved or discarded.
+ * quote_details columns the Quotes page lists and how each value shows in them, a moment in
+ * full, and the values kept in the browser until they are saved or discarded.
  */
 import type { QuoteSave, QuoteSource } from "../api/app"
 import { apiErrorCode, apiErrorStatus } from "../api/errors"
@@ -132,21 +132,6 @@ export function listValue(column: ListColumn, value: unknown): string {
 export const STAGE_LABEL: Record<WorkbenchAppQuote["stage"], string> = { draft: "Draft", priced: "Priced", final: "Final" }
 
 // ── Time ─────────────────────────────────────────────────────────────────
-
-/** How long ago `iso` was, as a list says it: just now, minutes, hours, yesterday, then the date. */
-export function relativeTime(iso: string, now: Date = new Date()): string {
-  const then = new Date(iso)
-  const seconds = Math.round((now.getTime() - then.getTime()) / 1000)
-  if (seconds < 45) return "just now"
-  const minutes = Math.round(seconds / 60)
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.round(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.round(hours / 24)
-  if (days === 1) return "yesterday"
-  if (days < 7) return `${days}d ago`
-  return then.toLocaleDateString(undefined, { day: "numeric", month: "short", year: then.getFullYear() === now.getFullYear() ? undefined : "numeric" })
-}
 
 /** A moment in full, for a title on hover. */
 export const fullTime = (iso: string): string => new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })

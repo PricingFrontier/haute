@@ -37,7 +37,7 @@
 | `frontend/src/panels/explore/pivotConfig.ts`, `frontend/src/panels/explore/pivotNumberFormat.ts`, `frontend/src/panels/explore/useExplorePivotActions.ts`, `frontend/src/panels/explore/useAutoUpdateExplorePivots.ts`, `frontend/src/panels/explore/ExplorePivotsPane.tsx`, `frontend/src/panels/explore/PivotTableGrid.tsx` | Pivot version-1 parsing, number-format helpers, calculation identity, and the shared result-freshness predicate; shared table/chart run and cancel lifecycle; deduplicated automatic scheduling for mounted consumers; enabled-section lifecycle; virtualised semantic matrix rendering. |
 | `frontend/src/panels/explore/ExploreResultCardChrome.tsx` | Result-card chrome shared by the Pivots and Charts panes: the centered empty state and the Cancel/Starting/Retry run-status action cluster. |
 | `frontend/src/panels/explore/chartConfig.ts`, `frontend/src/panels/explore/chartData.ts`, `frontend/src/panels/explore/chartOptions.ts`, `frontend/src/panels/explore/chartRuntime.ts`, `frontend/src/panels/explore/chartTheme.ts`, `frontend/src/panels/explore/ComboChart.tsx`, `frontend/src/panels/explore/ExploreChartsPane.tsx` | Versioned chart parsing/linkage/presets; pure typed pivot adapter; safe renderer options; narrow ECharts registration (Bar and Line, and Pie for the workbench's Chart)/lifecycle/accessibility, `setOption` passing a new option's merge settings through; `chartThemeTokens`, the chart theme read from the page's tokens; enabled-card state dispatch. |
-| `frontend/src/panels/explore/ExploreSummaryCards.tsx`, `frontend/src/panels/explore/SchemaTableCard.tsx` | Dataset, quality, numeric, categorical and schema report cards, including card-specific export grids. |
+| `frontend/src/panels/explore/ExploreSummaryCards.tsx`, `frontend/src/panels/explore/SchemaTableCard.tsx` | Dataset, quality, numeric, categorical and schema report cards, including card-specific export grids. The Dataset Snapshot card's Cached time reads by the app's one relative-time rule (`relativeTime`), with the full time on hover. |
 | `frontend/src/panels/explore/ExploreRelationshipsPane.tsx`, `frontend/src/api/exploreRelationships.ts` | The Explore preview's Relationships pane and its split endpoint module: target, optional weight, features (after a target) and key columns chosen in pane state; asked through `useWholeDataAnswer`, so it waits for cached data, debounces, and aborts a superseded question; answers render as a strength-ranked table with expandable levels and a key-check sentence. A `cache_required` answer while the local point looks current offers a Cache data action (`cache.run`) instead of waiting. |
 | `frontend/src/panels/explore/DistributionSparkline.tsx`, `frontend/src/panels/explore/distribution.ts` | The Numeric Summary card's per-field distribution: a bar chart of the profile's server-binned histogram, and the text that names it (bin count and span, or why there is none) for its accessible name and export. |
 | `frontend/src/panels/explore/ExploreTableActions.tsx` | Read-only copy-as-TSV and download-as-CSV actions for supported Explore tables, built on the shared table serializers. |
@@ -406,7 +406,9 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
   raises the node-data epoch, since a build can publish before a stop or a
   failure reaches it; only a completed, unstopped import re-previews the node.
   Its title says when the input was last imported (`utils/importedTitle.ts`):
-  the published generation's time, or "Not imported yet". A stop whose
+  the published generation's time, relative by the app's one rule
+  (`utils/relativeTime.ts`: "Imported just now", "Imported 2m ago"), or "Not
+  imported yet". A stop whose
   cancellation fails keeps the import running, and Stop cancels it again. A
   Data Input's Refresh keeps its freshness rules; Import is the one action that
   re-reads a source whose changes cannot be detected.

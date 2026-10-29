@@ -74,13 +74,18 @@ In scope:
   `useStaleConfigEstimate`.
 - Canonical shared types (`types/node.ts`, `types/trace.ts`,
   `types/banding.ts`) and the generic formatting/naming utilities
-  (`utils/formatBytes.ts`, `utils/formatTime.ts`, `utils/formatValue.ts`,
+  (`utils/formatBytes.ts`, `utils/relativeTime.ts`, `utils/formatValue.ts`,
   `utils/color.ts`, `utils/dtypeColors.ts`, `utils/portableKey.ts`,
   `utils/chartHelpers.ts`, `utils/formatTrace.ts`,
   `utils/mlflowOptimiser.ts`). Each repeated concern has one helper: error
   text (`api/errors.ts`), byte counts (`utils/formatBytes.ts`), durations
-  (`utils/formatValue.ts`) and the object guard (`types/guards.ts`); lint
-  rejects a new local copy.
+  (`utils/formatValue.ts`), relative times (`utils/relativeTime.ts`) and the
+  object guard (`types/guards.ts`); lint rejects a new local copy. Every panel
+  says how long ago something was by one rule, so one instant reads the same in
+  the git panel, the assistant's chats, the Files panel, Explore and the
+  underwriter app: "just now" under a minute, then whole minutes, hours and days
+  ago ("5m ago", "3h ago", "2d ago") below a week, then the day and month, with
+  the year when it is not this year.
 - The application bootstrap (`main.tsx`).
 
 Explicitly out of scope (owned elsewhere, even though the files live under
