@@ -19,7 +19,7 @@ import math
 import numbers
 import re
 import types
-from collections.abc import Collection, Iterator, Mapping
+from collections.abc import Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, cast
@@ -1378,14 +1378,14 @@ def _run_nodes(node: ast.AST) -> Iterator[ast.AST]:
         yield from _run_nodes(part)
 
 
-def _uses_reflection(node: ast.AST, bound: Collection[str]) -> bool:
-    """Whether *node* uses a reflective builtin the code did not bind itself."""
+def _uses_reflection(nodes: Iterable[ast.AST], bound: Collection[str]) -> bool:
+    """Whether *nodes* use a reflective builtin the code did not bind itself."""
     return any(
-        isinstance(sub, ast.Name)
-        and isinstance(sub.ctx, ast.Load)
-        and sub.id in _REFLECTIVE_BUILTINS
-        and sub.id not in bound
-        for sub in ast.walk(node)
+        isinstance(node, ast.Name)
+        and isinstance(node.ctx, ast.Load)
+        and node.id in _REFLECTIVE_BUILTINS
+        and node.id not in bound
+        for node in nodes
     )
 
 
@@ -1403,7 +1403,11 @@ def _own_line_changes(value: ast.AST, bound: Collection[str]) -> list[str | None
 
 
 def _changed_bases(
-    node: ast.AST, may_change: Mapping[str, bool], changing: _Changing
+    node: ast.AST,
+    may_change: Mapping[str, bool],
+    changing: _Changing,
+    *,
+    unrecorded_may_change: bool = False,
 ) -> list[str | None]:
     """The names whose value *node* itself may change in place.
 
@@ -1413,7 +1417,9 @@ def _changed_bases(
     a change: a call to it, or handing it on to be called; so is a call of a
     computed callee (``handlers["bump"](d)``, ``make()(d)``), which may be
     one. A container method on a name that may hold a container changes it
-    whether or not its result is used (``ordered = cols.sort()``).
+    whether or not its result is used (``ordered = cols.sort()``); a name
+    *may_change* does not record may hold one when *unrecorded_may_change*
+    (inside a function, a name from around it).
     """
     if isinstance(node, (ast.Subscript, ast.Attribute)) and isinstance(
         node.ctx, (ast.Store, ast.Del)
@@ -1430,7 +1436,11 @@ def _changed_bases(
             receiver = _base_name(node.func.value)
             if node.func.attr in _CHANGING_METHODS_WITH_RESULTS:
                 return [receiver]
-            if node.func.attr in _CHANGING_METHODS and receiver and may_change.get(receiver):
+            if (
+                node.func.attr in _CHANGING_METHODS
+                and receiver is not None
+                and may_change.get(receiver, unrecorded_may_change)
+            ):
                 return [receiver]
         return []
     if changing.used_by(node) is not None:
@@ -1460,7 +1470,7 @@ def _changes_when_run(function: ast.AST, changing: _Changing) -> bool:
         base is None or base not in own or may_change.get(base) is not False
         for stmt in body
         for node in ast.walk(stmt)
-        for base in _changed_bases(node, may_change, changing)
+        for base in _changed_bases(node, may_change, changing, unrecorded_may_change=True)
     )
 
 
@@ -1484,7 +1494,7 @@ def _global_rebinds(function: ast.AST) -> frozenset[str]:
 
     Every name, when it uses a reflective builtin (``exec``, ``globals()``).
     """
-    if _uses_reflection(function, ()):
+    if _uses_reflection(ast.walk(function), ()):
         return frozenset({_EVERY_NAME})
     declared = {
         name for node in ast.walk(function) if isinstance(node, ast.Global) for name in node.names
@@ -1671,7 +1681,7 @@ def _bind_statement(
             used = node.name if node.name in changing.names else used
         if used is not None:
             rebound |= changing.names.get(used, frozenset())
-    if _EVERY_NAME in rebound or _uses_reflection(stmt, may_change.keys()):
+    if _EVERY_NAME in rebound or _uses_reflection(_run_nodes(stmt), may_change.keys()):
         rebound = {*table, *may_change, _EVERY_NAME}
     for name in rebound:
         table.pop(name, None)

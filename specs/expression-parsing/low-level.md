@@ -202,10 +202,11 @@ no alias or migration shim; direct test callers use the same current contract.
   `remove`, `clear`, `sort`, `reverse`, `add`, `discard`, the set updates), on any value, or
   any method called on its own line on a value the code bound, also in a comprehension run for
   its effect; such a container method anywhere on a name that may hold a container, its result
-  used or not (`ordered = cols.sort()`); and any use of a changing function. A hit on a name the code bound only ever to
-  values that cannot change is no change (`factor += 0.1` on a number, `expr.alias("z")` alone
-  on a closed Polars expression). The scan reaches every depth of a statement, a loop body and
-  a class body included.
+  used or not (`ordered = cols.sort()`; inside a function, any name from around it may); and
+  any use of a changing function. A hit on a name the code bound only ever to values that
+  cannot change is no change (`factor += 0.1` on a number, `expr.alias("z")` alone on a closed
+  Polars expression). The scan reaches every depth of a statement, a loop body and a class body
+  included.
 - **A function the code defines changes values when it is used**: a `def` or `lambda` whose body
   changes a value in place, uses another such function or class, binds a name of the code again
   (`global factor`, any binding form), or changes one of its own names that a binding there
@@ -224,10 +225,11 @@ no alias or migration shim; direct test callers use the same current contract.
   made by a function the code does not define (`random.shuffle(cols)`, a preamble helper) is not
   followed: that is the boundary of what reading the code can see.
 - **Reflection is not followed**: a reflective builtin (`exec`, `eval`, `compile`, `setattr`,
-  `delattr`, `globals`, `locals`, `vars`, `__import__`), used directly or by a function the code
-  defines, may bind or change any name, so every name the code bound is unknown from there on,
-  and evaluation treats every preamble value a later formula reads as unknown except a module,
-  a class or a function.
+  `delattr`, `globals`, `locals`, `vars`, `__import__`) used in code that runs, or by a function
+  of the code when it is used, may bind or change any name, so every name the code bound is
+  unknown from there on, and evaluation treats every preamble value a later formula reads as
+  unknown except a module, a class or a function. One inside a function nobody uses changes
+  nothing.
 - **Every way of binding a name counts**: besides assignments, a `match` capture,
   `except ... as e`, a walrus inside a simple assignment's value and a walrus inside a
   comprehension (which binds in the scope around it) bind their names, so a name they bind is

@@ -2040,6 +2040,12 @@ class TestValuesChangedInPlace:
                 'factor = 1.0\nexec("factor = 2.0")\ndf = df.with_columns(y=pl.col("x") * factor)',
                 "factor",
             ),
+            (
+                'factors = {"A": 1.0}\ndef update_factors():\n'
+                '    return factors.update({"A": 2.0})\nupdate_factors()\n'
+                + _TIMES_A.format("factors"),
+                "factors",
+            ),
         ],
         ids=[
             "subscript",
@@ -2095,6 +2101,7 @@ class TestValuesChangedInPlace:
             "a-decorator-running-a-global-rebinding",
             "a-global-bound-again-by-a-match-capture",
             "exec",
+            "a-helper-returning-a-container-method-on-a-name-around-it",
         ],
     )
     def test_the_value_is_reported_not_guessed(self, code: str, unknown: str) -> None:
@@ -2166,6 +2173,11 @@ class TestValuesChangedInPlace:
                 'df = df.with_columns(y=pl.col("x").clip(0, 100) * factors["A"])',
                 20.0,
             ),
+            (
+                "factor = 2.0\ndef debug():\n    return locals()\n"
+                'df = df.with_columns(y=pl.col("x") * factor)',
+                20.0,
+            ),
         ],
         ids=[
             "read-before-the-change",
@@ -2180,6 +2192,7 @@ class TestValuesChangedInPlace:
             "a-helper-summing-numbers",
             "a-global-rebinding-only-an-unused-function-runs",
             "a-helper-named-like-a-polars-method",
+            "reflection-in-an-unused-helper",
         ],
     )
     def test_a_value_the_code_did_not_change_keeps_it(self, code: str, value: float) -> None:
