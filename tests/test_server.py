@@ -4588,7 +4588,11 @@ class TestFileWatcherRecovery:
             with (
                 patch("watchfiles.awatch", _single_module_change),
                 patch("haute.server.is_self_write", return_value=False),
-                patch("haute.server.pipelines_importing_module", return_value=[]),
+                # The module a pipeline imports: the edit is that pipeline's dependency.
+                patch(
+                    "haute.server.pipelines_importing_module",
+                    return_value=[pipeline_dir / "test_pipeline.py"],
+                ),
                 patch("haute.server.invalidate_pipeline_index") as invalidate,
                 patch("haute.server._DEBOUNCE_SECONDS", 0),
             ):
@@ -5749,3 +5753,128 @@ class TestSaveNeverRoundTripsTheWatcher:
         assert response.status_code == 422
         assert "active_source 'test_batch' is not one of the pipeline's sources" in response.text
         assert _project_bytes(pipeline_dir) == before
+
+
+# ---------------------------------------------------------------------------
+# Module watching follows the configured pipeline directory
+# ---------------------------------------------------------------------------
+
+_RATES_MODULE = """\
+import haute
+import polars as pl
+
+submodel = haute.Submodel(
+    "rates",
+    definition_id="rates",
+    input_ports=[],
+    output_ports=[],
+    pipeline_dir="..",
+)
+
+
+@submodel.polars
+def premium() -> pl.LazyFrame:
+    return pl.LazyFrame({{"premium": [{premium}]}})
+"""
+
+_IMPORTING_PIPELINE = (
+    "import haute\n\nfrom modules import rates\n\n"
+    'pipeline = haute.Pipeline("main")\n'
+    'pipeline.submodel(rates.submodel, "rates_1")\n'
+)
+
+
+def _module_project(root: Path, folder: str) -> tuple[Path, Path]:
+    """A project whose configured pipeline sits in *folder* (``""`` for the root) and
+    imports ``modules/rates.py`` beside it; the importer and the module's paths."""
+    base = root / folder if folder else root
+    (base / "modules").mkdir(parents=True)
+    pipeline = base / "main.py"
+    pipeline.write_text(_IMPORTING_PIPELINE, encoding="utf-8")
+    module = base / "modules" / "rates.py"
+    module.write_text(_RATES_MODULE.format(premium=100), encoding="utf-8")
+    configured = f"{folder}/main.py" if folder else "main.py"
+    (root / "haute.toml").write_text(f'[project]\npipeline = "{configured}"\n', encoding="utf-8")
+    return pipeline, module
+
+
+def _watch(changes: set[tuple[Change, str]]) -> list[dict]:
+    """The frames one watcher batch of *changes* broadcasts, discovery and parsing real."""
+    from haute.routes._helpers import invalidate_pipeline_index
+    from haute.server import _last_broadcast_fp
+
+    invalidate_pipeline_index()
+    _last_broadcast_fp.clear()
+
+    async def _fake_awatch(*dirs, **kw):
+        yield changes
+
+    frames: list[dict] = []
+
+    async def _capture_broadcast(data: dict, **_kw: object) -> None:
+        frames.append(data)
+
+    with (
+        patch("watchfiles.awatch", _fake_awatch),
+        patch("haute.server.broadcast", _capture_broadcast),
+        patch("haute.server._DEBOUNCE_SECONDS", 0),
+    ):
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(_run_file_watcher_and_drain())
+        finally:
+            loop.close()
+    return frames
+
+
+class TestModuleWatchingFollowsTheConfiguredPipeline:
+    @pytest.mark.parametrize("folder", ["rating", ""], ids=["nested", "root-level"])
+    def test_an_imported_module_edit_refreshes_its_importer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, folder: str
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        pipeline, module = _module_project(tmp_path, folder)
+        module.write_text(_RATES_MODULE.format(premium=150), encoding="utf-8")
+
+        frames = _watch({(Change.modified, str(module))})
+
+        assert [frame["type"] for frame in frames] == ["pipeline_document_update"]
+        assert frames[0]["source_file"] == pipeline.relative_to(tmp_path).as_posix()
+        document = json.dumps(frames[0]["document"])
+        assert "[150]" in document and "[100]" not in document
+
+    @pytest.mark.parametrize("change", [Change.added, Change.deleted], ids=["added", "deleted"])
+    def test_an_added_or_deleted_imported_module_refreshes_its_importer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: Change
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        pipeline, module = _module_project(tmp_path, "rating")
+        if change == Change.deleted:
+            module.unlink()
+
+        frames = _watch({(change, str(module))})
+
+        assert [frame["source_file"] for frame in frames] == ["rating/main.py"]
+
+    def test_an_unrelated_python_file_beside_the_pipeline_is_not_broadcast(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        _module_project(tmp_path, "rating")
+        scratch = tmp_path / "rating" / "modules" / "scratch.py"
+        scratch.write_text("x = 1\n", encoding="utf-8")
+
+        assert _watch({(Change.modified, str(scratch))}) == []
+
+    def test_the_server_s_own_write_of_an_imported_module_is_not_broadcast(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute.routes._helpers import mark_self_write
+
+        monkeypatch.chdir(tmp_path)
+        _pipeline, module = _module_project(tmp_path, "rating")
+        content = _RATES_MODULE.format(premium=175).encode("utf-8")
+        mark_self_write(module, content=content)
+        module.write_bytes(content)
+
+        assert _watch({(Change.modified, str(module))}) == []

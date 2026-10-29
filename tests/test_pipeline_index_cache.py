@@ -582,8 +582,9 @@ class TestConcurrentReadsDoNotRace:
         assert invalidation_finished.is_set()
         assert invalidation_did_not_wait
         assert read_count == 2
-        assert results == [{"fresh": {pipeline_file}}]
-        assert helpers._module_deps == {"fresh": {pipeline_file}}
+        fresh = helpers._module_dep_key(pipeline_file.parent / "modules" / "fresh.py")
+        assert results == [{fresh: {pipeline_file}}]
+        assert helpers._module_deps == {fresh: {pipeline_file}}
 
     def test_reader_during_rebuild_never_sees_none(
         self,

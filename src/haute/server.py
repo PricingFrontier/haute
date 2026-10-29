@@ -927,9 +927,6 @@ async def _file_watcher() -> None:
     watch_dirs = [cwd]
     if pipe_dir != cwd:
         watch_dirs.append(pipe_dir)
-    modules_dir = cwd / "modules"
-    if modules_dir.is_dir():
-        watch_dirs.append(modules_dir)
     config_dir = pipe_dir / "config"
     if config_dir.is_dir():
         watch_dirs.append(config_dir)
@@ -975,7 +972,7 @@ async def _file_watcher() -> None:
             changed_files: dict[str, tuple[Path, bool]] = {}
             direct_py_changes: list[Path] = []
             direct_index_changed = False
-            module_stems: list[str] = []
+            module_importers: list[Path] = []
             config_changed = False
             recovery_artifact_changes: list[Path] = []
             self_write_keys: set[str] = set()
@@ -1020,8 +1017,11 @@ async def _file_watcher() -> None:
                 utility_dir = pipe_dir / "utility"
                 if utility_dir.is_dir() and p.is_relative_to(utility_dir):
                     continue
-                if modules_dir.is_dir() and p.is_relative_to(modules_dir):
-                    module_stems.append(p.stem)
+                # A submodel module a pipeline imports, found where that pipeline's own
+                # ``modules/`` folder is, however deep the configured pipeline sits.
+                importers = pipelines_importing_module(p)
+                if importers:
+                    module_importers.extend(importers)
                 else:
                     # Deletions must invalidate the name→path index but must not
                     # be reparsed. A rename is normally a deleted+added pair:
@@ -1058,10 +1058,9 @@ async def _file_watcher() -> None:
                 changed_files[str(pipeline_path.resolve())] = (pipeline_path, False)
 
             # For changed modules, only re-parse pipelines that import them
-            for stem in module_stems:
-                for pipeline_path in pipelines_importing_module(stem):
-                    key = str(pipeline_path.resolve())
-                    changed_files[key] = (pipeline_path, True)
+            for pipeline_path in module_importers:
+                key = str(pipeline_path.resolve())
+                changed_files[key] = (pipeline_path, True)
 
             # If config JSON changed, re-parse all discovered pipelines
             if config_changed:

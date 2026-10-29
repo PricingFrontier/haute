@@ -160,8 +160,11 @@ fingerprint to the saver. Each socket is told its own connection id when it open
 that names its tab's connection id leaves that one socket out of the broadcast, provided the
 socket belongs to the same authorised session as the save (the same platform user when
 hosted), so a canvas never receives an echo of its own save while every other tab of the
-pipeline learns of it. A change to a `modules/*.py` file re-parses only the pipelines
-that import it, `from modules import <name>`, for a registration; a pipeline whose imports or
+pipeline learns of it. A change to a submodel module a pipeline imports for a registration,
+`from modules import <name>` (the `modules/<name>.py` beside that pipeline, wherever the
+configured pipeline sits: at the project root or in `rating/`), re-parses only the
+pipelines importing that file, whether it was added, edited or deleted; any other `.py`
+file that is not a pipeline publishes nothing. A pipeline whose imports or
 registrations the parser refuses is left out of that module-dependency index with a warning,
 rather than breaking it for every pipeline. A change to a `config/*.json` file re-parses every discovered pipeline (a
 config change can affect any pipeline that reads it). Direct pipeline `.py` additions,
@@ -598,10 +601,6 @@ describes. Stale, changed or already-applied plans fail before
   here. `_serve_index_html` serves the static shell verbatim and never injects a credential.
 
 ## Failure model
-
-> NOTE: The watcher currently misses imported modules below a nested configured
-> pipeline directory when launched from the project root.
-> [API-R11](../roadmap/server-api.md#api-r11--module-watching-follows-the-configured-pipeline-directory) owns correct module/dependency routing.
 
 This codebase prefers loud failure over silent fallbacks, and the server layer's job is to
 turn that loudness into a well-typed HTTP response rather than a raw traceback.

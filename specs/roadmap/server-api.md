@@ -16,7 +16,6 @@ come from the [23 September 2026 codebase review](codebase-review-2026-09-23.md)
 | API-R03 | Planned | P2 | Every browser type and response parser is generated from the Pydantic models. |
 | API-R09 | Planned | P3 | The repair routes, the admit-run-translate pattern, the path-resolution preludes and the two point-analysis services exist once each, and a save loads the pipeline once. |
 | API-R10 | Planned | P3 | Every free string and list in a request is bounded; the dead response fields and helpers are gone; the repair message and the `file` field say what is true. |
-| API-R11 | Planned | P2 | Editing an imported submodel under a nested configured pipeline reloads its importing documents. |
 
 ## Planned improvements
 
@@ -176,26 +175,3 @@ response; `file` is POSIX on Windows.
 `src/haute/routes/_helpers.py::raise_validation_error`;
 `src/haute/routes/_save_pipeline.py::_rollback_artifacts`;
 `src/haute/routes/pipeline.py`; `src/haute/routes/utility.py`.
-
-### API-R11 — Module watching follows the configured pipeline directory
-
-**Why:** The watcher anchors modules at cwd/modules, while the configured pipeline and its
-modules can be under rating/. With haute.toml naming rating/main.py, real discovery finds the
-importer, but a modified rating/modules/factors.py event is classified as non-pipeline Python
-and skipped. The measured module edit publishes zero documents; a parent-file event publishes
-one. Existing tests chdir into the pipeline directory and miss this layout.
-
-**Plan:** Resolve watched module locations through the same configured pipeline/module context
-used by parsing and dependency discovery. Route added, modified and deleted imported modules
-through dependency invalidation and publish only their importing documents, including nested
-pipeline layouts.
-
-**Acceptance:** From the project root, load a ready rating/main.py importing
-rating/modules/factors.py, change its premium, deliver a watcher event and assert the refreshed
-importer contains the change. Cover added/deleted modules and a root-level pipeline; unrelated
-Python files still do not broadcast. Preserve self-write suppression and the save-echo
-contract.
-
-**Dependencies:** None. A save's own writes are self-writes the watcher skips; share event classification without bringing their echoes back.
-
-**Evidence:** `src/haute/server.py::_file_watcher`; `src/haute/server.py::_file_watcher._flush_once`; `src/haute/server.py::_file_watcher._flush_once`; watcher tests in `tests/test_server.py`.

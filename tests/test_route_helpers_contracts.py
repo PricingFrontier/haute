@@ -30,6 +30,11 @@ def _write_pipeline(py_path: Path, *modules: str) -> None:
     py_path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _module(root: Path, name: str) -> Path:
+    """The submodel module ``from modules import <name>`` imports beside *root*'s pipelines."""
+    return root / "modules" / f"{name}.py"
+
+
 def test_pipelines_importing_module_rebuilds_after_invalidate(tmp_path: Path) -> None:
     pricing = tmp_path / "pricing.py"
     shared = tmp_path / "shared.py"
@@ -38,14 +43,34 @@ def test_pipelines_importing_module_rebuilds_after_invalidate(tmp_path: Path) ->
 
     helpers.invalidate_pipeline_index()
     with patch("haute.routes._helpers.discover_pipelines", return_value=[pricing, shared]):
-        assert helpers.pipelines_importing_module("pricing") == [pricing]
-        assert helpers.pipelines_importing_module("shared") == [shared]
+        assert helpers.pipelines_importing_module(_module(tmp_path, "pricing")) == [pricing]
+        assert helpers.pipelines_importing_module(_module(tmp_path, "shared")) == [shared]
 
         _write_pipeline(pricing, "shared")
         helpers.invalidate_pipeline_index()
 
-        assert helpers.pipelines_importing_module("pricing") == []
-        assert set(helpers.pipelines_importing_module("shared")) == {pricing, shared}
+        assert helpers.pipelines_importing_module(_module(tmp_path, "pricing")) == []
+        assert set(helpers.pipelines_importing_module(_module(tmp_path, "shared"))) == {
+            pricing,
+            shared,
+        }
+
+
+def test_a_module_is_the_file_beside_the_pipeline_importing_it(tmp_path: Path) -> None:
+    """Two pipelines in different folders import their own ``modules/rates.py``: a
+    change to one file is the importer's beside it, never the other's."""
+    rating = tmp_path / "rating" / "main.py"
+    other = tmp_path / "other" / "main.py"
+    rating.parent.mkdir()
+    other.parent.mkdir()
+    _write_pipeline(rating, "rates")
+    _write_pipeline(other, "rates")
+
+    helpers.invalidate_pipeline_index()
+    with patch("haute.routes._helpers.discover_pipelines", return_value=[rating, other]):
+        assert helpers.pipelines_importing_module(_module(rating.parent, "rates")) == [rating]
+        assert helpers.pipelines_importing_module(_module(other.parent, "rates")) == [other]
+        assert helpers.pipelines_importing_module(_module(tmp_path, "rates")) == []
 
 
 def test_pipelines_importing_module_skips_broken_pipeline_source(tmp_path: Path) -> None:
@@ -56,8 +81,8 @@ def test_pipelines_importing_module_skips_broken_pipeline_source(tmp_path: Path)
 
     helpers.invalidate_pipeline_index()
     with patch("haute.routes._helpers.discover_pipelines", return_value=[valid, broken]):
-        assert helpers.pipelines_importing_module("pricing") == [valid]
-        assert helpers.pipelines_importing_module("shared") == []
+        assert helpers.pipelines_importing_module(_module(tmp_path, "pricing")) == [valid]
+        assert helpers.pipelines_importing_module(_module(tmp_path, "shared")) == []
 
 
 @pytest.mark.parametrize(
@@ -81,16 +106,18 @@ def test_pipelines_importing_module_skips_a_pipeline_whose_registrations_are_ref
 
     helpers.invalidate_pipeline_index()
     with patch("haute.routes._helpers.discover_pipelines", return_value=[refusing, valid]):
-        assert helpers.pipelines_importing_module("pricing") == [valid]
-        assert helpers.pipelines_importing_module("shared") == []
+        assert helpers.pipelines_importing_module(_module(tmp_path, "pricing")) == [valid]
+        assert helpers.pipelines_importing_module(_module(tmp_path, "shared")) == []
 
 
-def test_pipelines_importing_module_matches_stem_case_insensitively(tmp_path: Path) -> None:
-    """Build-side stems come from the ``from modules import <name>`` a registration
-    names its definition by; the watcher passes the ON-DISK filename's stem.  On a
+def test_pipelines_importing_module_matches_the_file_case_insensitively(
+    tmp_path: Path,
+) -> None:
+    """Build-side paths come from the ``from modules import <name>`` a registration
+    names its definition by; the watcher passes the ON-DISK path.  On a
     case-insensitive filesystem (macOS/Windows) an imported ``rates`` resolves
     against an on-disk ``modules/Rates.py`` — one module, two spellings — so the map
-    must be hit regardless of stem case or live-sync silently goes stale."""
+    must be hit regardless of case or live-sync silently goes stale."""
     pricing = tmp_path / "pricing.py"
     shared = tmp_path / "shared.py"
     _write_pipeline(pricing, "rates")  # lowercase import
@@ -98,13 +125,13 @@ def test_pipelines_importing_module_matches_stem_case_insensitively(tmp_path: Pa
 
     helpers.invalidate_pipeline_index()
     with patch("haute.routes._helpers.discover_pipelines", return_value=[pricing, shared]):
-        # Watcher queries with a differently-cased on-disk stem.
-        assert helpers.pipelines_importing_module("Rates") == [pricing]
-        assert helpers.pipelines_importing_module("RATES") == [pricing]
-        assert helpers.pipelines_importing_module("baserates") == [shared]
-        # Same-case queries still hit, and distinct stems stay distinct.
-        assert helpers.pipelines_importing_module("rates") == [pricing]
-        assert helpers.pipelines_importing_module("other") == []
+        # Watcher queries with a differently-cased on-disk name.
+        assert helpers.pipelines_importing_module(_module(tmp_path, "Rates")) == [pricing]
+        assert helpers.pipelines_importing_module(_module(tmp_path, "RATES")) == [pricing]
+        assert helpers.pipelines_importing_module(_module(tmp_path, "baserates")) == [shared]
+        # Same-case queries still hit, and distinct modules stay distinct.
+        assert helpers.pipelines_importing_module(_module(tmp_path, "rates")) == [pricing]
+        assert helpers.pipelines_importing_module(_module(tmp_path, "other")) == []
 
 
 def test_parse_pipeline_to_graph_normalizes_sidecar_sources(tmp_path: Path) -> None:

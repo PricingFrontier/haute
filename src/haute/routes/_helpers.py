@@ -671,31 +671,33 @@ def discover_pipelines() -> list[Path]:
 
 
 # ---------------------------------------------------------------------------
-# Module dependency map: module_stem → set of pipeline Paths that import it
+# Module dependency map: imported module file → set of pipeline Paths that import it
 # ---------------------------------------------------------------------------
 _module_deps: dict[str, set[Path]] | None = None
 _module_deps_lock = threading.Lock()
 
 
-def _module_dep_key(module_stem: str) -> str:
-    """Canonical module-dep map key for a module file stem.
+def _module_dep_key(module_file: Path) -> str:
+    """Canonical module-dep map key for a submodel module file.
 
-    The build side derives stems from the ``from modules import <name>`` a
-    registration names its definition by; the file-watcher derives them from
-    on-disk filenames.  On a case-insensitive filesystem (macOS/Windows) an
-    imported ``foo`` resolves against an on-disk ``modules/Foo.py`` — the two spellings name
-    ONE module, so both sides must casefold through this single helper or the
-    map key and the watcher's query silently drift and live-sync goes stale.
+    The build side resolves the ``modules/<name>.py`` each registration names
+    against its own pipeline's folder, wherever the configured pipeline sits; the
+    file-watcher passes the on-disk path.  On a case-insensitive filesystem
+    (macOS/Windows) an imported ``foo`` resolves against an on-disk
+    ``modules/Foo.py`` — the two spellings name ONE module, so both sides must
+    casefold through this single helper or the map key and the watcher's query
+    silently drift and live-sync goes stale.
     """
-    return module_stem.casefold()
+    return str(module_file.resolve()).casefold()
 
 
 def _ensure_module_deps() -> dict[str, set[Path]]:
     """Build or return the cached module → pipeline dependency map.
 
     Scans each pipeline source for its ``pipeline.submodel(<module>.submodel, ...)``
-    registrations and maps each module's file stem to the set of pipeline files
-    that register it; a pipeline whose registrations are refused is skipped.
+    registrations and maps each module file, resolved beside that pipeline, to the
+    set of pipeline files that register it; a pipeline whose registrations are
+    refused is skipped.
     A dedicated build lock coalesces concurrent scans without blocking pipeline
     index invalidation. The builder snapshots the index generation and publishes
     only if it is unchanged; otherwise it rescans before returning.
@@ -733,8 +735,8 @@ def _ensure_module_deps() -> dict[str, set[Path]]:
                     logger.warning("module_deps_parse_failed", file=f.name, error=str(exc))
                     continue
                 for registration in registrations:
-                    module_stem = Path(registration.path).stem
-                    deps.setdefault(_module_dep_key(module_stem), set()).add(f)
+                    module_file = f.parent / registration.path
+                    deps.setdefault(_module_dep_key(module_file), set()).add(f)
 
             with _pipeline_index_lock:
                 if build_generation != _pipeline_index_generation:
@@ -748,15 +750,16 @@ def _ensure_module_deps() -> dict[str, set[Path]]:
                 return deps
 
 
-def pipelines_importing_module(module_stem: str) -> list[Path]:
-    """Return the pipeline files that import a given module (by stem name).
+def pipelines_importing_module(module_file: Path) -> list[Path]:
+    """Return the pipeline files that import the submodel module *module_file*.
 
-    The stem is matched case-insensitively (see :func:`_module_dep_key`): the
-    watcher passes the on-disk filename's stem, which may differ in case from
-    the ``from modules import <name>`` the map was built from.
+    The path is matched case-insensitively (see :func:`_module_dep_key`): the
+    watcher passes the on-disk path, whose case may differ from the
+    ``from modules import <name>`` the map was built from. Empty for a file no
+    pipeline imports, a nested helper or an unrelated script among them.
     """
     deps = _ensure_module_deps()
-    return list(deps.get(_module_dep_key(module_stem), []))
+    return list(deps.get(_module_dep_key(module_file), []))
 
 
 def lookup_pipeline_by_name(name: str) -> Path | None:

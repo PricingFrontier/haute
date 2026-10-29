@@ -401,7 +401,7 @@ its send-state.
 
 **File watcher loop.** `_watcher_forever()` wraps `_file_watcher()` in a crash-restart loop
 (`_WATCHER_RESTART_DELAY_SECONDS = 0.1`; `CancelledError` propagates, everything else logs
-and restarts). `_file_watcher()` watches `cwd`, the pipeline directory, `modules/`, and
+and restarts). `_file_watcher()` watches `cwd`, the pipeline directory and its
 `config/` (each only if it exists and differs from `cwd`) via `watchfiles.awatch`
 (recursive); if `watchfiles` isn't installed, live sync is disabled with a warning, not a
 crash. Every filesystem event batches into `pending_changes`; a 300ms debounce timer
@@ -423,9 +423,12 @@ crash. Every filesystem event batches into `pending_changes`; a 300ms debounce t
    last-broadcast fingerprint, so an external restore of previously broadcast content is
    broadcast rather than deduplicated.
 4. Classifies each remaining `.py`/`.json` change: `config/*.json` → re-parse every
-   discovered pipeline; `modules/*.py` → re-parse only pipelines importing that module stem
-   (case-insensitively, via `_module_dep_key`); any other `.py` (excluding `utility/` and
-   dunder-prefixed files) → re-parse that pipeline directly when added/modified. Any direct
+   discovered pipeline; a `.py` file some pipeline imports (`pipelines_importing_module`,
+   the module-dependency map keyed by each registration's `modules/<name>.py` resolved
+   beside its own pipeline, case-insensitively via `_module_dep_key`) → re-parse only
+   those importers, whether it was added, modified or deleted; any other `.py`
+   (excluding `utility/` and dunder-prefixed files) → re-parse that pipeline directly when
+   added/modified, and nothing when it is not a discovered pipeline. Any direct
    pipeline `.py` addition, modification, or deletion invalidates the pipeline name→path
    index before discovery; a deletion is not reparsed. Module and config changes (including
    deletion) do not discard an otherwise valid pipeline index.
@@ -1019,12 +1022,14 @@ later write and cleanup checks still compare against the captured identities.
   snapshots the pipeline-index generation; it publishes only if that generation is still
   current, otherwise it rescans. Invalidators therefore remain short and a stale in-flight
   dependency scan cannot overwrite them.
-- **Module-dependency keys are casefolded** (`_module_dep_key`) because the build side
-  derives a module stem from the `from modules import <name>` a registration names its
-  definition by (`extract_submodel_registrations`, each registration's derived
-  `modules/<name>.py`) while the watcher derives it from an *on-disk filename* — on
-  case-insensitive filesystems (macOS, Windows) those can differ in case and must still
-  match, or live-sync silently goes stale for that module.
+- **Module-dependency keys are resolved, casefolded paths** (`_module_dep_key`) because
+  the build side derives a module file from the `from modules import <name>` a
+  registration names its definition by (`extract_submodel_registrations`, each
+  registration's derived `modules/<name>.py` beside its own pipeline) while the watcher
+  passes an *on-disk path* — on case-insensitive filesystems (macOS, Windows) those can
+  differ in case and must still match, or live-sync silently goes stale for that
+  module. Two pipelines in different folders importing their own `modules/rates.py`
+  have two keys, so an edit refreshes only the importer beside the file.
 - **One refused pipeline leaves the module-dependency map whole.** `_ensure_module_deps`
   skips, with a `module_deps_parse_failed` warning, a pipeline that does not parse or whose
   submodel imports or registrations the parser refuses (the removed path form, an unused or
