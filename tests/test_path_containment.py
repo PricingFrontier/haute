@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 from haute._sandbox import contained_path, is_contained, validate_project_path
 from haute.errors import InvalidPathError, PathOutsideProjectError
 from haute.routes._helpers import pipeline_dir as _real_pipeline_dir
+from tests._source_files import REPO_ROOT, source_files
 from tests.job_store_support import seed_job
 from tests.optimiser_fixtures import make_solved_result
 
@@ -1131,7 +1132,6 @@ class TestConfiguredPipelines:
 # Every other path comparison says why it is not the check
 # ---------------------------------------------------------------------------
 
-_REPO = Path(__file__).resolve().parents[1]
 _MARKER = "# not contained_path:"
 _COMPARISONS = frozenset({"is_relative_to", "commonpath"})
 
@@ -1198,10 +1198,10 @@ def other(root, path):
 
 
 def test_every_other_path_comparison_is_marked() -> None:
-    sandbox = _REPO / "src" / "haute" / "_sandbox.py"
+    sandbox = REPO_ROOT / "src" / "haute" / "_sandbox.py"
     unmarked = [
-        f"{path.relative_to(_REPO).as_posix()}:{lineno}"
-        for path in [*sorted((_REPO / "src" / "haute").rglob("*.py")), _REPO / "hatch_build.py"]
+        f"{path.relative_to(REPO_ROOT).as_posix()}:{lineno}"
+        for path in [*source_files(REPO_ROOT / "src" / "haute"), REPO_ROOT / "hatch_build.py"]
         for lineno in _unmarked_comparisons(
             path.read_text(encoding="utf-8"), sandbox=path == sandbox
         )
