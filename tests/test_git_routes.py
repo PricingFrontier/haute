@@ -1020,6 +1020,29 @@ class TestWorkingBranchRoutes:
         res = client.post("/api/git/working-branch", json={"branch": "main"})
         assert res.status_code == 403
 
+    def test_a_broken_pair_is_reported_and_repaired(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        _git(tmp_path, "branch", "pricing-dev")
+        assert client.post("/api/git/working-branch", json={"branch": "pricing-dev"}).is_success
+        _git(tmp_path, "update-ref", "-d", "refs/heads/pricing-dev")
+
+        broken = client.get("/api/git/working-branch").json()["broken_pairs"]
+        assert broken == [
+            {"kind": "orphan-ledger", "ledger": "pricing-dev-save", "working": "pricing-dev"}
+        ]
+
+        res = client.post("/api/git/repair-pair", json={"ledger": "pricing-dev-save"})
+        assert res.status_code == 200
+        assert res.json() == {"working": "pricing-dev", "ledger": "pricing-dev-save"}
+        status = client.get("/api/git/working-branch").json()
+        assert status["broken_pairs"] == []
+        assert status["state"] == "ready"
+
+        again = client.post("/api/git/repair-pair", json={"ledger": "pricing-dev-save"})
+        assert again.status_code == 400
+        assert again.json()["detail"] == "'pricing-dev-save' is not part of a broken branch."
+
     def test_set_missing_branch_400(self, client: TestClient) -> None:
         res = client.post("/api/git/working-branch", json={"branch": "ghost"})
         assert res.status_code == 400

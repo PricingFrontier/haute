@@ -5,6 +5,7 @@ import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 import { apiErrorMessage } from "../api/errors"
 import { GitIdentityFields, ModalFormActions, ModalFormHeader, ModalTextInput } from "./ModalForm"
+import BrokenPairs from "./BrokenPairs"
 import ModalShell from "./ModalShell"
 
 interface WorkingBranchModalProps {
@@ -105,6 +106,9 @@ export default function WorkingBranchModal({ onConfirmed, onClose }: WorkingBran
             ))}
           </ul>
         )}
+
+        {/* A repair that leaves the project ready answers the chooser, as a choice does. */}
+        <BrokenPairs onRepaired={(next) => { if (next?.state === "ready") onConfirmed() }} />
 
         <div>
           <label

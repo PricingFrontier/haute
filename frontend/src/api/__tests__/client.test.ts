@@ -366,6 +366,7 @@ function makeWorkingBranchResponse(overrides: Record<string, unknown> = {}) {
     storage_forked_from: null,
     sync: null,
     storage_bind: null,
+    broken_pairs: [],
     ...overrides,
   }
 }

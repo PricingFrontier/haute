@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../../api/client", () => ({
+  repairBranchPair: vi.fn(() => Promise.resolve({ working: "pricing", ledger: "pricing-save" })),
   setWorkingBranch: vi.fn(() =>
     Promise.resolve({ working_branch: "dev", state: "ready", last_save_sha: "sha" }),
   ),
@@ -25,7 +26,7 @@ vi.mock("../../api/client", () => ({
 
 import WorkingBranchModal from "../WorkingBranchModal"
 import useGitStore, { resetGitStatusRequestForTests } from "../../stores/useGitStore"
-import { getWorkingBranch, setGitIdentity, setWorkingBranch } from "../../api/client"
+import { getWorkingBranch, repairBranchPair, setGitIdentity, setWorkingBranch } from "../../api/client"
 import type { GitWorkingBranchResponse } from "../../api/types"
 import { makeGitWorkingBranch } from "../../test-utils/factories"
 
@@ -65,6 +66,41 @@ describe("WorkingBranchModal", () => {
       "The working branch 'dev' no longer exists.",
       "Its save history 'dev-save' is missing.",
     ])
+  })
+
+  it("names a pair a crash split, with its Repair, when its branch is the one gone", () => {
+    useGitStore.setState({
+      status: status({
+        state: "invalid",
+        working_branch: "pricing",
+        errors: ["Working branch 'pricing' no longer exists."],
+        broken_pairs: [{ kind: "orphan-ledger", ledger: "pricing-save", working: "pricing" }],
+      }),
+    })
+    render(<WorkingBranchModal onConfirmed={vi.fn()} onClose={vi.fn()} />)
+
+    expect(screen.getByTestId("git-broken-pair")).toHaveTextContent(
+      "Branch 'pricing' is missing, though its saves are kept.",
+    )
+    expect(screen.getByTestId("git-broken-pair-repair")).toHaveAttribute("type", "button")
+  })
+
+  it("is answered by a Repair that leaves the project ready, as a choice answers it", async () => {
+    useGitStore.setState({
+      status: status({
+        state: "invalid",
+        working_branch: "pricing",
+        broken_pairs: [{ kind: "orphan-ledger", ledger: "pricing-save", working: "pricing" }],
+      }),
+    })
+    const onConfirmed = vi.fn()
+    render(<WorkingBranchModal onConfirmed={onConfirmed} onClose={vi.fn()} />)
+
+    fireEvent.click(screen.getByTestId("git-broken-pair-repair"))
+
+    await waitFor(() => expect(onConfirmed).toHaveBeenCalledTimes(1))
+    expect(repairBranchPair).toHaveBeenCalledWith("pricing-save")
+    expect(setWorkingBranch).not.toHaveBeenCalled()
   })
 
   it("on a project left on an earlier version, starts on a new branch and says why", () => {

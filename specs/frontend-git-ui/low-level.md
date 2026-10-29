@@ -22,6 +22,8 @@
 | `frontend/src/components/CommitBreadcrumb.tsx` | `CommitBreadcrumb` (version-relative label for a comparison canvas, its time by `relativeTime`) and `ComparisonDelta` (historic↔current commit-count chip). |
 | `frontend/src/components/MilestoneCommitModal.tsx` | Commit modal: required message (500-character maximum with visible validation) + version label form, and the 409 fork-warning override flow. |
 | `frontend/src/components/RestoreConfirmModal.tsx` | The save/discard/confirm prompt before a restore: reads `useGitStore.restoreTarget` for the target label and `useProjectDirty` (the canvas's or the workbench's form's unsaved edits) to decide single-confirm vs. save-or-discard, and locks buttons plus Escape/backdrop close (`busy`) once clicked while the caller performs the actual restore. |
+| `frontend/src/components/BrokenPairs.tsx` | The readiness's `broken_pairs`, one row each (`git-broken-pair`) in `brokenPairText`'s words, with a `type="button"` Repair (`git-broken-pair-repair`) that runs `repairBrokenPair` and hands `onRepaired` the readiness read after it; nothing while every pair is whole. The branch manager renders it above the current branch; the branch chooser renders it below its invalid reasons and confirms itself (`onConfirmed`) on a ready readiness. |
+| `frontend/src/utils/brokenPairs.ts` | `brokenPairText(pair)`, a broken pair in the analyst's words; `repairBrokenPair(pair)`, which calls `repairBranchPair(ledger)` (`POST /api/git/repair-pair`), toasts "Repaired <working>" or the refusal, then reads the readiness with a fresh request and bumps the history nonce; `reportBrokenPairs(pairs)`, startup's error toast for each, whose action is its Repair. The startup readiness effect in `frontend/src/App.tsx` reports them when no chooser opens (ready, interrupted, divergent, and the states without a repository). |
 | `frontend/src/components/WorkingBranchModal.tsx` | Startup / save-gate branch-selection modal, with an inline git-identity sub-form. Its default choice is the checked-out branch when eligible, else the first eligible branch, else "Create new branch…"; on a `detached` status it is always "Create new branch…", with a line saying that an existing branch opens its latest save. On an `invalid` status it lists every one of the status's `errors` (`working-branch-invalid`). |
 | `frontend/src/components/RemotePushControl.tsx` | Remote dropdown, ahead/behind + ledger-divergence display, explicit push (including empty-remote default-bootstrap tooltip/toast and the pending-save integrity confirm), the deploy's-secrets toasts and `CiSecretsMissing` line with its Set from .env button, catch-up, the non-fast-forward `PushRejectedModal`, `AheadBehind`/`LedgerStatus`/`RejectedLeg` sub-components. Catch up (`doCatchUp`) and Spin off a copy (`doBranchAway`), from the standalone button or the rejection dialog, pass its `useDirtyNavigation` guard (the panel's `onSave` for Save first) with a question naming the remote whose files replace the project's; on success they drop the edits chosen over (`discardCanvasEdits`, `discardFormEdits`) and read the readiness, branch list and history again. |
 | `frontend/src/components/DivergenceModal.tsx` | Recorded-branch-vs-HEAD divergence recovery modal (go home / stay here / open branch manager). |
@@ -585,8 +587,15 @@ Library component/unit tests (no e2e for this surface).
 - **`frontend/src/components/__tests__/WorkingBranchModal.test.tsx`** — eligible-branch listing plus
   create option, adopting an existing branch, creating a new one, submit gating, the
   inline identity sub-form, a detached project starting on "Create new branch…" with
-  its explanation (and no explanation otherwise), and an invalid project listing every
-  one of its errors.
+  its explanation (and no explanation otherwise), an invalid project listing every
+  one of its errors, a broken pair named with its Repair, and a Repair leaving the project
+  ready confirming the chooser.
+- **`frontend/src/components/__tests__/BrokenPairs.test.tsx`** — each kind of broken pair
+  in words, nothing when every pair is whole, a Repair that calls the route, toasts its
+  outcome and reads the readiness and history again, and a refused Repair toasting the
+  server's reason. `frontend/src/components/__tests__/BranchManager.test.tsx` lists a broken
+  pair above the branches, and `frontend/src/__tests__/App.integration.test.tsx` reports one at
+  startup in a toast whose Repair repairs it.
 - **`frontend/src/components/__tests__/RemotePushControl.test.tsx`** — no-remotes messaging, sole-
   remote auto-selection, multi-remote deliberate-selection requirement, the pending-save
   push confirm (both proceeding and cancelling), ahead/behind display in all states

@@ -150,6 +150,17 @@ the save fails; Discard drops them once the switch has succeeded, as an in-panel
 Known gap: the startup chooser adopting an existing branch from an unset project also
 checks out that branch's files, and a Save queued behind it meets them.
 
+**Broken branches.** A branch a crash left in two parts (the readiness's `broken_pairs`,
+[git-integration](../git-integration/high-level.md)) reads as "Branch '<name>' is missing,
+though its saves are kept." or "Archiving '<name>' stopped part way: its saves were not
+archived with it.", each with a Repair. The branch manager lists them above the branches,
+and so does the branch chooser when it opens at startup. When startup opens no chooser
+(the project is ready, interrupted or divergent), each is reported in an error toast,
+which stays until dismissed, with its Repair. Repair toasts its outcome and reads the
+readiness, the branch list and the history again. A Repair in the chooser that leaves the
+project ready answers the chooser as choosing a branch does, running the save or commit it
+was opened for.
+
 **Modals.** `WorkingBranchModal` gates first use (and any save attempted with no working
 branch set): choose among eligible branches or create one, optionally set git identity
 inline. Startup opens it when the project is unset, invalid or detached. On an invalid

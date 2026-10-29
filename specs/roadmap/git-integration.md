@@ -8,10 +8,6 @@ the remote handling, and the git panel that drives them. Current behaviour is
 specified in [the git-integration specification](../git-integration/high-level.md)
 and [the git UI](../frontend-git-ui/high-level.md). These
 packages come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md).
-`GIT-R16` comes from a review on 27 October 2026 of going
-back to an earlier version (one Codex and two Fable reviews, every finding checked at
-its source), after an analyst restoring a version on the test project took six Move
-and return cycles and made and deleted two branches between 13:14 and 13:36.
 `GIT-R18` comes from the [28 October functional review](codebase-review-2026-10-28.md).
 
 ## Priorities
@@ -20,7 +16,6 @@ and return cycles and made and deleted two branches between 13:14 and 13:36.
 |---|---|---:|---|
 | GIT-R05 | Planned | P3 | The git modules carry no dead symbols, one free-name finder and one compensation helper. |
 | GIT-R06 | Decision | P3 | Automatic ledger saves either skip the project's git hooks or the specification says they run them. |
-| GIT-R16 | Planned | P3 | A working branch left without its ledger, or half archived, is reported at startup with a Repair that leaves a whole pair. |
 | GIT-R18 | Planned | P2 | A rejected push's Catch up and Spin off actions stay bound to that rejection's remote. |
 
 ## Planned improvements
@@ -69,28 +64,6 @@ save.
 **Evidence:** `src/haute/_git_transactions.py::commit_save`;
 `src/haute/_git_transactions.py::commit_milestone`;
 `src/haute/_scaffold.py::pre_commit_hook`.
-
-### GIT-R16 — Broken pairs reported with Repair
-**Why:** Delete and archive used to move a pair's two refs one step at a time, so a
-crash between the steps could leave an orphan ledger (`x-save` with no `x`) or a
-half-archived pair (`archive/x` beside `x-save`). Both now move in one ref
-transaction, but a pair broken before that stays broken. Create, undelete and
-restore refuse such a name, and nothing checks pair health at startup. This is
-inferred: no broken pair has been seen.
-
-**Plan:**
-- A startup check lists orphan ledgers and half-archived pairs.
-- Repair finishes a half-done archive, and makes the missing working branch of an
-  orphan ledger at the ledger's last milestone.
-
-**Acceptance:** An orphan `x-save` and an `archive/x` beside `x-save` are both
-reported at startup, and Repair leaves each a whole pair.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_git_archive.py::archive_working_pair`;
-`src/haute/_git_transactions.py::check_invariants`;
-`src/haute/_git_read_models.py::working_branch_status`.
 
 ### GIT-R18 — Recovery acts on the remote named by its dialog
 

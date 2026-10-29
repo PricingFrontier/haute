@@ -37,7 +37,7 @@ records corrections to that audit's claims and proposed remedies.
 | [Frontend modelling and optimiser UI](frontend-modelling-optimiser-ui.md) | The specification as the editor is; an auto-range run that survives a save, percentage constraints kept as such, one point-request lifecycle; dispersion estimates bound to the initiating training draft | `FMOU-R04` |
 | [Frontend node editors](frontend-node-editors.md) | Editors that write what the engine reads, drafts in step with the document and errors with their detail, one copy of each picker and helper; grid rules the save refuses with a reason, positions and passthroughs in the subdirectories; cached-directory recovery and source-bound API Input inference and Data Input schemas | `FNED-R01` |
 | [Frontend shared](frontend-shared.md) | A save that keeps the browser in step after a reconnect, surfaced completion errors, aborted fetches, a bootstrap deadline; Ctrl+S saving what is being typed and creation fenced on structure; one copy of each store derivation and helper; the specification as the code is; the results store; independent edits during input resolution, job-bound cancellation replies, and failed solves retaining the identity of prior successful results | `FSH-R05` |
-| [Git integration](git-integration.md) | Dead symbols and one compensation helper, hooks on automatic saves (a decision); broken pairs reported with Repair; push recovery retaining its remote | `GIT-R18` |
+| [Git integration](git-integration.md) | Dead symbols and one compensation helper, hooks on automatic saves (a decision); push recovery retaining its remote | `GIT-R18` |
 | [IO layer](io-layer.md) | Missing against corrupt generations, one path-anchoring rule, lock holds and usage cost, clear and settle rules, one supervised build | `IO-R04` |
 | [Model scoring](model-scoring.md) | Generic model-file suffixes, pyfunc files, loader errors that keep their meaning; pyfunc classifiers preserving separate labels and positive-class probabilities | `MSC-06` |
 | [Modelling](modelling.md) | Publication outside the lock, diagnostics measured as the fit was; adaptive low-memory fitting: exact chunked GLM, a low-memory boosted-tree mode (both awaiting a decision); feasible stratified allocation, recorded tuning progress reaching the browser, prediction-based MLflow signatures, and accurate model-card and PDP labels | `MOD-R03` |
@@ -61,8 +61,7 @@ dependencies, its size and the user-visible changes it makes. It owns only
 the order; the packages above own the work. The packages the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md) added, and the
 documentation packages from that day's check of the deployment guides, are not
-yet placed in its rounds, nor is `GIT-R16` from the 27 October
-review of going back to a version.
+yet placed in its rounds.
 
 ## Codebase review — 23 September 2026
 

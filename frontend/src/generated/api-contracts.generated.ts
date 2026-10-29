@@ -923,6 +923,7 @@ export interface RatingLevelValue {
   value: string;
 }
 export interface GitWorkingBranchResponse {
+  broken_pairs: GitBrokenPair[];
   current_branch: string;
   eligible_branches: string[];
   errors: string[];
@@ -938,6 +939,11 @@ export interface GitWorkingBranchResponse {
   user_email: string | null;
   user_name: string | null;
   working_branch: string | null;
+}
+export interface GitBrokenPair {
+  kind: 'orphan-ledger' | 'half-archived';
+  ledger: string;
+  working: string;
 }
 /**
  * Progress of a bind running in the background.
@@ -1111,6 +1117,10 @@ export interface GitDeleteBranchResponse {
 export interface GitUndeleteResponse {
   branch: string;
   status: string;
+}
+export interface GitRepairPairResponse {
+  ledger: string;
+  working: string;
 }
 export interface GitRemotesResponse {
   remotes: GitRemote[];

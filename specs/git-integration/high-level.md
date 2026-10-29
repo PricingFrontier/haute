@@ -222,6 +222,13 @@ it again and deleting it again keeps both.
   them exactly, under another name when its own is taken.
 - **The cap:** when it rolls over, the oldest entry's pins go with its tombstone, since
   nothing could reach them any more.
+- **A pair broken before that:** delete and archive once moved the two refs one at a time,
+  so a crash between them could leave a save ledger without its working branch, or a
+  working branch archived while its ledger was not. Readiness lists every such pair at
+  startup, and Repair makes each whole: a half-done archive is finished, and a ledger
+  without its working branch gets it back at the ledger's last milestone, the saves since
+  then pending again for the next Commit. Create, undelete and restore refuse a name such a
+  pair holds, so Repair is the way back to it.
 
 Multi-step ref
 mutations (branch selection, archive/delete/restore, fork with move or switch, branch-away,

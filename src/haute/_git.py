@@ -3,6 +3,7 @@
 from haute._git_archive import (
     archive_working_pair,
     delete_working_pair,
+    repair_working_pair,
     restore_working_pair,
     undelete_working_pair,
 )
@@ -207,6 +208,7 @@ __all__ = [
     "resolve_ledger",
     "restore_version",
     "retry_interrupted",
+    "repair_working_pair",
     "restore_working_pair",
     "set_identity",
     "set_prefs",

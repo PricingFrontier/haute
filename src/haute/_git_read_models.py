@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -9,15 +10,19 @@ from typing import Literal
 # explicitly into this domain's namespace so extracted functions retain their
 # original signatures and semantics without a facade dependency.
 from haute._git_core import (
+    _ARCHIVE_PREFIX,
     _assert_git_repo,
+    _branch_name_problem,
     _get_default_branch,
     _is_git_repo,
+    _is_protected,
     _ledger_or_branch_sha,
     _list_branches_with_tips,
     _merge_base,
     _rev_parse,
     _run_git,
     _run_git_ok,
+    _tree_of,
     branch_category,
     files_in_use_message,
     git_binary_available,
@@ -28,6 +33,8 @@ from haute._git_core import (
 from haute._git_setup import get_identity
 from haute._git_transactions import check_invariants
 from haute.schemas import (
+    GitBranchListResponse,
+    GitBrokenPair,
     GitDeletedBranch,
     GitManagedBranch,
     GitWorkingBranchesResponse,
@@ -100,7 +107,9 @@ def ignore_rule(path: str, cwd: Path | None = None) -> str | None:
     return rule
 
 
-def _eligible_working_branches(cwd: Path | None = None) -> list[str]:
+def _eligible_working_branches(
+    listing: GitBranchListResponse, cwd: Path | None = None
+) -> list[str]:
     """Names choosable as a working branch: not protected, ledger, archived, or
     the repo's default branch (which is deploy-only, like the hardcoded
     protected set — PROTECTED_BRANCHES being configurable is a later item).
@@ -108,7 +117,6 @@ def _eligible_working_branches(cwd: Path | None = None) -> list[str]:
     Only names, archived flags and the yours-first order are consumed — the
     startup modal preselects the FIRST eligible branch, so the order must match
     the branch listing's."""
-    listing, _ = _list_branches_with_tips(cwd=cwd)
     default = _get_default_branch(cwd)
     return [
         b.name
@@ -155,7 +163,8 @@ def working_branch_status(project_root: Path, cwd: Path | None = None) -> GitWor
     head_sha = _rev_parse("HEAD", cwd=cwd)
     name, email = get_identity(cwd)
     identity_set = name is not None and email is not None
-    eligible = _eligible_working_branches(cwd)
+    listing, tips = _list_branches_with_tips(cwd=cwd)
+    eligible = _eligible_working_branches(listing, cwd)
 
     working = read_working_branch(project_root)
     base = GitWorkingBranchResponse(
@@ -166,6 +175,7 @@ def working_branch_status(project_root: Path, cwd: Path | None = None) -> GitWor
         identity_set=identity_set,
         user_name=name,
         user_email=email,
+        broken_pairs=_broken_pairs(tips, cwd),
     )
 
     interrupted = read_interrupted(project_root)
@@ -211,6 +221,50 @@ def working_branch_status(project_root: Path, cwd: Path | None = None) -> GitWor
 
     base.state = "ready"
     return base
+
+
+def _broken_pairs(tips: dict[str, str], cwd: Path | None = None) -> list[GitBrokenPair]:
+    """Every pair a crash split, from the ``{branch: tip}`` map of the local heads."""
+    broken = (_broken_pair(name, tips, cwd) for name in sorted(tips))
+    return [pair for pair in broken if pair is not None]
+
+
+def _broken_pair(
+    ledger: str, tips: dict[str, str], cwd: Path | None = None
+) -> GitBrokenPair | None:
+    """The broken pair *ledger* is part of, or None when it is no ledger missing its branch.
+
+    An interrupted two-step archive left an archived working branch without its ledger
+    beside it: ``archive/<W>``, or the dated name the archive took when that was taken.
+    Exactly one such branch whose history the ledger continues makes the pair
+    half-archived; otherwise the ledger is an orphan."""
+    working = working_name(ledger)
+    if (
+        working is None
+        or ledger not in tips
+        or working in tips
+        or _is_protected(working)
+        or _branch_name_problem(working) is not None
+    ):
+        return None
+    dated = re.compile(rf"{re.escape(f'{_ARCHIVE_PREFIX}/{working}')}(-\d{{8}}(-\d+)?)?")
+    archived = [
+        name
+        for name in sorted(tips)
+        if dated.fullmatch(name)
+        and ledger_name(name) not in tips
+        and _continues(tips[name], tips[ledger], cwd)
+    ]
+    if len(archived) == 1:
+        return GitBrokenPair(kind="half-archived", ledger=ledger, working=archived[0])
+    return GitBrokenPair(kind="orphan-ledger", ledger=ledger, working=working)
+
+
+def _continues(working_tip: str, ledger_tip: str, cwd: Path | None) -> bool:
+    """Whether a ledger at *ledger_tip* continues the history of a working branch at
+    *working_tip*, as ``check_invariants`` holds a pair to."""
+    base = _merge_base(working_tip, ledger_tip, cwd=cwd)
+    return base is not None and _tree_of(working_tip, cwd=cwd) == _tree_of(base, cwd=cwd)
 
 
 def _has_unmerged_saves(

@@ -46,6 +46,7 @@ from haute._git import (
     milestone_saves,
     pending_ledger_saves,
     push_working_pair,
+    repair_working_pair,
     resolve_ledger,
     restore_version,
     restore_working_pair,
@@ -3248,6 +3249,133 @@ class TestCreateWorkingBranch:
         res = create_working_branch("first-line", repo, cwd=repo)
         assert res.switched is True
         assert _git(repo, "symbolic-ref", "--short", "HEAD") == "first-line-save"
+
+
+class TestBrokenPairs:
+    """GIT-R16: a pair a crash split, before delete and archive moved both refs in one
+    transaction, is reported at startup and Repair makes it whole."""
+
+    def _broken(self, repo: Path) -> list[tuple[str, str, str]]:
+        status = working_branch_status(repo, cwd=repo)
+        return [(pair.kind, pair.ledger, pair.working) for pair in status.broken_pairs]
+
+    def test_a_ledger_without_its_branch_is_given_it_back_at_its_last_milestone(
+        self, repo: Path
+    ) -> None:
+        """The working branch was started on the default branch's plain commit; it comes
+        back there, and every save on the ledger is pending again."""
+        set_working_branch(WORKING, repo, cwd=repo)
+        start = _git(repo, "rev-parse", WORKING)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"}, message="first")
+        commit_milestone("First milestone", repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v3\n"}, message="second")
+        _git(repo, "update-ref", "-d", f"refs/heads/{WORKING}")  # the old delete's crash
+
+        assert self._broken(repo) == [("orphan-ledger", LEDGER, WORKING)]
+
+        repaired = repair_working_pair(LEDGER, repo, cwd=repo)
+
+        assert (repaired.working, repaired.ledger) == (WORKING, LEDGER)
+        assert _git(repo, "rev-parse", WORKING) == start
+        assert check_invariants(WORKING, cwd=repo) == []
+        pending = pending_ledger_saves(repo, cwd=repo, branch=WORKING).saves
+        assert [save.message for save in pending] == ["second", "first"]
+        assert self._broken(repo) == []
+        assert working_branch_status(repo, cwd=repo).state == "ready"
+
+    def test_a_half_archived_pair_is_archived_whole(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        ledger_tip = _git(repo, "rev-parse", LEDGER)
+        _git(repo, "checkout", "-q", "main")
+        _git(repo, "branch", "-m", WORKING, f"archive/{WORKING}")  # the old archive's crash
+
+        assert self._broken(repo) == [("half-archived", LEDGER, f"archive/{WORKING}")]
+
+        repaired = repair_working_pair(LEDGER, repo, cwd=repo)
+
+        assert (repaired.working, repaired.ledger) == (f"archive/{WORKING}", f"archive/{LEDGER}")
+        assert _git(repo, "rev-parse", f"archive/{LEDGER}") == ledger_tip
+        assert _git(repo, "branch", "--list", LEDGER) == ""
+        assert self._broken(repo) == []
+        archived = {b.name: b for b in working_branches(repo, cwd=repo).branches}
+        assert archived[f"archive/{WORKING}"].is_archived
+
+    def test_an_archive_to_a_dated_name_is_finished_under_that_name(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        _git(repo, "checkout", "-q", "main")
+        _git(repo, "branch", "-m", WORKING, f"archive/{WORKING}-20261020")
+
+        repaired = repair_working_pair(LEDGER, repo, cwd=repo)
+
+        assert repaired.ledger == f"archive/{WORKING}-20261020-save"
+        assert self._broken(repo) == []
+
+    def test_a_restore_save_is_never_taken_for_a_milestone(self, repo: Path) -> None:
+        """A restore records one save with one parent: the walk passes it, and the saves
+        the lost branch's milestone held are pending again rather than lost."""
+        set_working_branch(WORKING, repo, cwd=repo)
+        start = _git(repo, "rev-parse", WORKING)
+        first = _write_and_save(repo, WORKING, {"rating.py": "# v2\n"}, message="first")
+        commit_milestone("First milestone", repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v3\n"}, message="second")
+        assert first is not None
+        restore_version(first, repo, cwd=repo)
+        _git(repo, "update-ref", "-d", f"refs/heads/{WORKING}")
+
+        repair_working_pair(LEDGER, repo, cwd=repo)
+
+        assert _git(repo, "rev-parse", WORKING) == start
+        pending = [s.message for s in pending_ledger_saves(repo, cwd=repo, branch=WORKING).saves]
+        assert pending[0].startswith(f"Restored {first[:8]}")
+        assert pending[1:] == ["second", "first"]
+
+    def test_a_branch_started_at_a_save_comes_back_at_its_anchoring_milestone(
+        self, repo: Path
+    ) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        save = _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        assert save is not None
+        create_working_branch("idea", repo, at=save, switch=True, cwd=repo)
+        anchor = _git(repo, "rev-parse", "idea")
+        assert len(_parents(repo, anchor)) == 2
+        _write_and_save(repo, "idea", {"rating.py": "# idea\n"}, message="on the idea")
+        _git(repo, "update-ref", "-d", "refs/heads/idea")
+
+        repair_working_pair("idea-save", repo, cwd=repo)
+
+        assert _git(repo, "rev-parse", "idea") == anchor
+        pending = pending_ledger_saves(repo, cwd=repo, branch="idea").saves
+        assert [s.message for s in pending] == ["on the idea"]
+
+    def test_saves_another_ledger_shares_are_not_taken_for_milestones(self, repo: Path) -> None:
+        """After Spin off a copy, the set-aside ledger shares the saves before the fork: they
+        lie on its first-parent chain, but they are saves all the same."""
+        set_working_branch(WORKING, repo, cwd=repo)
+        start = _git(repo, "rev-parse", WORKING)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"}, message="first")
+        _write_and_save(repo, WORKING, {"rating.py": "# v3\n"}, message="second")
+        _git(repo, "branch", "aside", WORKING)
+        _git(repo, "branch", "aside-save", LEDGER)
+        _git(repo, "update-ref", "-d", f"refs/heads/{WORKING}")
+
+        repair_working_pair(LEDGER, repo, cwd=repo)
+
+        assert _git(repo, "rev-parse", WORKING) == start
+        pending = pending_ledger_saves(repo, cwd=repo, branch=WORKING).saves
+        assert [save.message for save in pending] == ["second", "first"]
+
+    def test_repair_refuses_a_ledger_that_is_not_broken(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        before = _git(repo, "for-each-ref", "refs/heads/")
+
+        with pytest.raises(GitDomainError, match="is not part of a broken branch"):
+            repair_working_pair(LEDGER, repo, cwd=repo)
+
+        assert _git(repo, "for-each-ref", "refs/heads/") == before
+        assert self._broken(repo) == []
 
 
 class TestArchiveCommit:

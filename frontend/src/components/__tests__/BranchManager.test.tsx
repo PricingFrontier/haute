@@ -7,6 +7,7 @@ import useGraphStore from "../../stores/useGraphStore"
 import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
+import { makeGitWorkingBranch } from "../../test-utils/factories"
 
 const mockGetWorkingBranches = vi.fn()
 const mockSetWorkingBranch = vi.fn()
@@ -89,6 +90,23 @@ describe("BranchManager", () => {
     expect(screen.getByText("demo")).toBeInTheDocument()
     expect(screen.getByText("experiment")).toBeInTheDocument()
     expect(screen.getByTestId("branch-manager-archived")).toHaveTextContent("archive/old")
+  })
+
+  it("lists a pair a crash split above the branches, with its Repair", async () => {
+    useGitStore.setState({
+      status: makeGitWorkingBranch({
+        working_branch: "demo",
+        state: "ready",
+        broken_pairs: [{ kind: "half-archived", ledger: "old-save", working: "archive/old" }],
+      }),
+    })
+    render(<BranchManager />)
+    await waitFor(() => expect(screen.getByTestId("branch-manager-current")).toBeInTheDocument())
+
+    expect(screen.getByTestId("git-broken-pair")).toHaveTextContent(
+      "Archiving 'archive/old' stopped part way: its saves were not archived with it.",
+    )
+    expect(screen.getByTestId("git-broken-pair-repair")).toHaveTextContent("Repair")
   })
 
   it("offers Archive on the current branch too (save-and-archive)", async () => {

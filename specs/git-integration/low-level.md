@@ -153,6 +153,18 @@ invariant-violating), `"divergent"` (attached HEAD is on neither the recorded br
 its ledger), or `"ready"`. This read is total for missing and invalid repository metadata;
 transport/server failures remain non-200 responses.
 
+**`GitWorkingBranchResponse.broken_pairs`** lists, in every state once a repository is
+present, each pair a crash split (`_broken_pairs`, read from the same one `for-each-ref`
+listing as `eligible_branches`), as `GitBrokenPair {kind, ledger, working}`. A ledger is a
+local branch `<W>-save` whose `<W>` does not exist, `<W>` being a name a working branch may
+have (protected names and names git cannot use are left out).
+- **`half-archived`:** an archived working branch the old two-step archive moved without
+  its ledger stands beside it. That is `archive/<W>`, or the dated `archive/<W>-<YYYYMMDD>`
+  or `archive/<W>-<YYYYMMDD>-<n>` the archive chose when the name was taken, with no ledger
+  of its own and history the ledger continues (their merge base has the archived tip's tree,
+  as `check_invariants` requires of a pair). Exactly one such branch: `working` names it.
+- **`orphan-ledger`:** no such branch, or more than one. `working` is the missing `<W>`.
+
 **HTTP contracts.** Every handler is synchronous `def`, so FastAPI runs git subprocess work
 in its thread pool. Request bodies are the named Pydantic models; omitted fields take the
 defaults shown. Query bounds are enforced by FastAPI and invalid input uses its standard 422
@@ -176,6 +188,7 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 | `POST /api/git/undelete` | `GitUndeleteRequest {id,as_name=null}`: a trash entry, rebuilt under its branch name or *as_name* | `GitUndeleteResponse {status="restored",branch}`, the name it was rebuilt under |
 | `GET /api/git/working-branches` | None | `GitWorkingBranchesResponse {current?,branches:[GitManagedBranch...],deleted:[GitDeletedBranch {id,branch,deleted_at,was_archived}...]}`, `deleted` newest first |
 | `POST /api/git/restore` | `GitRestoreRequest {branch}` | `GitRestoreResponse {restored_as}` |
+| `POST /api/git/repair-pair` | `GitRepairPairRequest {ledger}`: a ledger readiness lists in `broken_pairs` | `GitRepairPairResponse {working,ledger}`, the whole pair's names; a ledger that is no longer part of a broken pair is 400, nothing changed |
 | `POST /api/git/working-branches` | `GitCreateWorkingBranchRequest {name,at=null,move=false,switch=false}` | `GitCreateWorkingBranchResponse {working_branch,moved,switched,last_save_sha?}`; `move` and `switch` together are 400 |
 | `GET /api/git/prefs` | None | `GitPrefs {skip_switch_confirm=false}` |
 | `POST /api/git/prefs` | `GitPrefs {skip_switch_confirm=false}` | The persisted `GitPrefs` |
@@ -686,6 +699,27 @@ then creates both refs and deletes the entry's pins in one transaction; a failed
 records the tombstone again, so the entry stays restorable. The restored pair
 is NOT auto-adopted as the working branch. `working_branches()` lists the tombstones, newest
 first, as `deleted`.
+
+**Repair (`repair_working_pair(ledger, project_root, cwd)`).** Under the repository lock it
+reads the pair again (`_broken_pair`) and refuses a ledger that is not part of a broken pair
+("'<ledger>' is not part of a broken branch."). It changes refs only, so HEAD, the files and
+clone state stay as they are.
+- A `half-archived` pair is finished as the archive would have moved it: one `update-ref
+  --stdin` transaction creates `<archived>-save` at the ledger's tip and deletes the ledger
+  with that tip as its expected value.
+- An `orphan-ledger` gets its working branch back with `create refs/heads/<W> <milestone>`
+  in one transaction. *Milestone* is the ledger's last milestone (`_ledger_last_milestone`),
+  the commit its saves were recorded on. Walking the ledger's first-parent chain back from
+  its tip, it is the first commit that is a merge (a milestone, or the anchoring milestone of
+  a branch started at a save), has no parent (the root), or lies on the first-parent chain
+  of a local branch that is not a save ledger (the default branch's commit a branch was
+  started at). Those chains come from one `rev-list --first-parent --stdin` of the branches'
+  tips; with no such branch there is none. Another ledger's chain is no evidence: after Spin
+  off a copy the set-aside ledger shares the saves before the fork.
+- What the working branch's lost milestones held stays in the ledger's saves, which read as
+  pending until the next Commit folds them into one milestone. A save is never taken for a
+  milestone: saves have one parent and lie on no other branch's first-parent chain. That
+  includes restore saves, sweep saves and saves replayed by Create & Move.
 
 **Historical extraction (`src/haute/_git_history.py::archive_commit` / `src/haute/routes/_helpers.py::commit_pipeline_graph`).** Bounded extraction is owned by `archive_commit`, while the parse step `commit_pipeline_graph` is owned by [server-api](../server-api/low-level.md). `ls-tree` first
 enumerates the selected commit and filters to `haute.toml`, Python modules, Haute sidecars,

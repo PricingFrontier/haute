@@ -21,6 +21,7 @@ import { discardCanvasEdits, discardFormEdits } from "../hooks/useProjectDirty"
 import useToastStore from "../stores/useToastStore"
 import { recordArchive, recordDelete, recordRestore, recordSwitch } from "../utils/vcHistory"
 import { apiErrorMessage } from "../api/errors"
+import BrokenPairs from "./BrokenPairs"
 import Tooltip from "./Tooltip"
 import BackdropMenu, { MenuItem } from "./BackdropMenu"
 import GitNavigationConfirm from "./GitNavigationConfirm"
@@ -314,6 +315,8 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
           )}
 
           {navigation.confirm && <GitNavigationConfirm {...navigation.confirm} />}
+
+          <BrokenPairs />
 
           {/* Current branch — boxed, at the top. Dimmer when not the peeked one. */}
           {current && (
