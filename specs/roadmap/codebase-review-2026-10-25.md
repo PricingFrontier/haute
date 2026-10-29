@@ -125,8 +125,8 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the seventeen packages delivered or settled since (thirteen by 28
-October 2026, four more on 29 October) have been removed from the sections below; the coverage table keeps the
+The findings of the eighteen packages delivered or settled since (thirteen by 28
+October 2026, five more on 29 October) have been removed from the sections below; the coverage table keeps the
 original counts.
 
 ## Validation — 25 October 2026
@@ -143,7 +143,7 @@ target dependency resolution. The component roadmaps now carry the resulting pla
 | `PCFG-R18` | Normalise syntactic whitespace using token boundaries; preserve indentation and multiline literal contents. |
 | `FSH-R07`, `API-R08`, `FSH-R05` | Recover a save only from complete canonical saved-content equality, retain newer dirty edits, and distinguish intended other-tab broadcasts from watcher duplicates and self-echoes. |
 | `DEP-R11` | Check every response batch before positional pairing; require explicit first-deploy intent or authoritative absence, never infer absence from an outage. |
-| `DEP-R09`, `BUG-40` | Resolve and verify dependency locks for each target Python/platform and extras. |
+| `DEP-R09` | Resolve and verify dependency locks for each target Python/platform and extras. |
 | `WB-10` | Shipped SQLite already has atomic insert-if-absent. Require a real selected-engine concurrency test and correct transaction recovery. |
 | `GIT-R02` | Preserve configured SSH commands and Git precedence; use process-level noninteractive execution, deadlines and transport cleanup. Appended OpenSSH options do not reliably override earlier ones. |
 
@@ -383,7 +383,6 @@ production:
 | Sandbox security | PM-42 | `SBX-R04` |
 | Workbench | PM-44 | `WB-33` |
 | Workbench | PM-45 | `WB-10` (selected server engine's atomic form insertion) |
-| Bugs | PM-40, PM-41 | `BUG-40` |
 | Bugs | PM-47 | `BUG-42` (Decision) |
 | Engineering quality | PM-29 (Haute's own workflows) | `ENGQ-CI06` |
 | Engineering quality | PM-48 | `ENGQ-R06` |

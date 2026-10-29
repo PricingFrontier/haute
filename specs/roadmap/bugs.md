@@ -6,16 +6,15 @@ Defects found outside a component's own roadmap work, kept here until they
 are fixed. `BUG-24` was found on 5 October 2026 while checking the deployment guides
 against the CI/CD files `haute init` generates: as generated, those files fail before a
 first container release succeeds. The guides give the manual step that works today, and
-drop it when the package lands. `BUG-40` and `BUG-42` come from the
-[25 October 2026 codebase review](codebase-review-2026-10-25.md): the hosted Databricks
-app's boot and build script and the storage binding's unknown keys.
+drop it when the package lands. `BUG-42` comes from the
+[25 October 2026 codebase review](codebase-review-2026-10-25.md): the storage binding's
+unknown keys.
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | BUG-24 | Decision | P1 | Container targets log in to their registry before `haute deploy` pushes, and GitLab container deploys run where Docker is available. |
-| BUG-40 | Planned | P2 | The hosted Databricks app installs the wheel and its pinned dependencies from a lock at boot, and its build script takes the app name as a parameter. The build selects its current wheel rather than a stale lexicographic match. |
 | BUG-42 | Decision | P3 | The storage binding record either rejects unknown keys or is named as the exception to the canonical-only policy. |
 
 ## Planned improvements
@@ -39,43 +38,6 @@ Docker, AWS ECS and Azure guides are removed.
 
 **Evidence:** `src/haute/deploy/_container.py::_check_docker_available` and the push;
 `src/haute/_scaffold.py::TARGETS` (secrets) and the workflow generators.
-
-### BUG-40 — The hosted app boots from a lock
-**Why:** Every boot of the hosted Databricks app force-reinstalls the vendored wheel and
-then runs `pip install <wheel>[databricks]`, resolving Haute's dependency ranges from the
-index at boot time, so two boots of one deployment can run different dependency versions
-and a boot needs the index to be reachable. The committed `requirements.txt` names a wheel
-version and digest that drift from the released version until the build script is run,
-and `deploy.sh` hard-codes the app name `haute-spike` while taking the profile and the
-workspace directory as parameters.
-
-**Plan:** Use `DEP-R09`'s shared resolver to ship a lock for the hosted app's Linux
-platform, Python version and `databricks` extra beside the wheel; preserve hashes and
-credential-free index provenance. Verify the wheel digest and install it with
-`--no-deps`, and install the locked runtime without resolving fresh dependencies at
-boot. Generate `requirements.txt` in the build script only and ignore it in git; take
-the app name as a parameter. This fixes version drift; offline boot additionally needs
-the locked artifacts to be supplied locally and is not implied by a lock alone.
-
-**Acceptance:** Two boots of one deployment install the lock's versions and nothing else;
-the target installation passes `pip check`, including when the bundle was prepared
-on Windows; `requirements.txt` is not committed; `deploy.sh` with another app name
-deploys to it.
-
-**Dependencies:** `DEP-R09` supplies target resolution and the Model Serving runtime
-rules; share them without assuming the app and Model Serving need identical extras.
-
-**Evidence:** `databricks_app/app.py::_refresh_vendored_wheel`;
-`databricks_app/requirements.txt`; `databricks_app/scripts/deploy.sh`.
-
-**28 October full-pass addition:** The unchanged bundle script also selects the
-lexicographically last wheel in shared `dist/`, not necessarily the wheel just built. A
-controlled real-shell run builds 0.10.0 beside 0.9.0 and bundles OLD RELEASE from 0.9.0.
-**Plan/acceptance:** build into a fresh owned directory or consume the exact build output,
-require one matching artifact, and derive the digest/requirements from it. Mixed stale versions
-and rebuilding a lower checked-out version must both bundle the current build. Evidence:
-`databricks_app/scripts/build_bundle.sh`, wheel selection statement `wheel="$(ls "$repo_root"/dist/haute-*.whl | sort | tail -n1)"` (builder output and missing local digest tool only
-were substituted; no deployment ran).
 
 ### BUG-42 — Unknown keys in the storage binding record
 **Why:** `StorageBinding.from_payload` deliberately ignores unknown keys so that an older

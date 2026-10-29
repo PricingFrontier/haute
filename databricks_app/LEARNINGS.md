@@ -1,5 +1,16 @@
 # Databricks Apps deployment spike — learnings
 
+> Update (29 October 2026): the bundle now boots from a lock (BUG-40).
+> `scripts/build_bundle.sh` writes `requirements.txt` as `uv pip compile`'s
+> hashed lock of haute's runtime with the databricks extra, resolved for
+> CPython 3.11 on x86_64-manylinux_2_28, and the wheel's digest as
+> `wheel.sha256`; `app.py` installs the lock with `--no-deps --require-hashes`
+> and then the checked wheel with `--no-deps --force-reinstall`, so no boot
+> resolves haute's ranges any more. All three are gitignored build outputs
+> that `deploy.sh <profile> <workspace-dir> <app-name>` imports after the
+> sync. The notes below on the wheel in requirements.txt describe the format
+> this replaced.
+
 > Update (5 August 2026): the claim/fence layer and the fork + upstream
 > catch-up were proven live, two-actor — the app holding the parent
 > location while this repo's own transport code ran from a laptop

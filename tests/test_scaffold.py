@@ -1,6 +1,5 @@
 """Tests for haute._scaffold - template generation for ``haute init``."""
 
-import os
 import re
 import subprocess
 import tomllib
@@ -30,20 +29,7 @@ from haute._scaffold import (
     starter_test,
     starter_test_quote,
 )
-
-
-def _posix_shell() -> str:
-    """The bash a CI runner would use: Git for Windows' own on Windows.
-
-    A bare ``bash`` on Windows may be WSL's, which sees neither the Windows
-    paths nor the Windows git.
-    """
-    if os.name != "nt":
-        return "bash"
-    exec_path = subprocess.run(
-        ["git", "--exec-path"], check=True, capture_output=True, text=True
-    ).stdout.strip()
-    return str(Path(exec_path).parents[2] / "bin" / "bash.exe")
+from tests._posix_shell import posix_shell
 
 
 class TestHauteToml:
@@ -1220,7 +1206,7 @@ class TestOfferedTargets:
             heads.append(git("rev-parse", "--short", "HEAD").strip())
             for _ in range(2):  # the second run is a redeploy of the same commit
                 subprocess.run(
-                    [_posix_shell(), "-c", "set -euo pipefail\n" + script],
+                    [posix_shell(), "-c", "set -euo pipefail\n" + script],
                     cwd=tmp_path / "work",
                     check=True,
                     capture_output=True,
@@ -1295,7 +1281,7 @@ class TestDatabricksReleaseAndDeployJobs:
         # ``uv`` is a shell function standing in for ``uv run haute status --version-only``.
         script = _release_tag_script("databricks", "")
         return subprocess.run(
-            [_posix_shell(), "-c", f"set -euo pipefail\nuv() {{ {fake_uv}; }}\n{script}"],
+            [posix_shell(), "-c", f"set -euo pipefail\nuv() {{ {fake_uv}; }}\n{script}"],
             cwd=work,
             capture_output=True,
             text=True,

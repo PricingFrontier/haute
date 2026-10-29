@@ -1,3 +1,5 @@
-# Built artefact vendored at deploy time by scripts/build_bundle.sh — never
-# committed; requirements.txt carries its sha256 instead.
+# Built artefacts vendored at deploy time by scripts/build_bundle.sh — never
+# committed: the wheel, the lock of its runtime and the wheel's digest.
 haute-*.whl
+requirements.txt
+wheel.sha256

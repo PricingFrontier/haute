@@ -80,7 +80,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 
 | Priority | Trigger and observed consequence | Owning package | Evidence and practical limit |
 |---|---|---|---|
-| P2 | Building 0.10.0 beside stale 0.9.0 bundles the old wheel because selection is lexicographic. | [BUG-40](bugs.md#bug-40--the-hosted-app-boots-from-a-lock), extended | Unchanged shell builder in a temporary layout; deterministic builder output and local digest-tool adapter, no actual deployment. |
 | P2 | Invalid connect endpoints/keywords/ports are dropped or repaired; parameter inference can hide the discarded call. | [PCFG-R20](pipeline-config.md#pcfg-r20--malformed-connect-calls-are-parse-errors) | Actual strict parse/codegen versus executing original Python; four malformed call shapes. Existing helper tests preserve some wrong behavior. |
 | P1 | A keyword-only factor default disappears on Save; a preamble name takes over and changes 120 to 90. | [PCFG-R21](pipeline-config.md#pcfg-r21--node-signatures-retain-their-configuration-bindings) | Actual original and regenerated functions, strict file parse. |
 | P2 | Archive finishes after the user changes Team to Mine and reloads the older Team query as the newest request. | [WB-35](workbench.md#wb-35--every-quote-action-says-what-it-did), extended | Actual QuotesPage/store with deferred transport. Restore has the same source pattern but was not separately executed. |
@@ -298,7 +297,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | Earlier candidate note | Accepted owner |
 |---|---|
 | CI no-extra resync / docs / warning gate | **ENGQ-R07**; action pins **ENGQ-CI06**. |
-| stale hosted wheel | **BUG-40**. |
 | dispersion caller ownership / estimate queued | **FMOU-R06** for same-mounted draft identity; separate helper error-contract wording is **FSH-R06**. |
 | archive/restore obsolete query | **WB-35**. |
 | rejection remote “candidate pending” | **GIT-R18**. |
