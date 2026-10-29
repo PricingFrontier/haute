@@ -192,6 +192,18 @@ lock. Pure Git history/object readers do not acquire the engine lock, but every 
 reader in `_git_state.py` acquires it for the file read so it cannot overlap an atomic state
 transaction.
 
+The project's writers hold the same lock across their whole transaction:
+`SavePipelineService.save` (the canvas save, a save with persisted submodels, the assistant's
+Apply and undo) from its base-revision check through every artifact write, the rollback of a
+failed one, stale-config cleanup and the ledger capture, and
+`_pipeline_repair._commit_repair_plan` (a node-scoped save and every repair apply) from its
+revision and artifact re-checks through staging, verification and rollback. Both run in a
+worker thread entered after the project's `save_lock`, the order `project_write` uses; no
+holder of the repository lock waits for `save_lock`, so the order cannot deadlock, and the
+capture's `commit_save` re-enters the lock its save already holds. A milestone, restore or
+switch that arrives during a save therefore waits for it and then sees all of its artifacts,
+or, after a failed save's rollback, none of them.
+
 **The tree fence (`_rewrite_tree(*args, cwd)`).** Every command that rewrites the working
 tree runs through it. These are the checkouts in `resolve_ledger`, `set_working_branch`,
 `create_working_branch`'s switch and move, `_switch_away_if_active` and `branch_away`, and
@@ -653,7 +665,9 @@ without replacing a successfully parsed response with a cleanup error.
 - **Concurrent git mutations are serialized per repository** — FastAPI may run synchronous
   handlers on different worker threads, but only one can cross a repository's mutation
   boundary. Successful saves cannot be orphaned by an interleaved checkout, and state-file
-  read/merge/write transactions cannot lose sibling updates.
+  read/merge/write transactions cannot lose sibling updates. A pipeline save or repair holds
+  that boundary through its artifact writes, so a concurrent milestone never records a
+  pipeline whose Python references a configuration file the save had not written yet.
 - **A slow / credential-walled remote** — routine readiness, branch, history, graph, and
   remote-list reads never perform network I/O. Every deliberate remote read disables terminal/SSH prompts
   (`GIT_TERMINAL_PROMPT=0`, SSH `BatchMode=yes`). Fetch/inspection subprocesses use
@@ -808,6 +822,13 @@ process failures, and precise ref-movement races deterministic.
   batched commit context, merge-replay refusal, network-free remote listing, targeted
   historical extraction, archive member/byte ceilings, typed archive/parse failures, and
   Windows cleanup retries.
+- **`tests/test_save_git_serialization.py`** — real saves and repairs against a real
+  repository, each paused between two artifact writes while a milestone or restore runs on
+  another thread: the Git action cannot take the repository lock until the save is done,
+  then records the complete artifact set, which loads as the saved graph; a write failure
+  injected at the pause rolls back before the waiting milestone proceeds, which then records
+  none of the save. It covers the full save, a node-scoped config change and a reset that
+  rewrites a pipeline and its configuration.
 - **`tests/test_git_lifecycle_improvements.py`** — failure-injection coverage for
   adopting an existing pair, deleting the only active pair, partial fast-forward,
   archive state replacement, archive restore, undelete, and explicit incomplete-

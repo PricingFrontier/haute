@@ -746,7 +746,9 @@ excluded count; its path and content never cross the tool boundary.
    passes the stored normalized operations through `build_verified_plan`, requires
    the complete rebuilt `GraphEditPlan` and plan hash to equal the stored authority,
    checks the plan-store state, and invokes
-   `SavePipelineService.save_graph_transactionally` exactly once.
+   `SavePipelineService.save_graph_transactionally` exactly once. The save holds the
+   repository's Git lock for its transaction, so no milestone, restore or switch lands
+   inside it.
 3. Still under the lock, it reparses, derives the actual diff/revision,
    verifies the visible diff plus complete semantic-diff digest, postconditions,
    and schema evidence at the declared tier, marks the plan applied, and publishes

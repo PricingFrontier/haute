@@ -10,7 +10,11 @@ one layer, so guardrails (no writing to protected branches, no force-push, no si
 merges), user-friendly error translation, and safety nets (trash tombstones, transactional
 rollback paths) are enforced in exactly one place rather than scattered across call sites.
 All mutations and clone-state transactions for one repository are serialized by one
-logical reentrant engine critical section. Pure Git-object/history reads remain concurrent,
+logical reentrant engine critical section. A pipeline save, the assistant's Apply and undo,
+a node-scoped save and every repair apply enter that same section for their whole
+transaction, from the revision check through the artifact writes, rollback and stale cleanup
+to the capture on the save ledger, so a milestone, restore or switch sees all of a save's
+files or none of them. Pure Git-object/history reads remain concurrent,
 but reads of Haute's clone-state files acquire that same repository lock so they cannot
 observe a state transaction halfway through. Lock identity lookup is bounded and cached so
 readiness polling does not repeatedly walk the filesystem. A stable project-path key remains
@@ -302,7 +306,10 @@ complete old or new document, never torn JSON.
   preventing two request threads from interleaving successful-looking partial transactions.
   The registry holds locks weakly, and the path-to-repository lookup cache is bounded, so a
   long-running multi-project server does not retain one permanent lock per path it has ever
-  observed.
+  observed. Pipeline writers join this lock rather than relying on the project's save lock
+  alone: the save lock orders writers among themselves, and only the repository lock orders
+  them against Git, so a milestone can no longer capture a save's Python without the
+  configuration it references.
 - **Untracked per-clone state.** The working-branch association, preferences, fork map,
   trash, and last-pushed SHAs all live in `.haute/*.json`, deliberately outside git's own
   history — HEAD itself cannot answer "which working branch does this clone serve" once
@@ -332,12 +339,6 @@ complete old or new document, never torn JSON.
   against a foreign `git init` repo that lacks haute's guard entries.
 
 ## Failure model
-
-> NOTE: Pipeline saves do not hold the repository lock across
-> their artifact writes. A concurrent milestone can therefore capture Python
-> without its configuration, despite both operations succeeding.
-> [GIT-R17](../roadmap/git-integration.md#git-r17--pipeline-saves-share-the-git-transaction-boundary)
-> owns closing this gap in the serialization contract.
 
 Every git-facing failure surfaces through a `GitError` subclass (`GitError` itself is a
 subclass of the project-wide `HauteError`):

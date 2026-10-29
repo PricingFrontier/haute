@@ -32,6 +32,7 @@ from fastapi import HTTPException
 from haute._api_input_schema import is_json_api_input_path
 from haute._ast_helpers import _extract_global_constants_declaration
 from haute._file_ops import Writer, atomic_write_bytes
+from haute._git_lock import repository_mutation
 from haute._global_constants import (
     code_binds_global_constants,
     node_code_sources,
@@ -432,10 +433,23 @@ class SavePipelineService:
         Save is transactional: if any write step fails, all files we
         already touched are restored (or deleted for new files) before
         the exception propagates.  No partial save is ever left on disk.
+        The whole transaction holds the repository's Git lock, from the
+        revision check to the ledger capture, so a milestone, restore or
+        switch never meets a half-written save; callers hold ``save_lock``
+        first, as ``project_write`` does.
 
         *commit_message* is the ledger commit's message; without one the
         commit names the changed files.
         """
+        with repository_mutation(self._root):
+            return self._save(body, commit_message=commit_message)
+
+    def _save(
+        self,
+        body: SavePipelineRequest,
+        *,
+        commit_message: str | None,
+    ) -> SavePipelineResponse:
         graph = body.graph
 
         # Global constants: the file on disk, never the request, says whether

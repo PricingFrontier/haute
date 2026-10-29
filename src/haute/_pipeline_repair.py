@@ -23,6 +23,7 @@ from haute._ast_helpers import (
     _is_submodel_authored_decorator,
 )
 from haute._cache import canonical_json
+from haute._git_lock import repository_mutation
 from haute._graph_builders import PipelineNodeSkeleton, _extract_decorated_node_skeletons
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute.errors import HauteError
@@ -1035,7 +1036,19 @@ def _commit_repair_plan(
     project_root: Path,
     plan: PipelineRepairPlan,
 ) -> PipelineRepairApplyResponse:
-    """Apply exact server edits under the caller's save lock, with rollback."""
+    """Apply exact server edits under the caller's save lock, with rollback.
+
+    The re-checks, writes, verification and rollback hold the repository's Git
+    lock, so a milestone, restore or switch sees all of the repair or none of it."""
+    with repository_mutation(project_root):
+        return _commit_repair_edits(project_root=project_root, plan=plan)
+
+
+def _commit_repair_edits(
+    *,
+    project_root: Path,
+    plan: PipelineRepairPlan,
+) -> PipelineRepairApplyResponse:
     from haute.routes._save_pipeline import (
         _rollback_artifacts,
         _stage_artifact_delete,
