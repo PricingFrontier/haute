@@ -148,6 +148,45 @@ class TestStripOuterTrailingReturn:
         source = "return df\n# tail comment"
         assert _strip_outer_trailing_return(source, "df") == "return df\n# tail comment"
 
+    @pytest.mark.parametrize(
+        ("source", "kept"),
+        [
+            ("df = quotes.head(1); return df", "df = quotes.head(1)"),
+            ("df = quotes.head(1);return df", "df = quotes.head(1)"),
+            (
+                'df = quotes.head(1)\ndf = df.select("a");  return df',
+                'df = quotes.head(1)\ndf = df.select("a")',
+            ),
+            ('df = quotes.select(\n    "a",\n); return df', 'df = quotes.select(\n    "a",\n)'),
+            ('df = quotes.filter(a="x;y"); return df', 'df = quotes.filter(a="x;y")'),
+            ('label = "Prämie"; return df', 'label = "Prämie"'),
+            ("df = quotes; \\\n    return df", "df = quotes"),
+            ("df = quotes \\\n    ; return df", "df = quotes"),
+        ],
+    )
+    def test_a_return_sharing_its_line_keeps_the_statement_before_it(
+        self, source: str, kept: str
+    ) -> None:
+        """Only the return's own span is generated: the statement a ``;`` joins it to stays."""
+        compile(source.replace("return df", "pass"), "<source>", "exec")
+        assert _strip_outer_trailing_return(source, "df") == kept
+
+    def test_a_comment_between_the_statement_and_the_return_stays(self) -> None:
+        source = "df = quotes  # kept; really\n# also kept\nreturn df"
+        assert _strip_outer_trailing_return(source, "df") == (
+            "df = quotes  # kept; really\n# also kept"
+        )
+
+    @pytest.mark.parametrize("kind", ["polars", "hook"])
+    def test_a_semicolon_joined_closing_return_extracts_its_statements(self, kind: str) -> None:
+        body = "    df = quotes.head(1)\n    df = df.with_columns(x=1); return df\n"
+        assert extract_user_code(body, kind=kind, param_names=("quotes",)) == (
+            "df = quotes.head(1)\ndf = df.with_columns(x=1)"
+        )
+        assert extract_user_code("    df = quotes.head(1); return df\n", kind=kind) == (
+            "df = quotes.head(1)"
+        )
+
 
 # ---------------------------------------------------------------------------
 # _df_alias_target — non-alias / unparseable lines

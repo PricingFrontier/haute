@@ -28,10 +28,13 @@ Return-boundary detection:
 from __future__ import annotations
 
 import ast
+import io
+import tokenize
 from collections.abc import Callable
 from typing import NamedTuple
 
 from haute._ast_helpers import _dedent, _strip_docstring
+from haute._source_layout import python_lines
 from haute.errors import ParseError
 
 __all__ = [
@@ -149,7 +152,7 @@ def _rewrite_outer_returns_as_assignment(source: str, target: str) -> str:
     if not returns:
         return source
 
-    lines = source.splitlines(keepends=True)
+    lines = python_lines(source, keepends=True)
     # Rewrite from LAST to FIRST so earlier rewrites never invalidate
     # a later return's line index.
     for node in sorted(returns, key=lambda r: (r.lineno, r.col_offset), reverse=True):
@@ -197,7 +200,8 @@ def _strip_outer_trailing_return(source: str, return_var: str) -> str:
         return _rstrip_blank_lines(source)
     # Only the code's own last statement is the closing return: one nested in a
     # loop or branch stays, and the early-return check then refuses it.
-    closing = _parse_user_code(source, context="user code").body[-1]
+    body = _parse_user_code(source, context="user code").body
+    closing = body[-1]
     if (closing.lineno, closing.col_offset) != (last.lineno, last.col_offset):
         return _rstrip_blank_lines(source)
 
@@ -206,7 +210,7 @@ def _strip_outer_trailing_return(source: str, return_var: str) -> str:
     # single-line; use ``end_lineno`` to locate the last source line it
     # occupies.
     end_line = last.end_lineno or last.lineno
-    lines = source.splitlines(keepends=True)
+    lines = python_lines(source, keepends=True)
     # Check no non-blank source after end_line
     for line in lines[end_line:]:
         if line.strip():
@@ -215,9 +219,36 @@ def _strip_outer_trailing_return(source: str, return_var: str) -> str:
             # returns to be LAST, but defensive for comments etc.).
             return _rstrip_blank_lines(source)
 
-    # Drop the return's source span (lineno..end_lineno inclusive, 1-based).
-    kept = lines[: last.lineno - 1]
+    if len(body) > 1 and _follows_a_semicolon(source, last):
+        # ``df = quotes.head(1); return df``: the return shares a logical line
+        # with the statement before it, so the kept code ends where that
+        # statement ends, never at the start of the return's line.
+        previous = body[-2]
+        assert previous.end_lineno is not None and previous.end_col_offset is not None
+        last_kept = lines[previous.end_lineno - 1].encode("utf-8")[: previous.end_col_offset]
+        kept = [*lines[: previous.end_lineno - 1], last_kept.decode("utf-8")]
+    else:
+        # Drop the return's source span (lineno..end_lineno inclusive, 1-based).
+        kept = lines[: last.lineno - 1]
     return _rstrip_blank_lines("".join(kept))
+
+
+_TOKENS_BETWEEN_STATEMENTS = frozenset(
+    {tokenize.NL, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT}
+)
+
+
+def _follows_a_semicolon(source: str, statement: ast.stmt) -> bool:
+    """Whether *statement* follows the one before it on one logical line, after a ``;``."""
+    line = python_lines(source, keepends=True)[statement.lineno - 1]
+    start = (statement.lineno, len(line.encode("utf-8")[: statement.col_offset].decode("utf-8")))
+    previous: tokenize.TokenInfo | None = None
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.start == start:
+            return previous is not None and previous.exact_type == tokenize.SEMI
+        if token.type not in _TOKENS_BETWEEN_STATEMENTS:
+            previous = token
+    return False
 
 
 def _rstrip_blank_lines(source: str) -> str:
@@ -442,7 +473,7 @@ def is_declaration_body(body_source: str) -> bool:
     An optional docstring may precede it; a docstring alone is a declaration
     too. The comparison is structural, so a hand-formatted declaration counts.
     """
-    lines = body_source.splitlines()
+    lines = python_lines(body_source)
     while lines and not lines[0].strip():
         lines.pop(0)
     cleaned = _strip_docstring(lines)
@@ -572,7 +603,7 @@ def _strip_trailing_return(code_lines: list[str], return_vars: tuple[str, ...]) 
             break
     if not stripped_source:
         return []
-    return stripped_source.splitlines()
+    return python_lines(stripped_source)
 
 
 def _finalise_polars(code: str) -> str:
@@ -664,7 +695,7 @@ def extract_user_code(
     if is_declaration_body(body_source):
         return ""
 
-    lines = body_source.splitlines()
+    lines = python_lines(body_source)
     while lines and not lines[0].strip():
         lines.pop(0)
     while lines and not lines[-1].strip():
@@ -683,7 +714,7 @@ def extract_user_code(
         return ""
 
     code = _dedent("\n".join(rest)).strip()
-    code_lines = _strip_trailing_return(code.splitlines(), result.return_vars)
+    code_lines = _strip_trailing_return(python_lines(code), result.return_vars)
     if not code_lines:
         return ""
     return _finalise_polars("\n".join(code_lines).strip())

@@ -442,21 +442,38 @@ class TestExtractConnectCalls:
         with pytest.raises(ParseError, match="source_port"):
             _extract_connect_calls(tree)
 
-    def test_non_string_literal_args_skipped(self):
-        """Literal-but-not-string args keep the historical skip semantics
-        (such a call raises at runtime; the parser has no edge to record)."""
-        source = "pipeline.connect(1, 2)"
-        tree = ast.parse(source)
-        assert _extract_connect_calls(tree) == []
-
-    def test_under_specified_connect_skipped(self):
-        """connect("a") is a runtime TypeError — no edge can be derived."""
-        source = 'pipeline.connect("a")'
-        tree = ast.parse(source)
-        assert _extract_connect_calls(tree) == []
+    @pytest.mark.parametrize(
+        ("call", "argument", "fragment"),
+        [
+            ('pipeline.connect(1, "b")', "source", "must be a non-empty string"),
+            ('pipeline.connect("a", 2)', "target", "must be a non-empty string"),
+            ('pipeline.connect("", "b")', "source", "must be a non-empty string"),
+            ('pipeline.connect("a")', "target", "is missing"),
+            ('pipeline.connect(target="b")', "source", "is missing"),
+            ('pipeline.connect("a", "b", "c")', "*", "takes at most two positional"),
+            ('pipeline.connect("a", "b", source="c")', "source", "is given twice"),
+            ('pipeline.connect("a", "b", weird=1)', "weird", "has no argument"),
+            ('pipeline.connect("a", "b", source_prt="table")', "source_prt", "has no argument"),
+            ('pipeline.connect("a", "b", source_port=123)', "source_port", "None or a non-empty"),
+            ('pipeline.connect("a", "b", target_port="")', "target_port", "None or a non-empty"),
+            ("pipeline.connect(*pair)", "*", "unpacked"),
+            ('pipeline.connect("a", "b", **ports)', "**", "unpacked"),
+        ],
+    )
+    def test_a_call_the_live_signature_refuses_fails_the_parse(
+        self, call: str, argument: str, fragment: str
+    ):
+        """The parser reads connect() by the live signature's rules: a call Python or
+        ``Pipeline.connect`` would refuse is a located ParseError, never skipped or
+        repaired into an edge with a ``None`` port."""
+        tree = ast.parse(f"x = 1\n{call}")
+        with pytest.raises(ParseError, match=fragment) as raised:
+            _extract_connect_calls(tree)
+        assert raised.value.context["line"] == 2
+        assert raised.value.context["argument"] == argument
 
     def test_port_none_treated_as_absent(self):
-        source = 'pipeline.connect("a", "b", source_port=None)'
+        source = 'pipeline.connect("a", "b", source_port=None, target_port=None)'
         tree = ast.parse(source)
         assert _extract_connect_calls(tree) == [("a", "b", None, None)]
 
@@ -497,12 +514,6 @@ class TestExtractConnectCalls:
         source = 'pipeline.connect("a", target="b", target_port="base")'
         tree = ast.parse(source)
         assert _extract_connect_calls(tree) == [("a", "b", None, "base")]
-
-    def test_unknown_keyword_ignored(self):
-        """Unrecognised kwargs do not affect edge extraction."""
-        source = 'pipeline.connect("a", "b", weird=1)'
-        tree = ast.parse(source)
-        assert _extract_connect_calls(tree) == [("a", "b", None, None)]
 
     def test_ignores_wrong_method(self):
         source = 'pipeline.add("a", "b")'
@@ -1145,9 +1156,57 @@ class TestResolveNodeConfig:
         # Concrete folder resolved from NODE_TYPE_TO_FOLDER, not a placeholder.
         assert "config/data_input/" in message
         assert "<type>" not in message
-        # Names that inline kwargs are ignored + points at a generator.
-        assert "ignored" in message
+        # Says where its settings go + points at a generator.
+        assert "not in decorator keywords" in message
         assert "haute init" in message
+
+    def test_a_sidecar_backed_node_refuses_its_other_decorator_keywords(self, tmp_path):
+        """Every setting of a sidecar-backed node is in its sidecar: a keyword beside
+        ``config=`` fails the parse by name rather than being dropped."""
+        from haute.errors import ConfigError
+
+        cfg_dir = tmp_path / "config" / "constant"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "rates.json").write_text('{"values": [{"name": "base", "value": "1"}]}')
+
+        with pytest.raises(ConfigError) as excinfo:
+            _resolve_node_config(
+                {
+                    "config": "config/constant/rates.json",
+                    "values": [{"name": "base", "value": "2"}],
+                    "colour": "red",
+                },
+                "...",
+                [],
+                0,
+                tmp_path,
+                func_name="rates",
+                explicit_node_type=NodeType.CONSTANT,
+            )
+        assert excinfo.value.message == (
+            "Node 'rates' takes its settings from config/constant/rates.json, so its "
+            "decorator keywords 'colour', 'values' would be ignored: move them into that "
+            "file, or remove them."
+        )
+        assert excinfo.value.context["keywords"] == ["colour", "values"]
+
+    def test_a_sidecar_backed_node_keeps_its_contract_keyword(self, tmp_path):
+        cfg_dir = tmp_path / "config" / "constant"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "rates.json").write_text('{"values": [{"name": "base", "value": "1"}]}')
+
+        node_type, config = _resolve_node_config(
+            {"config": "config/constant/rates.json", "contract": "opaque"},
+            "...",
+            [],
+            0,
+            tmp_path,
+            func_name="rates",
+            explicit_node_type=NodeType.CONSTANT,
+        )
+        assert node_type == NodeType.CONSTANT
+        assert config["contract"] == "opaque"
+        assert config["values"] == [{"name": "base", "value": "1"}]
 
     def test_invalid_content_error_leads_with_underlying_cause(self, tmp_path):
         """Valid JSON whose *content* is invalid must surface the real reason.
@@ -1331,11 +1390,11 @@ class TestResolveNodeConfig:
 
     def test_does_not_mutate_decorator_kwargs(self):
         """_resolve_node_config must not modify the caller's dict (B21)."""
-        kwargs: dict[str, Any] = {"config": "config/data_input/x.json", "extra": True}
+        kwargs: dict[str, Any] = {"config": "config/data_input/x.json", "contract": "opaque"}
         original = dict(kwargs)
         with patch("haute._config_builder.load_node_config", return_value={}):
             _resolve_node_config(kwargs, "", [], 0, None)
-        # The original dict must be untouched — "config" key stays.
+        # The original dict must be untouched — "config" and "contract" keys stay.
         assert kwargs == original
 
     def test_no_mutation_polars_path(self):
@@ -1352,14 +1411,20 @@ class TestResolveNodeConfig:
         assert kwargs == original
 
     def test_no_mutation_with_multiple_keys(self):
-        """Input dict with many keys must not lose or gain any entries (B21)."""
+        """Input dict with many keys must not lose or gain any entries (B21), even when
+        the keywords beside ``config=`` are refused."""
+        from haute.errors import ConfigError
+
         kwargs: dict[str, Any] = {
             "config": "config/banding/x.json",
             "sink": "out.parquet",
             "format": "parquet",
         }
         original = dict(kwargs)
-        with patch("haute._config_builder.load_node_config", return_value={}):
+        with (
+            patch("haute._config_builder.load_node_config", return_value={}),
+            pytest.raises(ConfigError, match="'format', 'sink' would be ignored"),
+        ):
             _resolve_node_config(kwargs, "", [], 0, None)
         assert kwargs == original
 

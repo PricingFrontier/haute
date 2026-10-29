@@ -1091,7 +1091,9 @@ class TestProjectKnowledge:
 class TestConfiguredPipelines:
     @_ESCAPES
     def test_the_pipeline_haute_toml_names(self, layout: tuple[Path, Path], escape: str) -> None:
-        """The route helper itself; the layout fixture stands one in for the routes."""
+        """The route helper itself; the layout fixture stands one in for the routes. The
+        refusal is the haute.toml reader's, which every caller of the configured pipeline
+        shares."""
         from haute.errors import ConfigError
 
         project, outside = layout
@@ -1103,7 +1105,7 @@ class TestConfiguredPipelines:
         toml.write_text(
             f'[project]\npipeline = "{_escaping(project, escape, "main.py")}"\n', encoding="utf-8"
         )
-        with pytest.raises(ConfigError, match="resolves outside the project root"):
+        with pytest.raises(ConfigError, match="must name a file inside the project"):
             _real_pipeline_dir()
 
     @_ESCAPES

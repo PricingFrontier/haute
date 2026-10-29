@@ -150,6 +150,217 @@ def test_syntax_invalid_source_is_source_only_with_the_located_parse_error(
     assert document.capabilities.can_preview is False
 
 
+def test_a_source_that_is_not_utf8_is_source_only_and_its_save_is_refused(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Python refuses a file that is not UTF-8, so the editor shows no canvas for one: the
+    document names the byte where decoding stops, and nothing a save could write over the
+    author's bytes was ever decoded with replacement characters."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write_bytes(
+        tmp_path / "main.py",
+        b"import haute\n"
+        b'pipeline = haute.Pipeline("encoding")\n\n'
+        b"@pipeline.polars\n"
+        b"def premium():\n"
+        b'    return "Pr\xe4mie"\n',
+    )
+    before = pipeline_file.read_bytes()
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "source_only"
+    assert document.nodes == []
+    [diagnostic] = document.diagnostics
+    assert diagnostic.code == "source_encoding_invalid"
+    assert "byte 0xE4 at line 6, column 15" in diagnostic.message
+    assert diagnostic.source_span is not None
+    assert (diagnostic.source_span.start_line, diagnostic.source_span.start_column) == (6, 14)
+    assert diagnostic.remediation == "Save the file as UTF-8 in your editor, then reload it."
+    assert document.capabilities.can_save is False
+    assert document.capabilities.can_repair is False
+    assert document.source_revision
+
+    monkeypatch.chdir(tmp_path)
+    response = client.post(
+        "/api/pipeline/save",
+        json={
+            "name": "encoding",
+            "source_file": "main.py",
+            "base_revision": document.source_revision,
+            "graph": {"nodes": [], "edges": []},
+        },
+    )
+    assert response.status_code == 409
+    assert pipeline_file.read_bytes() == before
+
+
+def test_a_submodel_file_that_is_not_utf8_makes_only_its_definition_unavailable(
+    tmp_path: Path,
+) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    (tmp_path / "modules").mkdir()
+    _write_bytes(
+        tmp_path / "modules" / "pricing.py",
+        b"import haute\n\n"
+        b'submodel = haute.Submodel("pricing", definition_id="pricing", input_ports=[], '
+        b'output_ports=[], pipeline_dir="..")\n'
+        b"# \x96\n",
+    )
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+
+        from modules import pricing
+
+        pipeline = haute.Pipeline("encoding")
+
+        @pipeline.polars
+        def healthy():
+            return None
+
+        pipeline.submodel(pricing.submodel, "pricing")
+        """,
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "degraded"
+    by_id = {node.authored_id: node for node in document.nodes}
+    assert by_id["healthy"].availability == "ready"
+    assert by_id["pricing"].availability == "unavailable"
+    assert document.submodels is not None
+    assert document.submodels["modules/pricing.py"].availability == "unavailable"
+    assert any(
+        diagnostic.code == "submodel_definition_invalid"
+        and "byte 0x96 at line 4, column 3" in diagnostic.message
+        for diagnostic in document.diagnostics
+    )
+
+
+def test_a_node_config_that_is_not_utf8_makes_its_node_unavailable(tmp_path: Path) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    (tmp_path / "config" / "constant").mkdir(parents=True)
+    config = _write_bytes(
+        tmp_path / "config" / "constant" / "rates.json",
+        b'{"values": [{"name": "Pr\xe4mie", "value": "1.0"}]}',
+    )
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+
+        pipeline = haute.Pipeline("encoding")
+
+        @pipeline.constant(config="config/constant/rates.json")
+        def rates():
+            ...
+
+        @pipeline.polars
+        def healthy():
+            return None
+        """,
+    )
+    before = config.read_bytes()
+
+    with pytest.raises(ConfigError, match=r"rates\.json is not valid UTF-8: byte 0xE4"):
+        parse_pipeline_file(pipeline_file)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "degraded"
+    by_id = {node.authored_id: node for node in document.nodes}
+    assert by_id["healthy"].availability == "ready"
+    assert by_id["rates"].availability == "unavailable"
+    [diagnostic] = [
+        item for item in document.diagnostics if item.diagnostic_id in by_id["rates"].diagnostic_ids
+    ]
+    assert "rates.json is not valid UTF-8: byte 0xE4 at line 1, column 25" in diagnostic.message
+    assert config.read_bytes() == before
+
+
+def test_an_editor_sidecar_that_is_not_utf8_is_corrupt(tmp_path: Path) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write(tmp_path / "main.py", _healthy_source())
+    sidecar = _write_bytes(
+        tmp_path / "main.haute.json",
+        b'{"sources": ["live", "Pr\xe4mie"], "active_source": "live"}',
+    )
+    before = sidecar.read_bytes()
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "degraded"
+    assert document.source_selection_trusted is False
+    assert document.sources == []
+    assert [diagnostic.code for diagnostic in document.diagnostics] == ["sidecar_corrupt"]
+    assert sidecar.read_bytes() == before
+
+
+def test_an_editor_sidecar_with_a_byte_order_mark_still_reads(tmp_path: Path) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write(tmp_path / "main.py", _healthy_source())
+    _write_bytes(
+        tmp_path / "main.haute.json",
+        b'\xef\xbb\xbf{"sources": ["live", "Pr\xc3\xa4mie"], "active_source": "live"}',
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "ready"
+    assert document.sources == ["live", "Prämie"]
+
+
+def test_a_malformed_connect_is_located_and_no_inferred_edge_hides_it(
+    tmp_path: Path,
+) -> None:
+    """``result`` takes ``source`` by parameter name, so the graph would look the same
+    without the refused call: the parse still fails on it, and the editor names the call
+    and the argument."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+
+        pipeline = haute.Pipeline("connect")
+
+        @pipeline.polars
+        def source():
+            return None
+
+        @pipeline.polars
+        def result(source):
+            return source
+
+        pipeline.connect("source", "result", source_prt="table")
+        """,
+    )
+
+    with pytest.raises(ParseError, match="source_prt") as raised:
+        parse_pipeline_file(pipeline_file)
+    assert raised.value.context["line"] == 14
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "degraded"
+    assert document.capabilities.can_save is False
+    [unresolved] = document.unresolved_connections
+    [diagnostic] = [
+        item for item in document.diagnostics if item.code == "connection_declaration_invalid"
+    ]
+    assert "source_prt" in diagnostic.message
+    assert diagnostic.source_span is not None
+    assert diagnostic.source_span.start_line == 14
+
+
 def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -1003,6 +1214,126 @@ def test_recovery_revision_authenticates_the_bytes_the_document_presents(
     assert document.source_revision != changed_on_disk
 
 
+def test_recovery_revision_authenticates_the_sidecars_and_configs_the_document_presents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Editor sidecar and node config bytes are read once, through the load's capture, so
+    an edit landing before the revision is hashed cannot pair old content with a new
+    revision; a sidecar absent when read stays absent to the revision."""
+    from haute import _pipeline_recovery
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute._pipeline_revision import pipeline_recovery_revision
+
+    (tmp_path / "config" / "constant").mkdir(parents=True)
+    config = tmp_path / "config" / "constant" / "rates.json"
+    _write(config, '{"values": [{"name": "base", "value": "1"}]}')
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+
+        pipeline = haute.Pipeline("captured")
+
+        @pipeline.constant(config="config/constant/rates.json")
+        def rates():
+            ...
+        """,
+    )
+    sidecar = tmp_path / "main.haute.json"
+    sidecar.write_text('{"positions": {"rates": {"x": 5, "y": 7}}}', encoding="utf-8")
+    originals = {path: path.read_bytes() for path in (pipeline_file, sidecar, config)}
+    real_artifacts = _pipeline_recovery._recovery_artifacts
+
+    def edit_after_discovery(*args: object, **kwargs: object):
+        artifacts = real_artifacts(*args, **kwargs)  # type: ignore[arg-type]
+        sidecar.write_text('{"positions": {"rates": {"x": 9, "y": 9}}}', encoding="utf-8")
+        config.write_text('{"values": [{"name": "base", "value": "2"}]}', encoding="utf-8")
+        return artifacts
+
+    monkeypatch.setattr(_pipeline_recovery, "_recovery_artifacts", edit_after_discovery)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    [node] = document.nodes
+    assert node.display_position == {"x": 5.0, "y": 7.0}
+    assert node.config == {"values": [{"name": "base", "value": "1"}]}
+    artifacts = [
+        ("parent_source", pipeline_file),
+        ("parent_sidecar", sidecar),
+        ("node_config", config),
+    ]
+    assert document.source_revision == pipeline_recovery_revision(
+        project_root=tmp_path, artifacts=artifacts, known_bytes=originals
+    )
+    assert document.source_revision != pipeline_recovery_revision(
+        project_root=tmp_path, artifacts=artifacts
+    )
+
+    sidecar.unlink()
+
+    def create_after_discovery(*args: object, **kwargs: object):
+        artifacts = real_artifacts(*args, **kwargs)  # type: ignore[arg-type]
+        sidecar.write_text('{"positions": {}}', encoding="utf-8")
+        return artifacts
+
+    monkeypatch.setattr(_pipeline_recovery, "_recovery_artifacts", create_after_discovery)
+    absent = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    assert absent.source_revision == pipeline_recovery_revision(
+        project_root=tmp_path,
+        artifacts=artifacts,
+        known_bytes={
+            pipeline_file: originals[pipeline_file],
+            sidecar: None,
+            config: config.read_bytes(),
+        },
+    )
+
+
+def test_two_configs_differing_only_in_case_never_share_bytes(tmp_path: Path) -> None:
+    """The load's capture keys files by their exact path: where the filesystem keeps
+    ``Rates.json`` and ``rates.json`` apart, each node shows its own file, as the strict
+    parse reads it; where it does not, both name the one file and show it."""
+    import json
+
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    folder = tmp_path / "config" / "constant"
+    folder.mkdir(parents=True)
+    upper = folder / "Rates.json"
+    lower = folder / "rates.json"
+    upper.write_text('{"values": [{"name": "base", "value": "1"}]}', encoding="utf-8")
+    lower.write_text('{"values": [{"name": "base", "value": "2"}]}', encoding="utf-8")
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+
+        pipeline = haute.Pipeline("cases")
+
+        @pipeline.constant(config="config/constant/Rates.json")
+        def upper():
+            ...
+
+        @pipeline.constant(config="config/constant/rates.json")
+        def lower():
+            ...
+        """,
+    )
+    on_disk = {
+        "upper": json.loads(upper.read_text(encoding="utf-8")),
+        "lower": json.loads(lower.read_text(encoding="utf-8")),
+    }
+
+    strict = {node.id: node.data.config for node in parse_pipeline_file(pipeline_file).nodes}
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "ready"
+    assert {node.authored_id: node.config for node in document.nodes} == on_disk
+    assert {node_id: config["values"] for node_id, config in strict.items()} == {
+        node_id: config["values"] for node_id, config in on_disk.items()
+    }
+
+
 def test_ready_document_revision_authenticates_strictly_parsed_child_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1649,6 +1980,55 @@ def _submodel_modules(project: Path, *names: str) -> None:
             f'submodel = haute.Submodel("{name}", definition_id="{name}", input_ports=[], '
             'output_ports=[], pipeline_dir="..")\n',
         )
+
+
+def test_a_diagnostic_names_its_element_when_a_node_and_an_occurrence_share_a_name(
+    tmp_path: Path,
+) -> None:
+    """Ids are minted once over nodes and occurrences together, so each element's own
+    diagnostics name it and the banner's "go to" finds it."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    _submodel_modules(tmp_path, "pricing")
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+
+        from modules import pricing
+
+        pipeline = haute.Pipeline("names")
+
+        @pipeline.constant(config="config/constant/missing.json")
+        def priced():
+            ...
+
+        @pipeline.unknown_kind
+        def rated():
+            return None
+
+        pipeline.submodel(pricing.submodel, "priced")
+        pipeline.submodel(pricing.submodel, "rated")
+        """,
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    by_id = {diagnostic.diagnostic_id: diagnostic for diagnostic in document.diagnostics}
+    elements = {node.recovery_id for node in document.nodes}
+    assert len(elements) == len(document.nodes) == 4
+    for node in document.nodes:
+        for diagnostic_id in node.diagnostic_ids:
+            element_id = by_id[diagnostic_id].element_id
+            assert element_id is None or element_id == node.recovery_id, (
+                node.recovery_id,
+                by_id[diagnostic_id].code,
+            )
+    assert all(
+        diagnostic.element_id in elements
+        for diagnostic in document.diagnostics
+        if diagnostic.scope == "node" and diagnostic.element_id is not None
+    )
 
 
 def test_a_registration_of_a_module_never_imported_is_an_unavailable_occurrence(

@@ -16,7 +16,9 @@ This module provides:
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from functools import cache
 from pathlib import Path
@@ -29,6 +31,7 @@ from haute._banding_config import (
     expand_banding_config_from_sidecar,
 )
 from haute._graph_utils import _sanitize_func_name
+from haute._io import utf8_decode_failure
 from haute._logging import get_logger
 from haute._rating_step_config import (
     normalise_rating_step_config,
@@ -97,12 +100,40 @@ def reject_duplicate_keys_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+#: The reader node configs are read through while one is installed: editor
+#: recovery installs its load's byte capture, so the revision authenticates the
+#: config bytes the document was built from.
+_NODE_CONFIG_READER: ContextVar[Callable[[Path], bytes] | None] = ContextVar(
+    "haute_node_config_reader", default=None
+)
+
+
+@contextmanager
+def node_configs_read_through(read_bytes: Callable[[Path], bytes]) -> Iterator[None]:
+    """Read every node config through *read_bytes* for the length of the block."""
+    token = _NODE_CONFIG_READER.set(read_bytes)
+    try:
+        yield
+    finally:
+        _NODE_CONFIG_READER.reset(token)
+
+
 def _load_json_object(path: Path) -> dict[str, Any]:
-    """Load a config JSON object, rejecting duplicate keys."""
-    # Config JSON remains strict UTF-8: unlike Python source, a leading BOM is
-    # invalid JSON and must surface as authored corruption instead of being
-    # silently consumed by the user-source reader.
-    text = path.read_text(encoding="utf-8", errors="replace")
+    """Load a config JSON object, rejecting duplicate keys.
+
+    Config JSON is strict UTF-8: a byte that is not is a ``ConfigError`` naming
+    the file and the byte, because a config decoded with replacement characters
+    would be written over the author's bytes by the next save. Unlike Python
+    source, a leading BOM is invalid JSON and surfaces as authored corruption.
+    """
+    reader = _NODE_CONFIG_READER.get()
+    raw = reader(path) if reader is not None else path.read_bytes()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ConfigError(
+            f"{path} is not valid UTF-8: {utf8_decode_failure(raw, exc)}. Save the file as UTF-8."
+        ) from exc
     loaded = json.loads(text, object_pairs_hook=reject_duplicate_keys_hook)
     if not isinstance(loaded, dict):
         raise ValueError("Node config JSON must contain an object")
@@ -148,10 +179,11 @@ def _prepare_config_for_sidecar(
     # Only the config record's own underscore properties are editor state.
     # Nested mappings may contain arbitrary column names or user records.
     # Type-specific serializers own cleanup of their nested editor records.
+    # The contract annotation lives on the decorator; a sidecar copy goes stale.
     filtered = {
         k: deepcopy(v)
         for k, v in config.items()
-        if k not in CODE_CONFIG_KEYS and not k.startswith("_")
+        if k not in CODE_CONFIG_KEYS and k != "contract" and not k.startswith("_")
     }
 
     if node_type == NodeType.BANDING:
@@ -159,6 +191,18 @@ def _prepare_config_for_sidecar(
     if node_type == NodeType.RATING_STEP:
         return normalise_rating_step_config(filtered)
     return filtered
+
+
+def node_config_json(node_type: NodeType, config: dict[str, Any], *, node_label: str) -> str:
+    """The canonical sidecar text of one node's config: what every save path writes.
+
+    The record's own keys are sorted, so one configuration has one form whatever
+    order its keys arrived in; nested user mappings keep their order, since they
+    are data.
+    """
+    prepared = _prepare_config_for_sidecar(node_type, config, node_label=node_label)
+    canonical = {key: prepared[key] for key in sorted(prepared)}
+    return json.dumps(canonical, indent=2, ensure_ascii=False) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -373,8 +417,7 @@ def collect_node_configs(graph: PipelineGraph) -> dict[str, str]:
             continue
         func_name = _sanitize_func_name(node.data.label)
         rel_path = config_path_for_node(nt, func_name).as_posix()
-        filtered = _prepare_config_for_sidecar(nt, node.data.config, node_label=node.data.label)
-        configs[rel_path] = json.dumps(filtered, indent=2, ensure_ascii=False) + "\n"
+        configs[rel_path] = node_config_json(nt, node.data.config, node_label=node.data.label)
     return configs
 
 

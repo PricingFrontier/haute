@@ -246,8 +246,9 @@ is the resolved path against the resolved root:
   and project knowledge's `haute.toml`, `docs/` and cache file raise `ValueError`, and a
   document resolving outside is left out; session storage (`_sessions_storage_dir`)
   raises `ConfigError`;
-- the configured pipeline the route helper reads (`routes/_helpers.pipeline_dir`):
-  `ConfigError`;
+- the configured pipeline `haute.toml` names, refused by its one reader
+  (`_project._toml_configured_pipeline`, which the route helper `routes/_helpers.pipeline_dir`,
+  pipeline binding and the project layout read through): `ConfigError`;
 - worker artifacts (`WorkerRuntime.staged_path`, `validate_result_manifest`,
   `build_artifact_manifest`): `WorkerProtocolError`;
 - the MLflow artifact cache (`_mlflow_io._artifact_cache_path`) and optimiser artifact

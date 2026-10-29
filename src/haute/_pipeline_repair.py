@@ -27,7 +27,8 @@ from haute._git_lock import repository_mutation
 from haute._graph_builders import PipelineNodeSkeleton, _extract_decorated_node_skeletons
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._sandbox import contained_path, is_contained
-from haute.errors import HauteError, PathOutsideProjectError
+from haute._source_layout import python_lines
+from haute.errors import HauteError, ParseError, PathOutsideProjectError
 from haute.parser import parse_pipeline_file
 from haute.schemas import (
     PipelineEditorDocument,
@@ -381,16 +382,11 @@ def _connection_links(statement: ast.stmt, *, receiver: str) -> list[tuple[str, 
     for link in _chained_receiver_calls(statement, receiver=receiver, method="connect"):
         try:
             edge = _connect_call_edge(link, receiver)
-        except Exception as exc:
+        except ParseError as exc:
             raise PipelineRepairError(
                 "repair_connection_declaration_invalid",
                 "An authored connection cannot be interpreted safely for removal.",
             ) from exc
-        if edge is None:
-            raise PipelineRepairError(
-                "repair_connection_declaration_invalid",
-                "An authored connection cannot be interpreted safely for removal.",
-            )
         edges.append((edge[0], edge[1]))
     return edges
 
@@ -671,9 +667,9 @@ def _remove_position_entry(sidecar_bytes: bytes, authored_id: str) -> bytes:
 def _bounded_diff(edit: RepairArtifactEdit) -> tuple[str, bool]:
     if not edit.expose_diff:
         return "", False
-    before = (edit.before or b"").decode("utf-8-sig", errors="replace").splitlines(keepends=True)
+    before = python_lines((edit.before or b"").decode("utf-8-sig", errors="replace"), keepends=True)
     after_bytes = edit.after or b""
-    after = after_bytes.decode("utf-8-sig", errors="replace").splitlines(keepends=True)
+    after = python_lines(after_bytes.decode("utf-8-sig", errors="replace"), keepends=True)
     rendered = "".join(
         difflib.unified_diff(
             before,

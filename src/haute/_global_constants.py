@@ -22,6 +22,7 @@ import types
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import Any, Final, TypeAlias
 
+from haute._source_layout import python_lines
 from haute._types import (
     GLOBAL_CONSTANTS_FILE,
     GLOBAL_CONSTANTS_NAME,
@@ -51,7 +52,7 @@ def _parse_body(code: str) -> ast.Module | None:
     """Parse node code as the body of a function, so a closing ``return`` parses."""
     body = textwrap.dedent(code)
     wrapped = "def _haute_node_body():\n" + "\n".join(
-        f"    {line}" if line else line for line in body.splitlines()
+        f"    {line}" if line else line for line in python_lines(body)
     )
     try:
         return ast.parse(wrapped)

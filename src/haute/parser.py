@@ -39,7 +39,7 @@ from haute._graph_builders import (
     _extract_decorated_nodes,
 )
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
-from haute._io import read_user_text
+from haute._io import read_user_source
 from haute._logging import get_logger
 from haute._parser_bindings import assert_polars_parameters_bound, assert_request_frames_named
 from haute._parser_conservation import (
@@ -55,6 +55,7 @@ from haute._parser_submodels import (
 from haute._parser_submodels import merge_submodels as _merge_submodels
 from haute._parser_submodels import parse_submodel_source as _parse_submodel_source
 from haute._project import get_project_root
+from haute._source_layout import python_lines
 from haute._submodel_paths import resolve_submodel_reference, submodel_source_key
 from haute._support_code_names import UtilityReader, support_code_violations, utility_reader
 from haute._types import GLOBAL_CONSTANTS_FILE, GlobalConstant
@@ -168,7 +169,7 @@ def parse_pipeline_file(filepath: str | Path, *, flatten: bool = False) -> Pipel
     exposed separately by :mod:`haute._pipeline_recovery`.
     """
     filepath = Path(filepath)
-    source = read_user_text(filepath)
+    _raw, source = read_user_source(filepath)
     submodel_base_dir = _infer_parse_base_dir(filepath)
     return parse_pipeline_source(
         source,
@@ -192,7 +193,7 @@ def parse_submodel_file(
     Defaults to ``filepath.parent`` if not provided.
     """
     filepath = Path(filepath)
-    source = read_user_text(filepath)
+    _raw, source = read_user_source(filepath)
     return _parse_submodel_source(
         source,
         source_file=str(filepath),
@@ -258,13 +259,10 @@ def parse_pipeline_source_with_name_violations(
         _read_submodel_source: Override for reading a registered submodel
             file. Editor recovery injects its first-read byte capture here so
             one load never pairs parsed child content with different bytes
-            than its revision authenticates. Defaults to ``read_user_text``.
+            than its revision authenticates. Defaults to ``read_user_source``.
         _read_global_constants_bytes: The same override for the global
             constants file the constructor names. Defaults to reading it.
     """
-    if not source_file and _base_dir is not None:
-        source_file = str((_base_dir / "__source__.py").resolve())
-
     # Canonical consumers must never receive a regex-recovered graph.
     try:
         tree = ast.parse(source)
@@ -301,7 +299,7 @@ def parse_pipeline_source_with_name_violations(
     rf_nodes = _build_rf_nodes(raw_nodes)
     preamble = _extract_preamble(source, tree=tree)
     preserved_blocks = _extract_preserved_blocks(source)
-    preserved = _module_preserve_spans(source.splitlines())
+    preserved = _module_preserve_spans(python_lines(source))
     for statement in tree.body:
         if is_submodel_import(statement) and any(
             first <= statement.lineno - 1 <= last for first, last in preserved
@@ -403,7 +401,7 @@ def parse_pipeline_source_with_name_violations(
             child_source = (
                 _read_submodel_source(sm_filepath)
                 if _read_submodel_source is not None
-                else read_user_text(sm_filepath)
+                else read_user_source(sm_filepath)[1]
             )
             child_graph = _parse_submodel_source(
                 child_source,

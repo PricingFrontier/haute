@@ -39,6 +39,7 @@ import polars as pl
 
 from haute._polars_dtypes import parse_rendered_dtype
 from haute._polars_steps_layout import layout_statement
+from haute._source_layout import float_literal, lines_inside_literals, python_lines
 from haute._types import GLOBAL_CONSTANTS_NAME, GlobalConstant, NodeType
 from haute._user_exec import _exec_user_code
 from haute.errors import SchemaMismatchError
@@ -589,11 +590,10 @@ def rename_step_inputs(steps: object, renames: Mapping[str, str]) -> list[dict[s
     out: list[dict[str, Any]] = []
     for step in validated:
         copy = dict(step)
-        kind = step["kind"]
-        if kind in ("source", "join"):
-            copy["input"] = renamed[step["input"]]
-        elif kind == "concat":
-            copy["inputs"] = [renamed[name] for name in step["inputs"]]
+        input_field = _STEP_INPUT_FIELDS.get(step["kind"])
+        if input_field is not None:
+            name, many = input_field
+            copy[name] = [renamed[item] for item in step[name]] if many else renamed[step[name]]
         out.append(copy)
     return out
 
@@ -868,14 +868,20 @@ def _empty_frame(columns: ColumnList, owner: str) -> pl.LazyFrame:
 # ---------------------------------------------------------------------------
 
 
+#: The field each step kind that reads inputs names them in, and whether it
+#: holds a list of names: the one table input references and renames read.
+_STEP_INPUT_FIELDS: Mapping[str, tuple[str, bool]] = MappingProxyType(
+    {"source": ("input", False), "join": ("input", False), "concat": ("inputs", True)}
+)
+
+
 def step_input_references(step: Mapping[str, Any]) -> list[str]:
     """The input names one validated step reads (a source, join or concat)."""
-    kind = step["kind"]
-    if kind in ("source", "join"):
-        return [step["input"]]
-    if kind == "concat":
-        return list(step["inputs"])
-    return []
+    input_field = _STEP_INPUT_FIELDS.get(step["kind"])
+    if input_field is None:
+        return []
+    name, many = input_field
+    return list(step[name]) if many else [step[name]]
 
 
 def _needs_parentheses(child_op: object, parent: tuple[str, str] | None) -> bool:
@@ -897,6 +903,21 @@ def _needs_parentheses(child_op: object, parent: tuple[str, str] | None) -> bool
     if "**" in (child_op, parent_op) or side == "right":
         return True
     return _PRECEDENCE[child_op] < _PRECEDENCE[parent_op]
+
+
+def _without_line_end_whitespace(code: str) -> str:
+    """*code* without the whitespace ending its lines outside string literals.
+
+    ``ruff format`` removes it, so a rendering that kept it would not be the fixed
+    point its function body promises. A line ending inside a multiline string (the
+    line before one that begins inside it) keeps its whitespace, which is the
+    string's own; indentation is never touched.
+    """
+    ends_inside = {number - 1 for number in lines_inside_literals(code)}
+    return "\n".join(
+        line if number in ends_inside else line.rstrip(" \t\f")
+        for number, line in enumerate(python_lines(code), start=1)
+    )
 
 
 class _Renderer:
@@ -1022,7 +1043,7 @@ class _Renderer:
             if exc.msg == "'return' outside function":
                 raise self.fail("Assign the result to df instead of using return.") from None
             raise self.fail(f"Invalid Python on line {exc.lineno or 1}: {exc.msg}.") from None
-        return code
+        return _without_line_end_whitespace(code)
 
     # -- field helpers ---------------------------------------------------
 
@@ -1095,7 +1116,7 @@ class _Renderer:
                 raise self.fail(f"{label} must be a number.")
             if isinstance(value, float) and not math.isfinite(value):
                 raise self.fail(f"{label} must be a finite number.")
-            return literal_type, repr(value)
+            return literal_type, float_literal(value) if isinstance(value, float) else repr(value)
         if literal_type == "text":
             if not isinstance(value, str):
                 raise self.fail(f"{label} must be text.")

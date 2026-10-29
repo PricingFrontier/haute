@@ -25,7 +25,7 @@ from haute._polars_utils import (
     projected_or_carrier_columns,
 )
 from haute._validation_error import HauteValidationError
-from haute.errors import BoundedMemoryUnsupportedError, SchemaMismatchError
+from haute.errors import BoundedMemoryUnsupportedError, ParseError, SchemaMismatchError
 
 logger = get_logger(component="io")
 
@@ -370,30 +370,81 @@ def read_data_source(
     return build_data_source_adapter(config).read(profile=profile, columns=columns)
 
 
-def read_user_bytes_and_text(path: str | Path) -> tuple[bytes, str]:
-    """Read a user text file once, returning the raw bytes and decoded text.
+_UTF8_BOM = b"\xef\xbb\xbf"
 
-    Consumers that both present decoded content and authenticate the exact
-    bytes (the recovery revision) must derive both from one read, or a
-    concurrent external edit could pair one read's content with the other
-    read's identity.
+
+@dataclass(frozen=True, slots=True)
+class Utf8DecodeFailure:
+    """The first byte of a file that is not UTF-8, and where it is.
+
+    The line and column count from one, the column in characters, so they point
+    an editor at the byte.
+    """
+
+    byte: int
+    line: int
+    column: int
+
+    def __str__(self) -> str:
+        return f"byte 0x{self.byte:02X} at line {self.line}, column {self.column}"
+
+
+def utf8_decode_failure(raw: bytes, exc: UnicodeDecodeError) -> Utf8DecodeFailure:
+    """Locate the byte *exc* says *raw* cannot be decoded at."""
+    line_start = raw.rfind(b"\n", 0, exc.start) + 1
+    return Utf8DecodeFailure(
+        byte=raw[exc.start],
+        line=raw.count(b"\n", 0, exc.start) + 1,
+        column=len(raw[line_start : exc.start].decode("utf-8")) + 1,
+    )
+
+
+def decode_user_source(raw: bytes, *, source_file: str | Path) -> str:
+    """Decode a pipeline or submodel source's bytes as Python reads the file.
+
+    The bytes are strict UTF-8 and a leading byte order mark is dropped, since
+    ``ast.parse`` would read U+FEFF as a syntax error; newlines are translated
+    as ``Path.read_text`` translates them. A byte that is not UTF-8 is a
+    ``ParseError`` naming *source_file* and the byte, as Python itself refuses
+    such a file: text decoded with replacement characters would be written over
+    the author's bytes by the next save.
+    """
+    body = raw[len(_UTF8_BOM) :] if raw.startswith(_UTF8_BOM) else raw
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        failure = utf8_decode_failure(body, exc)
+        raise ParseError(
+            f"{source_file} is not valid UTF-8: {failure}. Save the file as UTF-8.",
+            source_file=str(source_file),
+            line=failure.line,
+            column=failure.column,
+        ) from exc
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def read_user_source(path: str | Path) -> tuple[bytes, str]:
+    """Read a pipeline or submodel source once: its exact bytes and its text.
+
+    Consumers that both present the text and authenticate the exact bytes (the
+    recovery revision) derive both from this one read, so a concurrent external
+    edit can never pair one read's content with another read's identity. The
+    text is :func:`decode_user_source`'s.
     """
     raw = Path(path).read_bytes()
-    # ``utf-8-sig`` is identical to UTF-8 except that it consumes an optional
-    # leading BOM. Feeding U+FEFF to ``ast.parse`` would turn an otherwise
-    # valid user pipeline into a false syntax error. ``TextIOWrapper`` applies
-    # the same universal-newline translation as ``Path.read_text``.
-    with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8-sig", errors="replace") as reader:
-        return raw, reader.read()
+    return raw, decode_user_source(raw, source_file=path)
 
 
 def read_user_text(path: str | Path) -> str:
-    """Read a user-supplied text file, tolerating non-UTF-8 bytes.
+    """Read a user-supplied text file other than a pipeline source, tolerating non-UTF-8 bytes.
 
-    User files may contain Windows-1252 or other non-UTF-8 bytes. Invalid
-    bytes are replaced instead of raising ``UnicodeDecodeError``.
+    Invalid bytes are replaced instead of raising ``UnicodeDecodeError``, and a
+    leading byte order mark is dropped. Pipeline and submodel sources are read
+    strictly by :func:`read_user_source` instead.
     """
-    return read_user_bytes_and_text(path)[1]
+    raw = Path(path).read_bytes()
+    with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8-sig", errors="replace") as reader:
+        return reader.read()
 
 
 _OBJECT_CACHE_MAX_SIZE = 32
@@ -539,7 +590,12 @@ def _load_external_object_uncached(path: str, file_type: str) -> object:
         from haute._sandbox import safe_unpickle
 
         return safe_unpickle(path)
-    raise ValueError(
+    raise ValueError(unsupported_external_file_type(file_type))
+
+
+def unsupported_external_file_type(file_type: object) -> str:
+    """The message for a Load File naming a file type it cannot load."""
+    return (
         f"Unsupported file_type: {file_type!r}. Load File loads "
         f"{', '.join(repr(supported) for supported in EXTERNAL_FILE_TYPES)} files."
     )

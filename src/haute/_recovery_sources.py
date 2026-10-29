@@ -22,6 +22,7 @@ from haute._config_io import (
 from haute._pipeline_repair import PipelineRepairError
 from haute._polars_steps import STEPPED_NODE_TYPES
 from haute._recovery_schemas import RecoveryFieldChange
+from haute._source_layout import python_lines
 from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import NodeType
 from haute.errors import ConfigError
@@ -76,6 +77,21 @@ def read_raw_node_settings(
     if reference is not None and not isinstance(reference, str):
         raise conflict("A node config reference must be a literal relative path.")
     if reference:
+        # A sidecar-backed node takes its settings from the sidecar alone, as
+        # the parser does: any other decorator keyword is removed, never
+        # written over the sidecar.
+        for key in sorted(raw.keys() - {"contract"}):
+            changes.append(
+                RecoveryFieldChange(
+                    path=f"/{key}",
+                    outcome="removed",
+                    reason=(
+                        f"The decorator keyword {key!r} has no effect beside config=; "
+                        f"the node takes its settings from {reference}."
+                    ),
+                )
+            )
+            del raw[key]
         relative = (Path(document.source_file).parent / reference).as_posix()
         content = read_artifact(root, relative)
         if content is None:
@@ -107,7 +123,7 @@ def read_raw_node_settings(
                     "Correct the file manually, or use Reset node to replace it."
                 ) from exc
     params = [arg.arg for arg in (*function.args.posonlyargs, *function.args.args)]
-    body = _function_body_source(source.splitlines(), function)
+    body = _function_body_source(python_lines(source), function)
     keyword_only = [arg.arg for arg in function.args.kwonlyargs]
     body_dropped = uncalled_function_body(node_type, body, [*params, *keyword_only], params)
     if body_dropped:
@@ -145,15 +161,6 @@ def read_raw_node_settings(
         if "steps" not in reconciled:
             changes.append(RecoveryFieldChange(path="/steps", outcome="removed", reason=reason))
         raw = reconciled
-    if "source_type" in raw and "sourceType" not in raw:
-        raw["sourceType"] = raw.pop("source_type")
-        changes.append(
-            RecoveryFieldChange(
-                path="/sourceType",
-                outcome="retained",
-                reason="Known decorator spelling: source_type maps to sourceType.",
-            )
-        )
     return node_type, raw, changes
 
 

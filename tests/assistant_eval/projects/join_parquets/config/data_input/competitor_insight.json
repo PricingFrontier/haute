@@ -1,7 +1,7 @@
 {
-  "inputType": "file",
+  "arguments": {},
   "format": "parquet",
+  "inputType": "file",
   "mode": "scan",
-  "path": "data/competitor_insight.parquet",
-  "arguments": {}
+  "path": "data/competitor_insight.parquet"
 }

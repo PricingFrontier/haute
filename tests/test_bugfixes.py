@@ -654,16 +654,14 @@ class TestParserConfigLoadWarning:
         graph = parse_pipeline_file(pipeline_dir / "main.py")
         assert graph.warning is None
 
-    def test_warning_set_when_config_has_invalid_utf8(self, tmp_path, monkeypatch):
-        """A config file with non-UTF-8 bytes (e.g. Windows-1252 en-dash)
-        should be read with replacement chars and still parse successfully."""
+    def test_a_config_that_is_not_utf8_fails_the_parse(self, tmp_path, monkeypatch):
+        """A config file with a Windows-1252 en-dash (0x96) is refused naming the file and
+        the byte, never read with a replacement character the next save would write."""
         monkeypatch.chdir(tmp_path)
         pipeline_dir = tmp_path / "rating"
         pipeline_dir.mkdir()
         config_dir = pipeline_dir / "config" / "banding"
         config_dir.mkdir(parents=True)
-        # Write a JSON file with a Windows-1252 en-dash (0x96) — invalid UTF-8
-        # With errors="replace", the 0x96 becomes U+FFFD and JSON stays valid
         (config_dir / "bands.json").write_bytes(
             b'{"factors": [{"banding": "categorical", "column": "age", '
             b'"outputColumn": "age_band", "rules": [{"value": "young", '
@@ -676,15 +674,11 @@ class TestParserConfigLoadWarning:
             "def bands(df): ...\n"
         )
 
+        from haute.errors import ConfigError
         from haute.parser import parse_pipeline_file
 
-        graph = parse_pipeline_file(pipeline_dir / "main.py")
-        # Pipeline parses successfully — replacement chars keep JSON valid
-        assert len(graph.nodes) == 1
-        config = graph.nodes[0].data.config
-        assert "_load_error" not in config
-        # The label contains the replacement character instead of the raw byte
-        assert "\ufffd" in config["factors"][0]["rules"][0]["assignment"]
+        with pytest.raises(ConfigError, match=r"bands\.json is not valid UTF-8: byte 0x96"):
+            parse_pipeline_file(pipeline_dir / "main.py")
 
     def test_format_load_error_warning_empty(self):
         """No labels should produce None."""

@@ -26,7 +26,6 @@ from haute._io import read_user_text
 from haute._logging import get_logger
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._project_mutation_lock import ProjectMutationLock
-from haute._sandbox import is_contained
 from haute._sidecar import (
     SidecarModel,
     SidecarReadResult,
@@ -37,7 +36,7 @@ from haute._sidecar import (
     read_sidecar_state,
 )
 from haute._submodel_paths import resolve_submodel_reference
-from haute.errors import ConfigError, ParseError
+from haute.errors import ParseError
 from haute.graph_utils import GraphNode, NodeType, PipelineGraph, _sanitize_func_name
 
 # The sidecar read schema lives in the core ``haute._sidecar`` module so editor
@@ -80,8 +79,9 @@ def pipeline_dir() -> Path:
     binding and the builders use (the builders apply it to the
     execution-scoped project root, this helper to cwd). A missing ``[project].pipeline`` key is a
     soft configuration omission: we warn and fall back to cwd so a fresh
-    project still works. A malformed or unreadable ``haute.toml``, or a
-    ``[project]`` that is not a table, raises ``ConfigError`` — silently
+    project still works. A malformed or unreadable ``haute.toml``, a
+    ``[project]`` that is not a table, or a pipeline it names outside the
+    project root raises ``ConfigError`` — silently
     returning cwd would route every subsequent save / load at the wrong
     directory and surface as confusing "file not found" errors far from the
     real cause.
@@ -96,16 +96,10 @@ def pipeline_dir() -> Path:
         )
         return project_root
 
+    # The reader refuses a pipeline outside the project root.
     configured = _toml_configured_pipeline(project_root)
     if configured is not None:
-        pipeline_path = configured.resolve()
-        if not is_contained(project_root, pipeline_path):
-            raise ConfigError(
-                "haute.toml [project].pipeline resolves outside the project root",
-                path=str(toml_path),
-                pipeline=str(configured),
-            )
-        return pipeline_path.parent
+        return configured.resolve().parent
     logger.warning(
         "haute_toml_missing_pipeline",
         path=str(toml_path),
