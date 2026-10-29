@@ -1987,6 +1987,26 @@ class TestValuesChangedInPlace:
                 + _TIMES_A.format("factors"),
                 "factors",
             ),
+            (
+                'factors = {"A": 1.0}\nclass Box:\n    def __init__(self, d):\n'
+                '        d["A"] = 2.0\nBox(factors)\n' + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                "factor = 1.0\ndef reset():\n    global factor\n    factor = 2.0\nreset()\n"
+                'df = df.with_columns(y=pl.col("x") * factor)',
+                "factor",
+            ),
+            (
+                "factor = 1.0\nvalues = [(factor := 2.0) for _ in range(1)]\n"
+                'df = df.with_columns(y=pl.col("x") * factor)',
+                "factor",
+            ),
+            (
+                "factors = [2.0, 1.0]\nordered = factors.sort()\n"
+                'df = df.with_columns(y=pl.col("x") * factors[0])',
+                "factors",
+            ),
         ],
         ids=[
             "subscript",
@@ -2032,6 +2052,10 @@ class TestValuesChangedInPlace:
             "a-parameter-held-in-a-local-container",
             "a-function-run-after-the-value-is-bound-again",
             "a-function-called-through-an-alias",
+            "a-class-whose-constructor-changes-its-argument",
+            "a-global-bound-again-by-a-function",
+            "a-walrus-in-a-comprehension",
+            "a-container-method-whose-result-is-used",
         ],
     )
     def test_the_value_is_reported_not_guessed(self, code: str, unknown: str) -> None:

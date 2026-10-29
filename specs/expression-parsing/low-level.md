@@ -201,23 +201,27 @@ no alias or migration shim; direct test callers use the same current contract.
   own line that changes one of Python's containers (`update`, `append`, `extend`, `insert`,
   `remove`, `clear`, `sort`, `reverse`, `add`, `discard`, the set updates), on any value, or
   any method called on its own line on a value the code bound, also in a comprehension run for
-  its effect; and any use of a changing function. A hit on a name the code bound only ever to
+  its effect; such a container method anywhere on a name that may hold a container, its result
+  used or not (`ordered = cols.sort()`); and any use of a changing function. A hit on a name the code bound only ever to
   values that cannot change is no change (`factor += 0.1` on a number, `expr.alias("z")` alone
   on a closed Polars expression). The scan reaches every depth of a statement, a loop body and
   a class body included.
 - **A function the code defines changes values when it is used**: a `def` or `lambda` whose body
   changes a value in place, uses another such function, or changes one of its own names that a
   binding there could make a container (a parameter always can; `t += x` on `t = 0` cannot) is
-  a changing function, and so is every name bound to a value that refers to one
-  (`run = bump`). Its body runs when it is used, so the change counts at every use: a call by
-  name or as a method, or handing it on to be called (an alias, an argument, a decorator, a
-  `lambda` written where it is passed). A definition nobody uses changes nothing; decorators,
+  a changing function, and so are a class defining one (making or using an instance runs it)
+  and every name bound to a value that refers to one (`run = bump`, `box = Box()`). Its body
+  runs when it is used, so the change counts at every use: a call by name or as a method, or
+  handing it on to be called (an alias, an argument, a decorator, a `lambda` written where it
+  is passed). A function that binds a `global` name binds it again wherever it is used, so
+  that name is unknown afterwards. A definition nobody uses changes nothing; decorators,
   defaults and base classes run where they are written. A change made by a function the code
   does not define (`random.shuffle(cols)`, a preamble helper) is not followed: that is the
   boundary of what reading the code can see.
 - **Every way of binding a name counts**: besides assignments, a `match` capture,
-  `except ... as e` and a walrus inside a simple assignment's value bind their names, so a name
-  they bind is unknown afterwards. Whether a name may hold a value that can change counts every
+  `except ... as e`, a walrus inside a simple assignment's value and a walrus inside a
+  comprehension (which binds in the scope around it) bind their names, so a name they bind is
+  unknown afterwards. Whether a name may hold a value that can change counts every
   binding a block may make, reads a binding's value without the names the block may bind
   (those may hold something else by then), and treats a name bound with no value to read
   (`except ... as e`) as able to hold anything.
