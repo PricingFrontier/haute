@@ -43,6 +43,7 @@ from haute._expression_parser import (
     parse_expression,
     parse_expression_chain,
     renamed_from,
+    wrap_node_code,
 )
 from haute._graph_utils import edge_input_name, select_edge_source_output
 from haute._logging import get_logger
@@ -905,18 +906,6 @@ def detect_row_lineage_type(
 # ---------------------------------------------------------------------------
 
 
-def _wrap_node_code(raw_code: str) -> str:
-    """Wrap dot-chain or bare-expression code so the parser sees valid Python."""
-    if not raw_code:
-        return raw_code
-    if raw_code.startswith("."):
-        return f"df = (df\n{raw_code})"
-    stripped = raw_code.lstrip()
-    if not stripped.startswith("df") and "=" not in raw_code.split("\n")[0].split("(")[0]:
-        return f"df = (\n{raw_code}\n)"
-    return raw_code
-
-
 def _effective_node_code(
     config: Mapping[str, Any],
     node_map: Mapping[str, GraphNode],
@@ -1010,7 +999,7 @@ def column_derivation(
         return derivation
     node = node_map.get(step.node_id)
     config = node.data.config if node is not None and isinstance(node.data.config, dict) else {}
-    code = _wrap_node_code(_effective_node_code(config, node_map))
+    code = wrap_node_code(_effective_node_code(config, node_map))
     if not code.strip():
         return derivation
     try:
@@ -1074,7 +1063,7 @@ def input_source_entry(
             entry["substituted_text"] = calculation["substituted_text"]
             entry["result_value"] = calculation["result_value"]
         else:
-            code = _wrap_node_code(_effective_node_code(config, node_map))
+            code = wrap_node_code(_effective_node_code(config, node_map))
             parsed = parse_expression(code, column) if code else None
             # Code that never assigns the column (a model's transform steps
             # around its prediction) did not compute it: the value is the one
@@ -1175,7 +1164,7 @@ def _build_rename_chain(
                     cfg = nd.data.config if isinstance(nd.data.config, dict) else {}
                     raw_code = cfg.get("code", "") or ""
                     if raw_code:
-                        source = copied_from(_wrap_node_code(raw_code), current_name)
+                        source = copied_from(wrap_node_code(raw_code), current_name)
                         if source is not None:
                             chain.insert(0, source)
                             current_name = source
@@ -1511,11 +1500,9 @@ def enrich_steps(
 ) -> None:
     """Enrich trace steps in-place with expression/calculation/detail data.
 
-    This is a best-effort pass — if the enrichment modules are unavailable
-    or a per-step enrichment fails, the fields stay ``None``.  The
-    expression-parser and node-type enricher references are resolved at
-    call time via ``haute.trace`` attribute lookup so pytest
-    monkeypatching at that location flows through unchanged.
+    This is a best-effort pass: a per-step enrichment that fails leaves a
+    visible ``error`` on the field it fills, and the other fields stay as
+    they were.
 
     *source_frames_of* maps a (source, target) node pair to the
     ``sourceHandle`` of every edge between them — the per-edge frame
@@ -1547,7 +1534,7 @@ def enrich_steps(
             # The executor wraps dot-chain syntax (e.g. ".filter(...)") as
             # "df = (df\n.filter(...))".  Apply the same wrapping so the
             # expression parser sees valid Python.
-            code = _wrap_node_code(raw_code)
+            code = wrap_node_code(raw_code)
             node_type = step.node_type
 
             # --- Expression parsing ---
@@ -1581,7 +1568,7 @@ def enrich_steps(
                         else {}
                     )
                     u_raw = _effective_node_code(u_cfg, node_map)
-                    u_code = _wrap_node_code(u_raw)
+                    u_code = wrap_node_code(u_raw)
                     if u_code:
                         try:
                             parsed = parse_expression(u_code, column)

@@ -32,7 +32,7 @@ from haute._trace_correlation import _correlate_rows_posthoc
 from haute._types import NodeType
 from haute.executor import _preview_cache
 from haute.trace import execute_trace
-from tests.conftest import build_test_api_input_snapshots, make_graph
+from tests.conftest import build_test_api_input_snapshots, head_frame_resolver, make_graph
 from tests.test_output_nested_roundtrip import _FIXTURE, _api_input_config, _output_mapping
 
 
@@ -111,6 +111,10 @@ def test_edge_join_with_multi_frame_base_correlates_join_parent() -> None:
         ),
     }
 
+    edge_metadata: dict[tuple[str, str], list[tuple[str | None, str | None]]] = {
+        ("base", "edge"): [("policies", "base")],
+        ("join", "edge"): [(None, "join")],
+    }
     rows = _correlate_rows_posthoc(
         eager_outputs,
         order=["base", "join", "edge"],
@@ -118,10 +122,9 @@ def test_edge_join_with_multi_frame_base_correlates_join_parent() -> None:
         target_node_id="edge",
         row_index=0,
         node_map=node_map,
-        edge_metadata={
-            ("base", "edge"): [("policies", "base")],
-            ("join", "edge"): [(None, "join")],
-        },
+        row_scope=head_frame_resolver(
+            eager_outputs, {"edge": ["base", "join"]}, "edge", node_map, edge_metadata
+        ),
         traced_column="rate",
     )
 
@@ -153,22 +156,26 @@ def test_edge_join_same_multi_frame_source_uses_physical_port_roles() -> None:
             ),
         ),
     }
-    rows = _correlate_rows_posthoc(
-        {
-            "api": {
-                "policies": pl.DataFrame({"policy_id": ["P1"], "premium": [100]}),
-                "rates": pl.DataFrame({"policy_id": ["P1"], "premium": [999], "rate": [1.2]}),
-            },
-            "edge": pl.DataFrame(
-                {"policy_id": ["P1"], "premium": [100], "premium_right": [999], "rate": [1.2]}
-            ),
+    frames: dict[str, Any] = {
+        "api": {
+            "policies": pl.DataFrame({"policy_id": ["P1"], "premium": [100]}),
+            "rates": pl.DataFrame({"policy_id": ["P1"], "premium": [999], "rate": [1.2]}),
         },
+        "edge": pl.DataFrame(
+            {"policy_id": ["P1"], "premium": [100], "premium_right": [999], "rate": [1.2]}
+        ),
+    }
+    edge_metadata: dict[tuple[str, str], list[tuple[str | None, str | None]]] = {
+        ("api", "edge"): [("policies", "base"), ("rates", "join")]
+    }
+    rows = _correlate_rows_posthoc(
+        frames,
         order=["api", "edge"],
         parents_of={"edge": ["api"]},
         target_node_id="edge",
         row_index=0,
         node_map=node_map,
-        edge_metadata={("api", "edge"): [("policies", "base"), ("rates", "join")]},
+        row_scope=head_frame_resolver(frames, {"edge": ["api"]}, "edge", node_map, edge_metadata),
         traced_column="rate",
     )
 
@@ -231,7 +238,6 @@ def test_row_scope_names_each_port_of_one_source_by_its_own_frame(
         target_node_id="priced",
         row_index=0,
         node_map=node_map,
-        edge_metadata=edge_metadata,
         traced_column="premium",
         row_scope=resolver,
     )

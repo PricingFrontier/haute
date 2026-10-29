@@ -582,11 +582,13 @@ class TestExecuteTraceEdgeCases:
         with pytest.raises(ValueError, match="not found"):
             execute_trace(graph, target_node_id="nonexistent")
 
-    def test_partial_materialisation_without_target_uses_documented_fallback(
+    def test_a_walk_without_the_target_frame_is_a_broken_invariant(
         self,
         tmp_path,
         monkeypatch: pytest.MonkeyPatch,
     ):
+        """The walk raises a node's failure and always collects the target, so a
+        target without a frame is never traced from positional guesses."""
         import haute.trace as trace_module
 
         p = tmp_path / "data.parquet"
@@ -615,20 +617,10 @@ class TestExecuteTraceEdgeCases:
         )
         trace_module._cache.clear()
         try:
-            result = execute_trace(
-                graph,
-                row_index=0,
-                target_node_id="target",
-                row_values={"x": 1},
-            )
+            with pytest.raises(RuntimeError, match="'target' produced no frame"):
+                execute_trace(graph, row_index=0, target_node_id="target", row_values={"x": 1})
         finally:
             trace_module._cache.clear()
-
-        assert result.target_node_id == "target"
-        assert result.output_value == {}
-        assert next(step for step in result.steps if step.node_id == "src").output_values == {
-            "x": 1
-        }
 
     def test_row_index_out_of_range_raises(self, tmp_path):
         p = tmp_path / "data.parquet"

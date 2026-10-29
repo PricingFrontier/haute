@@ -24,11 +24,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from haute._edge_join import EDGE_JOIN_DEFAULT_SUFFIX
-from haute._expression_parser import assigns_column
+from haute._expression_parser import assigns_column, wrap_node_code
 from haute._graph_utils import upstream_node_ids
 from haute._json_safe import MAX_SAFE_INTEGER
 from haute._logging import get_logger
-from haute._trace_enrichment import _effective_node_code, _wrap_node_code
+from haute._trace_enrichment import _effective_node_code
 
 if TYPE_CHECKING:
     from haute.trace import TraceStep
@@ -376,8 +376,7 @@ def _step_targets_column(
     config = getattr(getattr(node, "data", None), "config", None)
     if not isinstance(config, dict) or node_map is None:
         return False
-    code = _effective_node_code(config, node_map).strip()
-    return assigns_column(_wrap_node_code(code), column)
+    return assigns_column(wrap_node_code(_effective_node_code(config, node_map)), column)
 
 
 def _detail_uses_default(value: Any) -> bool:

@@ -22,9 +22,10 @@ from haute._expression_parser import (
     assignment_phases,
     assigns_column,
     parse_expression,
+    wrap_node_code,
 )
 from haute._trace_correlation import _edge_join_key_pairs
-from haute._trace_enrichment import _effective_node_code, _wrap_node_code
+from haute._trace_enrichment import _effective_node_code
 from haute._types import NodeType
 
 if TYPE_CHECKING:
@@ -324,7 +325,7 @@ class _Derivation:
         self.changed = changed
         config = node.data.config if isinstance(node.data.config, dict) else {}
         self.config: dict[str, Any] = config
-        self.code = _wrap_node_code(_effective_node_code(config, node_map))
+        self.code = wrap_node_code(_effective_node_code(config, node_map))
         self.made: set[str] = set()
         self.needed: _Demand = set()
         # Columns whose final value, and whose value from before the code,

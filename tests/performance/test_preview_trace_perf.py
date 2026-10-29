@@ -20,7 +20,7 @@ from haute.executor import _preview_cache, execute_graph
 from haute.schemas import NodeResult, TraceResponse
 from haute.trace import TraceResult, execute_trace, trace_result_to_dict
 from haute.trace import _cache as _trace_cache
-from tests.conftest import build_test_input_snapshot
+from tests.conftest import build_test_input_snapshot, head_frame_resolver
 
 pytestmark = [pytest.mark.perf, pytest.mark.usefixtures("_widen_sandbox_root")]
 
@@ -545,19 +545,22 @@ def test_multi_frame_correlation_records_cost(
     unresolved: dict[str, tuple[str, int]] = {}
     work = CorrelationWork()
 
+    parents_of: dict[str, list[str]] = {"api": [], "target": ["api"]}
+    edge_metadata: dict[tuple[str, str], list[tuple[str | None, str | None]]] = {
+        ("api", "target"): [("policies", None), ("drivers", None)],
+    }
+
     start = time.perf_counter()
     rows = _correlate_rows_posthoc(
         eager_outputs,
         ["api", "target"],
-        {"api": [], "target": ["api"]},
+        parents_of,
         "target",
         1777,
         node_map=node_map,
+        row_scope=head_frame_resolver(eager_outputs, parents_of, "target", node_map, edge_metadata),
         diagnostics=diagnostics,
         unresolved=unresolved,
-        edge_metadata={
-            ("api", "target"): [("policies", None), ("drivers", None)],
-        },
         traced_column="premium",
         work=work,
     )
@@ -608,21 +611,26 @@ def test_reordered_typed_correlation_10k_bounds(
     work = CorrelationWork()
     diagnostics: list[dict[str, Any]] = []
 
+    frames: dict[str, Any] = {"source": parent, "target": target}
+    parents_of: dict[str, list[str]] = {"source": [], "target": ["source"]}
+    node_map = {
+        "source": _node("source", NodeType.DATA_INPUT, {}),
+        "target": _node(
+            "target",
+            NodeType.POLARS,
+            {"code": 'df = source.sort("policy_id", descending=True)'},
+        ),
+    }
+
     start = time.perf_counter()
     rows = _correlate_rows_posthoc(
-        {"source": parent, "target": target},
+        frames,
         ["source", "target"],
-        {"source": [], "target": ["source"]},
+        parents_of,
         "target",
         0,
-        node_map={
-            "source": _node("source", NodeType.DATA_INPUT, {}),
-            "target": _node(
-                "target",
-                NodeType.POLARS,
-                {"code": 'df = source.sort("policy_id", descending=True)'},
-            ),
-        },
+        node_map=node_map,
+        row_scope=head_frame_resolver(frames, parents_of, "target", node_map),
         diagnostics=diagnostics,
         work=work,
     )
@@ -664,21 +672,26 @@ def test_ambiguous_correlation_10k_bounds(request: pytest.FixtureRequest) -> Non
     diagnostics: list[dict[str, Any]] = []
     unresolved: dict[str, tuple[str, int]] = {}
 
+    frames: dict[str, Any] = {"source": parent, "target": target}
+    parents_of: dict[str, list[str]] = {"source": [], "target": ["source"]}
+    node_map = {
+        "source": _node("source", NodeType.DATA_INPUT, {}),
+        "target": _node(
+            "target",
+            NodeType.POLARS,
+            {"code": 'df = source.sort("bucket").select("bucket")'},
+        ),
+    }
+
     start = time.perf_counter()
     rows = _correlate_rows_posthoc(
-        {"source": parent, "target": target},
+        frames,
         ["source", "target"],
-        {"source": [], "target": ["source"]},
+        parents_of,
         "target",
         0,
-        node_map={
-            "source": _node("source", NodeType.DATA_INPUT, {}),
-            "target": _node(
-                "target",
-                NodeType.POLARS,
-                {"code": 'df = source.sort("bucket").select("bucket")'},
-            ),
-        },
+        node_map=node_map,
+        row_scope=head_frame_resolver(frames, parents_of, "target", node_map),
         diagnostics=diagnostics,
         unresolved=unresolved,
         work=work,
@@ -714,17 +727,22 @@ def test_identical_correlation_10k_bounds(request: pytest.FixtureRequest) -> Non
     target = parent.sort("bucket").with_columns(observed=pl.col("bucket"))
     diagnostics: list[dict[str, Any]] = []
 
+    frames: dict[str, Any] = {"source": parent, "target": target}
+    parents_of: dict[str, list[str]] = {"source": [], "target": ["source"]}
+    node_map = {
+        "source": _node("source", NodeType.DATA_INPUT, {}),
+        "target": _node("target", NodeType.POLARS, {"code": 'df = source.sort("bucket")'}),
+    }
+
     start = time.perf_counter()
     rows = _correlate_rows_posthoc(
-        {"source": parent, "target": target},
+        frames,
         ["source", "target"],
-        {"source": [], "target": ["source"]},
+        parents_of,
         "target",
         0,
-        node_map={
-            "source": _node("source", NodeType.DATA_INPUT, {}),
-            "target": _node("target", NodeType.POLARS, {"code": 'df = source.sort("bucket")'}),
-        },
+        node_map=node_map,
+        row_scope=head_frame_resolver(frames, parents_of, "target", node_map),
         diagnostics=diagnostics,
     )
     correlation_seconds = time.perf_counter() - start

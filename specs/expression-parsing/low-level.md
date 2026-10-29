@@ -121,8 +121,9 @@ with no table).
 
 **`evaluate_expression`** (`_expression_parser.py`): wrap bare dot-chain code (`.method(...)`),
 including snippets with leading indentation, or a naked expression into a synthetic `df = (...)`
-statement through the same wrapper used by `parse_expression_chain` so both APIs parse the same
-source shape → merge
+statement through `wrap_node_code`, after stripping a leading BOM — the one wrapper
+`parse_expression_chain`, `assignment_phases` and trace enrichment use too, so every reader
+parses the same source shape → merge
 `preamble_ns` constants under `row_values` (column values win on key collision) →
 `parse_expression` for the text/columns/type → `_definition_in` locates the expression assigning
 `target_column` as `parse_expression` does → the expression is a window when it contains an
@@ -207,9 +208,9 @@ no alias or migration shim; direct test callers use the same current contract.
   `_PREC_USUB` (below `**`, above `*`) and `not` `_PREC_NOT` (below a comparison, above `and`);
   `_unaryop` parenthesises a looser operand, so `-(x + z)` and `~(a & b)` keep their parentheses
   while `-x ** 2` stays `-(x ** 2)` as Python reads it.
-- **BOM handling**: `parse_expression`, `parse_expression_chain`, and
-  `_locate_defining_expression` all strip a leading `﻿` before parsing (`evaluate_expression`
-  inherits this only transitively, by calling into `parse_expression`/`_locate_defining_expression`).
+- **BOM handling**: `wrap_node_code` strips a leading `﻿`, and `parse_expression`
+  and `_locate_defining_expression` strip it from code given to them unwrapped, so every
+  reader parses the same source.
 - **No text recovery of syntax-invalid source**: a file that is not valid Python is never
   scanned for fragments. The strict parser turns its `SyntaxError` into a contextual
   `ParseError`, and editor recovery presents it as a source-only document carrying the located

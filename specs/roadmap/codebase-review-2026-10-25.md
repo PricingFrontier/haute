@@ -125,8 +125,8 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the twenty-one packages delivered or settled since (thirteen by 28
-October 2026, eight more on 29 October) have been removed from the sections below; the coverage table keeps the
+The findings of the twenty-two packages delivered or settled since (thirteen by 28
+October 2026, nine more on 29 October) have been removed from the sections below; the coverage table keeps the
 original counts.
 
 ## Validation — 25 October 2026
@@ -336,7 +336,6 @@ production:
 | Modelling | MDL-2, MDL-18, MDL-22 | `MOD-R06` |
 | Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
 | Tracing | TRC-8, TRC-9, TRC-10, TRC-14 | `TRACE-R03` |
-| Tracing | TRC-5, TRC-6, TRC-7, TRC-11, TRC-12, TRC-13 | `TRACE-R04` |
 | Git integration | GIT-3, GIT-4, GIT-5, GIT-8, GIT-9 | `GIT-R02` |
 | Git integration | GIT-6, GIT-7 | `GIT-R03` |
 | Git integration | GIT-2 | `GIT-R04` |

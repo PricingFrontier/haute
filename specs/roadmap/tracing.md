@@ -16,7 +16,6 @@ from the [25 October 2026 codebase review](codebase-review-2026-10-25.md).
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | TRACE-R03 | Planned | P2 | A parent row proven by carried values is matched strictly or omitted, a banding coercion that fails is an error marker, an unnameable edge is reported, and a failed comparison names its real cause. |
-| TRACE-R04 | Planned | P3 | The unreachable partial-trace path, the test-only correlation branch, the dead helper, the stale comments and the three duplicated mechanisms are gone. |
 | TRACE-R05 | Planned | P2 | The trace panel shows an additive waterfall step with its own operator, the clicked column's conditional or opaque card shows its value, export failures say their cause, a power renders as a power, omission notes are chosen by code, and the panel's test-only helpers are gone. |
 
 ## Planned improvements
@@ -56,37 +55,6 @@ validation.
 `src/haute/_trace_enrichment.py::enrich_banding`;
 `src/haute/trace.py::_trace_lineage_alignments`;
 `src/haute/_trace_correlation.py::_unsupported_match_result`.
-
-### TRACE-R04 — Dead paths and clones in the trace
-**Why:** The "target node execution failed" branch builds partial rows by
-`row_index` position with no correlation and is unreachable (the walk raises
-node failures, the target is always collected, the cache holds only completed
-walks), while the specification still describes the partial path. The
-non-resolver branch of `_correlate_rows_posthoc` is a second correlation path
-only tests take. `_planned_order` has no caller. Two comments claim the
-enrichment dispatch resolves parser names through `sys.modules`, which nothing
-does; a dead `else` supplies a profile `execute_trace` always passes. The
-dot-chain code wrapper exists twice (differing on BOM stripping and indentation,
-against the specification's "same wrapper"), the preamble compile-and-merge
-three times, and the ancestor BFS in `_prune_to_column_relevance` twice.
-
-**Plan:** Delete the branch and the specification's partial-trace sentences;
-make `row_scope` required and move the tests onto a resolver; delete
-`_planned_order`, the comments and the dead `else`; one wrapper, one preamble
-helper, one BFS.
-
-**Acceptance:** The named code is gone; `_correlate_rows_posthoc` has one path;
-jscpd reports none of the pairs; the specification no longer describes a
-partial trace.
-
-**Dependencies:** `ENGQ-R01` owns dead code outside this component.
-
-**Evidence:** `src/haute/trace.py::_materialize_eager_outputs`;
-`src/haute/_trace_correlation.py::_correlate_rows_posthoc`;
-`src/haute/trace.py::_planned_order`;
-`src/haute/_trace_enrichment.py::_wrap_node_code`;
-`src/haute/_expression_parser.py::_wrap_expression_code`;
-`src/haute/trace.py::_prune_to_column_relevance`.
 
 ### TRACE-R05 — The trace panel shows what the response says
 **Why:** The backend emits waterfall entries with `operation: "add"` whose value

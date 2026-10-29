@@ -5,7 +5,7 @@
 | File | Responsibility |
 | --- | --- |
 | `src/haute/trace.py` | Public facade and orchestrator. `execute_trace()` entry point, `TraceStep`/`TraceOmission`/`TraceResult` dataclasses, the trace execution cache (`_cache`, `TRACE_CACHE_MAX_BYTES`), row/omission assembly, column-relevance pruning, provenance, and JSON serialisation (`trace_result_to_dict`). Re-exports expression-parser and node-type enricher names as public convenience imports; `_trace_enrichment.py` owns its dependencies directly. |
-| `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. It imports the shared row JSON converter from `src/haute/_json_safe.py` (owned by [json-shredding](../json-shredding/low-level.md)) imported locally as `_jsonify_row` rather than owning a second converter; the module owns `SchemaDiff` computation, dtype-robust Polars match-expression construction (`_typed_value_match_expr`), exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, shared by the single-frame and multi-frame paths), multi-frame per-edge parent resolution (`_resolve_multi_frame_parent`), and the backward-walk driver `_correlate_rows_posthoc`. |
+| `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. It imports the shared row JSON converter from `src/haute/_json_safe.py` (owned by [json-shredding](../json-shredding/low-level.md)) imported locally as `_jsonify_row` rather than owning a second converter; the module owns `SchemaDiff` computation, dtype-robust Polars match-expression construction (`_typed_value_match_expr`), exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, used for every head frame and every frame of a multi-frame parent), the limited-preview resolver (`RowScopeResolver`, which resolves every port of a parent one physical edge at a time), and the backward-walk driver `_correlate_rows_posthoc`. |
 | `src/haute/_python_syntax.py` | Cross-component dependency owned by [codegen](../codegen/low-level.md): tracing consumes its LibCST-derived exact method-call names and positions; it does not mutate trace source. |
 | `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), canonical instance-aware code selection (`_effective_node_code`), row-lineage-type classification (`detect_row_lineage_type`, from node type and operation alone), the per-step dispatch walk (`enrich_steps`) that drives expression parsing/evaluation (with a pre-assignment-value guard for self-referential columns), intra-node chain analysis, rename detection, and node-type dispatch for every `TraceStep`, and the input-source entry (`input_source_entry`: how one node computed a value a formula read). |
 | `src/haute/_trace_lineage.py` | The traced value's lineage. `trace_value_lineage()` walks a column trace's demand back from the target over the enriched steps and returns a `ValueLineage`: the nodes it reaches (step relevance and omission relevance), the columns each step contributes, and what each column a step computes for the value read (`reads`: per column, a helper the step dropped included, `ColumnRead` entries naming every node, as a `ColumnSource`, that computed the value read). |
@@ -235,30 +235,25 @@ continuation is never cached: every click proves again.
 4. Read the target output with `.get()`. If it is a `dict` (a multi-frame source
    targeted directly, with no downstream node to pick a frame), raise
    `ValueError` naming the node and directing the caller to trace a node
-   downstream of a specific frame instead. If it is absent because execution
-   produced only a partial result, retain the documented partial-trace path
-   below rather than indexing the missing key.
+   downstream of a specific frame instead. The walk raises a node's failure and
+   always collects the target, and the cache holds only completed walks, so a target
+   with no frame is a broken invariant and raises `RuntimeError`.
 5. Build `source_frames_of`: for every edge in the graph, append its
    `sourceHandle` to the list keyed by `(edge.source, edge.target)`, preserving
    edge order. One entry per edge, not per pair — a multi-frame source can feed
    the same child through several edges.
 6. Build a `RowScopeResolver` over a click-local copy of the head frames (row-scoped
    lookups are written only there, never to cached head frames). If the caller supplied
-   `row_values` and the target DataFrame exists, verify the row at `row_index` with
+   `row_values`, verify the row at `row_index` with
    `_match_rows_vectorized`. On mismatch, search via `_find_target_row_index` in the
    limited target frame; when the clicked values are absent from it, look the row up in
    the target's uncapped plan (`_lookup_clicked_row`), use that lookup as the target frame,
    and clear the resolver's head-resolved set so no ancestor is proven by a head frame. No
    match or ambiguity raises `ValueError`, while an unsupported target dtype raises
-   `TraceCorrelationUnsupportedError`. A missing target skips verification and continues
-   through the partial-result path.
-7. If the target node produced output, call `_correlate_rows_posthoc()` (below,
-   passed the click-local frames, `source_frames_of`, `column` as `traced_column`, and the
-   resolver as `row_scope`) to get a JSON-safe row dict per node (or `None` for unresolved
-   nodes). If the target node's
-   execution failed, build partial rows directly from whatever `eager_outputs`
-   are available instead (no correlation), skipping any node whose output is a
-   multi-frame `dict`.
+   `TraceCorrelationUnsupportedError`.
+7. Call `_correlate_rows_posthoc()` (below, passed the click-local frames,
+   `source_frames_of`, `column` as `traced_column`, and the resolver as `row_scope`) to
+   get a JSON-safe row dict per node (or `None` for unresolved nodes).
 8. `_assemble_steps()` builds `TraceStep`s from the correlated rows: source nodes
    get `input_values = {}`; other nodes' `input_values` merge each parent's
    correlated row (namespacing every parent's copy as `f"{pid}.{k}"` whenever
@@ -316,8 +311,10 @@ continuation is never cached: every click proves again.
 
 It runs only on a trace-cache miss; trace never reads the preview cache.
 
-1. Compile the preamble, merge in any caller-supplied `preamble_ns`
-   (caller-supplied keys win, for test convenience), and call
+1. Take the names node code runs with (`_trace_preamble_ns`: the compiled preamble
+   with any caller-supplied `preamble_ns` over it, caller-supplied keys winning, for
+   test convenience; `_build_trace_plans` and enrichment's formula names use the same
+   helper), and call
    a display walk (`walk_graph`, execution-engine) that raises node failures, collects
    the head-framed nodes (`CollectPolicy.display(collect=..., row_limits_by_node=...)`)
    each to its prefix, so each head frame is its node's plan limited to its own prefix;
@@ -492,10 +489,10 @@ the limited preview shows rather than independent source samples.
 
 ### `_match_parent_row()` (`_trace_correlation.py`)
 
-Correlates ONE candidate frame (a bare parent `DataFrame`, or one frame of a
-multi-frame parent) against the resolved child row. Factored out of
-`_correlate_rows_posthoc` so the single-frame and multi-frame paths share
-identical matching logic:
+Correlates ONE candidate frame (a parent's head frame, or one frame of a
+multi-frame parent) against the resolved child row. `RowScopeResolver.resolve`
+calls it for every port matched in a head frame, so a single-frame parent and each
+frame of a multi-frame one share identical matching logic:
 
 1. Project the child's row onto the parent's columns (`_build_parent_match_row`)
    — a generic name-based projection, except for the JOIN-role parent of an
@@ -545,33 +542,8 @@ identical matching logic:
    (`_allows_relaxed_parent_match`) — a
    relaxed miss there must not manufacture false lineage.
 4. Returns `(row_dict, positional_index, match_width)`, where `match_width` is
-   the number of child columns projected onto this frame — the specificity a
-   multi-frame resolution uses to rank competing candidate frames.
-
-### `_resolve_multi_frame_parent()` (`_trace_correlation.py`)
-
-Correlates a multi-frame parent (`dict[label, DataFrame]`) row for one child.
-Called once per (parent, child) pair from `_correlate_rows_posthoc`, with
-`edges` set to `(edge_metadata or {}).get((parent_id, child_id))` — a sequence
-of `(sourceHandle, targetHandle)` pairs per edge between that pair, in edge order:
-
-1. Appends one candidate per physical edge (duplicates allowed, without deduplicating
-   handles) for non-`None` handles whose frame exists in the parent's `dict` and is
-   non-empty as `candidates`. No candidates → record an `unresolved_source_frame`
-   diagnostic and return `(None, -1)`.
-2. Exactly one candidate → delegate straight to `_match_parent_row` on that
-   frame.
-3. Several candidates → call `_match_parent_row` on *each* independently
-   (diagnostics suppressed per-candidate to avoid noise), keeping only frames
-   that produced a confident row match. Duplicate-handle edges are compared
-   independently. No frame matches → record `unresolved_source_frame` and
-   return `(None, -1)`.
-4. Disambiguate the surviving matches in order: (a) if `traced_column` is set
-   and any matched frame's `DataFrame` has that column, narrow to those frames;
-   (b) narrow further to the frame(s) with the widest `match_width`; (c) if more
-   than one frame still survives, record an `ambiguous_source_frame` diagnostic
-   (`severity: "warning"`) naming the candidates and return `(None, -1)`.
-5. Return the winning frame's `(row_dict, positional_index)`.
+   the number of child columns projected onto this frame — the specificity the
+   resolver uses to rank competing ports of one parent.
 
 ### `_correlate_rows_posthoc()` (`_trace_correlation.py`)
 
@@ -584,17 +556,9 @@ of `(sourceHandle, targetHandle)` pairs per edge between that pair, in edge orde
    then by descending position in `order` (nearest the target first). The first child
    that proves the row decides it and only its diagnostics are kept; when none does, the
    first child's diagnostics explain the omission. A node with no such child is not on
-   the path to the target. Without a resolver (direct callers of the
-   function), walk `order` in reverse. For each unresolved node with a materialized output:
-   - Find a child of that node already resolved with a non-empty row
-     (`resolved_child_id`); if none exists, the node is not on the path to the
-     target and is marked unresolved (`None`, index `-1`).
-   - If the parent's output (`eager_outputs[nid]`) is a `dict` (a multi-frame
-     source), delegate to `_resolve_multi_frame_parent()` (above) with
-     `edges=(edge_metadata or {}).get((nid, resolved_child_id))` and the caller's
-     `traced_column`, and continue to the next node.
-   - Otherwise, delegate to `_match_parent_row()` (above) on the bare
-     `DataFrame`.
+   the path to the target. The resolver is required: correlation has this one path, and a
+   caller holding only materialised frames builds a resolver whose every edge is aligned
+   and every node head-framed, so each parent is matched in its frame.
 4. Return the per-node row dict (or `None`) map.
 
 The caller creates one `CorrelationWork` recorder and passes it through the
@@ -959,9 +923,8 @@ snapshot deterministically.
   at once (the canonical four-port `apiInput` → `OUTPUT` topology, or a node
   joining two data levels straight off one multi-frame source). `source_frames_of`
   therefore stores a `list[str | None]` per pair — one entry per edge, in edge
-  order — and `_resolve_multi_frame_parent` matches every distinct candidate
-  frame against the resolved child row independently rather than assuming a
-  single frame per pair.
+  order — and `RowScopeResolver.resolve` matches every port's frame against the
+  resolved child row independently rather than assuming a single frame per pair.
 - **Multi-frame disambiguation never guesses.** When several frames of one
   source all confidently match the child row, the traced column (if any) wins
   first, then the widest `match_width` (most specific match). A surviving tie
@@ -1162,7 +1125,11 @@ integration/regression suites:
   or a non-string quote id), with the quote id alone left ambiguous.
 - **`tests/test_trace_w4_fixes.py`** — W4-audit correlation-soundness
   regressions: fail-loud/unresolved behaviour over wrong-row attribution, and
-  numeric-comparison agreement with actual engine behaviour.
+  numeric-comparison agreement with actual engine behaviour. It, the identical-row,
+  multi-frame and evidence suites and the performance corpus call
+  `_correlate_rows_posthoc` over materialised frames through
+  `tests/conftest.py::head_frame_resolver`, a resolver whose every edge is aligned and
+  every node head-framed, so they exercise the one correlation path the trace runs.
 - **`tests/test_trace_fail_loudly.py`** — the fail-loud enrichment
   sweep: pins that specific `except Exception` sites inside `_enrich_steps` and
   its helpers surface a visible `error` field (or raise) rather than silently

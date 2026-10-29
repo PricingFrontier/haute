@@ -36,6 +36,7 @@ __all__ = [
     "evaluate_expression",
     "parse_expression_chain",
     "renamed_from",
+    "wrap_node_code",
 ]
 
 
@@ -1418,15 +1419,23 @@ def evaluate_expression(
     return _evaluate_expression_impl(code, target_column, row_values, preamble_ns, row)
 
 
-def _wrap_expression_code(code: str) -> str:
-    """Make expression snippets parseable without corrupting assignments."""
-    code_clean = code.lstrip("\ufeff")
-    if code_clean.lstrip().startswith("."):
-        return f"df = (df\n{code_clean})"
-    first_line_prefix = code_clean.split("\n", 1)[0].split("(", 1)[0]
-    if code_clean and not code_clean.startswith("df") and "=" not in first_line_prefix:
-        return f"df = (\n{code_clean}\n)"
-    return code_clean
+def wrap_node_code(code: str) -> str:
+    """Node code as the module the parser reads, as the executor runs it.
+
+    A dot chain (``.filter(...)``, indented or not) continues ``df``; a bare
+    expression becomes ``df``'s value; a leading BOM goes. Code that starts
+    with ``df`` or assigns on its first line is left as written, so the
+    wrapping never corrupts an assignment. The one wrapper every reader of a
+    node's code uses.
+    """
+    code = code.lstrip("\ufeff")
+    head = code.strip()
+    if head.startswith("."):
+        return f"df = (df\n{code})"
+    first_line_prefix = head.split("\n", 1)[0].split("(", 1)[0]
+    if head and not head.startswith("df") and "=" not in first_line_prefix:
+        return f"df = (\n{code}\n)"
+    return code
 
 
 _GLOBAL_CONSTANT_READ = re.compile(r"\bglobal_constants\.([A-Za-z][A-Za-z0-9_]*)\b")
@@ -1525,7 +1534,7 @@ def _evaluate_expression_impl(
     preamble_ns: dict[str, Any] | None,
     row: pl.DataFrame | None,
 ) -> EvaluatedExpression:
-    code = _wrap_expression_code(code)
+    code = wrap_node_code(code)
     namespace = dict(preamble_ns or {})
     constant_values = _global_constant_values(namespace, code)
 
@@ -1905,7 +1914,7 @@ def _call_writes(call: ast.Call, symbol_table: dict[str, ast.AST]) -> tuple[froz
 
 def assignment_phases(code: str, target_column: str) -> AssignmentPhases | None:
     """Split the columns *code* assigns around the last call assigning *target_column*."""
-    code = _wrap_expression_code(code).lstrip("﻿")
+    code = wrap_node_code(code)
     try:
         _cached_parse(code)
     except SyntaxError:
@@ -2169,7 +2178,7 @@ def parse_expression_chain(code: str, target_column: str) -> list[ParsedExpressi
 
 def _parse_expression_chain_impl(code: str, target_column: str) -> list[ParsedExpression]:
     """Implementation of parse_expression_chain."""
-    code_wrapped = _wrap_expression_code(code)
+    code_wrapped = wrap_node_code(code)
 
     try:
         _cached_parse(code_wrapped)
