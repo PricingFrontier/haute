@@ -10,6 +10,12 @@ exist go longest-first onto the least-loaded shard, and any other module goes
 to ``crc32(path) % N + 1``. A stale or incomplete table can unbalance the
 shards, but it can never drop or duplicate a test.
 
+Within a shard the same table orders the run: the longest modules go first, each
+module's tests in their own order, and a module the table does not record counts
+as its median. xdist hands tests out in collection order, which is alphabetical,
+so a long module collected last used to run alone while the other workers sat
+idle; started first, the long modules overlap and the short ones fill the end.
+
 ``tests/conftest.py`` adds the options and registers :class:`ShardSelection`
 in every pytest process, including each xdist worker, since workers are the
 processes that collect.
@@ -22,6 +28,7 @@ import fnmatch
 import json
 import math
 import re
+import statistics
 import zlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -123,6 +130,8 @@ class ShardSelection:
         self.spec = spec
         self._rootpath = rootpath
         self._patterns = tuple(python_files)
+        self._durations = present
+        self._median_seconds = statistics.median(present.values()) if present else 0.0
         self._assignment = assign_modules(present, spec.count)
         mine = [module for module, shard in self._assignment.items() if shard == spec.index]
         self._recorded_modules = len(mine)
@@ -147,11 +156,25 @@ class ShardSelection:
         # None, not False: a module in this shard stays subject to every other ignore rule.
         return None if self.shard_of(module) == self.spec.index else True
 
+    def expected_seconds(self, path: Path) -> float:
+        """A test file's recorded duration, or the table's median when it has none."""
+        try:
+            module = path.relative_to(self._rootpath).as_posix()
+        except ValueError:
+            return self._median_seconds
+        return self._durations.get(module, self._median_seconds)
+
+    @pytest.hookimpl(trylast=True)
+    def pytest_collection_modifyitems(self, items: list[pytest.Item]) -> None:
+        # A stable sort keeps each module's tests, and modules of equal duration,
+        # in collection order; every xdist worker sorts identically.
+        items.sort(key=lambda item: -self.expected_seconds(item.path))
+
     def pytest_report_header(self) -> str:
         return (
             f"shard {self.spec.index}/{self.spec.count}: {self._recorded_modules} recorded "
             f"test modules ({self._recorded_seconds:.0f}s recorded), plus any unrecorded "
-            "module that hashes here"
+            "module that hashes here; longest modules first"
         )
 
 

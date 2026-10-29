@@ -4,19 +4,27 @@ The file holds one table per sharded lane, because coverage tracing slows some
 modules far more than others. Each shard uploads a report written with
 ``-o junit_family=xunit1``, so every test case names its file: the coverage
 shards as ``backend-junit-<K>``, the compatibility shards as
-``backend-compat-junit-<python>-<K>``. Refresh both from one green run on main,
-the compatibility table from one interpreter's shards (a test may appear once
-per refresh):
+``backend-compat-junit-<python>-<K>``. Refresh both from several green runs,
+each downloaded into a directory of its own, the compatibility table from one
+interpreter's shards; ``--median-of-runs`` keeps each module's median across the
+runs. One run is not enough: each job lands on a runner whose speed differs from
+the next job's by around a tenth, so one run's table carries each shard's runner
+into the next balance.
 
-    gh run download <run-id> --pattern "backend-junit-*" --dir .cache/junit/coverage
-    uv run python scripts/refresh_test_durations.py --lane coverage .cache/junit/coverage
-    gh run download <run-id> --pattern "backend-compat-junit-3.13-*" --dir .cache/junit/compat
-    uv run python scripts/refresh_test_durations.py --lane compat .cache/junit/compat
+    for run in <run-id> <run-id> <run-id>; do
+      gh run download $run --pattern "backend-junit-*" --dir .cache/junit/coverage/$run
+      gh run download $run --pattern "backend-compat-junit-3.13-*" --dir .cache/junit/compat/$run
+    done
+    uv run python scripts/refresh_test_durations.py --lane coverage \
+        --median-of-runs .cache/junit/coverage/*
+    uv run python scripts/refresh_test_durations.py --lane compat \
+        --median-of-runs .cache/junit/compat/*
 
-A module's duration is the sum of its test cases' ``time`` (setup, call and
-teardown), rounded to one decimal place. The other lanes' tables are kept. The
-durations only balance the CI shards (tests/_ci_shards.py): a stale table can
-unbalance them, but it never drops or duplicates a test.
+Without ``--median-of-runs`` the reports are one run's, and a test may appear in
+them once. A module's duration is the sum of its test cases' ``time`` (setup,
+call and teardown), rounded to one decimal place. The other lanes' tables are
+kept. The durations only balance the CI shards (tests/_ci_shards.py): a stale
+table can unbalance them, but it never drops or duplicates a test.
 """
 
 from __future__ import annotations
@@ -24,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import statistics
 import sys
 import xml.etree.ElementTree as ElementTree
 from collections.abc import Iterable, Sequence
@@ -93,6 +102,21 @@ def module_durations(reports: Iterable[Path]) -> dict[str, float]:
     return totals
 
 
+def median_durations(runs: Sequence[Sequence[Path]]) -> dict[str, float]:
+    """Each module's median duration across runs, over the runs that recorded it.
+
+    One run's numbers carry each job's runner: a shard measured on a slow runner
+    records its modules as long, and balancing on that hands the shard too little
+    work next time. Across several runs each module meets several runners.
+    """
+    per_run = [module_durations(reports) for reports in runs]
+    modules = sorted(set().union(*per_run))
+    return {
+        module: statistics.median(run[module] for run in per_run if module in run)
+        for module in modules
+    }
+
+
 def existing_lanes(path: Path) -> dict[str, dict[str, float]]:
     """The lane tables already in *path*, or none when it does not exist yet."""
     if not path.exists():
@@ -150,6 +174,11 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="The lane whose table the reports refresh (coverage or compat).",
     )
     parser.add_argument(
+        "--median-of-runs",
+        action="store_true",
+        help="Treat each report path as one run and keep each module's median across them.",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=DEFAULT_OUTPUT,
@@ -162,7 +191,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     try:
         lanes = existing_lanes(args.output)
-        durations = module_durations(report_files(args.reports))
+        if args.median_of_runs:
+            durations = median_durations([report_files([run]) for run in args.reports])
+        else:
+            durations = module_durations(report_files(args.reports))
     except DurationsReportError as exc:
         print(str(exc), file=sys.stderr)
         return 2

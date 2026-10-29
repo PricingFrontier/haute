@@ -7,6 +7,7 @@ import json
 import re
 import xml.etree.ElementTree as ElementTree
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -188,6 +189,23 @@ def test_a_module_without_a_recorded_duration_goes_to_its_hashed_shard(tmp_path:
     assert selection.pytest_ignore_collect(tmp_path / "tests" / "test_example.py") is True
 
 
+def test_a_shard_runs_its_longest_modules_first_each_in_its_own_order(tmp_path: Path) -> None:
+    _touch(tmp_path, "tests/test_a.py", "tests/test_b.py", "tests/test_c.py", "tests/test_d.py")
+    durations = {"tests/test_a.py": 2.0, "tests/test_b.py": 9.0, "tests/test_c.py": 4.0}
+    selection = ShardSelection(ShardSpec(1, 1), durations, tmp_path, ["test_*.py"])
+    items: list[Any] = [
+        SimpleNamespace(path=tmp_path / "tests" / f"test_{module}.py", name=f"{module}{index}")
+        for module in "abcd"
+        for index in (1, 2)
+    ]
+
+    selection.pytest_collection_modifyitems(items)
+
+    # test_d is unrecorded and counts as the median, 4 s: a tie with test_c, which
+    # keeps their collection order.
+    assert [item.name for item in items] == ["b1", "b2", "c1", "c2", "d1", "d2", "a1", "a2"]
+
+
 def test_python_files_patterns_naming_directories_are_refused(tmp_path: Path) -> None:
     with pytest.raises(pytest.UsageError, match="unsupported patterns"):
         ShardSelection(ShardSpec(1, 2), {}, tmp_path, ["test_*.py", "checks/check_*.py"])
@@ -279,6 +297,37 @@ def test_the_shards_of_a_lane_run_every_test_exactly_once(pytester: pytest.Pytes
     assert sum(len(passed) for passed in per_shard) == len(every_test)
     assert set().union(*per_shard) == every_test
     assert all(passed for passed in per_shard)
+
+
+def _module_order(result: pytest.RunResult) -> list[str]:
+    calls = [
+        report.nodeid.split(".py::")[0]
+        for report in result.reprec.getreports("pytest_runtest_logreport")
+        if report.when == "call"
+    ]
+    return list(dict.fromkeys(calls))
+
+
+def test_a_sharded_run_executes_its_longest_modules_first(pytester: pytest.Pytester) -> None:
+    _sharded_project(pytester)
+
+    sharded = pytester.runpytest(
+        "--shard=1/1", "--shard-lane=ci", "--shard-durations=durations.json"
+    )
+
+    # alpha 9 s, beta 6, gamma 4 and delta 1 are recorded; epsilon and zeta count as
+    # the median, 5 s, and keep their collection order.
+    assert _module_order(sharded) == [
+        "test_alpha",
+        "test_beta",
+        "test_epsilon",
+        "test_zeta",
+        "test_gamma",
+        "test_delta",
+    ]
+    sharded.stdout.fnmatch_lines(["shard 1/1: *; longest modules first"])
+    # An unsharded run keeps pytest's own order.
+    assert _module_order(pytester.runpytest()) == sorted(_MODULES)
 
 
 def _passed_in_summary(result: pytest.RunResult) -> set[str]:
@@ -384,6 +433,62 @@ def test_the_refresh_sums_each_modules_test_case_times(tmp_path: Path) -> None:
         "tests/test_b.py": 4.0,
         "tests/test_c.py": 0.0,
     }
+
+
+def test_the_refresh_keeps_each_modules_median_across_runs(tmp_path: Path) -> None:
+    # Three runs of two shards; each run sees the same test once, so a run is one table.
+    runs = tmp_path / "junit"
+    for run, (a, b) in enumerate((("1.0", "8.0"), ("3.0", "2.0"), ("2.0", "4.0")), start=1):
+        _report(runs / f"run{run}" / "shard1" / "report.xml", _case("tests/test_a.py", "t", a))
+        _report(runs / f"run{run}" / "shard2" / "report.xml", _case("tests/test_b.py", "t", b))
+    # A module only the latest run has keeps that run's time.
+    _report(runs / "run3" / "shard2" / "new.xml", _case("tests/test_new.py", "t", "5.0"))
+    output = _write_json(tmp_path / "durations.json", _lanes(coverage={"tests/test_a.py": 9.0}))
+
+    assert (
+        refresh_test_durations.main(
+            [
+                *(str(runs / f"run{run}") for run in (1, 2, 3)),
+                "--median-of-runs",
+                "--lane",
+                "compat",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+
+    assert load_durations(output, "compat") == {
+        "tests/test_a.py": 2.0,
+        "tests/test_b.py": 4.0,
+        "tests/test_new.py": 5.0,
+    }
+    assert load_durations(output, "coverage") == {"tests/test_a.py": 9.0}
+
+
+def test_without_median_of_runs_two_runs_of_one_test_are_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for run in (1, 2):
+        _report(tmp_path / f"run{run}" / "report.xml", _case("tests/test_a.py", "t", "1"))
+    output = tmp_path / "durations.json"
+
+    assert (
+        refresh_test_durations.main(
+            [
+                str(tmp_path / "run1"),
+                str(tmp_path / "run2"),
+                "--lane",
+                "compat",
+                "--output",
+                str(output),
+            ]
+        )
+        == 2
+    )
+    assert "appears twice" in capsys.readouterr().err
+    assert not output.exists()
 
 
 def test_the_refresh_will_not_overwrite_a_file_it_cannot_read_as_lanes(

@@ -71,7 +71,7 @@
 | `scripts/core_test_files.txt` | Curated core test-subset manifest and its selection/refresh rationale for canary/dependency lanes. |
 | `scripts/property_test_files.txt` | Manifest of every Hypothesis test module for the property-exploration lane; `tests/test_workflow_coverage.py` keeps it equal to the modules that import `hypothesis`. |
 | `scripts/test_file_durations.json` | Recorded per-module backend test durations, one table per sharded lane (`coverage`, `compat`), used only to balance the CI shards (`tests/_ci_shards.py`). |
-| `scripts/refresh_test_durations.py` | Rewrites one lane's table (`--lane`) in `scripts/test_file_durations.json` from pytest JUnit reports (xunit1 family), summing each module's test-case times and keeping the other lanes' tables; refuses reports without test cases or with a test case lacking its `file` or a finite non-negative `time`, and an existing file it cannot read as lane tables. |
+| `scripts/refresh_test_durations.py` | Rewrites one lane's table (`--lane`) in `scripts/test_file_durations.json` from pytest JUnit reports (xunit1 family), summing each module's test-case times and keeping the other lanes' tables; with `--median-of-runs` each report path is one run, and each module keeps its median across the runs that recorded it; refuses reports without test cases or with a test case lacking its `file` or a finite non-negative `time`, and an existing file it cannot read as lane tables. |
 | `scripts/e2e_git_topologies.py` | Exercises Git topology scenarios used by repository-level verification. |
 | `scripts/e2e_scoring_models.py` | Trains small GLM, XGBoost and CatBoost-classifier model files into the e2e project, through the editor's training path, for `frontend/e2e/model-scoring.spec.ts`. |
 | `scripts/generate_api_contracts.py` | Deterministically composes the execution-strategy diagnostic and Explore chart root models (validation mode), the request models of each request group (`REQUEST_CONTRACT_GROUPS`, validation mode, as a route reads a body, listed under `x-haute-request-groups`) and the converted response models of each module group (`RESPONSE_CONTRACT_GROUPS`, serialization mode with every sent field required) into one Draft 2020-12 JSON Schema bundle (a serialization-mode definition that differs from a pilot's validation-mode one of the same name is emitted as `<Name>Output`, with its references rewritten; a response root is never renamed), fixes the recursive finite-JSON definition, drops OpenAPI's `discriminator` keyword from a tagged union (its `oneOf` branches carry the tag as a `const`; Ajv in strict mode refuses the keyword), and atomically writes or byte-checks the committed frontend source artifact. |
@@ -121,7 +121,7 @@
 | `tests/write_sandbox.toml` | The test write-sandbox ratchet's state: the modules that run strict, the lint allowlist's site fingerprints per unconverted file, and each class of out-of-sandbox write the observe-mode census may still record, with its reason. |
 | `tests/workflow_coverage.toml` | Versioned workflow coverage ledger: workflow families, node types, and scenario records with coverage state, owning package, test references, and execution evidence. |
 | `tests/test_workflow_coverage.py` | Ledger validator (`load_ledger`, `roadmap_package_ids`, `ledger_violations`) and its malformed-ledger cases; a meta-marked repository-health module. |
-| `tests/_ci_shards.py` | Pytest file sharding for the CI full-suite lanes, wired by `tests/conftest.py`: `--shard=K/N` keeps only the test modules assigned to shard K and ignores every other module before it is imported, balanced on the durations table `--shard-lane` names; `--shard-durations` names an alternative durations file. |
+| `tests/_ci_shards.py` | Pytest file sharding for the CI full-suite lanes, wired by `tests/conftest.py`: `--shard=K/N` keeps only the test modules assigned to shard K and ignores every other module before it is imported, balanced on the durations table `--shard-lane` names, and runs the shard's longest modules first, each module's tests in order (an unrecorded module counts as the table's median); `--shard-durations` names an alternative durations file. |
 | `tests/_test_debt_scanner.py` | Test-debt scanning primitives (backend AST visitor, frontend source scanner, frontend test-file predicate) shared by `tests/test_test_debt.py` and `tests/test_workflow_coverage.py`; a support module, not a test. |
 | `tests/_property_budget.py` | Shared Hypothesis settings for the generated families: `pr_budget` (small, derandomised, no example database, reproduction blob printed) and the `exploration_examples` override read from the `EXPLORATION_ENV` variable (HAUTE_PROPERTY_EXAMPLES); a support module, not a test. |
 | `scripts/benchmarks/` | Point-in-time benchmark, probe and reproduction programs with their raw results and metadata, linked from the dated reports under `specs/roadmap/`; not an automatically current product-behaviour contract. `specs/roadmap/` itself holds only Markdown reports and the provenance record its index links. |
@@ -424,7 +424,14 @@
   import, so the union of a lane's shards is exactly the unsharded collection.
   Recorded durations only balance the shards. A stale, missing, or renamed
   entry can unbalance them but can neither drop nor duplicate a test, so
-  refreshing the durations file is maintenance, not a correctness step. A
+  refreshing the durations file is maintenance, not a correctness step. The
+  table is refreshed from several green runs' medians: a job's runner differs
+  in speed from the next job's by around a tenth, so one run's table carries
+  each shard's runner into the next balance, and one run's shard times show
+  the runners as much as the balance. Balance is judged on each shard's median
+  over several runs. Within a shard the table orders the run longest module
+  first, so the long modules overlap instead of one finishing alone at the end
+  while the other workers wait. A
   malformed `--shard` value (not `K/N` with 1 ≤ K ≤ N), `--shard` without
   `--shard-lane`, a lane the file has no table for, or a missing, unreadable,
   wrongly versioned, or malformed durations file fails the run before
@@ -600,10 +607,13 @@
 - `tests/test_ci_shards.py` — `--shard` parsing and durations-file validation
   failures, each lane reading its own table and a lane without one refused,
   deterministic longest-first assignment with ties and CRC-32 placement of
-  unrecorded modules, a pytester partition proof (each module runs in exactly
+  unrecorded modules, longest-module-first order within a shard (each module's
+  tests in order, an unrecorded module at the median, an unsharded run
+  untouched), a pytester partition proof (each module runs in exactly
   one shard, an unassigned module is never imported, and xdist workers select
   the same modules), `scripts/refresh_test_durations.py` aggregation into one
-  lane with the others kept, and refusal cases, and the CI invariants that
+  lane with the others kept, each module's median across runs, and refusal
+  cases (one run's reports holding a test twice among them), and the CI invariants that
   every sharded matrix lists `1..N` for its `--shard=${{ matrix.shard }}/N`,
   each sharded backend lane balances on a table the file records, the coverage
   gate combines exactly those shards' data files, and the refresh recipe
