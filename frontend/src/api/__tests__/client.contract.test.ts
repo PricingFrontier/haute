@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import { ApiResponseValidationError } from "../responseValidation"
-import type { OptimiserApplyQuery } from "../types"
+import type { FormSpec, OptimiserApplyQuery } from "../types"
 import {
   applyOptimiser,
   cancelExplorePivot,
@@ -508,6 +508,22 @@ describe("client runtime contracts", () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
     await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).not.toHaveProperty("port_label")
+  })
+
+  it("previewNode sends workbench_form when given a form, omits it otherwise", async () => {
+    const form = { name: "Commercial property" } as unknown as FormSpec
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
+    await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10, portLabels: ["pricing_output"], workbenchForm: form })
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({
+      graph: dummyGraph,
+      port_labels: ["pricing_output"],
+      workbench_form: form,
+    })
+
+    mockFetch.mockClear()
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
+    await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).not.toHaveProperty("workbench_form")
   })
 
   it("previewNode honours a custom timeout and sends no streaming_chunk_size", async () => {

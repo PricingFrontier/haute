@@ -24,7 +24,7 @@ const EAGER_WORKBENCH_CHROME = [
   "components/ProjectControls.tsx",
   "workbench/ViewSwitcher.tsx",
   "stores/useWorkbenchStore.ts",
-  "hooks/useWorkbenchTables.ts",
+  "hooks/useWorkbenchConnections.ts",
 ]
 
 function staticImportsOf(source: string): string[] {

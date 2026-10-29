@@ -1,6 +1,7 @@
 import type { WorkbenchColumn, WorkbenchTable } from "../../api/types"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
-import { columnFill, readWorkbenchTables, type ColumnFill } from "../../utils/workbenchTables"
+import { NODE_TYPES } from "../../utils/nodeTypes"
+import { columnFill, workbenchNodeTables, type ColumnFill } from "../../utils/workbenchTables"
 import type { InputSource } from "./_shared"
 import { NO_COLUMNS_NOTE, WorkbenchTablesHeader, tableLabelIssue } from "./WorkbenchInputEditor"
 
@@ -20,39 +21,30 @@ function fillTitle(fill: ColumnFill): string | undefined {
 }
 
 /**
- * The Workbench Output's panel (specs/workbench): the response's tables the project's
- * workbench supplies, each with the node connected to its port, and each of its columns,
- * which the connected frame's column of exactly its name fills, bordered red while it is
- * missing and orange while that column is of a type that does not fit; the quote's reference
- * and option, which the response gives, are neither. The tables are read-only (the editor
- * keeps them current, `useWorkbenchTables`).
+ * The Workbench Output's panel (specs/workbench): the response's tables the newest fetch
+ * of the project's workbench gave, each with the node connected to its port, and each of
+ * its columns, which the connected frame's column of exactly its name fills, bordered red
+ * while it is missing and orange while that column is of a type that does not fit; the
+ * quote's reference and option, which the response gives, are neither. The tables are
+ * read-only, and nothing of them is in the node.
  */
 export default function WorkbenchOutputEditor({
-  config,
   inputSources,
   reservedFrameLabels,
-  insideSubmodel = false,
 }: {
-  config: Record<string, unknown>
   /** The node's inputs, each with the table port its edge lands on. */
   inputSources: readonly InputSource[]
   /** The document's reserved labels, which a table's name is held against as the schema editor holds it. */
   reservedFrameLabels: ReadonlySet<string>
-  /** A submodel is open: the editor updates the tables only at the pipeline's top level. */
-  insideSubmodel?: boolean
 }) {
-  const enabled = useWorkbenchStore((state) => state.enabled)
-  const tables = readWorkbenchTables(config)
+  const workbench = useWorkbenchStore((state) => state.tables)
+  const tables = workbenchNodeTables(NODE_TYPES.WORKBENCH_OUTPUT, workbench)
   const names = tables.map((table) => table.name)
 
   return (
     <div className="px-4 py-3 space-y-3" data-testid="workbench-output-editor">
       <section data-testid="workbench-output-tables" className="space-y-1.5">
-        <WorkbenchTablesHeader
-          enabled={enabled}
-          insideSubmodel={insideSubmodel}
-          empty={tables.length === 0}
-        />
+        <WorkbenchTablesHeader empty={tables.length === 0} />
         {tables.map((table, index) => (
           <OutputTable
             key={`${index}:${table.name}`}

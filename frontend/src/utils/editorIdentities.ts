@@ -18,7 +18,7 @@ import {
   type PipelineEdge,
   type SubmodelDefinition,
 } from "../types/node"
-import { requestInputFrameLabels } from "./apiInputPorts"
+import { apiInputFrameLabels } from "./apiInputPorts"
 import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 
 type SubmodelRegistry = Record<string, unknown>
@@ -78,9 +78,10 @@ function requestNode(
   }
   let sourceHandles: string[] = []
   let alias: string | undefined
-  if (isRequestInputType(nodeType)) {
-    sourceHandles = requestInputFrameLabels(
-      nodeType,
+  // A Workbench Input's ports are the form's tables, which its config does not hold: it
+  // asks for no handle identities, each frame being named by its handle.
+  if (isRequestInputType(nodeType) && nodeType !== NODE_TYPES.WORKBENCH_INPUT) {
+    sourceHandles = apiInputFrameLabels(
       node.data.config as Record<string, unknown> | undefined,
       reservedApiInputFrameLabels,
     )
@@ -188,6 +189,16 @@ export function applyEditorIdentityResponse(
 
 function edgeInputIdentity(edge: Edge, sourceNode: Node): string {
   const nodeType = requireNodeType(sourceNode)
+  // A Workbench Input's frame is named by its table, the handle itself, as the server names
+  // it (`executable_input_name`).
+  if (nodeType === NODE_TYPES.WORKBENCH_INPUT) {
+    if (typeof edge.sourceHandle !== "string" || edge.sourceHandle.length === 0) {
+      throw new Error(
+        `Cannot attach identity for edge ${edge.id}: source handle ${String(edge.sourceHandle)} has no authoritative identity`,
+      )
+    }
+    return edge.sourceHandle
+  }
   if (
     isRequestInputType(nodeType)
     || nodeType === NODE_TYPES.SUBMODEL

@@ -79,7 +79,7 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
   useWorkbenchShortcuts(onSaveShortcut)
   // The pricer prices on the document and the source as they are when it is called.
   useEffect(() => {
-    setPricer((workbench) => priceSample(resolveGraph(), workbench, useSettingsStore.getState().activeSource))
+    setPricer((form, workbench) => priceSample(resolveGraph(), form, workbench, useSettingsStore.getState().activeSource))
     return () => setPricer(null)
   }, [resolveGraph, setPricer])
   // Preview prices the sample; leaving it drops what waits to be priced, so nothing is

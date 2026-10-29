@@ -1,13 +1,14 @@
 /**
  * A Workbench Input takes its tables, and the sample quote its previews run on, from the
  * project's workbench (specs/workbench), and a Workbench Output takes the response's
- * tables from it. Their configs hold a copy, so the pipeline runs without the form; these
- * rules say how a copy is read, which of its tables are ports, when it needs updating and
- * what each starts with from the palette. `useWorkbenchTables` applies them. A Workbench
- * Output's panel also judges, by the same rule as a run, how a frame fills its columns.
+ * tables from it. Neither node holds them: the editor fetches them (`useWorkbenchStore`),
+ * and these rules say which of them are a node's ports and which connections a fetch
+ * leaves without a table. A Workbench Output's panel also judges, by the same rule as a
+ * run, how a frame fills its columns.
  */
+import type { Edge } from "@xyflow/react"
 import type { WorkbenchColumn, WorkbenchTable } from "../api/types"
-import { canonicalJson } from "./canonicalJson"
+import type { SubmodelBoundaryEdgeData } from "../types/node"
 import { NODE_TYPES } from "./nodeTypes"
 import { castFamily } from "./polarsDtypes"
 import { IDENTITY_COLUMNS } from "./quoteIdentity"
@@ -22,77 +23,84 @@ export interface WorkbenchTables {
   fetch: number
 }
 
-const COLUMN_TYPES: readonly WorkbenchColumn["type"][] = ["int", "float", "str", "bool", "date"]
-
-function isColumn(value: unknown): value is WorkbenchColumn {
-  if (value === null || typeof value !== "object") return false
-  const { name, type } = value as { name?: unknown; type?: unknown }
-  return typeof name === "string" && (COLUMN_TYPES as readonly unknown[]).includes(type)
-}
-
 /**
- * The tables a workbench node's config holds, as the editor reads them: each with its name,
- * its rows per quote and its columns, each with a name and a type. An entry that is not one
- * is left out here; the server refuses the config when the pipeline runs.
+ * Tables' ports: those with a column, by name, in order, a name counting once. A table
+ * without a column has no frame to read into or to fill, so no port.
  */
-export function readWorkbenchTables(config: Record<string, unknown> | undefined | null): WorkbenchTable[] {
-  const tables = config?.tables
-  if (!Array.isArray(tables)) return []
-  return tables.flatMap((entry: unknown): WorkbenchTable[] => {
-    if (entry === null || typeof entry !== "object") return []
-    const { name, rows, columns } = entry as { name?: unknown; rows?: unknown; columns?: unknown }
-    if (typeof name !== "string" || (rows !== "one" && rows !== "many") || !Array.isArray(columns)) return []
-    return [{ name, rows, columns: columns.filter(isColumn).map(({ name: column, type }) => ({ name: column, type })) }]
-  })
-}
-
-/**
- * A workbench node's ports: its tables with a column, by name, in order, a name counting
- * once. A table without a column has no frame to read into or to fill, so no port.
- */
-export function workbenchTablePorts(config: Record<string, unknown> | undefined | null): string[] {
+export function workbenchTablePorts(tables: readonly WorkbenchTable[]): string[] {
   const ports: string[] = []
-  for (const table of readWorkbenchTables(config)) {
+  for (const table of tables) {
     if (table.columns.length > 0 && !ports.includes(table.name)) ports.push(table.name)
   }
   return ports
 }
 
-/** JSON with every object's keys sorted, so the order of keys never reads as a change. */
 /**
- * The update a Workbench Input's config needs to match the fetched tables and sample, or
- * null when none does. A config without a sample matches an empty one.
+ * The tables a node of *nodeType* takes from *workbench*, the newest fetch: a Workbench
+ * Input's input tables and a Workbench Output's response tables; none before the first
+ * fetch lands, and none for any other node.
  */
-export function quoteTablesPatch(
-  config: Record<string, unknown>,
-  workbench: Pick<WorkbenchTables, "tables" | "sample"> | null,
-): { tables: WorkbenchTable[]; sample: Record<string, unknown> } | null {
-  if (workbench === null) return null
-  if (
-    canonicalJson(config.tables) === canonicalJson(workbench.tables) &&
-    canonicalJson(config.sample ?? {}) === canonicalJson(workbench.sample)
-  ) {
-    return null
+export function workbenchNodeTables(
+  nodeType: unknown,
+  workbench: WorkbenchTables | null,
+): readonly WorkbenchTable[] {
+  if (workbench === null) return []
+  if (nodeType === NODE_TYPES.WORKBENCH_INPUT) return workbench.tables
+  if (nodeType === NODE_TYPES.WORKBENCH_OUTPUT) return workbench.responseTables
+  return []
+}
+
+/** A node's ports from *workbench*: those of the tables it takes from it (`workbenchNodeTables`). */
+export function workbenchNodePorts(nodeType: unknown, workbench: WorkbenchTables | null): string[] {
+  return workbenchTablePorts(workbenchNodeTables(nodeType, workbench))
+}
+
+/** A workbench node's connections to tables a fetch no longer has. */
+export interface WorkbenchDisconnection<N> {
+  node: N
+  edges: Edge[]
+}
+
+/**
+ * The connections in *graph* to a table *workbench* does not have, by the node that loses
+ * them: each out of a Workbench Input whose `sourceHandle` is none of its ports, and each
+ * into a Workbench Output whose `targetHandle` is none of its. A connection follows its
+ * table's name however the tables were reordered or replaced. One through a submodel's
+ * boundary is the definition's port, which only the boundary's own editing changes, so it
+ * is left for the run to refuse, naming its table. Null when every connection has its table.
+ */
+export function workbenchDisconnections<N extends { id: string; data: Record<string, unknown> }>(
+  graph: { nodes: readonly N[]; edges: readonly Edge[] },
+  workbench: WorkbenchTables,
+): { edges: Edge[]; removed: WorkbenchDisconnection<N>[] } | null {
+  const inputPorts = new Set(workbenchTablePorts(workbench.tables))
+  const outputPorts = new Set(workbenchTablePorts(workbench.responseTables))
+  const typeOf = new Map(graph.nodes.map((node) => [node.id, node.data.nodeType]))
+  const lost = new Map<string, Edge[]>()
+  for (const edge of graph.edges) {
+    if ((edge.data as SubmodelBoundaryEdgeData | undefined)?.submodelBoundary !== undefined) continue
+    const owner =
+      typeOf.get(edge.source) === NODE_TYPES.WORKBENCH_INPUT && !inputPorts.has(edge.sourceHandle ?? "")
+        ? edge.source
+        : typeOf.get(edge.target) === NODE_TYPES.WORKBENCH_OUTPUT && !outputPorts.has(edge.targetHandle ?? "")
+          ? edge.target
+          : null
+    if (owner !== null) lost.set(owner, [...(lost.get(owner) ?? []), edge])
   }
-  return { tables: structuredClone([...workbench.tables]), sample: structuredClone({ ...workbench.sample }) }
+  if (lost.size === 0) return null
+  const gone = new Set([...lost.values()].flat())
+  return {
+    edges: graph.edges.filter((edge) => !gone.has(edge)),
+    removed: graph.nodes.flatMap((node) => {
+      const edges = lost.get(node.id)
+      return edges === undefined ? [] : [{ node, edges }]
+    }),
+  }
 }
 
 /** The sample priced on the pipeline: each of the Workbench Output's tables' rows, by the table's name. */
 export interface PricedSample {
   tables: Record<string, Record<string, unknown>[]>
-}
-
-/**
- * The update a Workbench Output's config needs to match the fetched response tables, or
- * null when none does.
- */
-export function responseTablesPatch(
-  config: Record<string, unknown>,
-  workbench: Pick<WorkbenchTables, "responseTables"> | null,
-): { tables: WorkbenchTable[] } | null {
-  if (workbench === null) return null
-  if (canonicalJson(config.tables) === canonicalJson(workbench.responseTables)) return null
-  return { tables: structuredClone([...workbench.responseTables]) }
 }
 
 /**
@@ -125,8 +133,8 @@ export function dtypeFits(declared: WorkbenchColumn["type"], dtype: string): boo
 export type ColumnFill = { kind: "filled" | "missing" | "unknown" | "haute" } | { kind: "mistyped"; dtype: string }
 
 /**
- * Whether a node's copy of a table leads with the quote's reference and option: every table
- * but quote_details (`carries_identity` in `src/haute/_workbench_tables.py`). A copy has no
+ * Whether a table leads with the quote's reference and option: every table but
+ * quote_details (`carries_identity` in `src/haute/_workbench_tables.py`). A table has no
  * ids, so the columns are known by their place, names and types.
  */
 export const carriesIdentity = (table: WorkbenchTable): boolean =>
@@ -153,33 +161,4 @@ export function columnFill(
   const held = frameColumns.find((each) => each.name === column.name)
   if (held === undefined) return { kind: "missing" }
   return dtypeFits(column.type, held.dtype) ? { kind: "filled" } : { kind: "mistyped", dtype: held.dtype }
-}
-
-/** The update a workbench node's config needs from a fetch, by its type; others take none. */
-export const WORKBENCH_COPY_PATCHES: Readonly<Record<string, typeof quoteTablesPatch | typeof responseTablesPatch>> = {
-  [NODE_TYPES.WORKBENCH_INPUT]: quoteTablesPatch,
-  [NODE_TYPES.WORKBENCH_OUTPUT]: responseTablesPatch,
-}
-
-/** The config a Workbench Input dragged from the palette starts with: the newest tables and sample fetched. */
-export function paletteWorkbenchInputConfig(
-  defaultConfig: Record<string, unknown>,
-  workbench: WorkbenchTables | null,
-): Record<string, unknown> {
-  return {
-    ...defaultConfig,
-    tables: workbench === null ? [] : structuredClone([...workbench.tables]),
-    sample: workbench === null ? {} : structuredClone({ ...workbench.sample }),
-  }
-}
-
-/** The config a Workbench Output dragged from the palette starts with: the newest response tables fetched. */
-export function paletteWorkbenchOutputConfig(
-  defaultConfig: Record<string, unknown>,
-  workbench: WorkbenchTables | null,
-): Record<string, unknown> {
-  return {
-    ...defaultConfig,
-    tables: workbench === null ? [] : structuredClone([...workbench.responseTables]),
-  }
 }

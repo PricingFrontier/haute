@@ -1,6 +1,7 @@
 import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_HANDLE, edgeJoinCanonicalTargetHandle } from "./edgeJoinRoles"
 import { NODE_TYPE_META, NODE_TYPES, isRequestInputType } from "./nodeTypes"
 import { requestInputFrameColumns } from "./apiInputPorts"
+import type { WorkbenchTables } from "./workbenchTables"
 
 export type EdgeJoinColumnInfo = {
   name: string
@@ -89,12 +90,15 @@ export function analyzeEdgeJoinNode({
   nodes,
   edges,
   columnsFence,
+  workbench = null,
 }: {
   nodeId: string
   config: Record<string, unknown>
   nodes: EdgeJoinValidationNode[]
   edges: EdgeJoinValidationEdge[]
   columnsFence?: EdgeJoinColumnsFence
+  /** The newest fetch of the workbench's tables, whose input tables a Workbench Input's frames are. */
+  workbench?: WorkbenchTables | null
 }): EdgeJoinAnalysis {
   const diagnostics: string[] = []
   const nodeMap = new Map(nodes.map((node) => [node.id, node]))
@@ -133,13 +137,13 @@ export function analyzeEdgeJoinNode({
   const hasPairedConfig = leftKeys.length > 0 || rightKeys.length > 0
   const hasSameValues = onKeys.some(Boolean)
   const hasPairedValues = leftKeys.some(Boolean) || rightKeys.some(Boolean)
-  const baseColumns = getColumns(baseRoleEdge, nodeMap.get(baseRoleInput))
-  const joinColumns = getColumns(joinRoleEdge, nodeMap.get(joinRoleInput))
+  const baseColumns = getColumns(baseRoleEdge, nodeMap.get(baseRoleInput), workbench)
+  const joinColumns = getColumns(joinRoleEdge, nodeMap.get(joinRoleInput), workbench)
   const commonColumns = commonColumnOptions(baseColumns, joinColumns)
   // Offer every column as an option, but only claim a key is *missing* from a
   // side whose columns describe this graph — see EdgeJoinColumnsFence.
-  const baseColumnsCurrent = columnsAreCurrent(baseRoleEdge, nodeMap.get(baseRoleInput), columnsFence)
-  const joinColumnsCurrent = columnsAreCurrent(joinRoleEdge, nodeMap.get(joinRoleInput), columnsFence)
+  const baseColumnsCurrent = columnsAreCurrent(baseRoleEdge, nodeMap.get(baseRoleInput), columnsFence, workbench)
+  const joinColumnsCurrent = columnsAreCurrent(joinRoleEdge, nodeMap.get(joinRoleInput), columnsFence, workbench)
 
   if (hasSameConfig && hasPairedConfig) {
     diagnostics.push("Choose either same-name keys or paired base/join keys, not both.")
@@ -190,6 +194,7 @@ export function findFirstInvalidEdgeJoin(
   nodes: EdgeJoinValidationNode[],
   edges: EdgeJoinValidationEdge[],
   columnsFence?: EdgeJoinColumnsFence,
+  workbench: WorkbenchTables | null = null,
 ): EdgeJoinValidationIssue | null {
   for (const node of nodes) {
     if (node.data?.nodeType !== NODE_TYPES.EDGE_JOIN) continue
@@ -199,6 +204,7 @@ export function findFirstInvalidEdgeJoin(
       nodes,
       edges,
       columnsFence,
+      workbench,
     })
     if (analysis.diagnostics.length > 0) return { node, analysis }
   }
@@ -266,12 +272,28 @@ function readKeyList(value: unknown, field: string, diagnostics: string[]): stri
   return []
 }
 
+/**
+ * Whether a request input's frames are declared rather than captured by a preview: a Quote
+ * Input's in its config's tables, a Workbench Input's in the newest fetch of the
+ * workbench's tables.
+ */
+function declaresFrames(
+  node: EdgeJoinValidationNode,
+  workbench: WorkbenchTables | null,
+): boolean {
+  if (!isRequestInputType(node.data?.nodeType)) return false
+  return node.data?.nodeType === NODE_TYPES.WORKBENCH_INPUT
+    ? workbench !== null
+    : Array.isArray(node.data?.config?.tables)
+}
+
 function getColumns(
   edge: EdgeJoinValidationEdge | undefined,
   node: EdgeJoinValidationNode | undefined,
+  workbench: WorkbenchTables | null,
 ): EdgeJoinColumnInfo[] {
-  if (edge && node?.data && isRequestInputType(node.data.nodeType) && Array.isArray(node.data.config?.tables)) {
-    return requestInputFrameColumns(node.data.nodeType, node.data.config, edge.sourceHandle)
+  if (edge && node?.data && declaresFrames(node, workbench)) {
+    return requestInputFrameColumns(node.data.nodeType, node.data.config, edge.sourceHandle, workbench)
   }
   return node?.data?._columns ?? []
 }
@@ -279,7 +301,7 @@ function getColumns(
 /**
  * Whether *node*'s columns describe the graph the caller is validating.
  *
- * An API Input's columns are read from its own authored config, so they are
+ * A request input's columns are declared (`declaresFrames`), so they are
  * always current. Every other node's are a preview capture, current only
  * while stamped with the fence's structural version and source.
  */
@@ -287,8 +309,9 @@ function columnsAreCurrent(
   edge: EdgeJoinValidationEdge | undefined,
   node: EdgeJoinValidationNode | undefined,
   fence: EdgeJoinColumnsFence | undefined,
+  workbench: WorkbenchTables | null,
 ): boolean {
-  if (edge && node?.data && isRequestInputType(node.data.nodeType) && Array.isArray(node.data.config?.tables)) {
+  if (edge && node?.data && declaresFrames(node, workbench)) {
     return true
   }
   if (!fence || !node?.data) return false

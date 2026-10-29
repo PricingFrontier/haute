@@ -221,6 +221,25 @@ describe("filterIncomingEdges", () => {
     ])
   })
 
+  it("keeps a workbench node's named ports, which are the form's tables rather than the synced graph's", () => {
+    // The server sends a Workbench Input no handle identities; the editor holds its
+    // connections to the tables it fetches (useWorkbenchConnections).
+    const nodes = [
+      graphNode("wb_in", NODE_TYPES.WORKBENCH_INPUT, {}, { _sourceHandleInputNames: {} }),
+      graphNode("priced", NODE_TYPES.POLARS),
+      graphNode("wb_out", NODE_TYPES.WORKBENCH_OUTPUT),
+    ]
+    const result = filterIncomingEdges(nodes, [
+      graphEdge("table", "wb_in", "priced", "policy_details"),
+      graphEdge("filled", "priced", "wb_out", null, "pricing_output"),
+      graphEdge("no-table", "wb_in", "priced"),
+      graphEdge("no-port", "priced", "wb_out"),
+    ], {})
+
+    expect(result.validEdges.map(edge => edge.id)).toEqual(["table", "filled"])
+    expect(result.rejectedEdges.map(({ edge }) => edge.id)).toEqual(["no-table", "no-port"])
+  })
+
   it("checks Edge Join roles and rejects handles that are not rendered", () => {
     const nodes = [
       graphNode("source", NODE_TYPES.POLARS),

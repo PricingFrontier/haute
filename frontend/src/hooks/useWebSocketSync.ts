@@ -76,6 +76,16 @@ function formatRejectedEdgeWarning(rejectedEdges: RejectedIncomingEdge[]): strin
   return `Retained ${rejectedEdges.length} unresolved synced ${edgeLabel} to prevent data loss. ${details}${omittedSummary}. Saving may fail until they are repaired.`
 }
 
+/**
+ * The workbench's form folder may have changed on disk (specs/workbench): the form store,
+ * once loaded, reads it again, and its tables, the workbench nodes' ports, are fetched
+ * again while the workbench is enabled.
+ */
+function formMayHaveChanged(): void {
+  useWorkbenchStore.setState((state) => ({ formChanges: state.formChanges + 1 }))
+  useWorkbenchStore.getState().refreshTables()
+}
+
 function normalizeSourceFile(value: unknown): string | null {
   if (typeof value !== "string") return null
   const trimmed = value.trim()
@@ -340,8 +350,8 @@ export default function useWebSocketSync({
         opened = true
         retriesRef.current = 0
         setStatus("connected")
-        // The form's file may have changed while no frame could say so: read it again.
-        useWorkbenchStore.setState((state) => ({ formChanges: state.formChanges + 1 }))
+        // The form's folder may have changed while no frame could say so.
+        formMayHaveChanged()
         sendResync(true)
       }
 
@@ -490,8 +500,7 @@ export default function useWebSocketSync({
         }
 
         if (msg.type === "workbench_form_changed") {
-          // The form store, once loaded, reads the file again.
-          useWorkbenchStore.setState((state) => ({ formChanges: state.formChanges + 1 }))
+          formMayHaveChanged()
           return
         }
 

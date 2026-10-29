@@ -20,10 +20,6 @@ that fill the sheets from databases and APIs.
 review](codebase-review-2026-10-25.md): what the review found in the Workbench view's
 Allowed field.
 
-`WB-41` finishes moving the form into the pipeline folder, the folder of named files the
-workbench specification describes. The owner chose on 28 October 2026 that the
-Workbench nodes stop keeping copies of the tables in a pull request after the folder's.
-
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -37,7 +33,6 @@ Workbench nodes stop keeping copies of the tables in a pull request after the fo
 | WB-13 | Planned | P3 | An underwriter compares a quote's revisions, records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
-| WB-41 | Planned | P2 | The Workbench Input and Workbench Output read their tables from the form folder instead of keeping copies, so a schema change shows once in a pull request and no copy can fall out of step. |
 
 ## Planned improvements
 
@@ -84,7 +79,7 @@ host) and `::build_release` (the release and the image's build context);
 ### WB-08 — The workbench project's CI/CD
 **Why:** `haute init --workbench` writes the `[workbench]` table and a blank form and
 generates the target's ordinary workflows: Validate (a dry-run deploy scoring the test
-quotes, which also holds the Workbench nodes' copies of the tables to the form), Deploy →
+quotes, which also holds the form the Workbench nodes take their tables from to the pipeline), Deploy →
 Staging, Smoke Test Staging (each test quote a request of its own, held to its expected
 output), Impact Analysis, approval, Deploy → Production, except that the workflows for Azure
 Container Apps, AWS ECS and GCP Cloud Run leave the smoke and impact out, since those
@@ -437,34 +432,3 @@ specification and the field stop calling the shape older.
 
 **Evidence:** `frontend/src/workbench/schema/AllowedField.tsx::TYPED_IN`,
 `src/haute/_workbench_form.py::FormSpec`, `frontend/src/utils/workbenchForm.ts`.
-
-### WB-41 — The Workbench nodes read the form folder
-**Why:** A Workbench Input and a Workbench Output keep copies of the tables, and the Input
-keeps a copy of the sample, in their config files. The editor keeps the copies current and
-deploy holds them to the form, so every schema change shows twice in a pull request
-(commercial-pricing's copies are 21,167 and 7,959 bytes), and a copy out of step is a
-failure that exists only because there is a copy. The copy's rationale, that runs, tests,
-generated code and deploy never read the form, no longer holds: the form is in the
-pipeline folder, and deploy already reads it to check the copies.
-
-**Plan:** Rewrite "A copy, not a reference" in the workbench specification first. The
-nodes then take their tables from the form folder through its reader: the schema
-gives the ports and the request's shape, and the sample is the one `sample_quote` makes,
-with its visibility and preset rows, never the typed rows read raw. The node configs hold
-no tables, the editor's synchronisation of the copies goes, and deploy's comparison
-becomes a check that the form reads and fits the pipeline. The folder's files join the
-nodes' cache keys and the pipeline's revision, and generated code and the deploy bundle
-take the tables from the folder.
-
-**Acceptance:** A schema change shows in the form folder alone. Previews, runs, `haute
-deploy` and the release price commercial-pricing's requests as before, hidden fields
-still left out of the sample. No copy can fall out of step, and an undo never brings one
-back.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_workbench_folder.py::read_form_document`;
-`src/haute/_workbench_input.py::workbench_input_tables`;
-`src/haute/_workbench_tables.py::sample_quote`;
-`src/haute/deploy/_validators.py::_workbench_form_errors`;
-`frontend/src/hooks/useWorkbenchTables.ts`.

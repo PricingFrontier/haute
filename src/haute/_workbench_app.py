@@ -345,7 +345,8 @@ def build_release(
             _validate_base_image_pinning(base_image)
         except DeployError as exc:
             raise WorkbenchAppError(f"[deploy.container] base_image: {exc.message}") from exc
-    resolved = resolve_config(deploy_config)
+    # The workbench nodes take their tables from the form this release ships, read once.
+    resolved = resolve_config(deploy_config, form=document)
     # Built beside the release it replaces, which is left as it is until this one has built.
     building = release_dir.with_name(f".{release_dir.name}.building-{uuid.uuid4().hex[:8]}")
     try:

@@ -42,39 +42,32 @@ export type UseGraphCommitControllerOptions = {
   /** A key of everything a rename's verdict depends on (every name, the support
    *  code); a rename resolved against an older key is resolved again. */
   readNamingContextKey: () => string
-  /** Commit the graph, as an undo step while `history` holds. */
   commitGraph: (
     nodes: Node[],
     edges: Edge[],
     submodels: Record<string, unknown>,
-    history: boolean,
   ) => void
   setSelectedNode: Dispatch<SetStateAction<Node | null>>
   addToast: (type: ToastType, text: string) => void
 }
 
-export type NodeUpdateOptions = {
-  /**
-   * False once the update no longer applies, such as tables fetched for a document the
-   * editor has since replaced. Checked before committing, again after identity resolution.
-   */
-  isCurrent?: () => boolean
-  /**
-   * Called once with the update's final result: at once for an ordinary node, and
-   * after identity resolution for a request input, whose call returns before it commits.
-   */
-  onSettled?: (result: OnUpdateConfigResult) => void
-  /**
-   * False for an update that follows something outside the graph rather than an edit of
-   * it, the workbench nodes' copies of the form's tables: committed without an undo step.
-   */
-  history?: false
-}
-
 export type GraphCommitController = {
-  onUpdateNode: (nodeId: string, data: Record<string, unknown>, options?: NodeUpdateOptions) => OnUpdateConfigResult
+  onUpdateNode: (nodeId: string, data: Record<string, unknown>) => OnUpdateConfigResult
   onRenameNode: (nodeId: string, label: string) => Promise<OnUpdateConfigResult>
   waitForPendingCommits: () => Promise<OnUpdateConfigResult>
+}
+
+/**
+ * The warning that *count* edges were disconnected from the node *label* because what they
+ * connected to went: a source's frames, or the tables a Workbench Output's connections
+ * filled.
+ */
+export function disconnectionWarning(label: string, nodeType: unknown, count: number): string {
+  const one = count === 1
+  const gone = nodeType === NODE_TYPES.WORKBENCH_OUTPUT
+    ? (one ? "the table it filled no longer exists" : "the tables they filled no longer exist")
+    : (one ? "the source frame no longer exists" : "the source frames no longer exist")
+  return `Disconnected ${count} edge${one ? "" : "s"} from ${label}: ${gone} after your edit.`
 }
 
 /**
@@ -179,61 +172,43 @@ export default function useGraphCommitController({
     || editKey(request.nodeId) !== request.editKey
   ), [editKey, requestInvalidated])
 
-  const commit = useCallback((prepared: PreparedNodeUpdate, history: boolean): void => {
+  const commit = useCallback((prepared: PreparedNodeUpdate): void => {
     // Keep request-facing refs coherent immediately; the store subscription
     // effects will observe the same identities after React commits.
     graphRef.current = { nodes: prepared.nodes, edges: prepared.edges }
     submodelsRef.current = prepared.submodels
-    commitGraph(prepared.nodes, prepared.edges, prepared.submodels, history)
+    commitGraph(prepared.nodes, prepared.edges, prepared.submodels)
     setSelectedNode((previous) => (
       previous?.id === prepared.nodeId
         ? { ...previous, data: prepared.data }
         : previous
     ))
     if (prepared.removed.length === 0) return
-    const label = String(prepared.data.label ?? prepared.nodeId)
-    const one = prepared.removed.length === 1
-    // A Workbench Output loses the connections whose tables went; anything else, those
-    // whose source frames went.
-    const gone = prepared.data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT
-      ? (one ? "the table it filled no longer exists" : "the tables they filled no longer exist")
-      : (one ? "the source frame no longer exists" : "the source frames no longer exist")
     addToast(
       "warning",
-      `Disconnected ${prepared.removed.length} edge${one ? "" : "s"} from ${label}: ${gone} after your edit.`,
+      disconnectionWarning(String(prepared.data.label ?? prepared.nodeId), prepared.data.nodeType, prepared.removed.length),
     )
   }, [addToast, commitGraph, graphRef, setSelectedNode, submodelsRef])
 
   const onUpdateNode = useCallback((
     nodeId: string,
     data: Record<string, unknown>,
-    options: NodeUpdateOptions = {},
   ): OnUpdateConfigResult => {
-    const superseded = {
-      ok: false as const,
-      error: "Node update was not applied because the document, editing capability, or a newer node edit superseded it.",
-    }
-    const settle = (result: OnUpdateConfigResult): OnUpdateConfigResult => {
-      options.onSettled?.(result)
-      return result
-    }
-    if (options.isCurrent?.() === false) return settle(superseded)
     const currentNode = graphRef.current.nodes.find((node) => node.id === nodeId)
-    if (!currentNode) return settle({ ok: false, error: `Cannot update missing node "${nodeId}".` })
+    if (!currentNode) return { ok: false, error: `Cannot update missing node "${nodeId}".` }
     if (currentNode.data.label !== data.label) {
-      return settle({
+      return {
         ok: false,
         error: "Use the rename action so the server can resolve the node identity before commit.",
-      })
+      }
     }
 
     const preflight = prepare(nodeId, data, false)
-    if (!preflight.ok) return settle(preflight)
+    if (!preflight.ok) return preflight
     const request = beginRequest(nodeId)
-    const history = options.history !== false
     if (!isRequestInputType(data.nodeType)) {
-      commit(preflight, history)
-      return settle({ ok: true })
+      commit(preflight)
+      return { ok: true }
     }
 
     const pending = (async (): Promise<OnUpdateConfigResult> => {
@@ -246,11 +221,16 @@ export default function useGraphCommitController({
           if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
             throw new Error("identity resolver returned an invalid node")
           }
-          if (requestInvalidated(attemptRequest) || options.isCurrent?.() === false) return superseded
+          if (requestInvalidated(attemptRequest)) {
+            return {
+              ok: false,
+              error: "Node update was not applied because the document, editing capability, or a newer node edit superseded it.",
+            }
+          }
           if (requestIsStale(attemptRequest)) continue
           const finalPlan = prepare(nodeId, resolved[0].data, true)
           if (!finalPlan.ok) return finalPlan
-          commit(finalPlan, history)
+          commit(finalPlan)
           return { ok: true }
         }
         return {
@@ -266,7 +246,6 @@ export default function useGraphCommitController({
     })()
     registerPendingCommit(pending)
     void pending.then((result) => {
-      options.onSettled?.(result)
       if (!result.ok) addToast("error", result.error)
     })
     return { ok: true }
@@ -352,7 +331,7 @@ export default function useGraphCommitController({
           }
           const prepared = prepare(nodeId, resolved[0].data, true)
           if (!prepared.ok) return prepared
-          commit(prepared, true)
+          commit(prepared)
           return { ok: true }
         }
         return {

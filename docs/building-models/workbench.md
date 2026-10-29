@@ -38,7 +38,7 @@ Preview. Preview prices the sample on the source the dropdown shows.
 
 **Save** and Ctrl+S save the project, the same from either view: the workbench's files
 that changed first, when the workbench has unsaved edits, then the pipeline, with the
-Workbench Input's and Workbench Output's tables brought up to date in between, and each
+Workbench Input's and Workbench Output's tables fetched again in between, and each
 save is recorded on your branch's save ledger, so it shows in the Git panel's history.
 **Commit** records a milestone of the whole project after that save. A save is refused
 when one of the workbench's files changed on disk since the workbench read them (an edit
@@ -201,8 +201,7 @@ earlier Haute takes today's columns when it is opened: its **reference** is name
 **quote_reference**, **valid_until** and **currency** are taken out, and the newer columns
 are added, the labels and rules you gave the others kept. A field on a column taken out
 shows **Missing column** on the sheets while you build, for you to remove or move to a
-column of your own, and is not shown in Preview or the app. Save once so the Workbench Input
-copies the table.
+column of your own, and is not shown in Preview or the app.
 
 The app sets **quote_reference**, **quote_option**, **stage**, **assignee**, **archived**,
 **created_date**, **created_by**, **modified_date**, **modified_by** and **haute_version**
@@ -224,9 +223,10 @@ every price has them. Preview prices the sample as `PREVIEW`, option 1, as the a
 the one quote it holds without a quote store: a quote's reference and option are never
 blank.
 
-A table or a column you add reaches the pipeline when you save: the editor fetches the
-tables again, the Workbench Input's and Workbench Output's tables follow the schema, and
-the pipeline is saved with them in the same save. Until then it is on the sheets alone.
+A table or a column you add reaches the pipeline when you save: the Workbench Input and
+the Workbench Output read their tables from the workbench's files wherever the pipeline
+runs, and the editor fetches them again, so their ports follow the schema. Until then it
+is on the sheets alone.
 
 ### Joining the schema's tables
 
@@ -565,8 +565,8 @@ button down on the sheet nothing moves, so a click is never pulled from under th
 when a section above them opens or closes the sheet scrolls to keep their place.
 
 A quote is what the sheets show. Values typed into hidden cells are left out of what is
-priced, as if they had never been typed, for the sample priced in Preview (and the
-Workbench Input's copy of it) and for a quote in the underwriter app, and a hidden required
+priced, as if they had never been typed, for the sample priced in Preview (and what the
+Workbench Input's previews run on) and for a quote in the underwriter app, and a hidden required
 cell is never marked. The values are kept, so ticking the cover again brings them back. A Chart takes
 nothing typed, so a column only a Chart plots never hides and a condition on it never
 holds, and a value only a hidden component or a hidden field takes is left out even when a

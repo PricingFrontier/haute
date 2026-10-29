@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import useWorkbenchStore from "../useWorkbenchStore"
+import useNodeDataStore from "../useNodeDataStore"
 import useToastStore from "../useToastStore"
 
 function respond(body: unknown, status = 200) {
@@ -171,6 +172,31 @@ describe("refreshTables", () => {
     await vi.waitFor(() => expect(store().tables?.fetch).toBe(fetch))
     expect(store().tables?.sample).toEqual(sample)
     expect(store().tables?.responseTables).toEqual(tables("pricing_output"))
+  })
+
+  it("asks every preview and reader of node data again after a fetch that changes what the workbench nodes are given, and not after one that brings the same", async () => {
+    const held = heldResponses()
+    const store = useWorkbenchStore.getState
+    const epoch = () => useNodeDataStore.getState().epoch
+    const fetchedAs = async (index: number, body: unknown) => {
+      const fetch = store().refreshTables()
+      held.answer(index, body)
+      await vi.waitFor(() => expect(store().tables?.fetch).toBe(fetch))
+    }
+    const columns = [{ name: "state", type: "str" }, { name: "exposure", type: "float" }]
+    await fetchedAs(0, { tables: [{ name: "policy", rows: "one", columns }], sample: {}, response_tables: [] })
+    const first = epoch()
+
+    // The same, its keys written in another order.
+    await fetchedAs(1, { response_tables: [], sample: {}, tables: [{ columns, rows: "one", name: "policy" }] })
+    expect(epoch()).toBe(first)
+
+    await fetchedAs(2, { tables: [{ name: "policy", rows: "one", columns }], sample: { policy: { state: "NY" } }, response_tables: [] })
+    expect(epoch()).toBe(first + 1)
+    await fetchedAs(3, { tables: [{ name: "policy", rows: "one", columns }], sample: { policy: { state: "NY" } }, response_tables: tables("premiums") })
+    expect(epoch()).toBe(first + 2)
+    await fetchedAs(4, { tables: [{ name: "policy", rows: "many", columns }], sample: { policy: { state: "NY" } }, response_tables: tables("premiums") })
+    expect(epoch()).toBe(first + 3)
   })
 
   it("keeps the tables it has when the newest fetch fails, and says so once", async () => {

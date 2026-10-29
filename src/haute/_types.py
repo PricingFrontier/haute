@@ -158,12 +158,13 @@ class ApiInputConfig(TypedDict, total=False):
 class WorkbenchInputConfig(TypedDict, total=False):
     """Config for workbenchInput nodes.
 
-    ``tables`` and ``sample`` are the copies of the workbench's input tables and
-    sample quote that the editor keeps current (specs/workbench): each table its
-    name, one row per quote or many, and its typed columns, as
-    ``haute._workbench_tables`` holds them. A request, and with no request, as in a
-    preview, the sample, is read into one frame per table; a table the sample gives
-    no rows is one row of nulls, typed as declared. A Workbench Input reads no file.
+    ``tables`` and ``sample`` are given to the node from the project's form folder
+    wherever the pipeline runs (``haute._workbench_nodes``, specs/workbench), never kept
+    in its config file: the schema's input tables, each its name, one row per quote or
+    many, and its typed columns, as ``haute._workbench_tables`` holds them, and the
+    sample quote as ``sample_quote`` makes it. A request, and with no request, as in a
+    preview, the sample, is read into one frame per table; a table the sample gives no
+    rows is one row of nulls, typed as declared. A Workbench Input reads no data file.
     """
 
     tables: list[dict[str, Any]]
@@ -173,10 +174,11 @@ class WorkbenchInputConfig(TypedDict, total=False):
 class WorkbenchOutputConfig(TypedDict, total=False):
     """Config for workbenchOutput nodes.
 
-    ``tables`` is the copy of the response's tables the project's workbench
-    supplies, which the editor keeps current (specs/workbench), in the Workbench
-    Input's shape. Each is filled from the frame connected to the port its name
-    names, each column from the frame's column of the same name.
+    ``tables`` are the response's tables, given to the node from the project's form
+    folder as a Workbench Input's are and never kept in its config file
+    (specs/workbench), in the Workbench Input's shape. Each is filled from the frame
+    connected to the port its name names, each column from the frame's column of the
+    same name.
     """
 
     tables: list[dict[str, Any]]

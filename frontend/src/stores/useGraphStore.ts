@@ -26,14 +26,14 @@
  *     and clears `redoStack`. An atomic graph commit whose authored fingerprint
  *     is unchanged (such as generated step-code refresh) preserves both stacks.
  *
- *   - Raw: `setNodesRaw`, `setEdgesRaw`, `setSubmodelsRaw`, `setPreambleRaw`,
- *     `setNodesAndEdgesAndSubmodelsRaw`. No
+ *   - Raw: `setNodesRaw`, `setEdgesRaw`, `setSubmodelsRaw`, `setPreambleRaw`. No
  *     history push — used for mid-drag position updates (React Flow's
  *     `onNodesChange` replays many `position` events per frame; snapshotting
  *     each would fill undo with ~60 entries per drag), for WebSocket sync,
- *     for guarded external synchronisation, and for the workbench nodes'
- *     copies of the form's tables, which follow the form, not the graph's
- *     history (an undo puts them back at once).
+ *     for guarded external synchronisation, and for removing the workbench
+ *     nodes' connections to tables the form no longer has, which follow the
+ *     form, not the graph's history (an undo that puts one back sees it
+ *     removed again at once).
  *
  * The 100-entry MAX_HISTORY cap prevents unbounded growth on long editing
  * sessions.
@@ -145,12 +145,6 @@ export interface GraphStore {
   setPreamble: (value: string) => void
 
   // Raw actions (skip history push — for mid-drag and guarded WS sync)
-  /** `setNodesAndEdgesAndSubmodels` without touching the undo or redo stack. */
-  setNodesAndEdgesAndSubmodelsRaw: (
-    nodes: Node[] | ((nds: Node[]) => Node[]),
-    edges: PipelineEdge[] | ((eds: PipelineEdge[]) => PipelineEdge[]),
-    submodels: Record<string, unknown>,
-  ) => void
   setNodesRaw: (nodes: Node[] | ((nds: Node[]) => Node[])) => void
   setEdgesRaw: (edges: PipelineEdge[] | ((eds: PipelineEdge[]) => PipelineEdge[])) => void
   setSubmodelsRaw: (submodels: Record<string, unknown>) => void
@@ -709,10 +703,6 @@ const useGraphStore = create<GraphStore>()((set, get) => {
 
     setNodesAndEdgesAndSubmodels: (nodesUpdater, edgesUpdater, submodels, preamble) => {
       set((state) => commitGraphState(state, nodesUpdater, edgesUpdater, submodels, preamble, true))
-    },
-
-    setNodesAndEdgesAndSubmodelsRaw: (nodesUpdater, edgesUpdater, submodels) => {
-      set((state) => commitGraphState(state, nodesUpdater, edgesUpdater, submodels, undefined, false))
     },
 
     setPreamble: (value) => {

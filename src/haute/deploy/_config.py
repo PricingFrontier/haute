@@ -14,7 +14,10 @@ from haute._artifact_paths import PATH_PROBLEMS, ordinary_path_problem
 from haute._graph_shape import validate_singleton_groups
 from haute._io import read_user_text
 from haute._logging import get_logger
-from haute._workbench_config import WORKBENCH_TOML_KEYS
+from haute._workbench_config import WORKBENCH_TOML_KEYS, read_workbench_config
+from haute._workbench_form import FormDocument
+from haute._workbench_nodes import connection_errors, form_owner, read_project_form, with_tables
+from haute._workbench_tables import workbench_tables
 from haute.assistant._config import ASSISTANT_EGRESS_TOML_KEYS, ASSISTANT_TOML_KEYS
 from haute.deploy._project_modules import ProjectModules, resolve_project_modules
 from haute.deploy._pruner import (
@@ -569,6 +572,8 @@ class ResolvedDeploy:
     removed_node_ids: list[str] = field(default_factory=list)
     snapshot_provenance: dict[str, dict[str, Any]] = field(default_factory=dict)
     model_sources: dict[str, dict[str, Any]] = field(default_factory=dict)
+    workbench_form: FormDocument | None = None
+    """The form the workbench nodes took their tables from; None without one."""
     _resources: ExitStack = field(default_factory=ExitStack, repr=False, compare=False)
     _closed: bool = field(default=False, init=False, repr=False, compare=False)
 
@@ -652,12 +657,13 @@ def _validate_python_versions(config: DeployConfig, project_root: Path) -> None:
         )
 
 
-def resolve_config(config: DeployConfig) -> ResolvedDeploy:
+def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) -> ResolvedDeploy:
     """Parse pipeline, prune graph, detect I/O nodes, collect artifacts, infer schemas.
 
     This is the main resolution function that converts user-provided
     ``DeployConfig`` into a fully resolved ``ResolvedDeploy`` ready for
-    deployment.
+    deployment. The pipeline's workbench nodes take their tables from *form* when the caller
+    read it (a release, which ships the form it read), else from the form folder, read here.
     """
     from haute._path_resolution import (
         RuntimePathError,
@@ -722,6 +728,18 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
     # One request input and one response, counting those inside submodels, as
     # save requires: a pipeline file written by hand can hold more.
     validate_singleton_groups(full_graph)
+    # A workbench node's tables are the form's, read once here, so the bundle carries the
+    # tables the deployed pipeline was validated on and never reads a folder.
+    owner = form_owner(full_graph)
+    if owner is not None:
+        if form is None:
+            form = read_project_form(project_root, owner=owner)
+        full_graph = with_tables(full_graph, workbench_tables(form.spec))
+        unconnectable = connection_errors(full_graph, read_workbench_config(project_root).form)
+        if unconnectable:
+            raise DeployError("\n".join(unconnectable))
+    else:
+        form = None
 
     # Find output node
     output_node_id = find_output_node(full_graph)
@@ -901,5 +919,6 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
         removed_node_ids=removed_ids,
         snapshot_provenance=snapshot_provenance,
         model_sources=model_sources,
+        workbench_form=form,
         _resources=resources,
     )

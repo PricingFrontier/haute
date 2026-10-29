@@ -664,7 +664,7 @@ describe("useNodeDataCache", () => {
         data: {
           label: "workbench",
           nodeType: "workbenchInput",
-          config: { tables: [{ name: "orders" }] },
+          config: {},
         },
       },
     ] as never as Parameters<typeof useNodeDataCache>[0]["allNodes"]

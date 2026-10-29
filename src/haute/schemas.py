@@ -1645,6 +1645,10 @@ class PreviewNodeRequest(BaseModel):
     # Chosen by the client so it can poll this request's step progress. Not part
     # of any cache or supersession identity.
     request_id: str | None = Field(default=None, pattern=PREVIEW_REQUEST_ID_PATTERN)
+    # The form the workbench view holds, saved or not: the workbench nodes run on its
+    # tables and sample in this request rather than the form folder's (the workbench's
+    # Preview pricing its sample). In the cache identity through the nodes' configs.
+    workbench_form: FormSpec | None = None
 
     @model_validator(mode="after")
     def _one_frame_or_several(self) -> PreviewNodeRequest:

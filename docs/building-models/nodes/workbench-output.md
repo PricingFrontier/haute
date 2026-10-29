@@ -1,6 +1,6 @@
 # Workbench Output
 
-When your quotes are keyed in through the project's workbench, its schema also defines what a priced quote fills in: its output tables. The Workbench Output is the pipeline's response for those quotes. Its tables are the workbench's output tables, copied into the pipeline and kept up to date as you change the schema, and each one is an input you connect a frame to. When the pipeline runs, each table is filled from its frame, and the filled tables are the response.
+When your quotes are keyed in through the project's workbench, its schema also defines what a priced quote fills in: its output tables. The Workbench Output is the pipeline's response for those quotes. Its tables are the workbench's output tables, read from the workbench's files wherever the pipeline runs, and each one is an input you connect a frame to. When the pipeline runs, each table is filled from its frame, and the filled tables are the response.
 
 !!! info "When to use"
     While the project's workbench is enabled, the palette offers the Workbench Output in place of the [Quote Response](output.md). Use it as the response for live pricing of keyed-in quotes. Without a workbench, use the Quote Response and map its columns yourself.
@@ -56,18 +56,19 @@ The panel lists the workbench's output tables and shows how the frames connected
 | A warning under the name | The name can't be an input: it isn't an identifier, or another table has it. Rename the table in the workbench. |
 | **No columns yet, so no port.** | The table has no columns, so there is nothing to fill. Add its columns in the workbench. |
 
-The tables are the workbench's schema, edited in the Workbench view: **Edit in Workbench** in this section opens it, and the switcher at the bottom of the node palette brings you back to **Pricing**. When you save (**Save**, or Ctrl+S, from either view), the editor fetches the tables again, the node's tables and inputs follow, and the pipeline is saved with them in the same save. Connections follow table names: a connection to a table that keeps its name stays, and one to a table that was renamed or removed is removed, with a message. Changes not yet saved in the Workbench are priced on the Workbench's own sheets but don't reach the pipeline until saved.
+The tables are the workbench's schema, edited in the Workbench view: **Edit in Workbench** in this section opens it, and the switcher at the bottom of the node palette brings you back to **Pricing**. When you save (**Save**, or Ctrl+S, from either view), the workbench's files are saved first, the editor fetches the tables again and the node's inputs follow, then the pipeline is saved. Connections follow table names: a connection to a table that keeps its name stays, and one to a table that was renamed or removed is removed, with a message; an undo never brings it back. Changes not yet saved in the Workbench are priced on the Workbench's own sheets but don't reach the pipeline until saved.
 
-While the workbench is not enabled, the section says "The workbench is not enabled in haute.toml, so these tables are the last copy and nothing updates them." The pipeline still runs, tests and deploys from that copy. Inside a submodel the section says "The editor updates these tables only at the pipeline's top level."
+A Workbench Output needs the project's workbench, as a [Workbench Input](workbench-input.md) does.
 
 ??? note "In the pipeline file"
-    The node's settings are stored in a JSON sidecar, `config/workbench_output/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.workbench_output(config="config/workbench_output/<node name>.json")`. Each connection names the table it fills: `pipeline.connect("priced", "response", target_port="pricing_output")`.
+    The node's decorator in the pipeline's `.py` file names its JSON sidecar, `@pipeline.workbench_output(config="config/workbench_output/<node name>.json")`, which holds none of its tables: they are the workbench's files, read as a [Workbench Input](workbench-input.md)'s are, and a sidecar holding `tables` is refused.
 
     | Setting in the editor | Stored as |
     |---|---|
-    | The tables | `tables`: the workbench's output tables, in the Workbench Input's format: each its `name`, its `rows` per quote and its typed `columns` |
+    | The tables | the workbench's files, a table each in `workbench/schema/`, never the sidecar |
+    | The table each connection fills | the `target_port` of each `pipeline.connect("priced", "response", target_port="pricing_output")` |
 
-    The pipeline fills the tables from `tables` alone, so it runs, tests and deploys without the workbench enabled.
+    Deploying refuses a connection to a table the workbench does not have.
 
 **See also:**
 

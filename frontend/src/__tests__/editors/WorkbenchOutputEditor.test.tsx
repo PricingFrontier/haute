@@ -1,24 +1,25 @@
 /**
- * The Workbench Output's panel (specs/workbench): the response's tables the project's
- * workbench supplies, each with the node connected to its port and each of its columns
- * bordered by how the connected frame fills it, and notes when nothing updates the tables.
+ * The Workbench Output's panel (specs/workbench): the response's tables the workbench
+ * store fetched, each with the node connected to its port and each of its columns
+ * bordered by how the connected frame fills it.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import WorkbenchOutputEditor from "../../panels/editors/WorkbenchOutputEditor"
-import { WORKBENCH_DISABLED_NOTE } from "../../panels/editors/WorkbenchInputEditor"
 import type { InputSource } from "../../panels/editors/_shared"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
+import type { WorkbenchColumn, WorkbenchTable } from "../../api/types"
 
-const column = (name: string, type: string) => ({ name, type })
-const config: Record<string, unknown> = {
-  tables: [
-    { name: "pricing_output", rows: "one", columns: [column("premium", "float"), column("referral", "str")] },
-    { name: "layers", rows: "many", columns: [column("layer", "int"), column("premium", "float")] },
-    { name: "two words", rows: "one", columns: [column("x", "int")] },
-    { name: "bare", rows: "one", columns: [] },
-  ],
-}
+const column = (name: string, type: WorkbenchColumn["type"]) => ({ name, type })
+const responseTables: WorkbenchTable[] = [
+  { name: "pricing_output", rows: "one", columns: [column("premium", "float"), column("referral", "str")] },
+  { name: "layers", rows: "many", columns: [column("layer", "int"), column("premium", "float")] },
+  { name: "two words", rows: "one", columns: [column("x", "int")] },
+  { name: "bare", rows: "one", columns: [] },
+]
+/** The newest fetch of the workbench's tables, whose response tables the panel shows. */
+const fetched = (tables: WorkbenchTable[] = responseTables) =>
+  useWorkbenchStore.setState({ tables: { tables: [], sample: {}, responseTables: tables, fetch: 1 } })
 const priced: InputSource = {
   sourceNodeId: "priced",
   name: "priced",
@@ -28,13 +29,11 @@ const priced: InputSource = {
   columns: [{ name: "premium", dtype: "Float64" }, { name: "base_premium", dtype: "Float64" }],
 }
 
-function renderEditor(props: { insideSubmodel?: boolean; inputSources?: InputSource[] } = {}) {
+function renderEditor(props: { inputSources?: InputSource[] } = {}) {
   render(
     <WorkbenchOutputEditor
-      config={config}
       inputSources={props.inputSources ?? [priced]}
       reservedFrameLabels={new Set(["class"])}
-      insideSubmodel={props.insideSubmodel}
     />,
   )
 }
@@ -44,15 +43,17 @@ const border = (table: string, name: string) =>
 describe("WorkbenchOutputEditor", () => {
   beforeEach(() => {
     useWorkbenchStore.setState({ enabled: true })
+    fetched()
   })
   afterEach(() => {
     cleanup()
-    useWorkbenchStore.setState({ enabled: false })
+    useWorkbenchStore.setState({ enabled: false, tables: null })
   })
 
   it("shows each table read-only with the node connected to its port", () => {
     renderEditor()
 
+    expect(within(screen.getByTestId("workbench-output-tables")).getByText("Tables from the workbench")).toBeInTheDocument()
     const pricing = screen.getByTestId("workbench-table-pricing_output")
     expect(pricing).toHaveTextContent("one per quote")
     expect(within(pricing).getByText("referral")).toBeInTheDocument()
@@ -103,14 +104,12 @@ describe("WorkbenchOutputEditor", () => {
 
   it("never borders the quote's reference and option, which the response gives, connected or not", () => {
     const identity = [column("quote_reference", "str"), column("quote_option", "int")]
+    fetched([
+      { name: "pricing_output", rows: "one", columns: [...identity, column("premium", "float")] },
+      { name: "layers", rows: "many", columns: [...identity, column("layer", "int")] },
+    ])
     render(
       <WorkbenchOutputEditor
-        config={{
-          tables: [
-            { name: "pricing_output", rows: "one", columns: [...identity, column("premium", "float")] },
-            { name: "layers", rows: "many", columns: [...identity, column("layer", "int")] },
-          ],
-        }}
         // The frame holds a quote_reference of another type, and no quote_option.
         inputSources={[{ ...priced, columns: [{ name: "premium", dtype: "Float64" }, { name: "quote_reference", dtype: "Int64" }] }]}
         reservedFrameLabels={new Set()}
@@ -142,20 +141,15 @@ describe("WorkbenchOutputEditor", () => {
     expect(within(screen.getByTestId("workbench-table-layers")).queryByRole("alert")).not.toBeInTheDocument()
   })
 
-  it("says the tables are the last copy while the workbench is not enabled", () => {
-    useWorkbenchStore.setState({ enabled: false })
+  it("shows each fetch's tables as it lands, and none before the first", () => {
+    useWorkbenchStore.setState({ tables: null })
     renderEditor()
+    expect(screen.getByTestId("workbench-output-tables")).toHaveTextContent("No tables yet.")
+    expect(screen.queryByRole("note")).not.toBeInTheDocument()
 
-    expect(screen.getByRole("note")).toHaveTextContent(WORKBENCH_DISABLED_NOTE)
-    expect(within(screen.getByTestId("workbench-output-tables")).getByText("Tables")).toBeInTheDocument()
-  })
-
-  it("says the editor updates the tables only at the top level while a submodel is open", () => {
-    renderEditor({ insideSubmodel: true })
-
-    expect(screen.getByRole("note")).toHaveTextContent(
-      "The editor updates these tables only at the pipeline's top level.",
-    )
+    act(() => fetched(responseTables.slice(1, 2)))
+    expect(screen.getByTestId("workbench-table-layers")).toBeInTheDocument()
+    expect(screen.queryByTestId("workbench-table-pricing_output")).not.toBeInTheDocument()
   })
 
   it("offers to edit the tables in the workbench's view while the workbench is enabled", () => {
