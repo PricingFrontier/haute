@@ -32,6 +32,8 @@ import json
 import os
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -122,15 +124,62 @@ def _scope_name() -> str:
     return _app_name() or "local"
 
 
+class _ProcessWorkspace:
+    """The process's one workspace client, built on first use.
+
+    Building a ``WorkspaceClient`` resolves authentication, so one per volume
+    call paid for that on every read, write, list and delete, the claim
+    heartbeat's every 30 s among them. The lock serves the heartbeat thread
+    and a publish asking at once. A call the workspace refuses for its
+    credentials forgets the client, so the next one resolves them again.
+    """
+
+    def __init__(self) -> None:
+        self._client: Any = None
+        self._lock = threading.Lock()
+
+    def files(self) -> Any:
+        with self._lock:
+            if self._client is None:
+                try:
+                    from databricks.sdk import WorkspaceClient
+                except ImportError as exc:  # pragma: no cover - exercised via stub in tests
+                    raise StorageConfigError(
+                        "Durable project storage needs the databricks-sdk package. "
+                        "Install the databricks extra: haute[databricks]."
+                    ) from exc
+                self._client = WorkspaceClient()
+            return self._client.files
+
+    def forget(self) -> None:
+        with self._lock:
+            self._client = None
+
+
+_workspace = _ProcessWorkspace()
+
+
 def _files_api() -> Any:
+    return _workspace.files()
+
+
+@contextmanager
+def _files() -> Iterator[Any]:
+    """The Files API for one volume call; refused credentials forget the client."""
     try:
-        from databricks.sdk import WorkspaceClient
-    except ImportError as exc:  # pragma: no cover - exercised via stub in tests
-        raise StorageConfigError(
-            "Durable project storage needs the databricks-sdk package. "
-            "Install the databricks extra: haute[databricks]."
-        ) from exc
-    return WorkspaceClient().files
+        yield _files_api()
+    except Exception as exc:
+        if _is_unauthenticated(exc):
+            _workspace.forget()
+        raise
+
+
+def _is_unauthenticated(exc: Exception) -> bool:
+    try:
+        from databricks.sdk.errors import Unauthenticated
+    except ImportError:  # pragma: no cover - SDK absent means we never got here
+        return False
+    return isinstance(exc, Unauthenticated)
 
 
 def _is_not_found(exc: Exception) -> bool:
@@ -160,8 +209,9 @@ def volume_read(path: str, *, event: str, unavailable: str) -> bytes | str | Non
     each call site.
     """
     try:
-        response = _files_api().download(path)
-        raw: bytes | str = response.contents.read()
+        with _files() as files:
+            response = files.download(path)
+            raw: bytes | str = response.contents.read()
         return raw
     except Exception as exc:
         if _is_not_found(exc):
@@ -176,7 +226,8 @@ def volume_write(path: str, payload: bytes | IO[bytes], *, event: str, unavailab
 
     contents = io.BytesIO(payload) if isinstance(payload, bytes) else payload
     try:
-        _files_api().upload(path, contents, overwrite=True)
+        with _files() as files:
+            files.upload(path, contents, overwrite=True)
     except Exception as exc:
         logger.warning(event, error=str(exc))
         raise StorageUnavailableError(unavailable) from exc
@@ -195,7 +246,8 @@ def volume_create(path: str, payload: bytes, *, event: str, unavailable: str) ->
     import io
 
     try:
-        _files_api().upload(path, io.BytesIO(payload), overwrite=False)
+        with _files() as files:
+            files.upload(path, io.BytesIO(payload), overwrite=False)
     except Exception as exc:
         if _is_already_exists(exc):
             return False
@@ -214,8 +266,9 @@ def volume_download(
     benign "nothing published yet".
     """
     try:
-        response = _files_api().download(path)
-        dest.write_bytes(response.contents.read())
+        with _files() as files:
+            response = files.download(path)
+            dest.write_bytes(response.contents.read())
     except Exception as exc:
         logger.warning(event, error=str(exc), **log_fields)
         raise StorageUnavailableError(unavailable) from exc
@@ -288,7 +341,8 @@ def _uc_bundle_path(url: str, filename: str) -> str:
 def _list_pointer_generations(url: str) -> list[int]:
     directory = f"{_uc_volume_path(url)}/{_UC_POINTER_DIR}"
     try:
-        entries = list(_files_api().list_directory_contents(directory))
+        with _files() as files:
+            entries = list(files.list_directory_contents(directory))
     except Exception as exc:
         if _is_not_found(exc):
             return []
@@ -734,7 +788,8 @@ def release_uc_claim() -> None:
     try:
         current = read_uc_claim(url)
         if current is not None and current.nonce == claim.nonce:
-            _files_api().delete(_uc_claim_path(url))
+            with _files() as files:
+                files.delete(_uc_claim_path(url))
             logger.info("uc_claim_released", scope=_scope_name())
     except Exception as exc:
         logger.warning("uc_claim_release_failed", error=str(exc))
@@ -905,7 +960,8 @@ def _publish_to_uc(url: str, project_root: Path, work: _UCPublishWork) -> str | 
 
 def _discard_orphaned_bundle(url: str, filename: str) -> None:
     try:
-        _files_api().delete(_uc_bundle_path(url, filename))
+        with _files() as files:
+            files.delete(_uc_bundle_path(url, filename))
     except Exception as exc:
         logger.warning("uc_orphan_bundle_delete_failed", error=str(exc))
 
@@ -924,9 +980,9 @@ def _prune_uc_bundles(url: str, newest: int) -> None:
     if cutoff < 1:
         return
     directory = f"{_uc_volume_path(url)}/{_UC_BUNDLE_DIR}"
-    api = _files_api()
     try:
-        entries = list(api.list_directory_contents(directory))
+        with _files() as files:
+            entries = list(files.list_directory_contents(directory))
     except Exception as exc:
         logger.warning("uc_bundle_prune_failed", error=str(exc))
         return
@@ -939,7 +995,8 @@ def _prune_uc_bundles(url: str, newest: int) -> None:
         if suffix != "bundle" or not generation_text.isdigit() or int(generation_text) > cutoff:
             continue
         try:
-            api.delete(f"{directory}/{name}")
+            with _files() as files:
+                files.delete(f"{directory}/{name}")
         except Exception as exc:
             logger.warning("uc_bundle_prune_failed", name=name, error=str(exc))
 
@@ -1100,7 +1157,8 @@ def clear_uc_lineage(url: str) -> None:
     unrelated project.
     """
     try:
-        _files_api().delete(_uc_lineage_path(url))
+        with _files() as files:
+            files.delete(_uc_lineage_path(url))
     except Exception as exc:
         if not _is_not_found(exc):
             logger.warning("uc_lineage_cleanup_failed", error=str(exc))

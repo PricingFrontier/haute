@@ -94,6 +94,7 @@ def _isolated_storage_state(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("DATABRICKS_APP_NAME", raising=False)
     monkeypatch.setattr(_project_storage, "_session", _project_storage._SessionState())
     monkeypatch.setattr(_uc_transport, "_writer", _uc_transport._WriterState())
+    monkeypatch.setattr(_uc_transport, "_workspace", _uc_transport._ProcessWorkspace())
     yield
     _project_storage.push_queue().stop()
     _uc_transport._writer.heartbeat.stop()
@@ -2733,6 +2734,68 @@ class TestUcClaim:
         assert heartbeat._thread is not first_thread
         assert not heartbeat._stop.is_set()
         assert heartbeat._thread is not None and heartbeat._thread.is_alive()
+
+
+class _CountedWorkspace:
+    """The SDK's ``WorkspaceClient`` stood in, counting each one built.
+
+    Every client serves one in-memory volume, as every real client of one
+    workspace reaches the same volume.
+    """
+
+    def __init__(self) -> None:
+        self.volume = _FakeFiles()
+        self.built = 0
+
+    def client(self) -> object:
+        self.built += 1
+        return type("_Client", (), {"files": self.volume})()
+
+
+class TestWorkspaceClient:
+    """BUG-41: every volume call built a ``WorkspaceClient``, resolving authentication
+    each time, the claim heartbeat's every 30 s among them."""
+
+    @pytest.fixture()
+    def workspace(self, monkeypatch: pytest.MonkeyPatch) -> _CountedWorkspace:
+        import databricks.sdk
+
+        counted = _CountedWorkspace()
+        monkeypatch.setattr(databricks.sdk, "WorkspaceClient", counted.client)
+        _plant_claim(counted.volume, "local")
+        return counted
+
+    def test_a_heartbeat_and_a_read_share_one_client(self, workspace: _CountedWorkspace) -> None:
+        claim = _uc_transport.read_uc_claim(UC_URL)
+        assert claim is not None
+        _uc_transport._writer.claim = claim
+        _uc_transport._writer.claim_url = UC_URL
+
+        assert _uc_transport._writer.heartbeat._beat() is True
+        assert _uc_transport.read_uc_claim(UC_URL) is not None
+        assert workspace.built == 1
+
+    def test_refused_credentials_build_a_fresh_client(self, workspace: _CountedWorkspace) -> None:
+        from databricks.sdk.errors import Unauthenticated
+
+        workspace.volume.fail_with = Unauthenticated("Invalid access token.")
+        with pytest.raises(StorageUnavailableError):
+            _uc_transport.read_uc_claim(UC_URL)
+        workspace.volume.fail_with = None
+
+        assert _uc_transport.read_uc_claim(UC_URL) is not None
+        assert workspace.built == 2
+
+    def test_other_failures_keep_the_client(self, workspace: _CountedWorkspace) -> None:
+        from databricks.sdk.errors import PermissionDenied
+
+        workspace.volume.fail_with = PermissionDenied("Missing READ VOLUME on the volume.")
+        with pytest.raises(StorageUnavailableError):
+            _uc_transport.read_uc_claim(UC_URL)
+        workspace.volume.fail_with = None
+
+        assert _uc_transport.read_uc_claim(UC_URL) is not None
+        assert workspace.built == 1
 
 
 # ---------------------------------------------------------------------------

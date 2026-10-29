@@ -9,11 +9,11 @@ submodel files.
 `BUG-21` and `BUG-24` were found on 5 October 2026 while checking the deployment
 guides against the CI/CD files `haute init` generates: as generated, those files fail before a
 first container release succeeds. The guides give the manual step that works today for each,
-and drop it when the package lands. `BUG-40` to `BUG-42`
+and drop it when the package lands. `BUG-40` and `BUG-42`
 come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md): the hosted
-Databricks app's boot and build script, the UC transport's clients and the storage binding's
-unknown keys; `BUG-44` and `BUG-45`, from the same review, are the Databricks browsing
-errors and the non-atomic first append.
+Databricks app's boot and build script and the storage binding's unknown keys; `BUG-44` and
+`BUG-45`, from the same review, are the Databricks browsing errors and the non-atomic first
+append.
 
 ## Priorities
 
@@ -23,7 +23,6 @@ errors and the non-atomic first append.
 | BUG-21 | Planned | P2 | The generated smoke and impact steps work for the generic container target once its endpoint addresses are set. |
 | BUG-24 | Decision | P1 | Container targets log in to their registry before `haute deploy` pushes, and GitLab container deploys run where Docker is available. |
 | BUG-40 | Planned | P2 | The hosted Databricks app installs the wheel and its pinned dependencies from a lock at boot, and its build script takes the app name as a parameter. The build selects its current wheel rather than a stale lexicographic match. |
-| BUG-41 | Planned | P3 | The UC volume transport builds one workspace client per process. |
 | BUG-42 | Decision | P3 | The storage binding record either rejects unknown keys or is named as the exception to the canonical-only policy. |
 | BUG-44 | Planned | P2 | A Databricks browsing failure (an expired token, a missing catalog, a missing permission) is answered with a message naming the cause instead of the sanitized 500. |
 | BUG-45 | Planned | P2 | A first `append` to a Databricks table that does not yet exist either creates and fills it in one statement or leaves nothing behind when the insert fails. |
@@ -130,19 +129,6 @@ require one matching artifact, and derive the digest/requirements from it. Mixed
 and rebuilding a lower checked-out version must both bundle the current build. Evidence:
 `databricks_app/scripts/build_bundle.sh`, wheel selection statement `wheel="$(ls "$repo_root"/dist/haute-*.whl | sort | tail -n1)"` (builder output and missing local digest tool only
 were substituted; no deployment ran).
-
-### BUG-41 — One workspace client per process
-**Why:** Every UC volume read, write, list and delete constructs a new `WorkspaceClient()`,
-resolving authentication each time, including the 30 s claim heartbeat.
-
-**Plan:** Build the client once per process and reset it on an authentication failure.
-
-**Acceptance:** A heartbeat and a read in one process share one client (a test counting
-constructions).
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_uc_transport.py::_files_api`.
 
 ### BUG-42 — Unknown keys in the storage binding record
 **Why:** `StorageBinding.from_payload` deliberately ignores unknown keys so that an older
