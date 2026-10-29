@@ -2890,6 +2890,32 @@ class TestWorkspaceClient:
         assert _uc_transport.read_uc_claim(UC_URL) is not None
         assert workspace.built == 2
 
+    def test_a_refused_service_principal_is_forgotten_and_a_corrected_one_reads(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The real SDK's OAuth exchange refuses a service principal with a plain
+        ``ValueError("invalid_client: ...")``, not ``Unauthenticated``; the client
+        holding the refused secret must not be kept."""
+        from tests._databricks_workspace_stub import workspace_stub
+
+        with workspace_stub(accepted_secret="current-secret") as stub:
+            monkeypatch.setenv("DATABRICKS_HOST", stub.host)
+            monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+            monkeypatch.setenv("DATABRICKS_CLIENT_ID", "app-id")
+            monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "revoked-secret")
+            monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(tmp_path / "no-profiles.cfg"))
+
+            with pytest.raises(StorageUnavailableError):
+                _uc_transport.read_uc_claim(UC_URL)
+            monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "current-secret")
+            generations = _uc_transport._list_pointer_generations(UC_URL)
+
+        assert generations == []
+        assert stub.discoveries == 2
+        # The SDK may ask for a token more than once before it gives up on a secret.
+        assert stub.token_requests[0] == "revoked-secret"
+        assert stub.token_requests[-1] == "current-secret"
+
     def test_other_failures_keep_the_client(self, workspace: _CountedWorkspace) -> None:
         from databricks.sdk.errors import PermissionDenied
 

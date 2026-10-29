@@ -4,7 +4,7 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/_databricks_credentials.py` | Single environment-to-credentials boundary: redaction-safe `DatabricksCredentials`, `DatabricksConfigError`, host normalisation, completeness validation, and PAT-over-service-principal precedence. |
+| `src/haute/_databricks_credentials.py` | Single environment-to-credentials boundary: redaction-safe `DatabricksCredentials`, `DatabricksConfigError`, host normalisation, completeness validation, PAT-over-service-principal precedence, and `credentials_rejected`, which tells a refusal of the credentials (the SDK's Unauthenticated error, or the ValueError its OAuth exchange raises for a refused service principal) from any other failure. |
 | `src/haute/_databricks_io.py` | SQL-connector adaptation, table/projection validation, canonical table identity, bounded Arrow batch iteration, retries, and integrity checks. It raises `DatabricksConfigError` from `src/haute/_databricks_credentials.py`. |
 | `src/haute/_databricks_output.py` | Data Output writes to a Unity Catalog table: Spark-compatible dtype casts, the staged Parquet upload, the overwrite/append load SQL, staged-file cleanup, and `DatabricksWriteError`. |
 | `src/haute/routes/databricks.py` | `/api/databricks` Unity Catalog browsing endpoints. |
@@ -162,9 +162,14 @@ The input-cache worker logs `error_type` and a shared credential-scrubbed `error
 provider failures; raw error text is not copied to public responses. Browsing endpoints
 preserve deliberate `HTTPException` responses (the 503s for a missing SDK or missing
 credentials) and answer an SDK failure with a message written for it, by its class:
-`Unauthenticated` 401, naming `DATABRICKS_TOKEN`, or `DATABRICKS_CLIENT_ID` and
+refused credentials 401, naming `DATABRICKS_TOKEN`, or `DATABRICKS_CLIENT_ID` and
 `DATABRICKS_CLIENT_SECRET`, by the credential form `resolve_databricks_credentials`
-selects; `PermissionDenied` 403, naming what was listed; `NotFound` from a listing inside
+selects. `credentials_rejected` (`_databricks_credentials.py`, shared with the UC
+transport) recognises them: a refused token is the SDK's `Unauthenticated`, while a
+refused service principal never reaches the API, because the SDK's OAuth token
+exchange raises a plain `ValueError("<code>: <description>")` from the token
+endpoint's answer, which counts only for the codes that refuse the client or its grant
+(`invalid_client`, `invalid_grant`, `unauthorized_client`); then `PermissionDenied` 403, naming what was listed; `NotFound` from a listing inside
 a catalog or schema 404, naming that catalog or schema; any other `DatabricksError` 502.
 Each is logged as `databricks_browsing_failed` with the error type and the SDK's text,
 the token and client secret scrubbed (`redact_sensitive_text`).
@@ -173,7 +178,8 @@ the token and client secret scrubbed (`redact_sensitive_text`).
 
 - `tests/test_databricks_credentials.py` covers the shared resolver's host
   projections, PAT precedence, incomplete-pair failures, aggregated named
-  requirements, and representation/error redaction.
+  requirements, representation/error redaction, and which failures count as a refusal
+  of the credentials (no other `ValueError` does).
 - `tests/test_databricks_io.py` covers SQL credential adaptation, table/projection validation,
   cancellation before execute, batch streaming, retries, empty-schema behaviour, row-loss
   detection, identity-independent batch sizing, and builder-through-store publication.
@@ -188,8 +194,9 @@ the token and client secret scrubbed (`redact_sensitive_text`).
   destination identity, and worker error kinds.
 - `tests/test_databricks_endpoints.py` covers optional dependency/credential failures,
   SDK mapping, and the browsing error answers: a missing catalog and a missing schema
-  404 naming them, a refused token and a refused service principal 401 naming their
-  variables, a missing grant 403, and any other SDK failure 502 with its text logged,
+  404 naming them, a refused token 401 naming its variable, a service principal that a
+  stub token endpoint refuses through the real SDK 401 naming its pair, and listing
+  again once the secret is corrected, a missing grant 403, and any other SDK failure 502 with its text logged,
   the token scrubbed.
 - `tests/test_databricks_routes_auth.py` proves the browsing adapter consumes
   the shared resolution result for both auth modes and preserves normalised

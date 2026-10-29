@@ -39,6 +39,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Any
 
+from haute._databricks_credentials import credentials_rejected
 from haute._logging import get_logger
 from haute._storage_types import (
     StorageClaimedError,
@@ -169,17 +170,9 @@ def _files() -> Iterator[Any]:
     try:
         yield _files_api()
     except Exception as exc:
-        if _is_unauthenticated(exc):
+        if credentials_rejected(exc):
             _workspace.forget()
         raise
-
-
-def _is_unauthenticated(exc: Exception) -> bool:
-    try:
-        from databricks.sdk.errors import Unauthenticated
-    except ImportError:  # pragma: no cover - SDK absent means we never got here
-        return False
-    return isinstance(exc, Unauthenticated)
 
 
 def _is_not_found(exc: Exception) -> bool:

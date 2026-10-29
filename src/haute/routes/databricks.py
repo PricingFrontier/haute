@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException
 from haute._credential_security import redact_sensitive_text
 from haute._databricks_credentials import (
     DatabricksConfigError,
+    credentials_rejected,
     databricks_workspace_client,
     resolve_databricks_credentials,
 )
@@ -62,8 +63,12 @@ def _browsing(subject: str, *, within: str | None = None) -> Iterator[Any]:
 
     try:
         yield client
-    except DatabricksError as exc:
-        raise _browsing_failure(exc, subject, within) from exc
+    except Exception as exc:
+        # A refused service principal surfaces from the SDK's OAuth token
+        # exchange as a plain ValueError, never as a DatabricksError.
+        if isinstance(exc, DatabricksError) or credentials_rejected(exc):
+            raise _browsing_failure(exc, subject, within) from exc
+        raise
 
 
 def _browsing_failure(exc: Exception, subject: str, within: str | None) -> HTTPException:
@@ -72,10 +77,10 @@ def _browsing_failure(exc: Exception, subject: str, within: str | None) -> HTTPE
     The SDK's text is the workspace's own and can name hosts; it is logged with the
     credentials scrubbed, and the answer is written here.
     """
-    from databricks.sdk.errors import NotFound, PermissionDenied, Unauthenticated
+    from databricks.sdk.errors import NotFound, PermissionDenied
 
     credentials = resolve_databricks_credentials()
-    if isinstance(exc, Unauthenticated):
+    if credentials_rejected(exc):
         detail = (
             f"Databricks refused DATABRICKS_TOKEN, so {subject} could not be listed: "
             "set a current personal access token in .env."

@@ -13,6 +13,8 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from httpx import Response
 
+from tests._databricks_workspace_stub import workspace_stub
+
 
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
@@ -172,22 +174,30 @@ def test_a_refused_token_answers_401_naming_its_variable(client: TestClient) -> 
 
 
 def test_a_refused_service_principal_answers_401_naming_its_pair(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from databricks.sdk.errors import Unauthenticated
+    """The real SDK's OAuth exchange refuses a service principal with a plain
+    ``ValueError("invalid_client: ...")``, which no ``DatabricksError`` handler sees."""
+    with workspace_stub(accepted_secret="current-secret") as workspace:
+        monkeypatch.setenv("DATABRICKS_HOST", workspace.host)
+        monkeypatch.delenv("DATABRICKS_TOKEN")
+        monkeypatch.setenv("DATABRICKS_CLIENT_ID", "app-id")
+        monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "revoked-secret")
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(tmp_path / "no-profiles.cfg"))
 
-    monkeypatch.delenv("DATABRICKS_TOKEN")
-    monkeypatch.setenv("DATABRICKS_CLIENT_ID", "app-id")
-    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "app-secret")
-    workspace = _failing_workspace("warehouses.list", Unauthenticated("invalid_client"))
+        refused = client.get("/api/databricks/catalogs")
+        monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "current-secret")
+        corrected = client.get("/api/databricks/catalogs")
 
-    response = _browse(client, workspace, "/api/databricks/warehouses")
-
-    assert response.status_code == 401
-    assert response.json()["detail"] == (
-        "Databricks refused DATABRICKS_CLIENT_ID and DATABRICKS_CLIENT_SECRET, so the SQL "
-        "warehouses could not be listed: check the service principal's credentials in .env."
+    assert refused.status_code == 401
+    assert refused.json()["detail"] == (
+        "Databricks refused DATABRICKS_CLIENT_ID and DATABRICKS_CLIENT_SECRET, so the "
+        "catalogs could not be listed: check the service principal's credentials in .env."
     )
+    assert corrected.status_code == 200
+    assert corrected.json()["catalogs"] == [{"name": "main", "comment": ""}]
+    assert workspace.token_requests[0] == "revoked-secret"
+    assert workspace.token_requests[-1] == "current-secret"
 
 
 def test_a_missing_grant_answers_403_naming_what_was_listed(client: TestClient) -> None:
