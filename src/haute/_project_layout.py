@@ -45,6 +45,7 @@ def pipeline_folder(project_root: Path) -> str | None:
         return None
     root = project_root.resolve()
     folder = configured.parent.resolve()
+    # not contained_path: a pipeline at or outside the root has no folder to version
     if folder == root or not folder.is_relative_to(root):
         return None
     return folder.relative_to(root).as_posix()

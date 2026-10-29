@@ -26,7 +26,8 @@ from haute._cache import canonical_json
 from haute._git_lock import repository_mutation
 from haute._graph_builders import PipelineNodeSkeleton, _extract_decorated_node_skeletons
 from haute._pipeline_recovery import load_pipeline_editor_document
-from haute.errors import HauteError
+from haute._sandbox import contained_path, is_contained
+from haute.errors import HauteError, PathOutsideProjectError
 from haute.parser import parse_pipeline_file
 from haute.schemas import (
     PipelineEditorDocument,
@@ -121,15 +122,14 @@ def _resolve_project_file(project_root: Path, raw_path: str, *, suffix: str) -> 
             "Repair source identity is empty or malformed.",
             status_code=400,
         )
-    root = project_root.resolve()
-    candidate = Path(raw_path)
-    resolved = (candidate if candidate.is_absolute() else root / candidate).resolve()
-    if not resolved.is_relative_to(root):
+    try:
+        resolved = contained_path(project_root, raw_path)
+    except PathOutsideProjectError:
         raise PipelineRepairError(
             "repair_path_outside_project",
             "Repair source identity resolves outside the project directory.",
             status_code=403,
-        )
+        ) from None
     if resolved.suffix.casefold() != suffix.casefold():
         raise PipelineRepairError(
             "repair_path_invalid",
@@ -153,7 +153,7 @@ def _resolve_config_reference(
 ) -> Path:
     candidate = Path(reference)
     resolved = (candidate if candidate.is_absolute() else root_path.parent / candidate).resolve()
-    if not resolved.is_relative_to(project_root.resolve()):
+    if not is_contained(project_root, resolved):
         raise PipelineRepairError(
             "repair_config_outside_project",
             "The node's referenced config resolves outside the project directory.",

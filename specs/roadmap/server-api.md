@@ -211,7 +211,7 @@ project root before listing or any read/create/update/delete; retain descendant 
 too. Symlink/junction escape tests must leave outside bytes unchanged and refuse reads, while
 an ordinary in-project utility directory works. Evidence: `src/haute/routes/utility.py::_utility_dir` and
 its `contained_path` calls. This package is P1 because the wrong trusted anchor bypasses the
-write boundary; `SBX-R01`'s shared comparison helper alone cannot repair a wrongly chosen root.
+write boundary; the shared comparison (`contained_path`) alone cannot repair a wrongly chosen root.
 
 ### API-R08 — A save never round-trips the watcher
 **Why:** The `.haute.json` sidecar write (`save_sidecar` → `atomic_write_text`) and the

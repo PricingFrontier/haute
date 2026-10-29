@@ -26,6 +26,7 @@ from haute._io import read_user_text
 from haute._logging import get_logger
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._project_mutation_lock import ProjectMutationLock
+from haute._sandbox import is_contained
 from haute._sidecar import (
     SidecarModel,
     SidecarReadResult,
@@ -98,7 +99,7 @@ def pipeline_dir() -> Path:
     configured = _toml_configured_pipeline(project_root)
     if configured is not None:
         pipeline_path = configured.resolve()
-        if not pipeline_path.is_relative_to(project_root):
+        if not is_contained(project_root, pipeline_path):
             raise ConfigError(
                 "haute.toml [project].pipeline resolves outside the project root",
                 path=str(toml_path),
@@ -884,6 +885,7 @@ def parse_pipeline_to_graph(
     resolved_path = py_path.resolve()
     if project_root is None:
         cwd = Path.cwd().resolve()
+        # not contained_path: chooses the root; a file outside the working directory is its own
         root = cwd if resolved_path.is_relative_to(cwd) else resolved_path.parent
     else:
         root = project_root.resolve()

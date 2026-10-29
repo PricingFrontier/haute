@@ -415,6 +415,7 @@ def _check_output(project_dir: Path, release_dir: Path) -> None:
         (project_dir, "the project"),
         (Path.cwd().resolve(), "the working directory"),
     ):
+        # not contained_path: the other direction, the release folder must not hold it
         if protected == where or protected.is_relative_to(where):
             raise WorkbenchAppError(
                 f"{release_dir} is {what} or holds it: name a folder of the release's own, "

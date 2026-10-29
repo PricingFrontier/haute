@@ -11,8 +11,9 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Literal
 
+from haute._sandbox import contained_path, is_contained
 from haute.assistant._config import EgressPolicy, Sensitivity
-from haute.errors import HauteError
+from haute.errors import HauteError, PathOutsideProjectError
 from haute.routes._helpers import parse_pipeline_to_graph
 
 EvidenceClass = Literal["project_fact", "untrusted_document"]
@@ -97,9 +98,10 @@ def _within_policy(item: KnowledgeItem, policy: EgressPolicy) -> bool:
 
 
 def _graph_fact(project_root: Path, source_file: str) -> KnowledgeItem:
-    source = (project_root / source_file).resolve()
-    if not source.is_relative_to(project_root):
-        raise ValueError("pipeline source must resolve inside the project root")
+    try:
+        source = contained_path(project_root, source_file)
+    except PathOutsideProjectError:
+        raise ValueError("pipeline source must resolve inside the project root") from None
     data = source.read_bytes()
     graph = parse_pipeline_to_graph(source)
     node_types: dict[str, int] = {}
@@ -131,7 +133,7 @@ def _toml_fact(project_root: Path) -> KnowledgeItem | None:
     path = project_root / "haute.toml"
     if not path.is_file():
         return None
-    if path.is_symlink() or not path.resolve().is_relative_to(project_root):
+    if path.is_symlink() or not is_contained(project_root, path.resolve()):
         raise ValueError("haute.toml must be a regular file inside the project root")
     data = path.read_bytes()
     # The exact TOML is not provider material. This deterministic fact names
@@ -153,7 +155,7 @@ def _document_items(project_root: Path) -> list[KnowledgeItem]:
     docs = project_root / "docs"
     if not docs.is_dir():
         return []
-    if docs.is_symlink() or not docs.resolve().is_relative_to(project_root):
+    if docs.is_symlink() or not is_contained(project_root, docs.resolve()):
         raise ValueError("project documentation must stay inside the project root")
     items: list[KnowledgeItem] = []
     candidates = sorted(
@@ -162,7 +164,7 @@ def _document_items(project_root: Path) -> list[KnowledgeItem]:
             for path in docs.rglob("*")
             if path.is_file()
             and not path.is_symlink()
-            and path.resolve().is_relative_to(project_root)
+            and is_contained(project_root, path.resolve())
             and path.suffix.casefold() in _DOC_EXTENSIONS
             and not any(part.startswith(".") for part in path.relative_to(project_root).parts)
         ),
@@ -210,7 +212,7 @@ def _cache_payload(items: list[KnowledgeItem]) -> dict[str, object]:
 
 def _write_cache(project_root: Path, payload: dict[str, object]) -> bool:
     path = project_root / ".haute" / "assistant" / "knowledge" / "index-v1.json"
-    if not path.resolve().is_relative_to(project_root):
+    if not is_contained(project_root, path.resolve()):
         raise ValueError("assistant knowledge cache must stay inside the project root")
     rendered = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     try:

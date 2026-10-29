@@ -49,8 +49,7 @@ not an inventory of all active work; see [Not scheduled](#not-scheduled).
 | E | 13 | Typed node configs | `PCFG-R07`, then `API-R03`: pipeline load and save, preview, trace, submodel, recovery and repair, and JSON-cache inference | 10, 12 | L | These `API-R03` groups carry node configs or the editor document, so they follow the typed models. The existing Model Scoring file source supplies its config seam; round 21 extends the same models with external-family selection and pyfunc trust. Completes `API-R03`. |
 | E | 14 | Node specification and results store | `PCFG-R09`, `FSH-R03` | 13 | M | Both build on the typed models and the complete generated contract. |
 | F | 15 | Cache measurements | `CACHE-S17`, `CACHE-S22`, `CACHE-S18`, `CACHE-S13` | 12 | M | Each runs its measurement and builds only past its gate, once the planner and config changes above have landed. |
-| F | 16 | Containment | `SBX-R01` | 9 | M | The remaining path comparisons, after the project context has deleted the resolvers that held many of them. |
-| F | 17 | Dead code | `ENGQ-R01` | 16 | M | After the refactors have deleted what they replace; adds knip to the frontend lint. |
+| F | 17 | Dead code | `ENGQ-R01` | 9 | M | After the refactors have deleted what they replace; adds knip to the frontend lint. |
 | F | 18 | Test organisation | `ENGQ-R05` | 17 | L | Last, so the suite is reorganised once, under the risk-based coverage rule. Several PRs, by component. |
 | I | 21 | Models trained outside Haute | `MSC-06`, then `MSC-05` | — | M | Generic suffixes and the XGBoost missing-value sentinel first; pyfunc files after, on the same file source. |
 | J | 23 | Remaining Polars 2 evidence | `PL2-17`, `PL2-18` | — | L | Reverify the training overhead and width calibration, operator evidence at `10m`, and worker baselines. Apply only the policy changes those measurements justify. |
