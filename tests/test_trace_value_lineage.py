@@ -8,7 +8,13 @@ from types import SimpleNamespace
 import polars as pl
 import pytest
 
-from haute._trace_lineage import ColumnRead, ColumnSource, JoinInputs, trace_value_lineage
+from haute._trace_lineage import (
+    ColumnRead,
+    ColumnSource,
+    JoinInputs,
+    ValueLineage,
+    trace_value_lineage,
+)
 from haute._types import GraphNode, NodeData, NodeType
 from haute.trace import SchemaDiff, TraceResult, TraceStep, execute_trace, trace_result_to_dict
 from tests.conftest import make_edge, make_graph, make_source_node, make_transform_node
@@ -258,6 +264,40 @@ def _policy_graph(tmp_path) -> object:
             ],
         }
     )
+
+
+def test_a_comment_naming_the_column_does_not_make_a_step_relevant(tmp_path):
+    pl.DataFrame({"quote_id": ["q1"], "a": [2.0]}).write_parquet(tmp_path / "quotes.parquet")
+    pl.DataFrame({"quote_id": ["q1"], "z": [1.0]}).write_parquet(tmp_path / "notes.parquet")
+    graph = make_graph(
+        {
+            "nodes": [
+                make_source_node("quotes", str(tmp_path / "quotes.parquet")),
+                make_source_node("notes", str(tmp_path / "notes.parquet")),
+                make_transform_node(
+                    "side",
+                    "# premium == 0 is checked downstream\n"
+                    'df = notes.with_columns((pl.col("z") + 1).alias("z2"))',
+                ),
+                _left_join("J"),
+                make_transform_node(
+                    "calc", 'df = J.with_columns((pl.col("a") * 2).alias("premium"))'
+                ),
+            ],
+            "edges": [
+                make_edge("quotes", "J", target_handle="base"),
+                make_edge("notes", "side"),
+                make_edge("side", "J", target_handle="join"),
+                make_edge("J", "calc"),
+            ],
+        }
+    )
+
+    steps = _steps_by_id(execute_trace(graph, target_node_id="calc", column="premium"))
+
+    # The joined-in side never reaches premium; its comment assigns nothing.
+    assert steps["calc"].column_relevant is True
+    assert "side" not in steps or steps["side"].column_relevant is False
 
 
 @pytest.mark.parametrize(
@@ -688,6 +728,92 @@ def test_a_coalesced_full_join_key_leads_to_both_sides_under_their_own_names():
     assert lineage.reads["calc"]["y"] == (
         ColumnRead("read", (ColumnSource("left", "read"), ColumnSource("right", "right_key"))),
     )
+
+
+@pytest.mark.parametrize("join_side_first", [False, True], ids=["base-first", "join-side-first"])
+def test_an_input_source_is_the_join_side_whose_value_the_row_holds(tmp_path, join_side_first):
+    pl.DataFrame({"quote_id": ["q1"], "x": [10.0]}).write_parquet(tmp_path / "a.parquet")
+    pl.DataFrame({"quote_id": ["q1"], "x": [1000.0]}).write_parquet(tmp_path / "b.parquet")
+    sources = [
+        make_source_node("A", str(tmp_path / "a.parquet")),
+        make_source_node("B", str(tmp_path / "b.parquet")),
+    ]
+    graph = make_graph(
+        {
+            "nodes": [
+                *(reversed(sources) if join_side_first else sources),
+                _left_join("J"),
+                make_transform_node("calc", 'df = J.with_columns((pl.col("x") * 2).alias("y"))'),
+            ],
+            "edges": [
+                make_edge("A", "J", target_handle="base"),
+                make_edge("B", "J", target_handle="join"),
+                make_edge("J", "calc"),
+            ],
+        }
+    )
+
+    calc = _steps_by_id(execute_trace(graph, target_node_id="calc", column="y"))["calc"]
+
+    # The join keeps the base's x and names B's copy x_right: y read A's 10.0.
+    assert calc.calculation is not None
+    assert calc.calculation["result_value"] == 20.0
+    assert calc.calculation["input_sources"] == {
+        "x": {"node_id": "A", "node_name": "A", "result_value": 10.0}
+    }
+
+
+def test_a_chain_intermediate_is_read_through_to_the_input_it_read(tmp_path):
+    steps = _chain_trace(
+        tmp_path,
+        pl.DataFrame({"a": [1.0], "b": [2.0]}),
+        [
+            # An upstream step adds a tmp of its own, which calc reassigns before reading.
+            ("pre", 'df = src.with_columns((pl.col("b") * 100).alias("tmp"))'),
+            (
+                "calc",
+                'df = pre.with_columns((pl.col("a") * 2).alias("tmp"))\n'
+                'df = df.with_columns((pl.col("tmp") + 1).alias("y"))',
+            ),
+        ],
+        "y",
+    )
+
+    calculation = steps["calc"].calculation
+    assert calculation is not None
+    assert [entry["target_column"] for entry in calculation["expression_chain"]] == ["tmp", "y"]
+    # y read calc's own tmp, which the chain shows; tmp read the source's a.
+    assert calculation["input_sources"] == {
+        "a": {"node_id": "src", "node_name": "src", "result_value": 1.0}
+    }
+
+
+def test_a_read_several_nodes_may_have_supplied_names_no_source():
+    from haute.trace import _attach_input_sources
+
+    calc = _step("calc", added=["y"])
+    calc.contributed_columns = ["y"]
+    calc.expression = {"expression_text": "k + m", "expression_type": "arithmetic"}
+    calc.calculation = {"result_value": 3}
+    lineage = ValueLineage(
+        reached=frozenset({"calc", "left", "right"}),
+        contributed={"calc": ("y",)},
+        reads={
+            "calc": {
+                "y": (
+                    # A coalesced full-join key: either side may have supplied it.
+                    ColumnRead("k", (ColumnSource("left", "k"), ColumnSource("right", "k"))),
+                    ColumnRead("m", (ColumnSource("left", "m"),)),
+                )
+            }
+        },
+    )
+    node_map = {"left": _node("left", NodeType.DATA_INPUT, {})}
+
+    # "left" was not correlated, so its entry carries only its name.
+    _attach_input_sources([calc], [calc], "y", lineage, node_map, None)
+
+    assert calc.calculation["input_sources"] == {"m": {"node_id": "left", "node_name": "left"}}
 
 
 def test_a_generated_column_the_code_reassigns_is_followed_both_before_and_after():

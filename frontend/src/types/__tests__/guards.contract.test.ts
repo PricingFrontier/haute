@@ -1661,7 +1661,7 @@ describe("API response guards", () => {
         ...trace,
         waterfall: [{
           label: "base",
-          operation: "set",
+          operation: "base",
           value: 10,
           delta: 10,
           cumulative: 10,

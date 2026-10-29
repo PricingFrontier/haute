@@ -97,8 +97,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P2 | Push rejection names origin; after dropdown changes, its Catch up/Spin off submits backup. | [GIT-R18](git-integration.md#git-r18--recovery-acts-on-the-remote-named-by-its-dialog) | Actual component/ApiError/response parser, both actions, with the remote changed mid-push. Spin off sets local work aside on a branch; a real wrong-remote mutation was not executed. |
 | P2 | Returning from a failed directory to a cached parent leaves the error hiding the files. | [FNED-R02](frontend-node-editors.md#fned-r02--drafts-in-step-with-the-document-errors-with-their-detail), extended | Actual FileBrowser and settings cache, list transport substituted. |
 | P2 | Use detected schema applies A's completed schema into B while B loads. | [FNED-R06](frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft), extended | Actual DataInputEditor/hooks, API transport substituted. |
-| P2 | Later scalar assignment changes a trace explanation: output 20 is explained as `10 * 3 = 30`. | [TRACE-R02](tracing.md#trace-r02--expression-facts-from-the-located-expression), extended | Real full trace, Parquet source and executor, plus expression evaluation. |
-| P2 | Unary parentheses disappear and regex value substitution rewrites a matching string literal. | [TRACE-R02](tracing.md#trace-r02--expression-facts-from-the-located-expression), extended | Real expression evaluator: `-(x+z)` displayed as `-x+z`; concat literal `"x"` is replaced. Numerical execution remains correct in these two cases. The actual browser formatter also rewrites quoted `a/b` and `a*b` into different literal text. |
 | P2 | Deployment proves a literal-only select preserves request order, then fails a three-quote request with one row. | [EXEC-R09](execution-engine.md#exec-r09--column-free-selects-are-not-row-local), extended | Actual row proof and score_graph. Existing chunk row-count corruption stays P1; this added deployment failure is loud. |
 | P2 | Late GLM dispersion estimate for A overwrites manually chosen theta 7 in newer target B with 3. | [FMOU-R06](frontend-modelling-optimiser-ui.md#fmou-r06--dispersion-estimates-belong-to-the-initiating-training-draft) | Actual GLMTargetConfig, only the estimate promise substituted. |
 | P2 | JSON omits an all-null nested pricing object while NDJSON returns pricing:null for the same quote. | [DEP-R17](deploy.md#dep-r17--json-and-ndjson-preserve-the-same-output-document) | Real generated FastAPI app, request shredder, scorer, assembler and materializer; no scorer mock. Batch variant is source-supported. |
@@ -307,7 +305,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | tuning status fields | **MOD-R08**. |
 | edge ID collisions | **NAME-10**. |
 | failed new solve identity | **FSH-R12**. |
-| quoted literal formatting | **TRACE-R02**. |
 | malformed connect extraction | **PCFG-R20**. |
 | keyword-only defaults | **PCFG-R21**. |
 | local app Host boundary | **WB-39**. |

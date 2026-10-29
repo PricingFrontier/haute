@@ -1884,7 +1884,7 @@ class TraceCorrelationDiagnosticResponse(BaseModel):
 
 class TraceWaterfallEntryResponse(BaseModel):
     label: str
-    operation: str
+    operation: Literal["base", "multiply", "add"]
     value: float
     delta: float
     cumulative: float

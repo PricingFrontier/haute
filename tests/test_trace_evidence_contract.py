@@ -21,7 +21,13 @@ from haute.trace import (
     execute_trace,
     trace_result_to_dict,
 )
-from tests.conftest import make_edge, make_graph, make_source_node, make_transform_node
+from tests.conftest import (
+    head_frame_resolver,
+    make_edge,
+    make_graph,
+    make_source_node,
+    make_transform_node,
+)
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -292,22 +298,28 @@ def test_ambiguous_source_frame_is_unresolved_instead_of_guessing() -> None:
     unresolved: dict[str, tuple[str, int]] = {}
     work = CorrelationWork()
 
-    rows = _correlate_rows_posthoc(
-        {
-            "source": {
-                "first": pl.DataFrame({"policy_id": ["P1"], "premium": [100]}),
-                "second": pl.DataFrame({"policy_id": ["P1"], "premium": [100]}),
-            },
-            "target": pl.DataFrame({"policy_id": ["P1"], "premium": [100]}),
+    frames: dict[str, object] = {
+        "source": {
+            "first": pl.DataFrame({"policy_id": ["P1"], "premium": [100]}),
+            "second": pl.DataFrame({"policy_id": ["P1"], "premium": [100]}),
         },
+        "target": pl.DataFrame({"policy_id": ["P1"], "premium": [100]}),
+    }
+    edge_metadata: dict[tuple[str, str], list[tuple[str | None, str | None]]] = {
+        ("source", "target"): [("first", None), ("second", None)]
+    }
+    rows = _correlate_rows_posthoc(
+        frames,
         order=["source", "target"],
         parents_of={"target": ["source"]},
         target_node_id="target",
         row_index=0,
         node_map=node_map,
+        row_scope=head_frame_resolver(
+            frames, {"target": ["source"]}, "target", node_map, edge_metadata
+        ),
         diagnostics=diagnostics,
         unresolved=unresolved,
-        edge_metadata={("source", "target"): [("first", None), ("second", None)]},
         traced_column="premium",
         work=work,
     )

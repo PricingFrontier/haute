@@ -125,8 +125,8 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the nineteen packages delivered or settled since (thirteen by 28
-October 2026, six more on 29 October) have been removed from the sections below; the coverage table keeps the
+The findings of the twenty-nine packages delivered or settled since (thirteen by 28
+October 2026, sixteen more on 29 October) have been removed from the sections below; the coverage table keeps the
 original counts.
 
 ## Validation — 25 October 2026
@@ -230,13 +230,6 @@ these are the Majors still open.
 - **The optimiser's MLflow log writes the complete result artifact without the
   finiteness gate the save applies** (Major, `OPT-R01`): a missing defence layer
   on a pricing artifact, since the status poll corrects the UI path.
-- **A trace's input sources name the nearest step in declaration order, not
-  the node whose value the row carries** (Major, `TRACE-R01`; reproduced): on a
-  join with a shared non-key column the join side is shown as the source of a
-  base-side value, flipping with node order.
-- **`.over(` anywhere in a node's code types every column of the node as a
-  window** (Major, `TRACE-R02`; reproduced): `y = a * 2` is shown as "rank of x
-  over g" with the right value.
 - **The assistant's SDK clients are built without the validated endpoint**
   (Major, `ASSIST-54`): `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` in the
   server's environment redirects the key, the prompt and project material to a
@@ -257,10 +250,6 @@ these are the Majors still open.
 - **Saving the pipeline cancels an auto-range run in flight, and a percentage
   constraint is shown as "at least 0" and rewritten as an absolute bound on
   edit** (two Majors, `FMOU-R04`).
-- **The trace panel labels an additive waterfall step as a multiplication**
-  (Major, `TRACE-R05`): the backend's `operation` is dropped and every row after
-  the first is prefixed `×`, so a step that added 30 reads `×30`; the totals stay
-  right.
 - **Ctrl+S with the cursor in a code box saves without the last keystrokes**
   (Major, `FSH-R07`): the save helper blurs only text fields, the code editor's
   debounced commit flushes only on blur, and the toolbar shows "Saved" while the
@@ -342,10 +331,7 @@ production:
 | Modelling | MDL-3, MDL-9, MDL-11, MDL-16, MDL-20, MDL-21 | `MOD-R05` |
 | Modelling | MDL-2, MDL-18, MDL-22 | `MOD-R06` |
 | Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
-| Tracing | TRC-1 | `TRACE-R01` |
-| Tracing | TRC-2, TRC-3, TRC-4 | `TRACE-R02` |
 | Tracing | TRC-8, TRC-9, TRC-10, TRC-14 | `TRACE-R03` |
-| Tracing | TRC-5, TRC-6, TRC-7, TRC-11, TRC-12, TRC-13 | `TRACE-R04` |
 | Git integration | GIT-3, GIT-4, GIT-5, GIT-8, GIT-9 | `GIT-R02` |
 | Git integration | GIT-6, GIT-7 | `GIT-R03` |
 | Git integration | GIT-2 | `GIT-R04` |
@@ -374,7 +360,6 @@ production:
 | Frontend optimiser | FOX-1, FOX-2, FOX-3 | `FMOU-R04` |
 | Frontend optimiser | FOX-4, FOX-5, FOX-6, FOX-8, FOX-10 (optimiser part) | `FMOU-R05` |
 | Frontend Explore | FOX-7, FOX-9, FOX-10 (Explore part), FOX-11, FOX-12 | `EDA-R03` |
-| Trace UI | FTG-1, FTG-4, FTG-6, FTG-10, FTG-11, FTG-13, FTG-15, FTG-16, FTG-21 | `TRACE-R05` |
 | Git UI | FTG-2, FTG-3, FTG-7, FTG-8, FTG-14, FTG-17, FTG-19, FTG-22 | `GIT-R07` |
 | Git UI | FTG-9, FTG-12 | `GIT-R08` |
 | Assistant UI | FTG-5, FTG-18, FTG-20 | `ASSIST-60` |

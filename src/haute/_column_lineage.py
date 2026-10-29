@@ -3454,6 +3454,31 @@ def _selector_assignment(
     return {f"{prefix}{column}{suffix}" for column in expanded}
 
 
+def _binds_a_value(statement: ast.stmt, frame_names: frozenset[str]) -> bool:
+    """Whether *statement* only binds a name to a value no frame flows into.
+
+    ``factor = 2`` (plain, annotated or augmented) before ``df = ...`` rewrites
+    no frame, so it does not stop the proof, and a later statement using the
+    name as a frame fails the proof on its own. Binding ``df`` or an input, or
+    a value that reads a frame (``n = src.height``), is not such a statement.
+    """
+    if isinstance(statement, ast.Assign):
+        if len(statement.targets) != 1:
+            return False
+        target: ast.expr = statement.targets[0]
+        value: ast.expr | None = statement.value
+    elif isinstance(statement, (ast.AnnAssign, ast.AugAssign)):
+        target, value = statement.target, statement.value
+    else:
+        return False
+    if not isinstance(target, ast.Name) or target.id == "df" or target.id in frame_names:
+        return False
+    return value is None or not any(
+        isinstance(node, ast.Name) and (node.id == "df" or node.id in frame_names)
+        for node in ast.walk(value)
+    )
+
+
 def carried_column_proof(
     code: str,
     input_names: Iterable[str],
@@ -3500,6 +3525,8 @@ def carried_column_proof(
         if isinstance(statement, (ast.Import, ast.ImportFrom, ast.Pass)):
             continue
         if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant):
+            continue
+        if _binds_a_value(statement, names):
             continue
         if (
             not isinstance(statement, ast.Assign)

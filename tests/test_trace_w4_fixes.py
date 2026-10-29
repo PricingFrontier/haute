@@ -30,6 +30,7 @@ from haute._trace_waterfall import (
     build_waterfall_from_steps,
 )
 from haute.trace import SchemaDiff, TraceStep
+from tests.conftest import head_frame_resolver
 
 
 def _node(node_id: str, node_type: str = "generic", config: dict | None = None):
@@ -153,7 +154,15 @@ class TestPositionalFastPath:
             ),
         }
 
-        result = _correlate_rows_posthoc(eager, ["p", "c"], {"c": ["p"]}, "c", 0, node_map=node_map)
+        result = _correlate_rows_posthoc(
+            eager,
+            ["p", "c"],
+            {"c": ["p"]},
+            "c",
+            0,
+            node_map=node_map,
+            row_scope=head_frame_resolver(eager, {"c": ["p"]}, "c", node_map),
+        )
 
         assert result["c"] == {"b": 30}
         # Must NOT be the positionally-aligned {'a': 10}.
@@ -172,7 +181,15 @@ class TestPositionalFastPath:
             "c": _node("c", "polars", {"code": "df = df.rename({'old': 'new'})"}),
         }
 
-        result = _correlate_rows_posthoc(eager, ["p", "c"], {"c": ["p"]}, "c", 2, node_map=node_map)
+        result = _correlate_rows_posthoc(
+            eager,
+            ["p", "c"],
+            {"c": ["p"]},
+            "c",
+            2,
+            node_map=node_map,
+            row_scope=head_frame_resolver(eager, {"c": ["p"]}, "c", node_map),
+        )
 
         assert result["p"] == {"old": 30}
 
@@ -185,7 +202,15 @@ class TestPositionalFastPath:
         # is unambiguous.
         node_map = {"p": _node("p", "source"), "c": _node("c", "generic")}
 
-        result = _correlate_rows_posthoc(eager, ["p", "c"], {"c": ["p"]}, "c", 0, node_map=node_map)
+        result = _correlate_rows_posthoc(
+            eager,
+            ["p", "c"],
+            {"c": ["p"]},
+            "c",
+            0,
+            node_map=node_map,
+            row_scope=head_frame_resolver(eager, {"c": ["p"]}, "c", node_map),
+        )
 
         assert result["p"] == {"a": 42}
 
@@ -207,6 +232,7 @@ class TestPositionalFastPath:
             "c",
             0,
             node_map=node_map,
+            row_scope=head_frame_resolver(eager, {"c": ["p"]}, "c", node_map),
             diagnostics=diagnostics,
         )
 
@@ -224,7 +250,15 @@ class TestPositionalFastPath:
             "c": _node("c", "polars", {"code": "df = df.with_columns(other=pl.lit(9))"}),
         }
 
-        result = _correlate_rows_posthoc(eager, ["p", "c"], {"c": ["p"]}, "c", 1, node_map=node_map)
+        result = _correlate_rows_posthoc(
+            eager,
+            ["p", "c"],
+            {"c": ["p"]},
+            "c",
+            1,
+            node_map=node_map,
+            row_scope=head_frame_resolver(eager, {"c": ["p"]}, "c", node_map),
+        )
 
         assert result["p"] == {"k": 1, "extra": 6}
 
@@ -237,7 +271,15 @@ class TestPositionalFastPath:
         }
         node_map = {"p": _node("p", "source"), "c": _node("c", "generic")}
 
-        result = _correlate_rows_posthoc(eager, ["p", "c"], {"c": ["p"]}, "c", 1, node_map=node_map)
+        result = _correlate_rows_posthoc(
+            eager,
+            ["p", "c"],
+            {"c": ["p"]},
+            "c",
+            1,
+            node_map=node_map,
+            row_scope=head_frame_resolver(eager, {"c": ["p"]}, "c", node_map),
+        )
 
         assert result["p"] == {"k": 2, "extra": 6}
 

@@ -223,7 +223,7 @@ def test_waterfall_carries_default_evidence_from_specialised_detail() -> None:
             output_values={"premium": value},
             node_detail={
                 "detail_type": "rating_step",
-                "tables": [{"default_used": default_used}],
+                "tables": [{"output_column": "premium", "default_used": default_used}],
             },
         )
 
@@ -240,3 +240,48 @@ def test_waterfall_carries_default_evidence_from_specialised_detail() -> None:
 
     assert isinstance(result, list)
     assert [entry["default_used"] for entry in result] == [False, True, False]
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        # A user column named ``status`` holding "default", inside a model's inputs.
+        {"detail_type": "model_score", "input_values": {"status": "default"}},
+        # A table that defaulted, but for another column than the traced one.
+        {
+            "detail_type": "rating_step",
+            "tables": [{"output_column": "other", "default_used": True, "status": "default"}],
+        },
+    ],
+    ids=["user-status-column", "another-tables-default"],
+)
+def test_waterfall_default_evidence_reads_only_the_traced_columns_typed_fields(detail) -> None:
+    def step(node_id: str, value: float, *, added: bool = False, **kwargs) -> TraceStep:
+        return TraceStep(
+            node_id=node_id,
+            node_name=node_id,
+            node_type="ratingStep",
+            schema_diff=SchemaDiff(
+                columns_added=["premium"] if added else [],
+                columns_removed=[],
+                columns_modified=[] if added else ["premium"],
+                columns_passed=[],
+            ),
+            input_values={},
+            output_values={"premium": value},
+            **kwargs,
+        )
+
+    result = build_waterfall_from_steps(
+        [
+            step("base", 100, added=True),
+            step("middle", 110, node_detail=detail),
+            step("target", 121),
+        ],
+        "premium",
+        target_node_id="target",
+        final_output_value=121,
+    )
+
+    assert isinstance(result, list)
+    assert [entry["default_used"] for entry in result] == [False, False, False]

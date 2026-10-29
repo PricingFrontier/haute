@@ -25,10 +25,8 @@ This module combines two layers:
 from __future__ import annotations
 
 import ast
-import copy
 import dataclasses
 import math
-import re
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
@@ -36,16 +34,18 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from haute._banding_config import normalise_banding_factors
-from haute._cache import canonical_json
 from haute._expression_parser import (
     AssignmentPhases,
     assignment_phases,
+    assigns_column,
+    copied_from,
     evaluate_expression,
     parse_expression,
     parse_expression_chain,
+    renamed_from,
+    wrap_node_code,
 )
 from haute._graph_utils import edge_input_name, select_edge_source_output
-from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._rating import (
     SUPPORTED_BANDING_OPERATORS,
@@ -62,38 +62,6 @@ if TYPE_CHECKING:
     from haute.trace import TraceStep
 
 logger = get_logger(component="trace_enrichment")
-
-_EnrichmentMemoKey = tuple[object, ...]
-
-
-def _enrichment_value_identity(value: Any) -> str:
-    """Return a deterministic request-local identity for concern inputs."""
-    return canonical_json(to_json_safe(value))
-
-
-def _enrichment_frame_identity(
-    eager_outputs: Mapping[str, Any],
-) -> tuple[tuple[str, str, int], ...]:
-    identities: list[tuple[str, str, int]] = []
-    for node_id, output in eager_outputs.items():
-        if isinstance(output, dict):
-            identities.extend(
-                (str(node_id), str(handle), id(frame)) for handle, frame in output.items()
-            )
-        else:
-            identities.append((str(node_id), "", id(output)))
-    return tuple(sorted(identities))
-
-
-def _enrichment_contains_error(value: Any) -> bool:
-    if isinstance(value, Mapping):
-        if "error" in value or "error_type" in value:
-            return True
-        return any(_enrichment_contains_error(item) for item in value.values())
-    if isinstance(value, (list, tuple)):
-        return any(_enrichment_contains_error(item) for item in value)
-    return False
-
 
 # ---------------------------------------------------------------------------
 # Rating step enrichment
@@ -938,18 +906,6 @@ def detect_row_lineage_type(
 # ---------------------------------------------------------------------------
 
 
-def _wrap_node_code(raw_code: str) -> str:
-    """Wrap dot-chain or bare-expression code so the parser sees valid Python."""
-    if not raw_code:
-        return raw_code
-    if raw_code.startswith("."):
-        return f"df = (df\n{raw_code})"
-    stripped = raw_code.lstrip()
-    if not stripped.startswith("df") and "=" not in raw_code.split("\n")[0].split("(")[0]:
-        return f"df = (\n{raw_code}\n)"
-    return raw_code
-
-
 def _effective_node_code(
     config: Mapping[str, Any],
     node_map: Mapping[str, GraphNode],
@@ -1043,7 +999,7 @@ def column_derivation(
         return derivation
     node = node_map.get(step.node_id)
     config = node.data.config if node is not None and isinstance(node.data.config, dict) else {}
-    code = _wrap_node_code(_effective_node_code(config, node_map))
+    code = wrap_node_code(_effective_node_code(config, node_map))
     if not code.strip():
         return derivation
     try:
@@ -1065,280 +1021,112 @@ def column_derivation(
     return derivation
 
 
-def _build_input_sources(
-    ref_cols: list[str],
-    current_step: TraceStep,
-    all_steps: list[TraceStep],
-    node_map: dict[str, Any],
+def input_source_entry(
+    step: TraceStep | None,
+    node_id: str,
+    column: str,
+    node_map: Mapping[str, GraphNode],
     preamble_ns: dict[str, Any] | None,
-    *,
-    depth: int = 0,
-    max_depth: int = 3,
-    completed_memo: dict[_EnrichmentMemoKey, dict[str, Any]] | None = None,
-    active_path: tuple[tuple[str, str], ...] = (),
-    frame_identity: object | None = None,
 ) -> dict[str, Any]:
-    """Recursively build input source derivations for referenced columns.
+    """How the node *node_id* computed the *column* value a formula read.
 
-    For each column in *ref_cols*, finds the upstream step that created it
-    and extracts its formula + values.  If that source itself has an
-    expression with referenced columns, recurses to build nested sources.
+    *step* is the node's trace step, ``None`` when the trace could not
+    correlate its row, which leaves only the node's name. A banding factor
+    gives its band; code that assigns the column gives that formula,
+    evaluated on the step's row; a node whose code does not assign it (a
+    model's prediction beside its transform steps, a loaded column) gives the
+    value it produced. A step read from a snapshot no recompute reproduced
+    gives only the value it held there: its provenance ends at the snapshot.
     """
-    if completed_memo is None:
-        completed_memo = {}
-    result: dict[str, Any] = {}
+    node = node_map.get(node_id)
+    if step is None:
+        return {"node_id": node_id, "node_name": node.data.label if node is not None else node_id}
+    entry: dict[str, Any] = {"node_id": node_id, "node_name": step.node_name}
+    combined = {**step.input_values, **step.output_values}
+    if step.snapshot_generation_id is not None and not step.snapshot_reproduced:
+        entry["result_value"] = combined.get(column)
+        entry["snapshot_generation_id"] = step.snapshot_generation_id
+        return entry
+    config = node.data.config if node is not None and isinstance(node.data.config, dict) else {}
     try:
-        current_step_index = all_steps.index(current_step)
-    except ValueError as exc:
-        raise ValueError(
-            f"current_step {current_step.node_id!r} is not present in all_steps"
-        ) from exc
-
-    for ref_col in ref_cols:
-        upstream_steps = all_steps[:current_step_index]
-        for other_step in reversed(upstream_steps):
-            if other_step is current_step:
-                continue
-            if (
-                ref_col not in other_step.schema_diff.columns_added
-                and ref_col not in other_step.schema_diff.columns_modified
-            ):
-                continue
-            memo_node = node_map.get(other_step.node_id)
-            memo_config = (
-                memo_node.data.config
-                if memo_node is not None and isinstance(memo_node.data.config, dict)
-                else {}
+        factor = None
+        if step.node_type == "banding":
+            detail = enrich_banding(
+                config, step.input_values, step.output_values, traced_column=column
             )
-            active_key = (other_step.node_id, ref_col)
-            memo_key: _EnrichmentMemoKey = (
-                "input_source",
-                other_step.node_id,
-                ref_col,
-                _enrichment_value_identity(other_step.input_values),
-                _enrichment_value_identity(other_step.output_values),
-                _enrichment_value_identity(memo_config),
-                frame_identity,
-                id(preamble_ns),
-            )
-            memo_value = completed_memo.get(memo_key)
-            if memo_value is not None:
-                result[ref_col] = copy.deepcopy(memo_value)
-                break
-            if active_key in active_path:
-                result[ref_col] = {
-                    "error": "input-source enrichment cycle detected",
-                    "error_type": "TraceEnrichmentCycle",
-                    "node_id": other_step.node_id,
-                    "column": ref_col,
-                }
-                break
-            other_combined = {**other_step.input_values, **other_step.output_values}
-            source_info: dict[str, Any] = {
-                "node_id": other_step.node_id,
-                "node_name": other_step.node_name,
-            }
-            snapshot_generation_id = getattr(other_step, "snapshot_generation_id", None)
-            if snapshot_generation_id is not None and not getattr(
-                other_step, "snapshot_reproduced", False
-            ):
-                # Read from a shared snapshot no recompute reproduced: the input's
-                # provenance ends here, with the value it held, never a formula
-                # rebuilt from it.
-                source_info["result_value"] = other_combined.get(ref_col)
-                source_info["snapshot_generation_id"] = snapshot_generation_id
-                result[ref_col] = source_info
-                break
-
-            # Parse the expression for this specific column from the
-            # upstream node's code — don't rely on other_step.expression
-            # since that's only populated for the traced column.
-            parsed_refs: list[str] = []
-            banding_lineage_applied = False
-            try:
-                other_code = ""
-                cfg: dict[str, Any] = {}
-                nd = node_map.get(other_step.node_id)
-                if nd is not None:
-                    cfg = nd.data.config if isinstance(nd.data.config, dict) else {}
-                    if other_step.node_type == "banding":
-                        banding_detail = enrich_banding(
-                            cfg,
-                            other_step.input_values,
-                            other_step.output_values,
-                            traced_column=ref_col,
-                        )
-                        banding_factor = _banding_factor_for_column(banding_detail, ref_col)
-                        if banding_factor is not None:
-                            banding_expression = _banding_expression_payload(banding_factor)
-                            banding_calculation = _banding_calculation_payload(banding_factor)
-                            source_info["expression_text"] = banding_expression["expression_text"]
-                            source_info["substituted_text"] = banding_calculation[
-                                "substituted_text"
-                            ]
-                            source_info["result_value"] = banding_calculation["result_value"]
-                            parsed_refs = list(banding_expression["referenced_columns"])
-                            # The banding factor is the authoritative
-                            # lineage for this column.  A banding node that
-                            # also carries a `code` config key must not have
-                            # its expression/substituted/result values
-                            # clobbered by the generic parse/eval below.
-                            banding_lineage_applied = True
-                    raw = _effective_node_code(cfg, node_map)
-                    other_code = _wrap_node_code(raw)
-                if other_code and not banding_lineage_applied:
-                    parsed = parse_expression(other_code, ref_col)
-                    if parsed and parsed.expression_text:
-                        parsed_refs = list(parsed.referenced_columns)
-                    # Code that never assigns the column (a model's transform
-                    # steps around its prediction) did not compute it: the
-                    # value is the one the node produced, as for a code-less node.
-                    if parsed is not None and parsed.expression_text:
-                        source_info.update(
-                            _formula_fields(other_step, ref_col, other_code, parsed, preamble_ns)
-                        )
-            except Exception as exc:
-                # Surface the derivation failure on the source entry so
-                # the caller can see why an input column's value/
-                # expression is missing, rather than silently falling
-                # back to the raw cell value.
-                logger.warning(
-                    "input_source_derivation_failed",
-                    node_id=other_step.node_id,
-                    column=ref_col,
-                    error=str(exc),
-                    error_type=type(exc).__name__,
-                    exc_info=True,
-                )
-                source_info["error"] = f"input-source derivation failed: {exc}"
-                source_info["error_type"] = type(exc).__name__
-                source_info.setdefault("result_value", other_combined.get(ref_col))
-
-            # If no expression was found (source node with no code),
-            # use the value from the step's output_values directly.
-            if "result_value" not in source_info:
-                source_info["result_value"] = other_combined.get(ref_col)
-
-            # Recurse into this source's dependencies
-            if depth < max_depth and parsed_refs:
-                sub_sources = _build_input_sources(
-                    parsed_refs,
-                    other_step,
-                    all_steps,
-                    node_map,
-                    preamble_ns,
-                    depth=depth + 1,
-                    max_depth=max_depth,
-                    completed_memo=completed_memo,
-                    active_path=(*active_path, active_key),
-                    frame_identity=frame_identity,
-                )
-                if sub_sources:
-                    source_info["input_sources"] = sub_sources
-
-            result[ref_col] = source_info
-            if not _enrichment_contains_error(source_info):
-                completed_memo[memo_key] = copy.deepcopy(source_info)
-            break
-    return result
+            factor = _banding_factor_for_column(detail, column)
+        if factor is not None:
+            # The banding factor is the column's lineage; code the node also
+            # carries never replaces it.
+            calculation = _banding_calculation_payload(factor)
+            entry["expression_text"] = calculation["expression_text"]
+            entry["substituted_text"] = calculation["substituted_text"]
+            entry["result_value"] = calculation["result_value"]
+        else:
+            code = wrap_node_code(_effective_node_code(config, node_map))
+            parsed = parse_expression(code, column) if code else None
+            # Code that never assigns the column (a model's transform steps
+            # around its prediction) did not compute it: the value is the one
+            # the node produced, as for a code-less node.
+            if parsed is not None and parsed.expression_text:
+                entry.update(_formula_fields(step, column, code, parsed, preamble_ns))
+    except Exception as exc:
+        logger.warning(
+            "input_source_derivation_failed",
+            node_id=node_id,
+            column=column,
+            error=str(exc),
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
+        entry["error"] = f"input-source derivation failed: {exc}"
+        entry["error_type"] = type(exc).__name__
+    entry.setdefault("result_value", combined.get(column))
+    return entry
 
 
-def _attach_banding_lineage(
-    step: TraceStep,
-    detail: dict[str, Any],
-    column: str | None,
-    steps: list[TraceStep],
-    node_map: dict[str, Any],
-    preamble_ns: dict[str, Any] | None,
-    eager_outputs: dict[str, pl.DataFrame],
-    *,
-    completed_memo: dict[_EnrichmentMemoKey, dict[str, Any]],
-    frame_identity: object,
-) -> None:
+def _attach_banding_lineage(step: TraceStep, detail: dict[str, Any], column: str | None) -> None:
     if not column:
         return
     factor = _banding_factor_for_column(detail, column)
     if factor is None:
         return
-
-    expression = _banding_expression_payload(factor)
-    calculation = _banding_calculation_payload(factor)
-    ref_cols = expression.get("referenced_columns", [])
-
-    if ref_cols:
-        input_sources = _build_input_sources(
-            list(ref_cols),
-            step,
-            steps,
-            node_map,
-            preamble_ns,
-            depth=0,
-            max_depth=3,
-            completed_memo=completed_memo,
-            frame_identity=frame_identity,
-        )
-        if input_sources:
-            calculation["input_sources"] = input_sources
-
-    step.expression = expression
-    step.calculation = calculation
+    step.expression = _banding_expression_payload(factor)
+    step.calculation = _banding_calculation_payload(factor)
 
 
 def _detect_rename(
     step: TraceStep,
     code: str,
-    raw_code: str,
     column: str,
     all_steps: list[TraceStep],
     node_map: dict[str, Any] | None = None,
 ) -> None:
-    """Detect if the column is a rename and populate calculation/node_detail."""
+    """Detect if the column is a rename and populate calculation/node_detail.
 
-    # Case 1: .rename({'old': 'new'}) syntax
-    rename_match = re.search(r"\.rename\s*\(\s*\{", raw_code)
-    if rename_match:
-        # Parse rename mapping from the raw code
-        pairs = re.findall(r"['\"](\w+)['\"]\s*:\s*['\"](\w+)['\"]", raw_code)
-        for old_name, new_name in pairs:
-            if new_name == column:
-                if step.calculation is None:
-                    step.calculation = {}
-                step.calculation["original_name"] = old_name
+    Both cases are read from the syntax tree: a ``rename`` call's own literal
+    mapping (never another call's dict, such as ``replace``'s), or an
+    assignment that copies another column unchanged.
+    """
+    renamed = renamed_from(code, column)
+    original = renamed if renamed is not None else copied_from(code, column)
+    if original is None:
+        return
+    if step.calculation is None:
+        step.calculation = {}
+    step.calculation["original_name"] = original
 
-                # Build rename chain by looking at previous steps
-                chain = _build_rename_chain(all_steps, step, old_name, column, node_map)
-                if chain and len(chain) > 2:
-                    step.calculation["rename_chain"] = chain
+    # Build rename chain by looking at previous steps
+    chain = _build_rename_chain(all_steps, step, original, column, node_map)
+    if chain and len(chain) > 2:
+        step.calculation["rename_chain"] = chain
 
-                if step.node_detail is None:
-                    step.node_detail = {}
-                step.node_detail["detail_type"] = "rename"
-                step.node_detail["original_name"] = old_name
-                step.node_detail["new_name"] = new_name
-                return
-
-    # Case 2: .with_columns(new_name=pl.col('old_name')) — pure rename (col reference only)
-    if ".with_columns(" in raw_code:
-        col_match = re.search(
-            rf"{re.escape(column)}\s*=\s*pl\.col\(\s*['\"](\w+)['\"]\s*\)",
-            raw_code,
-        )
-        if col_match:
-            old_name = col_match.group(1)
-            # Check if this is a pure rename (no additional operations)
-            # The expression text should be just the column name
-            expr = step.expression
-            if expr and expr.get("expression_type") == "arithmetic":
-                expr_text = expr.get("expression_text", "")
-                if expr_text.strip() == old_name:
-                    if step.calculation is None:
-                        step.calculation = {}
-                    step.calculation["original_name"] = old_name
-
-                    # Build rename chain
-                    chain = _build_rename_chain(all_steps, step, old_name, column, node_map)
-                    if chain and len(chain) > 2:
-                        step.calculation["rename_chain"] = chain
+    if renamed is not None:
+        if step.node_detail is None:
+            step.node_detail = {}
+        step.node_detail["detail_type"] = "rename"
+        step.node_detail["original_name"] = renamed
+        step.node_detail["new_name"] = column
 
 
 def _build_rename_chain(
@@ -1369,22 +1157,18 @@ def _build_rename_chain(
             continue
 
         # Try to detect what column was the source by parsing the step's code
-        if node_map and parse_expression is not None:
+        if node_map:
             try:
                 nd = node_map.get(prev_step.node_id)
                 if nd:
                     cfg = nd.data.config if isinstance(nd.data.config, dict) else {}
                     raw_code = cfg.get("code", "") or ""
                     if raw_code:
-                        wrapped = _wrap_node_code(raw_code)
-                        parsed = parse_expression(wrapped, current_name)
-                        if parsed and parsed.expression_type == "arithmetic":
-                            refs = parsed.referenced_columns
-                            if len(refs) == 1 and refs[0] != current_name:
-                                if parsed.expression_text.strip() == refs[0]:
-                                    chain.insert(0, refs[0])
-                                    current_name = refs[0]
-                                    continue
+                        source = copied_from(wrap_node_code(raw_code), current_name)
+                        if source is not None:
+                            chain.insert(0, source)
+                            current_name = source
+                            continue
             except Exception as exc:
                 # Walking the rename chain is best-effort — if parsing a
                 # prior step's code blows up we stop walking and return
@@ -1716,11 +1500,9 @@ def enrich_steps(
 ) -> None:
     """Enrich trace steps in-place with expression/calculation/detail data.
 
-    This is a best-effort pass — if the enrichment modules are unavailable
-    or a per-step enrichment fails, the fields stay ``None``.  The
-    expression-parser and node-type enricher references are resolved at
-    call time via ``haute.trace`` attribute lookup so pytest
-    monkeypatching at that location flows through unchanged.
+    This is a best-effort pass: a per-step enrichment that fails leaves a
+    visible ``error`` on the field it fills, and the other fields stay as
+    they were.
 
     *source_frames_of* maps a (source, target) node pair to the
     ``sourceHandle`` of every edge between them — the per-edge frame
@@ -1737,9 +1519,6 @@ def enrich_steps(
     full scenario set and a ratio constraint's whole-frame baseline both lie
     outside a limited preview's head rows.
     """
-    completed_memo: dict[_EnrichmentMemoKey, dict[str, Any]] = {}
-    frame_identity = _enrichment_frame_identity(eager_outputs)
-
     for step in steps:
         if getattr(step, "snapshot_generation_id", None) is not None and not getattr(
             step, "snapshot_reproduced", False
@@ -1755,7 +1534,7 @@ def enrich_steps(
             # The executor wraps dot-chain syntax (e.g. ".filter(...)") as
             # "df = (df\n.filter(...))".  Apply the same wrapping so the
             # expression parser sees valid Python.
-            code = _wrap_node_code(raw_code)
+            code = wrap_node_code(raw_code)
             node_type = step.node_type
 
             # --- Expression parsing ---
@@ -1789,7 +1568,7 @@ def enrich_steps(
                         else {}
                     )
                     u_raw = _effective_node_code(u_cfg, node_map)
-                    u_code = _wrap_node_code(u_raw)
+                    u_code = wrap_node_code(u_raw)
                     if u_code:
                         try:
                             parsed = parse_expression(u_code, column)
@@ -1836,10 +1615,10 @@ def enrich_steps(
                                 step.calculation = dict(err_payload)
                             else:
                                 step.calculation.setdefault("error", err_payload["error"])
-            _col_in_code = False
-            if column and raw_code and ".with_columns(" in raw_code:
-                # Check if the column is a keyword arg or appears as an alias target
-                _col_in_code = bool(re.search(rf"\b{re.escape(column)}\s*=", raw_code))
+            # A step whose code assigns the column (to the value it already
+            # held, say) still shows its formula; a comment, a string or a
+            # comparison naming the column is not an assignment.
+            _col_in_code = bool(column and assigns_column(code, column))
             if column and (_col_in_schema or _col_in_code):
                 parsed = None
                 try:
@@ -1898,8 +1677,8 @@ def enrich_steps(
                             exc_info=True,
                         )
                         # Seed calculation with a visible error marker that
-                        # persists even if later enrichment stages (chain,
-                        # input_sources) add more fields to the dict.
+                        # persists even if later stages (the chain, the input
+                        # sources) add more fields to the dict.
                         step.calculation = {
                             "error": f"evaluate_expression failed: {exc}",
                             "error_type": type(exc).__name__,
@@ -2022,61 +1801,10 @@ def enrich_steps(
                     step.calculation.setdefault("error", chain_error_msg)
                     step.calculation.setdefault("error_type", chain_error_type)
 
-                # --- Input sources (recursive upstream derivations) ---
-                try:
-                    # Collect ALL referenced columns: from the target
-                    # expression AND from every chain entry. This ensures
-                    # upstream derivations are found for intra-node deps
-                    # too (e.g., margin = premium - burn_cost in the same
-                    # node — we still need to trace premium and burn_cost
-                    # to their upstream origins).
-                    all_ref_cols: list[str] = []
-                    if step.expression and step.expression.get("referenced_columns"):
-                        all_ref_cols.extend(step.expression["referenced_columns"])
-                    if step.calculation and step.calculation.get("expression_chain"):
-                        chain_val = step.calculation["expression_chain"]
-                        if isinstance(chain_val, list):
-                            for chain_entry in chain_val:
-                                if not isinstance(chain_entry, dict):
-                                    continue
-                                for rc in chain_entry.get("referenced_columns", []):
-                                    if rc not in all_ref_cols:
-                                        all_ref_cols.append(rc)
-                    if all_ref_cols:
-                        input_sources = _build_input_sources(
-                            all_ref_cols,
-                            step,
-                            steps,
-                            node_map,
-                            preamble_ns,
-                            depth=0,
-                            max_depth=3,
-                            completed_memo=completed_memo,
-                            frame_identity=frame_identity,
-                        )
-                        if input_sources:
-                            if step.calculation is None:
-                                step.calculation = {}
-                            step.calculation["input_sources"] = input_sources
-
-                except Exception as exc:
-                    logger.warning(
-                        "input_sources_failed",
-                        node_id=step.node_id,
-                        column=column,
-                        error=str(exc),
-                        error_type=type(exc).__name__,
-                        exc_info=True,
-                    )
-                    if step.calculation is None:
-                        step.calculation = {}
-                    step.calculation.setdefault("error", f"input_sources build failed: {exc}")
-                    step.calculation.setdefault("error_type", type(exc).__name__)
-
             # --- Rename detection ---
             if column:
                 try:
-                    _detect_rename(step, code, raw_code, column, steps, node_map)
+                    _detect_rename(step, code, column, steps, node_map)
                 except Exception as exc:
                     logger.warning(
                         "rename_detection_failed",
@@ -2158,17 +1886,7 @@ def enrich_steps(
                 if detail is not None:
                     step.node_detail = detail
                     if node_type == "banding":
-                        _attach_banding_lineage(
-                            step,
-                            detail,
-                            column,
-                            steps,
-                            node_map,
-                            preamble_ns,
-                            eager_outputs,
-                            completed_memo=completed_memo,
-                            frame_identity=frame_identity,
-                        )
+                        _attach_banding_lineage(step, detail, column)
             except Exception as exc:
                 logger.warning(
                     "node_enrichment_failed",

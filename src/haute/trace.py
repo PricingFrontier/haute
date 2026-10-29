@@ -35,7 +35,6 @@ directly and does not depend on this facade being imported first.
 from __future__ import annotations
 
 import functools
-import re
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -52,9 +51,11 @@ from haute._execute_lazy import lineage_preparation_order
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionCancelledError, ExecutionContext, ExecutionProfile
 from haute._expression_parser import (
+    assigns_column,
     evaluate_expression,
     parse_expression,
     parse_expression_chain,
+    wrap_node_code,
 )
 from haute._global_constants import node_code_globals
 from haute._graph_utils import edge_input_name, upstream_node_ids
@@ -88,8 +89,8 @@ from haute._trace_correlation import (
     trace_edge_alignment,
     trace_head_prefixes,
 )
-from haute._trace_enrichment import column_derivation as _column_derivation
 from haute._trace_enrichment import (
+    _effective_node_code,
     detect_row_lineage_type,
     enrich_banding,
     enrich_live_switch,
@@ -98,7 +99,9 @@ from haute._trace_enrichment import (
     enrich_rating_step,
     enrich_scenario_expansion,
 )
+from haute._trace_enrichment import column_derivation as _column_derivation
 from haute._trace_enrichment import enrich_steps as _enrich_steps
+from haute._trace_enrichment import input_source_entry as _input_source_entry
 from haute._trace_lineage import ColumnRead, JoinInputs, ValueLineage, trace_value_lineage
 from haute._trace_waterfall import build_waterfall_from_steps
 from haute._types import REQUEST_INPUT_NODE_TYPES
@@ -288,13 +291,6 @@ _cache: LRUCache[str, dict[str, Any]] = LRUCache(
     max_bytes=TRACE_CACHE_MAX_BYTES,
     size_of=_estimate_preview_cache_entry_bytes,
 )
-
-
-# Enrichment + expression-parser names are imported at the top of this
-# module and re-exported via ``__all__`` so tests can
-# ``monkeypatch.setattr("haute.trace.parse_expression", …)`` and the
-# dispatch walk in ``_trace_enrichment.enrich_steps`` sees the patched
-# version via its ``sys.modules["haute.trace"]`` lookup.
 
 
 # ---------------------------------------------------------------------------
@@ -812,12 +808,11 @@ def _continue_above_seed(
             seed_id,
             0,
             node_map=node_map,
+            row_scope=resolver,
             diagnostics=continuation.diagnostics,
             unresolved=continuation.unresolved,
-            edge_metadata=edge_metadata,
             traced_column=column,
             work=work,
-            row_scope=resolver,
             row_positions=continuation.positions,
         )
     except (ExecutionCancelledError, MemoryError):
@@ -1041,11 +1036,7 @@ def _execute_trace_core(
         execution_facade.ProjectionRequest(
             graph=graph,
             target_node_id=target_node_id,
-            profile=(
-                execution_context.profile
-                if execution_context is not None
-                else ExecutionProfile.PREVIEW_EAGER
-            ),
+            profile=execution_context.profile,
             required_columns_by_node=(
                 {target_node_id: requested_columns} if requested_columns is not None else None
             ),
@@ -1175,7 +1166,11 @@ def _execute_trace_core(
             f"Target node {target_node_id!r} emits multiple frames; "
             "trace a node downstream of a specific frame instead."
         )
-    if table_fill is not None and isinstance(target_output, pl.DataFrame):
+    if not isinstance(target_output, pl.DataFrame):
+        # The walk raises a node's failure and always collects the target, and
+        # the cache holds only completed walks.
+        raise RuntimeError(f"Trace target {target_node_id!r} produced no frame")
+    if table_fill is not None:
         if column is not None and not table_fill.fills(target_output, column):
             raise ValueError(table_fill.refusal)
         if row_values is not None:
@@ -1249,7 +1244,7 @@ def _execute_trace_core(
     # A mismatch means the preview and trace are using different
     # DataFrames (e.g., due to non-deterministic Polars join ordering
     # after a cache miss).
-    if row_values is not None and isinstance(target_output, pl.DataFrame):
+    if row_values is not None:
         target_df = target_output
         row_matches = False
         if row_index < len(target_df):
@@ -1308,37 +1303,21 @@ def _execute_trace_core(
     correlation_started = time.perf_counter()
 
     # Extract correct row from each node via post-hoc correlation
-    # (only if target node has output data)
     try:
-        if isinstance(target_output, pl.DataFrame):
-            cached_rows = _correlate_rows_posthoc(
-                frames,
-                order,
-                parents_of,
-                target_node_id,
-                row_index,
-                node_map=node_map,
-                diagnostics=correlation_diagnostics,
-                unresolved=unresolved_rows,
-                edge_metadata=edge_metadata,
-                traced_column=column,
-                work=correlation_work,
-                row_scope=row_scope,
-                row_positions=row_positions,
-            )
-        else:
-            # Target node execution failed — build partial rows from available nodes
-            cached_rows = {}
-            for nid in order:
-                df = eager_outputs.get(nid)
-                if isinstance(df, pl.DataFrame):
-                    if row_index < len(df):
-                        cached_rows[nid] = _jsonify_row(df.row(row_index, named=True))
-                        row_positions[nid] = row_index
-                    else:
-                        cached_rows[nid] = {}
-                else:
-                    cached_rows[nid] = {}
+        cached_rows = _correlate_rows_posthoc(
+            frames,
+            order,
+            parents_of,
+            target_node_id,
+            row_index,
+            node_map=node_map,
+            row_scope=row_scope,
+            diagnostics=correlation_diagnostics,
+            unresolved=unresolved_rows,
+            traced_column=column,
+            work=correlation_work,
+            row_positions=row_positions,
+        )
     finally:
         duration_ms = max(0.0, (time.perf_counter() - correlation_started) * 1000)
         logger.info(
@@ -1355,7 +1334,7 @@ def _execute_trace_core(
 
     # ---------- Above each seed: prove the snapshot row, then trace ----------
     continuations: list[_SeedContinuation] = []
-    if snapshot_plan is not None and isinstance(target_output, pl.DataFrame):
+    if snapshot_plan is not None:
         for seed_id, seed_decision in snapshot_plan.decision.seeds.items():
             seed_row = cached_rows.get(seed_id)
             if not seed_row:
@@ -1459,14 +1438,7 @@ def _execute_trace_core(
     def _enrichment_plans() -> dict[str, Any]:
         return {**above_seed_plans, **_lineage_plans()}
 
-    formula_names = node_code_globals(
-        {
-            **_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph)),
-            **(preamble_ns or {}),
-        },
-        graph,
-        source,
-    )
+    formula_names = node_code_globals(_trace_preamble_ns(graph, preamble_ns), graph, source)
     _enrich_steps(
         steps,
         node_map,
@@ -1495,8 +1467,10 @@ def _execute_trace_core(
             source_handles=source_frames_of,
             join_inputs=join_inputs,
         )
+        traced_steps = steps
         steps = _prune_to_column_relevance(steps, column, parents_of, node_map, lineage)
         _attach_derivations(steps, lineage, node_map, formula_names)
+        _attach_input_sources(steps, traced_steps, column, lineage, node_map, formula_names)
 
     # A node not traced above a seed was never computed for this trace, so no
     # schema says whether it bears on a traced column: it is always reported.
@@ -1608,15 +1582,6 @@ def _materialize_eager_outputs(
     Returns ``(eager_outputs, order, parents_of, node_map, plans)``, where
     ``plans`` holds every lineage node's uncapped runtime plan.
     """
-    compiled_preamble_ns = _compile_preamble(
-        graph.preamble or "",
-        pipeline_dir=_pipeline_dir(graph),
-    )
-    # Merge caller-supplied preamble_ns with compiled preamble
-    # (caller-supplied takes priority for testing convenience)
-    effective_preamble = dict(compiled_preamble_ns or {})
-    if preamble_ns:
-        effective_preamble.update(preamble_ns)
     # Run the graph — if it fails, let the original exception
     # propagate unchanged.  Previous versions of this code
     # regex-matched "unable to find column" in the error message
@@ -1632,7 +1597,7 @@ def _materialize_eager_outputs(
             row_limits_by_node=prefixes,
         ),
         target_node_id=target_node_id,
-        preamble_ns=effective_preamble or None,
+        preamble_ns=_trace_preamble_ns(graph, preamble_ns) or None,
         source=source,
         execution_context=execution_context,
         snapshot_plan=snapshot_plan,
@@ -1661,24 +1626,28 @@ def _build_trace_plans(
     snapshot_plan: SeedPlan | None = None,
 ) -> dict[str, Any]:
     """Build the uncapped runtime plan of every lineage node without collecting."""
-    compiled_preamble_ns = _compile_preamble(
-        graph.preamble or "",
-        pipeline_dir=_pipeline_dir(graph),
-    )
-    effective_preamble = dict(compiled_preamble_ns or {})
-    if preamble_ns:
-        effective_preamble.update(preamble_ns)
     result = walk_graph(
         graph,
         _build_node_fn,
         policy=CollectPolicy.display(collect=(), row_limit=row_limit),
         target_node_id=target_node_id,
-        preamble_ns=effective_preamble or None,
+        preamble_ns=_trace_preamble_ns(graph, preamble_ns) or None,
         source=source,
         execution_context=execution_context,
         snapshot_plan=snapshot_plan,
     )
     return dict(result.frames)
+
+
+def _trace_preamble_ns(graph: PipelineGraph, preamble_ns: dict[str, Any] | None) -> dict[str, Any]:
+    """The names node code runs with: the compiled preamble, then the caller's.
+
+    Caller-supplied names win, for test convenience.
+    """
+    return {
+        **_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph)),
+        **(preamble_ns or {}),
+    }
 
 
 def _planned_strategy_scope(graph: PipelineGraph, snapshot_plan: SeedPlan | None) -> dict[str, Any]:
@@ -1689,14 +1658,6 @@ def _planned_strategy_scope(graph: PipelineGraph, snapshot_plan: SeedPlan | None
         "materialising_node_ids": snapshot_plan.decision.executed_node_ids,
         "estimation_graph": snapshot_plan.estimation_graph(graph),
     }
-
-
-def _planned_order(order: Sequence[str], snapshot_plan: SeedPlan | None) -> list[str]:
-    """The lineage nodes a trace runs: under a plan, its seeds and executed nodes."""
-    if snapshot_plan is None:
-        return list(order)
-    ran = set(snapshot_plan.decision.executed_node_ids) | set(snapshot_plan.decision.seeds)
-    return [node_id for node_id in order if node_id in ran]
 
 
 def _trace_lineage_alignments(
@@ -2019,8 +1980,9 @@ def _prune_to_column_relevance(
          inputs must stay in the trace even when they live on branches that do
          not themselves carry the traced column.
 
-    A kept step is ``column_relevant`` when the value's lineage reaches it, and
-    its ``contributed_columns`` are the columns it computes for the value.
+    A kept step is ``column_relevant`` exactly when the value's lineage
+    reaches it, and its ``contributed_columns`` are the columns it computes
+    for the value.
     """
     carrier_ids = {s.node_id for s in steps if _carries_column(s, column)}
 
@@ -2032,72 +1994,45 @@ def _prune_to_column_relevance(
         if column in s.schema_diff.columns_added or column in s.schema_diff.columns_modified
     }
 
-    # Also check for nodes whose code creates the column (for failed-execution cases)
-    code_origin_ids: set[str] = set()
+    # Also keep nodes whose code assigns the column though their row shows no
+    # change (an assignment of the value it already held).
     for s in steps:
         nd = node_map.get(s.node_id)
         if nd:
             cfg = nd.data.config if isinstance(nd.data.config, dict) else {}
-            rc = cfg.get("code", "") or ""
-            if rc and ".with_columns(" in rc and re.search(rf"\b{re.escape(column)}\s*=", rc):
-                code_origin_ids.add(s.node_id)
-    origin_ids |= code_origin_ids
+            if assigns_column(wrap_node_code(_effective_node_code(cfg, node_map)), column):
+                origin_ids.add(s.node_id)
 
     # Collect ancestors that actually contribute to the formula.
     # If the expression tells us which columns are referenced (e.g.
     # burn_cost = premium * 0.7 references ["premium"]), only keep
     # ancestors that produce those columns.  This prunes unrelated
     # branches (e.g. competitor_scoring when tracing burn_cost).
-    ancestor_ids: set[str] = set()
-    contributing_ids: set[str] = set()
-    if origin_ids:
-        # Check if expressions tell us what columns matter.  Multiple nodes may
-        # assign the traced column; later assignments can reference side-branch
-        # columns that the first creation did not.
-        ref_cols: set[str] = set()
+    # Multiple nodes may assign the traced column; later assignments can
+    # reference side-branch columns that the first creation did not.
+    ref_cols: set[str] = set()
+    for s in steps:
+        if s.node_id in origin_ids and s.expression:
+            ref_cols.update(s.expression.get("referenced_columns", []))
+    # With referenced columns known, only the steps producing them lead back
+    # to the ancestors kept; with none, every ancestor of an origin is kept.
+    contributing_ids = set(origin_ids)
+    if ref_cols:
         for s in steps:
-            if s.node_id in origin_ids and s.expression:
-                expr_refs = s.expression.get("referenced_columns", [])
-                if expr_refs:
-                    ref_cols.update(expr_refs)
+            sd = s.schema_diff
+            produced = set(sd.columns_added) | set(sd.columns_modified)
+            if produced & ref_cols or any(c in s.output_values for c in ref_cols):
+                contributing_ids.add(s.node_id)
+    ancestor_ids = {
+        ancestor
+        for node_id in contributing_ids
+        for ancestor in upstream_node_ids(node_id, parents_of)
+    }
 
-        if ref_cols:
-            # Targeted walk: find nodes that produce referenced columns
-            # and only walk their ancestors
-            contributing_ids = set(origin_ids)
-            for s in steps:
-                if s.node_id in origin_ids:
-                    continue
-                sd = s.schema_diff
-                produced = set(sd.columns_added) | set(sd.columns_modified)
-                if produced & ref_cols:
-                    contributing_ids.add(s.node_id)
-                elif any(c in s.output_values for c in ref_cols):
-                    contributing_ids.add(s.node_id)
-            queue = list(contributing_ids)
-            while queue:
-                nid = queue.pop()
-                for pid in parents_of.get(nid, []):
-                    if pid not in ancestor_ids:
-                        ancestor_ids.add(pid)
-                        queue.append(pid)
-        else:
-            # No expression info — fall back to keeping all ancestors
-            queue = list(origin_ids)
-            while queue:
-                nid = queue.pop()
-                for pid in parents_of.get(nid, []):
-                    if pid not in ancestor_ids:
-                        ancestor_ids.add(pid)
-                        queue.append(pid)
-
-    # Also keep contributing nodes (those that produce referenced columns)
-    keep_ids = ancestor_ids | origin_ids | carrier_ids
-    if contributing_ids:
-        keep_ids |= contributing_ids
+    keep_ids = ancestor_ids | contributing_ids | carrier_ids
     kept = [s for s in steps if s.node_id in keep_ids]
     for s in kept:
-        s.column_relevant = s.node_id in lineage.reached or s.node_id in code_origin_ids
+        s.column_relevant = s.node_id in lineage.reached
         s.contributed_columns = lineage.contributed_columns(s.node_id)
     return kept
 
@@ -2120,6 +2055,94 @@ def _attach_derivations(
             )
             for column in step.contributed_columns
         ]
+
+
+# Levels of input sources below a formula's own, as the trace panel's tree shows them.
+_INPUT_SOURCE_DEPTH = 3
+
+
+def _attach_input_sources(
+    steps: Sequence[TraceStep],
+    traced_steps: Sequence[TraceStep],
+    column: str,
+    lineage: ValueLineage,
+    node_map: dict[str, Any],
+    preamble_ns: dict[str, Any] | None,
+) -> None:
+    """Name the node behind every value a kept step's formula for *column* read.
+
+    The lineage's reads say which node computed each value a column read, as
+    a step's ``derivations`` do: the formula's own reads and those of its
+    chain's entries. A read of the step's own value (an earlier assignment
+    the chain shows, a model's prediction) and a read no single node supplied
+    (no source, several, or unknown) name none. Each named node's entry
+    follows its own reads the same way, *_INPUT_SOURCE_DEPTH* levels deep.
+    *traced_steps* are every step of the trace, the pruned ones included.
+    """
+    by_id = {step.node_id: step for step in traced_steps}
+    entries: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def sources(node_id: str, computed: Sequence[str], depth: int) -> dict[str, Any]:
+        found: dict[str, Any] = {}
+        for computed_column in computed:
+            for read in lineage.column_reads(node_id, computed_column) or ():
+                if read.column in found or len(read.sources) != 1:
+                    continue
+                (source,) = read.sources
+                if source.node_id == node_id:
+                    continue
+                key = (source.node_id, source.column)
+                if key not in entries:
+                    entries[key] = _input_source_entry(
+                        by_id.get(source.node_id),
+                        source.node_id,
+                        source.column,
+                        node_map,
+                        preamble_ns,
+                    )
+                entry = dict(entries[key])
+                if depth < _INPUT_SOURCE_DEPTH:
+                    nested = sources(source.node_id, [source.column], depth + 1)
+                    if nested:
+                        entry["input_sources"] = nested
+                found[read.column] = entry
+        return found
+
+    for step in steps:
+        expression = step.expression
+        calculation = step.calculation
+        if (
+            column not in step.contributed_columns
+            or not isinstance(calculation, dict)
+            or not isinstance(expression, dict)
+            or not expression.get("expression_text")
+            or expression.get("expression_type") == "opaque"
+        ):
+            continue
+        chain = calculation.get("expression_chain")
+        computed = [column]
+        if isinstance(chain, list):
+            computed.extend(
+                entry["target_column"]
+                for entry in chain
+                if isinstance(entry, dict) and entry.get("target_column") != column
+            )
+        try:
+            input_sources = sources(step.node_id, computed, 0)
+        except Exception as exc:
+            logger.warning(
+                "input_sources_failed",
+                node_id=step.node_id,
+                column=column,
+                error=str(exc),
+                error_type=type(exc).__name__,
+                exc_info=True,
+            )
+            calculation.setdefault("error", f"input_sources build failed: {exc}")
+            calculation.setdefault("error_type", type(exc).__name__)
+            continue
+        if input_sources:
+            calculation["input_sources"] = input_sources
 
 
 def _reads_payload(reads: tuple[ColumnRead, ...] | None) -> list[dict[str, Any]] | None:

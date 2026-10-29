@@ -2,9 +2,12 @@ import type React from "react"
 
 import { formatJsonSpecialValue } from "../utils/formatValue"
 import {
+  displayOperators,
   formatTraceValue as formatCanonicalTraceValue,
   TRACE_MAX_FRACTION_DIGITS,
 } from "../utils/formatTrace"
+
+export { displayOperators }
 
 // ---------------------------------------------------------------------------
 // Value formatting helpers shared across CalculationHero and its sub-components.
@@ -15,10 +18,6 @@ import {
 
 export function formatSmartValue(v: unknown): string {
   return formatCanonicalTraceValue(v)
-}
-
-export function formatResultValue(v: unknown, precision?: number): string {
-  return formatCanonicalTraceValue(v, precision ?? TRACE_MAX_FRACTION_DIGITS)
 }
 
 export function formatResultValueFull(v: unknown): string {
@@ -55,7 +54,7 @@ export function formatDisplayExpression(
   expr: string,
   maxLen = 60,
 ): { text: string; truncated: boolean } {
-  const replaced = expr.replace(/\*/g, "\u00d7").replace(/\//g, "\u00f7")
+  const replaced = displayOperators(expr)
   if (replaced.length > maxLen) {
     return { text: replaced.slice(0, maxLen) + "\u2026", truncated: true }
   }

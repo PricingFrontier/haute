@@ -1,6 +1,6 @@
 import React from "react"
 import { ExpressionChainRowContentView } from "./ExpressionChain"
-import { formatDisplayExpression } from "./traceFormatting"
+import { displayOperators, formatDisplayExpression } from "./traceFormatting"
 import { evaluatedValue, notComputableNote, type InputSourceEntry } from "./traceHelpers"
 
 // ---------------------------------------------------------------------------
@@ -31,9 +31,7 @@ const InputSourceTree: React.FC<InputSourceTreeProps> = ({ subSources }) => {
     <div style={{ marginTop: 4 }}>
       {entries.map(([subCol, subSrc]) => {
         const sfm = subSrc.expression_text ? formatDisplayExpression(subSrc.expression_text).text : null
-        const ssub = subSrc.substituted_text
-          ? subSrc.substituted_text.replace(/\*/g, "\u00d7").replace(/\//g, "\u00f7")
-          : null
+        const ssub = subSrc.substituted_text ? displayOperators(subSrc.substituted_text) : null
         return (
           <div key={subCol} style={{ position: "relative", paddingLeft: 24, marginBottom: 4 }}>
             <div style={{ position: "absolute", left: 6, top: 9, width: 14, height: 1, background: "var(--text-accent-line)" }} />
