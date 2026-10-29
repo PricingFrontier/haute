@@ -176,7 +176,8 @@ reaches node code exactly as the preamble made it.
    `_blocked_pickle_error(..., "allowlisted, but `<package>` is not installed in
    this environment")`, and a `ModuleNotFoundError` deeper in the tree — a
    broken install — propagates unchanged.
-5. `safe_joblib_load` defines a private `NumpyUnpickler` subclass whose
+5. `restricted_joblib_load` (which `safe_joblib_load` calls once the path is
+   contained) defines a private `NumpyUnpickler` subclass whose
    `find_class` routes through `_resolve_allowed_global`, then uses joblib's
    file-object validation/decompression context and instantiates that subclass
    directly, driving its `load()` inside the same
@@ -184,9 +185,10 @@ reaches node code exactly as the preamble made it.
    never mutates `NumpyUnpickler.find_class` process-wide. Haute
    declares `joblib>=1.5,<2` directly because this restricted path requires the
    private file-object validator and native-byte-order constructor contract
-   introduced in joblib 1.5. A missing `joblib` package logs a warning and falls
-   back to `safe_unpickle(validated)`; an installed joblib missing those private
-   APIs, or exposing an incompatible unpickler constructor, raises `RuntimeError`.
+   introduced in joblib 1.5. There is one code path: a `joblib` that cannot be
+   imported raises the import's `ModuleNotFoundError`, and an installed joblib
+   missing those private APIs, or exposing an incompatible unpickler
+   constructor, raises `RuntimeError`.
    If joblib's file-object validator reports a legacy string-backed persistence
    format, the loader raises `ValueError` rather than bypassing the restricted
    subclass.
@@ -296,9 +298,12 @@ the app's own origin check refuses another site's writes. Its tests are in
   returned `ns` and sets `ns["__builtins__"] = inner` (so nested scopes like
   comprehensions resolve names correctly) — so mutating one exec call's builtins
   cannot leak into a subsequent `safe_globals()` call's namespace.
-- **`safe_joblib_load` falls back only when the top-level `joblib` package is
-  absent.** That path degrades to `safe_unpickle`, not unrestricted loading.
-  An installed joblib with missing/incompatible private APIs fails loudly.
+- **Restricted joblib loading has no fallback.** `joblib` is a required
+  dependency, so a `joblib` that cannot be imported fails with the import's
+  `ModuleNotFoundError`; the file is never read as a plain pickle instead, whose
+  `safe_unpickle` would apply the project-root check `restricted_joblib_load`
+  does not. An installed joblib with missing/incompatible private APIs fails
+  loudly.
 - **A validated-but-evicted cache entry is not "trusted by omission."**
   `_validation_cache` is bounded at 1024 entries; when it's flooded past that
   size, older entries (including ones already proven safe) are evicted and
@@ -329,6 +334,8 @@ the app's own origin check refuses another site's writes. Its tests are in
 - `ValueError` — raised by `safe_joblib_load` when joblib exposes a legacy
   string-backed persistence format that cannot use the restricted unpickler. Not
   caught inside this component.
+- `ModuleNotFoundError` — `joblib`, a required dependency, cannot be imported;
+  propagated unchanged by `restricted_joblib_load` and `safe_joblib_load`.
 - `RuntimeError` — raised when installed joblib lacks the private
   `NumpyUnpickler`/file-object validation APIs required to enforce the allowlist,
   or when its private unpickler constructor is incompatible with the supported
@@ -377,9 +384,10 @@ the app's own origin check refuses another site's writes. Its tests are in
 - `tests/test_sandbox_coverage_gaps.py` — targets the *accept* arms of
   `_RestrictedUnpickler.find_class`/the restricted joblib subclass specifically (the exhaustive
   suite above concentrates on the *reject* arms): exact 2-tuple accepts for both
-  the `_ALLOWED_PICKLE_GLOBALS` and `_ALLOWED_PICKLE_CLASSES` tiers, the top-level
-  joblib-package-absent → `safe_unpickle` fallback, and installed-private-API
-  failure.
+  the `_ALLOWED_PICKLE_GLOBALS` and `_ALLOWED_PICKLE_CLASSES` tiers, a hidden
+  `joblib` failing `restricted_joblib_load` with `ModuleNotFoundError` for a file
+  outside the project root (not with a containment refusal), and
+  installed-private-API failure.
 
 - `tests/test_user_exec_imports.py` — a structural regression pin (not a
   behavioral test of `_exec_user_code` itself): asserts no file under `src/haute`

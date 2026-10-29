@@ -166,7 +166,9 @@ Out of scope (owned elsewhere, linked where relevant):
   (`validate_project_path`, which resolves the configured path and checks it with
   `contained_path`). `restricted_joblib_load` is the same allowlisted
   loader without that containment, for model files Haute's own loaders locate (training
-  outputs, the MLflow artifact cache, an MLflow pyfunc package).
+  outputs, the MLflow artifact cache, an MLflow pyfunc package). Neither has a fallback:
+  `joblib` is a required dependency, and when it cannot be imported the import error
+  propagates.
 - **Exactly two InterpretML classes are trusted:**
   `interpret.glassbox._ebm._ebm.ExplainableBoostingRegressor` and
   `...ExplainableBoostingClassifier`; no `interpret.*` prefix or other symbol is. A pinned

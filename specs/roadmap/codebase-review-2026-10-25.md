@@ -357,7 +357,6 @@ production:
 | Frontend optimiser | FOX-4, FOX-5, FOX-6, FOX-8, FOX-10 (optimiser part) | `FMOU-R05` |
 | Frontend Explore | FOX-7, FOX-9, FOX-10 (Explore part), FOX-11, FOX-12 | `EDA-R03` |
 | Assistant UI | FTG-5, FTG-18, FTG-20 | `ASSIST-60` |
-| Sandbox security | PM-42 | `SBX-R04` |
 | Workbench | PM-45 | `WB-10` (selected server engine's atomic form insertion) |
 | Engineering quality | PM-50 | `ENGQ-R01` (evidence added) |
 | Engineering quality | the campaign-named test modules recounted | `ENGQ-R05` (evidence added) |
