@@ -15,7 +15,7 @@ import { openRelease } from "./openRelease"
 import QuotesPage from "./QuotesPage"
 import QuoteView from "./QuoteView"
 import { followLink, quotesQueryOf, useAppRoute, type AppRoute } from "./route"
-import { BUTTON, Notice } from "./ui"
+import { BUTTON, Notice, ReleaseNotice } from "./ui"
 import useAppStore from "./useAppStore"
 import useNewQuoteStore from "./useNewQuoteStore"
 
@@ -140,6 +140,7 @@ function RoutedPage({ route }: { route: AppRoute }) {
 /** An app with no quote store: one quote, priced as it is typed, kept nowhere. */
 function OneQuote() {
   const error = useWorkbenchPreviewStore((s) => s.error)
+  const releaseChanged = useAppStore((s) => s.releaseChanged)
   const zoomBy = useWorkbenchViewStore((s) => s.zoomBy)
 
   return (
@@ -153,6 +154,7 @@ function OneQuote() {
         )}
       </AppHeader>
       <main className="relative flex min-h-0 min-w-0 flex-1 flex-col" aria-label="Sheets">
+        {releaseChanged && <ReleaseNotice kept={false} />}
         <Notice tone="info" testId="notice-no-store">
           This app keeps no quotes: it was started without a quote store. A quote priced here is not saved.
         </Notice>

@@ -29,7 +29,7 @@ and rules named once and used by many sheets were offered and not taken. Fields 
 columns with conditions of their own, not taken that day, were asked for on 2026-10-22;
 cells shown row by row through "this row" tests were offered again and not taken.
 
-`WB-35` to `WB-38` come from the [25 October 2026 codebase
+`WB-36` to `WB-38` come from the [25 October 2026 codebase
 review](codebase-review-2026-10-25.md): what the review found in the Workbench view and
 the underwriter app in the browser.
 
@@ -51,7 +51,6 @@ Workbench nodes stop keeping copies of the tables in a pull request after the fo
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-28 | Planned | P3 | A condition tests a field against another field, text within text, and a date against another date give or take a number of days. |
 | WB-29 | Planned | P3 | A component that takes nothing typed, or a section or a sheet holding only such components, shows by conditions on the price, applied after it so the price never decides what is priced. |
-| WB-35 | Planned | P2 | Every quote action in the app says what it did: a quote made while the page stays is announced, a storeless page offers Reload when the release changed, "Open the newest" opens once, and the Quotes page's keys leave a focused select alone. Late archive/restore completion keeps the current query. |
 | WB-36 | Planned | P2 | A number list in a Show when condition never splits a thousands separator into two values, and the app reads quote_details ids from one typed map. |
 | WB-37 | Planned | P3 | The column key, the refusal predicate, the 409 detail reader, the empty visibility constants, the half-window width, the collapsible group and the pricing basis each exist once in the workbench and the app. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
@@ -493,46 +492,6 @@ sides.
 table named as a fault); `src/haute/_workbench_visibility.py::_tested_column` (input tables
 alone); `src/haute/_workbench_tables.py::sample_quote` (the hidden columns the quote leaves
 out).
-
-### WB-35 — Every quote action says what it did
-**Why:** Duplicate and Renew from a quote with unsaved values create the new quote on the
-server, close the window and only then ask the page's leave guard; `navigate` is called
-without `force` and its answer is dropped, so on Cancel the quote exists and nothing on
-the page says so (only the Save-as-new branch toasts). The storeless app (`OneQuote`)
-reads the preview store's error alone, so a release change arrives as "Pricing failed:
-This page was drawn for another release ... reload" with no Reload control; the Reload
-notice is rendered only by the store-backed page. "Open the newest" calls `openQuote`
-and then `navigate`, whose route effect calls `openQuote` again. The Quotes page gates
-`/` and `N` with `isTypingTarget`, so with the Order or Assigned-to select focused `N`
-opens the New quote window instead of the select's type-ahead; the pipeline editor and
-the Workbench view use `isFormControl` for such keys. From the [25 October 2026 codebase
-review](codebase-review-2026-10-25.md) (FWB-1, FWB-6, FWB-8, FWB-9).
-
-**Plan:** Ask the leave guard before Create for Duplicate and Renew, or toast "Made
-<label>" whenever the page does not move to the quote; state the guard case in the
-workbench specification's `send` description. Render the same Reload notice in
-`OneQuote` when `releaseChanged`. Make `navigate` report whether the path changed and
-call `openQuote` only when it did not. Guard the Quotes page's keys with
-`isFormControl`.
-
-**Acceptance:** Tests: Duplicate from a dirty quote followed by Cancel at the guard
-shows the toast naming the quote made (or the guard runs before creation and no quote is
-made); the storeless page shows the Reload notice on a 409 release mismatch; "Open the
-newest" reads the quote once; `N` with a select focused opens no window.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/app/useNewQuoteStore.ts::send`, `frontend/src/app/route.ts::navigate`,
-`frontend/src/app/UnderwriterApp.tsx::OneQuote`, `frontend/src/app/QuoteView.tsx`,
-`frontend/src/app/QuotesPage.tsx`, `frontend/src/hooks/keyboardTargets.ts::isFormControl`.
-
-**28 October full-pass addition:** Archive/restore completion calls `load(query)` using the
-query captured before its await. A real QuotesPage archive witness switches from Team to Mine
-while the request waits; completion starts a newer load for Team and replaces Mine.
-**Plan/acceptance:** reconcile the mutation against the current list generation/query, or
-reload the current query. A delayed archive or restore must not replace newer
-search/filter/sort/navigation state; test with the actual page/store and deferred API response.
-The archive case was executed; restore shares the same source pattern at `frontend/src/app/QuotesPage.tsx::QuotesPage.restore`.
 
 ### WB-36 — Number lists in Show when, and the quote_details ids from one map
 **Why:** "is one of" and "is not one of" on a number column without allowed values split

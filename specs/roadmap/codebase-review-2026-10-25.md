@@ -125,8 +125,8 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the twenty packages delivered or settled since (thirteen by 28
-October 2026, seven more on 29 October) have been removed from the sections below; the coverage table keeps the
+The findings of the twenty-one packages delivered or settled since (thirteen by 28
+October 2026, eight more on 29 October) have been removed from the sections below; the coverage table keeps the
 original counts.
 
 ## Validation — 25 October 2026
@@ -384,7 +384,6 @@ production:
 | Workbench | PM-45 | `WB-10` (selected server engine's atomic form insertion) |
 | Engineering quality | PM-50 | `ENGQ-R01` (evidence added) |
 | Engineering quality | the campaign-named test modules recounted | `ENGQ-R05` (evidence added) |
-| Workbench UI | FWB-1, FWB-6, FWB-8, FWB-9 | `WB-35` |
 | Workbench UI | FWB-2, FWB-3 | `WB-36` |
 | Workbench UI | FWB-4, FWB-5; app shell FAP-14 | `WB-37` |
 | Workbench UI | FWB-7 | `WB-38` (Decision) |

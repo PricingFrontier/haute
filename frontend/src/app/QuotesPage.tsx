@@ -29,7 +29,7 @@ import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, 
 import { changeAppQuote, type QuotesQuery } from "../api/app"
 import { apiErrorMessage } from "../api/errors"
 import type { WorkbenchAppQuote } from "../api/types"
-import { inModalDialog, isTypingTarget } from "../hooks/keyboardTargets"
+import { inModalDialog, isFormControl } from "../hooks/keyboardTargets"
 import useToastStore from "../stores/useToastStore"
 import { fullTime, listColumns, listValue, relativeTime } from "./quoteValues"
 import { followLink, navigate, newQuotePath, quotePath, quotesPath, quotesQueryOf } from "./route"
@@ -154,8 +154,9 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      // A key pressed in a window over the page, New quote's among them, is the window's.
-      if (event.defaultPrevented || inModalDialog(event.target) || isTypingTarget(event.target) || event.ctrlKey || event.metaKey || event.altKey) return
+      // A key pressed in a window over the page, New quote's among them, is the window's, and
+      // one in a control is the control's: a select's type-ahead takes its letters.
+      if (event.defaultPrevented || inModalDialog(event.target) || isFormControl(event.target) || event.ctrlKey || event.metaKey || event.altKey) return
       if (event.key === "/") {
         event.preventDefault()
         searchBox.current?.focus()
@@ -171,7 +172,8 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
   const archive = async (quote: WorkbenchAppQuote) => {
     try {
       const { quote: archived } = await changeAppQuote(quote.id, "archive", quote.latest, {})
-      void load(query, true)
+      // The list shown once it is answered, which may be another than the one archived from.
+      void useQuoteListStore.getState().reload()
       addToast("success", `Archived ${quote.label}`, {
         label: "Undo",
         run: () => {
@@ -189,7 +191,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
   const restore = async (quote: WorkbenchAppQuote) => {
     try {
       await changeAppQuote(quote.id, "restore", quote.latest, {})
-      void load(query, true)
+      void useQuoteListStore.getState().reload()
       addToast("success", `Restored ${quote.label}`)
     } catch (reason: unknown) {
       addToast("error", `Could not restore ${quote.label}: ${apiErrorMessage(reason)}`)

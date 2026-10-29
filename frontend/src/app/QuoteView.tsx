@@ -39,7 +39,7 @@ import AppHeader from "./AppHeader"
 import HistoryPanel from "./HistoryPanel"
 import { basisOf, fullTime, relativeTime, valuesKey } from "./quoteValues"
 import { followLink, navigate, newQuotePath, quotePath, revisionPath, setLeaveGuard, type AppRoute } from "./route"
-import { BUTTON, Menu, Notice, StageChip, type MenuItem } from "./ui"
+import { BUTTON, Menu, Notice, ReleaseNotice, StageChip, type MenuItem } from "./ui"
 import useAppStore from "./useAppStore"
 import useNewQuoteStore from "./useNewQuoteStore"
 import useOpenQuoteStore, { busy, canEdit, readOnlyReason, type QuoteOrigin } from "./useOpenQuoteStore"
@@ -510,16 +510,13 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
 
   const openNewest = async () => {
     if (quote === null) return
-    if (await navigate(quotePath(quote.id), { force: true })) void useOpenQuoteStore.getState().openQuote(quote.id, null)
+    // Moved to the quote's address, its route opens it; there already, nothing else will.
+    if ((await navigate(quotePath(quote.id), { force: true })) === "here") void useOpenQuoteStore.getState().openQuote(quote.id, null)
   }
 
   return (
     <>
-      {releaseChanged && (
-        <Notice tone="danger" testId="notice-release" actions={<button type="button" className={BUTTON} onClick={() => window.location.reload()}>Reload</button>}>
-          This page was drawn for an earlier release of the app. Reload it to carry on: your changes stay in this browser.
-        </Notice>
-      )}
+      {releaseChanged && <ReleaseNotice kept />}
       {conflict !== null && (
         <Notice
           tone="warning"

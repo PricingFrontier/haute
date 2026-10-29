@@ -212,6 +212,7 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
       if (key !== null) forgetCreation(key)
       const done = get().shown
       set({ shown: null })
+      const savedAsNew = done?.savedFrom != null
       // Saved as new: the open quote's values kept in this browser are in the new quote now.
       if (done?.savedFrom != null) {
         const { draftKey, values: sheets } = done.savedFrom
@@ -219,8 +220,10 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
         if (draftKey !== null && draft !== null && valuesKey(draft.values) === valuesKey(sheets)) clearDraft(draftKey)
         useToastStore.getState().addToast("success", `Saved as ${answer.quote.label}`)
       }
-      // Answered once the page moved on, Back included, the quote is made and the page stays.
-      if (here() === sentFrom) await navigate(quotePath(answer.quote.id), { force: done?.savedFrom != null })
+      // Answered once the page moved on, Back included, the quote is made and the page stays,
+      // as it does when the leave guard keeps the quote behind the window: either says so.
+      const opened = here() === sentFrom && (await navigate(quotePath(answer.quote.id), { force: savedAsNew })) === "moved"
+      if (!opened && !savedAsNew) useToastStore.getState().addToast("success", `Made ${answer.quote.label}`)
     } catch (error: unknown) {
       if (refused(error)) {
         // Refused, it was not made and never will be: the window takes typing again, saying why.

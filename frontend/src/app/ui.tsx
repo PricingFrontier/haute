@@ -1,6 +1,7 @@
 /**
  * The underwriter app's small pieces (specs/workbench), at Haute's density: a quote's stage
- * as a chip, a one-line notice with its actions, and a menu behind a button.
+ * as a chip, a one-line notice with its actions, the notice of a page drawn for an earlier
+ * release, and a menu behind a button.
  */
 import { AlertTriangle, ChevronDown, Info, X, type LucideIcon } from "lucide-react"
 import { useEffect, useRef, useState, type ReactNode } from "react"
@@ -67,6 +68,24 @@ export function Notice({
         </button>
       )}
     </div>
+  )
+}
+
+/** The page was drawn for an earlier release: Reload, saying whether what is typed stays in the browser. */
+export function ReleaseNotice({ kept }: { kept: boolean }) {
+  return (
+    <Notice
+      tone="danger"
+      testId="notice-release"
+      actions={
+        <button type="button" className={BUTTON} onClick={() => window.location.reload()}>
+          Reload
+        </button>
+      }
+    >
+      This page was drawn for an earlier release of the app.{" "}
+      {kept ? "Reload it to carry on: your changes stay in this browser." : "Reload it to carry on. What is typed here is not kept."}
+    </Notice>
   )
 }
 

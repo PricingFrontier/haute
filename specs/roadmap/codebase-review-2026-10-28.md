@@ -80,7 +80,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 |---|---|---|---|
 | P2 | Invalid connect endpoints/keywords/ports are dropped or repaired; parameter inference can hide the discarded call. | [PCFG-R20](pipeline-config.md#pcfg-r20--malformed-connect-calls-are-parse-errors) | Actual strict parse/codegen versus executing original Python; four malformed call shapes. Existing helper tests preserve some wrong behavior. |
 | P1 | A keyword-only factor default disappears on Save; a preamble name takes over and changes 120 to 90. | [PCFG-R21](pipeline-config.md#pcfg-r21--node-signatures-retain-their-configuration-bindings) | Actual original and regenerated functions, strict file parse. |
-| P2 | Archive finishes after the user changes Team to Mine and reloads the older Team query as the newest request. | [WB-35](workbench.md#wb-35--every-quote-action-says-what-it-did), extended | Actual QuotesPage/store with deferred transport. Restore has the same source pattern but was not separately executed. |
 | P1 | Parser endpoint concatenation and multi-frame paste mint duplicate edge ids; healthy recovery can be refused and deleting one duplicate deletes both. | [NAME-10](name-collisions.md#name-10--every-distinct-connection-has-a-distinct-identity) | Real parser/codegen and actual keyboard/store paste/delete. Healthy recovery rejection follows its duplicate-id validator; malformed documents were not assumed to load normally. |
 | P3 | Delete with a selected node and unrelated selected edge leaves the edge. | [FGC-R07](frontend-graph-canvas.md#fgc-r07--delete-removes-the-complete-eligible-selection) | Actual keyboard/store witness; the remaining edge stays visible and can be deleted again. Undo behavior is an acceptance requirement, not an executed assertion after the failure. |
 | P1 | Pending submodel drill-in replaces a newly loaded root with the old child and mismatched navigation context. | [FGC-R06](frontend-graph-canvas.md#fgc-r06--pending-submodel-navigation-belongs-to-its-document) | Actual navigation hook and stores, delayed layout. A subsequent destructive Save was not executed. |
@@ -226,7 +225,7 @@ adds a finding group or changes the 42-group count.
 | `frontend/src/api/assistant.ts::streamAssistantMessage` | **Unverified.** Confirm an actual supported server/proxy emits CRLF SSE, then split the CR and LF across stream chunks and assert complete events/terminal outcomes. The client normalizes each decoded chunk before buffering; no actual server-framing failure was recorded. LF-only production output does not exercise this trigger. |
 | `frontend/src/api/client.ts::request` / retry policy | **Unverified, hypothesis underspecified.** Name a real retry-enabled PUT/DELETE endpoint with a non-idempotent effect, let its mutation commit while losing the response, and observe a duplicate effect or incorrect retry result. POST is not retried by default; project-file/workbench writes have explicit zero-retry paths. Do not label every mutation unsafe. |
 | `frontend/src/api/projectFiles.ts` XHR upload / `FilesPanel` | **Unverified.** Stall an actual upload transport indefinitely, check whether the panel remains stuck and whether its cancel/close action retires transport and UI ownership. Lack of an automatic timeout alone is not a confirmed failure if intentional long uploads remain cancellable. |
-| `frontend/src/app/useQuoteListStore.ts::more` / `load` | **Unverified.** Hold old-list `more()`, load another list, and try its pagination before/after the old request settles. Confirm new pagination remains blocked or old completion clears a newer loading state. This is distinct from accepted WB-35 archive/restore query adoption. |
+| `frontend/src/app/useQuoteListStore.ts::more` / `load` | **Unverified.** Hold old-list `more()`, load another list, and try its pagination before/after the old request settles. Confirm new pagination remains blocked or old completion clears a newer loading state. This is distinct from the archive/restore query adoption delivered on 29 October. |
 | `ExplorePivotsConfig` / `PivotFormulaSection` confirmation continuations | **Unverified; previous ownership statement lacked an exact package.** Open a destructive pivot/formula confirmation, apply an independent edit or document switch while it is open, then confirm and inspect current config. Confirmation must show old captured arrays replacing newer state or deleting a no-longer-current target. FSH-R07's identity-resolved creation fences and FNED-R02's committed drafts do not by themselves dispose of this separate continuation. |
 | `frontend/src/panels/modelling/TermTableView.tsx` state, `EBMTermsTab` / `TBoostTablesTab` keys | **Unverified.** Keep the same mounted term key, replace its result with different axis count/levels, and observe an invalid fixed index/axis or wrong slice. First establish the real parent lifecycle preserves that component across results; an isolated rerender is insufficient if production remounts it. |
 | `frontend/src/stores/useSettingsStore.ts::loadPipelineSettings` | **Unverified.** Complete newer load B before older A so `_confirmedPipelineSettings` could regress, then fail a settings save and inspect rollback. Confirmation requires the UI to restore A despite B being the latest accepted settings. The existing save-completion fence may rule out some interleavings; no completed witness is recorded. |
@@ -258,7 +257,6 @@ adds a finding group or changes the 42-group count.
 
 | Candidate scope | Disposition |
 |---|---|
-| quote reload/post-create flows | Duplicate **WB-35**. Do not merge the distinct pending pagination candidate into this without adding its exact transition. |
 | uncontrolled Rating/pivot drafts | Duplicate **FNED-R02**. |
 | percentages and auto-range | Duplicate **FMOU-R04**. |
 | save flush, coarse graph creation fence, scoped edited marker | Duplicate **FSH-R07**. |
@@ -293,7 +291,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | Earlier candidate note | Accepted owner |
 |---|---|
 | dispersion caller ownership / estimate queued | **FMOU-R06** for same-mounted draft identity; separate helper error-contract wording is **FSH-R06**. |
-| archive/restore obsolete query | **WB-35**. |
 | rejection remote “candidate pending” | **GIT-R18**. |
 | cancellation caller / result consumer identity | **FSH-R11**. Native polling's captured-job guard is not itself a new defect. |
 | request-input edits / explicit Auto Layout | **FSH-R10**, **FGC-R05**; mixed Delete **FGC-R07**. |

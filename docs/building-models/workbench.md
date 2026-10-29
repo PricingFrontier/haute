@@ -668,8 +668,9 @@ builder on screen. With a quote store it is where they manage their quotes too.
   ends, and while every place is taken a quote is refused as busy, to be priced again in a
   few seconds, rather than waiting.
 
-A page opened before a new release is refused when it prices or saves, and reloading it
-picks up the release; its unsaved values stay in the browser.
+A page opened before a new release is refused when it prices or saves, and offers
+**Reload**, which picks up the release; its unsaved values stay in the browser, though an app
+that keeps no quotes keeps nothing typed.
 
 ### The Quotes page
 The app opens on the Quotes page. On the left are **My work** (the quotes with you),
@@ -716,7 +717,8 @@ A quote opens at its own address, under a bar holding its reference and option
   the revision showing, linked to it, and open it. **Duplicate** and **Renew** open the new
   quote's window over the quote, filled from it with the reference blank, a renewal with
   **is_renewal** ticked: key the new reference and **Create**; **Cancel** leaves the quote as
-  it was. **Create alternative** makes the quote at once under the same reference as its
+  it was. With changes to the quote not yet saved, the new quote is made and the app asks
+  before leaving them; stay, and a message names the quote made. **Create alternative** makes the quote at once under the same reference as its
   next option (`ABC-1/2` from `ABC-1/1`);
   **Archive** takes it out of the lists (it opens read only until restored); **Copy link**.
 - **History**: the handover note, every revision (each opens as it was saved), what was done

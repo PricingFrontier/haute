@@ -167,9 +167,21 @@ describe("UnderwriterApp", () => {
     act(() => useWorkbenchPreviewStore.getState().setCell("policy", 0, "policy.state", "NY"))
 
     expect(await screen.findByTestId("app-pricing-error")).toHaveTextContent(`Pricing failed: ${refusal}`)
-    // The page is for another release: the Reload notice asks for it at once, before a save.
-    expect(useAppStore.getState().releaseChanged).toBe(true)
-    useAppStore.setState({ releaseChanged: false })
+    // The page is for another release: the Reload notice asks for it at once, though the app
+    // keeps nothing typed.
+    const notice = await screen.findByTestId("notice-release")
+    expect(notice).toHaveTextContent("This page was drawn for an earlier release of the app.")
+    expect(notice).toHaveTextContent("What is typed here is not kept.")
+    const original = window.location
+    const reload = vi.fn()
+    Object.defineProperty(window, "location", { configurable: true, value: { ...original, reload } })
+    try {
+      fireEvent.click(within(notice).getByRole("button", { name: "Reload" }))
+      expect(reload).toHaveBeenCalledTimes(1)
+    } finally {
+      Object.defineProperty(window, "location", { configurable: true, value: original })
+      useAppStore.setState({ releaseChanged: false })
+    }
   })
 
   it("says why the sheets could not be opened, a request the host did not sign in among them", async () => {

@@ -1176,7 +1176,9 @@ Out of scope:
   was loaded with. A page drawn for another
   revision or another release is refused (409), so a page loaded from an earlier release
   reloads rather than price on a newer contract or model, a release that changed the
-  model alone included. The request is built as Preview's pricing builds it and priced through the deployed
+  model alone included: the page says it was drawn for an earlier release and offers
+  Reload, with or without a quote store, an app without one saying that what is typed is
+  not kept. The request is built as Preview's pricing builds it and priced through the deployed
   pipeline's engine, one quote per request, off the server's event loop, under the deploy's
   admission limit and a timeout, and answered whole: each output table's rows, with the
   request priced. The app prices at most a bounded number of quotes at once, four unless
@@ -1255,13 +1257,16 @@ Out of scope:
   reference, quote name, insured or broker (`ABC-1/2` matching that option alone, a
   reference matched however its letters are cased or composed), in Team an assignee to
   narrow it to, the order (newest saved, Reference, A to Z with each reference's options in
-  order, or insured) and New quote (`N`), which opens the new quote's window over the list. The list is a table at Haute's
+  order, or insured) and New quote (`N`), which opens the new quote's window over the list;
+  neither key acts from a control it is typed or picked in, so `N` in a select picks its
+  option. The list is a table at Haute's
   density, 50 quotes at a time with Load more, read from the quotes' `quote_details`: each
   quote's reference and option, `ABC-1/2`, its title (its quote name, else its insured,
   else its reference and option), its insured, broker and inception date under their columns'
   labels on the sheets, the date as a day, its stage, who it is with and when it was saved,
   relative, with the time on hover. A row opens its quote, its reference a link of its
-  own; on hover or focus it offers Open, Duplicate, and Archive or Restore. The list,
+  own; on hover or focus it offers Open, Duplicate, and Archive or Restore, each reloading,
+  once answered, the list showing then, whichever list the underwriter has moved to. The list,
   stage, search, assignee and order are in the page's address, so Back returns to the
   list as it was. Loading shows placeholder rows, a failure says why with Retry, and an
   empty list says why: no quotes yet, with New quote; none matching, with Clear search;
@@ -1332,8 +1337,9 @@ Out of scope:
   it again and it is made once. A quote made from another names what it was made from and
   any value that no longer fits. Made, it is clean: left as it opened it keeps no draft and
   asks nothing on leaving, and one left with nothing typed stays a draft; an answer
-  arriving once the page moved on does not move it, and one who may only read quotes makes
-  none. The sheets take no typing and are not priced, and Save is
+  arriving once the page moved on does not move it, nor does leaving a quote whose unsaved
+  values the leave guard keeps, and a quote made where the page did not move says so,
+  "Made" and its label; one who may only read quotes makes none. The sheets take no typing and are not priced, and Save is
   off, while the quote is final, archived, shown at an earlier revision (at
   `/quotes/{id}/revisions/{n}`, with Open the newest) or saved on earlier sheets (opened
   on those sheets, with Move to current sheets, which carries its values onto the
