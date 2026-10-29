@@ -10,7 +10,7 @@ specified in
 [23 September 2026 codebase review](codebase-review-2026-09-23.md). The
 `ENGQ-CI` packages come from the 30 September 2026 CI duration study: per-test
 timings from diagnostic PR #279 (run 36769548458) and the sharded lanes of
-PR #280. `ENGQ-CI06` and `ENGQ-R07` to `ENGQ-R11` come from the
+PR #280. `ENGQ-CI06` and `ENGQ-R08` to `ENGQ-R11` come from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md), which also added
 evidence to `ENGQ-R01` and `ENGQ-R05`.
 
@@ -24,7 +24,6 @@ evidence to `ENGQ-R01` and `ENGQ-R05`.
 | ENGQ-R01 | Planned | P3 | Production code that nothing calls, or only tests call, is removed. |
 | ENGQ-R05 | Planned | P3 | Tests are organised by component and behaviour, not by coverage campaign. |
 | ENGQ-CI06 | Planned | P3 | Haute's own workflows pin every action by commit. |
-| ENGQ-R07 | Planned | P2 | Every gate runs on every run: a red coverage shard fails the coverage gate instead of skipping it, the documentation site builds strictly on every pull request, the warnings filter holds in the exploration lane and in ledger evidence, and the two safety-critical coverage lists agree with each other and the specification. Core-only dependency smoke stays free of optional extras and cannot pass with every test skipped. |
 | ENGQ-R08 | Planned | P2 | The suite exercises what production runs: a representative route slice under the process execution mode, the production preparation-join bound, a flaky browser test made visible, and fixture git commands that fail loudly. |
 | ENGQ-R09 | Planned | P3 | The write-sandbox ratchet moves: the observe census is recorded and may not grow, modules with an empty census become strict, the system temp directory is a stated gap or no longer allowed, and the lint allowlist is keyed by site. |
 | ENGQ-R10 | Planned | P3 | Repository-health hygiene: file-reading tests carry the `meta` marker, the specification's bundle and lint numbers are read from their files, `mypy` covers `scripts/`, the package smoke derives its version prefixes, the Windows preflight is held in step, the dependency alarm fires on schedule only, and the e2e server stops its Node child on Windows. |
@@ -266,67 +265,6 @@ lint step fails on a tag pin.
 
 **Evidence:** `.github/workflows/ci.yml`; `.github/workflows/release.yml`;
 `.github/workflows/container-smoke.yml`.
-
-### ENGQ-R07 — Every gate runs on every run
-**Why:** The `backend-coverage-gate` job has no `if:` and the shard's coverage artifact is
-uploaded without `if: always()`, so one red coverage shard skips the 90 % floor, the
-per-file critical floors and the changed-code gate entirely and withholds the coverage
-data; a pull request red for an unrelated flaky test learns about an uncovered
-safety-critical line only on the next cycle. The mutation gate already protects itself
-against this (`!cancelled()` plus explicit failure steps) and the specification promises
-it for mutation alone. `mkdocs build --strict` runs only after a merge to `main` and only
-when `docs/` or `mkdocs.yml` changed, so a broken nav entry or dead link merges green and
-is found by a red Pages deploy. The weekly exploration lane and all 31 ledger evidence
-commands pass `-p no:warnings`, which unloads the warnings plugin, so the `RuntimeWarning`
-error filter the pull-request lane applies does not hold there. The changed-code gate's
-35 paths and the 34 critical floors differ by `_workbench_visibility.py`, which the
-specification's "exactly this set" does not name, and no test keeps the two lists equal
-(both checker tests build synthetic `pyproject.toml` files). From the [25 October 2026
-codebase review](codebase-review-2026-10-25.md) (ENG-1, ENG-2, ENG-4, ENG-8).
-
-The [28 October review](codebase-review-2026-10-28.md) found another vacuous gate:
-`optional-deps-smoke` syncs without `dev`, then invokes bare `uv run pytest`,
-which syncs the default dev group containing `haute[databricks]` back into the
-environment. The test module skips all three tests when the SQL connector is
-present, including its assertion that the connector must be absent. The exact
-test invocation in the local dev environment exits zero with three skips. Hosted
-[main run 40754355254, optional-deps-smoke](https://github.com/PricingFrontier/haute/actions/runs/40754355254/job/123049170185)
-confirms the workflow consequence: its `uv run` step uninstalled 5 packages,
-installed 42, then passed with `3 skipped in 0.18s`.
-
-**Plan:** Upload each shard's coverage and JUnit files `if: always()`, run the gate job
-`if: !cancelled()` and fail its first step explicitly when any shard did not succeed. Add
-a `docs-build` job to `ci.yml` running `mkdocs build --strict`, or run the docs build on
-`pull_request` too. Replace `-p no:warnings` with an ignore of the specific Hypothesis
-warning, and have the ledger validator reject evidence commands that disable the plugin.
-Seed a floor for `_workbench_visibility.py` and name it in the specification, or drop it
-from the paths; add a `meta` test asserting the two lists and the specification agree.
-Prepare the optional-dependency lane with the core project and the test harness's
-explicit dependency closure, including Hypothesis, which `tests/conftest.py`
-imports unconditionally. Do not restore the full dev group to obtain those test
-dependencies. Then invoke pytest without resyncing project groups (for example
-`uv run --no-sync pytest ...`).
-Add a lane-level environment assertion that fails when core MLflow is absent or
-Databricks SQL is installed, outside the module's development-environment skip.
-Keep ordinary full-development test runs able to skip this lane-specific module.
-
-**Acceptance:** A workflow run with one failed shard shows the coverage gate failed, not
-skipped, with every shard's artifact present; a pull request with a broken docs nav entry
-is red; a `RuntimeWarning` fails the exploration lane; the list-parity test passes and
-fails when one list gains a path.
-In a fresh core-only environment the shared test setup imports successfully and
-all three optional-dependency tests execute and pass; intentionally installing
-the Databricks connector makes that lane fail,
-not pass with skips. Verify the actual workflow command sequence in an isolated
-environment rather than relying on a workflow-text assertion alone.
-
-**Dependencies:** None.
-
-**Evidence:** `.github/workflows/ci.yml`, `.github/workflows/mutation.yml`,
-`.github/workflows/docs.yml`, `.github/workflows/property-exploration.yml`,
-`tests/workflow_coverage.toml`, `pyproject.toml`, `tests/test_check_changed_coverage.py`,
-`tests/test_check_critical_coverage.py`, `tests/test_optional_dependency_matrix.py`,
-`tests/conftest.py`, `specs/engineering-quality/high-level.md`.
 
 ### ENGQ-R08 — The suite exercises what production runs
 **Why:** An autouse fixture runs every preview, trace and estimate in `thread` mode while

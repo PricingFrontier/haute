@@ -120,22 +120,29 @@ databricks = [
     "databricks-sql-connector>=4.2.5,<5",
 ]
 [dependency-groups]
-dev = [
+# What the shared test setup (tests/conftest.py) and the pytest configuration
+# need to collect and run a module, and nothing more: the core-only CI lane
+# installs this group alone, because the dev group's haute[databricks] would put
+# the optional SQL connector back.
+test-harness = [
     "pytest==9.0.3",
     "pytest-asyncio==1.3.0",
+    "httpx==0.28.1",
+    "hypothesis==6.151.9",
+]
+dev = [
+    {include-group = "test-harness"},
     "pytest-cov==7.0.0",
     # Inline per-test failure annotations on GitHub PRs; self-activates only
     # when GITHUB_ACTIONS is set, inert locally.
     "pytest-github-actions-annotate-failures==0.4.2",
     "pytest-timeout==2.4.0",
     "pytest-xdist==3.8.0",
-    "httpx==0.28.1",
     "ruff==0.15.0",
     "mypy==1.19.1",
     "mkdocs==1.6.1",
     "mkdocs-material==9.7.7",
     "haute[databricks]",
-    "hypothesis==6.151.9",
     "types-psutil==7.2.2.20260906",
 ]
 
@@ -556,6 +563,12 @@ path = "src/haute/_workbench_output.py"
 min_statement_coverage = 95.0
 min_branch_coverage = 92.0
 rationale = "Fills the response's tables from the frames connected to them and builds the response a request is answered with: a column filled from the wrong source or cast wrongly is a wrong price. Seeded below the 10 October 2026 measurement (100/100)."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_workbench_visibility.py"
+min_statement_coverage = 98.0
+min_branch_coverage = 98.0
+rationale = "What shows on the sheets for a quote's typed values decides which input columns the quote leaves out, so a column hidden or kept wrongly changes what is priced. Seeded 2 points below the 29 October 2026 CI measurement (100/100)."
 
 [tool.mypy]
 python_version = "3.11"

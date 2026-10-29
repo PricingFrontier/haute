@@ -346,6 +346,17 @@ def _canonical(name: str) -> str:
     return str(canonicalize_name(name))
 
 
+def _group_requirements(groups: dict[str, list[str | dict[str, str]]], name: str) -> list[str]:
+    """A dependency group's requirement strings, with the groups it includes (PEP 735)."""
+    requirements: list[str] = []
+    for entry in groups[name]:
+        if isinstance(entry, dict):
+            requirements.extend(_group_requirements(groups, entry["include-group"]))
+        else:
+            requirements.append(entry)
+    return requirements
+
+
 def _dev_only_distributions(lane_extras: set[str]) -> set[str]:
     """Dev-group distributions the wheel plus *lane_extras* does not also depend on."""
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
@@ -354,7 +365,10 @@ def _dev_only_distributions(lane_extras: set[str]) -> set[str]:
     for name in lane_extras:
         assert name in extras, f"the lane installs extra {name!r}, which pyproject does not declare"
         runtime.update(_canonical(Requirement(dep).name) for dep in extras[name])
-    dev = {_canonical(Requirement(dep).name) for dep in project["dependency-groups"]["dev"]}
+    dev = {
+        _canonical(Requirement(dep).name)
+        for dep in _group_requirements(project["dependency-groups"], "dev")
+    }
     return dev - runtime - {"haute"}
 
 

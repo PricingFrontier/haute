@@ -400,7 +400,6 @@ production:
 | App shell and canvas | FAP-1, FAP-11 | `FGC-R02` |
 | App shell and canvas | FAP-9 | `FGC-R03` |
 | App shell and canvas | FAP-4, FAP-6, FAP-7, FAP-8, FAP-10, FAP-12, FAP-13, FAP-15 | `FGC-R04` |
-| Tests, scripts and CI | ENG-1, ENG-2, ENG-4, ENG-8 | `ENGQ-R07` |
 | Tests, scripts and CI | ENG-5, ENG-6, ENG-10, ENG-16 | `ENGQ-R08` |
 | Tests, scripts and CI | ENG-7 | `ENGQ-R09` |
 | Tests, scripts and CI | ENG-3, ENG-9, ENG-11, ENG-12, ENG-13, ENG-14, ENG-15 | `ENGQ-R10` |

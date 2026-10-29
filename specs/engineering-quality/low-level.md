@@ -11,10 +11,10 @@
 | `specs/corpus.toml` | Versioned declaration for supported component documents outside the conventional high/low pair; records a closed document kind and exact required headings. |
 | `specs/ownership.toml` | Machine-checked ledger for files shared by multiple Module maps or explicit cross-component prose ownership claims; records the single primary owner and all consumer components. |
 | `.pre-commit-config.yaml` | Runs Ruff fix/format plus local mypy and frontend typecheck/lint hooks on relevant source changes. |
-| `.github/workflows/ci.yml` | Defines PR/main CI jobs: canary, install/package smoke, dependency floors, static/type checks, duration-balanced coverage shards and their gate, duration-balanced compatibility shards, the 3.14 probe, performance, optional dependencies, platform, mutation-config, frontend static and test lanes, and two browser E2E shards. Branch protection, outside this repository workflow file, determines which checks are required for merge. |
+| `.github/workflows/ci.yml` | Defines PR/main CI jobs: canary, install/package smoke, dependency floors, static/type checks, duration-balanced coverage shards and their gate (which runs whatever the shards' result and fails explicitly when one did not pass), duration-balanced compatibility shards, the 3.14 probe, performance, the core-only and extras-installed optional-dependency lanes, platform, the strict documentation build (`docs-build`), mutation-config, frontend static and test lanes, and two browser E2E shards. Branch protection, outside this repository workflow file, determines which checks are required for merge. |
 | `.github/workflows/dependencies.yml` | Runs the weekly/manual fresh unlocked-resolve monitor plus the locked Python/frontend advisory gate, the latter daily as well as on manual dispatch, main lock-policy changes, and relevant PRs; retains failed reports and raises/updates dependency-watch issues on every non-pull-request failure, and closes a lane's issue when that lane next passes on `main` (`locked-advisory-all-clear` for the audit), since both lanes are deterministic for a given index or advisory feed. |
 | `.github/workflows/frontend-shuffle.yml` | Runs the scheduled/manual shuffled Vitest monitor and raises/updates shuffle-watch issues with its seed on eligible failures. A green night never closes one: one passing seed does not prove an order dependence gone, so the fix's author closes it. |
-| `.github/workflows/property-exploration.yml` | Runs the weekly/manual wide-budget Hypothesis lane (HAUTE_PROPERTY_EXAMPLES over `scripts/property_test_files.txt`) and raises/updates property-watch issues on eligible failures. A green week never closes one: the fix pins the counterexample as an `@example`, and its author closes it. |
+| `.github/workflows/property-exploration.yml` | Runs the weekly/manual wide-budget Hypothesis lane (HAUTE_PROPERTY_EXAMPLES over `scripts/property_test_files.txt`, with the warnings plugin loaded so a RuntimeWarning fails it) and raises/updates property-watch issues on eligible failures. A green week never closes one: the fix pins the counterexample as an `@example`, and its author closes it. |
 | `.github/workflows/container-smoke.yml` | Runs the weekly/manual container deployment smoke lane (process smoke check, Docker image build, run, /health and /quote verification) and raises/updates container-watch issues on eligible failures, closing the issue when the lane next passes on `main`. |
 | `.github/workflows/e2e-snapshots.yml` | Manual-dispatch lane that re-renders Playwright screenshot baselines in the same Ubuntu environment the browser E2E lane compares them in, for the per-platform `-linux` baselines a Windows or macOS developer cannot produce. It writes nothing to the repository: it uploads only the baselines whose pixels changed, for review and commit alongside the change that moved them. |
 | `.github/workflows/mutation.yml` | Plans changed mutation targets, runs separate CI-job shards whose mutants execute serially per runner, and uses a failure-aware non-cancelled status condition on the single merge gate so plan/shard failures become failed rather than skipped checks. |
@@ -234,7 +234,8 @@
   the invariant, invariant, optional finding id, state, entry point, tier, lane,
   real and stubbed dependency names, and test references). A `covered`
   scenario carries an `evidence` table with the tested commit, exact command,
-  and result; a `not-applicable` scenario carries a reason; `gap` and
+  and result, the command keeping pytest's warnings plugin loaded (no
+  `-p no:warnings`); a `not-applicable` scenario carries a reason; `gap` and
   `decision` scenarios name the owning roadmap package. Test references are
   pytest node ids
   (`tests/<file>.py::[Class::]test`) or frontend titles
@@ -253,7 +254,10 @@
    CI runs Ruff, mypy, and `HAUTE_BUILD_FRONTEND=1 uv build`.
 3. Backend coverage runs the full test corpus on 3.12 in four file shards
    (`--shard=K/4`). Each shard uploads its coverage data file and a JUnit
-   report, the input to `scripts/refresh_test_durations.py`. The gate combines
+   report, the input to `scripts/refresh_test_durations.py`, whether its tests
+   passed or not. The gate runs whenever the shards ran (`!cancelled()`); when
+   any shard did not pass, its first step fails explicitly and the later steps
+   still run, so the floors are reported rather than skipped. It combines
    the four coverage files, enforces the global 90% floor, writes JSON,
    invokes `scripts/check_critical_coverage.py` for per-file floors, then invokes
    `scripts/check_changed_coverage.py` against the pull-request base SHA (or the
@@ -270,7 +274,16 @@
 4. Compatibility runs the same corpus without coverage, excluding `perf` and
    `meta` tests, in three file shards on each of 3.11 and 3.13
    (`--shard=K/3`). Optional-dependency, platform, package, init, and mutation
-   configuration smoke lanes run their named commands. The 3.14 probe is
+   configuration smoke lanes run their named commands. The core-only
+   optional-dependency lane installs the project with the `test-harness`
+   dependency group alone (pytest, pytest-asyncio, httpx and Hypothesis, which
+   `tests/conftest.py` imports), never the dev group, whose `haute[databricks]`
+   would restore the SQL connector; a step of its own asserts that core MLflow
+   is present and the Databricks SQL connector absent, then the smoke module runs
+   through `uv run --no-sync`, since a bare `uv run` syncs the default groups
+   back in. The module's own skip lets a full development environment pass over
+   it; the lane cannot. The `docs-build` job runs `mkdocs build --strict`.
+   The 3.14 probe is
    explicitly allowed to fail without blocking the workflow result.
 5. Frontend CI runs two jobs after `npm ci`. The static job runs
    `npm run check:contracts`, `typecheck`, `lint`, `build`, `check:bundle`,
@@ -497,7 +510,9 @@
   `decision` scenario must name a package heading that is currently active in
   `specs/roadmap/`; a `not-applicable` scenario must give a reason; a `covered`
   scenario must reference at least one test and carry evidence with a commit
-  hash, command, and result, each omission reported separately. A Python test
+  hash, command, and result, each omission reported separately, and an
+  evidence command that unloads the warnings plugin (`-p no:warnings`) is
+  reported. A Python test
   reference must be a `test_*.py` file under `tests/` naming a `test*` function
   (inside a `Test*` class when qualified); a frontend reference must match the
   Vitest include globs or the Playwright `e2e/**/*.spec.ts` pattern and equal the
@@ -575,7 +590,8 @@
   real ledger is valid and complete, plus malformed cases (duplicate ids,
   unknown component, missing owning package, each covered-state omission and
   malformed evidence field reported exactly, unresolvable, helper, production,
-  traversal, absolute, out-of-root, skipped, or focused references, contract
+  traversal, absolute, out-of-root, skipped, or focused references, an
+  evidence command that unloads the warnings plugin, contract
   paths that are empty, directories, traversal, missing, or missing their
   heading, not-applicable without reason, undeclared supplemental documents,
   unmapped component or node type, a witness under `tests/performance/` or
@@ -630,6 +646,10 @@
   reload, exact named API-input `sourceHandle`, immediate drill and render of an
   API Input inside a newly created unsaved submodel, and an Edge Join retained
   and highlighted in a downstream trace. Private React state is not an oracle.
+- `tests/test_safety_critical_lists.py` — a `meta` check that the changed-code
+  gate's paths, the critical floors and the high-level specification's list name
+  the same modules, read as the two gates read `pyproject.toml`, and that a
+  module added to any one list alone is named as missing from the other two.
 - `tests/test_check_critical_coverage.py`, `tests/test_check_changed_coverage.py`,
   `tests/test_mutation_suite_runner.py`, `tests/test_run_mutation_pytest.py`,
   `tests/test_mutation_sharding.py`, `tests/test_run_perf_suite.py`,

@@ -197,7 +197,8 @@ jobs:
   #
   # Each shard also uploads a JUnit report in the xunit1 family, so every test
   # case names its file: the input for refreshing the durations with
-  # scripts/refresh_test_durations.py.
+  # scripts/refresh_test_durations.py. Both uploads run even when the shard's
+  # tests fail, so the gate below can still report what the shard covered.
   backend-coverage-shard:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -226,6 +227,7 @@ jobs:
           -o junit_family=xunit1
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: backend-coverage-${{ matrix.shard }}
           path: .coverage.shard${{ matrix.shard }}
@@ -240,23 +242,38 @@ jobs:
           path: .cache/junit/
           retention-days: 14
 
+  # The gate runs whenever the shards ran, red or green (`!cancelled()`), as the
+  # mutation gate does: a pull request red for an unrelated test still learns
+  # what its coverage is, instead of the floors being skipped. A red shard fails
+  # the gate's first step explicitly, and every later step still runs.
   backend-coverage-gate:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: backend-coverage-shard
+    if: ${{ !cancelled() }}
     steps:
+      - name: Require every coverage shard to pass
+        if: ${{ needs.backend-coverage-shard.result != 'success' }}
+        run: |
+          echo "::error title=Coverage shards::A coverage shard did not pass (${{ needs.backend-coverage-shard.result }}); the steps below still report the coverage its data shows."
+          exit 1
+
       - uses: actions/checkout@v4
+        if: ${{ !cancelled() }}
         with:
           fetch-depth: 0
 
       - uses: astral-sh/setup-uv@v5
+        if: ${{ !cancelled() }}
         with:
           version: "0.8.22"
           python-version: "3.12"
 
       - run: uv sync --group dev --locked
+        if: ${{ !cancelled() }}
 
       - uses: actions/download-artifact@v4
+        if: ${{ !cancelled() }}
         with:
           pattern: backend-coverage-*
           merge-multiple: true
@@ -264,24 +281,26 @@ jobs:
       # The global floor and the per-file critical gates are independent invariants,
       # so they get their own steps: the step name in the GitHub UI then tells you
       # which one broke without opening the log. The critical gate runs even when the
-      # global floor fails (`always()`), because a run that breaches both should say
+      # global floor fails (`!cancelled()`), because a run that breaches both should say
       # so — a masked critical-coverage regression has bitten this repo before.
       - name: Combine coverage shards
         id: combine
+        if: ${{ !cancelled() }}
         run: |
           mkdir -p .cache/coverage
           uv run coverage combine .coverage.shard1 .coverage.shard2 .coverage.shard3 .coverage.shard4
           uv run coverage json -o .cache/coverage/backend.json
 
       - name: Enforce global coverage floor (90%)
+        if: ${{ !cancelled() && steps.combine.outcome == 'success' }}
         run: uv run coverage report --fail-under=90 --show-missing
 
       - name: Enforce per-file critical coverage gates
-        if: always() && steps.combine.outcome == 'success'
+        if: ${{ !cancelled() && steps.combine.outcome == 'success' }}
         run: uv run python scripts/check_critical_coverage.py --coverage-json .cache/coverage/backend.json
 
       - name: Changed-code coverage (gates the safety-critical modules, reports the rest)
-        if: always() && steps.combine.outcome == 'success'
+        if: ${{ !cancelled() && steps.combine.outcome == 'success' }}
         env:
           HAUTE_COVERAGE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: >
@@ -388,6 +407,10 @@ jobs:
           name: python-perf-${{ github.run_id }}-${{ github.run_attempt }}
           path: .cache/perf/
 
+  # Core-only install: the project with the test harness group alone, never the
+  # dev group, whose haute[databricks] restores the SQL connector and makes the
+  # whole smoke module skip. Every later command is `uv run --no-sync`, because a
+  # bare `uv run` syncs the default groups back in.
   optional-deps-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -399,10 +422,32 @@ jobs:
           version: "0.8.22"
           python-version: "3.12"
 
-      - run: uv sync --locked --no-group dev
-      - run: uv pip install pytest pytest-asyncio httpx
+      - run: uv sync --locked --no-default-groups --group test-harness
+
+      # Outside the smoke module's own skip, which lets a full development
+      # environment pass over it: here an environment that is not core-only fails.
+      - name: Core-only environment (core MLflow present, Databricks SQL connector absent)
+        run: |
+          uv run --no-sync python - <<'PY'
+          import importlib.util
+          import sys
+
+          problems = []
+          if importlib.util.find_spec("mlflow") is None:
+              problems.append("core MLflow is not installed")
+          try:
+              connector = importlib.util.find_spec("databricks.sql")
+          except ModuleNotFoundError:
+              connector = None
+          if connector is not None:
+              problems.append("the Databricks SQL connector is installed")
+          for problem in problems:
+              print(f"::error title=Core-only lane::{problem}")
+          sys.exit(1 if problems else 0)
+          PY
+
       - name: Optional dependency smoke (core MLflow, no Databricks SQL connector)
-        run: uv run pytest tests/test_optional_dependency_matrix.py -q
+        run: uv run --no-sync pytest tests/test_optional_dependency_matrix.py -q
 
   optional-deps-present-smoke:
     runs-on: ubuntu-latest
@@ -501,6 +546,25 @@ jobs:
           tests/test_api_input_table_snapshots.py
           tests/test_json_runtime_storage.py
           -q
+
+  # The documentation site builds strictly on every pull request, not only when a
+  # merge to main deploys it (docs.yml), so a broken nav entry or dead link is red
+  # before it merges rather than at the Pages deploy.
+  docs-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.8.22"
+          python-version: "3.12"
+
+      - run: uv sync --group dev --locked
+
+      - name: Documentation site (strict build)
+        run: uv run mkdocs build --strict
 
   mutation-config-smoke:
     runs-on: ubuntu-latest

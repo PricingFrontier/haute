@@ -48,7 +48,7 @@ probe files stayed outside the repository. No full backend/frontend suite,
 browser journey, hosted deployment, external model registry, Linux worker/cgroup
 run or production performance benchmark was performed. The foreign-Host probe
 used TestClient; browser DNS-rebinding exploitability is an inference, not an
-executed browser attack. The CI finding is now also measured in hosted
+executed browser attack. The core-only CI finding, since delivered, was also measured in hosted
 [main run 40754355254, optional-deps-smoke](https://github.com/PricingFrontier/haute/actions/runs/40754355254/job/123049170185):
 the `uv run` step uninstalled 5 packages, installed 42, and passed with
 `3 skipped in 0.18s`. The cross-family reviewer supplied this evidence and the
@@ -74,7 +74,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P1 | Inference for `first.json` returns after the user selected `second.json` and added a table; old path/tables are written back. | [FNED-R06](frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft) | Actual API Input editor with delayed inference response. |
 | P1 | Auto-layout finishes after a code edit and restores the old code from its node snapshot. | [FGC-R05](frontend-graph-canvas.md#fgc-r05--auto-layout-cannot-overwrite-edits) | Actual node-handler hook with delayed layout. Node addition/deletion and document-switch variants are source-supported. |
 | P2 | Stratified test allocation consumes class members needed by later validation, refusing feasible plans. | [MOD-R07](modelling.md#mod-r07--stratified-allocation-reserves-every-later-partition) | Real evaluation planner; holdout and five-fold examples below. |
-| P2 | Core-only CI invokes resyncing `uv run`, restores the optional connector and passes with the whole smoke module skipped. | [ENGQ-R07](engineering-quality.md#engq-r07--every-gate-runs-on-every-run), extended | [Hosted main run 40754355254, optional-deps-smoke](https://github.com/PricingFrontier/haute/actions/runs/40754355254/job/123049170185): `uv run` uninstalled 5 packages, installed 42, then `3 skipped in 0.18s`. |
 
 ### Additional full-source findings
 
@@ -300,7 +299,7 @@ scratch notes. Package splits use the new owners without adding finding groups.
 
 | Earlier candidate note | Accepted owner |
 |---|---|
-| CI no-extra resync / docs / warning gate | **ENGQ-R07**; action pins **ENGQ-CI06**. |
+| CI action pins | **ENGQ-CI06**. |
 | stale hosted wheel | **BUG-40**. |
 | dispersion caller ownership / estimate queued | **FMOU-R06** for same-mounted draft identity; separate helper error-contract wording is **FSH-R06**. |
 | archive/restore obsolete query | **WB-35**. |
@@ -370,7 +369,7 @@ that regression. This was same-family review, not cross-family validation.
 The subsequent **cross-family review by Claude** checked the decisive code for all
 42 finding groups and reported no false positives; it did not check MOD-R05's integer
 PDP-label item. It reproduced MOD-R07, PCFG-R21, the parser half of NAME-10 and two
-findings since delivered, and supplied the hosted ENGQ-R07 evidence cited above. This documentation
+findings since delivered, and supplied the hosted evidence for the core-only smoke finding, since delivered. This documentation
 follow-up incorporates its coverage qualifications, candidate dispositions, package
 splits, priorities, ownership, ordering and link corrections. Neither review approval
 claims that the recorded production defects have been fixed.

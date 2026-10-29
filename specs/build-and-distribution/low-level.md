@@ -123,7 +123,10 @@ package input validated by `hatch_build.py`, not hand-edited source.
    Python's `-m haute` package entry point imports and invokes that same group.
 6. Separately, `.github/workflows/docs.yml` runs `uv sync --group dev --locked`
    and `uv run mkdocs build --strict`, uploads `site/`, then lets the dependent
-   deploy job publish it to GitHub Pages.
+   deploy job publish it to GitHub Pages. That workflow runs only after a merge
+   to `main` touching `docs/` or `mkdocs.yml`, so the CI workflow's `docs-build`
+   job runs the same strict build on every pull request and push to `main`: a
+   broken nav entry or dead link is red before it merges.
 
 ## Edge cases and invariants
 
@@ -183,7 +186,10 @@ package input validated by `hatch_build.py`, not hand-edited source.
   import smoke checks (skipped when the Databricks extra is absent).
 - `tests/test_optional_dependency_matrix.py` — core-install import/route smoke
   checks with core MLflow present and the optional Databricks SQL connector
-  absent. MLflow itself brings `databricks-sdk` transitively.
+  absent. MLflow itself brings `databricks-sdk` transitively. The module skips
+  in a full development environment; the CI lane that runs it installs the
+  project with the `test-harness` group alone and asserts the core-only
+  environment in a step of its own, so it cannot pass with every test skipped.
 
 - `tests/test_hatch_build.py` covers editable-build behavior, environment-value
   validation ordering, the complete included/excluded input matrix,

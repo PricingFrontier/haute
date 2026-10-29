@@ -46,7 +46,11 @@ Out of scope:
   90% floor, per-file floors for the safety-critical modules, and the
   changed-code coverage check. They also run supported Python compatibility
   tests, package/install smoke tests, optional-dependency checks, frontend
-  checks, browser E2E, and the named auxiliary lanes in the CI workflow.
+  checks, browser E2E, the strict documentation build, and the named auxiliary
+  lanes in the CI workflow. Every gate runs on every run: a gate that combines
+  other jobs' results (the coverage gate, the mutation gate) runs whether they
+  passed or not and fails explicitly when one did not, so a red shard can never
+  turn it into a skipped check.
 - Coverage is gated by risk. The changed-code gate (100% statement and branch
   coverage of changed lines), the per-file critical floors and the mutation
   targets apply only to the safety-critical modules, whose silent failure
@@ -64,23 +68,29 @@ Out of scope:
     `_json_shred/_inference_cache.py`;
   - snapshot publication: `_source_cache.py`, `_node_snapshots.py`,
     `_file_lock.py`, and the rest of the API-input snapshot package
-    (`_json_shred/_snapshots.py`, `_writer.py`, `_shred.py`, `_records.py`,
-    `_runtime_storage.py`, `_inference.py`, `_inference_filter.py`,
-    `_json_shred/_cache.py`);
+    (`_json_shred/_snapshots.py`, `_json_shred/_writer.py`,
+    `_json_shred/_shred.py`, `_json_shred/_records.py`,
+    `_json_shred/_runtime_storage.py`, `_json_shred/_inference.py`,
+    `_json_shred/_inference_filter.py`, `_json_shred/_cache.py`);
   - the workbench's tables: `_workbench_tables.py`, `_workbench_input.py` and
-    `_workbench_output.py`, which type a quote's tables and build its response.
+    `_workbench_output.py`, which type a quote's tables and build its response,
+    and `_workbench_visibility.py`, which decides which input columns a quote
+    leaves out.
 
   `[tool.haute.changed_coverage].paths` and `[tool.haute.critical_coverage]` in
-  `pyproject.toml` list exactly this set, and the mutation targets are
-  `output-assembler`, `jsonpath` and `json-shred`. The general execution engine
+  `pyproject.toml` list exactly this set, which a `meta` test
+  (`tests/test_safety_critical_lists.py`) holds equal to the list above, and
+  the mutation targets are `output-assembler`, `jsonpath` and `json-shred`. The general execution engine
   (`executor.py`, `execution.py`, `projection.py`, the node builders) is not on
   the list: the deploy-scoring and snapshot tests run through it, and its own
   coverage is judged in review. Changed code in any other file under
   `src/haute/` is listed in the coverage job's summary with its changed-line
   coverage but does not fail the build; coverage there is judged in review
   against risk. The global 90% floor applies to all of `src/haute/`.
-- The user-facing documentation is checked by `mkdocs build --strict` in the
-  documentation workflow, by the generated node-reference tables
+- The user-facing documentation is checked by `mkdocs build --strict` on every
+  pull request and push to `main` (the CI workflow's `docs-build` job, and again
+  in the documentation workflow before it deploys), by the generated
+  node-reference tables
   (`tests/test_node_reference_docs.py`), and by the `docs/` checks in
   `tests/test_docs_accuracy.py`: the execution-strategy, managed Windows setup
   and edge-join guides, the exclusion of internal engineering documents from the
@@ -119,6 +129,9 @@ Out of scope:
   typecheck/lint hooks for matching source files. The hooks do not replace CI.
 - The default pytest configuration excludes only `perf`-marked tests, treats
   xfails/config/markers strictly, and turns most runtime warnings into errors.
+  No lane and no recorded ledger evidence unloads the warnings plugin
+  (`-p no:warnings`), so that filter holds everywhere a result is relied on,
+  the weekly exploration lane included.
   Performance tests run through dedicated scripts/workflows with explicit time
   budgets instead.
 - Tests leave the source tree alone. `SourceTreeGuard` in
@@ -148,8 +161,9 @@ Out of scope:
   `decision` without an active roadmap package, a `not-applicable` without a
   reason, a test reference that is not a collectable test under the repository's
   pytest, Vitest, or Playwright discovery rules, a referenced test the test-debt
-  scanners classify as skipped, expected-failure, or focused, and a `covered`
-  record without commit-stamped execution evidence. Static discovery rules and
+  scanners classify as skipped, expected-failure, or focused, a `covered`
+  record without commit-stamped execution evidence, and evidence whose command
+  unloads pytest's warnings plugin. Static discovery rules and
   evidence establish existence and scheduling; assertion quality stays in
   review, and a green result from another snapshot is never carried forward
   silently.
@@ -321,11 +335,6 @@ by, a scripted result.
 
 ## Failure model
 
-> NOTE: The core-only optional-dependency workflow invokes a resyncing `uv run`
-> after removing the dev group; the restored connector makes its entire smoke
-> module skip, including its environment assertion. A non-vacuous lane is tracked
-> in [ENGQ-R07](../roadmap/engineering-quality.md#engq-r07--every-gate-runs-on-every-run).
-
 - A failing CI command stops its job and makes the corresponding check red;
   package, test, lint, type, coverage, mutation-config, frontend, and E2E
   failures are surfaced rather than replaced with a passing fallback. GitHub
@@ -341,6 +350,10 @@ by, a scripted result.
   missing static reason, a non-strict unbudgeted xfail, a stale aggregate
   summary, or malformed mutation-target metadata. Zero current backend flaky
   markers is an enforced budget, not an undocumented observation.
+- The coverage gate runs after its shards whatever their result. A shard that
+  did not pass fails the gate's first step explicitly, and the later steps still
+  report the floors from the data the shards uploaded, since each shard uploads
+  its coverage data and JUnit report whether its tests passed or not.
 - Coverage merge/gate fails when shard data cannot satisfy the 90% global floor,
   `scripts/check_critical_coverage.py` finds a safety-critical file below its
   statement/branch thresholds, or the changed-code gate finds an uncovered changed
