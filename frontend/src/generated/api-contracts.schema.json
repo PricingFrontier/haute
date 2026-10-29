@@ -16264,7 +16264,25 @@
       "type": "object"
     },
     "UtilityDeleteResponse": {
+      "description": "A deleted utility file, with the save-ledger capture of its removal.",
       "properties": {
+        "git_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Git Sha"
+        },
+        "identity_required": {
+          "default": false,
+          "title": "Identity Required",
+          "type": "boolean"
+        },
         "module": {
           "title": "Module",
           "type": "string"
@@ -16273,9 +16291,27 @@
           "default": "ok",
           "title": "Status",
           "type": "string"
+        },
+        "uncaptured": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Uncaptured",
+          "type": "array"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
         }
       },
       "required": [
+        "warnings",
+        "git_sha",
+        "identity_required",
+        "uncaptured",
         "status",
         "module"
       ],
@@ -16329,17 +16365,23 @@
         "name": {
           "title": "Name",
           "type": "string"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
         }
       },
       "required": [
         "name",
         "module",
-        "content"
+        "content",
+        "revision"
       ],
       "title": "UtilityReadResponse",
       "type": "object"
     },
     "UtilityWriteResponse": {
+      "description": "A written utility file, with its new revision and its save-ledger capture.",
       "properties": {
         "error": {
           "anyOf": [
@@ -16365,6 +16407,23 @@
           "default": null,
           "title": "Error Line"
         },
+        "git_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Git Sha"
+        },
+        "identity_required": {
+          "default": false,
+          "title": "Identity Required",
+          "type": "boolean"
+        },
         "import_line": {
           "default": "",
           "title": "Import Line",
@@ -16380,17 +16439,40 @@
           "title": "Name",
           "type": "string"
         },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        },
         "status": {
           "default": "ok",
           "title": "Status",
           "type": "string"
+        },
+        "uncaptured": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Uncaptured",
+          "type": "array"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
         }
       },
       "required": [
+        "warnings",
+        "git_sha",
+        "identity_required",
+        "uncaptured",
         "status",
         "name",
         "module",
         "import_line",
+        "revision",
         "error",
         "error_line"
       ],

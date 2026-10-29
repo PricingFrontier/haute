@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react"
 import { answerQuestion, asked } from "../../test-utils/question"
 import UtilityPanel from "../UtilityPanel"
+import useGitStore from "../../stores/useGitStore"
+import useToastStore from "../../stores/useToastStore"
 
 // Mock the CodeEditor (heavy CodeMirror dependency)
 vi.mock("../editors/CodeEditor", () => ({
@@ -128,7 +130,7 @@ describe("UtilityPanel", () => {
       files: [{ name: "features.py", module: "features" }],
     })
     mockReadFile.mockResolvedValue({
-      name: "features.py", module: "features", content: "x = 1\n",
+      name: "features.py", module: "features", content: "x = 1\n", revision: "1-1",
     })
 
     render(<UtilityPanel {...defaultProps} />)
@@ -140,7 +142,7 @@ describe("UtilityPanel", () => {
       files: [{ name: "features.py", module: "features" }],
     })
     mockReadFile.mockResolvedValue({
-      name: "features.py", module: "features", content: "def foo(): pass\n",
+      name: "features.py", module: "features", content: "def foo(): pass\n", revision: "1-1",
     })
 
     render(<UtilityPanel {...defaultProps} />)
@@ -153,7 +155,7 @@ describe("UtilityPanel", () => {
       files: [{ name: "features.py", module: "features" }],
     })
     mockReadFile.mockResolvedValue({
-      name: "features.py", module: "features", content: "x = 1\n",
+      name: "features.py", module: "features", content: "x = 1\n", revision: "1-1",
     })
 
     render(<UtilityPanel {...defaultProps} />)
@@ -169,7 +171,7 @@ describe("UtilityPanel", () => {
       files: [{ name: "features.py", module: "features" }],
     })
     mockReadFile.mockResolvedValue({
-      name: "features.py", module: "features", content: "x = 1\n",
+      name: "features.py", module: "features", content: "x = 1\n", revision: "1-1",
     })
 
     render(<UtilityPanel {...defaultProps} />)
@@ -203,6 +205,7 @@ describe("UtilityPanel", () => {
     mockCreateFile.mockResolvedValue({
       status: "ok", name: "helpers.py", module: "helpers",
       import_line: "from utility.helpers import *",
+      revision: "1-1",
       error: null,
       error_line: null,
     })
@@ -234,11 +237,13 @@ describe("UtilityPanel auto-save", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.useFakeTimers({ shouldAdvanceTime: true })
+    useToastStore.setState({ toasts: [] })
+    useGitStore.setState({ uncaptured: [] })
     mockListFiles.mockResolvedValue({
       files: [{ name: "features.py", module: "features" }],
     })
     mockReadFile.mockResolvedValue({
-      name: "features.py", module: "features", content: "x = 1\n",
+      name: "features.py", module: "features", content: "x = 1\n", revision: "1-1",
     })
   })
 
@@ -251,7 +256,7 @@ describe("UtilityPanel auto-save", () => {
   })
 
   it("auto-saves after debounce when code changes", async () => {
-    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", error: null, error_line: null })
+    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", revision: "2-2", error: null, error_line: null })
 
     render(<UtilityPanel {...defaultProps} />)
     await waitFor(() => expect(screen.getByTestId("code-editor")).toBeInTheDocument())
@@ -264,11 +269,11 @@ describe("UtilityPanel auto-save", () => {
     // Advance past the 500ms debounce
     await act(async () => { vi.advanceTimersByTime(600) })
 
-    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith("features", "x = 2\n"))
+    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith("features", "x = 2\n", "1-1"))
   })
 
   it("debounces rapid edits (only saves last value)", async () => {
-    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", error: null, error_line: null })
+    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", revision: "2-2", error: null, error_line: null })
 
     render(<UtilityPanel {...defaultProps} />)
     await waitFor(() => expect(screen.getByTestId("code-editor")).toBeInTheDocument())
@@ -285,7 +290,7 @@ describe("UtilityPanel auto-save", () => {
 
     await waitFor(() => {
       expect(mockUpdateFile).toHaveBeenCalledTimes(1)
-      expect(mockUpdateFile).toHaveBeenCalledWith("features", "x = 4\n")
+      expect(mockUpdateFile).toHaveBeenCalledWith("features", "x = 4\n", "1-1")
     })
   })
 
@@ -297,9 +302,9 @@ describe("UtilityPanel auto-save", () => {
       ],
     })
     mockReadFile.mockImplementation((module: string) =>
-      Promise.resolve({ name: `${module}.py`, module, content: `# ${module}\n` }),
+      Promise.resolve({ name: `${module}.py`, module, content: `# ${module}\n`, revision: "1-1" }),
     )
-    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", error: null, error_line: null })
+    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", revision: "2-2", error: null, error_line: null })
 
     render(<UtilityPanel {...defaultProps} />)
     await waitFor(() => expect(screen.getByTestId("code-editor")).toHaveValue("# features\n"))
@@ -314,13 +319,13 @@ describe("UtilityPanel auto-save", () => {
     await waitFor(() => expect(screen.getByText("helpers")).toBeInTheDocument())
     fireEvent.click(screen.getByText("helpers"))
 
-    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith("features", "x = 99\n"))
+    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith("features", "x = 99\n", "1-1"))
     // And the switch still completed — the new file was loaded after the flush.
     await waitFor(() => expect(mockReadFile).toHaveBeenCalledWith("helpers"))
   })
 
   it("persists a pending edit when the panel unmounts", async () => {
-    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", error: null, error_line: null })
+    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", revision: "2-2", error: null, error_line: null })
 
     const { unmount } = render(<UtilityPanel {...defaultProps} />)
     await waitFor(() => expect(screen.getByTestId("code-editor")).toBeInTheDocument())
@@ -329,7 +334,7 @@ describe("UtilityPanel auto-save", () => {
     expect(mockUpdateFile).not.toHaveBeenCalled()
 
     unmount()
-    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith("features", "x = 5\n"))
+    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith("features", "x = 5\n", "1-1"))
     expect(mockUpdateFile).toHaveBeenCalledTimes(1)
   })
 
@@ -343,7 +348,7 @@ describe("UtilityPanel auto-save", () => {
     fireEvent.click(screen.getByTitle("Delete features"))
     expect(asked()).toMatchObject({ title: "Delete features?", confirm: "Delete", danger: true })
     await answerQuestion("confirm")
-    await waitFor(() => expect(mockDeleteFile).toHaveBeenCalledWith("features"))
+    await waitFor(() => expect(mockDeleteFile).toHaveBeenCalledWith("features", "1-1"))
 
     await act(async () => { vi.advanceTimersByTime(600) })
     expect(mockUpdateFile).not.toHaveBeenCalled()
@@ -357,14 +362,14 @@ describe("UtilityPanel auto-save", () => {
       ],
     })
     mockReadFile.mockImplementation((module: string) =>
-      Promise.resolve({ name: `${module}.py`, module, content: `# ${module}\n` }),
+      Promise.resolve({ name: `${module}.py`, module, content: `# ${module}\n`, revision: "1-1" }),
     )
     mockUpdateFile
       .mockRejectedValueOnce(
         new MockApiError("HTTP 400", 400, "Syntax error on line 1: invalid draft"),
       )
       .mockResolvedValueOnce({
-        status: "ok", name: "features.py", module: "features", import_line: "",
+        status: "ok", name: "features.py", module: "features", import_line: "", revision: "2-2",
       })
 
     render(<UtilityPanel {...defaultProps} />)
@@ -375,7 +380,7 @@ describe("UtilityPanel auto-save", () => {
     await waitFor(() => expect(screen.getByText("helpers")).toBeInTheDocument())
     fireEvent.click(screen.getByText("helpers"))
 
-    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith("features", "broken draft\n"))
+    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith("features", "broken draft\n", "1-1"))
     expect(mockReadFile).not.toHaveBeenCalledWith("helpers")
     expect(screen.getByTestId("code-editor")).toHaveValue("broken draft\n")
     expect(screen.getByText("Syntax error on line 1: invalid draft")).toBeInTheDocument()
@@ -399,7 +404,7 @@ describe("UtilityPanel auto-save", () => {
       ],
     })
     mockReadFile.mockImplementation((module: string) =>
-      Promise.resolve({ name: `${module}.py`, module, content: `# ${module}\n` }),
+      Promise.resolve({ name: `${module}.py`, module, content: `# ${module}\n`, revision: "1-1" }),
     )
     let rejectSave!: (reason: unknown) => void
     mockUpdateFile.mockReturnValue(new Promise((_resolve, reject) => {
@@ -411,7 +416,7 @@ describe("UtilityPanel auto-save", () => {
 
     fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "broken draft\n" } })
     await act(async () => { vi.advanceTimersByTime(600) })
-    expect(mockUpdateFile).toHaveBeenCalledWith("features", "broken draft\n")
+    expect(mockUpdateFile).toHaveBeenCalledWith("features", "broken draft\n", "1-1")
 
     fireEvent.click(screen.getByText("features"))
     await waitFor(() => expect(screen.getByText("helpers")).toBeInTheDocument())
@@ -435,7 +440,7 @@ describe("UtilityPanel auto-save", () => {
       ],
     })
     mockReadFile.mockImplementation((module: string) =>
-      Promise.resolve({ name: `${module}.py`, module, content: `# ${module}\n` }),
+      Promise.resolve({ name: `${module}.py`, module, content: `# ${module}\n`, revision: "1-1" }),
     )
     mockUpdateFile.mockRejectedValue(
       new MockApiError("HTTP 400", 400, "Syntax error on line 1: invalid draft"),
@@ -492,7 +497,7 @@ describe("UtilityPanel auto-save", () => {
         new MockApiError("HTTP 400", 400, "Syntax error on line 3: unexpected EOF"),
       )
       .mockResolvedValueOnce({
-        status: "ok", name: "features.py", module: "features", import_line: "",
+        status: "ok", name: "features.py", module: "features", import_line: "", revision: "2-2",
       })
 
     render(<UtilityPanel {...defaultProps} />)
@@ -524,6 +529,64 @@ describe("UtilityPanel auto-save", () => {
     await waitFor(() => expect(
       screen.getByText("Syntax error on line 1: Save failed"),
     ).toBeInTheDocument())
+  })
+
+  it("sends the revision each save returned with the next save", async () => {
+    mockUpdateFile
+      .mockResolvedValueOnce({ status: "ok", name: "features.py", module: "features", import_line: "", revision: "2-2" })
+      .mockResolvedValueOnce({ status: "ok", name: "features.py", module: "features", import_line: "", revision: "3-3" })
+
+    render(<UtilityPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("code-editor")).toBeInTheDocument())
+
+    fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "x = 2\n" } })
+    await act(async () => { vi.advanceTimersByTime(600) })
+    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith("features", "x = 2\n", "1-1"))
+    fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "x = 3\n" } })
+    await act(async () => { vi.advanceTimersByTime(600) })
+
+    await waitFor(() => expect(mockUpdateFile).toHaveBeenLastCalledWith("features", "x = 3\n", "2-2"))
+  })
+
+  it("keeps the draft and says so when the file changed outside the panel", async () => {
+    mockUpdateFile.mockRejectedValue(
+      new MockApiError(
+        "utility/features.py changed since you opened it. Open it again, then retry.",
+        412,
+        "utility/features.py changed since you opened it. Open it again, then retry.",
+      ),
+    )
+
+    render(<UtilityPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("code-editor")).toBeInTheDocument())
+
+    fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "x = 7\n" } })
+    await act(async () => { vi.advanceTimersByTime(600) })
+
+    await waitFor(() => expect(useToastStore.getState().toasts.map((toast) => toast.text)).toContain(
+      'Failed to save utility file "features": utility/features.py changed since you opened it. Open it again, then retry.',
+    ))
+    expect(screen.getByTestId("code-editor")).toHaveValue("x = 7\n")
+    expect(screen.getByText("Failed to save")).toBeInTheDocument()
+  })
+
+  it("reports a save's ledger capture as every project write does", async () => {
+    mockUpdateFile.mockResolvedValue({
+      status: "ok", name: "features.py", module: "features", import_line: "", revision: "2-2",
+      git_sha: "abc123", warnings: ["Changes saved; version capture failed (git error — see server log)."],
+      identity_required: false, uncaptured: ["utility/features.py"],
+    })
+
+    render(<UtilityPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("code-editor")).toBeInTheDocument())
+
+    fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "x = 8\n" } })
+    await act(async () => { vi.advanceTimersByTime(600) })
+
+    await waitFor(() => expect(useGitStore.getState().uncaptured).toContain("utility/features.py"))
+    expect(useToastStore.getState().toasts.map((toast) => toast.text)).toContain(
+      "Changes saved; version capture failed (git error — see server log).",
+    )
   })
 
   it("sets error-line attribute on editor when save detail mentions a line", async () => {
@@ -563,7 +626,7 @@ describe("UtilityPanel dropdown close-on-outside-click", () => {
       ],
     })
     mockReadFile.mockResolvedValue({
-      name: "helpers.py", module: "helpers", content: "x = 1\n",
+      name: "helpers.py", module: "helpers", content: "x = 1\n", revision: "1-1",
     })
   })
 

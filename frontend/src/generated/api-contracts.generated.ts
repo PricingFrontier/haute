@@ -2455,18 +2455,34 @@ export interface UtilityReadResponse {
   content: string;
   module: string;
   name: string;
+  revision: string;
 }
+/**
+ * A written utility file, with its new revision and its save-ledger capture.
+ */
 export interface UtilityWriteResponse {
   error: string | null;
   error_line: number | null;
+  git_sha: string | null;
+  identity_required: boolean;
   import_line: string;
   module: string;
   name: string;
+  revision: string;
   status: string;
+  uncaptured: string[];
+  warnings: string[];
 }
+/**
+ * A deleted utility file, with the save-ledger capture of its removal.
+ */
 export interface UtilityDeleteResponse {
+  git_sha: string | null;
+  identity_required: boolean;
   module: string;
   status: string;
+  uncaptured: string[];
+  warnings: string[];
 }
 /**
  * Whether the project's workbench is enabled (``[workbench]`` in ``haute.toml``).

@@ -277,6 +277,29 @@ def publish_staged_file(staged: Path, target: Path, *, replace: bool) -> None:
         staged.unlink()
 
 
+def atomic_create_text(path: Path, data: str, encoding: str = "utf-8") -> None:
+    """Write *data* as the new file *path* in one rename, never replacing a file there.
+
+    Raises ``FileExistsError`` when *path* exists, or appeared since the caller looked;
+    the staged copy is removed either way.
+    """
+    tmp = _temp_path_for(path)
+    try:
+        tmp.write_bytes(data.encode(encoding))
+        publish_staged_file(tmp, path, replace=False)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def file_revision(info: os.stat_result) -> str:
+    """A file's revision as an editor confirms it: its size and modification time.
+
+    A write or delete made against a revision is refused when the file's revision is no
+    longer that one, so a change made since the editor read the file is never overwritten.
+    """
+    return f"{info.st_size}-{info.st_mtime_ns}"
+
+
 def atomic_copy_files(pairs: Sequence[tuple[Path, Path]]) -> None:
     """Copy each (source, target) pair transactionally: all targets change or none do.
 

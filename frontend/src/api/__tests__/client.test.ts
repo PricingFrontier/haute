@@ -1482,7 +1482,7 @@ describe("utility endpoints", () => {
   })
 
   it("readUtilityFile GETs /api/utility/{module} with encoded module", async () => {
-    const data = { name: "helpers", module: "my helpers", content: "def foo(): pass" }
+    const data = loadUiContractFixture("utility_read_response")
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await readUtilityFile("my helpers")
     const [url] = mockFetch.mock.calls[0]
@@ -1491,14 +1491,7 @@ describe("utility endpoints", () => {
   })
 
   it("createUtilityFile POSTs to /api/utility with name and content", async () => {
-    const data = {
-      status: "ok",
-      name: "utils",
-      module: "utils",
-      import_line: "from utility.utils import *",
-      error: null,
-      error_line: null,
-    }
+    const data = loadUiContractFixture("utility_write_response")
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await createUtilityFile({ name: "utils", content: "code" })
     const [url, opts] = mockFetch.mock.calls[0]
@@ -1509,44 +1502,30 @@ describe("utility endpoints", () => {
   })
 
   it("createUtilityFile POSTs with name only when content is omitted", async () => {
-    mockFetch.mockReturnValue(jsonResponse({
-      status: "ok",
-      name: "empty",
-      module: "empty",
-      import_line: "from utility.empty import *",
-      error: null,
-      error_line: null,
-    }))
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("utility_write_response")))
     await createUtilityFile({ name: "empty" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).toEqual({ name: "empty" })
   })
 
-  it("updateUtilityFile PUTs to /api/utility/{module} with content body", async () => {
-    const data = {
-      status: "ok",
-      name: "helpers",
-      module: "helpers",
-      import_line: "from utility.helpers import *",
-      error: null,
-      error_line: null,
-    }
+  it("updateUtilityFile PUTs the content and the revision it was made against", async () => {
+    const data = loadUiContractFixture("utility_write_response")
     mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await updateUtilityFile("helpers", "updated")
+    const result = await updateUtilityFile("helpers", "updated", "12-34")
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/utility/helpers")
     expect(opts.method).toBe("PUT")
     expect(opts.headers["Content-Type"]).toBe("application/json")
-    expect(JSON.parse(opts.body)).toEqual({ content: "updated" })
+    expect(JSON.parse(opts.body)).toEqual({ content: "updated", revision: "12-34" })
     expect(result).toEqual(data)
   })
 
-  it("deleteUtilityFile DELETEs /api/utility/{module}", async () => {
-    const data = { status: "deleted", module: "old-util" }
+  it("deleteUtilityFile DELETEs /api/utility/{module} at the revision it was read", async () => {
+    const data = loadUiContractFixture("utility_delete_response")
     mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await deleteUtilityFile("old-util")
+    const result = await deleteUtilityFile("old-util", "12-34")
     const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/utility/old-util")
+    expect(url).toBe("/api/utility/old-util?revision=12-34")
     expect(opts.method).toBe("DELETE")
     expect(result).toEqual(data)
   })

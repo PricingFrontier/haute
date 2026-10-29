@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+
+from haute._git_state import write_working_branch
+from tests._git_helpers import git_run, init_repo
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -13,9 +17,33 @@ if TYPE_CHECKING:
 
 @pytest.fixture(autouse=True)
 def _isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Run every test in a temporary directory so utility/ is fresh."""
+    """Run every test in a temporary project so utility/ is fresh."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("haute.routes.utility.pipeline_dir", lambda: tmp_path)
+
+
+def _revision(client: TestClient, module: str) -> str:
+    """The revision a read of *module* hands the editor."""
+    res = client.get(f"/api/utility/{module}")
+    assert res.status_code == 200, res.text
+    return res.json()["revision"]
+
+
+def _put(client: TestClient, module: str, content: str, revision: str | None = None):
+    revision = _revision(client, module) if revision is None else revision
+    return client.put(f"/api/utility/{module}", json={"content": content, "revision": revision})
+
+
+def _delete(client: TestClient, module: str, revision: str | None = None):
+    revision = _revision(client, module) if revision is None else revision
+    return client.delete(f"/api/utility/{module}", params={"revision": revision})
+
+
+def _change_outside_haute(path: Path, content: str) -> None:
+    """Rewrite *path* as another editor would, with a modification time Haute cannot have read."""
+    before = path.stat().st_mtime_ns
+    path.write_text(content, encoding="utf-8")
+    os.utime(path, ns=(before + 1_000_000_000, before + 1_000_000_000))
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +241,7 @@ class TestUpdateUtilityFile:
         d.mkdir()
         (d / "helpers.py").write_text("x = 1\n")
 
-        res = client.put("/api/utility/helpers", json={"content": "x = 2\ny = 3\n"})
+        res = _put(client, "helpers", "x = 2\ny = 3\n")
         assert res.status_code == 200
         body = res.json()
         assert body["status"] == "ok"
@@ -224,7 +252,7 @@ class TestUpdateUtilityFile:
         d.mkdir()
         (d / "helpers.py").write_text("x = 1\n")
 
-        res = client.put("/api/utility/helpers", json={"content": "def foo(\n"})
+        res = _put(client, "helpers", "def foo(\n")
         assert res.status_code == 400
         # Item #76: flat string detail with embedded line number.
         detail = res.json()["detail"]
@@ -234,7 +262,7 @@ class TestUpdateUtilityFile:
         assert (d / "helpers.py").read_text() == "x = 1\n"
 
     def test_404_for_missing(self, client: TestClient) -> None:
-        res = client.put("/api/utility/nonexistent", json={"content": "x = 1\n"})
+        res = client.put("/api/utility/nonexistent", json={"content": "x = 1\n", "revision": "0-0"})
         assert res.status_code == 404
 
 
@@ -250,21 +278,21 @@ class TestDeleteUtilityFile:
         target = d / "helpers.py"
         target.write_text("x = 1\n")
 
-        res = client.delete("/api/utility/helpers")
+        res = _delete(client, "helpers")
         assert res.status_code == 200
         assert res.json()["status"] == "ok"
         assert not target.exists()
 
     def test_404_for_missing(self, client: TestClient) -> None:
-        res = client.delete("/api/utility/nonexistent")
+        res = _delete(client, "nonexistent", revision="0-0")
         assert res.status_code == 404
 
     def test_rejects_dunder_name(self, client: TestClient) -> None:
-        res = client.delete("/api/utility/__init__")
+        res = _delete(client, "__init__", revision="0-0")
         assert res.status_code == 400
 
     def test_rejects_dashes(self, client: TestClient) -> None:
-        res = client.delete("/api/utility/my-file")
+        res = _delete(client, "my-file", revision="0-0")
         assert res.status_code == 400
 
 
@@ -293,7 +321,7 @@ class TestAutoImportIntegration:
         d.mkdir()
         (d / "helpers.py").write_text("x = 1\n")
 
-        res = client.put("/api/utility/helpers", json={"content": "x = 2\n"})
+        res = _put(client, "helpers", "x = 2\n")
         assert res.json()["import_line"] == "from utility.helpers import *"
 
 
@@ -364,7 +392,7 @@ class TestSyntaxErrorReturns400:
         d.mkdir()
         (d / "mymod.py").write_text("x = 1\n")
 
-        res = client.put("/api/utility/mymod", json={"content": "if True\n"})
+        res = _put(client, "mymod", "if True\n")
         assert res.status_code == 400
         # Item #76: flat string detail with embedded line number.
         detail = res.json()["detail"]
@@ -384,3 +412,194 @@ class TestSyntaxErrorReturns400:
         )
         assert res.status_code == 200
         assert res.json()["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# A utility write is a project write (specs/server-api, Utility scripts)
+# ---------------------------------------------------------------------------
+
+
+class TestWritesAgainstARevision:
+    def test_each_write_returns_the_revision_the_next_one_sends(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "utility" / "helpers.py"
+        target.parent.mkdir()
+        target.write_text("x = 1\n", encoding="utf-8")
+
+        first = _put(client, "helpers", "x = 2\n")
+        second = _put(client, "helpers", "x = 3\n", revision=first.json()["revision"])
+
+        assert second.status_code == 200, second.text
+        assert target.read_text(encoding="utf-8") == "x = 3\n"
+        assert second.json()["revision"] == _revision(client, "helpers")
+
+    def test_an_update_against_a_changed_file_is_refused_and_writes_nothing(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "utility" / "helpers.py"
+        target.parent.mkdir()
+        target.write_text("VALUE = 1\n", encoding="utf-8")
+        opened = _revision(client, "helpers")
+        _change_outside_haute(target, "VALUE = 2\n")
+
+        res = _put(client, "helpers", "VALUE = 3\n", revision=opened)
+
+        assert res.status_code == 412
+        assert res.json()["detail"] == (
+            "utility/helpers.py changed since you opened it. Open it again, then retry."
+        )
+        assert target.read_text(encoding="utf-8") == "VALUE = 2\n"
+
+    def test_a_delete_against_a_changed_file_is_refused_and_keeps_it(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "utility" / "helpers.py"
+        target.parent.mkdir()
+        target.write_text("VALUE = 1\n", encoding="utf-8")
+        opened = _revision(client, "helpers")
+        _change_outside_haute(target, "VALUE = 2\n")
+
+        res = _delete(client, "helpers", revision=opened)
+
+        assert res.status_code == 412
+        assert target.read_text(encoding="utf-8") == "VALUE = 2\n"
+
+    def test_a_create_never_replaces_a_file_that_appeared_meanwhile(
+        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import haute.routes.utility as utility_routes
+
+        target = tmp_path / "utility" / "late.py"
+        check = utility_routes._refuse_new_name_violations
+
+        def checked_while_another_program_writes(module: str, content: str) -> None:
+            check(module, content)
+            target.parent.mkdir(exist_ok=True)
+            target.write_text("MINE = 1\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            utility_routes, "_refuse_new_name_violations", checked_while_another_program_writes
+        )
+
+        res = client.post("/api/utility", json={"name": "late", "content": "THEIRS = 1\n"})
+
+        assert res.status_code == 409
+        assert res.json()["detail"] == "utility/late.py already exists."
+        assert target.read_text(encoding="utf-8") == "MINE = 1\n"
+
+    def test_a_reader_during_an_update_finds_the_old_file_or_the_new_one(
+        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every write lands its first half, then the module is read, as a preview worker
+        importing it would be: it must find one whole version, never part of one."""
+        target = tmp_path / "utility" / "helpers.py"
+        target.parent.mkdir()
+        old, new = "VALUE = 1\n" * 50, "VALUE = 2\n" * 50
+        target.write_text(old, encoding="utf-8")
+        opened = _revision(client, "helpers")
+        observed: list[str] = []
+
+        def write_bytes_in_halves(self: Path, data: bytes) -> int:
+            with open(self, "wb") as handle:
+                handle.write(data[: len(data) // 2])
+                handle.flush()
+                observed.append(target.read_text(encoding="utf-8"))
+                handle.write(data[len(data) // 2 :])
+            return len(data)
+
+        def write_text_in_halves(
+            self: Path,
+            data: str,
+            encoding: str | None = None,
+            errors: str | None = None,
+            newline: str | None = None,
+        ) -> int:
+            return write_bytes_in_halves(self, data.encode(encoding or "utf-8"))
+
+        monkeypatch.setattr(Path, "write_bytes", write_bytes_in_halves)
+        monkeypatch.setattr(Path, "write_text", write_text_in_halves)
+
+        res = _put(client, "helpers", new, revision=opened)
+
+        assert res.status_code == 200, res.text
+        assert observed, "the update wrote no bytes through Path"
+        assert all(seen in (old, new) for seen in observed)
+        assert target.read_text(encoding="utf-8") == new
+
+
+class TestUtilityFolderContainment:
+    def test_a_utility_folder_leading_outside_the_project_is_refused_by_every_route(
+        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._file_ops import file_revision
+
+        project = tmp_path / "project"
+        outside = tmp_path / "outside"
+        project.mkdir()
+        outside.mkdir()
+        monkeypatch.chdir(project)
+        monkeypatch.setattr("haute.routes.utility.pipeline_dir", lambda: project)
+        (outside / "values.py").write_text("VALUE = 1\n", encoding="utf-8")
+        link = project / "utility"
+        if os.name == "nt":
+            import _winapi
+
+            _winapi.CreateJunction(str(outside), str(link))
+        else:
+            os.symlink(outside, link, target_is_directory=True)
+        revision = file_revision((outside / "values.py").stat())
+
+        responses = [
+            client.get("/api/utility"),
+            client.get("/api/utility/values"),
+            client.put(
+                "/api/utility/values", json={"content": "VALUE = 999\n", "revision": revision}
+            ),
+            client.delete("/api/utility/values", params={"revision": revision}),
+            client.post("/api/utility", json={"name": "fresh"}),
+        ]
+
+        assert [res.status_code for res in responses] == [403] * 5
+        assert all("VALUE" not in res.text and "values" not in res.text for res in responses)
+        assert sorted(path.name for path in outside.iterdir()) == ["values.py"]
+        assert (outside / "values.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+
+
+_WORKING = "pricing-dev"
+
+
+class TestLedgerCapture:
+    @pytest.fixture()
+    def repository(self, tmp_path: Path) -> Path:
+        init_repo(tmp_path)
+        git_run(tmp_path, "checkout", "-b", _WORKING)
+        write_working_branch(tmp_path, _WORKING)
+        return tmp_path
+
+    @staticmethod
+    def _ledger(repository: Path) -> tuple[str, list[str]]:
+        """The ledger's last commit and the files it changed."""
+        ledger = f"{_WORKING}-save"
+        files = git_run(repository, "show", "--name-only", "--format=", ledger).splitlines()
+        return git_run(repository, "rev-parse", ledger), files
+
+    def test_a_create_an_update_and_a_delete_are_each_captured(
+        self, client: TestClient, repository: Path
+    ) -> None:
+        created = client.post("/api/utility", json={"name": "helpers", "content": "X = 1\n"})
+        assert created.status_code == 200, created.text
+        assert self._ledger(repository) == (
+            created.json()["git_sha"],
+            ["utility/__init__.py", "utility/helpers.py"],
+        )
+
+        updated = _put(client, "helpers", "X = 2\n", revision=created.json()["revision"])
+        assert updated.status_code == 200, updated.text
+        assert self._ledger(repository) == (updated.json()["git_sha"], ["utility/helpers.py"])
+
+        deleted = _delete(client, "helpers", revision=updated.json()["revision"])
+        assert deleted.status_code == 200, deleted.text
+        assert self._ledger(repository) == (deleted.json()["git_sha"], ["utility/helpers.py"])
+        tracked = git_run(repository, "ls-tree", "-r", "--name-only", f"{_WORKING}-save")
+        assert "utility/helpers.py" not in tracked.splitlines()

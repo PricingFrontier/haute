@@ -1315,14 +1315,14 @@ describe("next-wave client runtime contracts", () => {
     },
     {
       name: "updateUtilityFile",
-      response: { ...loadUiContractFixture<Record<string, unknown>>("utility_write_response"), error_line: "bad" },
-      call: () => updateUtilityFile("helpers", "print('x')"),
-      error: /UtilityWriteResponse: invalid contract at \/error_line: type/,
+      response: { ...loadUiContractFixture<Record<string, unknown>>("utility_write_response"), revision: 42 },
+      call: () => updateUtilityFile("helpers", "print('x')", "1-1"),
+      error: /UtilityWriteResponse: invalid contract at \/revision: type/,
     },
     {
       name: "deleteUtilityFile",
       response: { ...loadUiContractFixture<Record<string, unknown>>("utility_delete_response"), module: 42 },
-      call: () => deleteUtilityFile("helpers"),
+      call: () => deleteUtilityFile("helpers", "1-1"),
       error: /UtilityDeleteResponse: invalid contract at \/module: type/,
     },
     {

@@ -2976,10 +2976,14 @@ class UtilityReadResponse(BaseModel):
     name: str
     module: str
     content: str
+    # The revision an update or delete of this file must send (``file_revision``).
+    revision: str
 
 
 class UtilityWriteRequest(BaseModel):
     content: str
+    # The revision the edit was made against: a file changed since is refused (412).
+    revision: str
 
 
 class UtilityCreateRequest(BaseModel):
@@ -2991,16 +2995,21 @@ class UtilityCreateRequest(BaseModel):
     content: str = ""
 
 
-class UtilityWriteResponse(BaseModel):
+class UtilityWriteResponse(SaveCapture):
+    """A written utility file, with its new revision and its save-ledger capture."""
+
     status: str = "ok"
     name: str = ""
     module: str = ""
     import_line: str = ""  # e.g. "from utility.features import *"
+    revision: str
     error: str | None = None
     error_line: int | None = None
 
 
-class UtilityDeleteResponse(BaseModel):
+class UtilityDeleteResponse(SaveCapture):
+    """A deleted utility file, with the save-ledger capture of its removal."""
+
     status: str = "ok"
     module: str
 

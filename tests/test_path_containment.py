@@ -211,7 +211,13 @@ class TestUtilityRoutes:
     def test_inside_and_dotdot(self, layout: tuple[Path, Path], client: TestClient) -> None:
         assert client.get("/api/utility/helpers").status_code == 200
         assert client.get("/api/utility/..%2Foutside").status_code in (400, 404)
-        assert client.put("/api/utility/helpers", json={"content": "X = 3\n"}).status_code == 200
+        revision = client.get("/api/utility/helpers").json()["revision"]
+        assert (
+            client.put(
+                "/api/utility/helpers", json={"content": "X = 3\n", "revision": revision}
+            ).status_code
+            == 200
+        )
         assert client.post("/api/utility", json={"name": "fresh"}).status_code == 200
         assert client.post("/api/utility", json={"name": "../evil"}).status_code == 400
 
@@ -221,8 +227,9 @@ class TestUtilityRoutes:
         project, outside = layout
         _require_links(project)
         assert client.get("/api/utility/link").status_code == 403
-        assert client.put("/api/utility/link", json={"content": "X = 4\n"}).status_code == 403
-        assert client.delete("/api/utility/link").status_code == 403
+        edit = {"content": "X = 4\n", "revision": "0-0"}
+        assert client.put("/api/utility/link", json=edit).status_code == 403
+        assert client.delete("/api/utility/link", params={"revision": "0-0"}).status_code == 403
         assert client.post("/api/utility", json={"name": "link"}).status_code == 403
         assert (outside / "evil.py").read_text(encoding="utf-8") == "X = 2\n"
 

@@ -331,6 +331,19 @@ written) any name violation the edit adds (codegen "Names cannot collide with su
 naming the pipeline and the colliding node; a pipeline that does not parse is skipped, since
 it fails on its own.
 
+A utility file is written as every other project file is. The write is staged beside its
+target and renamed into place, so a reader (a trace hashing `utility/**/*.py`, a preview
+worker importing `utility.*`) sees the old file or the new one, never part of either; it takes
+its turn with saves, uploads and branch switches under the project write lock; and it is
+captured on the save ledger, answering the same capture fields as every project write. Each
+file has a revision, its size and modification time as a project file's is: a read returns
+it, a write returns the new one, and an update or delete must send the revision it was made
+against, so a file changed since (another editor's save, an edit outside Haute) is refused
+with HTTP 412 and left as it is. A create refuses a file that appeared meanwhile with 409. The
+`utility/` folder must itself resolve inside the project: when it is a link or junction (or
+sits below one) that leads outside, every utility route refuses with HTTP 403 before it lists,
+reads, writes or deletes anything, and each file must also resolve inside the folder.
+
 **OUTPUT assembly dry-run.** `POST /api/output-assemble/dry-run` lets the OUTPUT node editor
 preview the assembled JSON response from an *in-progress, unsaved* field→path mapping: it
 validates the mapping shape independently of any data, swaps it into the target node's
@@ -577,10 +590,6 @@ describes. Stale, changed or already-applied plans fail before
 > NOTE: The watcher currently misses imported modules below a nested configured
 > pipeline directory when launched from the project root.
 > [API-R11](../roadmap/server-api.md#api-r11--module-watching-follows-the-configured-pipeline-directory) owns correct module/dependency routing.
-
-> NOTE: The utility directory itself is not authenticated against the project root;
-> a junction/symlink can make utility routes access outside files.
-> [API-R07](../roadmap/server-api.md#api-r07--utility-files-written-like-project-files) includes the root containment check for reads and mutations.
 
 This codebase prefers loud failure over silent fallbacks, and the server layer's job is to
 turn that loudness into a well-typed HTTP response rather than a raw traceback.

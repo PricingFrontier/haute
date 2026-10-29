@@ -213,9 +213,6 @@ these are the Majors still open.
 - **A graph the flattener refuses, and a trace that fails in the user's node
   code, are answered with the sanitized 500** (two Majors, `API-R06`); two tests
   pin the 500.
-- **Utility files are written non-atomically, unlocked and without a revision**
-  (Major, `API-R07`): a second editor's PUT silently wins and a concurrent
-  preview can import a truncated file.
 - **A non-UTF-8 sidecar or pipeline file is loaded with replacement characters
   that the next save writes over the author's bytes** (Major, `PCFG-R10`;
   reproduced). The package is P1 because the corruption is silent.
@@ -307,7 +304,6 @@ production:
 | Background jobs | WRK-8, WRK-9, WRK-10 | `ROAD-WORKER-08` |
 | Server API | PM-43 | `API-R05` |
 | Server API | SRV-2, SRV-3, SRV-9, SRV-11 | `API-R06` |
-| Server API | SRV-4 | `API-R07` |
 | Server API | SRV-1, SRV-5 | `API-R08` |
 | Server API | SRV-6, SRV-7, SRV-8, SRV-13, SRV-15 | `API-R09` |
 | Server API | SRV-10, SRV-12, SRV-14, SRV-16, SRV-17 | `API-R10` |

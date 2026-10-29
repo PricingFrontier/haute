@@ -1989,24 +1989,29 @@ export function createUtilityFile(
   return post<unknown>("/api/utility", payload, options).then(async (data) => expectGeneratedContract("UtilityWriteResponse", (await utilityValidators()).validateUtilityWriteResponse, data))
 }
 
+/** Save *content* over the module, if it is still the *revision* the panel read or last saved. */
 export function updateUtilityFile(
   module: string,
   content: string,
+  revision: string,
   options?: { signal?: AbortSignal },
 ): Promise<UtilityWriteResult> {
   return request<unknown>(`/api/utility/${encodeURIComponent(module)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, revision }),
     ...options,
   }).then(async (data) => expectGeneratedContract("UtilityWriteResponse", (await utilityValidators()).validateUtilityWriteResponse, data))
 }
 
+/** Delete the module, if it is still the *revision* the panel read or last saved. */
 export function deleteUtilityFile(
   module: string,
+  revision: string,
   options?: { signal?: AbortSignal },
 ): Promise<UtilityDeleteResponse> {
-  return del<unknown>(`/api/utility/${encodeURIComponent(module)}`, options).then(async (data) => expectGeneratedContract("UtilityDeleteResponse", (await utilityValidators()).validateUtilityDeleteResponse, data))
+  const query = new URLSearchParams({ revision })
+  return del<unknown>(`/api/utility/${encodeURIComponent(module)}?${query}`, options).then(async (data) => expectGeneratedContract("UtilityDeleteResponse", (await utilityValidators()).validateUtilityDeleteResponse, data))
 }
 
 // ---------------------------------------------------------------------------

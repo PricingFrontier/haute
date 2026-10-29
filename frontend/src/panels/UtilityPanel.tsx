@@ -4,6 +4,7 @@ import { CodeEditor } from "./editors/CodeEditor"
 import PanelShell from "./PanelShell"
 import useClickOutside from "../hooks/useClickOutside"
 import { useDebouncedCallback } from "../hooks/useDebouncedCallback"
+import { reportSaveCapture } from "../stores/saveCapture"
 import { confirmed } from "../stores/useQuestionStore"
 import useToastStore from "../stores/useToastStore"
 import {
@@ -75,6 +76,9 @@ export default function UtilityPanel({
   // failure separate from the in-flight queue so a later file switch cannot
   // overwrite the only local copy of the draft.
   const failedSaveModuleRef = useRef<string | null>(null)
+  // Each file's revision as its read, create or last save returned it: a save or delete
+  // sends it, so the server refuses one made against a file changed outside the panel.
+  const revisionsRef = useRef(new Map<string, string>())
   const activeModuleRef = useRef(activeModule)
   const mountedRef = useRef(true)
   useEffect(() => { activeModuleRef.current = activeModule }, [activeModule])
@@ -88,7 +92,11 @@ export default function UtilityPanel({
   // the current file's error UI.
   const persistSave = useCallback(async (module: string, value: string): Promise<boolean> => {
     try {
-      await updateUtilityFile(module, value)
+      const revision = revisionsRef.current.get(module)
+      if (revision === undefined) throw new Error(`no revision of ${module} was read`)
+      const saved = await updateUtilityFile(module, value, revision)
+      revisionsRef.current.set(module, saved.revision)
+      reportSaveCapture(saved)
       if (failedSaveModuleRef.current === module) {
         failedSaveModuleRef.current = null
       }
@@ -167,6 +175,7 @@ export default function UtilityPanel({
     if (!await flushSave()) return
     try {
       const res = await readUtilityFile(module)
+      revisionsRef.current.set(module, res.revision)
       setContent(res.content)
       setActiveModule(module)
       setImportsSelected(false)
@@ -200,6 +209,8 @@ export default function UtilityPanel({
     setCreateError(null)
     try {
       const res = await createUtilityFile({ name })
+      revisionsRef.current.set(res.module, res.revision)
+      reportSaveCapture(res)
       setCreating(false)
       setNewName("")
       // Auto-add import to preamble
@@ -220,7 +231,10 @@ export default function UtilityPanel({
     // Discard any pending save — the file is being removed.
     pendingSave.cancel()
     try {
-      await deleteUtilityFile(activeModule)
+      const revision = revisionsRef.current.get(activeModule)
+      if (revision === undefined) throw new Error(`no revision of ${activeModule} was read`)
+      reportSaveCapture(await deleteUtilityFile(activeModule, revision))
+      revisionsRef.current.delete(activeModule)
       if (failedSaveModuleRef.current === activeModule) {
         failedSaveModuleRef.current = null
       }

@@ -1,8 +1,13 @@
 {
+  "warnings": [],
+  "git_sha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+  "identity_required": false,
+  "uncaptured": [],
   "status": "ok",
   "name": "helpers",
   "module": "helpers",
   "import_line": "from utility.helpers import *",
+  "revision": "29-1761750000000000000",
   "error": null,
   "error_line": null
 }

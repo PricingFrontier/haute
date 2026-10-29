@@ -16,7 +16,6 @@ come from the [23 September 2026 codebase review](codebase-review-2026-09-23.md)
 | API-R03 | Planned | P2 | Every browser type and response parser is generated from the Pydantic models. |
 | API-R05 | Planned | P3 | The server start does not delete bytecode caches under the installed package. |
 | API-R06 | Planned | P2 | A user-fixable error is answered as one: a graph the flattener refuses, a trace that fails in the user's node code, and the two 400s that carry the server-error text, with the trace's status chosen by type rather than by message prefix. |
-| API-R07 | Planned | P1 | Utility files are written like every other project file: atomically, under the project write lock, with a revision precondition and a ledger capture. Utility reads and writes also stay inside the project across symlinks and junctions. |
 | API-R08 | Planned | P2 | A save never round-trips through the file watcher, and its request is validated before any file is staged. |
 | API-R09 | Planned | P3 | The repair routes, the admit-run-translate pattern, the path-resolution preludes and the two point-analysis services exist once each, and a save loads the pipeline once. |
 | API-R10 | Planned | P3 | Every free string and list in a request is bounded; the dead response fields and helpers are gone; the repair message and the `file` field say what is true. |
@@ -174,44 +173,6 @@ the route-level mapping that exists today.
 `src/haute/routes/banding.py`; `src/haute/routes/rating.py`;
 `src/haute/routes/files.py::get_schema`; `src/haute/routes/submodel.py::create_submodel`;
 `tests/test_trace_api.py`.
-
-### API-R07 — Utility files written like project files
-**Why:** Utility files are the one project write that is neither atomic, nor under the
-project write lock, nor revision-checked, nor captured on the save ledger: `write_text`
-truncates then writes, PUT and DELETE take no revision so a second editor's PUT silently
-wins, and nothing captures the write. Readers race it: every trace hashes
-`utility/**/*.py` and preview workers import `utility.*` in the preamble, so a concurrent
-preview can import a truncated file. The primitives exist (`atomic_write_text`, `Writer`,
-`project_write`) and `PUT /api/project-files/content` shows the contract (staged, renamed
-under the lock, 409 `file_exists`, 412 `file_changed`, captured). This package comes from
-the [25 October 2026 codebase review](codebase-review-2026-10-25.md).
-
-**Plan:** Write through `atomic_write_text` (or `Writer`) inside `project_write`, take a
-`revision` (size and mtime_ns, as project files do) on PUT and DELETE and answer 412 on a
-mismatch, capture the write on the ledger, and state the contract in the utility section
-of the server-api specification.
-
-**Acceptance:** A PUT with a stale revision is answered 412 and leaves the file unchanged;
-a reader never observes a partial utility file (a test that reads during a write sees old
-or new bytes); the save ledger records the write.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/routes/utility.py::_ensure_init`;
-`src/haute/routes/utility.py::delete_utility_file`;
-`src/haute/routes/project_files.py`; `src/haute/routes/_helpers.py::project_write`;
-`src/haute/_file_ops.py::atomic_write_text`.
-
-**28 October full-pass addition:** Utility containment uses `pipeline_dir()/utility` as the
-trusted root without first proving that directory lies inside the project. A real Windows
-junction from project/utility to an outside directory makes GET disclose its Python file and
-PUT return ok after changing the outside file from VALUE=1 to VALUE=999. Only project discovery
-was injected. **Plan/acceptance:** resolve and authenticate the utility root against the
-project root before listing or any read/create/update/delete; retain descendant containment
-too. Symlink/junction escape tests must leave outside bytes unchanged and refuse reads, while
-an ordinary in-project utility directory works. Evidence: `src/haute/routes/utility.py::_utility_dir` and
-its `contained_path` calls. This package is P1 because the wrong trusted anchor bypasses the
-write boundary; `SBX-R01`'s shared comparison helper alone cannot repair a wrongly chosen root.
 
 ### API-R08 — A save never round-trips the watcher
 **Why:** The `.haute.json` sidecar write (`save_sidecar` → `atomic_write_text`) and the

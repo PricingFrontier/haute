@@ -86,7 +86,7 @@ df = df.filter(pl.col("vehicle_age") < 20).with_columns(
 
 **Switch to code** turns a node's steps into editable code for good: the steps are removed and the generated code becomes editable, and there is no way back to steps. Code always assigns its result to `df`; do not end it with `return`.
 
-For more involved logic, you can write your own Python functions. `haute init` creates a `rating/utility/` folder for them, and the toolbar's **Utility** button opens a panel where you can edit its files or create new ones. A utility's functions are available in your code once its import is listed under **Imports**, the first entry in the Utility panel's file list, for example `from utility.features import *`. A file you create in the Utility panel gets its import line added automatically; the starter `features.py` does not, so add its import yourself.
+For more involved logic, you can write your own Python functions. `haute init` creates a `rating/utility/` folder for them, and the toolbar's **Utility** button opens a panel where you can edit its files or create new ones. A utility's functions are available in your code once its import is listed under **Imports**, the first entry in the Utility panel's file list, for example `from utility.features import *`. A file you create in the Utility panel gets its import line added automatically; the starter `features.py` does not, so add its import yourself. The panel saves as you type, and each save is kept in version history like a pipeline save. A save is refused when the file has changed outside the panel since you opened it (in another tab or another editor), so that change is never overwritten; your edit stays on screen until you close the panel.
 
 ---
 
