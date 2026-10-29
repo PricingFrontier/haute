@@ -31,11 +31,8 @@ from pathlib import Path
 from types import CodeType
 from typing import Any
 
-from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute.errors import HauteError, InvalidPathError, PathOutsideProjectError
-
-logger = get_logger(component="sandbox")
 
 # ---------------------------------------------------------------------------
 # Project-root path validation
@@ -113,6 +110,20 @@ def contained_path(root: Path, path: str | Path) -> Path:
     if not target.is_relative_to(base):
         raise PathOutsideProjectError(_OUTSIDE_PROJECT, path=str(path))
     return target
+
+
+def is_contained(root: Path, path: str | Path) -> bool:
+    """Whether :func:`contained_path` accepts *path* under *root*.
+
+    For a caller to which a path outside *root* is not an error but simply not
+    one of its own (an entry it skips). A NUL byte still raises
+    :class:`InvalidPathError`.
+    """
+    try:
+        contained_path(root, path)
+    except PathOutsideProjectError:
+        return False
+    return True
 
 
 def validate_project_path(path: str | Path) -> Path:
@@ -566,16 +577,9 @@ def restricted_joblib_load(path: str | Path, *, offset: int = 0) -> Any:
     The joblib stream starts *offset* bytes into the file (an ``.ebm`` file's
     record comes first).
     """
-    validated = Path(path).resolve()
+    import joblib
 
-    try:
-        import joblib
-    except ModuleNotFoundError as exc:
-        if exc.name != "joblib":
-            raise
-        # joblib not installed — fall back to restricted pickle.
-        logger.warning("joblib_missing", msg="falling back to safe_unpickle")
-        return safe_unpickle(validated)
+    validated = Path(path).resolve()
 
     try:
         if not hasattr(joblib.numpy_pickle, "NumpyUnpickler"):

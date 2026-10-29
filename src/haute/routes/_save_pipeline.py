@@ -43,7 +43,7 @@ from haute._global_constants import (
 from haute._graph_shape import validate_singleton_groups
 from haute._logging import get_logger
 from haute._pipeline_recovery import load_pipeline_editor_document
-from haute._sandbox import contained_path
+from haute._sandbox import contained_path, is_contained
 from haute._submodel_paths import (
     SUBMODEL_PACKAGE,
     MalformedSubmodelPathError,
@@ -339,7 +339,7 @@ class SavePipelineService:
     def __init__(self, project_root: Path, pipeline_root: Path | None = None) -> None:
         self._root = project_root.resolve()
         self._pipeline_root = (pipeline_root or project_root).resolve()
-        if not self._pipeline_root.is_relative_to(self._root):
+        if not is_contained(self._root, self._pipeline_root):
             raise ValueError("pipeline_root must resolve inside project_root")
         self._precondition_identities: dict[str, str | None] | None = None
         self._identity_roots: tuple[Path, ...] = ()
@@ -401,6 +401,7 @@ class SavePipelineService:
         key = str(resolved)
         if key in identities:
             expected = identities[key]
+        # not contained_path: whether the precondition governs the target, not a guard
         elif any(resolved.is_relative_to(root) for root in self._identity_roots):
             expected = _recorded_digest_for_same_file(target, identities)
         else:
@@ -1212,7 +1213,7 @@ class SavePipelineService:
 
     def _validate_source_file_matches_pipeline_root(self, py_path: Path) -> None:
         """Reject saves whose source file does not belong to ``pipeline_root``."""
-        if not py_path.is_relative_to(self._pipeline_root):
+        if not is_contained(self._pipeline_root, py_path):
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -1401,11 +1402,6 @@ class SavePipelineService:
             project_root=self._root,
         )
         if target.exists():
-            if not target.is_relative_to(self._root):
-                raise HTTPException(
-                    status_code=400,
-                    detail="Submodel delete path resolves outside the project root.",
-                )
             return target
         return self._resolve_module_delete_file(normalised)
 
@@ -1786,7 +1782,7 @@ class SavePipelineService:
         self._raise_config_path_conflicts(conflicts)
         for rel_path, json_content in self._last_config_files.items():
             out_path = (self._pipeline_root / rel_path).resolve()
-            if not out_path.is_relative_to(self._pipeline_root):
+            if not is_contained(self._pipeline_root, out_path):
                 # A link out of the pipeline folder: writing would leave it,
                 # and skipping would drop the edit while the save succeeds.
                 raise HTTPException(
@@ -1983,7 +1979,7 @@ class SavePipelineService:
 
         for rel in stale:
             stale_path = (self._pipeline_root / rel).resolve()
-            if not stale_path.is_relative_to(self._pipeline_root):
+            if not is_contained(self._pipeline_root, stale_path):
                 continue
             if stale_path.is_file():
                 stale_path.unlink()
@@ -2046,7 +2042,7 @@ class SavePipelineService:
             # stale sweep retires it.
             for rel in self._discarded_sidecars_recursive(disk_graph):
                 path = (self._pipeline_root / rel).resolve()
-                if rel not in prev and path.is_relative_to(self._pipeline_root) and path.is_file():
+                if rel not in prev and is_contained(self._pipeline_root, path) and path.is_file():
                     prev[rel] = path.read_text(encoding="utf-8")
             # A declared constants file that loads is this pipeline's to retire
             # when its last constant goes; one that fails to load is left alone.

@@ -154,6 +154,7 @@ def capture_provenance(
     if pipeline_source:
         source = Path(pipeline_source)
         source = (source if source.is_absolute() else root / source).resolve()
+        # not contained_path: provenance names the pipeline only when it is in the project
         if source.is_relative_to(root):
             pipeline = source.relative_to(root).as_posix()
     git_commit, git_dirty = _git_state(root)

@@ -879,6 +879,7 @@ def parse_pipeline_to_graph(
     resolved_path = py_path.resolve()
     if project_root is None:
         cwd = Path.cwd().resolve()
+        # not contained_path: chooses the root; a file outside the working directory is its own
         root = cwd if resolved_path.is_relative_to(cwd) else resolved_path.parent
     else:
         root = project_root.resolve()

@@ -45,7 +45,6 @@ records corrections to that audit's claims and proposed remedies.
 | [Pipeline config](pipeline-config.md) | Comments kept across a save, dead paths, one recovery pass per file; project context, typed configs, editor state, node specification; keyword-only configuration defaults preserved | `PCFG-R21` |
 | [Polars 2](polars-2.md) | Remaining RAM-estimate calibration, large-scale operator measurements and worker baselines; Map columns and quantile/rank binning (deferred) | `PL2-17` |
 | [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
-| [Sandbox security](sandbox-security.md) | Every containment comparison through the one check; restricted joblib loading without a fallback | `SBX-R01` |
 | [Server API](server-api.md) | Client errors answered as client errors, utility files written like project files, a save that never round-trips the watcher, one copy of each route mechanism, bounded requests, no bytecode deletion at start; domain errors, generated browser contract; utility containment across junctions and symlinks, and module watching relative to the configured pipeline | `API-R07` |
 | [Submodels](submodels.md) | One reuse mechanism | `SUB-R01` |
 | [t-boost](t-boost.md) | What rating-table models make possible: cell-level holdout A/E, unfolding into rating steps, model comparison with premium attribution, measured analyst adjustments (all awaiting a decision) | `TBOOST-02` |

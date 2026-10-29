@@ -55,6 +55,7 @@ from haute._parser_submodels import (
     submodel_imports,
 )
 from haute._pipeline_revision import pipeline_recovery_revision
+from haute._sandbox import is_contained
 from haute._sidecar import (
     SidecarReadResult,
     _normalise_sidecar_sources,
@@ -1914,7 +1915,7 @@ def _recovery_artifacts(
         config_refs, registrations = _source_references(source, child=child)
         for reference in config_refs:
             config_path = (config_base / reference.replace("\\", "/")).resolve()
-            if config_path.is_relative_to(root):
+            if is_contained(root, config_path):
                 artifacts.append(("node_config", config_path))
         for registration in registrations:
             try:
@@ -2522,7 +2523,7 @@ def load_pipeline_editor_document(
     """
     path = Path(pipeline_path).resolve()
     root = (project_root or path.parent).resolve()
-    if not path.is_relative_to(root):
+    if not is_contained(root, path):
         raise ValueError("Pipeline recovery path escapes the project root.")
     captures = _SourceCaptures(root)
     raw_source = captures.read_bytes(path)

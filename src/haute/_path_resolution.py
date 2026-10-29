@@ -11,7 +11,7 @@ from functools import wraps
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal, TypeVar, cast
 
-from haute._sandbox import _get_project_root
+from haute._sandbox import _get_project_root, is_contained
 from haute._types import PipelineGraph
 from haute._validation_error import HauteValidationError
 
@@ -104,12 +104,16 @@ def _infer_project_root(
     if not source.is_absolute():
         return current_project
 
-    lexical_source = source.absolute()
+    # not contained_path: a source spelled inside the project is not an external
+    # pipeline, so it must also resolve inside it
+    if source.absolute().is_relative_to(current_project):
+        if not is_contained(current_project, source.resolve()):
+            raise RuntimePathOutsideProjectError(
+                "Pipeline source resolves outside the project root"
+            )
+        return current_project
     resolved_source = source.resolve()
-    if lexical_source.is_relative_to(current_project) and not resolved_source.is_relative_to(
-        current_project
-    ):
-        raise RuntimePathOutsideProjectError("Pipeline source resolves outside the project root")
+    # not contained_path: chooses the root; a pipeline outside the project is its own
     if resolved_source.is_relative_to(current_project):
         return current_project
     return resolved_source.parent
@@ -160,8 +164,7 @@ def _candidate_if_allowed(
     enforce_project_root: bool,  # pragma: no mutate
 ) -> Path | None:  # pragma: no mutate
     spelling_preserved = Path(os.path.abspath(candidate))
-    resolved = spelling_preserved.resolve()
-    if enforce_project_root and not resolved.is_relative_to(project_root):
+    if enforce_project_root and not is_contained(project_root, spelling_preserved.resolve()):
         return None
     return spelling_preserved
 
@@ -192,13 +195,12 @@ def resolve_runtime_file_path(
         raise RuntimePathOutsideProjectError(f"Path {raw_path!r} resolves outside the project root")
 
     if raw.is_absolute():
-        spelling_preserved = Path(os.path.abspath(raw))
-        resolved = spelling_preserved.resolve()
-        if enforce_project_root and not resolved.is_relative_to(root):
+        allowed = _candidate_if_allowed(raw, root, enforce_project_root=enforce_project_root)
+        if allowed is None:
             raise RuntimePathOutsideProjectError(
                 f"Path {raw_path!r} resolves outside the project root"
             )
-        return spelling_preserved
+        return allowed
 
     pdir: Path | None
     if pipeline_dir is not None:

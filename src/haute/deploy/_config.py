@@ -14,6 +14,7 @@ from haute._artifact_paths import PATH_PROBLEMS, ordinary_path_problem
 from haute._graph_shape import validate_singleton_groups
 from haute._io import read_user_text
 from haute._logging import get_logger
+from haute._sandbox import is_contained
 from haute._workbench_config import WORKBENCH_TOML_KEYS, read_workbench_config
 from haute._workbench_form import FormDocument
 from haute._workbench_nodes import connection_errors, form_owner, read_project_form, with_tables
@@ -704,7 +705,7 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
         if not pipeline_candidate.is_absolute():
             pipeline_candidate = project_root / pipeline_candidate
         canonical_pipeline = resolve_pipeline_file(pipeline_candidate)
-        if not canonical_pipeline.is_relative_to(project_root):
+        if not is_contained(project_root, canonical_pipeline):
             raise DeployError(
                 "Configured pipeline resolves outside the configured project root. "
                 "Move it inside the project or correct [project].pipeline.",
