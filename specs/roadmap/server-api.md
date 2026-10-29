@@ -94,7 +94,12 @@ API Input config). The rest carry none and can go first: the shared
 execution-metrics parser, which the converted status responses still apply
 after their generated check (each group's validator carries its own copy of
 the metrics contract, about 13 KiB gzip; one shared execution-metrics
-validator module would remove both).
+validator module would remove both). That needs the Node stage to compile a
+definition once, in its own module, and leave it an object in every group
+that carries it, with the client checking the field through that module;
+the hand parser stays for the preview response until the second set, and the
+metrics type the eager diagnostics read carries the execution-strategy
+diagnostic's normalised shape, which the move must keep.
 
 **Acceptance:** Every response the client parses is validated by generated
 code; `guards.ts`, `trainGuards.ts` and `api/types.ts` contain no structural
