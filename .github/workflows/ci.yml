@@ -216,9 +216,12 @@ jobs:
 
       - run: uv sync --group dev --locked
 
+      # The shard also records the write-sandbox census, every write its
+      # observe-mode tests made outside their sandbox, for the gate below.
       - name: Pytest shard ${{ matrix.shard }}/4 (coverage)
         env:
           COVERAGE_FILE: .coverage.shard${{ matrix.shard }}
+          HAUTE_TEST_WRITE_SANDBOX_CENSUS_OUT: .cache/write-sandbox/census-shard${{ matrix.shard }}.json
         run: >
           uv run pytest tests/ -q -n 4 --timeout=60 --timeout-method=signal
           --shard=${{ matrix.shard }}/4 --shard-lane=coverage
@@ -240,6 +243,14 @@ jobs:
         with:
           name: backend-junit-${{ matrix.shard }}
           path: .cache/junit/
+          retention-days: 14
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: write-sandbox-census-${{ matrix.shard }}
+          path: .cache/write-sandbox/
+          if-no-files-found: error
           retention-days: 14
 
   # The gate runs whenever the shards ran, red or green (`!cancelled()`), as the
@@ -307,6 +318,22 @@ jobs:
           uv run python scripts/check_changed_coverage.py
           --coverage-json .cache/coverage/backend.json
           --base-ref "$HAUTE_COVERAGE_BASE"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: ${{ !cancelled() }}
+        with:
+          pattern: write-sandbox-census-*
+          path: .cache/write-sandbox
+          merge-multiple: true
+
+      # Every shard's census must be there, and no class of write outside the
+      # test sandbox may appear or linger unlisted (tests/write_sandbox.toml).
+      - name: Write-sandbox census may not grow
+        if: ${{ !cancelled() }}
+        run: >
+          uv run python scripts/check_write_sandbox_census.py
+          .cache/write-sandbox/census-shard1.json .cache/write-sandbox/census-shard2.json
+          .cache/write-sandbox/census-shard3.json .cache/write-sandbox/census-shard4.json
 
   # Compatibility: the full suite (no coverage) on the supported version edges,
   # split by test module into 3 shards per interpreter exactly as the coverage

@@ -36,24 +36,27 @@ targets the scan cannot resolve (call results, non-literal modes) pass —
 the runtime guard (layer 3, ``tests/_write_sandbox.py``) owns what
 static analysis cannot see.
 
-The allowlist below carries the not-yet-converted files with their
-current violation counts. Shrinking it is the conversion ratchet; a new
-entry, or a count that grows, is a deliberate review decision made in
-this file, where review sees it.
+The allowlist, under ``[lint]`` in ``tests/write_sandbox.toml``, carries the
+not-yet-converted files and the fingerprint of each write site flagged in
+them: file, enclosing scope, kind and source, as the debt ratchet keys its
+sites. Shrinking it is the conversion ratchet; a new site is a deliberate
+review decision made in that file, where review sees it.
 """
 
 from __future__ import annotations
 
 import ast
+import hashlib
 import re
 import textwrap
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from tests._source_files import source_files
-from tests._write_sandbox import ENV_ROOT, STRICT_FILES
+from tests._write_sandbox import ENV_ROOT, LINT_ALLOWLIST, STRICT_FILES
 
 _TESTS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _TESTS_DIR.parent
@@ -102,6 +105,17 @@ class LintViolation:
     line: int
     kind: str
     detail: str
+    scope: str = "<module>"  # qualified name of the enclosing function
+    source: str = ""  # the flagged call, whitespace-normalised
+    occurrence: int = 0  # identical sites before this one in the same scope
+
+    @property
+    def fingerprint(self) -> str:
+        """The site's identity, built as the debt ratchet builds its: file, scope,
+        kind and source. The line is left out, so an edit above a site keeps it;
+        a site repeated verbatim in one scope is told apart by its occurrence."""
+        raw = "|".join((self.file, self.scope, self.kind, self.source, str(self.occurrence)))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def _iter_test_sources() -> list[Path]:
@@ -142,6 +156,7 @@ class _FileScanner:
         self.rel = rel
         self.source_lines = source_lines
         self.violations: list[LintViolation] = []
+        self.scope = "<module>"
         self.tempfile_aliases, self.tempfile_members = _module_aliases(tree, "tempfile")
         self.shutil_aliases, self.shutil_members = _module_aliases(tree, "shutil")
         self.os_aliases, self.os_members = _module_aliases(tree, "os")
@@ -315,28 +330,29 @@ class _FileScanner:
         # every function/method is its own scope, seeded with the fixtures, its
         # parameters, and — closures — everything tainted in its enclosing scope.
         module_scope: list[ast.stmt] = []
-        functions: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+        functions: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]] = []
 
-        def split(body: list[ast.stmt]) -> None:
+        def split(body: list[ast.stmt], prefix: str) -> None:
             for stmt in body:
                 if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    functions.append(stmt)
+                    functions.append((prefix + stmt.name, stmt))
                 elif isinstance(stmt, ast.ClassDef):
-                    split(stmt.body)
+                    split(stmt.body, f"{prefix}{stmt.name}.")
                 else:
                     module_scope.append(stmt)
 
-        split(tree.body)
+        split(tree.body, "")
         module_tainted: set[str] = set()
         self._propagate(module_scope, module_tainted)
         self._check_scope(module_scope, module_tainted)
-        for function in functions:
-            self._scan_function(function, module_tainted)
+        for qualname, function in functions:
+            self._scan_function(function, module_tainted, qualname)
         return self.violations
 
     def _scan_function(
-        self, node: ast.FunctionDef | ast.AsyncFunctionDef, enclosing: set[str]
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef, enclosing: set[str], qualname: str
     ) -> None:
+        self.scope = qualname
         tainted = set(enclosing) | _TAINT_SEEDS
         args = node.args
         for arg in (
@@ -350,7 +366,7 @@ class _FileScanner:
         self._propagate(node.body, tainted)
         self._check_scope(node.body, tainted)
         for nested in self._nested_functions(node.body):
-            self._scan_function(nested, tainted)
+            self._scan_function(nested, tainted, f"{qualname}.{nested.name}")
 
     def _nested_functions(
         self, body: list[ast.stmt]
@@ -373,7 +389,23 @@ class _FileScanner:
             _PRAGMA
         ):
             return
-        self.violations.append(LintViolation(file=self.rel, line=line, kind=kind, detail=detail))
+        source = re.sub(r"\s+", " ", ast.unparse(node)).strip()
+        occurrence = sum(
+            1
+            for seen in self.violations
+            if (seen.scope, seen.kind, seen.source) == (self.scope, kind, source)
+        )
+        self.violations.append(
+            LintViolation(
+                file=self.rel,
+                line=line,
+                kind=kind,
+                detail=detail,
+                scope=self.scope,
+                source=source,
+                occurrence=occurrence,
+            )
+        )
 
     def _check_write_target(
         self, call: ast.Call, target: ast.expr, tainted: set[str], kind: str
@@ -499,51 +531,28 @@ def scan_tests() -> dict[str, list[LintViolation]]:
     return results
 
 
-# ---------------------------------------------------------------------------
-# The allowlist: not-yet-converted files -> current violation count.
-# Shrink by converting a file to derive its writes from haute_scratch and
-# deleting its row. Counts are exact on purpose: growth in an allowlisted
-# file fails the gate the same as a new file would.
-# ---------------------------------------------------------------------------
+def allowlist_drift(
+    scanned: Mapping[str, list[LintViolation]], allowlist: Mapping[str, tuple[str, ...]]
+) -> tuple[list[LintViolation], dict[str, list[str]]]:
+    """The flagged sites the allowlist does not hold, and the fingerprints it
+    holds that no flagged site has any more, file by file.
 
-EXPECTED_VIOLATIONS: dict[str, int] = {
-    # Mostly writes through cache-dir/model-dir helper call results the static
-    # taint cannot resolve, plus a handful of genuine system-temp users. The
-    # runtime census (layer 3 observe mode) is the ground truth for which of
-    # these actually escape the sandbox at run time.
-    "tests/test_algorithms_coverage.py": 3,
-    "tests/test_deploy.py": 1,
-    # The temp directory is created by the code under test
-    # (``_batch_scoring.py``'s ``tempfile.mkdtemp``, which takes no ``dir=``),
-    # so the tests can only write into and clean up the path it hands back.
-    "tests/test_deploy_batch_scoring.py": 4,
-    "tests/test_deploy_scorer_artifact_cache.py": 1,
-    "tests/test_executor.py": 2,
-    "tests/test_file_ops.py": 18,
-    "tests/test_git_graph.py": 5,
-    "tests/test_graph_fingerprint_cached.py": 1,
-    # These writes resolve through isolated project/cache helper paths. The
-    # static scanner intentionally cannot infer taint through those helpers;
-    # the runtime sandbox census verifies that they remain under tmp_path.
-    # 5 pre-existing + 4 removing a cache layer and 1 rewriting a working-layer
-    # manifest to exercise status fallback. All are `_json_cache_dir(...)`
-    # results, which are `Path.cwd()`-rooted and therefore under the
-    # `isolated_cwd` tmp_path.
-    "tests/test_load_v2_api_source.py": 1,
-    # 2 pre-existing + 2 cache-key-contract tests writing through
-    # _artifact_cache_path(tmp_path / ...) results (tmp_path-rooted, but the
-    # static taint cannot see through the helper call).
-    "tests/test_mlflow_io.py": 4,
-    "tests/test_mlflow_io_concurrency.py": 12,
-    "tests/test_model_score_executor.py": 1,
-    "tests/test_optimiser_service_coverage.py": 2,
-    # ``main()`` regenerates the checked-in compatibility corpus offline; it
-    # never runs under pytest.
-    "tests/test_polars_compatibility_corpus.py": 1,
-    "tests/test_polars_utils.py": 1,
-    "tests/test_server.py": 1,
-    "tests/test_submodel_routes.py": 3,
-}
+    Sites rather than counts: a file that drops one violation and gains another
+    keeps its count but fails here in both directions.
+    """
+    new_sites = [
+        violation
+        for rel, violations in sorted(scanned.items())
+        for violation in violations
+        if violation.fingerprint not in allowlist.get(rel, ())
+    ]
+    stale: dict[str, list[str]] = {}
+    for rel, fingerprints in sorted(allowlist.items()):
+        found = {violation.fingerprint for violation in scanned.get(rel, [])}
+        gone = [fingerprint for fingerprint in fingerprints if fingerprint not in found]
+        if gone:
+            stale[rel] = gone
+    return new_sites, stale
 
 
 @pytest.mark.meta
@@ -552,47 +561,45 @@ def test_write_apis_derive_from_scratch_fixture() -> None:
     # The full-corpus AST scan is slow and load-sensitive under `-n 4` +
     # coverage, so scan once and give the test headroom beyond the default
     # pytest-timeout.
-    scanned = scan_tests()
-    observed = {rel: len(violations) for rel, violations in scanned.items()}
-    details = {
-        rel: [f"  {v.file}:{v.line} {v.kind} ({v.detail})" for v in violations]
-        for rel, violations in scanned.items()
-    }
+    new_sites, stale = allowlist_drift(scan_tests(), LINT_ALLOWLIST)
 
-    unexpected = {
-        rel: count for rel, count in observed.items() if count > EXPECTED_VIOLATIONS.get(rel, 0)
-    }
-    stale = {
-        rel: expected
-        for rel, expected in EXPECTED_VIOLATIONS.items()
-        if observed.get(rel, 0) < expected
-    }
-
-    unexpected_lines = "\n".join(
-        line
-        for rel in sorted(unexpected)
-        for line in [f"{rel}: {observed[rel]} (allowlisted: {EXPECTED_VIOLATIONS.get(rel, 0)})"]
-        + details.get(rel, [])
+    new_lines = "\n".join(
+        f"  {v.file}:{v.line} {v.kind} ({v.detail}) in {v.scope}: {v.fingerprint}"
+        for v in new_sites
     )
-    assert unexpected == {}, (
+    assert new_sites == [], (
         "New test-write violations outside the sandbox convention. Derive the "
         "write target from the haute_scratch fixture (or tmp_path); tempfile."
         "mkdtemp/mkstemp, absolute paths, and '..' are banned in tests/. If the "
-        "file genuinely cannot convert yet, add/update its allowlist row here, "
-        f"where review sees it.\n{unexpected_lines}"
+        "file genuinely cannot convert yet, add the site's fingerprint under "
+        f"[lint] in tests/write_sandbox.toml, where review sees it.\n{new_lines}"
     )
-    stale_report = {rel: (EXPECTED_VIOLATIONS[rel], observed.get(rel, 0)) for rel in sorted(stale)}
     assert stale == {}, (
-        "Allowlist is stale — these files now have fewer violations than "
-        "recorded. Ratchet down their counts (or delete the rows) so the "
-        f"gate keeps its teeth: {stale_report}"
+        "The allowlist holds sites the lint no longer flags; delete their "
+        f"fingerprints from tests/write_sandbox.toml so the gate keeps its teeth: {stale}"
     )
+
+
+def test_allowlisted_sites_are_listed_once() -> None:
+    repeated = {
+        rel: sorted({fingerprint for fingerprint in sites if sites.count(fingerprint) > 1})
+        for rel, sites in LINT_ALLOWLIST.items()
+        if len(set(sites)) != len(sites)
+    }
+    assert repeated == {}
 
 
 def test_strict_files_are_lint_clean() -> None:
     """Layer coupling: a strict (converted) module may not be allowlisted."""
-    overlap = sorted(rel for rel in EXPECTED_VIOLATIONS if Path(rel).name in STRICT_FILES)
+    overlap = sorted(rel for rel in LINT_ALLOWLIST if Path(rel).name in STRICT_FILES)
     assert overlap == []
+
+
+def test_every_strict_file_is_a_test_module() -> None:
+    """A deleted or renamed module would otherwise keep its strict entry, and a
+    module re-added under that name would run strict unsurveyed."""
+    missing = sorted(name for name in STRICT_FILES if not (_TESTS_DIR / name).is_file())
+    assert missing == []
 
 
 # ---------------------------------------------------------------------------
@@ -818,3 +825,83 @@ def test_scanner_flags_untainted_makedirs_and_shutil_dest() -> None:
         """
     )
     assert kinds == ["os.makedirs", "shutil.copy"]
+
+
+# ---------------------------------------------------------------------------
+# Site fingerprints: the allowlist holds sites, not counts
+# ---------------------------------------------------------------------------
+
+
+def _sites(source: str) -> list[LintViolation]:
+    return scan_source("tests/probe.py", textwrap.dedent(source))
+
+
+def test_a_swapped_violation_fails_in_both_directions() -> None:
+    before = _sites(
+        """
+        def test_x():
+            open("out.txt", "w", encoding="utf-8").write("x")
+        """
+    )
+    after = _sites(
+        """
+        import tempfile
+
+        def test_x():
+            tempfile.mkdtemp()
+        """
+    )
+    allowlist = {"tests/probe.py": tuple(site.fingerprint for site in before)}
+
+    assert allowlist_drift({"tests/probe.py": before}, allowlist) == ([], {})
+    new_sites, stale = allowlist_drift({"tests/probe.py": after}, allowlist)
+
+    assert len(before) == len(after) == 1
+    assert [site.kind for site in new_sites] == ["tempfile.mkdtemp"]
+    assert stale == {"tests/probe.py": [before[0].fingerprint]}
+
+
+def test_a_site_keeps_its_fingerprint_when_lines_above_it_move() -> None:
+    (site,) = _sites(
+        """
+        def test_x():
+            open("out.txt", "w", encoding="utf-8").write("x")
+        """
+    )
+    (moved,) = _sites(
+        """
+        # A comment and a helper above the test move it down.
+
+
+        def helper():
+            return 1
+
+
+        def test_x():
+            open("out.txt",  "w", encoding="utf-8").write("x")
+        """
+    )
+
+    assert moved.line != site.line
+    assert moved.fingerprint == site.fingerprint
+
+
+def test_identical_sites_are_told_apart_within_a_scope_and_across_scopes() -> None:
+    sites = _sites(
+        """
+        class TestX:
+            def test_a(self):
+                open("out.txt", "w", encoding="utf-8")
+                open("out.txt", "w", encoding="utf-8")
+
+            def test_b(self):
+                open("out.txt", "w", encoding="utf-8")
+        """
+    )
+
+    assert [(site.scope, site.occurrence) for site in sites] == [
+        ("TestX.test_a", 0),
+        ("TestX.test_a", 1),
+        ("TestX.test_b", 0),
+    ]
+    assert len({site.fingerprint for site in sites}) == 3

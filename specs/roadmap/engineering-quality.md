@@ -7,10 +7,8 @@ the coverage gates and the dependency advisory gate. Current behaviour is
 specified in
 [the engineering-quality specification](../engineering-quality/high-level.md).
 `ENGQ-R01` and `ENGQ-R05` come from the
-[23 September 2026 codebase review](codebase-review-2026-09-23.md). The
-`ENGQ-CI` packages come from the 30 September 2026 CI duration study: per-test
-timings from diagnostic PR #279 (run 36769548458) and the sharded lanes of
-PR #280. `ENGQ-R09` and `ENGQ-R11` come from the
+[23 September 2026 codebase review](codebase-review-2026-09-23.md).
+`ENGQ-R11` comes from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md), which also added
 evidence to `ENGQ-R01` and `ENGQ-R05`.
 
@@ -20,7 +18,6 @@ evidence to `ENGQ-R01` and `ENGQ-R05`.
 |---|---|---:|---|
 | ENGQ-R01 | Planned | P3 | Production code that nothing calls, or only tests call, is removed. |
 | ENGQ-R05 | Planned | P3 | Tests are organised by component and behaviour, not by coverage campaign. |
-| ENGQ-R09 | Planned | P3 | The write-sandbox ratchet moves: the observe census is recorded and may not grow, modules with an empty census become strict, the system temp directory is a stated gap or no longer allowed, and the lint allowlist is keyed by site. |
 | ENGQ-R11 | Decision | P2 | Mutation witnesses cover the rating step and deploy scoring, the modules whose silent failure changes a price, or the specification says why the three JSON-boundary targets suffice. |
 
 ## Planned improvements
@@ -117,31 +114,6 @@ modules is unchanged; suite runtime is recorded before and after.
 `tests/test_json_cache_coverage_uplift.py`; `tests/test_coverage_gaps.py`;
 `tests/test_dry_fixes.py`; `tests/test_expression_parser_w3_fixes.py`;
 `tests/test_trace_w4_fixes.py`.
-
-### ENGQ-R09 — The write-sandbox ratchet moves
-**Why:** Strict interception covers 4 of 603 test modules: `STRICT_FILES` has had no
-addition since 13 July 2026 and lost a module on 23 September. Observe mode allows the
-whole system temp directory, so a test writing to `tempfile.gettempdir()` is never
-recorded, and the specification's "Known gaps" does not say so. The observe census is
-printed to the terminal and never persisted or asserted on CI. The lint allowlist is
-count-based, so a file that swaps one violation for another at the same count passes
-in both directions. From the [25 October 2026 codebase
-review](codebase-review-2026-10-25.md) (ENG-7).
-
-**Plan:** Record the census as a CI artifact and assert it does not grow; move modules
-with an empty census into `STRICT_FILES` on a schedule; add the system temp directory to
-the Known gaps or stop allowing it in observe mode; key the allowlist by a
-`file:line:kind` fingerprint as the debt test does.
-
-**Acceptance:** The census artifact exists on every coverage run and a new observe-mode
-write fails the gate; the strict set grows at each scheduled pass; the lint fails on a
-swapped violation.
-
-**Dependencies:** None.
-
-**Evidence:** `tests/_write_sandbox.py::STRICT_FILES`, `tests/conftest.py`,
-`tests/test_write_sandbox_lint.py::EXPECTED_VIOLATIONS`,
-`specs/engineering-quality/low-level.md`.
 
 ### ENGQ-R11 — Mutation witnesses for the price-changing modules
 **Why:** The safety-critical list has 35 modules but mutation witnesses cover three

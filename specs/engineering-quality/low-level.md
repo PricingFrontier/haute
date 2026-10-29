@@ -11,7 +11,7 @@
 | `specs/corpus.toml` | Versioned declaration for supported component documents outside the conventional high/low pair; records a closed document kind and exact required headings. |
 | `specs/ownership.toml` | Machine-checked ledger for files shared by multiple Module maps or explicit cross-component prose ownership claims; records the single primary owner and all consumer components. |
 | `.pre-commit-config.yaml` | Runs Ruff fix/format plus local mypy and frontend typecheck/lint hooks on relevant source changes. |
-| `.github/workflows/ci.yml` | Defines PR/main CI jobs: canary, install/package smoke, dependency floors, static/type checks, duration-balanced coverage shards and their gate (which runs whatever the shards' result and fails explicitly when one did not pass), duration-balanced compatibility shards, the process-mode route slice (`backend-process-mode`), the 3.14 probe, performance, the core-only and extras-installed optional-dependency lanes, platform, the strict documentation build (`docs-build`), mutation-config, frontend static and test lanes, and two browser E2E shards. Branch protection, outside this repository workflow file, determines which checks are required for merge. |
+| `.github/workflows/ci.yml` | Defines PR/main CI jobs: canary, install/package smoke, dependency floors, static/type checks, duration-balanced coverage shards, each recording its write-sandbox census, and their gate (which runs whatever the shards' result and fails explicitly when one did not pass, and fails when the census grows), duration-balanced compatibility shards, the process-mode route slice (`backend-process-mode`), the 3.14 probe, performance, the core-only and extras-installed optional-dependency lanes, platform, the strict documentation build (`docs-build`), mutation-config, frontend static and test lanes, and two browser E2E shards. Branch protection, outside this repository workflow file, determines which checks are required for merge. |
 | `.github/workflows/dependencies.yml` | Runs the weekly/manual fresh unlocked-resolve monitor plus the locked Python/frontend advisory gate, the latter daily as well as on manual dispatch, main lock-policy changes, and relevant PRs; retains failed reports and raises/updates dependency-watch issues (the unlocked lane on a scheduled failure or a dispatch with `force_fail`, as the other monitoring lanes do; the audit on every non-pull-request failure), and closes a lane's issue when that lane next passes on `main` (`locked-advisory-all-clear` for the audit), since both lanes are deterministic for a given index or advisory feed. |
 | `.github/workflows/frontend-shuffle.yml` | Runs the scheduled/manual shuffled Vitest monitor and raises/updates shuffle-watch issues with its seed on eligible failures. A green night never closes one: one passing seed does not prove an order dependence gone, so the fix's author closes it. |
 | `.github/workflows/property-exploration.yml` | Runs the weekly/manual wide-budget Hypothesis lane (HAUTE_PROPERTY_EXAMPLES over `scripts/property_test_files.txt`, with the warnings plugin loaded so a RuntimeWarning fails it) and raises/updates property-watch issues on eligible failures. A green week never closes one: the fix pins the counterexample as an `@example`, and its author closes it. |
@@ -19,6 +19,7 @@
 | `.github/workflows/e2e-snapshots.yml` | Manual-dispatch lane that re-renders Playwright screenshot baselines in the same Ubuntu environment the browser E2E lane compares them in, for the per-platform `-linux` baselines a Windows or macOS developer cannot produce. It writes nothing to the repository: it uploads only the baselines whose pixels changed, for review and commit alongside the change that moved them. |
 | `.github/workflows/mutation.yml` | Plans changed mutation targets, runs separate CI-job shards whose mutants execute serially per runner, and uses a failure-aware non-cancelled status condition on the single merge gate so plan/shard failures become failed rather than skipped checks. |
 | `.github/workflows/performance.yml` | Runs scheduled/manual Python and browser-performance lanes and uploads their artifacts. |
+| `.github/workflows/write-sandbox-survey.yml` | Runs the monthly/manual write-sandbox survey: the suite with the sandbox forced strict, then `scripts/write_sandbox_promotions.py` over its JUnit report. Red while a test module passes whole under strict but still runs in observe mode; raises/updates a `sandbox-watch` issue on a scheduled or forced failure and closes it when the lane next passes on `main`. |
 | `.github/dependabot.yml` | Has Dependabot propose the next commit, tag comment included, when an action a workflow uses releases. It covers GitHub Actions only: the lockfiles hold the Python and npm versions, and the dependencies workflow resolves them fresh every week. |
 | `frontend/package.json` | Cross-component dependency owned by [build-and-distribution](../build-and-distribution/low-level.md); defines frontend lint/type/unit/coverage/bundle/E2E/benchmark command entry points and frontend critical-coverage entries. |
 | `frontend/scripts/generate-api-contracts.mjs` | Pinned schema-to-browser generator: selects each contract's exact transitive definition closure, compiles every contract root into one TypeScript declaration module (property-level titles dropped, so a nested definition is declared once and an unrelated addition never renames an alias; objects are closed; array length bounds stay in the validators rather than becoming tuple types; a schema that says nothing of its type, pydantic's `Any`, is declared `unknown` through `untypedAsUnknown` rather than an object), emits constants, and bundles self-contained Ajv standalone ESM validator modules, one per pilot, one per converted response module group with one validator export per response and one per request group with one per request body (a group compiles one schema holding every definition its responses reach, so a shared definition compiles once), so Explore validation remains lazy. The eager execution validator co-exports its schema-version literal while Explore-only option constants remain in the lazy contract module. Its check mode compares every output byte without writing. |
@@ -81,6 +82,8 @@
 | `scripts/update_assistant_example_manifests.py` | Checks or explicitly refreshes closed content-addressed assistant example inventories; unsafe, duplicate, missing, and undeclared paths fail in both modes. |
 | `scripts/update_assistant_prompt_golden.py` | Cross-component dependency owned by [assistant](../assistant/low-level.md); checks, or with `--write` refreshes, the golden snapshot of the assistant's system prompt and provider tool schemas, failing with a unified diff per changed file. |
 | `scripts/preflight.ps1` | Windows preflight entry point for selected backend/frontend/init-smoke checks. |
+| `scripts/check_write_sandbox_census.py` | The coverage gate's census check: reads every coverage shard's write-sandbox census, classes each write by the deepest recorded root that holds it, sets the harness's own writes apart, and fails on a class missing from, or a class lingering in, the census table of `tests/write_sandbox.toml`; a missing or malformed shard record fails too. Writes a class table to the job summary. |
+| `scripts/write_sandbox_promotions.py` | The write-sandbox survey's verdict: from the strict run's JUnit reports, names each test module that ran a test and passed every one, and is neither strict already nor allowlisted by the lint, failing while any remain. |
 | `scripts/lint_pins.py` | Enforces the asymmetric dependency-pinning doctrine against the declaration layer: published dependencies need an explicit floor and cap and may not be exact-pinned or prefix-matched, tooling dependencies must be exact with a concrete version, executable surfaces may not invoke `npx`, and every action a workflow or composite action uses names the 40-hex commit it runs, with its tag in a comment (local actions and container images aside). |
 | `scripts/preflight.sh` | POSIX preflight entry point for selected backend/frontend/init-smoke checks. |
 | `scripts/regen_sanitize_parity_fixture.py` | Regenerates the retained backend compatibility golden when deliberately requested. |
@@ -115,6 +118,7 @@
 | `frontend/src/stores/__tests__/`, `frontend/src/test-utils/__tests__/`, `frontend/src/trace/__tests__/`, `frontend/src/types/__tests__/`, and `frontend/src/utils/__tests__/` | Frontend store, test-helper, trace, type, and utility test groups. |
 | `specs/roadmap/README.md` | Entry point for the internal component improvement catalogue and its working/retirement protocol. |
 | `specs/roadmap/<component>.md` | One self-contained, non-normative improvement queue per component. Each package defines its problem, plan, acceptance criteria, dependencies, and current code/test evidence. |
+| `tests/write_sandbox.toml` | The test write-sandbox ratchet's state: the modules that run strict, the lint allowlist's site fingerprints per unconverted file, and each class of out-of-sandbox write the observe-mode census may still record, with its reason. |
 | `tests/workflow_coverage.toml` | Versioned workflow coverage ledger: workflow families, node types, and scenario records with coverage state, owning package, test references, and execution evidence. |
 | `tests/test_workflow_coverage.py` | Ledger validator (`load_ledger`, `roadmap_package_ids`, `ledger_violations`) and its malformed-ledger cases; a meta-marked repository-health module. |
 | `tests/_ci_shards.py` | Pytest file sharding for the CI full-suite lanes, wired by `tests/conftest.py`: `--shard=K/N` keeps only the test modules assigned to shard K and ignores every other module before it is imported, balanced on the durations table `--shard-lane` names; `--shard-durations` names an alternative durations file. |
@@ -741,6 +745,26 @@
   manifests through the collector — the live tree stays clean, and removing a
   real Python cap, relaxing a real npm pin or moving a real action back to
   its tag is caught.
+- `tests/test_write_sandbox_lint.py` covers the scanner's flags and taint, the
+  allowlist keyed by site in both directions (a swapped violation at the same
+  count fails twice, a site keeps its fingerprint when lines above it move,
+  identical sites within a scope and across scopes are told apart), each
+  allowlisted site listed once, and the strict set lint-clean and naming only
+  existing modules. `tests/test_write_sandbox_guard.py`, itself strict, covers
+  the guard's placement and enforcement and the census record the session hook
+  writes: its version, roots and writes, an empty record when nothing was
+  recorded, and none from an xdist worker.
+- `tests/test_check_write_sandbox_census.py` covers write classes (the deepest
+  root, `other:` paths, Windows paths), the harness's writes told from a test's,
+  the gate holding, failing on a new class with its write and test named and on
+  a listed class no shard recorded, a missing or malformed shard record, a class
+  without its reason, the job-summary table, and the workflow giving every
+  coverage shard a census record that the gate reads.
+- `tests/test_write_sandbox_promotions.py` covers the survey's verdict: a module
+  joins only when a test of it ran and every test passed, strict modules are not
+  named again, allowlisted ones are held back, the lane is red while a module can
+  join and green otherwise, an unusable report fails, and the survey workflow
+  hands its strict run's report to the verdict.
 - `mutation/` is tested as configuration/orchestration through its active
   script/tests and CI workflow. `specs/roadmap/`, `scripts/benchmarks/`, and generated
   artifacts are intentionally not claimed as a current test suite.
@@ -776,11 +800,16 @@ using conservative intra-function taint tracking:
   write APIs above. Not bare string literals generally: route literals are
   ubiquitous and are not paths.
 
-It ships with an explicit per-file allowlist for not-yet-converted files,
-asserted **in both directions**: a new violation in a clean file fails, *and* a
-conversion that forgets to remove its allowlist entry fails. Targets the scan
-cannot resolve — helper parameters, call results — deliberately pass lint;
-layer 3 owns those.
+It ships with an explicit allowlist for not-yet-converted files, under
+`[lint]` in `tests/write_sandbox.toml`, keyed by site: each flagged write's
+fingerprint hashes its file, enclosing scope, kind and whitespace-normalised
+source, and how many identical sites precede it in that scope, as the debt
+ratchet keys its sites. The line is left out, so an edit above a site keeps
+its fingerprint. The allowlist is asserted **in both directions**: a site it
+does not hold fails, *and* a held site the scan no longer finds fails, so a file
+that swaps one violation for another at the same count fails twice. Targets
+the scan cannot resolve — helper parameters, call results — deliberately pass
+lint; layer 3 owns those.
 
 **Layer 3 — runtime guard.** An autouse fixture, mode-dependent per test:
 
@@ -788,17 +817,26 @@ layer 3 owns those.
   and home-directory environment variables are pointed inside it; `open` and the
   low-level open call are intercepted, and any write-intent open whose resolved
   path falls outside the sandbox root raises immediately, naming the offending
-  path and the test. This catches the computed paths layer 2 cannot see.
+  path and the test. This catches the computed paths layer 2 cannot see. The
+  stores the harness keeps for the test outside its `tmp_path`, which a test
+  may list, are inside the sandbox too: its source-proof records, the session's
+  source cache, and the widened-root fixture's cache.
 - **observe** — the same interception with no working-directory or environment
   changes; out-of-sandbox writes are *recorded*, not failed, and a terminal
-  summary prints the census grouped by path class.
+  summary prints the census by path. With
+  `HAUTE_TEST_WRITE_SANDBOX_CENSUS_OUT` set, the controller also writes the
+  run's merged census there as JSON (a version, the repository, home and
+  runner-temp roots, and each write's test, call, path and mode), even when it
+  recorded nothing. Observe mode allows the run's pytest base directory, the
+  system temporary directory and the Hypothesis example database.
 - **off** — an escape hatch for debugging.
 
 The mode can be forced for a whole run with
 `HAUTE_TEST_WRITE_SANDBOX=strict|observe|off`; without it, modules in the
 strict set run strict and everything else runs observe.
 
-Strict membership is a module set plus the opt-in `sandbox_strict` marker.
+Strict membership is the module set `strict` in `tests/write_sandbox.toml`
+plus the opt-in `sandbox_strict` marker. Every listed module must exist.
 Tests carrying the `perf` marker are exempt from interception so wall-clock
 budgets see no overhead. Every test outside `off` mode gets the sandbox root
 exported as `HAUTE_TEST_SANDBOX_ROOT`, so an external permission gate can
@@ -816,13 +854,39 @@ Stated, not silently omitted:
   intercepted.
 - **Session-scoped fixtures** that run before the per-test guard are outside its
   window.
+- **The system temporary directory** is allowed in observe mode, so an observe
+  test writing under `tempfile.gettempdir()` is never recorded. Strict mode
+  points the temporary directory into the sandbox, which contains those writes.
+- **pytest's assertion-rewrite bytecode** (`__pycache__/*.pyc.<pid>`) is
+  recorded but never gated: which test triggers it depends on import order and
+  worker scheduling, not on what any test does. Multiprocessing's
+  shared-memory arenas (`/dev/shm/pym-*`, created and unlinked at once) are let
+  through in both modes, as `os.devnull` is: they are the interpreter's own.
 
 These are census-informed ratchet candidates.
 
 ### The ratchet
 
-1. The allowlist shrinks monotonically; conversions delete entries, and the
-   both-direction staleness assertion enforces it.
+`tests/write_sandbox.toml` holds the ratchet's state, and each of its lists
+moves one way:
+
+1. The lint allowlist shrinks monotonically; conversions delete fingerprints,
+   and the both-direction assertion enforces it.
 2. New test files are born clean — absent from the allowlist, so lint-gated from
    day one.
-3. Census classes graduate to strict per module as they empty.
+3. The census may not grow. Every coverage shard records its census and
+   uploads it, and the coverage gate's census check
+   (`scripts/check_write_sandbox_census.py`) puts each write in a class: a root
+   the shard recorded and the first path component below it (`repo:mlruns`,
+   `home:.cache`, `runner-temp:_runner_file_commands`), or `other:` and the
+   path's first two components. A class not listed under `[census]`, with its
+   reason, fails the gate, and so does a listed class no shard recorded. A
+   missing or malformed shard record fails it too.
+4. The strict set grows at each scheduled pass. The monthly write-sandbox
+   survey runs the suite with the sandbox forced strict, and
+   `scripts/write_sandbox_promotions.py` names each module whose every test
+   that ran passed, at least one having run, that is neither strict already
+   nor allowlisted by the lint. The lane stays red, with a `sandbox-watch`
+   issue, until a pass moves them into `strict`. A module that passes strict
+   but still has allowlisted sites is reported: its flagged writes convert
+   first.

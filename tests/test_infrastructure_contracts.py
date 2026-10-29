@@ -253,6 +253,7 @@ _MONITORING_ALARM_CONDITION = "failure() && (github.event_name == 'schedule' || 
         ("dependencies.yml", "unlocked-resolve"),
         ("frontend-shuffle.yml", "frontend-shuffle"),
         ("property-exploration.yml", "property-exploration"),
+        ("write-sandbox-survey.yml", "write-sandbox-survey"),
     ],
 )
 def test_monitoring_lanes_raise_their_alarm_on_schedule_or_force_fail(

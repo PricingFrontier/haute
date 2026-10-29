@@ -101,7 +101,7 @@ def released_price_contour(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True, scope="session")
 def _isolate_repository_source_cache(
     tmp_path_factory: pytest.TempPathFactory,
-) -> Iterator[None]:
+) -> Iterator[Path]:
     """Keep the suite's source snapshots out of the working tree.
 
     A test that never sets its own project root inherits the repository root,
@@ -140,7 +140,7 @@ def _isolate_repository_source_cache(
     coordination_by_root: dict[Any, Any] = {}
     patch.setattr(SourceCacheStore, "_coordination_by_root", coordination_by_root)
     try:
-        yield
+        yield session_cache_root
     finally:
         try:
             for coordination in coordination_by_root.values():
@@ -547,7 +547,8 @@ def source_proof_records(
 def _widen_sandbox_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-):
+    _haute_write_sandbox: _ws.Guard | None,
+) -> Iterator[Path]:
     """Allow tests to load files from temp directories.
 
     Sets the sandbox project root to ``/`` for the duration of each test
@@ -557,7 +558,8 @@ def _widen_sandbox_root(
     test's temp directory, and so is the local MLflow destination's default
     runs folder, which would otherwise be the drive's own ``/mlruns``
     (refused on Linux, created at ``C:\\mlruns`` on Windows).
-    Restores the original root afterwards.
+    Restores the original root afterwards, and yields the redirected directory,
+    which the write sandbox lets the test write to.
     """
     from haute._source_cache import SourceCacheStore
     from haute.modelling import _mlflow_settings
@@ -567,6 +569,8 @@ def _widen_sandbox_root(
     # Keep this root short enough for the generation + atomic-write suffixes
     # to remain below Windows' traditional path limit.
     cache_root = Path(tempfile.mkdtemp(prefix="sc-", dir=tmp_path.parent))
+    if _haute_write_sandbox is not None:
+        _haute_write_sandbox.allow(cache_root)
     original_store_init = SourceCacheStore.__init__
 
     def init_with_writable_cache(
@@ -592,7 +596,7 @@ def _widen_sandbox_root(
 
     monkeypatch.setattr(_mlflow_settings, "_resolve_local", resolve_local_under_writable_root)
     set_project_root(widened_root)
-    yield
+    yield cache_root
     set_project_root(original)
 
 
@@ -1057,11 +1061,15 @@ def _project_root_baseline():
 
 @pytest.fixture(autouse=True)
 def _haute_write_sandbox(
-    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+    request: pytest.FixtureRequest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_proof_records: Path,
+    _isolate_repository_source_cache: Path,
+) -> Iterator[_ws.Guard | None]:
     """Layer-3 runtime guard: containment env + open() interception.
 
-    Strict for the converted pilot slice (``_write_sandbox.STRICT_FILES`` or
+    Strict for the converted modules (``strict`` in tests/write_sandbox.toml, or
     the ``sandbox_strict`` marker), observe-and-record for everything else,
     off for perf-marked tests and under ``HAUTE_TEST_WRITE_SANDBOX=off``.
     """
@@ -1072,7 +1080,7 @@ def _haute_write_sandbox(
         marked_strict=request.node.get_closest_marker("sandbox_strict") is not None,
     )
     if mode == "off":
-        yield
+        yield None
         return
     monkeypatch.setenv(_ws.ENV_ROOT, str(tmp_path))
     if mode == "strict":
@@ -1086,7 +1094,14 @@ def _haute_write_sandbox(
         monkeypatch.setattr(tempfile, "tempdir", str(sandbox_tmp))
         monkeypatch.setenv("HOME", str(sandbox_home))
         monkeypatch.setenv("USERPROFILE", str(sandbox_home))
-        allowed = (os.path.realpath(str(tmp_path)),)
+        # The stores the harness keeps for the test outside its tmp_path, which
+        # a test may list: its source-proof records and the session's source
+        # cache. The widened-root fixture adds its own.
+        allowed = (
+            os.path.realpath(str(tmp_path)),
+            os.path.realpath(str(source_proof_records)),
+            os.path.realpath(str(_isolate_repository_source_cache)),
+        )
     else:
         allowed = (
             os.path.realpath(str(tmp_path.parent)),  # this run's basetemp
@@ -1096,7 +1111,7 @@ def _haute_write_sandbox(
     guard = _ws.Guard(mode=mode, nodeid=request.node.nodeid, allowed_roots=allowed)
     guard.install()
     try:
-        yield
+        yield guard
     finally:
         guard.uninstall()
 
@@ -1157,6 +1172,9 @@ def pytest_terminal_summary(terminalreporter) -> None:
     if spool:
         shutil.rmtree(spool, ignore_errors=True)  # write-sandbox: deliberate
         os.environ.pop(_ws.ENV_CENSUS_DIR, None)
+    census_out = os.environ.get(_ws.ENV_CENSUS_OUT)
+    if census_out and not hasattr(terminalreporter.config, "workerinput"):
+        _ws.write_census(census_out, violations, _ws.census_roots(_WS_REPO_ROOT))
     if violations:
         terminalreporter.section("write-sandbox census (observe mode)")
         for line in _ws.summarize(violations):
