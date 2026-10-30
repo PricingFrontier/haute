@@ -27,6 +27,7 @@ import type {
   ExplorePivotRunResponse,
   ExplorePivotStatusResponse,
   BrowseFilesResponse,
+  FormSpec,
   ModelFileInspectionResponse,
   FrontierAutoRangeStartResponse,
   FrontierAutoRangeStatusResponse,
@@ -796,6 +797,10 @@ export interface PreviewNodeArgs {
   /** Several frames of a multi-frame producer, each previewed from one run into the
    * answer's `port_previews`. Sent as `port_labels`; not with `portLabel`. */
   portLabels?: string[]
+  /** A workbench form, saved or not, whose tables and sample every Workbench Input and
+   * Workbench Output of the request takes in place of the form folder's. Sent as
+   * `workbench_form`. */
+  workbenchForm?: FormSpec
   /** Chosen by the caller so it can poll this request's step progress. */
   requestId?: string
   signal?: AbortSignal
@@ -811,6 +816,7 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
     requestedPreviewColumns,
     portLabel,
     portLabels,
+    workbenchForm,
     requestId,
     signal,
     timeout = null,
@@ -825,6 +831,7 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
       ...(requestedPreviewColumns ? { requested_preview_columns: requestedPreviewColumns } : {}),
       ...(portLabel !== undefined ? { port_label: portLabel } : {}),
       ...(portLabels !== undefined ? { port_labels: portLabels } : {}),
+      ...(workbenchForm !== undefined ? { workbench_form: workbenchForm } : {}),
       ...(requestId !== undefined ? { request_id: requestId } : {}),
     },
     { signal, timeout },

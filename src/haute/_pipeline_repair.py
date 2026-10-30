@@ -18,7 +18,6 @@ from typing import Any, Literal
 from haute._ast_helpers import (
     _chained_receiver_calls,
     _connect_call_edge,
-    _extract_function_bodies,
     _is_pipeline_authored_decorator,
     _is_submodel_authored_decorator,
 )
@@ -26,7 +25,9 @@ from haute._cache import canonical_json
 from haute._git_lock import repository_mutation
 from haute._graph_builders import PipelineNodeSkeleton, _extract_decorated_node_skeletons
 from haute._pipeline_recovery import load_pipeline_editor_document
-from haute.errors import HauteError
+from haute._sandbox import contained_path, is_contained
+from haute._source_layout import python_lines
+from haute.errors import HauteError, ParseError, PathOutsideProjectError
 from haute.parser import parse_pipeline_file
 from haute.schemas import (
     PipelineEditorDocument,
@@ -121,15 +122,14 @@ def _resolve_project_file(project_root: Path, raw_path: str, *, suffix: str) -> 
             "Repair source identity is empty or malformed.",
             status_code=400,
         )
-    root = project_root.resolve()
-    candidate = Path(raw_path)
-    resolved = (candidate if candidate.is_absolute() else root / candidate).resolve()
-    if not resolved.is_relative_to(root):
+    try:
+        resolved = contained_path(project_root, raw_path)
+    except PathOutsideProjectError:
         raise PipelineRepairError(
             "repair_path_outside_project",
             "Repair source identity resolves outside the project directory.",
             status_code=403,
-        )
+        ) from None
     if resolved.suffix.casefold() != suffix.casefold():
         raise PipelineRepairError(
             "repair_path_invalid",
@@ -153,7 +153,7 @@ def _resolve_config_reference(
 ) -> Path:
     candidate = Path(reference)
     resolved = (candidate if candidate.is_absolute() else root_path.parent / candidate).resolve()
-    if not resolved.is_relative_to(project_root.resolve()):
+    if not is_contained(project_root, resolved):
         raise PipelineRepairError(
             "repair_config_outside_project",
             "The node's referenced config resolves outside the project directory.",
@@ -343,18 +343,7 @@ def _extract_skeletons(
         if receiver == "pipeline"
         else _is_submodel_authored_decorator
     )
-    bodies = _extract_function_bodies(source, tree=tree)
-    return (
-        tree,
-        list(
-            _extract_decorated_node_skeletons(
-                tree,
-                predicate,
-                bodies,
-                source=source,
-            )
-        ),
-    )
+    return tree, _extract_decorated_node_skeletons(tree, predicate, source=source)
 
 
 def _implicit_consumers(
@@ -381,16 +370,11 @@ def _connection_links(statement: ast.stmt, *, receiver: str) -> list[tuple[str, 
     for link in _chained_receiver_calls(statement, receiver=receiver, method="connect"):
         try:
             edge = _connect_call_edge(link, receiver)
-        except Exception as exc:
+        except ParseError as exc:
             raise PipelineRepairError(
                 "repair_connection_declaration_invalid",
                 "An authored connection cannot be interpreted safely for removal.",
             ) from exc
-        if edge is None:
-            raise PipelineRepairError(
-                "repair_connection_declaration_invalid",
-                "An authored connection cannot be interpreted safely for removal.",
-            )
         edges.append((edge[0], edge[1]))
     return edges
 
@@ -671,9 +655,9 @@ def _remove_position_entry(sidecar_bytes: bytes, authored_id: str) -> bytes:
 def _bounded_diff(edit: RepairArtifactEdit) -> tuple[str, bool]:
     if not edit.expose_diff:
         return "", False
-    before = (edit.before or b"").decode("utf-8-sig", errors="replace").splitlines(keepends=True)
+    before = python_lines((edit.before or b"").decode("utf-8-sig", errors="replace"), keepends=True)
     after_bytes = edit.after or b""
-    after = after_bytes.decode("utf-8-sig", errors="replace").splitlines(keepends=True)
+    after = python_lines(after_bytes.decode("utf-8-sig", errors="replace"), keepends=True)
     rendered = "".join(
         difflib.unified_diff(
             before,
@@ -688,6 +672,34 @@ def _bounded_diff(edit: RepairArtifactEdit) -> tuple[str, bool]:
     return rendered[: _MAX_PUBLIC_DIFF - len(marker)] + marker, True
 
 
+_STALE_RECOVERY_MESSAGE = (
+    "The pipeline changed after this recovery document loaded; reload before repairing."
+)
+
+
+def _document_at_revision(
+    root: Path,
+    source_file: str,
+    source_revision: str,
+    *,
+    stale_message: str = _STALE_RECOVERY_MESSAGE,
+) -> tuple[Path, PipelineEditorDocument]:
+    """The pipeline file a request names and its editor document, at the request's revision.
+
+    A document whose revision has moved on since the request was made is refused, naming
+    the current revision, so nothing is planned against bytes the user has not seen.
+    """
+    root_path = _resolve_project_file(root, source_file, suffix=".py")
+    document = load_pipeline_editor_document(root_path, project_root=root)
+    if document.source_revision != source_revision:
+        raise PipelineRepairError(
+            "repair_revision_conflict",
+            stale_message,
+            current_revision=document.source_revision,
+        )
+    return root_path, document
+
+
 def build_remove_unavailable_node_plan(
     *,
     project_root: Path,
@@ -696,14 +708,7 @@ def build_remove_unavailable_node_plan(
     """Reload current recovery state and build a deterministic no-write plan."""
 
     root = project_root.resolve()
-    root_path = _resolve_project_file(root, request.source_file, suffix=".py")
-    document = load_pipeline_editor_document(root_path, project_root=root)
-    if document.source_revision != request.source_revision:
-        raise PipelineRepairError(
-            "repair_revision_conflict",
-            "The pipeline changed after this recovery document loaded; reload before repairing.",
-            current_revision=document.source_revision,
-        )
+    root_path, document = _document_at_revision(root, request.source_file, request.source_revision)
     target_path = _resolve_project_file(root, request.target_source_file, suffix=".py")
     target_wire_path = _wire_path(target_path, root)
     target = _find_target(
@@ -894,14 +899,7 @@ def build_remove_connection_plan(
 ) -> PipelineRepairPlan:
     """Plan deleting one broken ``connect()`` statement; the nodes it joined stay."""
     root = project_root.resolve()
-    root_path = _resolve_project_file(root, request.source_file, suffix=".py")
-    document = load_pipeline_editor_document(root_path, project_root=root)
-    if document.source_revision != request.source_revision:
-        raise PipelineRepairError(
-            "repair_revision_conflict",
-            "The pipeline changed after this recovery document loaded; reload before repairing.",
-            current_revision=document.source_revision,
-        )
+    root_path, document = _document_at_revision(root, request.source_file, request.source_revision)
     target_path = _resolve_project_file(root, request.target_source_file, suffix=".py")
     target_wire_path = _wire_path(target_path, root)
     connection = _find_connection(

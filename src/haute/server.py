@@ -59,9 +59,9 @@ from haute._pipeline_settings import (
     follow_chunk_rows,
     stop_following_chunk_rows,
 )
-from haute._sandbox import _get_project_root
+from haute._sandbox import _get_project_root, contained_path
 from haute._workbench_config import WorkbenchConfigError, read_workbench_config
-from haute.errors import ConfigError
+from haute.errors import ConfigError, PathOutsideProjectError
 from haute.hosted import FORWARDED_USER_SCOPE_KEY
 from haute.routes._error_handlers import install_exception_handlers
 from haute.routes._helpers import (
@@ -981,6 +981,7 @@ async def _file_watcher() -> None:
             for change_type, changed_path in to_process:
                 p = Path(changed_path)
                 key = str(p.resolve())
+                # not contained_path: routes the change by its folder
                 if form_file is not None and Path(key).is_relative_to(form_file[1]):
                     # Every change to the form's files is announced, the server's own saves
                     # included: another window learns of a save, and the view that made it
@@ -1008,6 +1009,7 @@ async def _file_watcher() -> None:
                     recovery_artifact_changes.append(p)
                     continue
                 # JSON config files in config/ directory
+                # not contained_path: routes the change by its folder
                 if p.suffix == ".json" and config_dir.is_dir() and p.is_relative_to(config_dir):
                     config_changed = True
                     continue
@@ -1015,6 +1017,7 @@ async def _file_watcher() -> None:
                     continue
                 # Skip utility/ directory — utility scripts don't affect graph structure
                 utility_dir = pipe_dir / "utility"
+                # not contained_path: routes the change by its folder
                 if utility_dir.is_dir() and p.is_relative_to(utility_dir):
                     continue
                 # A submodel module a pipeline imports, found where that pipeline's own
@@ -1179,6 +1182,19 @@ async def _file_watcher() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _spa_static_file(static_dir: Path, full_path: str) -> Path | None:
+    """The built SPA's file at *full_path*, or ``None`` when it names none.
+
+    A path that leaves *static_dir* (through ``..``, as an absolute path or through a
+    link) names none, so the route serves the index page for it.
+    """
+    try:
+        file_path = contained_path(static_dir, full_path)
+    except PathOutsideProjectError:
+        return None
+    return file_path if file_path.is_file() else None
+
+
 def _serve_index_html(static_dir: Path = STATIC_DIR) -> HTMLResponse:
     """Serve the SPA shell without placing session credentials in browser-readable data."""
     html = (static_dir / "index.html").read_text(encoding="utf-8")
@@ -1199,10 +1215,8 @@ if static_build_ready(STATIC_DIR):
     @app.get("/{full_path:path}", response_model=None)
     async def serve_spa(full_path: str) -> Response:
         """Serve the React SPA - all non-API routes return index.html."""
-        file_path = (STATIC_DIR / full_path).resolve()
-        if file_path.is_relative_to(STATIC_DIR) and file_path.is_file():
-            if file_path.name == "index.html":
-                return _serve_index_html(STATIC_DIR)
+        file_path = _spa_static_file(STATIC_DIR, full_path)
+        if file_path is not None and file_path.name != "index.html":
             media_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
             return FileResponse(file_path, media_type=media_type)
         return _serve_index_html(STATIC_DIR)

@@ -1,7 +1,7 @@
 {
-  "outputType": "file",
+  "arguments": {},
   "format": "parquet",
   "mode": "sink",
-  "path": "outputs/priced_batch.parquet",
-  "arguments": {}
+  "outputType": "file",
+  "path": "outputs/priced_batch.parquet"
 }

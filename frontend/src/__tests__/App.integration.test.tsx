@@ -3133,17 +3133,25 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     vi.mocked(workbenchApi.fetchWorkbenchTables).mockReset().mockImplementation(() => Promise.resolve({ tables: [], sample: {}, response_tables: [] }))
   })
 
-  /** A pipeline whose Workbench Input starts with no tables. */
+  const policyTables = [{ name: "policy", rows: "one" as const, columns: [{ name: "state", type: "str" as const }] }]
+  /**
+   * A pipeline whose Workbench Input feeds `priced` from its policy table, which the
+   * workbench's tables hold when the editor first fetches them.
+   */
   const withWorkbenchInput = () => {
     const input = makeNode("wb_in", "Workbench Input", "workbenchInput")
-    input.data.config = { tables: [], sample: {} }
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({ nodes: [input], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))
+    const priced = makeNode("priced", "priced")
+    const fromPolicy = { id: "e_policy", source: "wb_in", sourceHandle: "policy", target: "priced", targetHandle: null, data: { _inputName: "policy" } }
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({ nodes: [input, priced], edges: [fromPolicy], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))
+    vi.mocked(workbenchApi.fetchWorkbenchTables).mockResolvedValue({ tables: policyTables, sample: {}, response_tables: [] })
   }
-  const policyTables = [{ name: "policy", rows: "one" as const, columns: [] }]
-  /** The Workbench Input's tables in the pipeline the save sent. */
-  const savedInputTables = () => {
-    const graph = vi.mocked(api.savePipeline).mock.calls[0][0].graph
-    return (graph.nodes.find((node) => node.id === "wb_in")?.data.config as { tables?: unknown } | undefined)?.tables
+  /** The pipeline a save sent: its connections, and the config of its Workbench Input, which holds nothing of the tables. */
+  const savedPipeline = (call = 0) => {
+    const graph = vi.mocked(api.savePipeline).mock.calls[call][0].graph
+    return {
+      edges: graph.edges.map((edge) => edge.id),
+      inputConfig: graph.nodes.find((node) => node.id === "wb_in")?.data.config,
+    }
   }
 
   it("shows the workbench over the hidden, inert pipeline editor with its own toolbar and shortcuts, and switches back", async () => {
@@ -3170,8 +3178,8 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     expect(within(view).getByRole("tablist", { name: "Sheets" })).toBeInTheDocument()
 
     // Ctrl+S saves the project, as Save does from either toolbar: the form's unsaved edits
-    // first, then the tables fetched again, the fetch that brings the Workbench Input's and
-    // Workbench Output's copies up to date, then the pipeline.
+    // first, then the tables fetched again, so the workbench nodes' ports are the saved
+    // form's, then the pipeline.
     act(() => {
       useWorkbenchFormStore.getState().change((form) => ({ ...form, name: "renamed" }))
     })
@@ -3190,7 +3198,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     expect(await screen.findByRole("toolbar", { name: "Pipeline toolbar" })).toBeInTheDocument()
   })
 
-  it("Commit in the workbench's toolbar saves the form's edits, brings the Workbench Input's tables up to date, then saves the pipeline and opens the milestone modal", async () => {
+  it("Commit in the workbench's toolbar saves the form's edits, fetches the tables afresh and removes a connection to one the form no longer has, then saves the pipeline and opens the milestone modal", async () => {
     vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
     withWorkbenchInput()
     render(<App />)
@@ -3219,15 +3227,17 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     expect(api.savePipeline).not.toHaveBeenCalled()
     expect(screen.queryByTestId("milestone-commit-modal")).toBeNull()
 
+    // The saved form no longer has the policy table.
     act(() => {
-      answerTables({ tables: policyTables, sample: {}, response_tables: [] })
+      answerTables({ tables: [], sample: {}, response_tables: [] })
     })
 
-    // Then the pipeline is saved with the Workbench Input carrying those tables, and the
-    // milestone asked for.
+    // Then the pipeline is saved without the connection to it, and the milestone asked for.
     await waitFor(() => expect(screen.getByTestId("milestone-commit-modal")).toBeInTheDocument())
     expect(api.savePipeline).toHaveBeenCalledTimes(1)
-    expect(savedInputTables()).toEqual(policyTables)
+    expect(savedPipeline()).toEqual({ edges: [], inputConfig: {} })
+    expect(useGraphStore.getState().edges).toEqual([])
+    expect(screen.getByText("Disconnected 1 edge from Workbench Input: the workbench no longer has the table it read.")).toBeInTheDocument()
     expect(useWorkbenchFormStore.getState().dirty).toBe(false)
   })
 
@@ -3249,13 +3259,15 @@ describe("App integration - the workbench view (specs/workbench)", () => {
 
     await waitFor(() => expect(workbenchApi.saveWorkbenchForm).toHaveBeenCalledTimes(1))
     expect(
-      await screen.findByText("The pipeline was not saved: its workbench nodes could not be brought up to date with the workbench's tables."),
+      await screen.findByText("The pipeline was not saved: the workbench's tables could not be read."),
     ).toBeInTheDocument()
     expect(api.savePipeline).not.toHaveBeenCalled()
     expect(screen.queryByTestId("milestone-commit-modal")).toBeNull()
+    // The ports stay as the last fetch gave them, and no connection is removed.
+    expect(useGraphStore.getState().edges.map((edge) => edge.id)).toEqual(["e_policy"])
   })
 
-  it("Save in the pipeline toolbar saves the form's unsaved edits first, brings the Workbench Input's tables up to date, then saves the pipeline, as Commit does", async () => {
+  it("Save in the pipeline toolbar saves the form's unsaved edits first, fetches the tables afresh, then saves the pipeline, keeping a connection to a table the form still has, as Commit does", async () => {
     vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
     withWorkbenchInput()
     render(<App />)
@@ -3265,74 +3277,33 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     fireEvent.click(within(switcher).getByRole("button", { name: "Workbench" }))
     const view = await screen.findByTestId("workbench-view", {}, { timeout: 10_000 })
     await within(view).findByTestId("sheet-viewport", {}, { timeout: 10_000 })
-    // An edit to the form, left unsaved on the way back to the pipeline editor; the tables
-    // the saved form then defines.
+    // An edit to the form, left unsaved on the way back to the pipeline editor; the saved
+    // form keeps the policy table.
     act(() => {
       useWorkbenchFormStore.getState().change((form) => ({ ...form, name: "renamed" }))
     })
-    vi.mocked(workbenchApi.fetchWorkbenchTables).mockResolvedValue({ tables: policyTables, sample: {}, response_tables: [] })
+    const tableFetches = vi.mocked(workbenchApi.fetchWorkbenchTables).mock.calls.length
     fireEvent.click(within(view).getByRole("button", { name: "Pricing" }))
     await screen.findByRole("toolbar", { name: "Pipeline toolbar" })
 
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
 
-    // The form's edits reach the ledger first, then the tables are fetched for the nodes'
-    // copies, then the pipeline is saved; the chain pays a lazy import and an identity
-    // resolution, so the last wait is explicit.
+    // The form's edits reach the ledger first, then the tables are fetched afresh, then the
+    // pipeline is saved; the chain pays a lazy import, so the last wait is explicit.
     await waitFor(() => expect(workbenchApi.saveWorkbenchForm).toHaveBeenCalledTimes(1))
     expect(vi.mocked(workbenchApi.saveWorkbenchForm).mock.calls[0][0]).toMatchObject({ name: "renamed" })
-    await waitFor(() => expect(workbenchApi.fetchWorkbenchTables).toHaveBeenCalled())
     await waitFor(() => expect(api.savePipeline).toHaveBeenCalledTimes(1), { timeout: 10_000 })
-    expect(vi.mocked(workbenchApi.saveWorkbenchForm).mock.invocationCallOrder[0])
-      .toBeLessThan(vi.mocked(api.savePipeline).mock.invocationCallOrder[0])
-    expect(savedInputTables()).toEqual(policyTables)
+    const fetches = vi.mocked(workbenchApi.fetchWorkbenchTables).mock.invocationCallOrder.slice(tableFetches)
+    expect(fetches.length).toBeGreaterThan(0)
+    expect(vi.mocked(workbenchApi.saveWorkbenchForm).mock.invocationCallOrder[0]).toBeLessThan(fetches[0])
+    expect(fetches[0]).toBeLessThan(vi.mocked(api.savePipeline).mock.invocationCallOrder[0])
+    expect(savedPipeline()).toEqual({ edges: ["e_policy"], inputConfig: {} })
     expect(useWorkbenchFormStore.getState().dirty).toBe(false)
-  })
-
-  it("Save puts back a copy an undo took back while it waited, and saves the pipeline carrying the form's tables", async () => {
-    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
-    const input = makeNode("wb_in", "Workbench Input", "workbenchInput")
-    input.data.config = { tables: [], sample: {} }
-    const output = makeNode("wb_out", "Workbench Output", "workbenchOutput")
-    output.data.config = { tables: [] }
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({ nodes: [input, output], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))
-    render(<App />)
-    await waitForAppReady()
-    await waitFor(() => expect(workbenchApi.fetchWorkbenchTables).toHaveBeenCalled())
-    const responseTables = [{ name: "premium", rows: "one" as const, columns: [] }]
-    vi.mocked(workbenchApi.fetchWorkbenchTables).mockResolvedValue({ tables: policyTables, sample: {}, response_tables: responseTables })
-    // The Workbench Input's update resolves its identity only when the test lets it.
-    const answer = vi.mocked(api.resolveEditorNodeIdentities).getMockImplementation()
-    let release: () => void = () => {}
-    vi.mocked(api.resolveEditorNodeIdentities).mockImplementationOnce(
-      (payload, options) => new Promise((resolve) => { release = () => resolve(answer!(payload, options)) }),
-    )
-
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
-    await waitFor(() => expect(api.resolveEditorNodeIdentities).toHaveBeenCalled())
-    const outputTables = () => (useGraphStore.getState().nodes.find((node) => node.id === "wb_out")?.data.config as { tables?: unknown }).tables
-    await waitFor(() => expect(outputTables()).toEqual(responseTables))
-
-    // While the save waits, an undo of an earlier edit puts back the Workbench Output's
-    // copy as it was before the form changed.
-    act(() => {
-      useGraphStore.getState().setNodesRaw((nodes) => nodes.map((node) => (
-        node.id === "wb_out" ? { ...node, data: { ...node.data, config: { tables: [] } } } : node
-      )))
-    })
-    expect(outputTables()).toEqual(responseTables)
-    act(() => release())
-
-    await waitFor(() => expect(api.savePipeline).toHaveBeenCalledTimes(1), { timeout: 10_000 })
-    const saved = vi.mocked(api.savePipeline).mock.calls[0][0].graph.nodes
-    expect((saved.find((node) => node.id === "wb_out")?.data.config as { tables?: unknown }).tables).toEqual(responseTables)
-    expect(savedInputTables()).toEqual(policyTables)
   })
 
   it("Save is refused before the form is saved while the pipeline document cannot be saved, so the form is never saved ahead of the pipeline", async () => {
     vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
     const input = makeNode("wb_in", "Workbench Input", "workbenchInput")
-    input.data.config = { tables: [], sample: {} }
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       nodes: [input],
       edges: [],
@@ -3361,7 +3332,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     expect(useWorkbenchFormStore.getState().dirty).toBe(true)
   })
 
-  it("two Saves pressed while the first waits on a node's identity are saved in turn, the pipeline by both and no update superseded", async () => {
+  it("two Saves pressed while the first waits on its fetch of the tables are saved in turn, the pipeline by both", async () => {
     vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
     withWorkbenchInput()
     render(<App />)
@@ -3373,39 +3344,35 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     act(() => {
       useWorkbenchFormStore.getState().change((form) => ({ ...form, name: "renamed" }))
     })
-    vi.mocked(workbenchApi.fetchWorkbenchTables).mockResolvedValue({ tables: policyTables, sample: {}, response_tables: [] })
-    // The Workbench Input's update with the fetched tables waits on its identity until
-    // the test lets it through; the second Save is pressed meanwhile.
-    const identities = vi.mocked(api.resolveEditorNodeIdentities)
-    const resolveIdentities = identities.getMockImplementation()
-    if (resolveIdentities === undefined) throw new Error("the identity resolver has no implementation")
-    let release: () => void = () => {}
-    identities.mockImplementationOnce(
-      (payload) => new Promise((resolve) => { release = () => resolve(resolveIdentities(payload)) }),
+    // The first Save's fetch of the tables answers only when the test lets it; the second
+    // Save is pressed meanwhile.
+    let answerFirst: () => void = () => {}
+    vi.mocked(workbenchApi.fetchWorkbenchTables).mockImplementationOnce(
+      () => new Promise<WorkbenchTablesResponse>((resolve) => {
+        answerFirst = () => resolve({ tables: policyTables, sample: {}, response_tables: [] })
+      }),
     )
     const save = await screen.findByTestId("toolbar-save", {}, { timeout: 10_000 })
 
     fireEvent.click(save)
     await waitFor(() => expect(workbenchApi.saveWorkbenchForm).toHaveBeenCalledTimes(1))
-    await waitFor(() => expect(identities).toHaveBeenCalled())
     const fetchesByFirst = vi.mocked(workbenchApi.fetchWorkbenchTables).mock.calls.length
     fireEvent.click(save)
-    // The second Save's continuations run while the first still waits on the identity:
-    // it takes its turn behind the first, so it fetches nothing yet. Run at once, it
-    // would fetch now, and that fetch would supersede the first save's update.
+    // The second Save's continuations run while the first still waits on its fetch: it
+    // takes its turn behind the first, so it fetches nothing yet.
     await act(() => new Promise<void>((resolve) => { setTimeout(resolve, 100) }))
     expect(vi.mocked(workbenchApi.fetchWorkbenchTables).mock.calls.length).toBe(fetchesByFirst)
     expect(api.savePipeline).not.toHaveBeenCalled()
 
-    await act(async () => { release() })
+    await act(async () => { answerFirst() })
 
-    // The first save's pipeline, then the second's, each with the Workbench Input carrying
-    // the tables; neither refused for an update the other superseded.
+    // The first save's pipeline, then the second's, each keeping the connection the form
+    // still has; neither refused.
     await waitFor(() => expect(api.savePipeline).toHaveBeenCalledTimes(2), { timeout: 10_000 })
-    expect(savedInputTables()).toEqual(policyTables)
-    const secondGraph = vi.mocked(api.savePipeline).mock.calls[1][0].graph
-    expect((secondGraph.nodes.find((node) => node.id === "wb_in")?.data.config as { tables?: unknown } | undefined)?.tables).toEqual(policyTables)
-    expect(useToastStore.getState().toasts.map((toast) => toast.text).join("\n")).not.toContain("Node update was not applied")
+    expect(vi.mocked(workbenchApi.fetchWorkbenchTables).mock.calls.length).toBeGreaterThan(fetchesByFirst)
+    expect(savedPipeline(0).edges).toEqual(["e_policy"])
+    expect(savedPipeline(1).edges).toEqual(["e_policy"])
+    expect(useToastStore.getState().toasts.map((toast) => toast.text).join("\n")).not.toContain("was not saved")
     expect(workbenchApi.saveWorkbenchForm).toHaveBeenCalledTimes(1)
   })
 
@@ -3438,7 +3405,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     }
   })
 
-  it("an assistant turn that starts while a Save waits on the form's save refuses the rest of it, so the pipeline never carries copies behind the sheets", async () => {
+  it("an assistant turn that starts while a Save waits on the form's save refuses the rest of it, so the pipeline is never saved ahead of its fence", async () => {
     vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
     withWorkbenchInput()
     render(<App />)
@@ -3450,7 +3417,6 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     act(() => {
       useWorkbenchFormStore.getState().change((form) => ({ ...form, name: "renamed" }))
     })
-    vi.mocked(workbenchApi.fetchWorkbenchTables).mockResolvedValue({ tables: policyTables, sample: {}, response_tables: [] })
     // The form's save answers only when the test lets it; the assistant's turn starts
     // meanwhile.
     let answerFormSave: () => void = () => {}

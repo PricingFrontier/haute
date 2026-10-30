@@ -30,8 +30,9 @@ from haute._model_flavors import is_registered_flavor, model_families, model_fam
 from haute._model_source import BoundModel, ModelSource, require_model_source
 from haute._polars_dtypes import refuse_wide_integers
 from haute._polars_utils import bounded_collect_batches
+from haute._sandbox import contained_path
 from haute._types import _Frame
-from haute.errors import ConfigError, HauteValidationError
+from haute.errors import ConfigError, HauteValidationError, PathOutsideProjectError
 from haute.errors import FeatureMismatchError as FeatureMismatchError
 
 if TYPE_CHECKING:
@@ -1664,11 +1665,10 @@ def score_from_config(
     config_path = Path(config)
     if base_dir is not None and not config_path.is_absolute():
         config_path = Path(base_dir) / config_path
-    # Validate path stays within project directory
-    resolved = config_path.resolve()
-    root = (Path(base_dir) if base_dir else Path.cwd()).resolve()
-    if not resolved.is_relative_to(root):
-        raise ValueError(f"Config path {config!r} resolves outside project root")
+    try:
+        resolved = contained_path(Path(base_dir) if base_dir else Path.cwd(), config_path.resolve())
+    except PathOutsideProjectError:
+        raise ValueError(f"Config path {config!r} resolves outside project root") from None
     cfg = json.loads(read_user_text(resolved))
     from haute._model_source import scoring_contract_path
 

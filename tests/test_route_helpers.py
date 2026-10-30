@@ -1023,7 +1023,7 @@ class TestPipelineDir:
         toml = tmp_path / "haute.toml"
         toml.write_text('[project]\npipeline = "../outside/main.py"\n')
 
-        with pytest.raises(ConfigError, match="outside the project root"):
+        with pytest.raises(ConfigError, match="must name a file inside the project"):
             pipeline_dir()
 
         pipeline_dir.cache_clear()

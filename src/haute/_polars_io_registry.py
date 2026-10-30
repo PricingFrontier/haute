@@ -1535,6 +1535,7 @@ def anchor_config_source_path(config: Mapping[str, Any], base_dir: Any = None) -
                 resolve_runtime_file_path(
                     raw,
                     pipeline_dir=pipeline_dir,
+                    # not contained_path: chooses the root; an outside pipeline is its own
                     project_root=root if pipeline_dir.is_relative_to(root) else pipeline_dir,
                     prefer="pipeline",
                     enforce_project_root=True,

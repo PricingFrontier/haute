@@ -9,12 +9,12 @@ knowledge of node types, configs, or graphs — that logic lives in
 from __future__ import annotations
 
 import ast
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 from haute._global_constants import module_binding_lines
+from haute._source_layout import lines_inside_literals, python_lines
 from haute._submodel_paths import SUBMODEL_PACKAGE
 from haute._types import (
     DECORATOR_TO_NODE_TYPE,
@@ -29,14 +29,10 @@ __all__ = [
     "_eval_ast_literal",
     "_get_decorator_kwargs",
     "_is_pipeline_authored_decorator",
-    "_is_pipeline_node_decorator",
     "_is_submodel_authored_decorator",
-    "_is_submodel_node_decorator",
     "_get_decorator_node_type",
-    "_get_docstring",
     "_strip_docstring",
     "_dedent",
-    "_extract_function_bodies",
     "_extract_connect_calls",
     "_extract_meta",
     "_extract_pipeline_meta",
@@ -160,22 +156,6 @@ def _get_decorator_kwargs(decorator: ast.expr) -> dict[str, Any]:
     return {}
 
 
-def _is_pipeline_node_decorator(decorator: ast.expr) -> bool:
-    """Check if a decorator is @pipeline.<type>(...) for any type in DECORATOR_TO_NODE_TYPE."""
-    if isinstance(decorator, ast.Attribute):
-        if (
-            isinstance(decorator.value, ast.Name)
-            and decorator.value.id == "pipeline"
-            and decorator.attr in DECORATOR_TO_NODE_TYPE
-        ):
-            return True
-
-    if isinstance(decorator, ast.Call):
-        return _is_pipeline_node_decorator(decorator.func)
-
-    return False
-
-
 def _is_receiver_authored_decorator(decorator: ast.expr, receiver: str) -> bool:
     """Return whether *decorator* is any direct ``@receiver.<name>`` use.
 
@@ -220,24 +200,9 @@ def _get_decorator_node_type(decorator: ast.expr) -> NodeType | None:
     return None
 
 
-def _is_submodel_node_decorator(decorator: ast.expr) -> bool:
-    """Check if a decorator is @submodel.<type>(...) for any type in DECORATOR_TO_NODE_TYPE."""
-    if isinstance(decorator, ast.Attribute):
-        if isinstance(decorator.value, ast.Name) and decorator.attr in DECORATOR_TO_NODE_TYPE:
-            return decorator.value.id == "submodel"
-    if isinstance(decorator, ast.Call):
-        return _is_submodel_node_decorator(decorator.func)
-    return False
-
-
 # ---------------------------------------------------------------------------
 # Docstring / whitespace helpers
 # ---------------------------------------------------------------------------
-
-
-def _get_docstring(func: ast.FunctionDef) -> str:
-    """Extract the docstring from a function def."""
-    return ast.get_docstring(func) or ""
 
 
 def _strip_docstring(lines: list[str]) -> list[str]:
@@ -265,7 +230,7 @@ def _strip_docstring(lines: list[str]) -> list[str]:
     # parse time; the extra ``def`` header shifts line numbers by one.
     body_source = _dedent("\n".join(lines))
     wrapped = "def _f():\n" + "\n".join(
-        f"    {line}" if line else line for line in body_source.splitlines()
+        f"    {line}" if line else line for line in python_lines(body_source)
     )
     try:
         func = ast.parse(wrapped).body[0]
@@ -293,45 +258,32 @@ def _strip_docstring(lines: list[str]) -> list[str]:
 
 
 def _dedent(code: str) -> str:
-    """Remove common leading whitespace."""
-    code_lines = code.splitlines()
+    """Remove common leading whitespace, outside string literals.
+
+    A line that begins inside a multiline string keeps its text: its leading
+    whitespace is the string's own, and it takes no part in the common indent.
+    """
+    code_lines = python_lines(code)
     if not code_lines:
         return code
-    indents = [len(line) - len(line.lstrip()) for line in code_lines if line.strip()]
+    inside = lines_inside_literals(code)
+    indents = [
+        len(line) - len(line.lstrip())
+        for number, line in enumerate(code_lines, start=1)
+        if line.strip() and number not in inside
+    ]
     if not indents:
         return code
     m = min(indents)
-    return "\n".join(line[m:] if len(line) >= m else line for line in code_lines)
+    return "\n".join(
+        line if number in inside else line[m:] if len(line) >= m else line
+        for number, line in enumerate(code_lines, start=1)
+    )
 
 
 # ---------------------------------------------------------------------------
 # Source extraction
 # ---------------------------------------------------------------------------
-
-
-def _extract_function_bodies(
-    source: str,
-    *,
-    tree: ast.Module,
-) -> dict[str, str]:
-    """Extract raw source of each function body, keyed by function name.
-
-    Args:
-        source: The raw source code (needed for line extraction).
-        tree: Pre-parsed AST tree.  Required — callers must parse the
-            source exactly once and pass the resulting tree.  Making this
-            mandatory prevents a class of bug where *source* and *tree*
-            are computed from two different snapshots of the file, and
-            avoids a silent second ``ast.parse()`` call that masks errors.
-    """
-    source_lines = source.splitlines()
-    bodies: dict[str, str] = {}
-
-    for node in ast.iter_child_nodes(tree):
-        if isinstance(node, ast.FunctionDef) and node.body:
-            bodies[node.name] = _function_body_source(source_lines, node)
-
-    return bodies
 
 
 def _function_body_source(
@@ -384,52 +336,114 @@ def _eval_connect_value(receiver: str, role: str, node: ast.expr) -> Any:
             f"{receiver}.connect() arguments must be string literals: "
             f"{role} is the non-literal expression {_describe_expr(node)!r}",
             role=role,
+            argument=role,
             line=node.lineno,
         ) from exc
+
+
+_CONNECT_ENDPOINTS = ("source", "target")
+_CONNECT_PORTS = ("source_port", "target_port")
+
+
+def _connect_call_error(
+    receiver: str, problem: str, *, argument: str, node: ast.expr
+) -> ParseError:
+    return ParseError(
+        f"{receiver}.connect() on line {node.lineno}: {problem}",
+        argument=argument,
+        line=node.lineno,
+    )
 
 
 def _connect_call_edge(
     call: ast.Call,
     receiver: str,
-) -> tuple[str, str, str | None, str | None] | None:
+) -> tuple[str, str, str | None, str | None]:
     """Extract ``(src, tgt, source_port, target_port)`` from one connect call.
 
-    ``source`` / ``target`` are positional-or-keyword in the runtime
-    signature, so both spellings are accepted.  Returns ``None`` for calls
-    that carry no derivable edge (missing source/target, or literal values
-    that are not strings — both are runtime errors with no edge to record).
-    Non-literal values raise :class:`ParseError`: silently skipping them
-    would drop the edge from the graph and lose the line on the next save.
+    The call is read by the live ``connect(source, target, *, source_port=None,
+    target_port=None)`` signature's rules: ``source`` and ``target`` once each,
+    positionally or by keyword, each a non-empty string literal; the ports only
+    by keyword, each ``None`` or a non-empty string literal; nothing else. Any
+    other shape raises :class:`ParseError` naming the line and the argument,
+    because a skipped or repaired call would lose the authored line on the next
+    save, and an edge inferred from a parameter name could hide that it was lost.
     """
-    src_expr: ast.expr | None = call.args[0] if len(call.args) >= 1 else None
-    tgt_expr: ast.expr | None = call.args[1] if len(call.args) >= 2 else None
-    port_exprs: dict[str, ast.expr] = {}
-    for kw in call.keywords:
-        if kw.arg == "source" and src_expr is None:
-            src_expr = kw.value
-        elif kw.arg == "target" and tgt_expr is None:
-            tgt_expr = kw.value
-        elif kw.arg in ("source_port", "target_port"):
-            port_exprs[kw.arg] = kw.value
+    if len(call.args) > len(_CONNECT_ENDPOINTS):
+        raise _connect_call_error(
+            receiver,
+            "it takes at most two positional arguments, source and target; "
+            f"{len(call.args)} are given.",
+            argument="*",
+            node=call.args[len(_CONNECT_ENDPOINTS)],
+        )
+    values: dict[str, ast.expr] = {}
+    for role, expr in zip(_CONNECT_ENDPOINTS, call.args, strict=False):
+        if isinstance(expr, ast.Starred):
+            raise _connect_call_error(
+                receiver,
+                "its arguments must be written out, not unpacked from "
+                f"*{_describe_expr(expr.value)}.",
+                argument="*",
+                node=expr,
+            )
+        values[role] = expr
+    for keyword in call.keywords:
+        if keyword.arg is None:
+            raise _connect_call_error(
+                receiver,
+                "its arguments must be written out, not unpacked from "
+                f"**{_describe_expr(keyword.value)}.",
+                argument="**",
+                node=keyword.value,
+            )
+        if keyword.arg not in (*_CONNECT_ENDPOINTS, *_CONNECT_PORTS):
+            raise _connect_call_error(
+                receiver,
+                f"it has no argument {keyword.arg!r}; it takes source, target, source_port "
+                "and target_port.",
+                argument=keyword.arg,
+                node=keyword.value,
+            )
+        if keyword.arg in values:
+            raise _connect_call_error(
+                receiver,
+                f"argument {keyword.arg} is given twice.",
+                argument=keyword.arg,
+                node=keyword.value,
+            )
+        values[keyword.arg] = keyword.value
 
-    if src_expr is None or tgt_expr is None:
-        return None
-
-    src = _eval_connect_value(receiver, "source", src_expr)
-    tgt = _eval_connect_value(receiver, "target", tgt_expr)
-    if not (isinstance(src, str) and isinstance(tgt, str)):
-        return None
-
-    source_port: str | None = None
-    target_port: str | None = None
-    for role, expr in port_exprs.items():
-        val = _eval_connect_value(receiver, role, expr)
-        if isinstance(val, str) and val:
-            if role == "source_port":
-                source_port = val
-            else:
-                target_port = val
-    return (src, tgt, source_port, target_port)
+    endpoints: list[str] = []
+    for role in _CONNECT_ENDPOINTS:
+        if role not in values:
+            raise _connect_call_error(
+                receiver, f"argument {role} is missing.", argument=role, node=call
+            )
+        endpoint = _eval_connect_value(receiver, role, values[role])
+        if not isinstance(endpoint, str) or not endpoint:
+            raise _connect_call_error(
+                receiver,
+                f"argument {role} must be a non-empty string naming a node; it is {endpoint!r}.",
+                argument=role,
+                node=values[role],
+            )
+        endpoints.append(endpoint)
+    ports: list[str | None] = []
+    for role in _CONNECT_PORTS:
+        if role not in values:
+            ports.append(None)
+            continue
+        port = _eval_connect_value(receiver, role, values[role])
+        if port is not None and (not isinstance(port, str) or not port):
+            raise _connect_call_error(
+                receiver,
+                f"argument {role} must be None or a non-empty string; it is {port!r}.",
+                argument=role,
+                node=values[role],
+            )
+        ports.append(port)
+    return (endpoints[0], endpoints[1], ports[0], ports[1])
 
 
 def _extract_connect_calls(
@@ -453,9 +467,7 @@ def _extract_connect_calls(
 
     for node in tree.body:
         for link in _chained_receiver_calls(node, receiver=receiver, method="connect"):
-            edge = _connect_call_edge(link, receiver)
-            if edge is not None:
-                connects.append(edge)
+            connects.append(_connect_call_edge(link, receiver))
 
     return connects
 
@@ -475,19 +487,33 @@ def _chained_receiver_calls(
     not lost. Links are returned in authored (source) order; an empty list
     means the statement contributes nothing.
     """
-    if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
+    chain = _receiver_call_chain(statement)
+    if chain is None:
         return []
+    base, links = chain
+    calls = [
+        link for link in links if isinstance(link.func, ast.Attribute) and link.func.attr == method
+    ]
+    if not calls or not (isinstance(base, ast.Name) and base.id == receiver):
+        return []
+    return calls
+
+
+def _receiver_call_chain(statement: ast.stmt) -> tuple[ast.expr, list[ast.Call]] | None:
+    """The base and the calls of a statement's ``<base>.<a>(...).<b>(...)`` chain.
+
+    The calls are in source order; ``None`` when the statement is not a call
+    expression. The one walk of a receiver's call chain the parser does.
+    """
+    if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
+        return None
     links: list[ast.Call] = []
     current: ast.expr = statement.value
     while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
-        if current.func.attr == method:
-            links.append(current)
+        links.append(current)
         current = current.func.value
-    if not links or not (isinstance(current, ast.Name) and current.id == receiver):
-        return []
-    # Links were collected outermost-first; reverse for source order.
     links.reverse()
-    return links
+    return current, links
 
 
 # ---------------------------------------------------------------------------
@@ -521,31 +547,20 @@ def _extract_meta(
     """Find ``<var_name> = haute.<Class>("name", description="...")`` at module level."""
     name = default_name
     description = ""
+    call = _constructor_call(tree, var_name)
+    if call is None:
+        return name, description
 
-    for node in ast.iter_child_nodes(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        if len(node.targets) != 1:
-            continue
-        target = node.targets[0]
-        if not isinstance(target, ast.Name) or target.id != var_name:
-            continue
-        call = node.value
-        if not isinstance(call, ast.Call):
-            continue
+    if call.args:
+        val = _eval_meta_value(var_name, "name", call.args[0])
+        if isinstance(val, str):
+            name = val
 
-        if call.args:
-            val = _eval_meta_value(var_name, "name", call.args[0])
+    for kw in call.keywords:
+        if kw.arg == "description":
+            val = _eval_meta_value(var_name, "description", kw.value)
             if isinstance(val, str):
-                name = val
-
-        for kw in call.keywords:
-            if kw.arg == "description":
-                val = _eval_meta_value(var_name, "description", kw.value)
-                if isinstance(val, str):
-                    description = val
-
-        break
+                description = val
 
     return name, description
 
@@ -561,7 +576,7 @@ def _extract_submodel_meta(tree: ast.Module) -> tuple[str, str]:
 
 
 def _constructor_call(tree: ast.Module, var_name: str) -> ast.Call | None:
-    """The first ``<var_name> = <call>`` at module level, as ``_extract_meta`` finds it."""
+    """The first module-level ``<var_name> = <call>``: the constructor every reader uses."""
     for node in ast.iter_child_nodes(tree):
         if (
             isinstance(node, ast.Assign)
@@ -651,8 +666,6 @@ def _reject_reserved_global_constants_bindings(tree: ast.Module, *, receiver: st
 # ---------------------------------------------------------------------------
 
 
-_RE_POLARS_IMPORT = re.compile(r"import\s+polars(?:\s+as\s+\w+)?\s*$")
-_RE_HAUTE_IMPORT = re.compile(r"import\s+haute(?:\s+as\s+(\w+))?\s*$")
 _PRESERVE_START = "# haute:preserve-start"
 _PRESERVE_END = "# haute:preserve-end"
 
@@ -833,7 +846,7 @@ def _extract_preamble_from_ast(
     constructor_name: str,
 ) -> str:
     """Extract a valid module's preamble from AST source boundaries."""
-    lines = source.splitlines()
+    lines = python_lines(source)
     boundaries = _module_boundaries(
         tree, line_count=len(lines), receiver=receiver, constructor_name=constructor_name
     )
@@ -855,14 +868,12 @@ def _extract_preamble_from_ast(
 
 def _is_generated_call(statement: ast.stmt, receiver: str) -> bool:
     """``<receiver>.connect(...)`` chains, and ``pipeline.submodel(...)`` registrations."""
-    if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
+    chain = _receiver_call_chain(statement)
+    if chain is None:
         return False
-    methods: list[str] = []
-    expr: ast.expr = statement.value
-    while isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute):
-        methods.append(expr.func.attr)
-        expr = expr.func.value
-    if not isinstance(expr, ast.Name) or expr.id != receiver or not methods:
+    base, links = chain
+    methods = [link.func.attr for link in links if isinstance(link.func, ast.Attribute)]
+    if not isinstance(base, ast.Name) or base.id != receiver or not methods:
         return False
     if receiver == "pipeline" and all(method == "submodel" for method in methods):
         # Registrations, chained or not: codegen writes each one, a statement apiece.
@@ -927,7 +938,7 @@ def unkept_module_statements(
     """
     if tree is None:
         tree = ast.parse(source)
-    lines = source.splitlines()
+    lines = python_lines(source)
     boundaries = _module_boundaries(
         tree, line_count=len(lines), receiver=receiver, constructor_name=constructor_name
     )
@@ -974,126 +985,20 @@ def _extract_preamble(
     receiver: str = "pipeline",
     constructor_name: str = "Pipeline",
 ) -> str:
-    """Extract user preamble with AST boundaries when the module is valid.
+    """Extract the user preamble between the standard imports and the generated code.
 
-    The regex fallback calls this on an invalid whole file, so a conservative
-    textual implementation remains available for that path.
+    *tree* is the module's syntax tree, parsed from *source* when not given.
     """
     if receiver not in {"pipeline", "submodel"}:
         raise ValueError(f"Unsupported generated-code receiver: {receiver!r}")
     if tree is None:
-        try:
-            tree = ast.parse(source)
-        except SyntaxError:
-            return _extract_preamble_textual(
-                source,
-                receiver=receiver,
-                constructor_name=constructor_name,
-            )
+        tree = ast.parse(source)
     return _extract_preamble_from_ast(
         source,
         tree,
         receiver=receiver,
         constructor_name=constructor_name,
     )
-
-
-_RE_SUBMODEL_IMPORT = re.compile(rf"from\s+{SUBMODEL_PACKAGE}(?:\.\w+)*\s+import\b")
-
-
-def _textual_submodel_import_lines(lines: list[str]) -> frozenset[int]:
-    """The lines of a file that does not parse that its submodel imports span.
-
-    A parenthesised import runs to the line that closes it.
-    """
-    found: set[int] = set()
-    open_import = False
-    for index, line in enumerate(lines):
-        stripped = line.strip()
-        if open_import or _RE_SUBMODEL_IMPORT.match(stripped):
-            found.add(index)
-            open_import = ("(" in stripped or open_import) and ")" not in stripped
-    return frozenset(found)
-
-
-def _extract_preamble_textual(
-    source: str,
-    *,
-    receiver: str,
-    constructor_name: str,
-) -> str:
-    """Extract user preamble between standard imports and generated object code.
-
-    The preamble is any code that appears after the standard imports
-    (``import polars as pl``, ``import haute``) but before the first
-    ``@<receiver>.<type>`` decorator or
-    ``<receiver> = haute.<constructor_name>(...)`` line.
-
-    Import spellings are alias-aware: ``import haute as ht`` is recognised as
-    a standard import (not preamble) and its alias is used to detect the
-    matching construction line. Without this, an aliased import over-captures
-    the generated construction into the preamble and duplicates it on the
-    next round-trip save.
-    """
-    lines = source.splitlines()
-    # Find the end of standard imports region, capturing either supported
-    # spelling of the requested constructor.
-    last_standard_idx = -1
-    constructor = f"haute.{constructor_name}"
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        haute_match = _RE_HAUTE_IMPORT.match(stripped)
-        if haute_match is not None:
-            haute_alias = haute_match.group(1) or "haute"
-            constructor = f"{haute_alias}.{constructor_name}"
-            last_standard_idx = i
-            continue
-        constructor_import_match = re.fullmatch(
-            rf"from\s+haute\s+import\s+{re.escape(constructor_name)}"
-            r"(?:\s+as\s+(\w+))?\s*",
-            stripped,
-        )
-        if constructor_import_match is not None:
-            constructor = constructor_import_match.group(1) or constructor_name
-            last_standard_idx = i
-            continue
-        if _RE_POLARS_IMPORT.match(stripped):
-            last_standard_idx = i
-
-    if last_standard_idx == -1:
-        return ""
-
-    # Find the start of generated object code (assignment or node decorator).
-    generated_start_idx = len(lines)
-    for i in range(last_standard_idx + 1, len(lines)):
-        stripped = lines[i].strip()
-        starts_receiver = stripped.startswith(f"{receiver} =") or stripped.startswith(
-            f"{receiver}="
-        )
-        is_constructor = starts_receiver and constructor in stripped
-        if is_constructor:
-            generated_start_idx = i
-            break
-        decorator_prefix = f"@{receiver}."
-        if stripped.startswith(decorator_prefix):
-            generated_start_idx = i
-            break
-
-    # Extract lines between standard imports and generated object code.
-    preamble_lines = _slice_without_module_preserve_spans(
-        lines,
-        last_standard_idx + 1,
-        generated_start_idx,
-        generated=_textual_submodel_import_lines(lines) if receiver == "pipeline" else frozenset(),
-    )
-
-    # Strip leading/trailing blank lines
-    while preamble_lines and not preamble_lines[0].strip():
-        preamble_lines.pop(0)
-    while preamble_lines and not preamble_lines[-1].strip():
-        preamble_lines.pop()
-
-    return "\n".join(preamble_lines)
 
 
 # ---------------------------------------------------------------------------
@@ -1110,25 +1015,14 @@ def _extract_preserved_blocks(source: str) -> list[str]:
     marker-free string per completed module block, in source order. Unmatched
     starts are ignored.
     """
+    lines = python_lines(source)
     blocks: list[str] = []
-    lines = source.splitlines()
-    i = 0
-    while i < len(lines):
-        if lines[i].rstrip() == _PRESERVE_START:
-            # Collect lines until the matching end marker
-            block_lines: list[str] = []
-            i += 1
-            while i < len(lines) and lines[i].rstrip() != _PRESERVE_END:
-                block_lines.append(lines[i])
-                i += 1
-            if i < len(lines):
-                # Found the end marker — store the block
-                # Strip leading/trailing blank lines but keep internal structure
-                while block_lines and not block_lines[0].strip():
-                    block_lines.pop(0)
-                while block_lines and not block_lines[-1].strip():
-                    block_lines.pop()
-                blocks.append("\n".join(block_lines))
-            # else: unmatched start marker — skip
-        i += 1
+    for start, end in _module_preserve_spans(lines):
+        block_lines = lines[start + 1 : end]
+        # Strip leading/trailing blank lines but keep internal structure
+        while block_lines and not block_lines[0].strip():
+            block_lines.pop(0)
+        while block_lines and not block_lines[-1].strip():
+            block_lines.pop()
+        blocks.append("\n".join(block_lines))
     return blocks

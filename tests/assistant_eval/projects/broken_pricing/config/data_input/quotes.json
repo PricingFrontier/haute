@@ -1,8 +1,8 @@
 {
-  "inputType": "file",
+  "arguments": {},
   "format": "csv",
+  "inputType": "file",
   "mode": "scan",
   "path": "data/quotes.csv",
-  "arguments": {},
   "steps": []
 }

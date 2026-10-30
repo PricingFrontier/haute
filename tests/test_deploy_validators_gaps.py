@@ -307,12 +307,8 @@ class TestValidateDeployGlobalConstants:
 
 
 # ===========================================================================
-# validate_deploy — the form against each Workbench node's copy of its tables
+# validate_deploy — the form the Workbench nodes took their tables from, held to the pipeline
 # ===========================================================================
-
-
-def _column(name: str, type_: str) -> dict[str, str]:
-    return {"name": name, "type": type_}
 
 
 _FORM_TABLES: list[dict[str, Any]] = [
@@ -343,85 +339,63 @@ _FORM_TABLES: list[dict[str, Any]] = [
 ]
 
 
-def _identity() -> list[dict[str, str]]:
-    """The quote's reference and option, which every table but quote_details leads with."""
-    return [_column("quote_reference", "str"), _column("quote_option", "int")]
-
-
-def _input_copy() -> list[dict[str, Any]]:
-    """The Workbench Input's tables as the editor copies them from ``_FORM_TABLES``."""
-    return [
-        {
-            "name": "policy",
-            "rows": "one",
-            "columns": [*_identity(), _column("limit", "float"), _column("region", "str")],
-        },
-        {"name": "items", "rows": "many", "columns": [*_identity(), _column("value", "float")]},
-    ]
-
-
-def _output_copy() -> list[dict[str, Any]]:
-    return [
-        {"name": "pricing", "rows": "one", "columns": [*_identity(), _column("premium", "float")]}
-    ]
-
-
-def _workbench_project(root: Path, *, enabled: bool = True, form: bool = True) -> None:
+def _workbench_project(root: Path) -> None:
     from tests._workbench_helpers import enable, write_form
 
-    enable(root, f"[workbench]\nenabled = {str(enabled).lower()}\n")
-    if form:
-        write_form(
-            root,
-            {
-                "name": "motor",
-                "schema": {"tables": _FORM_TABLES},
-                "pages": [
-                    {
-                        "id": "p",
-                        "title": "Sheet 1",
-                        "width": 1280,
-                        "sections": [{"id": "s", "title": "s", "height": 120, "widgets": []}],
-                    }
-                ],
-            },
-        )
+    enable(root)
+    write_form(
+        root,
+        {
+            "name": "motor",
+            "schema": {"tables": _FORM_TABLES},
+            "pages": [
+                {
+                    "id": "p",
+                    "title": "Sheet 1",
+                    "width": 1280,
+                    "sections": [{"id": "s", "title": "s", "height": 120, "widgets": []}],
+                }
+            ],
+        },
+    )
 
 
-def _details_copy() -> dict[str, Any]:
-    """Haute's ``quote_details`` table as the editor copies it into the Workbench Input."""
-    from haute._workbench_form import QUOTE_DETAILS_COLUMNS
-
-    columns = [_column(name, type_) for _, name, type_ in QUOTE_DETAILS_COLUMNS]
-    return {"name": "quote_details", "rows": "one", "columns": columns}
-
-
-def _form_check_errors(
-    root: Path,
-    input_copy: list[dict[str, Any]],
-    output_copy: list[dict[str, Any]],
-    *,
-    details: bool = True,
-) -> list[str]:
-    """The structural errors ``validate_deploy`` reports for a workbench pipeline in *root*;
-    the pipeline is otherwise sound, so they are the form check's alone. The Workbench
-    Input's copy holds Haute's ``quote_details`` table first, as the form read does, unless
-    *details* is false, as a copy saved before the table existed does not."""
+def _form_check_errors(root: Path, edges: list[GraphEdge] | None = None) -> list[str]:
+    """The structural errors ``validate_deploy`` reports for a workbench pipeline in *root*,
+    its nodes given their tables from the form read as resolution reads it, *edges* joining
+    them; the pipeline is otherwise sound, so they are the form check's alone."""
+    from haute._workbench_nodes import read_project_form, with_tables
+    from haute._workbench_tables import workbench_tables
     from haute.deploy._validators import validate_deploy
 
-    if details:
-        input_copy = [_details_copy(), *input_copy]
-
+    form = read_project_form(root, owner="Workbench Input")
+    graph = with_tables(
+        PipelineGraph(
+            nodes=[
+                _make_node("quote", NodeType.WORKBENCH_INPUT),
+                _make_node("priced", NodeType.WORKBENCH_OUTPUT),
+            ],
+            edges=edges
+            or [
+                GraphEdge(
+                    id="e1",
+                    source="quote",
+                    target="priced",
+                    sourceHandle="policy",
+                    targetHandle="pricing",
+                )
+            ],
+        ),
+        workbench_tables(form.spec),
+    )
     resolved = _make_resolved(
-        nodes=[
-            _make_node("quote", NodeType.WORKBENCH_INPUT, {"tables": input_copy}),
-            _make_node("priced", NodeType.WORKBENCH_OUTPUT, {"tables": output_copy}),
-        ],
-        edges=[GraphEdge(id="e1", source="quote", target="priced")],
+        nodes=graph.nodes,
+        edges=graph.edges,
         input_node_ids=["quote"],
         output_node_id="priced",
         config=DeployConfig(pipeline_file=root / "main.py", model_name="m", project_dir=root),
     )
+    resolved.workbench_form = form
     try:
         validate_deploy(resolved)
     except DeployError as exc:
@@ -430,90 +404,63 @@ def _form_check_errors(
 
 
 class TestValidateDeployWorkbenchForm:
-    """Each Workbench node must hold the tables the form defines for it (deploy spec)."""
+    """The form the Workbench nodes took their tables from must fit the pipeline (deploy
+    spec): resolution read it strictly, so nothing here compares a copy."""
 
-    def test_copies_that_match_the_form_pass(self, tmp_path: Path) -> None:
+    def test_a_form_that_fits_the_pipeline_passes(self, tmp_path: Path) -> None:
         _workbench_project(tmp_path)
-        assert _form_check_errors(tmp_path, _input_copy(), _output_copy()) == []
+        assert _form_check_errors(tmp_path) == []
 
     @pytest.mark.parametrize(
-        ("node", "change", "named"),
+        ("edge", "named"),
         [
             (
-                "input",
-                lambda tables: tables[0]["columns"].pop(),
-                "column 'policy.region' is in the form but not in the copy",
+                GraphEdge(
+                    id="e",
+                    source="quote",
+                    target="priced",
+                    sourceHandle="gone",
+                    targetHandle="pricing",
+                ),
+                "'priced' takes table 'gone' of Workbench Input 'quote', which rating/workbench "
+                "does not have.",
             ),
             (
-                "input",
-                lambda tables: tables[0]["columns"].append(_column("extra", "int")),
-                "column 'policy.extra' is in the copy but not in the form",
-            ),
-            (
-                "input",
-                lambda tables: tables[0]["columns"][2].update(type="int"),
-                "column 'policy.limit' is float in the form and int in the copy",
-            ),
-            (
-                "input",
-                lambda tables: tables[1].update(rows="one"),
-                "table 'items' is many rows per quote in the form and one in the copy",
-            ),
-            (
-                "input",
-                lambda tables: tables.pop(),
-                "table 'items' is in the form but not in the copy",
-            ),
-            (
-                "input",
-                lambda tables: tables.append({"name": "old", "rows": "one", "columns": []}),
-                "table 'old' is in the copy but not in the form",
-            ),
-            (
-                "input",
-                lambda tables: tables.reverse(),
-                "the tables are in a different order in the copy",
-            ),
-            (
-                "input",
-                lambda tables: tables[0]["columns"].reverse(),
-                "the columns of table 'policy' are in a different order in the copy",
-            ),
-            (
-                "output",
-                lambda tables: tables[0]["columns"][2].update(type="int"),
-                "column 'pricing.premium' is float in the form and int in the copy",
+                GraphEdge(
+                    id="e",
+                    source="quote",
+                    target="priced",
+                    sourceHandle="policy",
+                    targetHandle="gone",
+                ),
+                "'quote' fills table 'gone' of Workbench Output 'priced', which "
+                "rating/workbench does not have.",
             ),
         ],
-        ids=[
-            "column-missing",
-            "column-extra",
-            "column-type",
-            "rows",
-            "table-missing",
-            "table-extra",
-            "table-order",
-            "column-order",
-            "output-column-type",
-        ],
+        ids=["input", "output"],
     )
-    def test_each_disagreement_is_named_with_the_way_to_fix_it(
-        self,
-        tmp_path: Path,
-        node: str,
-        change: Any,
-        named: str,
+    def test_a_connection_to_a_table_the_form_does_not_have_is_named(
+        self, tmp_path: Path, edge: GraphEdge, named: str
     ) -> None:
+        # As a pipeline file written by hand, or saved before the form dropped the table,
+        # can hold: resolution refuses it before anything runs.
+        from haute._workbench_nodes import connection_errors, read_project_form, with_tables
+        from haute._workbench_tables import workbench_tables
+
         _workbench_project(tmp_path)
-        input_copy, output_copy = _input_copy(), _output_copy()
-        change(input_copy if node == "input" else output_copy)
+        form = read_project_form(tmp_path, owner="Workbench Input")
+        graph = with_tables(
+            PipelineGraph(
+                nodes=[
+                    _make_node("quote", NodeType.WORKBENCH_INPUT),
+                    _make_node("priced", NodeType.WORKBENCH_OUTPUT),
+                ],
+                edges=[edge],
+            ),
+            workbench_tables(form.spec),
+        )
 
-        [error] = _form_check_errors(tmp_path, input_copy, output_copy)
-
-        owner = "Workbench Input 'quote'" if node == "input" else "Workbench Output 'priced'"
-        assert error.startswith(f"{owner} does not match rating/workbench: ")
-        assert named in error
-        assert "Save the project in Haute's editor" in error
+        assert connection_errors(graph, "rating/workbench") == [named]
 
     def test_a_table_whose_own_column_takes_an_identity_name_is_refused(
         self, tmp_path: Path
@@ -523,31 +470,12 @@ class TestValidateDeployWorkbenchForm:
             _workbench_project(tmp_path)
         finally:
             _FORM_TABLES[1]["columns"].pop()
-        input_copy = _input_copy()
-        input_copy[1]["columns"] = [_column("value", "float"), _column("quote_option", "str")]
 
-        assert _form_check_errors(tmp_path, input_copy, _output_copy()) == [
+        assert _form_check_errors(tmp_path) == [
             "rating/workbench: items.quote_option has a name Haute keeps for the quote's "
             "identity in every table: rename it, and the table takes quote_reference and "
             "quote_option at the next save."
         ]
-
-    def test_a_copy_saved_before_quote_details_existed_asks_for_a_save(
-        self, tmp_path: Path
-    ) -> None:
-        _workbench_project(tmp_path)
-
-        [error] = _form_check_errors(tmp_path, _input_copy(), _output_copy(), details=False)
-
-        assert "table 'quote_details' is in the form but not in the copy" in error
-        assert "Save the project in Haute's editor" in error
-
-    def test_a_form_folder_that_does_not_exist_is_refused(self, tmp_path: Path) -> None:
-        _workbench_project(tmp_path, form=False)
-
-        [error] = _form_check_errors(tmp_path, _input_copy(), _output_copy())
-
-        assert error.startswith("rating/workbench does not exist: restore it from version history")
 
     def test_a_sheet_naming_a_column_the_schema_does_not_hold_is_refused(
         self, tmp_path: Path
@@ -574,31 +502,14 @@ class TestValidateDeployWorkbenchForm:
         }
         layout.write_bytes((json.dumps(placed) + "\n").encode())
 
-        assert _form_check_errors(tmp_path, _input_copy(), _output_copy()) == [
+        assert _form_check_errors(tmp_path) == [
             'rating/workbench/sheets/sheet_1.json, the Collection "Cover" names policy.gone, '
             "which the schema does not hold."
         ]
 
-    def test_a_project_whose_workbench_is_off_is_not_checked_against_a_form(
-        self, tmp_path: Path
-    ) -> None:
-        _workbench_project(tmp_path, enabled=False)
-        input_copy = _input_copy()
-        input_copy.pop()
+    def test_a_pipeline_without_a_workbench_node_reads_no_form(self, tmp_path: Path) -> None:
+        from haute.deploy._validators import _workbench_form_errors
 
-        assert _form_check_errors(tmp_path, input_copy, _output_copy()) == []
-
-    def test_a_form_that_cannot_be_read_is_reported(self, tmp_path: Path) -> None:
-        _workbench_project(tmp_path)
-        (tmp_path / "rating" / "workbench" / "form.json").write_text("not json", encoding="utf-8")
-
-        [error] = _form_check_errors(tmp_path, _input_copy(), _output_copy())
-
-        assert "rating/workbench/form.json is not JSON" in error
-
-    def test_a_copy_not_as_the_workbench_writes_it_is_reported(self, tmp_path: Path) -> None:
-        _workbench_project(tmp_path)
-
-        [error] = _form_check_errors(tmp_path, [{"name": "policy"}], _output_copy())
-
-        assert "The Workbench Input's tables are not as the workbench writes them" in error
+        resolved = _make_resolved(nodes=[_make_node("api_in", NodeType.API_INPUT)])
+        assert resolved.workbench_form is None
+        assert _workbench_form_errors(resolved) == []

@@ -19,7 +19,7 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-from haute.errors import ConfigError
+from haute.errors import ConfigError, InvalidPathError, PathOutsideProjectError
 
 # Files that look like Python modules but are never pipeline entry points.
 # Kept in sync with :mod:`haute.discovery` so resolver and discovery don't
@@ -145,6 +145,16 @@ def _toml_configured_pipeline(root: Path) -> Path | None:
             path=str(toml_path),
             value_type=type(pipeline).__name__,
         )
+    from haute._sandbox import contained_path
+
+    try:
+        contained_path(root, pipeline)
+    except (InvalidPathError, PathOutsideProjectError) as exc:
+        raise ConfigError(
+            "haute.toml [project].pipeline must name a file inside the project",
+            path=str(toml_path),
+            pipeline=pipeline,
+        ) from exc
     return root / pipeline
 
 

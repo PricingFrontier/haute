@@ -44,7 +44,7 @@ from haute._pipeline_recovery import (
     load_pipeline_editor_document,
     pipeline_document_fingerprint,
 )
-from haute._sandbox import contained_path
+from haute._sandbox import contained_path, is_contained
 from haute._submodel_paths import (
     SUBMODEL_PACKAGE,
     MalformedSubmodelPathError,
@@ -427,7 +427,7 @@ class SavePipelineService:
         self._root = project_root.resolve()
         self._require_ready = require_ready
         self._pipeline_root = (pipeline_root or project_root).resolve()
-        if not self._pipeline_root.is_relative_to(self._root):
+        if not is_contained(self._root, self._pipeline_root):
             raise ValueError("pipeline_root must resolve inside project_root")
         self._precondition_identities: dict[str, str | None] | None = None
         self._identity_roots: tuple[Path, ...] = ()
@@ -522,6 +522,7 @@ class SavePipelineService:
         key = str(resolved)
         if key in identities:
             expected = identities[key]
+        # not contained_path: whether the precondition governs the target, not a guard
         elif any(resolved.is_relative_to(root) for root in self._identity_roots):
             expected = _recorded_digest_for_same_file(target, identities)
         else:
@@ -772,7 +773,6 @@ class SavePipelineService:
         self._validate_declared_config_keys(graph)
         self._validate_strict_node_configs(graph)
         self._validate_quote_input_tables_do_not_shadow_nodes(graph)
-        self._validate_no_load_errors(graph)
         self._validate_global_constants(graph)
         py_path = self._resolve_source_file(source_file)
         self._validate_source_file_matches_pipeline_root(py_path)
@@ -1170,8 +1170,12 @@ class SavePipelineService:
 
     @staticmethod
     def _validate_declared_config_keys(graph: PipelineGraph) -> None:
-        """Refuse a config key its node type does not declare, which a write would lose."""
-        from haute._config_validation import reject_unrecognized_config_keys
+        """Refuse a config key its node type does not declare, which a write would lose, and
+        a workbench node's tables or sample, which it is given from the form, never saved."""
+        from haute._config_validation import (
+            reject_form_given_keys,
+            reject_unrecognized_config_keys,
+        )
 
         graphs = [graph, *SavePipelineService._iter_embedded_submodel_graphs(graph)]
         for scoped_graph in graphs:
@@ -1180,6 +1184,7 @@ class SavePipelineService:
                     reject_unrecognized_config_keys(
                         node.data.nodeType, node.data.config, node_label=node.data.label
                     )
+                    reject_form_given_keys(node.data.nodeType, node.data.config)
                 except ConfigError as exc:
                     raise InvalidRequestError(f"{exc.message} Nothing was saved.") from None
 
@@ -1194,6 +1199,8 @@ class SavePipelineService:
         Names are global across the pipeline and its submodels (see
         :meth:`_validate_executable_names`); the Quote Input's own name
         is exempt, since its explicit connection already covers that edge.
+        A Workbench Input holds no tables, being given the form's where it
+        runs, so the tables its connections take are the ones checked.
         """
         scoped = [
             graph,
@@ -1210,19 +1217,21 @@ class SavePipelineService:
             for node in scoped_graph.nodes:
                 if node.data.nodeType not in REQUEST_INPUT_NODE_TYPES:
                     continue
-                tables = node.data.config.get("tables")
-                if not isinstance(tables, list):
-                    continue
+                if node.data.nodeType is NodeType.WORKBENCH_INPUT:
+                    kind = "Workbench Input"
+                    labels = [
+                        edge.sourceHandle for edge in scoped_graph.edges if edge.source == node.id
+                    ]
+                else:
+                    tables = node.data.config.get("tables")
+                    if not isinstance(tables, list):
+                        continue
+                    kind = "Quote Input"
+                    labels = [
+                        table.get("label") if isinstance(table, dict) else None for table in tables
+                    ]
                 own_name = _sanitize_func_name(node.data.label)
-                # A Workbench Input's tables carry their port as `name`, a Quote Input's
-                # as `label`.
-                kind, key = (
-                    ("Workbench Input", "name")
-                    if node.data.nodeType is NodeType.WORKBENCH_INPUT
-                    else ("Quote Input", "label")
-                )
-                for table in tables:
-                    label = table.get(key) if isinstance(table, dict) else None
+                for label in labels:
                     if not isinstance(label, str) or label == own_name:
                         continue
                     clashing = labels_by_name.get(label)
@@ -1244,20 +1253,6 @@ class SavePipelineService:
             yield definition_id, definition.graph
 
     @staticmethod
-    def _validate_no_load_errors(graph: PipelineGraph) -> None:
-        """Reject saves while any parsed node is known to be incomplete."""
-        broken = [
-            node.data.label
-            for node in SavePipelineService._iter_nodes_recursive(graph)
-            if node.data.config.get("_load_error")
-        ]
-        if broken:
-            raise InvalidRequestError(
-                "Cannot save while node configs failed to load or parse. "
-                "Fix these nodes before saving: " + ", ".join(sorted(broken))
-            )
-
-    @staticmethod
     def _iter_nodes_recursive(graph: PipelineGraph) -> Iterator[GraphNode]:
         yield from graph.nodes
         for nested in SavePipelineService._iter_embedded_submodel_graphs(graph):
@@ -1274,7 +1269,7 @@ class SavePipelineService:
 
     def _validate_source_file_matches_pipeline_root(self, py_path: Path) -> None:
         """Reject saves whose source file does not belong to ``pipeline_root``."""
-        if not py_path.is_relative_to(self._pipeline_root):
+        if not is_contained(self._pipeline_root, py_path):
             raise InvalidRequestError(
                 "source_file must be under the active pipeline directory; "
                 "refusing to write modules/config for a different pipeline."
@@ -1401,8 +1396,6 @@ class SavePipelineService:
             project_root=self._root,
         )
         if target.exists():
-            if not target.is_relative_to(self._root):
-                raise InvalidRequestError("Submodel delete path resolves outside the project root.")
             return target
         return self._resolve_module_delete_file(normalised)
 
@@ -1741,24 +1734,9 @@ class SavePipelineService:
             self._last_config_files[GLOBAL_CONSTANTS_FILE] = global_constants_json(
                 graph.global_constants
             )
-        self._protected_config_files: set[str] = set(
-            self._collect_config_load_errors_recursive(graph)
-        )
-        # Casefolded intersection, consistent with the collision guards below:
-        # a to-be-written path and a protected load-error path differing only
-        # in case are the same file on the case-insensitive filesystems macOS
-        # and Windows default to. (Defence in depth — the per-graph casefold
-        # guard already rejects such graphs upstream.)
-        protected_folded = {rel.casefold(): rel for rel in self._protected_config_files}
-        conflicts: set[str] = set()
-        for rel_path in self._last_config_files:
-            match = protected_folded.get(rel_path.casefold())
-            if match is not None:
-                conflicts.update((match, rel_path))
-        self._raise_config_path_conflicts(conflicts)
         for rel_path, json_content in self._last_config_files.items():
             out_path = (self._pipeline_root / rel_path).resolve()
-            if not out_path.is_relative_to(self._pipeline_root):
+            if not is_contained(self._pipeline_root, out_path):
                 # A link out of the pipeline folder: writing would leave it,
                 # and skipping would drop the edit while the save succeeds.
                 raise InvalidRequestError(
@@ -1797,20 +1775,6 @@ class SavePipelineService:
                 SavePipelineService._collect_node_configs_recursive(nested),
             )
         return configs
-
-    @staticmethod
-    def _collect_config_load_errors_recursive(graph: PipelineGraph) -> dict[str, str]:
-        """Collect load-error protected config paths across submodel graphs."""
-        from haute._config_io import config_load_errors
-
-        SavePipelineService._validate_unique_config_paths_in_graph(graph)
-        errors = dict(config_load_errors(graph))
-        for nested in SavePipelineService._iter_embedded_submodel_graphs(graph):
-            SavePipelineService._merge_config_maps(
-                errors,
-                SavePipelineService._collect_config_load_errors_recursive(nested),
-            )
-        return errors
 
     @staticmethod
     def _validate_unique_config_paths_in_graph(graph: PipelineGraph) -> None:
@@ -1923,7 +1887,6 @@ class SavePipelineService:
         """
         prev = getattr(self, "_prev_config_files", {}) or {}
         current = getattr(self, "_last_config_files", {})
-        protected: set[str] = getattr(self, "_protected_config_files", set())
         removed: list[Path] = []
 
         # Compute the stale diff casefolded, mirroring the collision guards in
@@ -1932,21 +1895,18 @@ class SavePipelineService:
         # ``Foo.json`` and current's ``FOO.json`` are the SAME on-disk file on
         # the case-insensitive filesystems macOS and Windows default to — this
         # save has just rewritten it in place, so unlinking the prev casing
-        # would delete the freshly written survivor. Protected paths get the
-        # same treatment: a prev path differing only in case from a protected
-        # one names the same file there too. Excluding casefold matches on
+        # would delete the freshly written survivor. Excluding casefold matches on
         # every platform means a case-only rename on case-SENSITIVE Linux
         # leaves the old-cased file behind as harmless residue; data safety on
         # macOS/Windows wins over Linux tidiness.
         keep_folded = {rel.casefold() for rel in current}
-        keep_folded.update(rel.casefold() for rel in protected)
         stale = {rel for rel in prev if rel.casefold() not in keep_folded}
         if not stale:
             return removed
 
         for rel in stale:
             stale_path = (self._pipeline_root / rel).resolve()
-            if not stale_path.is_relative_to(self._pipeline_root):
+            if not is_contained(self._pipeline_root, stale_path):
                 continue
             if stale_path.is_file():
                 # The server's own deletion: the watcher must not re-parse for it.
@@ -2008,7 +1968,7 @@ class SavePipelineService:
             # stale sweep retires it.
             for rel in self._discarded_sidecars_recursive(disk_graph):
                 path = (self._pipeline_root / rel).resolve()
-                if rel not in prev and path.is_relative_to(self._pipeline_root) and path.is_file():
+                if rel not in prev and is_contained(self._pipeline_root, path) and path.is_file():
                     prev[rel] = path.read_text(encoding="utf-8")
             # A declared constants file that loads is this pipeline's to retire
             # when its last constant goes; one that fails to load is left alone.

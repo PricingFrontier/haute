@@ -42,9 +42,8 @@ def test_a_deeper_pipeline_folder_is_named_with_forward_slashes(tmp_path: Path) 
         None,
         "[project]\n",
         '[project]\npipeline = "main.py"\n',
-        '[project]\npipeline = "../elsewhere/main.py"\n',
     ],
-    ids=["no-haute-toml", "no-pipeline", "pipeline-at-root", "pipeline-outside-root"],
+    ids=["no-haute-toml", "no-pipeline", "pipeline-at-root"],
 )
 def test_without_a_folder_below_the_root_nothing_is_versioned_as_a_whole(
     tmp_path: Path, toml: str | None
@@ -56,6 +55,15 @@ def test_without_a_folder_below_the_root_nothing_is_versioned_as_a_whole(
     assert pipeline_folder(root) is None
     assert pipeline_files_folder(root) is None
     assert default_model_folder(root) == "models"
+
+
+def test_a_pipeline_outside_the_root_is_refused(tmp_path: Path) -> None:
+    root = _project(tmp_path / "project", None)
+    root.mkdir()
+    _project(root, '[project]\npipeline = "../elsewhere/main.py"\n')
+
+    with pytest.raises(ConfigError, match="inside the project"):
+        pipeline_folder(root)
 
 
 def test_a_malformed_haute_toml_is_refused(tmp_path: Path) -> None:

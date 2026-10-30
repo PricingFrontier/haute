@@ -18,16 +18,9 @@ from haute._io import read_user_text
 from haute._logging import get_logger
 from haute._output_assembler import pruned_document
 from haute._types import GLOBAL_CONSTANTS_FILE, NodeType, PipelineGraph
-from haute._workbench_config import WorkbenchConfigError, read_workbench_config
-from haute._workbench_folder import read_form_document, unresolved_references
-from haute._workbench_form import WorkbenchFormError, identity_clashes
-from haute._workbench_tables import (
-    WorkbenchTablesError,
-    input_tables,
-    output_tables,
-    parse_workbench_tables,
-    table_disagreements,
-)
+from haute._workbench_config import read_workbench_config
+from haute._workbench_folder import unresolved_references
+from haute._workbench_form import identity_clashes
 from haute.deploy._config import ResolvedDeploy, test_quote_files
 from haute.deploy._scorer import (
     DeployInput,
@@ -481,47 +474,19 @@ def _project_root(resolved: ResolvedDeploy) -> Path:
 
 
 def _workbench_form_errors(resolved: ResolvedDeploy) -> list[str]:
-    """Each Workbench node's copy of its tables against the form, when the workbench is on.
+    """Whether the form the workbench nodes took their tables from fits the pipeline.
 
-    The editor copies the form's input tables into the Workbench Input and its output tables
-    into the Workbench Output, so the pipeline runs without the form; a copy that no longer
-    matches the form would deploy tables the sheets do not ask for. The form is read from its
-    folder strictly: a folder that does not exist is refused. A table a column of the
-    project's own keeps from the quote's reference and option is refused too, and so is a
-    sheet naming a table or column the schema does not hold.
+    Resolution read the form strictly, gave each Workbench Input and Workbench Output its
+    tables from it (``resolved.workbench_form``) and refused a connection to a table it does
+    not have; a table a column of the project's own keeps from the quote's reference and
+    option, and a sheet naming a table or column the schema does not hold, are refused here.
     """
-    nodes = [
-        node
-        for node in resolved.pruned_graph.nodes
-        if node.data.nodeType in (NodeType.WORKBENCH_INPUT, NodeType.WORKBENCH_OUTPUT)
-    ]
-    if not nodes:
+    document = resolved.workbench_form
+    if document is None:
         return []
-    try:
-        config = read_workbench_config(_project_root(resolved))
-        if not config.enabled:
-            return []
-        document = read_form_document(config)
-    except (WorkbenchConfigError, WorkbenchFormError) as exc:
-        return [str(exc)]
-    errors = [f"{config.form}: {clash}." for clash in identity_clashes(document.spec)]
-    errors += [f"{config.form}/{found}." for found in unresolved_references(document.spec)]
-    for node in nodes:
-        reads_quotes = node.data.nodeType == NodeType.WORKBENCH_INPUT
-        owner = "Workbench Input" if reads_quotes else "Workbench Output"
-        try:
-            defined = input_tables(document.spec) if reads_quotes else output_tables(document.spec)
-            copied = parse_workbench_tables(node.data.config.get("tables"), owner=owner)
-        except WorkbenchTablesError as exc:
-            errors.append(str(exc))
-            continue
-        found = table_disagreements(defined, copied)
-        if found:
-            errors.append(
-                f"{owner} {node.id!r} does not match {config.form}: {'; '.join(found)}. Save "
-                "the project in Haute's editor to bring its copy of the tables up to date."
-            )
-    return errors
+    form = read_workbench_config(_project_root(resolved)).form
+    errors = [f"{form}: {clash}." for clash in identity_clashes(document.spec)]
+    return errors + [f"{form}/{found}." for found in unresolved_references(document.spec)]
 
 
 def _global_constant_errors(graph: PipelineGraph) -> list[str]:

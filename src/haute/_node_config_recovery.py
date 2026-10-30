@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ast
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from types import UnionType
@@ -17,12 +17,19 @@ from typing import Any, Literal, get_args, get_origin, get_type_hints
 
 from haute._api_input_schema import ApiInputSchemaError, validate_v2_schema
 from haute._config_io import palette_default_config
-from haute._config_validation import _TYPED_DICT_BY_NODE_TYPE, validate_optimiser_input_selectors
+from haute._config_validation import (
+    _TYPED_DICT_BY_NODE_TYPE,
+    FORM_GIVEN_KEYS,
+    VALID_KEYS,
+    validate_optimiser_input_selectors,
+)
 from haute._contracts import Contract
+from haute._edge_join import build_edge_join_kwargs
 from haute._explore_charts import validate_explore_charts
 from haute._explore_overview import validate_explore_overview
 from haute._explore_pivots import validate_explore_pivot_state
-from haute._io import EXTERNAL_FILE_TYPES
+from haute._model_source import MODEL_SOURCE_TYPES, parse_model_source
+from haute._node_apply import constant_frame, scenario_step_count, validate_external_file_config
 from haute._output_assembler import OutputMappingSchemaError, validate_v2_output_mapping
 from haute._polars_io_registry import (
     PolarsIoConfigError,
@@ -31,7 +38,6 @@ from haute._polars_io_registry import (
 )
 from haute._polars_steps import (
     DEFAULT_JOIN_ORDER,
-    JOIN_MAINTAIN_ORDER,
     PolarsStepError,
     is_stepped_config,
     render_polars_steps,
@@ -47,8 +53,7 @@ from haute._types import (
     NodeType,
     RatingTable,
 )
-from haute._workbench_tables import WorkbenchTablesError, parse_workbench_tables
-from haute.errors import ConfigError
+from haute.errors import ConfigError, HauteError
 from haute.modelling._descriptors import DESCRIPTORS
 from haute.modelling._train_config import (
     TrainingConfigError,
@@ -132,8 +137,10 @@ def _field_hints(node_type: NodeType, raw: dict[str, Any]) -> dict[str, Any]:
         result["tables"] = list[RatingTable]
     if node_type is NodeType.CONSTANT:
         result["values"] = list[dict[str, Any]]
-    if node_type is NodeType.CONSTANT:
-        result["values"] = list[dict[str, Any]]
+    # A workbench node is given these from the form where it runs; a config holding them,
+    # as an earlier Haute's copies, has them removed as retired fields.
+    for key in FORM_GIVEN_KEYS.get(node_type, frozenset()):
+        result.pop(key, None)
     return result
 
 
@@ -386,73 +393,125 @@ def _reconcile_value(
     return _UNRECOVERED
 
 
+_ENGINE_REFUSALS = (
+    ApiInputSchemaError,
+    OutputMappingSchemaError,
+    PolarsIoConfigError,
+    ConfigError,
+    TrainingConfigError,
+    ValueError,
+)
+
+
+def _refused_setting(node_type: NodeType, exc: BaseException) -> str | None:
+    """The one setting an engine refusal names, or ``None`` for a whole-config refusal.
+
+    A ``setting`` attribute names it, as do a ``field``/``missing_field`` context
+    entry; otherwise the refusal names it when exactly one context entry is a
+    setting of the node type.
+    """
+    setting = getattr(exc, "setting", None)
+    if isinstance(setting, str):
+        return setting
+    if not isinstance(exc, HauteError):
+        return None
+    for key in ("field", "missing_field"):
+        if isinstance(exc.context.get(key), str):
+            return str(exc.context[key])
+    named = [key for key in exc.context if key in VALID_KEYS.get(node_type, ())]
+    return named[0] if len(named) == 1 else None
+
+
+def _engine_issues(
+    node_type: NodeType, config: Mapping[str, Any], check: Callable[[], object]
+) -> list[RecoveryIssue]:
+    """The engine's own refusal of *config*, with its message, at the setting it names."""
+    try:
+        check()
+    except _ENGINE_REFUSALS as exc:
+        # The wording the engine's own public error contract gives the refusal.
+        message = exc.to_payload()["message"] if isinstance(exc, HauteError) else str(exc)
+        setting = _refused_setting(node_type, exc)
+        if setting is None:
+            return [_issue("", "invalid_group", message)]
+        code = "required" if config.get(setting) in (None, "") else "invalid_value"
+        return [_issue(_pointer("", setting), code, message)]
+    return []
+
+
 def _validator_issues(
     node_type: NodeType, config: dict[str, Any], input_names: Sequence[str] | None
 ) -> list[RecoveryIssue]:
-    try:
-        if node_type is NodeType.WORKBENCH_INPUT and "tables" in config:
-            parse_workbench_tables(config["tables"], owner="Workbench Input")
-        elif node_type is NodeType.WORKBENCH_OUTPUT and "tables" in config:
-            parse_workbench_tables(config["tables"], owner="Workbench Output")
-        elif node_type == NodeType.API_INPUT and "tables" in config:  # the Quote Input alone
-            validate_v2_schema(config)
-        elif node_type is NodeType.DATA_INPUT:
-            # Missing locators are completeness, not a recovery error.
-            validate_data_input_config(config, require_complete=False)
-        elif node_type is NodeType.DATA_OUTPUT:
-            validate_data_output_config(config, require_complete=False)
-        elif node_type is NodeType.BANDING:
-            validate_banding_config(config)
-        elif node_type is NodeType.RATING_STEP:
-            normalise_rating_step_config(config)
-        elif node_type is NodeType.EXPLORE:
+    """The engine's refusals of *config*, from the validators the engine itself runs.
+
+    Every path is a JSON pointer into the config. The rules written here are for
+    the node types whose engine has no validator to call.
+    """
+    issues: list[RecoveryIssue] = []
+
+    def engine(check: Callable[[], object]) -> None:
+        issues.extend(_engine_issues(node_type, config, check))
+
+    if node_type == NodeType.API_INPUT and "tables" in config:  # the Quote Input alone
+        engine(lambda: validate_v2_schema(config))
+    elif node_type is NodeType.DATA_INPUT:
+        # Missing locators are completeness, not a recovery error.
+        engine(lambda: validate_data_input_config(config, require_complete=False))
+    elif node_type is NodeType.DATA_OUTPUT:
+        engine(lambda: validate_data_output_config(config, require_complete=False))
+    elif node_type is NodeType.BANDING:
+        engine(lambda: validate_banding_config(config))
+    elif node_type is NodeType.RATING_STEP:
+        engine(lambda: normalise_rating_step_config(config))
+    elif node_type is NodeType.EXPLORE:
+
+        def explore() -> None:
             validate_explore_overview(config.get("overview", {}), context="recovery")
             validate_explore_pivot_state(
                 config.get("pivot_formulas", []), config.get("pivots", []), context="recovery"
             )
             validate_explore_charts(config.get("charts", []), context="recovery")
-        elif node_type is NodeType.OUTPUT:
-            validate_v2_output_mapping(config.get("outputMapping", []))
-        elif node_type is NodeType.MODELLING:
-            if "evaluation" in config:
-                evaluation = parse_evaluation_config(config["evaluation"])
-                parse_tuning_config(
-                    config.get("tuning"),
-                    algorithm=str(config.get("algorithm", "")),
-                    base_params=config.get("params", {}),
-                    evaluation=evaluation,
-                    configured_metrics=config.get("metrics", []),
-                )
-        elif (
-            node_type in (NodeType.OPTIMISER, NodeType.OPTIMISER_APPLY) and input_names is not None
-        ):
-            validate_optimiser_input_selectors(
+
+        engine(explore)
+    elif node_type is NodeType.OUTPUT:
+        engine(lambda: validate_v2_output_mapping(config.get("outputMapping", [])))
+    elif node_type is NodeType.MODELLING and "evaluation" in config:
+
+        def modelling() -> None:
+            evaluation = parse_evaluation_config(config["evaluation"])
+            parse_tuning_config(
+                config.get("tuning"),
+                algorithm=str(config.get("algorithm", "")),
+                base_params=config.get("params", {}),
+                evaluation=evaluation,
+                configured_metrics=config.get("metrics", []),
+            )
+
+        engine(modelling)
+    elif node_type in (NodeType.OPTIMISER, NodeType.OPTIMISER_APPLY) and input_names is not None:
+        engine(
+            lambda: validate_optimiser_input_selectors(
                 node_type, config, input_names, node_label="recovery"
             )
-    except (
-        ApiInputSchemaError,
-        WorkbenchTablesError,
-        OutputMappingSchemaError,
-        PolarsIoConfigError,
-        ConfigError,
-        TrainingConfigError,
-        ValueError,
-    ) as exc:
-        return [_issue("", "invalid_group", str(exc))]
-    issues: list[RecoveryIssue] = []
-    if node_type is NodeType.EDGE_JOIN and config.get("maintainOrder") not in JOIN_MAINTAIN_ORDER:
-        issues.append(
-            _issue(
-                "maintainOrder",
-                "required" if config.get("maintainOrder") is None else "invalid_value",
-                "Choose the joined rows' order: none, left, right, left_right or right_left.",
-            )
         )
+    if issues:
+        # A refused structure leaves nothing for the field rules below to judge.
+        return issues
+    if node_type is NodeType.EDGE_JOIN:
+        engine(lambda: build_edge_join_kwargs(config))
+    elif node_type is NodeType.SCENARIO_EXPANDER:
+        engine(lambda: scenario_step_count(config))
+    elif node_type is NodeType.CONSTANT:
+        engine(lambda: constant_frame(config.get("values") or []))
+    elif node_type is NodeType.EXTERNAL_FILE:
+        engine(lambda: validate_external_file_config(config))
+    elif node_type is NodeType.MODEL_SCORE and config.get("sourceType") in MODEL_SOURCE_TYPES:
+        engine(lambda: parse_model_source(config))
     if node_type is NodeType.LIVE_SWITCH:
         mapping = config.get("input_scenario_map")
         if not isinstance(mapping, dict):
             issues.append(
-                _issue("input_scenario_map", "required", "A live switch needs a scenario map.")
+                _issue("/input_scenario_map", "required", "A live switch needs a scenario map.")
             )
         elif input_names is not None:
             for name in input_names:
@@ -468,57 +527,11 @@ def _validator_issues(
                 if name not in input_names or not isinstance(scenario, str) or not scenario:
                     issues.append(
                         _issue(
-                            f"input_scenario_map.{name}",
+                            _pointer("/input_scenario_map", name),
                             "invalid_reference",
                             "Mapping must use an exact connected input and a non-empty scenario.",
                         )
                     )
-    if node_type is NodeType.SCENARIO_EXPANDER:
-        required = ("quote_id", "column_name", "step_column")
-        for field in required:
-            if not isinstance(config.get(field), str) or not config[field]:
-                issues.append(_issue(field, "required", f"{field} is required."))
-        if any(field not in config for field in ("min_value", "max_value", "stepCount")):
-            issues.append(
-                _issue("", "incomplete_range", "Scenario range and stepCount are required.")
-            )
-        elif (
-            type(config["stepCount"]) is not int
-            or config["stepCount"] <= 0
-            or type(config["min_value"]) not in (int, float)
-            or type(config["max_value"]) not in (int, float)
-            or config["min_value"] > config["max_value"]
-        ):
-            issues.append(
-                _issue(
-                    "",
-                    "invalid_range",
-                    "Scenario range must have ordered numbers and positive integer steps.",
-                )
-            )
-    if node_type is NodeType.CONSTANT:
-        values = config.get("values")
-        if not isinstance(values, list):
-            issues.append(_issue("values", "required", "Constants require a values list."))
-        else:
-            names: set[str] = set()
-            for index, value in enumerate(values):
-                if (
-                    not isinstance(value, dict)
-                    or not isinstance(value.get("name"), str)
-                    or not value["name"].isidentifier()
-                    or value["name"] in names
-                    or "value" not in value
-                ):
-                    issues.append(
-                        _issue(
-                            f"values[{index}]",
-                            "invalid_constant",
-                            "Each constant needs a unique valid name and literal value.",
-                        )
-                    )
-                elif value["name"]:
-                    names.add(value["name"])
     if is_stepped_config(node_type, config):
         # A raw sidecar candidate carries no derived ``_steps_error``, so the
         # steps are rendered here rather than trusting a field the node data
@@ -537,69 +550,57 @@ def _validator_issues(
             except PolarsStepError as exc:
                 problem = str(exc)
         if problem:
-            issues.append(_issue("steps", "incomplete", str(problem)))
+            issues.append(_issue("/steps", "incomplete", str(problem)))
     elif node_type is NodeType.POLARS and (
         not isinstance(config.get("code"), str) or not config["code"].strip()
     ):
-        issues.append(_issue("code", "required", "Polars code must be non-empty."))
+        issues.append(_issue("/code", "required", "Polars code must be non-empty."))
     elif node_type is NodeType.POLARS:
         try:
             ast.parse(config["code"])
         except SyntaxError as exc:
-            issues.append(_issue("code", "invalid_syntax", exc.msg))
-    if node_type is NodeType.EXTERNAL_FILE:
-        if not isinstance(config.get("path"), str) or not config["path"]:
-            issues.append(_issue("path", "required", "External file path is required."))
-        if config.get("fileType") not in EXTERNAL_FILE_TYPES:
-            issues.append(
-                _issue("fileType", "invalid_value", "Select a supported external file type.")
-            )
-    if node_type in (NodeType.MODEL_SCORE, NodeType.OPTIMISER_APPLY):
+            issues.append(_issue("/code", "invalid_syntax", exc.msg))
+    if node_type is NodeType.OPTIMISER_APPLY:
         source = config.get("sourceType")
-        source_field: str = (
+        source_field = (
             "run_id"
             if source == "run"
             else "registered_model"
             if source == "registered"
-            else "model_path"
-            if node_type is NodeType.MODEL_SCORE
             else "artifact_path"
         )
         if source and (not isinstance(config.get(source_field), str) or not config[source_field]):
             issues.append(
-                _issue(source_field, "required", f"{source_field} is required for {source}.")
+                _issue(
+                    _pointer("", source_field),
+                    "required",
+                    f"{source_field} is required for {source}.",
+                )
             )
     if node_type is NodeType.MODELLING:
         for field in ("target", "algorithm"):
             if not isinstance(config.get(field), str) or not config[field]:
-                issues.append(_issue(field, "required", f"{field} is required."))
+                issues.append(_issue(_pointer("", field), "required", f"{field} is required."))
         if config.get("algorithm") in DESCRIPTORS:
             objective_problem = training_objective_issue(config)
             if objective_problem:
                 issues.append(_issue("", "incomplete_objective", objective_problem))
-    if node_type is NodeType.EDGE_JOIN:
-        how = config.get("how", "left")
-        if how not in {"inner", "left", "right", "full", "semi", "anti", "cross", "asof"}:
-            issues.append(_issue("how", "invalid_value", "Select a supported join kind."))
-        on, left_on, right_on = config.get("on"), config.get("leftOn"), config.get("rightOn")
-        if on is not None and (left_on is not None or right_on is not None):
-            issues.append(
-                _issue("", "invalid_group", "Use either on or the paired leftOn/rightOn keys.")
-            )
-        if (left_on is None) != (right_on is None):
-            issues.append(
-                _issue("", "invalid_group", "leftOn and rightOn must be configured together.")
-            )
     if node_type is NodeType.OPTIMISER:
         if not isinstance(config.get("objective"), str) or not config["objective"]:
-            issues.append(_issue("objective", "required", "Optimiser objective is required."))
+            issues.append(_issue("/objective", "required", "Optimiser objective is required."))
         for field in ("max_iter", "frontier_steps", "max_cd_iterations"):
             if field in config and (type(config[field]) is not int or config[field] <= 0):
-                issues.append(_issue(field, "invalid_value", "Control must be a positive integer."))
+                issues.append(
+                    _issue(
+                        _pointer("", field), "invalid_value", "Control must be a positive integer."
+                    )
+                )
         for field in ("tolerance", "cd_tolerance"):
             if field in config and (type(config[field]) not in (int, float) or config[field] <= 0):
                 issues.append(
-                    _issue(field, "invalid_value", "Tolerance must be a positive number.")
+                    _issue(
+                        _pointer("", field), "invalid_value", "Tolerance must be a positive number."
+                    )
                 )
     return issues
 
@@ -623,9 +624,17 @@ def validate_recovery_config(
     has_shape_errors = False
     for key, value in config.items():
         if key not in hints:
-            issues.append(_issue(key, "unknown_field", "Unknown configuration field.", "warning"))
+            issues.append(
+                _issue(
+                    _pointer("", key), "unknown_field", "Unknown configuration field.", "warning"
+                )
+            )
         elif not _valid(value, hints[key]):
-            issues.append(_issue(key, "invalid_value", "Value does not match its declared shape."))
+            issues.append(
+                _issue(
+                    _pointer("", key), "invalid_value", "Value does not match its declared shape."
+                )
+            )
             has_shape_errors = True
     discriminant = _DISCRIMINANTS.get(node_type)
     if discriminant:
@@ -633,7 +642,7 @@ def validate_recovery_config(
         if not isinstance(value, str) or value not in discriminant[1]:
             issues.append(
                 _issue(
-                    discriminant[0],
+                    _pointer("", discriminant[0]),
                     "unknown_discriminant",
                     f"Select a supported {discriminant[0]}.",
                 )
@@ -644,7 +653,7 @@ def validate_recovery_config(
         try:
             Contract.from_user_declared(config["contract"])
         except ValueError as exc:
-            issues.append(_issue("contract", "invalid_value", str(exc)))
+            issues.append(_issue("/contract", "invalid_value", str(exc)))
     issues.extend(_validator_issues(node_type, config, input_names))
     return issues
 

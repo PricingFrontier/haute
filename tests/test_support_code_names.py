@@ -7,6 +7,7 @@ Support code is the root and submodel preambles, the preserved blocks, the
 
 from __future__ import annotations
 
+import sys
 import textwrap
 from pathlib import Path
 
@@ -241,11 +242,31 @@ def test_the_support_code_rule(
     assert _violations(graph, **modules) == expected
 
 
+_MATCH_AND_TYPE_BINDINGS = [
+    pytest.param(
+        "match 1:\n    case 1:\n        rate_lookup = 2\n", "rate_lookup", id="match-case-body"
+    ),
+    pytest.param("match 1:\n    case rate_lookup:\n        pass\n", "rate_lookup", id="capture"),
+    pytest.param(
+        "match []:\n    case [*rate_lookup]:\n        pass\n", "rate_lookup", id="star-capture"
+    ),
+    pytest.param(
+        "match {}:\n    case {**rate_lookup}:\n        pass\n", "rate_lookup", id="mapping-rest"
+    ),
+    *(
+        [pytest.param("type rate_lookup = int\n", "rate_lookup", id="type-alias")]
+        if sys.version_info >= (3, 12)
+        else []
+    ),
+]
+
+
 @pytest.mark.parametrize(
     ("preamble", "name"),
     [
         pytest.param("for rate_lookup in range(3):\n    pass\n", "rate_lookup", id="loop-target"),
         pytest.param("with open('x') as rate_lookup:\n    pass\n", "rate_lookup", id="with-target"),
+        *_MATCH_AND_TYPE_BINDINGS,
     ],
 )
 def test_block_targets_in_a_preamble_are_bindings(preamble: str, name: str) -> None:

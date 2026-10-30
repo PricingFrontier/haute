@@ -62,6 +62,7 @@ from haute._pipeline_settings import project_pipeline_settings
 from haute._registry import ensure_registry_ready
 from haute._sandbox import (
     compile_project_code,
+    is_contained,
     project_code_module,
     safe_globals,
     validate_user_code,
@@ -1866,7 +1867,7 @@ def _contain_output_path(
                 source = root / source
             base = source.resolve().parent
         out = (base / raw).resolve()
-    if not out.is_relative_to(root):
+    if not is_contained(root, out):
         raise RuntimePathOutsideProjectError(
             f"Sink path {resolved_path!r} resolves outside the project root"
         )
@@ -1896,7 +1897,7 @@ def _validate_output_publish_paths(
 
     resolved_final = final.resolve()
     resolved_staging = staging.resolve()
-    if not resolved_final.is_relative_to(root) or not resolved_staging.is_relative_to(root):
+    if not is_contained(root, resolved_final) or not is_contained(root, resolved_staging):
         raise ValueError("Data output path resolves outside the project root")
 
 
@@ -1956,7 +1957,7 @@ def _cleanup_output_staging_path(
 ) -> None:
     """Remove a failed staging artefact without following a swapped path outside the project."""
     root = Path(project_root).resolve()
-    if not staging_path.resolve().is_relative_to(root):
+    if not is_contained(root, staging_path.resolve()):
         logger.warning("data_output_stage_cleanup_blocked", path=str(staging_path))
         return
     try:

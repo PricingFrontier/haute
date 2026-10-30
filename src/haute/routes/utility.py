@@ -22,7 +22,7 @@ from fastapi import Path as PathParam
 
 from haute._config_io import is_windows_reserved_filename
 from haute._file_ops import atomic_create_text, atomic_write_text, file_revision
-from haute._io import read_user_text
+from haute._io import read_user_source, read_user_text
 from haute._logging import get_logger
 from haute._sandbox import contained_path
 from haute.routes._helpers import discover_pipelines, pipeline_dir, project_write
@@ -200,8 +200,8 @@ def _refuse_new_name_violations(module: str, content: str) -> None:
     for pipeline_file in discover_pipelines():
         # A registered submodel may star-import the module though the root
         # file never names it, so every pipeline is parsed.
-        source = read_user_text(pipeline_file)
         try:
+            _raw, source = read_user_source(pipeline_file)
             violations = [
                 {
                     violation.message()
@@ -214,7 +214,7 @@ def _refuse_new_name_violations(module: str, content: str) -> None:
                 }
                 for reader in (current, edited)
             ]
-        except (HauteError, OSError, UnicodeError) as exc:
+        except (HauteError, OSError) as exc:
             logger.info("utility_check_pipeline_skipped", path=str(pipeline_file), error=str(exc))
             continue
         before, after = violations

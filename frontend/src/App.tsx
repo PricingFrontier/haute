@@ -75,7 +75,7 @@ import { captureUncaptured } from "./stores/saveCapture"
 import useToastStore from "./stores/useToastStore"
 import useWorkbenchStore from "./stores/useWorkbenchStore"
 import ViewSwitcher from "./workbench/ViewSwitcher"
-import useWorkbenchTables from "./hooks/useWorkbenchTables"
+import useWorkbenchConnections from "./hooks/useWorkbenchConnections"
 import useNodeResultsStore from "./stores/useNodeResultsStore"
 import { refreshNodeDataCache } from "./hooks/useNodeDataCache"
 import { stopNodeWork, useNodeWorkRunning } from "./stores/useNodeWorkStore"
@@ -169,6 +169,9 @@ const proOptions = { hideAttribution: true }
 // One-shot sessionStorage flag set just before the post-restore reload, read once
 // on the next startup so the reloaded page can say what was restored.
 const JUST_RESTORED_KEY = "haute:justRestored"
+
+// A project save whose fetch of the workbench's tables failed saves no pipeline.
+const WORKBENCH_TABLES_UNREAD = "The pipeline was not saved: the workbench's tables could not be read."
 
 // Save and Commit while a git action left files out of step (the toolbar's Files in use).
 const filesInUseRefusal = (doing: "saving" | "committing") =>
@@ -695,7 +698,6 @@ function NodePropertiesPanel({
           onSwapEdgeJoinInputs={onSwapEdgeJoinInputs}
           readOnly={editingReadOnly}
           documentReadOnly={documentEditingReadOnly}
-          insideSubmodel={isInsideSubmodel}
           scopedSave={scopedSave}
           onRefreshPreview={onRefreshPreview}
           dimmed={!selectedNode && !!activePanelNodeId}
@@ -739,7 +741,7 @@ function FlowEditor() {
   // Core ReactFlow state with undo/redo
   const {
     nodes, edges,
-    setNodes, setEdges, setNodesAndEdges, setNodesAndEdgesAndSubmodels, setNodesAndEdgesAndSubmodelsRaw,
+    setNodes, setEdges, setNodesAndEdges, setNodesAndEdgesAndSubmodels,
     setNodesRaw, setEdgesRaw, setSubmodelsRaw,
     onNodesChange, onEdgesChange,
     undo, redo, canUndo, canRedo, pushSnapshot,
@@ -753,8 +755,8 @@ function FlowEditor() {
   const paletteOpen = useUIStore((s) => s.paletteOpen)
   const setPaletteOpen = useUIStore((s) => s.setPaletteOpen)
   // The project's workbench (specs/workbench): whether it is enabled decides what the
-  // palette offers and whether the workbench nodes' copies are kept current. While its
-  // view shows, the pipeline editor stays mounted but hidden, inert and deaf to the keyboard.
+  // palette offers and whether its tables, the workbench nodes' ports, are fetched. While
+  // its view shows, the pipeline editor stays mounted but hidden, inert and deaf to the keyboard.
   const workbenchEnabled = useWorkbenchStore((s) => s.enabled)
   const pipelineActive = useWorkbenchStore((s) => s.activeView === "pipeline")
   useEffect(() => {
@@ -1258,13 +1260,6 @@ function FlowEditor() {
     ])
   }, [])
 
-  // A node update is an undo step, but for one that follows the form rather than an edit
-  // of the graph: the workbench nodes' copies of its tables.
-  const commitGraphUpdate = useCallback((nodes: Node[], edges: Edge[], submodels: Record<string, unknown>, history: boolean) => {
-    if (history) setNodesAndEdgesAndSubmodels(nodes, edges, submodels)
-    else setNodesAndEdgesAndSubmodelsRaw(nodes, edges, submodels)
-  }, [setNodesAndEdgesAndSubmodels, setNodesAndEdgesAndSubmodelsRaw])
-
   const { onUpdateNode, onRenameNode, waitForPendingCommits } = useGraphCommitController({
     graphRef,
     submodelsRef,
@@ -1274,17 +1269,19 @@ function FlowEditor() {
     resolveNodeIdentities,
     resolveRenameIdentities,
     readNamingContextKey,
-    commitGraph: commitGraphUpdate,
+    commitGraph: setNodesAndEdgesAndSubmodels,
     setSelectedNode,
     addToast,
   })
 
-  // A Workbench Input and a Workbench Output keep their copies of the workbench's
-  // tables current; they are at the top level, so only that level is updated.
-  const { nodeCreated, bringUpToDate, copiesCurrent } = useWorkbenchTables({
+  // A Workbench Input's and a Workbench Output's ports are the workbench's tables, at the
+  // top level and inside a submodel alike: their connections to a table the form no longer
+  // has are removed from the graph the editor shows.
+  const { holdConnections } = useWorkbenchConnections({
     graphRef,
-    onUpdateNode,
-    editable: !editingReadOnly && viewStack.length === 1,
+    commitEdges: setEdgesRaw,
+    editable: !editingReadOnly,
+    addToast,
   })
 
   const {
@@ -1301,21 +1298,22 @@ function FlowEditor() {
   // The project's save, as it runs: Save and Ctrl/Cmd+S in either toolbar, and
   // the git flows before a milestone, a move, a branch switch or an identity
   // retry. The workbench's form first, when it holds unsaved edits or a save the
-  // ledger did not capture, then the workbench nodes' copies brought up to date
-  // with it, then the pipeline through the graph-commit fence, so what is saved
-  // runs on the form that was saved; a pipeline whose copies could not be
-  // brought up to date is not saved. The form store is a lazy chunk, imported
-  // here only while the workbench is enabled and never on start.
+  // ledger did not capture, then its tables fetched afresh, so the workbench
+  // nodes' ports are the saved form's and a connection to a table it no longer
+  // has is removed, then the pipeline through the graph-commit fence, so what is
+  // saved runs on the form that was saved; a pipeline whose tables could not be
+  // read is not saved, rather than saved with connections the form may not hold.
+  // The form store is a lazy chunk, imported here only while the workbench is
+  // enabled and never on start.
   const saveProjectNow = useCallback(async (): Promise<boolean> => {
     // The fence that disables Save in both toolbars, and the pipeline save's own
     // checks, read as they are now: before the form is saved, and again after each
     // wait, since a submodel can open, the assistant's turn can start or the document
     // can change while the save waits. A save asked for inside a submodel, during the
     // assistant's turn or of a document that cannot be saved is refused by the
-    // pipeline's save anyway, or would carry copies that cannot be brought up to date;
-    // refused before the form is saved it never leaves the pipeline's copies behind
-    // the form on disk, and refused after, it saves no pipeline on a fence that closed
-    // meanwhile, rather than one behind the form just saved.
+    // pipeline's save anyway; refused before the form is saved it never saves the
+    // form ahead of a pipeline that is not, and refused after, it saves no pipeline
+    // on a fence that closed meanwhile.
     const refused = (): boolean => {
       if (parentGraphRef.current) {
         addToast("error", "Return to the main pipeline before saving.")
@@ -1337,57 +1335,42 @@ function FlowEditor() {
     // What earlier writes left off the ledger is captured first; a capture that fails
     // says so, and the project is saved all the same.
     await captureUncaptured()
-    if (useWorkbenchStore.getState().enabled) {
+    const workbench = useWorkbenchStore.getState()
+    if (workbench.enabled) {
       const { default: formStore } = await import("./stores/useWorkbenchFormStore")
       // A form save refused (stale, or failed) saves no pipeline: what is saved runs on
-      // the form that was saved, never on copies of a form the view does not show.
+      // the form that was saved, never over a form the view does not show.
       if (!(await formStore.getState().flush())) return false
       if (refused()) return false
-      const brought = await bringUpToDate()
+      workbench.refreshTables()
+      const read = await workbench.awaitTables()
       if (refused()) return false
-      if (!brought) {
-        addToast("error", "The pipeline was not saved: its workbench nodes could not be brought up to date with the workbench's tables.")
+      if (!read) {
+        addToast("error", WORKBENCH_TABLES_UNREAD)
         return false
       }
     }
-    // Through the graph-commit fence: an update of a node still resolving its identity,
-    // a workbench copy's among them, lands or fails before the pipeline is saved, and a
-    // failure saves nothing.
+    // Through the graph-commit fence: an update of a node still resolving its identity
+    // lands or fails before the pipeline is saved, and a failure saves nothing.
     const pending = await waitForPendingCommits()
     if (!pending.ok) {
       addToast("error", pending.error)
       return false
     }
-    // An undo while the save waited can put back a copy older than the form's tables: it is
-    // brought up to them again, and the save waits for that update once more. A copy still
-    // behind after that saves nothing.
-    if (useWorkbenchStore.getState().enabled) {
-      let copies = copiesCurrent()
-      if (copies === "sent") {
-        const settled = await waitForPendingCommits()
-        if (!settled.ok) {
-          addToast("error", settled.error)
-          return false
-        }
-        copies = copiesCurrent()
-      }
-      if (copies !== "current") {
-        addToast("error", "The pipeline was not saved: its workbench nodes could not be brought up to date with the workbench's tables.")
-        return false
-      }
-    }
     if (refused()) return false
+    // The connections held to the tables just fetched at once, rather than on a render:
+    // one an undo put back while the save waited goes too.
+    if (workbench.enabled && !holdConnections()) {
+      addToast("error", WORKBENCH_TABLES_UNREAD)
+      return false
+    }
     return handleSave()
-  }, [addToast, bringUpToDate, copiesCurrent, handleSave, waitForPendingCommits])
+  }, [addToast, handleSave, holdConnections, waitForPendingCommits])
   const saveProjectNowRef = useRef(saveProjectNow)
   useEffect(() => { saveProjectNowRef.current = saveProjectNow }, [saveProjectNow])
 
   // Project saves take turns, as the form store's saves do: a Save pressed while
-  // one runs waits for it and then saves the project as it stands by then. Two
-  // running at once would each fetch the tables, the second fetch superseding the
-  // first fetch's updates of the workbench nodes, and a save waits for every update
-  // of the nodes, a superseded one counting as a failure, so both would be refused
-  // and the pipeline saved by neither.
+  // one runs waits for it and then saves the project as it stands by then.
   const [projectSaveTurn] = useState(serial)
   const saveProject = useCallback((): Promise<boolean> => projectSaveTurn(() => saveProjectNowRef.current()), [projectSaveTurn])
 
@@ -1624,6 +1607,7 @@ function FlowEditor() {
       panelGraph.allNodes,
       panelGraph.edges,
       submodelsRef.current,
+      useWorkbenchStore.getState().tables,
     ).ok
   }, [editingReadOnly, isBoundaryConnection, panelGraph])
 
@@ -1640,6 +1624,7 @@ function FlowEditor() {
       panelGraph.allNodes,
       panelGraph.edges,
       submodelsRef.current,
+      useWorkbenchStore.getState().tables,
     )
   }, [editingReadOnly, isBoundaryConnection, panelGraph])
 
@@ -1666,7 +1651,6 @@ function FlowEditor() {
     validateConnection,
     commitBoundaryConnection,
     deleteBoundaryEdge,
-    onNodeCreated: nodeCreated,
   })
 
   // The workbench prices its sample on the document as it is then: the whole pipeline,

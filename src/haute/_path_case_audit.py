@@ -71,6 +71,7 @@ def case_equivalent_siblings(
     stop_resolved = Path(os.path.abspath(str(stop))) if stop is not None else None
 
     segments: list[tuple[Path, str]] = []
+    # not contained_path: lexical, it bounds the ancestors the audit lists
     if stop_resolved is not None and resolved.is_relative_to(stop_resolved):
         node = resolved
         while node != stop_resolved:

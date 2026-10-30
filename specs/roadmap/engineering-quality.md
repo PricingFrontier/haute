@@ -42,10 +42,9 @@ reports 8 unused files (including the banding and rating editor barrels), the
 whole `panels/editors/index.ts` barrel of 22 editors (consumers use the lazy
 editors), 33 unused exports, 91 unused exported types and an unlisted
 `@lezer/highlight` dependency. The API client's `checkHauteSession` has no
-production caller left. The 25 October 2026 review added two parameters that are
-accepted and never read, `_resolve_node_config(n_params=...)` and
-`render_ave_feature_svg(is_categorical=...)`, which every caller computes and
-passes. `TrainService._join_preparation` says shutdown uses it, but only tests
+production caller left. The 25 October 2026 review added a parameter that is
+accepted and never read, `render_ave_feature_svg(is_categorical=...)`, which every
+caller computes and passes. `TrainService._join_preparation` says shutdown uses it, but only tests
 call it; its 10 s default exists for them alone, and an autouse fixture
 (`tests/conftest.py::_patient_preparation_join`) rewrites that default to
 120 s for every test.
@@ -80,7 +79,6 @@ is gone; tests import the owning modules.
 `frontend/src/panels/editors/banding/index.ts`;
 `frontend/src/panels/editors/rating/index.ts`;
 `frontend/src/api/client.ts::checkHauteSession`;
-`src/haute/_config_builder.py::_resolve_node_config`;
 `src/haute/modelling/_charts.py::render_ave_feature_svg`;
 `src/haute/routes/_training_lifecycle.py::TrainService._join_preparation`;
 `tests/conftest.py::_patient_preparation_join`.

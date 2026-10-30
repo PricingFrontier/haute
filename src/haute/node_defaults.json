@@ -1,9 +1,9 @@
 {
   "apiInput": {"path": ""},
-  "workbenchInput": {"tables": []},
+  "workbenchInput": {},
   "liveSwitch": {"input_scenario_map": {}},
   "output": {"outputMapping": [], "outputFormat": ""},
-  "workbenchOutput": {"tables": []},
+  "workbenchOutput": {},
   "dataInput": {"inputType": "file", "format": "parquet", "mode": "scan", "path": "", "arguments": {}, "steps": []},
   "dataOutput": {"outputType": "file", "format": "parquet", "mode": "sink", "path": "", "arguments": {}},
   "explore": {"steps": []},

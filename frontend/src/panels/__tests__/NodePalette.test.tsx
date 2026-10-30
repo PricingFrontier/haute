@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest"
 import { act, render, screen, fireEvent, cleanup } from "@testing-library/react"
 import NodePalette from "../NodePalette"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
-import { NODE_TYPES } from "../../utils/nodeTypes"
+import { NODE_TYPES, NODE_TYPE_META } from "../../utils/nodeTypes"
 
 describe("NodePalette", () => {
   afterEach(cleanup)
@@ -135,23 +135,23 @@ describe("NodePalette", () => {
       expect(items[0]).toHaveAttribute("data-testid", `node-palette-item-${NODE_TYPES.WORKBENCH_INPUT}`)
     })
 
-    it("drags a Workbench Input with the newest tables and sample fetched, or none until they are", () => {
-      useWorkbenchStore.setState({ enabled: true, tables: null })
+    it("drags a Workbench Input and a Workbench Output with their plain default config, holding nothing of the tables fetched", () => {
+      // Their ports are the tables the workbench store fetched, not anything in the node.
+      useWorkbenchStore.setState({
+        enabled: true,
+        tables: { tables, sample: { policy_details: { state: "NY" } }, responseTables, fetch: 1 },
+      })
       render(<NodePalette />)
-      expect(dragConfig("Workbench Input", NODE_TYPES.WORKBENCH_INPUT)).toEqual({ tables: [], sample: {} })
 
-      const sample = { policy_details: { state: "NY" } }
-      act(() => useWorkbenchStore.setState({ tables: { tables, sample, responseTables: [], fetch: 1 } }))
-      expect(dragConfig("Workbench Input", NODE_TYPES.WORKBENCH_INPUT)).toEqual({ tables, sample })
-    })
-
-    it("drags a Workbench Output with the newest response tables fetched, or none until they are", () => {
-      useWorkbenchStore.setState({ enabled: true, tables: null })
-      render(<NodePalette />)
-      expect(dragConfig("Workbench Output", NODE_TYPES.WORKBENCH_OUTPUT)).toEqual({ tables: [] })
-
-      act(() => useWorkbenchStore.setState({ tables: { tables: [], sample: {}, responseTables, fetch: 1 } }))
-      expect(dragConfig("Workbench Output", NODE_TYPES.WORKBENCH_OUTPUT)).toEqual({ tables: responseTables })
+      for (const [name, type] of [
+        ["Workbench Input", NODE_TYPES.WORKBENCH_INPUT],
+        ["Workbench Output", NODE_TYPES.WORKBENCH_OUTPUT],
+      ] as const) {
+        const config = dragConfig(name, type)
+        expect(config).toEqual(NODE_TYPE_META[type].defaultConfig)
+        expect(config).not.toHaveProperty("tables")
+        expect(config).not.toHaveProperty("sample")
+      }
     })
 
     it("greys out the Workbench Input while the pipeline has either request input", () => {

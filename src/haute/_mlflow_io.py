@@ -55,7 +55,9 @@ from haute._model_flavors import (
     model_file_suffixes,
     supported_model_files_description,
 )
+from haute._sandbox import contained_path
 from haute._stat_gated_cache import StatGatedCache, artifact_cache_key, resolve_artifact_path
+from haute.errors import PathOutsideProjectError
 
 if TYPE_CHECKING:
     from catboost import CatBoostClassifier, CatBoostRegressor
@@ -318,13 +320,12 @@ def _artifact_cache_path(
     digest = sha256(artifact_path.encode("utf-8")).hexdigest()
     suffix = PurePosixPath(artifact_path).suffix
     file_name = f"artifact{suffix}" if suffix else "artifact"
-    cache_root_abs = cache_root.resolve()
-    candidate = (cache_root / backend_digest / run_id / digest / file_name).resolve()
-    if not candidate.is_relative_to(cache_root_abs):
+    try:
+        return contained_path(cache_root, Path(backend_digest) / run_id / digest / file_name)
+    except PathOutsideProjectError:
         raise ValueError(
             f"Invalid artifact cache identity: run_id={run_id!r}, artifact_path={artifact_path!r}"
-        )
-    return candidate
+        ) from None
 
 
 @contextmanager

@@ -122,6 +122,8 @@ from haute._submodel_instances import qualified_runtime_node_id, resolve_submode
 from haute._support_code_names import name_violations, utility_reader
 from haute._topo import ancestors
 from haute._types import GlobalConstant, GraphEdge, GraphNode, NodeData, SubmodelDefinition
+from haute._workbench_config import WorkbenchError
+from haute._workbench_tables import WorkbenchTablesError
 from haute._worker_isolation import (
     IsolatedWorkerCrashedError,
     IsolatedWorkerMemoryLimitExceededError,
@@ -1709,7 +1711,7 @@ async def _preview_canonical_graph(
                 # A graph the flattener refuses (a name collision, an undeclared
                 # handle) is shown on the node, as a graph-shape issue the run meets
                 # is; every other route that takes a graph answers it 400.
-                graph = flatten_executable_graph(body.graph)
+                graph = flatten_executable_graph(body.graph, form=body.workbench_form)
                 _ensure_source_file(graph)
                 if not graph.nodes:
                     raise HTTPException(status_code=400, detail="Empty graph")
@@ -1818,7 +1820,8 @@ async def preview_inputs(body: PreviewInputsRequest) -> PreviewInputsResponse:
     """
     try:
         graph = flatten_executable_graph(body.graph)
-    except (ParseError, ConfigError) as e:
+    except (ParseError, ConfigError, WorkbenchError, WorkbenchTablesError) as e:
+        # A form the workbench nodes cannot read is the preview's to report, as a shape is.
         logger.info("preview_inputs_graph_invalid", error=str(e))
         return PreviewInputsResponse(input_node_ids=[])
     _ensure_source_file(graph)

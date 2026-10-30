@@ -143,17 +143,6 @@ export default function useGraphCanvasState(
     [],
   )
 
-  const setNodesAndEdgesAndSubmodelsRaw = useCallback(
-    (
-      nodesUpdater: Node[] | ((nds: Node[]) => Node[]),
-      edgesUpdater: Edge[] | ((eds: Edge[]) => Edge[]),
-      submodels: Record<string, unknown>,
-    ) => {
-      useGraphStore.getState().setNodesAndEdgesAndSubmodelsRaw(nodesUpdater, edgesUpdater, submodels)
-    },
-    [],
-  )
-
   const setSubmodelsRaw = useCallback((submodels: Record<string, unknown>) => {
     useGraphStore.getState().setSubmodelsRaw(submodels)
   }, [])
@@ -187,7 +176,6 @@ export default function useGraphCanvasState(
     setEdges,
     setNodesAndEdges,
     setNodesAndEdgesAndSubmodels,
-    setNodesAndEdgesAndSubmodelsRaw,
     setNodesRaw,
     setEdgesRaw,
     setSubmodelsRaw,

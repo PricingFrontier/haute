@@ -345,7 +345,8 @@ def build_release(
             _validate_base_image_pinning(base_image)
         except DeployError as exc:
             raise WorkbenchAppError(f"[deploy.container] base_image: {exc.message}") from exc
-    resolved = resolve_config(deploy_config)
+    # The workbench nodes take their tables from the form this release ships, read once.
+    resolved = resolve_config(deploy_config, form=document)
     # Built beside the release it replaces, which is left as it is until this one has built.
     building = release_dir.with_name(f".{release_dir.name}.building-{uuid.uuid4().hex[:8]}")
     try:
@@ -414,6 +415,7 @@ def _check_output(project_dir: Path, release_dir: Path) -> None:
         (project_dir, "the project"),
         (Path.cwd().resolve(), "the working directory"),
     ):
+        # not contained_path: the other direction, the release folder must not hold it
         if protected == where or protected.is_relative_to(where):
             raise WorkbenchAppError(
                 f"{release_dir} is {what} or holds it: name a folder of the release's own, "
