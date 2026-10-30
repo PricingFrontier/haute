@@ -205,6 +205,47 @@ describe("useNodeHandlers - handleRenameNode", () => {
     expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/invalid node/)
   })
 
+  it("refuses a plain-node instance when its parent document transform is unavailable", async () => {
+    const params = makeParams()
+    params.graphRef.current = { nodes: [makeNode("source")], edges: [] }
+    const graph = params.graphRef.current
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    await act(async () => {
+      await expect(result.current.handleCreateInstance("source")).rejects.toThrow(
+        "Create Instance requires the parent document transform handler",
+      )
+    })
+
+    expect(params.graphRef.current).toBe(graph)
+    expect(params.resolveNodeIdentities).not.toHaveBeenCalled()
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+  })
+
+  it("reports a refused wrap without committing or selecting an instance", async () => {
+    const params = makeParams()
+    params.graphRef.current = { nodes: [makeNode("source")], edges: [] }
+    const graph = params.graphRef.current
+    const createWrappedNodeInstance = vi.fn(async () => ({
+      ok: false as const, error: "The pipeline changed; reload before creating an instance.",
+    }))
+    const { result } = renderHook(() => useNodeHandlers({ ...params, createWrappedNodeInstance }))
+
+    await act(async () => { await result.current.handleCreateInstance("source") })
+
+    expect(createWrappedNodeInstance).toHaveBeenCalledWith("source")
+    expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
+      type: "error", text: "The pipeline changed; reload before creating an instance.",
+    })
+    expect(params.graphRef.current).toBe(graph)
+    expect(params.resolveNodeIdentities).not.toHaveBeenCalled()
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+  })
+
   it("applies automatic layout to a non-empty graph", async () => {
     const params = makeParams()
     params.graphRef.current = { nodes: [makeNode("layout")], edges: [] }
