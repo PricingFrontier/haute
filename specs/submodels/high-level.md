@@ -449,14 +449,15 @@ across a rewire.
   place in a one-node definition: the definition and its module take the
   node's name (`modules/<name>.py`, suffixed `_2`, `_3` while a module of that
   name exists under any casing); the owner occurrence keeps the node's name,
-  position and connections, its output becoming the one public output, named
+  position and connections, and the node inside is renamed `<name>_node`,
+  since a node and the occurrence holding it may not share a name; its output becoming the one public output, named
   as its frame was, so its consumers read what they read before, and each
   incoming frame a public input named as the node read it (suffixed `_2` when
   that is the output's name, the node still reading its old name); and an unbound
   instance, named as a submodel copy is (`<name>_2`), is placed beside it.
   From then on both are ordinary occurrences: the node is edited by drilling
   into the owner, and Dissolve, once no instance references the owner, turns
-  it back into the plain node. It is one undoable editor transform through
+  it back into the plain node, under its inside name (`<name>_node`). It is one undoable editor transform through
   `POST /api/submodel/instance`, written only by Save, as grouping is. It is
   offered on every node type a definition can hold, apart from the
   document-wide singletons (`apiInput`, `workbenchInput`, `output`,

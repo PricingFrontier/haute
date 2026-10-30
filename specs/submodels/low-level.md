@@ -496,7 +496,10 @@ Acquires `save_lock` and runs the body in a threadpool, as create does:
 3. Name the definition after the node's executable name, suffixed `_2`, `_3`
    until no definition in the graph and no module in the pipeline's `modules/`
    folder has that name under any casing.
-4. Wrap: the definition's graph is the node at local position (0, 0). The
+4. Wrap: the definition's graph is the node at local position (0, 0),
+   renamed `<name>_node` (suffixed `_2`, `_3` while the naming rule refuses
+   it), since a node and the occurrence holding it may not share a name; its
+   config file follows the new name, as a rename's does. The
    node's output, when it has one, becomes one public output named by the
    node's executable name. Each incoming frame becomes a public input named by
    the executable name the node read it under (the name grouping gives a

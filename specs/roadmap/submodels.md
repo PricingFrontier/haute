@@ -92,9 +92,11 @@ aliasing.
   one-node submodel named after it (`modules/<name>.py`, suffixed `_2`, `_3`
   when that module exists), keeping the node's name, position, connections
   and output name, and places an instance beside it: one undoable edit,
-  written only by Save. From then on both are ordinary submodels: the
-  original is opened to edit the node, and Dissolve, once no instance is
-  left, turns it back into the plain node. On a submodel it places an
+  written only by Save. The node inside is named `<name>_node`, since a
+  node and the submodel holding it may not share a name. From then on both
+  are ordinary submodels: the original is opened to edit the node, and
+  Dissolve, once no instance is left, turns it back into a plain node named
+  `<name>_node`. On a submodel it places an
   instance as today. It is offered on every node type a definition can hold,
   apart from the document-wide singletons and the Source Switch.
 - **Missing columns.** For each public input both an instance and its
