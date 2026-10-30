@@ -479,31 +479,28 @@ def load_external_file_object(config: Mapping[str, Any]) -> object:
 
 
 def _resolve_runtime_data_path(data_path: str) -> str:
-    """Anchor a (possibly relative) runtime data path to the pipeline dir.
+    """Anchor a (possibly relative) runtime data path by the one anchoring rule.
 
-    Relative ``path`` values are pipeline-directory-relative (the GUI file
-    browser reports them from the pipeline's location, and codegen emits them
-    under ``Path(__file__).parent``); the cache-build route resolves them the
-    same way. Resolving at this builder seam keeps the shared runtime entry points
-    (``load_v2_api_source``, ``read_data_source``, ``load_external_object``)
-    free of duplicated resolution logic.  Absolute paths pass straight through
-    :func:`haute._path_resolution.resolve_runtime_file_path`.
+    A relative ``path`` names the project-root file first, then the one under
+    the pipeline dir (:func:`haute._path_resolution.resolve_node_input_path`),
+    as the engine and the cache-build route resolve it. Resolving at this
+    builder seam keeps the shared runtime entry points (``load_v2_api_source``,
+    ``read_data_source``, ``load_external_object``) free of duplicated
+    resolution logic. Absolute paths pass straight through.
     """
     if not data_path:
         return data_path
 
     from haute._path_case_audit import warn_if_case_ambiguous
-    from haute._path_resolution import current_runtime_project_root, resolve_runtime_file_path
+    from haute._path_resolution import current_runtime_project_root, resolve_node_input_path
 
     project_root = current_runtime_project_root()
 
     resolved = str(
-        resolve_runtime_file_path(
+        resolve_node_input_path(
             data_path,
             pipeline_dir=_configured_pipeline_dir(),
             project_root=project_root,
-            prefer="project",
-            enforce_project_root=True,
         )
     )
     # Advisory only: no normalization is applied (pinned contract), but a

@@ -179,6 +179,12 @@ plan is no longer reachable. Refresh and clear never delete a live leased genera
 including one held by another process. A superseded input generation is normally retired after
 `HAUTE_INPUT_CACHE_RETIRE_GRACE_SECONDS` (default 1800) have elapsed since the current
 generation was published. Explicit clear bypasses this grace period while preserving live leases.
+Retiring a generation, an input snapshot's or a node output's, renames it out of selection under
+the store-wide lease lock and deletes its files after the lock is released, so a reader's open
+file never leaves a half-deleted generation behind: on Windows such a file refuses the rename,
+and the generation stays whole and unpointed until a later retirement (the next release,
+refresh, clear or publication) renames it. A renamed generation whose files could not be
+deleted is swept the next time a process opens the store.
 
 Node outputs live in the same store as a `node_output` provider. A
 node-output identity is a slot — pipeline source file, node, source, and execution
@@ -211,9 +217,12 @@ publication through the publisher's first lease, and retirement atomic. Every le
 a marker file in its generation naming the owning process's token, whose liveness is an
 exclusive lock that process holds on its token file, so retirement never removes a
 generation another live process reads, and a dead owner's marker is removed. Retirement
-renames a generation out of selection under the lock and deletes its files afterwards.
-Clear removes a slot's identities, pointers, and pin but never a generation another
-operation still leases; that generation retires when released. A reader may lease a named
+renames a generation out of selection under the lock and deletes its files afterwards, as it
+does for an input snapshot. Clear removes a slot's identities, pointers, and pin but never a
+generation another operation still leases; that generation retires when released. Until it
+does, as when an open Windows handle refuses its rename, its identity stays in the slot's
+index, unpointed, as publication keeps a signature it superseded, so the slot's next
+publication or Clear retires it. A reader may lease a named
 generation, current or not, so a spawned worker reads exactly the generation its parent
 leased.
 
@@ -309,7 +318,12 @@ destination before anything is written.
 
 Malformed pointers, digest mismatches, metadata mismatches, invalid generation identifiers,
 linked, hard-linked, reparse-point, or escaping generation artifacts, or invalid Parquet
-footer/schema evidence raise `SourceCacheCorruptError`; a named generation that does not
-exist or was retired raises its `SourceCacheGenerationMissingError` subclass. Callers do not
-silently rebuild or fall back. Transient operating-system access errors propagate as
-operating-system errors so operators can retry and are not told durable data is corrupt.
+footer/schema evidence raise `SourceCacheCorruptError`, and callers do not silently rebuild or
+fall back. A generation that is gone is missing, not corrupt: a current pointer naming a
+generation whose directory no longer exists (evicted by another process, deleted by hand)
+reads as absent, as a generation in a retired layout does, so its status and the cache
+inventory report `missing`, a current lease finds no snapshot, and preparation, an explicit
+build or the next capture builds it again. Leasing a named generation that does not exist or
+was retired raises the `SourceCacheGenerationMissingError` subclass, which its caller answers
+as data that moved on. Transient operating-system access errors propagate as operating-system
+errors so operators can retry and are not told durable data is corrupt.
