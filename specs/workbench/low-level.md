@@ -43,6 +43,9 @@
 | `frontend/src/api/workbench.ts` | `fetchWorkbenchStatus`: `GET /api/workbench` through the shared request machinery, validated by the generated `workbench` contract, whose validators load with the first response. `fetchWorkbenchTables`: `GET /api/workbench/tables`, validated by the same group's `WorkbenchTablesResponse`. `fetchWorkbenchFormTables`: `POST /api/workbench/tables` with a form, validated by `WorkbenchTablesResponse`. `fetchWorkbenchForm`: `GET /api/workbench/form`, validated by `WorkbenchFormResponse`. `saveWorkbenchForm`: `PUT /api/workbench/form` with the form and its `base_revision`, in one attempt (a retry of a save that landed but lost its answer would read as stale), validated by `WorkbenchFormSaveResponse`: the form at its new revision with the save's capture. `fetchParamFile`: `GET /api/workbench/params` with a file and, given one, a column, validated by `WorkbenchParamFileResponse`: the file's header and the column's distinct values. |
 | `frontend/src/stores/useWorkbenchStore.ts` | `useWorkbenchStore`: `enabled`, whether the project's workbench is, and `formPath`, where its form is as `haute.toml` names it; `load`, which fetches the status, leaves the store untouched while the workbench is not enabled (so the editor never re-renders for it) and reports a failure as one error toast; `activeView`, which view shows (`EditorView`: `pipeline` or `workbench`), and `showView`, which refuses the workbench's view while the workbench is not enabled; `tables`, the workbench's tables, sample and response tables from the newest fetch that succeeded, and `storeColumns`, the columns the quote store keeps in each table that the form does not, from the same fetch; `refreshTables`, which numbers its fetches so that only the newest publishes them or toasts its failure; `awaitTables`, which settles with whether the newest fetch published (a superseded fetch taking the newer one's outcome); `formDirty`, the form store's `dirty` mirrored by that store for the editor's navigation guards; and `formChanges`, counted by the WebSocket client (`frontend/src/hooks/useWebSocketSync.ts`) at each frame saying the form's file changed on disk and at each connection, a change while disconnected having gone unannounced, which the form store follows. |
 | `frontend/e2e/workbench.spec.ts` | The workbench's journey in a browser against the real server (Playwright, Chromium): the workbench switched on for the end-to-end project and its sheets written, the scaffold's Quote Input and Quote Response replaced through `POST /api/pipeline/save` by a Workbench Input, a Transform and a Workbench Output, the workbench nodes' configs empty, the view opened, the schema read, a Collection dragged out of the palette onto the sheet and given its fields, drawn while building as a new quote, the sample typed and priced live in Preview with no Price or Clear, a column added to the schema, and one Save writing the component, the sample and the column to the form folder (`rating/workbench/`: the sheet's file, the table's schema file and its sample file) and then the pipeline, the Workbench Input's and Workbench Output's config files (`rating/config/workbench_input/quote.json` and `rating/config/workbench_output/response.json`) holding nothing. |
+| `frontend/e2e/workbenchProject.ts` | The journeys' project as a workbench project: `FORM_FILES` (the form as a pricing team starts it, a policy table in, a pricing table out and one blank sheet), `readFormFile` and `writeFormFiles` (the form folder's files, `FORM_FOLDER`, read and written as a save writes them), `enableWorkbench` (the workbench switched on in `haute.toml` and the form written) and `buildWorkbenchPipeline` (the scaffold's Quote Input and Quote Response replaced through `POST /api/pipeline/save` by a Workbench Input, a Transform and a Workbench Output, neither workbench node's config holding anything). |
+| `frontend/e2e/appServe.ts` | The underwriter app through `haute app serve` on the journeys' project: `buildAppPage` (the app's page built from the frontend as it stands into a folder of the journey's own, since the browser job builds no frontend and the app answers its page with a 503 without it), `startAppServe` (the command started in the project on a free loopback port, answered as an `AppServe` once its health check answers, with the release it serves, refused with the command's output when it stops first or does not answer in time; its `stop` ending the whole process tree) and `readStore` (dev's quote store, `storeFile`, read with plain SQL, opened read only). |
+| `frontend/e2e/app-quotes.spec.ts` | The underwriter app's quotes in a browser through `haute app serve` (Playwright, Chromium): the journeys' project made a workbench project, a Collection on its sheet and its test quotes the form's, its release built and served; a quote made in the New quote window, typed, priced and saved, its rows read from dev's SQLite file with SQL (`quoteRows`): the values typed in the policy table and the premium in the pricing table, under its reference and option, saved by the analyst's git identity on the release served; marked final; amended giving a reason, changed and saved again, a draft again with the new value and haute_activity holding each step; and a column added to the form, in its table once the app starts again, the quote opening at its address. |
 | `frontend/src/utils/canonicalJson.ts` | `canonicalJson`, JSON with every object's keys sorted, so two values holding the same data compare equal whatever order their keys were written in: the form store's `dirty` and the workbench store's "the nodes are given the same" both compare through it. |
 | `frontend/src/utils/workbenchTables.ts` | The rules for a workbench node's ports, which neither node holds: `WorkbenchTables` (the newest fetch: `tables`, `sample`, `responseTables`, `fetch`), `PricedSample` (the sample priced: each output table's rows by its label), `workbenchTablePorts` (tables' ports: those with a column, by name, in order, once), `workbenchNodeTables` (the tables a node of a type takes from a fetch: a Workbench Input's input tables, a Workbench Output's response tables, none before the first fetch or for another node) and `workbenchNodePorts` (their ports), `workbenchDisconnections` (the connections in a graph to a table a fetch does not have, by the node losing them, each out of a Workbench Input on none of its ports or into a Workbench Output on none of its, one through a submodel's boundary left for the run to refuse; null when every connection has its table), `dtypeFits` (whether a frame column's dtype, as previews render it, fills a column of a declared type: the backend's `column_fits` through `castFamily`), `carriesIdentity` (whether a table leads with the quote's reference and option, by place, name and type, as the server's `carries_identity`) and `columnFill` (how a Workbench Output's table's column at a place is filled, a `ColumnFill`: `haute` for the identity of a table that carries it, `missing` while nothing is connected to its table or the connected frame has no column of exactly its name, `mistyped`, with the frame's dtype, when `dtypeFits` refuses it, `filled` otherwise, and `unknown` while the connected frame's columns are). |
 | `frontend/src/hooks/useWorkbenchConnections.ts` | The hook the editor shell (`frontend/src/App.tsx`) calls to hold the workbench nodes' connections to the tables fetched: a fetch when the workbench is enabled and on each `executionGeneration`, recorded against the generation (`adoptionFetch`); while the document can change, on every newest fetch and every change of the shown graph's `edges` (an undo, a redo, a paste), `holdConnections` removes the connections `workbenchDisconnections` finds from the graph the editor shows, through `commitEdges` (`setEdgesRaw`, no undo step), reporting each node's in one warning toast ("Disconnected 1 edge from <node>: the workbench no longer has the table it read.", or "filled" for a Workbench Output's); it holds a document only to a fetch made since that document was adopted, answering false, nothing removed, while none has landed, so a save refuses rather than prune against an earlier document's form, and a failed fetch, which leaves the tables of the one before, removes nothing more. |
@@ -2137,7 +2140,14 @@ no longer has; and `InputSource` in
   sample typed and priced live in Preview with no Price or Clear, Build a new quote's again,
   a column added to the schema, and Save writing the component, the sample and the column
   to the form folder and then the pipeline, each with its toast, neither workbench node's
-  config file holding a copy.
+  config file holding a copy; its project and pipeline from `frontend/e2e/workbenchProject.ts`.
+- `frontend/e2e/app-quotes.spec.ts` drives the underwriter app in a browser through `haute app
+  serve` on the journeys' project, its page built by `frontend/e2e/appServe.ts`: a quote made,
+  typed, priced and saved, its rows read from dev's SQLite file with SQL, the values in the
+  form's input table and the price in its output table under the quote's reference and option;
+  marked final; amended giving a reason, changed and saved again, a draft again with the new
+  value and each step in haute_activity; and a column added to the form, in its table once the
+  app starts again, the quote opening at its address.
 - `frontend/src/stores/__tests__/useWorkbenchStore.test.ts` covers loading through the
   generated contract (with the form's path), the untouched store while the workbench is not
   enabled, the failure toast (also for a contract violation), `showView` refusing the
@@ -2792,12 +2802,9 @@ its roadmap package lands.
   (`src/haute/_quote_store/_schema.py::store_schema`, `src/haute/_quote_store/_store.py::make_engine`),
   changed by one planner (`src/haute/_quote_store/_migrate.py::prepare_store`) in dev and in
   each hosted environment a project declares; a started app checks `haute_store`'s record
-  and the database's catalogue, never the privileges the store needs; and no browser journey
-  drives `haute app serve`.
-- **Unresolved target.** The providers' paragraph below
-  ([WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql)) and the
-  browser journey among the testing scenarios
-  ([WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments)).
+  and the database's catalogue, never the privileges the store needs.
+- **Unresolved target.** The providers' paragraph below and its testing scenario
+  ([WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql)).
 - **Non-goals.** No route changes. The form, the sheets, the store's tables as
   `src/haute/_quote_store/_schema.py::store_schema` derives them and the app's quote routes
   are as they are.
@@ -2808,7 +2815,6 @@ its roadmap package lands.
 - **Acceptance evidence.** The testing scenarios at the end of this section, each extending
   the named module or in a new one.
 - **Roadmap package.**
-  [WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments) and
   [WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql).
 
 **Providers (WB-43).** A new module, src/haute/_quote_store/_providers.py, holds `sqlite`,
@@ -2839,10 +2845,6 @@ ODBC Driver 18 for a release that declares `sqlserver`.
 
 **Testing scenarios.**
 
-- The browser (WB-42, a new journey under frontend/e2e/ starting `haute app serve` on the
-  journeys' project): a quote saved in the app is read from dev's SQLite file with SQL,
-  marked final, amended and saved again, and a form change reaches dev's tables as the app
-  starts again.
 - Providers (WB-43, a new tests/test_quote_store_providers.py, and the store tests marked to run
   on the CI job's SQL Server and PostgreSQL containers): a built release started in a folder
   apart from its project signs in as its `release.json` declares; on SQL Server `ABC-1` and `abc-1` are

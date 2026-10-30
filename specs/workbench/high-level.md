@@ -73,9 +73,7 @@ Out of scope:
   ([WB-07](../roadmap/workbench.md#wb-07--the-underwriter-app-on-other-hosts)).
 - The underwriter app's host-side delivery: rolling a host to a release and checking it
   there ([WB-08](../roadmap/workbench.md#wb-08--the-workbench-projects-cicd)).
-- Where a deployment's quote store is configured, how a form change reaches its tables
-  ([WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments)),
-  and the server databases it will run on
+- The server databases the quote store will run on
   ([WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql)).
 - Running an Import or an Export: reading a file or a database into a table
   ([WB-09](../roadmap/workbench.md#wb-09--actions-that-fill-the-sheets)) and writing the
@@ -2565,11 +2563,10 @@ Out of scope:
 
 ## Approved change contract — the quote store as the form's own tables
 
-This section specifies the quote store's environments, schema changes and server databases
-before they are built. Every record in it is unresolved until its roadmap package lands. Each
-package folds its part into the present-tense sections of this specification and of
-[cli](../cli/high-level.md), WB-43 also into the container build's row in
-[deploy](../deploy/low-level.md)'s module map, and the last package to land removes this
+This section specifies the quote store's server databases before they are built. Every
+record in it is unresolved until its roadmap package lands, which folds it into the
+present-tense sections of this specification, of [cli](../cli/high-level.md) and of the
+container build's row in [deploy](../deploy/low-level.md)'s module map, and removes this
 section. The [low-level contract](low-level.md#approved-change-contract--the-quote-store-as-the-forms-own-tables)
 names the seams, shapes and tests.
 
@@ -2579,10 +2576,7 @@ names the seams, shapes and tests.
   there.
 - **Unresolved target.** The store runs on SQL Server and PostgreSQL besides SQLite, each
   signing the app in as its environment declares, and a started app checks the privileges the
-  store needs ([WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql));
-  a browser journey saves a quote in `haute app serve`, reads it with SQL, marks it final,
-  amends it and saves it again
-  ([WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments)).
+  store needs ([WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql)).
 - **Non-goals.** In test and prod a type, rows or role change on a column or table that holds
   values is refused, never converted; Haute drops no column or table there, adopts no table it
   did not record, and touches none of the database's other tables. No laptop reaches a hosted
@@ -2596,9 +2590,7 @@ names the seams, shapes and tests.
 - **Acceptance evidence.** Each package's acceptance tests, in the testing scenarios of the
   low-level contract.
 - **Roadmap package.**
-  [WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments) and
-  [WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql), in that
-  order.
+  [WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql).
 
 **Environments on a server.** An environment on a server database names how the app signs
 in, `managed-identity`, `service-principal` or `password`, with the names of the variables

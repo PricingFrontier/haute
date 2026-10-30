@@ -34,7 +34,6 @@ Allowed field.
 | WB-13 | Planned | P3 | An underwriter records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
-| WB-42 | Planned | P1 | A form change reaches the store's tables through one planner, by stable id, in dev on the analyst's laptop and in the hosted test and prod environments, which a project declares once and a host picks by name. |
 | WB-43 | Planned | P2 | The store runs on the database a project's IT team provides: SQL Server, Azure SQL Database and Azure SQL Managed Instance, or PostgreSQL, each a provider that passes the same store tests in CI. |
 
 ## Planned improvements
@@ -107,8 +106,8 @@ workflows; the behaviour lives in Haute's commands, which read the workbench set
 the YAML stays thin and alike across providers, and a refresh command regenerates a
 project's workflows without rewriting its pipeline or form, as `haute init --force` would.
 The deploy triggers gain each release input as it arrives, where its specification puts it:
-the app's entry point and the export templates; the store's tables follow the form (WB-42),
-which already starts the deploy. The app's delivery builds each release once. On every
+the app's entry point and the export templates; the store's tables follow the form, which
+already starts the deploy. The app's delivery builds each release once. On every
 pull request, Validate and the packaged app tested in the CI runner before any host sees it,
 against SQLite and once against the server engine IT's instance runs (a service container),
 since SQLite proves neither that engine's schema changes nor its types: the test quotes of WB-12
@@ -117,7 +116,7 @@ WB-11's formats exist, exported through the app, and the sheets driven in a brow
 merge to `main` alone, never on a push of the save branch: the merge commit built once, the
 packaged app's tests run again on that build, the image published to the registry and its
 digest recorded; the staging database migrated (`haute app migrate` with the built release,
-for the hosted environment the workflow names for staging, WB-42) and the staging app rolled
+for the hosted environment the workflow names for staging) and the staging app rolled
 to that digest, never to a tag; a hosted check that the expected release runs, that a request without
 sign-in is refused and that the app reaches its database; impact re-pricing a bounded sample
 of saved quotes from the store, through a read-only identity, on the candidate and the
@@ -130,7 +129,7 @@ digest, checked the same way, and the release that runs recorded. Rollouts take 
 maintenance window: the old revision stops, the migrate runs, the new revision starts, and
 no traffic is split; a new revision that fails to start or fails its check after the
 migrate is replaced by the previous release, the database first migrated back to that
-release's form (WB-42), and the run fails; when the candidate's plan named a step a migrate
+release's form, and the run fails; when the candidate's plan named a step a migrate
 back cannot reverse, the run fails with the app stopped, naming the restore point the
 migrate recorded, which the workflow takes from IT's backup before it migrates. The
 host step is small, and the project's IT team provides what it deploys onto (the Container
@@ -151,8 +150,8 @@ that fails after the migrate leaves the previous release running on its own form
 migrated back, and the run failed, or, after a step its plan named irreversible, the app
 stopped, the run failed and the restore point named.
 
-**Dependencies:** WB-42 (the store's migrate step), WB-11 (the export
-the app's tests make, once its formats are decided) and WB-12 (the test quotes). The Azure
+**Dependencies:** WB-11 (the export the app's tests make, once its formats are
+decided) and WB-12 (the test quotes). The Azure
 resources and identities, provided by the project's IT team. The generated deploy jobs
 already log in to the registry before a push; impact's input is the `[safety]` portfolio
 sample, or the test quotes without one.
@@ -379,78 +378,10 @@ specification and the field stop calling the shape older.
 **Evidence:** `frontend/src/workbench/schema/AllowedField.tsx::TYPED_IN`,
 `src/haute/_workbench_form.py::FormSpec`, `frontend/src/utils/workbenchForm.ts`.
 
-### WB-42 — The store's schema changes and environments
-**Why:** With the store as the form's own tables, a change to the form is a change to
-the database's tables, and a project's app runs against several databases: dev on the
-analyst's laptop, where schema changes are tried, and the hosted test and prod environments,
-each in a database or a schema the project's IT team provides. Projects declare their hosted
-environments and hosts pick one by name (`src/haute/_quote_store/_environment.py::resolve_store`),
-and one planner brings each database to a release's form by stable id
-(`src/haute/_quote_store/_migrate.py::prepare_store`), but no browser journey drives `haute
-app serve`: nothing shows an underwriter's save reaching the SQLite file's rows, read there
-with SQL, through Mark final and Amend.
-
-**Plan:** Decided with the owner on 30 October 2026. Dev is the laptop's SQLite file, which
-`haute app serve` keeps, and nothing points a laptop at a hosted environment. `haute.toml`
-declares each hosted environment under `[workbench.store.<name>]` with its provider and its
-sign-in (`managed-identity`, `service-principal` or `password`, naming the variables that hold
-any secret); a host or a CI job picks one with `HAUTE_ENVIRONMENT`, and the host's own
-environment says where it is (`HAUTE_STORE_SERVER`, `HAUTE_STORE_DATABASE` and optionally
-`HAUTE_STORE_SCHEMA`, or `HAUTE_STORE_URL` for a whole URL), so no credential, server or
-database name is in a file and a pull request cannot point prod elsewhere. A project's layout
-is its own: a database per environment, a schema per environment, or both. `haute_store`
-records the project and the environment, so a database recorded for another is refused
-naming both, and an environment `haute.toml` does not declare is refused naming those it
-does. A release carries the declarations, since it carries no `haute.toml`, and a hosted app
-and a migrate read them from it. One planner, `haute app migrate`, reads the form from the
-built release it is given and compares it with the database by stable id through
-`haute_store`, which it first checks against the database's catalogue (a kept object the SQL
-side dropped is forgotten; one the form still has that the database lacks is refused): it
-creates tables, adds nullable columns, renames in two phases and changes an object that holds
-no value; in test and prod it drops nothing the form removed and nothing holding a value,
-keeping a removed column or table unused, listing
-it with the DROP statements for the DBA and forgetting it once dropped, and refuses, before
-any DDL, a type, rows or role change on an object that holds values and a new object taking a
-kept one's name; in dev it applies every change, drops included, and names what it dropped.
-`required` never becomes NOT NULL. Every plan says whether a migrate back reverses each step,
-and a test or prod plan holding a step only a restore reverses is applied only given a
-restore point, the backup or point in time IT can return the database to, which the store
-records; dev asks for none. `--plan`
-prints the plan, against the database, or offline against a `--base` form for a pull request,
-headed as provisional with each step that depends on the data shown as conditional, and
-`--sql` prints it as SQL for a DBA who runs it. A started app checks, read-only, that every table and column its
-release uses is there under its id with its name, type and keys, that any other column is
-nullable, that the project and environment match and that it holds the privileges it needs,
-and refuses to start naming each difference and the command that resolves it. WB-08 runs the
-migrate step in its rollouts.
-
-**Acceptance:** A form change in the editor reaches `haute app serve`'s SQLite file the next
-time it starts, drops included and named; the same change made to a test database adds and
-renames without losing a value, keeps a removed column that holds values and lists its DROP,
-and refuses a retype of a column holding values before any DDL; a kept column dropped on the
-SQL side is forgotten and its name taken by a new column; a plan needing a restore point is
-refused without one; `--plan --base` names each step of a pull request's change without a
-database, marking those that depend on the data; a built release started apart from its
-project signs in as it declares; a host whose `HAUTE_ENVIRONMENT` is
-`test` pointed at prod's database refuses to start naming both; an app whose database lacks a
-column its release uses refuses to start naming it and `haute app migrate`; no credential,
-server or database name appears in `haute.toml`, the form, an API response or a log; and a
-browser journey saves a quote in `haute app serve`, reads its rows from the SQLite file with
-SQL, marks it final, amends it and saves it again.
-
-**Dependencies:** None. WB-08 runs the migrate step in the generated workflows.
-
-**Evidence:** `src/haute/_quote_store/_migrate.py::prepare_store` (the planner) and
-`src/haute/_quote_store/_store.py::open_engine` (a started app's check of its database);
-`src/haute/cli/_app.py::handle_app_migrate` and `::_local_store` (the migrate command and the
-local file); `src/haute/_workbench_config.py::read_workbench_config` (the
-`[workbench]` table); `src/haute/_database_io.py::resolve_connection_uri` (a credential named
-by the variable that holds it).
-
 ### WB-43 — The store on SQL Server and PostgreSQL
 **Why:** Projects bring their own databases: SQL Server, Azure SQL Database and Azure SQL
 Managed Instance, or PostgreSQL in its hosted forms. The store's tables, transactions and
-planner (WB-42) are written once against SQLAlchemy Core, but the engines differ where
+planner are written once against SQLAlchemy Core, but the engines differ where
 the store relies on them: exact text comparison (SQL Server's default collation ignores
 case), identifier limits (PostgreSQL truncates a name past 63 bytes), rename DDL, non-finite
 floats, string lengths counted in UTF-16 units, and sign-in through Microsoft Entra ID.
@@ -485,7 +416,7 @@ column; the image built for a `sqlserver` environment signs in to an Azure SQL d
 its managed identity; an environment naming a provider outside the two families is refused
 naming the providers Haute has.
 
-**Dependencies:** WB-42. The databases and identities the project's IT team provides.
+**Dependencies:** The databases and identities the project's IT team provides.
 
 **Evidence:** `src/haute/deploy/_container.py::prepare_build_directory` (the image's build
 context, pip installs only); `src/haute/_workbench_app.py::STORE_DEPENDENCIES` (SQLAlchemy and
