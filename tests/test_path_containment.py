@@ -23,6 +23,7 @@ from haute._sandbox import contained_path, is_contained, validate_project_path
 from haute.errors import InvalidPathError, PathOutsideProjectError, RequestRefusedError
 from haute.routes._helpers import pipeline_dir as _real_pipeline_dir
 from tests._source_files import REPO_ROOT, source_files
+from tests.conftest import current_source_revision
 from tests.job_store_support import seed_job
 from tests.optimiser_fixtures import make_solved_result
 
@@ -824,7 +825,7 @@ class TestSaveService:
             source = rating / "elsewhere" / "main.py"
         else:
             source = rating / ".." / "main.py"
-        with pytest.raises(HTTPException) as refused:
+        with pytest.raises(RequestRefusedError) as refused:
             service._validate_source_file_matches_pipeline_root(source)
         assert refused.value.status_code == 400
 
@@ -888,7 +889,12 @@ class TestSaveService:
             lambda _self, _graph: ["config/polars/quotes.json", escaping],
         )
 
-        prev = self._service(project)._compute_disk_prev_config_files(project / "main.py")
+        service = self._service(project)
+        # The save reads its file once; the baseline is computed from that read.
+        on_disk = service._read_on_disk(
+            project / "main.py", current_source_revision(project / "main.py", project)
+        )
+        prev = service._compute_disk_prev_config_files(on_disk)
 
         assert "config/polars/quotes.json" in prev
         assert escaping not in prev
