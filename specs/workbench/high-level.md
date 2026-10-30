@@ -1899,8 +1899,11 @@ Out of scope:
 
   The store holds the tables of one form, as `haute_store` records them by stable id, and
   one planner brings a database to a release's form, in one transaction, refusing before any
-  DDL a step it cannot take: `haute app serve` runs it on dev's store as it starts, in dev's
-  mode, and `haute app migrate` on a hosted environment's before a release starts. It makes a
+  DDL a step it cannot take, and on a server holding the store's tables against every other
+  writer from before it reads `haute_store`'s record to its commit, so nothing a save writes
+  between its counts and its DDL is lost: `haute app serve` runs it on dev's store as it
+  starts, in dev's mode, and `haute app migrate` on a hosted environment's before a release
+  starts. It makes a
   table the form gains, gives a table a nullable column the form gains, renames a table or
   column the form renamed, in two steps through temporary names so a change of case or a swap
   of two names works, and changes the type, rows or role of a column or table that holds no
@@ -1930,7 +1933,11 @@ Out of scope:
   `--plan --base DIR` prints it offline, from the form of the release built in `DIR`, for a
   pull request, headed as provisional, each step that depends on the data shown as
   conditional and a removed one shown kept with its DROP; and `--sql` prints the plan as the
-  SQL a DBA runs instead, `haute_store`'s row last.
+  SQL a DBA runs instead, one transaction with every value written in and `haute_store`'s row
+  last, so a statement that fails leaves nothing changed. A plan refusing a step has no SQL,
+  nor one holding a retype or a change of a table's rows or role, made only while what it
+  changes holds no value, which a migrate checks as it applies it and a script run later
+  cannot.
 
   A database of an earlier Haute's store, of another project or
   environment, or holding a table of the form's name the store did not make, is refused,

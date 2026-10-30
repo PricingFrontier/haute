@@ -104,6 +104,21 @@ StepKind = Literal[
 Key = tuple[str, str | None]
 #: The SQL dialect each provider's offline plan is printed in.
 PROVIDER_DIALECTS: Mapping[str, str] = {name: each.dialect for name, each in PROVIDERS.items()}
+#: The steps made only while what they change holds no value: a migrate checks that as it
+#: applies them, holding the tables, and a script a DBA runs later cannot, so none is printed.
+_DATA_BOUND = frozenset({"retype column", "reshape table"})
+#: How each dialect's script opens and closes the one transaction that holds all of it: SQL
+#: Server rolling back at the first error (XACT_ABORT), PostgreSQL turning the COMMIT of a
+#: failed transaction into a rollback, and SQLite's shell stopping before it with -bail.
+_SCRIPT_TRANSACTIONS: Mapping[str, tuple[str, str]] = {
+    "mssql": ("SET XACT_ABORT ON;\nBEGIN TRANSACTION;\n\n", "COMMIT TRANSACTION;\n"),
+    "postgresql": ("BEGIN;\n\n", "COMMIT;\n"),
+    "sqlite": (
+        "-- Run with sqlite3 -bail, which stops at a failing statement before the COMMIT.\n"
+        "BEGIN;\n\n",
+        "COMMIT;\n",
+    ),
+}
 
 
 class MigrationRefusedError(QuoteStoreError):
@@ -192,12 +207,19 @@ def _kept(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _count(counts: Mapping[Key, int] | None, key: Key) -> int | None:
-    return None if counts is None else counts.get(key, 0)
+    """The quotes holding values in what *key* names, None offline. A count the plan needs and
+    was not given is a fault, never taken for none, which would let a change through."""
+    if counts is None:
+        return None
+    if key not in counts:
+        raise KeyError(f"The plan was given no count of {key}: counts follow wanted_counts.")
+    return counts[key]
 
 
 def wanted_counts(form: Mapping[str, Any], recorded: Mapping[str, Any]) -> set[Key]:
     """The tables and columns of *recorded* a plan to *form* counts the quotes of: those the
-    form removed or kept already, and those whose type, rows or role it changed."""
+    form removed or kept already, and those whose type, rows or role it changed, a kept table
+    the form brings back included."""
     new = _by_id(form["tables"])
     wanted: set[Key] = set()
     for table in recorded["tables"]:
@@ -205,7 +227,8 @@ def wanted_counts(form: Mapping[str, Any], recorded: Mapping[str, Any]) -> set[K
         if after is None or table["kept"]:
             # A table removed, or kept already, is counted whole.
             wanted.add((table["id"], None))
-            continue
+            if after is None:
+                continue
         if (table["rows"], table["role"]) != (after["rows"], after["role"]):
             wanted.add((table["id"], None))
         columns = _by_id(after["columns"])
@@ -595,10 +618,15 @@ def _emit(operations: Operations, plan: Plan, schema: StoreSchema) -> None:
         operations.rename_table(str(step.was), _named(step.table_id), schema=owner)
     for step in renames:
         operations.rename_table(_named(step.table_id), step.table, schema=owner)
+    # A column dev builds again was dropped under its old name above and is added under its
+    # new one below: renaming it too would name a column already gone.
+    rebuilt = {(step.table_id, step.column_id) for step in steps if step.kind == "rebuild column"}
     columns = [
         step
         for step in steps
-        if step.kind in ("rename column", "bring back column") and step.was != step.column
+        if step.kind in ("rename column", "bring back column")
+        and step.was != step.column
+        and (step.table_id, step.column_id) not in rebuilt
     ]
     for step in columns:
         operations.alter_column(
@@ -753,16 +781,45 @@ def plan_store(
         engine.dispose()
 
 
+def _hold(connection: Connection, owner: str | None, names: Sequence[str]) -> None:
+    """Hold the store's tables *names*, in the SQL schema *owner*, against every other writer
+    until the transaction on *connection* ends, in the order given: on PostgreSQL in ACCESS
+    EXCLUSIVE mode, on SQL Server under an exclusive table lock. SQLite's write transaction
+    holds its whole file already."""
+    dialect = connection.dialect.name
+    if dialect == "sqlite" or not names:
+        return
+    preparer = connection.dialect.identifier_preparer
+    tables = [preparer.format_table(Table(name, MetaData(schema=owner))) for name in names]
+    if dialect == "postgresql":
+        connection.exec_driver_sql(f"LOCK TABLE {', '.join(tables)} IN ACCESS EXCLUSIVE MODE")
+        return
+    for table in tables:
+        # Reading a row takes the table's exclusive lock, held to the transaction's end.
+        connection.exec_driver_sql(f"SELECT TOP 1 1 FROM {table} WITH (TABLOCKX, HOLDLOCK)")
+
+
 def _planned(
-    connection: Connection, schema: StoreSchema, form: FormSpec, project: str, environment: str
+    connection: Connection,
+    schema: StoreSchema,
+    form: FormSpec,
+    project: str,
+    environment: str,
+    *,
+    hold: bool = False,
 ) -> Plan:
-    """The plan for the database on *connection*."""
+    """The plan for the database on *connection*; with *hold*, a migrate's, every table of the
+    store held against other writers from before its record is read to the transaction's end,
+    so nothing written between the counts and the DDL is lost."""
     owner = schema.metadata.schema
     provider = dialect_provider(connection.dialect.name)
     catalogue = inspect(connection)
     names = set(catalogue.get_table_names(schema=owner))
     _refuse_old_store(names)
     wanted = structure(form)
+    if hold and STORE_TABLE in names:
+        # Two migrates take turns here, so the record read next is the one this one changes.
+        _hold(connection, owner, [STORE_TABLE])
     held = _recorded(connection, schema) if STORE_TABLE in names else None
     mode: Mode = "dev" if environment == DEV else "hosted"
     if held is None:
@@ -784,6 +841,12 @@ def _planned(
         wanted["store_columns"],
     ):
         return plan(wanted, recorded, {}, mode, provider=provider)
+    if hold:
+        # quote_details first, as a save takes its locks, then the form's other tables and the
+        # activity, so a save under way finishes before the counts and none starts after.
+        stored = [table["name"] for table in recorded["tables"] if table["name"] in names]
+        stored.sort(key=lambda name: name != QUOTE_DETAILS_ID)
+        _hold(connection, owner, [*stored, *sorted({ACTIVITY_TABLE} & names)])
     reconciled, refusals = reconcile(recorded, wanted, catalogue, owner)
     found = counts(connection, reconciled, wanted_counts(wanted, reconciled), owner)
     made = plan(wanted, reconciled, found, mode, provider=provider)
@@ -819,7 +882,7 @@ def prepare_store(
     try:
         with reaching(url, environment):
             with writing(engine) as connection:
-                made = _planned(connection, schema, form, project, environment)
+                made = _planned(connection, schema, form, project, environment, hold=True)
                 _refuse(made, restore_point, mode)
                 operations = Operations(MigrationContext.configure(connection))
                 _emit(operations, made, schema)
@@ -906,20 +969,40 @@ def render_sql(
     restore_point: str | None,
     sql_schema: str | None = None,
 ) -> str:
-    """*plan* as the SQL a DBA runs in its place, Alembic's offline rendering for *dialect*,
-    each name in the SQL schema *sql_schema* when one is named, ``haute_store``'s row last, a
-    restore point noted where the plan needs one."""
+    """*plan* as the SQL a DBA runs in its place: Alembic's offline rendering for *dialect*,
+    every value written in, each name in the SQL schema *sql_schema* when one is named,
+    ``haute_store``'s row last, the whole of it one transaction, so a statement that fails
+    leaves nothing changed. Refused (:class:`MigrationRefusedError`) for a plan refusing a
+    step, and for one holding a step made only while what it changes holds no value, which
+    ``haute app migrate`` checks as it applies it and a script run later cannot."""
+    if plan.refusals:
+        raise MigrationRefusedError(
+            "The plan refuses steps, so it has no SQL: " + "; ".join(plan.refusals) + ".",
+            refusals=plan.refusals,
+        )
+    bound = [
+        f"{step.kind} {step.table}{'.' + step.column if step.column else ''}"
+        for step in plan.steps
+        if step.kind in _DATA_BOUND
+    ]
+    if bound:
+        raise MigrationRefusedError(
+            "These steps are made only while what they change holds no value, which haute app "
+            "migrate checks as it applies them and a script run later cannot: "
+            + "; ".join(bound)
+            + ". Apply them with haute app migrate --environment.",
+            refusals=bound,
+        )
     buffer = io.StringIO()
-    context = MigrationContext.configure(
-        dialect_name=dialect, opts={"as_sql": True, "output_buffer": buffer}
-    )
+    options: dict[str, Any] = {"as_sql": True, "output_buffer": buffer, "literal_binds": True}
+    if dialect == "mssql":
+        # One batch: a GO between statements would end the transaction's hold on them.
+        options["mssql_batch_separator"] = None
+    context = MigrationContext.configure(dialect_name=dialect, opts=options)
     operations = Operations(context)
     schema = store_schema(form, sql_schema=sql_schema)
-    if plan.restoring:
-        buffer.write(
-            "-- Steps only a restore reverses: take the restore point "
-            f"{restore_point or '<NAME>'} before running this.\n\n"
-        )
+    begin, commit = _SCRIPT_TRANSACTIONS[dialect]
+    buffer.write(begin)
     _emit(operations, plan, schema)
     _record(
         operations,
@@ -933,4 +1016,5 @@ def render_sql(
         restore_point=restore_point,
         at=literal(datetime.now(UTC).replace(tzinfo=None).isoformat(sep=" ")),
     )
+    buffer.write(commit)
     return buffer.getvalue()

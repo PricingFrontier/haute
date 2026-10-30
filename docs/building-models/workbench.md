@@ -728,9 +728,11 @@ builder on screen. With a quote store it is where they manage their quotes too.
   `.haute/app/release` (or the folder `--release` names) before that release starts. It adds
   and renames without losing a value, keeps a table or column you removed, listing it with
   the DROP statement for your IT team, and refuses, before it changes anything, a change to a
-  column or table that holds values. `--plan` prints what it would do, `--sql` the SQL your IT
-  team can run instead, and a change only a restore can undo needs `--restore-point`, naming
-  the backup. The migrate's identity needs to create and alter tables in the schema. The
+  column or table that holds values. `--plan` prints what it would do, and `--sql` the SQL
+  your IT team can run instead, as one transaction. A change of a column's type or a table's
+  rows is made only while it holds no value, which only `haute app migrate` can check as it
+  runs, so `--sql` refuses a plan holding one: apply that change with the migrate, which
+  needs `--restore-point`, naming the backup, as any change only a restore can undo does. The migrate's identity needs to create and alter tables in the schema. The
   app's needs to read, insert, update and delete in the form's tables, to read and insert in
   haute_activity and to read haute_store; the app does not start without them, naming each
   permission it lacks.

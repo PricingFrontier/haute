@@ -263,6 +263,19 @@ def test_a_removed_table_is_kept_with_every_quotes_rows_and_brought_back(url: st
     assert sql(url, "SELECT notes FROM extras") == [("n",)]
 
 
+def test_a_kept_table_brought_back_counts_its_columns_before_retyping_one(url: str) -> None:
+    extras = table("extras", column("notes"))
+    migrate(url, POLICY, extras)
+    quote(url, region="north")
+    run(url, "INSERT INTO extras (quote_reference, quote_option, notes) VALUES ('A-1', 1, 'n')")
+    migrate(url, POLICY)
+
+    # Back under its id, its populated column a whole number now: refused, the value kept.
+    with pytest.raises(MigrationRefusedError, match="extras.notes holds values in 1 quote"):
+        migrate(url, POLICY, table("extras", column("notes", "int")), restore_point="backup-1")
+    assert sql(url, "SELECT notes FROM extras") == [("n",)]
+
+
 def test_a_new_column_or_table_taking_a_kept_ones_name_is_refused(url: str) -> None:
     migrate(url, POLICY, table("extras", column("notes")))
     migrate(url, table("policy", column("region")))
@@ -399,6 +412,23 @@ def test_dev_drops_what_the_form_removed_and_rebuilds_what_changed_naming_each(u
     assert made.cleared == ["policy.x"]
 
 
+def test_dev_renames_and_retypes_a_populated_column_in_one_release(url: str) -> None:
+    prepare_store(url, form(POLICY), project=PROJECT)
+    quote(url, region="north", value=1.5)
+
+    # The column holding a value renamed and made a whole number at once: built again.
+    made = prepare_store(
+        url,
+        form(table("policy", column("area", "int", id_="c_region"), column("value", "float"))),
+        project=PROJECT,
+    )
+
+    assert ("rebuild column", "policy.area") in kinds(made)
+    assert made.cleared == ["policy.area"]
+    assert columns(url, "policy") == ["quote_reference", "quote_option", "value", "area"]
+    assert sql(url, "SELECT value, area FROM policy") == [(1.5, None)]
+
+
 def test_a_store_of_an_earlier_format_is_built_afresh_in_dev_and_refused_hosted(url: str) -> None:
     prepare_store(url, form(POLICY), project=PROJECT)
     run(url, "UPDATE haute_store SET schema = replace(schema, '\"format\": 2', '\"format\": 1')")
@@ -435,34 +465,67 @@ def test_an_offline_plan_is_provisional_each_step_on_the_data_conditional() -> N
     assert "DROP TABLE extras;" in text
 
 
-def test_a_plan_is_printed_as_the_sql_a_dba_runs_noting_its_restore_point(url: str) -> None:
-    migrate(url, POLICY)
-    retyped = form(table("policy", column("region"), column("value", "int")))
-
-    made = plan_store(url, retyped, project=PROJECT, environment=TEST)
-
-    def script(dialect: str, **where: str) -> str:
-        return render_sql(
-            made,
-            retyped,
-            dialect,
-            project=PROJECT,
-            environment=TEST,
-            release="r1",
-            haute_version="1",
-            restore_point=None,
-            **where,
-        )
-
-    # PostgreSQL changes the empty column in place; SQLite replaces it.
-    postgresql = script("postgresql", sql_schema="pricing")
-    assert postgresql.startswith("-- Steps only a restore reverses")
-    assert (
-        "ALTER TABLE pricing.policy ALTER COLUMN value TYPE BIGINT USING NULL::BIGINT" in postgresql
+def _script(made: Any, release_form: FormSpec, dialect: str = "sqlite") -> str:
+    return render_sql(
+        made,
+        release_form,
+        dialect,
+        project=PROJECT,
+        environment=TEST,
+        release="r2",
+        haute_version="1",
+        restore_point=None,
     )
-    assert "UPDATE pricing.haute_store SET" in postgresql
-    sqlite = script("sqlite")
-    assert "ALTER TABLE policy ADD COLUMN haute_tmp_" in sqlite
-    assert "ALTER TABLE policy DROP COLUMN value" in sqlite
+
+
+def test_a_plan_is_printed_as_one_transaction_a_dba_runs_whole_or_not_at_all(url: str) -> None:
+    migrate(url, POLICY)
+    quote(url, region="north", value=1.5)
+    renamed = form(table("policy", column("area", id_="c_region"), column("value", "float")))
+    script = _script(plan_store(url, renamed, project=PROJECT, environment=TEST), renamed)
+
+    # Every value written in, the whole of it one transaction.
+    assert script.startswith("-- Run with sqlite3 -bail")
+    assert "BEGIN;" in script and script.rstrip().endswith("COMMIT;")
+    assert "?" not in script and "%(" not in script
+    assert "UPDATE haute_store SET release='r2'" in script
+
+    # A statement failing before the COMMIT leaves every step undone.
+    failing = script.replace("COMMIT;", "SELECT * FROM haute_no_such_table;\nCOMMIT;")
+    raw = sqlite3.connect(url.removeprefix("sqlite:///"))
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="haute_no_such_table"):
+            raw.executescript(failing)
+    finally:
+        raw.close()
+    assert columns(url, "policy") == ["quote_reference", "quote_option", "region", "value"]
+
+    # Run whole, the store is the release's: the app opens it, the quote's values kept.
+    raw = sqlite3.connect(url.removeprefix("sqlite:///"))
+    try:
+        raw.executescript(script)
+    finally:
+        raw.close()
+    with open_book(url, renamed, project=PROJECT, environment=TEST, haute_version="1") as book:
+        assert book.read("A-1", 1).values["t_policy"][0]["c_region"] == "north"
+
+
+def test_a_plan_a_script_could_not_apply_safely_is_never_printed_as_sql(url: str) -> None:
+    migrate(url, POLICY)
+    # A retype is made only while the column is empty, which only a migrate checks.
+    retyped = form(table("policy", column("region"), column("value", "int")))
+    with pytest.raises(
+        MigrationRefusedError, match="retype column policy.value. Apply them with haute app migrate"
+    ):
+        _script(plan_store(url, retyped, project=PROJECT, environment=TEST), retyped)
+    # Offline, every such step is conditional: refused alike.
+    with pytest.raises(MigrationRefusedError, match="retype column policy.value"):
+        _script(offline_plan(form(POLICY), retyped), retyped, "postgresql")
+    # A plan refusing a step has no SQL at all.
+    quote(url, region="north", value=1.5)
+    populated = plan_store(url, retyped, project=PROJECT, environment=TEST)
+    assert populated.refusals
+    with pytest.raises(MigrationRefusedError, match="The plan refuses steps, so it has no SQL"):
+        _script(populated, retyped)
     # Nothing was applied.
     assert "haute_tmp" not in " ".join(columns(url, "policy"))

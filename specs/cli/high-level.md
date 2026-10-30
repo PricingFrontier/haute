@@ -131,8 +131,10 @@ Out of scope, owned elsewhere:
   host's own variables say it is at, to that release's form before the release starts,
   through the store's planner in a hosted environment's mode, printing each step. `--plan`
   prints the plan and changes nothing, made offline with `--base DIR` from the form of the
-  release built there, with no database; `--sql` prints it as the SQL a DBA runs; and a plan
-  holding a step only a restore reverses is applied only given `--restore-point NAME`. A step
+  release built there, with no database; `--sql` prints it as the SQL a DBA runs, one
+  transaction, refused for a plan refusing a step or holding a retype or a change of a
+  table's rows or role, which only the migrate applies; and a plan holding a step only a
+  restore reverses is applied only given `--restore-point NAME`. A step
   it cannot take, an environment the release does not declare, a location not given or given
   twice, `--base` without `--plan` or `--sql`, and no release built in `DIR` are each refused
   naming what, exiting non-zero before any DDL; nothing it prints names where the database

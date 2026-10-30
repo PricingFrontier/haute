@@ -9,6 +9,8 @@ started apart from its project signing in as it declares."""
 
 from __future__ import annotations
 
+import io
+import sqlite3
 import struct
 import uuid
 from collections.abc import Iterator
@@ -17,11 +19,13 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from click.testing import CliRunner
 from fastapi.testclient import TestClient
 from sqlalchemy.dialects import mssql, postgresql
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.schema import CreateTable
 
 from haute._credential_security import validate_credential_free_uri
@@ -29,6 +33,7 @@ from haute._quote_store import (
     QuoteStoreEnvironmentError,
     QuoteStoreMismatchError,
     SignIn,
+    _migrate,
     offline_plan,
     open_book,
     plan_store,
@@ -36,7 +41,7 @@ from haute._quote_store import (
     render_sql,
     resolve_store,
 )
-from haute._quote_store._migrate import plan
+from haute._quote_store._migrate import MigrationRefusedError, _emit, plan
 from haute._quote_store._providers import (
     PROVIDERS,
     SQL_COPT_SS_ACCESS_TOKEN,
@@ -46,13 +51,13 @@ from haute._quote_store._providers import (
     retypes_in_place,
 )
 from haute._quote_store._schema import store_schema, structure
-from haute._quote_store._store import reaching
+from haute._quote_store._store import make_engine, reaching
 from haute._sandbox import _get_project_root, set_project_root
 from haute._workbench_app import create_app, hosted_store, store_dependencies
 from haute._workbench_config import StoreEnvironment
 from haute._workbench_form import FormSpec, with_quote_details
 from haute.cli import cli
-from tests._store_servers import Target, configured, database
+from tests._store_servers import Target, backends, configured, database
 from tests.test_workbench_app_quotes import Page, _write_release
 
 PROJECT = "motor"
@@ -382,23 +387,29 @@ def test_an_empty_column_changes_type_in_place_where_the_engine_converts_the_pai
         )
     )
     made = offline_plan(base, retyped, provider=sqlserver)
-    script = render_sql(
-        made,
-        retyped,
-        "mssql",
-        project=PROJECT,
-        environment=TEST,
-        release="r1",
-        haute_version="1",
-        restore_point="backup-1",
-        sql_schema="pricing",
+    buffer = io.StringIO()
+    context = MigrationContext.configure(
+        dialect_name="mssql", opts={"as_sql": True, "output_buffer": buffer}
     )
+    _emit(Operations(context), made, store_schema(retyped, sql_schema="pricing"))
+    ddl = buffer.getvalue()
 
     # A float SQL Server converts in place; a date it cannot, so the empty column is replaced.
-    assert "ALTER TABLE pricing.policy ALTER COLUMN value BIGINT NULL" in script
-    assert "ALTER TABLE pricing.policy DROP COLUMN start" in script
-    assert "EXEC sp_rename 'pricing.policy.haute_tmp_" in script
-    assert script.startswith("-- Steps only a restore reverses: take the restore point backup-1")
+    assert "ALTER TABLE pricing.policy ALTER COLUMN value BIGINT NULL" in ddl
+    assert "ALTER TABLE pricing.policy DROP COLUMN start" in ddl
+    assert "EXEC sp_rename 'pricing.policy.haute_tmp_" in ddl
+    # A migrate applies these, checking each column empty; no script prints them.
+    with pytest.raises(MigrationRefusedError, match="haute app migrate checks"):
+        render_sql(
+            made,
+            retyped,
+            "mssql",
+            project=PROJECT,
+            environment=TEST,
+            release="r1",
+            haute_version="1",
+            restore_point="backup-1",
+        )
 
 
 def test_a_release_image_takes_each_declared_providers_driver() -> None:
@@ -518,7 +529,9 @@ def test_the_planner_brings_a_server_store_in_its_own_schema_to_each_release(
         assert book.read("A-1", 1).values["t_policy"][0]["c_region"] == "north"
 
 
-def test_a_server_plan_is_shown_as_the_sql_that_engine_runs(server: Target) -> None:
+def test_an_empty_column_is_retyped_on_a_server_in_place_or_by_replacement(
+    server: Target,
+) -> None:
     _schema_named(server, "pricing")
     where = {"sql_schema": "pricing", "sign_in": server.sign_in}
     base = form(table("policy", column("note"), column("start", "date")))
@@ -533,39 +546,182 @@ def test_a_server_plan_is_shown_as_the_sql_that_engine_runs(server: Target) -> N
         )
     )
 
-    planned = plan_store(server.url, retyped, project=PROJECT, environment=TEST, **where)
-    script = render_sql(
-        planned,
-        retyped,
-        "postgresql" if server.backend == "postgresql" else "mssql",
-        project=PROJECT,
-        environment=TEST,
-        release="r2",
-        haute_version="1",
-        restore_point="backup-2",
-        sql_schema="pricing",
-    )
-    if server.backend == "postgresql":
-        assert (
-            "ALTER TABLE pricing.policy ALTER COLUMN note TYPE BIGINT USING NULL::BIGINT" in script
-        )
-    else:
-        assert "ALTER TABLE pricing.policy DROP COLUMN start" in script
-
-    prepare_store(
+    made = prepare_store(
         server.url, retyped, project=PROJECT, environment=TEST, restore_point="backup-2", **where
     )
+
+    assert [(step.kind, step.column) for step in made.steps] == [("retype column", moved)]
+    # The column is the new type in the server's own catalogue, under its name.
+    assert server.read(
+        "SELECT data_type FROM information_schema.columns WHERE table_schema = 'pricing' "
+        f"AND table_name = 'policy' AND column_name = '{moved}'"
+    ) == [("bigint",)]
     with open_book(
         server.url, retyped, project=PROJECT, environment=TEST, haute_version="1", **where
     ) as book:
-        made = book.create(
+        made_quote = book.create(
             operation="operation-0001",
             actor="ana",
             values={"t_policy": [{f"c_{moved}": "7"}]},
             at=book.now(),
             reference="A-1",
         )
-        assert made.values["t_policy"][0][f"c_{moved}"] == "7"
+        assert made_quote.values["t_policy"][0][f"c_{moved}"] == "7"
+
+
+def _columns_in_order(server: Target, owner: str, table_name: str) -> str:
+    """A catalogue query of *table_name*'s columns in their order."""
+    if server.backend == "postgresql":
+        return (
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = "
+            f"'{owner}' AND table_name = '{table_name}' ORDER BY ordinal_position"
+        )
+    return (
+        "SELECT c.name FROM sys.columns c JOIN sys.tables t ON c.object_id = t.object_id "
+        f"JOIN sys.schemas s ON t.schema_id = s.schema_id WHERE s.name = '{owner}' "
+        f"AND t.name = '{table_name}' ORDER BY c.column_id"
+    )
+
+
+def _run_script(server: Target, script: str) -> None:
+    """*script* run as a DBA runs it: on a connection of its own, committing nothing itself,
+    each statement's result read so a later one's error is raised."""
+    engine = make_engine(server.url, sign_in=server.sign_in)
+    try:
+        raw = engine.raw_connection()
+        try:
+            raw.driver_connection.autocommit = True  # type: ignore[union-attr]
+            cursor = raw.cursor()
+            cursor.execute(script)
+            if server.backend == "sqlserver":
+                # pyodbc raises a statement's error once its result is reached.
+                while cursor.nextset():
+                    pass
+            cursor.close()
+        finally:
+            raw.close()
+    finally:
+        engine.dispose()
+
+
+def test_a_plan_exported_as_sql_runs_on_the_server_whole_or_not_at_all(server: Target) -> None:
+    _schema_named(server, "pricing")
+    where = {"sql_schema": "pricing", "sign_in": server.sign_in}
+    base = form(table("policy", column("region")))
+    prepare_store(server.url, base, project=PROJECT, environment=TEST, **where)
+    renamed = form(table("policy", column("area", id_="c_region"), column("seats", "int")))
+    planned = plan_store(server.url, renamed, project=PROJECT, environment=TEST, **where)
+    script = render_sql(
+        planned,
+        renamed,
+        "postgresql" if server.backend == "postgresql" else "mssql",
+        project=PROJECT,
+        environment=TEST,
+        release="r2",
+        haute_version="1",
+        restore_point=None,
+        sql_schema="pricing",
+    )
+    commit = "COMMIT;" if server.backend == "postgresql" else "COMMIT TRANSACTION;"
+
+    # A statement failing before the COMMIT leaves every step undone, the rename included.
+    failing = script.replace(commit, "SELECT * FROM pricing.haute_no_such_table;\n" + commit)
+    # The driver's own error, as the DBA's client shows it.
+    with pytest.raises(Exception, match="haute_no_such_table"):
+        _run_script(server, failing)
+    assert [name for (name,) in server.read(_columns_in_order(server, "pricing", "policy"))] == [
+        "quote_reference",
+        "quote_option",
+        "region",
+    ]
+
+    # Run whole, it brings the store to the release: the app opens it.
+    _run_script(server, script)
+    with open_book(
+        server.url, renamed, project=PROJECT, environment=TEST, haute_version="1", **where
+    ) as book:
+        assert book.page(actor="ana", view="team").quotes == []
+
+
+@pytest.fixture(params=backends())
+def any_store(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Target]:
+    """A database of the test's own on each backend the run has, SQLite's included."""
+    with database(request.param, tmp_path) as target:
+        yield target
+
+
+def _write_waits(target: Target, statement: str) -> bool:
+    """Whether *statement*, run on a connection of its own, waited out its lock timeout
+    rather than landing."""
+    if target.backend == "sqlite":
+        raw = sqlite3.connect(target.url.removeprefix("sqlite:///"), timeout=1)
+        try:
+            raw.execute(statement)
+            raw.commit()
+        except sqlite3.OperationalError:
+            return True
+        finally:
+            raw.close()
+        return False
+    engine = make_engine(target.url, sign_in=target.sign_in)
+    try:
+        with engine.connect() as connection:
+            try:
+                with connection.begin():
+                    connection.exec_driver_sql(
+                        "SET lock_timeout = '2s'"
+                        if target.backend == "postgresql"
+                        else "SET LOCK_TIMEOUT 2000"
+                    )
+                    connection.exec_driver_sql(statement)
+            except DBAPIError:
+                return True
+        return False
+    finally:
+        engine.dispose()
+
+
+def test_a_migrate_holds_writers_off_from_its_counts_to_its_ddl(
+    any_store: Target, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = any_store
+    base = form(table("policy", column("region"), column("note")))
+    prepare_store(store.url, base, project=PROJECT, environment=TEST, sign_in=store.sign_in)
+    with open_book(
+        store.url, base, project=PROJECT, environment=TEST, haute_version="1", sign_in=store.sign_in
+    ) as book:
+        book.create(
+            operation="operation-0001",
+            actor="ana",
+            values={"t_policy": [{"c_region": "north"}]},
+            at=book.now(),
+            reference="A-1",
+        )
+    waited: list[bool] = []
+    counted = _migrate.counts
+
+    def counting(*args: Any, **kwargs: Any) -> Any:
+        found = counted(*args, **kwargs)
+        # A save between the counts, which found note empty, and the retype: it must wait.
+        waited.append(_write_waits(store, "UPDATE policy SET note = 'kept?'"))
+        return found
+
+    monkeypatch.setattr(_migrate, "counts", counting)
+    retyped = form(table("policy", column("region"), column("note", "int")))
+    made = prepare_store(
+        store.url,
+        retyped,
+        project=PROJECT,
+        environment=TEST,
+        restore_point="backup-1",
+        sign_in=store.sign_in,
+    )
+
+    assert waited == [True]
+    assert ("retype column", "note") in {(step.kind, step.column) for step in made.steps}
+    assert store.read("SELECT quote_reference, region, note FROM policy") == [
+        ("A-1", "north", None)
+    ]
 
 
 def test_a_sign_in_the_server_refuses_is_said_naming_no_server_or_user(server: Target) -> None:
