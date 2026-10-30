@@ -27,14 +27,15 @@ from haute._quote_store._book import (
     with_details,
     without_app_details,
 )
+from haute._quote_store._environment import StoreLocation, resolve_store
 from haute._quote_store._rows import input_rows
 from haute._quote_store._store import (
     DEV,
-    HOSTED,
     MisfitCell,
     QuoteLockedError,
     QuoteNotFoundError,
     QuoteNotReadyError,
+    QuoteStoreEnvironmentError,
     QuoteStoreError,
     QuoteStoreMismatchError,
     QuoteValuesError,
@@ -66,7 +67,6 @@ def open_book(
 
 __all__ = [
     "DEV",
-    "HOSTED",
     "ActivityEntry",
     "AppQuote",
     "MisfitCell",
@@ -78,12 +78,14 @@ __all__ = [
     "QuoteNotFoundError",
     "QuoteNotReadyError",
     "QuotePage",
+    "QuoteStoreEnvironmentError",
     "QuoteStoreError",
     "QuoteStoreMismatchError",
     "QuoteValuesError",
     "ReferenceTakenError",
     "RelatedQuote",
     "Source",
+    "StoreLocation",
     "StaleQuoteError",
     "WriteSupersededError",
     "as_written",
@@ -94,6 +96,7 @@ __all__ = [
     "open_book",
     "open_engine",
     "prepare_store",
+    "resolve_store",
     "store_url",
     "with_details",
     "without_app_details",

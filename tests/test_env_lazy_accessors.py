@@ -498,14 +498,6 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
         "DATABRICKS_APP_NAME",
         "os.environ.get",
     ),
-    # The underwriter app's quote store, a SQLAlchemy URL the host supplies at runtime,
-    # read as the app starts.
-    (
-        "src/haute/_workbench_app.py",
-        "<module>.quote_store_url",
-        "HAUTE_QUOTE_STORE_URL",
-        "os.environ.get",
-    ),
     (
         "src/haute/_project_storage.py",
         "<module>.resolve_project_dir",

@@ -44,16 +44,14 @@ from sqlalchemy import (
 from sqlalchemy.schema import DropTable
 
 from haute._quote_store._schema import STORE_TABLE, StoreSchema, store_schema, structure_text
-from haute._workbench_config import WorkbenchError
+from haute._workbench_config import DEV_ENVIRONMENT, WorkbenchError
 from haute._workbench_form import FormSpec
 
 #: The table an earlier Haute's quote store kept its migrations' version in, which a database
 #: of that store holds: it is refused, never read.
 OLD_STORE_TABLE = "haute_quote_store_version"
 #: The environment ``haute app serve`` keeps its quotes in, on the analyst's laptop.
-DEV = "dev"
-#: The environment a hosted app keeps its quotes in, which ``haute app migrate`` makes.
-HOSTED = "hosted"
+DEV = DEV_ENVIRONMENT
 #: The oldest SQLite that can rename and drop a column.
 SQLITE_MINIMUM = (3, 35, 0)
 #: The execution option that begins a transaction as a write: ``BEGIN IMMEDIATE`` on SQLite.
@@ -148,6 +146,14 @@ class QuoteValuesError(QuoteStoreError):
         self.cells = list(cells)
 
 
+class QuoteStoreEnvironmentError(QuoteStoreError):
+    """The store is not the environment's: the environment named or where its database is
+    cannot be resolved, or the database holds another project's or environment's quotes. The
+    message says which variable to set, and names no server, database or URL."""
+
+    error_code = "quote_store_environment"
+
+
 class QuoteStoreMismatchError(QuoteStoreError):
     """The database does not hold the form's tables as the store needs them: *differences*
     names each, and the message what resolves them."""
@@ -240,7 +246,7 @@ def _refuse_old_store(names: set[str]) -> None:
 
 def _refuse_other(recorded: Recorded, project: str, environment: str) -> None:
     if recorded.project != project or recorded.environment != environment:
-        raise QuoteStoreMismatchError(
+        raise QuoteStoreEnvironmentError(
             f"This database holds the quotes of {recorded.project!r} in "
             f"{recorded.environment!r}, not of {project!r} in {environment!r}: point the app "
             "at its own database."

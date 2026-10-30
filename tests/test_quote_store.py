@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import inspect, text
 
 from haute._quote_store import (
+    QuoteStoreEnvironmentError,
     QuoteStoreMismatchError,
     open_book,
     prepare_store,
@@ -184,10 +185,11 @@ def test_a_database_recorded_for_another_project_or_environment_is_refused_namin
     prepare_store(url, form(POLICY), project=PROJECT)
 
     with pytest.raises(
-        QuoteStoreMismatchError, match=f"of 'motor' in 'dev', not of '{project}' in '{environment}'"
+        QuoteStoreEnvironmentError,
+        match=f"of 'motor' in 'dev', not of '{project}' in '{environment}'",
     ):
         open_book(url, form(POLICY), project=project, environment=environment, haute_version="1")
-    with pytest.raises(QuoteStoreMismatchError):
+    with pytest.raises(QuoteStoreEnvironmentError):
         prepare_store(url, form(POLICY), project=project, environment=environment)
 
 

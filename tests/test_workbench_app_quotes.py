@@ -21,9 +21,10 @@ from fastapi.testclient import TestClient
 from haute import _workbench_app_quotes
 from haute._quote_store import (
     DEV,
-    HOSTED,
     QuoteBook,
+    QuoteStoreEnvironmentError,
     QuoteStoreMismatchError,
+    StoreLocation,
     open_book,
     prepare_store,
     store_url,
@@ -33,18 +34,21 @@ from haute._types import PipelineGraph
 from haute._workbench_app import (
     EASY_AUTH_NAME,
     EASY_AUTH_PRINCIPAL,
-    STORE_URL_ENV,
     create_app,
     easy_auth_roles,
+    hosted_store,
     read_release,
     write_release,
 )
+from haute._workbench_config import ENVIRONMENT_ENV, StoreEnvironment
 from haute._workbench_form import QUOTE_DETAILS_ID, FormSpec, with_quote_details
 from haute._workbench_tables import input_tables
 from haute.deploy._utils import shipped_graph
 from tests.test_workbench_app import _graph
 from tests.test_workbench_routes import POLICY, PRICING, form
 
+#: The hosted environment the tests' releases declare, whose store a hosted app opens.
+TEST = "test"
 ANA = {EASY_AUTH_NAME: "ana@example.com"}
 JO = {EASY_AUTH_NAME: "jo@example.com"}
 DETAILS = {"qd_quote_name": "Fleet", "qd_insured": "Acme", "qd_inception_date": "2026-11-01"}
@@ -98,12 +102,17 @@ def _write_release(
     }
     (directory / "deploy_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     write_release(
-        directory, FormSpec.model_validate(spec), "azure-container-apps", edit_role, runtime=[]
+        directory,
+        FormSpec.model_validate(spec),
+        "azure-container-apps",
+        edit_role,
+        runtime=[],
+        environments=(StoreEnvironment(TEST, "sqlite"),),
     )
     return directory
 
 
-def _prepared(path: Path, release_dir: Path, environment: str = HOSTED) -> str:
+def _prepared(path: Path, release_dir: Path, environment: str = TEST) -> str:
     """The URL of a store at *path* holding the tables of *release_dir*'s form."""
     url = store_url(path)
     release, spec, _ = read_release(release_dir)
@@ -131,7 +140,7 @@ def url(path: Path, release_dir: Path) -> str:
 
 @pytest.fixture()
 def client(release_dir: Path, url: str) -> Iterator[TestClient]:
-    with TestClient(create_app(release_dir, store_url=url)) as opened:
+    with TestClient(create_app(release_dir, store=StoreLocation(TEST, url))) as opened:
         yield opened
 
 
@@ -224,7 +233,7 @@ def test_the_release_says_the_app_keeps_quotes(client: TestClient, release_dir: 
         assert storeless.get("/api/app/release", headers=ANA).json()["quotes"] is False
         refused = storeless.get("/api/app/quotes", headers=ANA)
         assert refused.status_code == 503
-        assert STORE_URL_ENV in refused.json()["detail"]
+        assert ENVIRONMENT_ENV in refused.json()["detail"]
 
 
 def test_a_priced_save_is_priced_again_on_the_server_and_kept_in_the_forms_tables(
@@ -375,7 +384,7 @@ def test_what_the_app_sets_decides_what_shows_and_is_no_typing(
     policy = {"t1": VALUES["t1"]}
 
     with TestClient(
-        create_app(shown, store_url=_prepared(tmp_path / "shown.sqlite", shown))
+        create_app(shown, store=StoreLocation(TEST, _prepared(tmp_path / "shown.sqlite", shown)))
     ) as client:
         page = Page(client)
         anas = page.create(values={}).json()["quote"]
@@ -485,7 +494,9 @@ def test_a_new_quote_leaving_a_required_detail_empty_is_made_and_saved(
     required = _write_release(tmp_path / "required", spec)
 
     with TestClient(
-        create_app(required, store_url=_prepared(tmp_path / "required.sqlite", required))
+        create_app(
+            required, store=StoreLocation(TEST, _prepared(tmp_path / "required.sqlite", required))
+        )
     ) as client:
         page = Page(client)
         blank = {**VALUES, "quote_details": [{**DETAILS, "qd_insured": "   "}]}
@@ -801,7 +812,7 @@ def test_mark_final_needs_a_price_of_the_release_running(
     priced = page.priced()
     # The next release, on the same store, did not price it.
     upgraded = _write_release(tmp_path / "upgraded", haute_version="9.9.10")
-    with TestClient(create_app(upgraded, store_url=url)) as client:
+    with TestClient(create_app(upgraded, store=StoreLocation(TEST, url))) as client:
         refused = client.post(
             f"{address(priced)}/final", json={"version": priced["version"]}, headers=ANA
         )
@@ -837,7 +848,8 @@ def test_the_apps_pages_are_its_one_page(release_dir: Path, url: str, tmp_path: 
     (static / "assets").mkdir(parents=True)
     (static / "app.html").write_text("<div id=app></div>", encoding="utf-8")
 
-    with TestClient(create_app(release_dir, store_url=url, static_dir=static)) as client:
+    app = create_app(release_dir, store=StoreLocation(TEST, url), static_dir=static)
+    with TestClient(app) as client:
         for path in ("/", "/quotes/new", "/quotes/ABC-1/2", "/quotes/Fleet%20%237/1"):
             assert client.get(path, headers=ANA).text == "<div id=app></div>", path
         assert client.get("/quotes/ABC-1/2").status_code == 401
@@ -847,11 +859,11 @@ def test_the_app_does_not_start_on_a_database_without_the_forms_tables(
     release_dir: Path, tmp_path: Path
 ) -> None:
     with pytest.raises(QuoteStoreMismatchError, match="holds no quote store yet"):
-        create_app(release_dir, store_url=store_url(tmp_path / "fresh.sqlite"))
+        create_app(release_dir, store=StoreLocation(TEST, store_url(tmp_path / "fresh.sqlite")))
     # A store of the release's tables in dev is the analyst's laptop's, not a hosted app's.
     dev = _prepared(tmp_path / "dev.sqlite", release_dir, environment=DEV)
-    with pytest.raises(QuoteStoreMismatchError, match="in 'dev', not of 'motor' in 'hosted'"):
-        create_app(release_dir, store_url=dev)
+    with pytest.raises(QuoteStoreEnvironmentError, match="in 'dev', not of 'motor' in 'test'"):
+        create_app(release_dir, store=StoreLocation(TEST, dev))
 
 
 # ── Who may change quotes ─────────────────────────────────────────────────
@@ -891,7 +903,7 @@ def test_with_an_edit_role_only_those_holding_it_change_quotes(tmp_path: Path) -
     original = _get_project_root()
     try:
         url = _prepared(tmp_path / "roles.sqlite", directory)
-        with TestClient(create_app(directory, store_url=url)) as client:
+        with TestClient(create_app(directory, store=StoreLocation(TEST, url))) as client:
             release = client.get("/api/app/release", headers=reader).json()
             assert (release["edit_role"], release["can_edit"]) == ("Quotes.Edit", False)
             assert client.get("/api/app/release", headers=editor).json()["can_edit"] is True
@@ -962,7 +974,9 @@ def _quotes_kept(url: str, release_dir: Path) -> int:
 def test_serving_locally_refuses_another_host_and_forwarded_requests(
     release_dir: Path, dev_url: str
 ) -> None:
-    app = create_app(release_dir, local_principal="ana@example.com", store_url=dev_url)
+    app = create_app(
+        release_dir, local_principal="ana@example.com", store=StoreLocation(DEV, dev_url)
+    )
     foreign = {"host": "rebound.example:8001"}
     # A page of a site whose name resolves to the analyst's machine: the browser calls its
     # requests the page's own.
@@ -1000,7 +1014,10 @@ def test_serving_locally_refuses_another_host_and_forwarded_requests(
 
 def test_serving_locally_as_a_reader_changes_no_quote(release_dir: Path, dev_url: str) -> None:
     app = create_app(
-        release_dir, local_principal="ana@example.com", store_url=dev_url, local_reader=True
+        release_dir,
+        local_principal="ana@example.com",
+        store=StoreLocation(DEV, dev_url),
+        local_reader=True,
     )
     with TestClient(app, base_url=LOOPBACK) as client:
         release = client.get("/api/app/release").json()
@@ -1022,6 +1039,34 @@ def test_serving_locally_as_a_reader_changes_no_quote(release_dir: Path, dev_url
 # ── The commands ──────────────────────────────────────────────────────────
 
 
+def test_a_hosted_app_opens_the_store_of_the_environment_the_host_names(
+    release_dir: Path, path: Path, url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Named by no environment, the app keeps no quotes, and reads nothing of the store's.
+    monkeypatch.delenv(ENVIRONMENT_ENV, raising=False)
+    assert hosted_store(release_dir) is None
+
+    monkeypatch.setenv(ENVIRONMENT_ENV, TEST)
+    monkeypatch.setenv("HAUTE_STORE_DATABASE", str(path))
+    store = hosted_store(release_dir)
+    assert store == StoreLocation(TEST, url)
+    with TestClient(create_app(release_dir, store=store)) as client:
+        assert client.get("/api/app/release", headers=ANA).json()["quotes"] is True
+        # What the release declares of its environments is no answer of the app's.
+        assert "environments" not in client.get("/api/app/release", headers=ANA).json()
+
+    monkeypatch.setenv(ENVIRONMENT_ENV, "prod")
+    with pytest.raises(QuoteStoreEnvironmentError, match="'prod'.*declares test"):
+        hosted_store(release_dir)
+
+
+def test_a_release_carries_the_environments_its_project_declares(release_dir: Path) -> None:
+    release, _, _ = read_release(release_dir)
+
+    assert release.environments == {TEST: {"provider": "sqlite"}}
+    assert [each.name for each in release.store_environments()] == [TEST]
+
+
 def test_haute_app_migrate_makes_the_tables_of_a_built_releases_form(
     release_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1029,24 +1074,36 @@ def test_haute_app_migrate_makes_the_tables_of_a_built_releases_form(
 
     from haute.cli import cli
 
-    fresh = store_url(tmp_path / "hosted.sqlite")
-    built = ["--release", str(release_dir)]
-    monkeypatch.delenv(STORE_URL_ENV, raising=False)
-    unnamed = CliRunner().invoke(cli, ["app", "migrate", *built])
+    hosted = tmp_path / "hosted.sqlite"
+    built = ["--environment", TEST, "--release", str(release_dir)]
+    monkeypatch.delenv("HAUTE_STORE_DATABASE", raising=False)
+    monkeypatch.delenv("HAUTE_STORE_URL", raising=False)
+    unnamed = CliRunner().invoke(cli, ["app", "migrate", "--release", str(release_dir)])
     assert unnamed.exit_code != 0
-    assert STORE_URL_ENV in unnamed.output
+    assert "--environment" in unnamed.output
     unbuilt = CliRunner().invoke(
-        cli, ["app", "migrate", "--url", fresh, "--release", str(tmp_path / "none")]
+        cli, ["app", "migrate", "--environment", TEST, "--release", str(tmp_path / "none")]
     )
     assert unbuilt.exit_code != 0
     assert "run haute app build first" in unbuilt.output
+    unlocated = CliRunner().invoke(cli, ["app", "migrate", *built])
+    assert unlocated.exit_code == 1
+    assert "HAUTE_STORE_DATABASE" in unlocated.output
+    undeclared = CliRunner().invoke(
+        cli, ["app", "migrate", "--environment", "prod", "--release", str(release_dir)]
+    )
+    assert undeclared.exit_code == 1
+    assert "declares test" in undeclared.output
 
-    by_option = CliRunner().invoke(cli, ["app", "migrate", "--url", fresh, *built])
-    assert by_option.exit_code == 0, by_option.output
+    monkeypatch.setenv("HAUTE_STORE_DATABASE", str(hosted))
+    made = CliRunner().invoke(cli, ["app", "migrate", *built])
+    assert made.exit_code == 0, made.output
+    # Nothing it says names where the database is.
+    assert str(hosted) not in made.output and hosted.name not in made.output
     release, spec, _ = read_release(release_dir)
-    open_book(fresh, spec, project="motor", environment=HOSTED, haute_version="1").close()
+    open_book(store_url(hosted), spec, project="motor", environment=TEST, haute_version="1").close()
     # Run again for the same form, it changes nothing.
-    assert CliRunner().invoke(cli, ["app", "migrate", "--url", fresh, *built]).exit_code == 0
+    assert CliRunner().invoke(cli, ["app", "migrate", *built]).exit_code == 0
 
     # A release of another form is refused, naming the table that differs.
     other = json.loads(json.dumps(FORM))
@@ -1054,11 +1111,8 @@ def test_haute_app_migrate_makes_the_tables_of_a_built_releases_form(
         {"id": "c_seats", "name": "seats", "type": "int"}
     )
     changed = _write_release(tmp_path / "changed", other)
-    refused = CliRunner().invoke(cli, ["app", "migrate", "--url", fresh, "--release", str(changed)])
+    refused = CliRunner().invoke(
+        cli, ["app", "migrate", "--environment", TEST, "--release", str(changed)]
+    )
     assert refused.exit_code == 1
     assert "policy_details has changed" in refused.output
-
-    by_environment = store_url(tmp_path / "other.sqlite")
-    monkeypatch.setenv(STORE_URL_ENV, by_environment)
-    assert CliRunner().invoke(cli, ["app", "migrate", *built]).exit_code == 0
-    open_book(by_environment, spec, project="motor", environment=HOSTED, haute_version="1").close()

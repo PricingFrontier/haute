@@ -26,9 +26,9 @@ import threading
 import uuid
 from collections.abc import AsyncIterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -47,6 +47,7 @@ from haute._logging import get_logger
 from haute._output_assembler import render_output_document
 from haute._sandbox import set_project_root
 from haute._types import PipelineGraph
+from haute._workbench_config import ENVIRONMENT_ENV, StoreEnvironment, store_environments
 from haute._workbench_form import (
     QUOTE_DETAILS_COLUMNS,
     QUOTE_DETAILS_ID,
@@ -76,6 +77,9 @@ from haute.schemas import (
     WorkbenchValues,
 )
 
+if TYPE_CHECKING:
+    from haute._quote_store._environment import StoreLocation
+
 RELEASE_FILE = "release.json"
 FORM_FILE = "form.json"
 MANIFEST_FILE = "deploy_manifest.json"
@@ -98,9 +102,6 @@ EASY_AUTH_ID = "x-ms-client-principal-id"
 EASY_AUTH_PRINCIPAL = "x-ms-client-principal"
 #: The claim types an app role is under when the principal names none.
 _ROLE_CLAIMS = frozenset({"roles", "http://schemas.microsoft.com/ws/2008/06/identity/claims/role"})
-#: The environment variable a hosted app reads its quote store's SQLAlchemy URL from, which
-#: the host supplies at runtime; without it the app keeps no quotes.
-STORE_URL_ENV = "HAUTE_QUOTE_STORE_URL"
 #: What the app's quote store needs in the image past the scoring runtime; a server
 #: engine's driver joins them with that engine's backend.
 STORE_DEPENDENCIES = ("sqlalchemy", "alembic")
@@ -113,9 +114,9 @@ APP_ENTRY = '''"""The underwriter app, serving this release (specs/workbench).""
 
 from pathlib import Path
 
-from haute._workbench_app import create_app, quote_store_url
+from haute._workbench_app import create_app, hosted_store
 
-app = create_app(Path(__file__).parent, store_url=quote_store_url())
+app = create_app(Path(__file__).parent, store=hosted_store(Path(__file__).parent))
 '''
 
 #: The app's built page and its assets (``frontend/vite.app.config.ts``).
@@ -144,6 +145,14 @@ class Release:
     host: str | None
     #: The role that may change quotes; None lets everyone signed in change them.
     edit_role: str | None = None
+    #: The hosted environments of the quote store the project declares, by name, each as
+    #: :meth:`StoreEnvironment.declared` records it: its provider and sign-in, never where its
+    #: database is or a secret.
+    environments: dict[str, dict[str, str]] = field(default_factory=dict)
+
+    def store_environments(self) -> tuple[StoreEnvironment, ...]:
+        """The environments the release declares."""
+        return store_environments(self.environments, f"{RELEASE_FILE} environments")
 
 
 @dataclass(frozen=True)
@@ -274,9 +283,11 @@ def write_release(
     edit_role: str | None = None,
     *,
     runtime: list[str],
+    environments: tuple[StoreEnvironment, ...] = (),
 ) -> Release:
     """Beside the bundle already in *release_dir*: the form without its sample, what the
-    release is, named for the *runtime* it prices on too, and the entry point."""
+    release is, named for the *runtime* it prices on too, with the quote store's
+    *environments*, and the entry point."""
     shipped = render_form(form.model_copy(update={"sample": {}})).encode("utf-8")
     # Written as rendered, so the file's revision is the one the release records.
     (release_dir / FORM_FILE).write_bytes(shipped)
@@ -289,6 +300,7 @@ def write_release(
         created_at=str(manifest.get("created_at") or ""),
         host=host,
         edit_role=edit_role,
+        environments={each.name: each.declared() for each in environments},
     )
     described = json.dumps(asdict(release), indent=2) + "\n"
     (release_dir / RELEASE_FILE).write_bytes(described.encode("utf-8"))
@@ -399,7 +411,12 @@ def build_release(
         finally:
             resolved.close()
         release = write_release(
-            building, form, config.app_host, config.app_edit_role, runtime=runtime
+            building,
+            form,
+            config.app_host,
+            config.app_edit_role,
+            runtime=runtime,
+            environments=config.store,
         )
         _swap_in(building, release_dir)
     except BaseException:
@@ -540,10 +557,18 @@ _MANIFEST_KEYS = (
 )
 
 
-def quote_store_url() -> str | None:
-    """The quote store's URL a hosted app is given in :data:`STORE_URL_ENV`; None unset."""
-    url = os.environ.get(STORE_URL_ENV, "").strip()
-    return url or None
+def hosted_store(release_dir: Path) -> StoreLocation | None:
+    """The quote store the host points the release in *release_dir* at: the environment
+    :data:`ENVIRONMENT_ENV` names, which the release must declare, at the database the host's
+    variables say it is at; None while no environment is named, so the app keeps no quotes and
+    loads nothing of the store's."""
+    name = os.environ.get(ENVIRONMENT_ENV, "").strip()
+    if not name:
+        return None
+    from haute._quote_store._environment import resolve_store
+
+    release, _, _ = read_release(release_dir)
+    return resolve_store(release.store_environments(), name, os.environ)
 
 
 #: The names of the quote_details columns the app sets (``QUOTE_DETAILS_MANAGED``).
@@ -582,7 +607,7 @@ def create_app(
     *,
     local_principal: str | None = None,
     static_dir: Path | None = None,
-    store_url: str | None = None,
+    store: StoreLocation | None = None,
     local_reader: bool = False,
 ) -> FastAPI:
     """The app serving the release in *release_dir*.
@@ -592,10 +617,11 @@ def create_app(
     unless *local_reader*, and refuses any other request; otherwise the
     release's host says who is signed in and, for a release with an ``edit_role``, whether
     they hold it. The page and
-    its assets come from *static_dir*, Haute's built frontend unless given. *store_url* names
-    the quote store the app keeps quotes in, which must hold the release's form's tables for
-    its pipeline, dev's on the analyst's machine and the hosted store's otherwise: the app
-    does not start on one that does not, and keeps no quotes without one.
+    its assets come from *static_dir*, Haute's built frontend unless given. *store* is the
+    quote store the app keeps quotes in, dev's on the analyst's machine and a hosted
+    environment's otherwise (:func:`hosted_store`), whose database must hold the release's
+    form's tables for its pipeline in that environment: the app does not start on one that
+    does not, and keeps no quotes without one.
     """
     release, form, manifest = read_release(release_dir)
     # The pipeline reads what it ships from the release, wherever the host starts the app.
@@ -649,15 +675,14 @@ def create_app(
         )
 
     book = None
-    if store_url is not None:
-        from haute._quote_store import DEV, HOSTED, open_book
+    if store is not None:
+        from haute._quote_store import open_book
 
-        # A laptop is dev's alone: served there, the app keeps dev's quotes.
         book = open_book(
-            store_url,
+            store.url,
             form,
             project=release.pipeline_name,
-            environment=DEV if local_principal is not None else HOSTED,
+            environment=store.environment,
             haute_version=release.haute_version,
         )
 
@@ -718,7 +743,7 @@ def create_app(
     @app.get("/api/app/release", response_model=WorkbenchAppReleaseResponse)
     async def get_release(request: Request) -> WorkbenchAppReleaseResponse:
         return WorkbenchAppReleaseResponse(
-            **asdict(release),
+            **{key: value for key, value in asdict(release).items() if key != "environments"},
             principal=request.state.principal,
             quotes=book is not None,
             can_edit=request.state.can_edit,
@@ -853,7 +878,7 @@ def create_app(
                 status_code=503,
                 content={
                     "detail": "This app keeps no quotes: it was started without a quote store "
-                    f"({STORE_URL_ENV})."
+                    f"({ENVIRONMENT_ENV})."
                 },
             )
 

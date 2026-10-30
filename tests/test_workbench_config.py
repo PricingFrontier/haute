@@ -10,7 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from haute._workbench_config import WorkbenchConfigError, read_workbench_config
+from haute import _workbench_config as workbench_config
+from haute._workbench_config import (
+    WorkbenchConfigError,
+    read_workbench_config,
+    store_environments,
+)
 from haute.deploy._config import _validate_toml_keys
 from haute.errors import ConfigError
 from tests._workbench_helpers import PIPELINE_SOURCE, enable
@@ -72,6 +77,56 @@ def test_the_app_table_names_where_the_underwriter_app_runs(tmp_path: Path) -> N
     assert read_workbench_config(tmp_path).app_edit_role is None
 
 
+def test_the_store_tables_declare_the_hosted_environments_by_provider(tmp_path: Path) -> None:
+    enable(tmp_path)
+    assert read_workbench_config(tmp_path).store == ()
+
+    enable(
+        tmp_path,
+        "[workbench]\nenabled = true\n\n[workbench.store.test]\nprovider = 'sqlite'\n\n"
+        "[workbench.store.prod]\nprovider = 'sqlite'\n",
+    )
+
+    store = read_workbench_config(tmp_path).store
+    assert [(each.name, each.provider, each.auth) for each in store] == [
+        ("test", "sqlite", None),
+        ("prod", "sqlite", None),
+    ]
+    assert store[0].declared() == {"provider": "sqlite"}
+
+
+def test_a_provider_that_signs_in_names_the_variables_its_sign_in_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A database on a server signs the app in, by the variables the environment names.
+    monkeypatch.setattr(workbench_config, "STORE_PROVIDERS", frozenset({"sqlite", "server"}))
+    principal = {
+        "provider": "server",
+        "auth": "service-principal",
+        "client_id_env": "STORE_CLIENT",
+        "client_secret_env": "STORE_SECRET",
+    }
+
+    [environment] = store_environments({"prod": principal}, "[workbench.store]")
+
+    assert (environment.auth, dict(environment.variables)) == (
+        "service-principal",
+        {"client_id_env": "STORE_CLIENT", "client_secret_env": "STORE_SECRET"},
+    )
+    assert environment.declared() == principal
+    [identity] = store_environments(
+        {"prod": {"provider": "server", "auth": "managed-identity"}}, "[workbench.store]"
+    )
+    assert identity.variables == {}
+    for settings, says in (
+        ({"provider": "server"}, "auth must be one of managed-identity"),
+        ({**principal, "client_secret_env": "not a name"}, "must name the environment variable"),
+        ({**principal, "username_env": "STORE_USER"}, "unknown key(s): username_env"),
+    ):
+        with pytest.raises(ValueError, match=re.escape(says)):
+            store_environments({"prod": settings}, "[workbench.store]")
+
+
 def test_the_app_table_names_the_role_that_may_change_quotes(tmp_path: Path) -> None:
     enable(
         tmp_path,
@@ -90,7 +145,7 @@ def test_the_app_table_names_the_role_that_may_change_quotes(tmp_path: Path) -> 
         ("workbench = true\n", "[workbench] must be a TOML table"),
         (
             "[workbench]\nenabled = true\nenable = true\nlabel = 'x'\n",
-            "[workbench] has unknown key(s): enable, label; the keys are enabled and app",
+            "[workbench] has unknown key(s): enable, label; the keys are enabled, app and store",
         ),
         (
             "[workbench]\nenabled = true\nform = 'forms/form.json'\n",
@@ -125,6 +180,40 @@ def test_the_app_table_names_the_role_that_may_change_quotes(tmp_path: Path) -> 
         (
             "[workbench]\nenabled = true\n[workbench.app]\nhost = { name = 'azure' }\n",
             "[workbench.app].host must be one of azure-container-apps; got {'name': 'azure'}",
+        ),
+        ("[workbench]\nenabled = true\nstore = 'test'\n", "[workbench.store] must be a table"),
+        (
+            "[workbench]\nenabled = true\n[workbench.store.dev]\nprovider = 'sqlite'\n",
+            "[workbench.store.dev]: dev is the analyst's laptop",
+        ),
+        (
+            "[workbench]\nenabled = true\n[workbench.store.Prod]\nprovider = 'sqlite'\n",
+            "[workbench.store.Prod]: an environment's name is up to 32 lower-case letters",
+        ),
+        (
+            "[workbench]\nenabled = true\n[workbench.store.test]\nprovider = 'oracle'\n",
+            "[workbench.store.test].provider must be one of sqlite; got 'oracle'",
+        ),
+        (
+            "[workbench]\nenabled = true\n[workbench.store.test]\nprovider = 'sqlite'\n"
+            "auth = 'password'\n",
+            "[workbench.store.test].auth: a sqlite database is a file, which takes no sign-in",
+        ),
+        (
+            "[workbench]\nenabled = true\n[workbench.store.test]\nprovider = 'sqlite'\npool = 4\n",
+            "[workbench.store.test] has unknown key(s): pool; the keys are auth, provider",
+        ),
+        (
+            "[workbench]\nenabled = true\n[workbench.store.test]\nprovider = 'sqlite'\n"
+            "database = 'quotes.sqlite'\n",
+            "[workbench.store.test].database: where an environment's database is comes from the "
+            "host's environment (HAUTE_STORE_DATABASE), never from a file",
+        ),
+        (
+            "[workbench]\nenabled = true\n[workbench.store.test]\nprovider = 'sqlite'\n"
+            "password = 'hunter2'\n",
+            "[workbench.store.test].password would hold a secret's value: name the variable that "
+            "holds it (password_env) instead",
         ),
     ],
 )
@@ -183,6 +272,9 @@ def test_deploy_s_whole_file_check_accepts_the_table_and_refuses_an_unknown_key(
     _validate_toml_keys({"workbench": {"enabled": True}}, path)
     _validate_toml_keys(
         {"workbench": {"enabled": True, "app": {"host": "azure-container-apps"}}}, path
+    )
+    _validate_toml_keys(
+        {"workbench": {"enabled": True, "store": {"test": {"provider": "x"}}}}, path
     )
 
     with pytest.raises(ValueError, match=r"\[workbench\] unknown key 'enable'"):

@@ -1222,13 +1222,14 @@ Out of scope:
   resolves to the analyst's machine, whose requests the browser counts as that page's own.
   No credential reaches the page.
   Given a quote store, the app keeps the quotes saved in it as rows of the form's own tables
-  (the quote store, below). A hosted app reads the store's SQLAlchemy URL from
-  `HAUTE_QUOTE_STORE_URL`, which the host supplies at runtime, and does not start on a
-  database that does not hold its release's form's tables, which `haute app migrate` makes
-  before the release starts; `haute app serve` keeps its quotes in dev's store,
-  `.haute/app/store.sqlite`, beside the release rather than in it, its tables built from the
-  release's form as it starts, so a rebuild keeps them. Without a store the app keeps
-  nothing, says so on `GET /api/app/release` (`quotes`), and answers its quote routes 503.
+  (the quote store, below). A hosted app keeps them in the environment its host names in
+  `HAUTE_ENVIRONMENT`, one its release declares, at the database the host's own variables say
+  it is at, and does not start on a database that does not hold its release's form's tables,
+  which `haute app migrate --environment` makes before the release starts; `haute app serve`
+  keeps its quotes in dev's store, `.haute/app/store.sqlite`, beside the release rather than
+  in it, its tables built from the release's form as it starts, so a rebuild keeps them.
+  Started with no environment named, the app keeps nothing, says so on `GET
+  /api/app/release` (`quotes`), and answers its quote routes 503, naming `HAUTE_ENVIRONMENT`.
   A quote is named by its reference and option, the reference URL-encoded. The quote routes
   list a page of quotes (`GET /api/app/quotes`: the list, stage, search, assignee, order,
   cursor and size), create one (`POST /api/app/quotes`, made from another quote when it names
@@ -1861,6 +1862,21 @@ Out of scope:
   reference, quote name, insured or broker whatever their case (`ABC-1/2` matching that
   option alone), newest saved first, by reference from A to Z with its options in order, or
   by insured, with each list's count and each stage's.
+
+  A project's quotes live in dev, on the analyst's laptop, and in the hosted environments its
+  `haute.toml` declares, each a `[workbench.store.<name>]` table naming its database's
+  provider: `sqlite`, a file on the host, which takes no sign-in. Dev is the SQLite file
+  `.haute/app/store.sqlite` that `haute app serve` keeps; no project declares dev, and nothing
+  points a laptop at a hosted environment. A host or a CI job picks an environment with
+  `HAUTE_ENVIRONMENT`, and the host's own environment says where its database is:
+  `HAUTE_STORE_DATABASE`, the file's path, or `HAUTE_STORE_URL`, a whole connection URL, never
+  both. No credential, server or database name is in a file the project versions: a table
+  naming where a database is, or holding a secret's value, is refused naming the variable it
+  belongs in, so a pull request cannot point an environment elsewhere. A release carries the
+  declarations with it, so a hosted app and a migrate read them from the release they run,
+  never from a project checkout, and an environment the release does not declare is refused
+  naming those it does. `haute_store` records the project and the environment, so an app
+  pointed at another's database refuses to start naming both.
 
   The store holds the tables of one form, as `haute_store` records them. In dev a database
   holding none takes them as the app starts, and each table the form has changed since is
@@ -2525,16 +2541,17 @@ package folds its part into the present-tense sections of this specification and
 section. The [low-level contract](low-level.md#approved-change-contract--the-quote-store-as-the-forms-own-tables)
 names the seams, shapes and tests.
 
-- **Current limitation.** The store is the form's own tables (the quote store, in Behaviour)
-  on SQLite alone. A hosted app reads one opaque URL and records its quotes under the one
-  environment `hosted`; nothing declares an environment. `haute app migrate` makes an empty
-  database's tables and changes none, so a form change reaches a hosted store only as a new
-  database, and dev builds again each table the form changed, its rows dropped.
-- **Unresolved target.** A project declares its hosted environments once and a host picks
-  one by name; one planner keeps the tables in step with the form, by stable id, in dev and
-  in each hosted environment; and the store runs on SQLite, SQL Server and PostgreSQL.
+- **Current limitation.** The store is the form's own tables, in dev and in the hosted
+  environments a project declares (the quote store, in Behaviour), on SQLite alone. `haute app
+  migrate` makes an empty database's tables and changes none, so a form change reaches a
+  hosted store only as a new database, and dev builds again each table the form changed, its
+  rows dropped; a started app checks its database against `haute_store`'s record alone.
+- **Unresolved target.** One planner keeps the tables in step with the form, by stable id,
+  in dev and in each hosted environment; a started app checks its database's own catalogue;
+  and the store runs on SQL Server and PostgreSQL besides SQLite, each signing the app in as
+  its environment declares.
   [WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments) builds
-  the planner and the environments, and
+  the planner and the startup check, and
   [WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql) the server
   databases.
 - **Non-goals.** In test and prod a type, rows or role change on a column or table that holds
@@ -2544,11 +2561,9 @@ names the seams, shapes and tests.
   The SQL Export, outcomes and policies are unchanged
   ([WB-11](../roadmap/workbench.md#wb-11--exports-from-the-app),
   [WB-13](../roadmap/workbench.md#wb-13--managing-quotes-in-the-underwriter-app)).
-- **Failure and compatibility semantics.** A started app refuses a database that does not
-  hold its release's form, naming each difference and the command that resolves it; a
-  database recorded for another project or environment, naming both; an environment its
-  release does not declare, naming those it does; and a provider Haute does not have, naming
-  those it has. A migrate refuses before any DDL, naming each step it cannot take, a table or
+- **Failure and compatibility semantics.** A started app refuses a database whose
+  catalogue does not hold its release's form, naming each difference and the command that
+  resolves it. A migrate refuses before any DDL, naming each step it cannot take, a table or
   column the form still has that the database lacks, and a plan needing a restore point it
   was not given. Nothing falls back: a value the store cannot hold as its column's type is
   refused, never kept as something else.
@@ -2559,12 +2574,9 @@ names the seams, shapes and tests.
   [WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql), in that
   order.
 
-**Environments.** A project's quotes live in dev, on the analyst's laptop, and in the hosted
-environments its `haute.toml` declares. Dev is the SQLite file `.haute/app/store.sqlite` that
-`haute app serve` keeps, where schema changes are tried; nothing points a laptop at a hosted
-environment. Each hosted environment is a table naming its provider and how the app signs in,
-`managed-identity`, `service-principal` or `password`, with the names of the variables holding
-any secret, never a value:
+**Environments on a server.** An environment on a server database names how the app signs
+in, `managed-identity`, `service-principal` or `password`, with the names of the variables
+holding any secret, never a value:
 
 ```toml
 [workbench.store.test]
@@ -2576,16 +2588,10 @@ provider = "sqlserver"
 auth = "managed-identity"
 ```
 
-A host or a CI job picks one with `HAUTE_ENVIRONMENT`, and the host's own environment says
-where it is: `HAUTE_STORE_SERVER`, `HAUTE_STORE_DATABASE` and, optionally, `HAUTE_STORE_SCHEMA`,
-or `HAUTE_STORE_URL` holding a whole connection URL. No credential, server or database name is
-in a file the project versions, so a pull request cannot point an environment elsewhere. A
-release carries the declarations, provider and sign-in, with it, so a hosted app and a
-migrate read them from the release they run, never from a project checkout. A
+The host's own environment says where it is: `HAUTE_STORE_SERVER`, `HAUTE_STORE_DATABASE`
+and, optionally, `HAUTE_STORE_SCHEMA`, or `HAUTE_STORE_URL` holding a whole connection URL. A
 project lays its environments out as it likes, a database each, a schema each or both: Haute
-qualifies every name with the schema, the connection's default when none is named, and
-`haute_store` records the project and the environment, so an app pointed at another's
-database refuses to start naming both.
+qualifies every name with the schema, the connection's default when none is named.
 
 **Schema changes.** `haute app migrate` brings an environment's tables to the release's form,
 comparing them by stable id through `haute_store`, in one transaction, and refuses, before any

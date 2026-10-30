@@ -679,11 +679,20 @@ builder on screen. With a quote store it is where they manage their quotes too.
   base_image = "python:3.11.9-slim"
   ```
 
-- The hosted app keeps quotes in the SQL database your IT team provides, as your schema's
-  tables. The host gives the app its SQLAlchemy URL in `HAUTE_QUOTE_STORE_URL`; without it
-  the app keeps nothing, says so, and prices its one quote as `PREVIEW`, option 1. The app
-  does not start on a database that does not hold its release's tables: `haute app migrate`
-  (with `HAUTE_QUOTE_STORE_URL` set, or `--url`) makes them in an empty database from the
+- The hosted app keeps quotes in the database of an environment you declare in
+  `haute.toml`, as your schema's tables. Declare each environment by name with its database's
+  provider, `sqlite` so far; where the database is never goes in the file:
+
+  ```toml
+  [workbench.store.test]
+  provider = "sqlite"
+  ```
+
+  The host names the environment in `HAUTE_ENVIRONMENT` and says where its database is in
+  `HAUTE_STORE_DATABASE` (the file's path) or `HAUTE_STORE_URL` (a whole connection URL).
+  Without an environment named the app keeps nothing, says so, and prices its one quote as
+  `PREVIEW`, option 1. The app does not start on a database that does not hold its release's
+  tables: `haute app migrate --environment test` makes them in an empty database from the
   release built in `.haute/app/release` (or the folder `--release` names) before that
   release starts. It refuses a database holding another form's tables, naming each table
   that differs, so a release whose schema changed a table needs a database of its own.

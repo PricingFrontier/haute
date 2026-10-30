@@ -16,8 +16,9 @@ alone, signed in as the analyst's git identity, so the sheets underwriters will 
 checked before a merge; the quotes saved there are kept in dev's quote store, a SQLite file
 beside the release, not in it, so a rebuild keeps them. Its tables are the form's, built as
 it starts: a table the form changed is built afresh, its rows dropped and named. ``migrate``
-makes a hosted app's quote store hold the tables of a built release's form, before that
-release starts.
+makes a hosted environment's quote store hold the tables of a built release's form, before
+that release starts: the environment one the release declares, its database where the host's
+own environment says it is.
 """
 
 from __future__ import annotations
@@ -119,6 +120,8 @@ def handle_app_serve(config: AppServeConfig) -> None:
         raise click.ClickException(
             "Set your git identity first (git config user.email): the app signs you in as it."
         )
+    from haute._quote_store import DEV, StoreLocation
+
     release_dir = (project_dir / RELEASE_DIR).resolve()
     _built(project_dir, release_dir)
     url = _local_store(project_dir, release_dir)
@@ -127,7 +130,7 @@ def handle_app_serve(config: AppServeConfig) -> None:
             release_dir,
             local_principal=principal,
             static_dir=config.static_dir,
-            store_url=url,
+            store=StoreLocation(DEV, url),
             local_reader=config.reader,
         )
     reading = ", reading quotes only" if config.reader else ""
@@ -162,38 +165,34 @@ def _local_store(project_dir: Path, release_dir: Path) -> str:
     return url
 
 
-def handle_app_migrate(url: str | None, release_dir: Path) -> None:
-    """Make the quote store at *url*, else at ``HAUTE_QUOTE_STORE_URL``, hold the tables of
-    the form of the release built in *release_dir*: made on a database holding none, and a
-    database holding another form's refused, naming each table that differs."""
-    from haute._quote_store import HOSTED, prepare_store
-    from haute._workbench_app import (
-        RELEASE_FILE,
-        STORE_URL_ENV,
-        quote_store_url,
-        read_release,
-    )
+def handle_app_migrate(environment: str, release_dir: Path) -> None:
+    """Make the quote store of *environment*, one the release built in *release_dir*
+    declares, at the database the host's own environment says it is at, hold the tables of
+    that release's form: made on a database holding none, and a database holding another
+    form's refused, naming each table that differs."""
+    import os
 
-    target = url or quote_store_url()
-    if target is None:
-        raise click.ClickException(
-            f"Name the quote store: pass --url or set {STORE_URL_ENV} to its SQLAlchemy URL."
-        )
+    from haute._quote_store import prepare_store, resolve_store
+    from haute._workbench_app import RELEASE_FILE, read_release
+
     if not (release_dir / RELEASE_FILE).is_file():
         raise click.ClickException(
             f"No release is built in {release_dir.as_posix()}: run haute app build first."
         )
     with _said():
         release, form, _ = read_release(release_dir.resolve())
+        store = resolve_store(release.store_environments(), environment, os.environ)
         prepare_store(
-            target,
+            store.url,
             form,
             project=release.pipeline_name,
-            environment=HOSTED,
+            environment=store.environment,
             haute_version=release.haute_version,
             release=release.id,
         )
-    click.echo(f"  ✓ The quote store holds the tables of release {release.id}'s form")
+    click.echo(
+        f"  ✓ The {store.environment} quote store holds the tables of release {release.id}'s form"
+    )
 
 
 @click.group(name="app")
@@ -236,9 +235,9 @@ def serve(port: int, static_dir: Path | None, reader: bool) -> None:
 
 @app.command()
 @click.option(
-    "--url",
-    default=None,
-    help="The quote store's SQLAlchemy URL; HAUTE_QUOTE_STORE_URL when not given.",
+    "--environment",
+    required=True,
+    help="The hosted environment whose quote store is migrated, one the release declares.",
 )
 @click.option(
     "--release",
@@ -248,7 +247,7 @@ def serve(port: int, static_dir: Path | None, reader: bool) -> None:
     show_default=True,
     help="The built release whose form's tables the store holds.",
 )
-def migrate(url: str | None, release_dir: Path) -> None:
-    """Make the app's quote store hold the tables of a built release's form, before that
-    release starts."""
-    handle_app_migrate(url, release_dir)
+def migrate(environment: str, release_dir: Path) -> None:
+    """Make a hosted environment's quote store hold the tables of a built release's form,
+    before that release starts."""
+    handle_app_migrate(environment, release_dir)
