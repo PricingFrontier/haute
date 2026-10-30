@@ -16,12 +16,12 @@ export function apiErrorCode(error: unknown): string | null {
 }
 
 /** The codes a save is refused with when what it was based on changed since it was read. */
-const STALE_REVISION_CODES: ReadonlySet<string> = new Set(["stale_document_revision", "stale_quote_revision"])
+const STALE_REVISION_CODES: ReadonlySet<string> = new Set(["stale_document_revision", "stale_quote"])
 
 /**
  * Whether a save was refused because what it was based on changed since it was read: the
- * pipeline's or the form's document, or a quote. Its code is in a structured detail, or
- * leads a flat one (`stale_document_revision: ...`).
+ * pipeline's or the form's document, or a quote's version. Its code is in a structured
+ * detail, or leads a flat one (`stale_document_revision: ...`).
  */
 export function isStaleRevision(error: unknown): boolean {
   const detail = typeof error === "object" && error !== null && "detail" in error ? (error as { detail?: unknown }).detail : undefined

@@ -1,7 +1,7 @@
 /**
  * A quote's history in the underwriter app (specs/workbench), on Haute's side panel: the
- * handover note, edited here; the quote it came from and those made from it; its revisions,
- * each opened as it was; and what was done to it, by whom and when, newest first.
+ * handover note, edited here; the quote it came from and those made from it; and what was
+ * done to it, by whom and when, newest first.
  */
 import { History } from "lucide-react"
 import { useState } from "react"
@@ -9,8 +9,8 @@ import type { WorkbenchAppQuote } from "../api/types"
 import { halfWindowWidth, SidePanel } from "../haute-ui"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { relativeTime } from "../utils/relativeTime"
-import { RELATION_TEXT as RELATION, eventText, fullTime } from "./quoteValues"
-import { followLink, quotePath, revisionPath } from "./route"
+import { RELATION_TEXT as RELATION, activityText, fullTime } from "./quoteValues"
+import { followLink, quotePath } from "./route"
 import { BUTTON, Collapsible } from "./ui"
 import useOpenQuoteStore, { busy, canEdit } from "./useOpenQuoteStore"
 
@@ -53,13 +53,14 @@ function NoteEditor({ quote }: { quote: WorkbenchAppQuote }) {
 
 export default function HistoryPanel() {
   const quote = useOpenQuoteStore((s) => s.quote)
-  const revision = useOpenQuoteStore((s) => s.revision)
-  const history = useOpenQuoteStore((s) => s.history)
+  const activity = useOpenQuoteStore((s) => s.activity)
   const setHistoryOpen = useOpenQuoteStore((s) => s.setHistoryOpen)
   const panelWidth = useWorkbenchViewStore((s) => s.panelWidth)
   const setPanelWidth = useWorkbenchViewStore((s) => s.setPanelWidth)
   if (quote === null) return null
   const linkStyle = { color: "var(--text-accent)" }
+  const source = activity?.source ?? null
+  const sourcePath = source === null ? null : quotePath(source.reference, source.option)
   return (
     <SidePanel
       width={panelWidth}
@@ -76,69 +77,52 @@ export default function HistoryPanel() {
         <Collapsible title="Note">
           <NoteEditor quote={quote} />
         </Collapsible>
-        {history === null ? (
+        {activity === null ? (
           <p role="status" style={{ color: "var(--text-muted)" }}>
             Reading the history…
           </p>
         ) : (
           <>
-            {(history.source || history.derived.length > 0) && (
-              <Collapsible title="Related quotes" count={(history.source ? 1 : 0) + history.derived.length}>
+            {(source !== null || activity.derived.length > 0) && (
+              <Collapsible title="Related quotes" count={(source === null ? 0 : 1) + activity.derived.length}>
                 <ul className="flex flex-col gap-0.5">
-                  {history.source && (
+                  {source !== null && sourcePath !== null && (
                     <li>
-                      Made as {RELATION[history.source.relation]} of{" "}
-                      <a href={revisionPath(history.source.id, history.source.revision)} onClick={(event) => followLink(event, revisionPath(history.source?.id ?? "", history.source?.revision ?? 1))} style={linkStyle}>
-                        {history.source.label}
-                      </a>{" "}
-                      revision {history.source.revision}
+                      Made as {RELATION[source.relation]} of{" "}
+                      <a href={sourcePath} onClick={(event) => followLink(event, sourcePath)} style={linkStyle}>
+                        {source.label}
+                      </a>
                     </li>
                   )}
-                  {history.derived.map((made) => (
-                    <li key={made.id}>
-                      <a href={quotePath(made.id)} onClick={(event) => followLink(event, quotePath(made.id))} style={linkStyle}>
-                        {made.label}
-                      </a>{" "}
-                      <span style={{ color: "var(--text-secondary)" }}>
-                        {RELATION[made.relation]} from revision {made.revision}
-                      </span>
-                    </li>
-                  ))}
+                  {activity.derived.map((made) => {
+                    const path = quotePath(made.reference, made.option)
+                    return (
+                      <li key={made.label}>
+                        <a href={path} onClick={(event) => followLink(event, path)} style={linkStyle}>
+                          {made.label}
+                        </a>{" "}
+                        <span style={{ color: "var(--text-secondary)" }}>{RELATION[made.relation]}</span>
+                      </li>
+                    )
+                  })}
                 </ul>
               </Collapsible>
             )}
-            <Collapsible title="Revisions" count={history.revisions.length}>
-              <ul className="flex flex-col">
-                {[...history.revisions].reverse().map((each) => {
-                  const showing = revision?.number === each.number
-                  const path = each.number === quote.latest ? quotePath(quote.id) : revisionPath(quote.id, each.number)
-                  return (
-                    <li key={each.number} className="flex h-6 items-center gap-1.5" style={{ color: showing ? "var(--text-primary)" : "var(--text-secondary)" }}>
-                      <a href={path} onClick={(event) => followLink(event, path)} style={linkStyle} aria-current={showing ? "true" : undefined}>
-                        Revision {each.number}
-                      </a>
-                      {quote.final_revision === each.number && <span style={{ color: "var(--quote-final-text)" }}>final</span>}
-                      <span>{each.priced ? "priced" : "unpriced"}</span>
-                      <span className="ml-auto truncate" title={fullTime(each.saved_at)}>
-                        {each.saved_by}, {relativeTime(new Date(each.saved_at))}
+            <Collapsible title="Activity" count={activity.entries.length}>
+              <ol className="flex flex-col gap-1">
+                {activity.entries
+                  .map((entry, at) => ({ entry, at }))
+                  .reverse()
+                  .map(({ entry, at }) => (
+                    <li key={at} className="flex flex-col" data-testid={`activity-${entry.action}`}>
+                      <span style={{ color: "var(--text-primary)" }}>
+                        {entry.actor} {activityText(entry, source)}
+                      </span>
+                      <span className="text-[11px]" style={{ color: "var(--text-muted)" }} title={fullTime(entry.at)}>
+                        {relativeTime(new Date(entry.at))}
                       </span>
                     </li>
-                  )
-                })}
-              </ul>
-            </Collapsible>
-            <Collapsible title="Activity" count={history.events.length}>
-              <ol className="flex flex-col gap-1">
-                {[...history.events].reverse().map((event) => (
-                  <li key={event.id} className="flex flex-col" data-testid={`event-${event.kind}`}>
-                    <span style={{ color: "var(--text-primary)" }}>
-                      {event.actor} {eventText(event)}
-                    </span>
-                    <span className="text-[11px]" style={{ color: "var(--text-muted)" }} title={fullTime(event.at)}>
-                      {relativeTime(new Date(event.at))}
-                    </span>
-                  </li>
-                ))}
+                  ))}
               </ol>
             </Collapsible>
           </>

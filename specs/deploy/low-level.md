@@ -45,7 +45,7 @@
   by `resolve_config()`: `config`, `full_graph`, `pruned_graph`, `input_node_ids`,
   `output_node_id`, `artifacts` (`dict[str, Path]`), `input_schema`/`output_schema`
   (`dict[str, str]` of column name → Polars dtype string), `execution_policy` (the
-  bundle-time batch strategy record from `_schema.py::infer_deploy_execution_policy`),
+  bundle-time batch strategy record from `deploy/_schema.py::infer_deploy_execution_policy`),
   `removed_node_ids`, `snapshot_provenance` (`dict[str, dict[str, Any]]`), `model_sources`
   (`dict[str, dict[str, Any]]`: each registered model-score node's `registered_model`,
   `alias`, resolved `version` and `run_id`), `project_modules` (`ProjectModules`: the
@@ -108,7 +108,7 @@
 - **`BatchScoreCleanupError`** (`_batch_scoring.py`) — raised when the batch temp
   directory (request rows plus scored parquet) could not be removed and no primary error
   is in flight; a data-retention defect is never swallowed.
-- **Deploy execution policy** (`_schema.py::infer_deploy_execution_policy`) — the
+- **Deploy execution policy** (`deploy/_schema.py::infer_deploy_execution_policy`) — the
   bundle-time record on `ResolvedDeploy.execution_policy`, in the manifest, and on
   `/health`: `schema_version`, `profile` (`"deploy_batch"`), `runtime`
   (`hard_capped_worker` | `in_process`), `status`, `strategy`, `reason_code`,
@@ -922,7 +922,7 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 | `DeployError` (request rows) | `_request_rows.py::check_lookups` (a checked side holding a join key twice, or a cross join's side not holding exactly one row; every failure in one error) and `copy_verified` (an artefact's bytes differ from the digest resolution recorded) | Propagates from `resolve_config()` or the bundle copy; the build fails. |
 | `QuoteAnswerRowsError` (`DeployError`, `error_code="quote_answer_rows"`, public fields `quotes`, `position` and `rows`) | `_request_rows.py::check_quote_answer`, called by `score_quote_by_quote` | A contract error: the batch child's `contract` kind and `/quote` → HTTP 422 with `to_payload()`; raised from the MLflow `pyfunc` predict. |
 | `RequestRowCountError` (`ExecutionError`, no public code) | `_request_rows.py::check_answer_rows`, called by `score_graph` and the batch child for a request answered in request order | The batch child's `error` kind → HTTP 500 `deploy_internal_error`; the live path's catch-all → HTTP 500; raised from the MLflow `pyfunc` predict. |
-| `DeployError` (capped schema dry-run) | `_schema.py::infer_output_schema` when the fallback's worker fails: a `BatchScoreError` from the child, or any `IsolatedWorker*Error` (`IsolatedWorkerMemoryLimitUnsupportedError` on a host without native caps included) | Propagates from `resolve_config()`; names the blocking node/operator from the original group-by rejection and states that the served batch path could not be proven. |
+| `DeployError` (capped schema dry-run) | `deploy/_schema.py::infer_output_schema` when the fallback's worker fails: a `BatchScoreError` from the child, or any `IsolatedWorker*Error` (`IsolatedWorkerMemoryLimitUnsupportedError` on a host without native caps included) | Propagates from `resolve_config()`; names the blocking node/operator from the original group-by rejection and states that the served batch path could not be proven. |
 | `RuntimeError` (startup) | Generated `app.py`'s `_require_fail_closed_batch_enforcement` at module load: a `warned` execution policy with `HAUTE_WORKER_MEMORY_ENFORCEMENT` other than `required`, or `required` on a host where `process_memory_caps_supported()` is `False` | Uncaught — the service refuses to start rather than failing every batch request. |
 | `IsolatedWorkerMemoryLimitUnsupportedError` | `run_isolated_worker` under `required` enforcement on a host that cannot install a native cap | Caught in `_quote_batch` → HTTP 507 with `reason: "native_memory_cap_unavailable"`. |
 | `BatchScoreCleanupError` | `_batch_scoring.py::_remove_batch_temp_dir` (temp directory removal failed with no primary error in flight) | Caught in `_quote_batch`'s `finally`, logged `deploy_quote_batch_cleanup_failed`, replaces the computed response with HTTP 500 `deploy_internal_error`. With a primary error in flight it is attached to that error as a note instead. |

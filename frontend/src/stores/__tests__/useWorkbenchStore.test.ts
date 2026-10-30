@@ -95,7 +95,7 @@ describe("refreshTables", () => {
   }
 
   beforeEach(() => {
-    useWorkbenchStore.setState({ enabled: true, tables: null })
+    useWorkbenchStore.setState({ enabled: true, tables: null, storeColumns: {} })
     useToastStore.setState({ toasts: [], _toastCounter: 0 })
   })
 
@@ -117,9 +117,9 @@ describe("refreshTables", () => {
     await Promise.resolve()
     expect(settled).toBe(false)
 
-    server.answer(1, { tables: tables("policy"), sample: {}, response_tables: [] })
+    server.answer(1, { tables: tables("policy"), sample: {}, response_tables: [], store_columns: {} })
     await expect(second).resolves.toBe(true)
-    server.answer(0, { tables: tables("old"), sample: {}, response_tables: [] })
+    server.answer(0, { tables: tables("old"), sample: {}, response_tables: [], store_columns: {} })
     await expect(first).resolves.toBe(true)
     expect(useWorkbenchStore.getState().tables?.tables).toEqual(tables("policy"))
 
@@ -143,9 +143,9 @@ describe("refreshTables", () => {
 
     const older = store().refreshTables()
     const newer = store().refreshTables()
-    held.answer(1, { tables: tables("newer"), sample: {}, response_tables: [] })
+    held.answer(1, { tables: tables("newer"), sample: {}, response_tables: [], store_columns: {} })
     await vi.waitFor(() => expect(store().tables?.fetch).toBe(newer))
-    held.answer(0, { tables: tables("older"), sample: {}, response_tables: [] })
+    held.answer(0, { tables: tables("older"), sample: {}, response_tables: [], store_columns: {} })
     await new Promise((resolve) => setTimeout(resolve, 0))
 
     expect(older).toBeLessThan(newer!)
@@ -153,7 +153,7 @@ describe("refreshTables", () => {
 
     const failing = store().refreshTables()
     const newest = store().refreshTables()
-    held.answer(3, { tables: tables("newest"), sample: {}, response_tables: [] })
+    held.answer(3, { tables: tables("newest"), sample: {}, response_tables: [], store_columns: {} })
     await vi.waitFor(() => expect(store().tables?.fetch).toBe(newest))
     held.answer(2, { detail: "v2 table label 'class' must be an ASCII Python identifier", type: "ApiInputSchemaError" }, 422)
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -162,17 +162,19 @@ describe("refreshTables", () => {
     expect(useToastStore.getState().toasts).toEqual([])
   })
 
-  it("keeps the sample quote and the response tables a fetch brings beside the tables", async () => {
+  it("keeps the sample quote, the response tables and the columns the quote store keeps a fetch brings beside the tables", async () => {
     const held = heldResponses()
     const store = useWorkbenchStore.getState
     const sample = { policy: { state: "NY" } }
+    const kept = { quote_details: [{ name: "quote_version", kind: "int" }, { name: "saved_at", kind: "datetime" }], t_items: [{ name: "quote_row", kind: "int" }] }
 
     const fetch = store().refreshTables()
-    held.answer(0, { tables: tables("policy"), sample, response_tables: tables("pricing_output") })
+    held.answer(0, { tables: tables("policy"), sample, response_tables: tables("pricing_output"), store_columns: kept })
 
     await vi.waitFor(() => expect(store().tables?.fetch).toBe(fetch))
     expect(store().tables?.sample).toEqual(sample)
     expect(store().tables?.responseTables).toEqual(tables("pricing_output"))
+    expect(store().storeColumns).toEqual(kept)
   })
 
   it("asks every preview and reader of node data again after a fetch that changes what the workbench nodes are given, and not after one that brings the same", async () => {
@@ -186,20 +188,20 @@ describe("refreshTables", () => {
       await vi.waitFor(() => expect(store().tables?.fetch).toBe(fetch))
     }
     const columns = [{ name: "state", type: "str" }, { name: "exposure", type: "float" }]
-    await fetchedAs(0, { tables: [{ name: "policy", rows: "one", columns }], sample: {}, response_tables: [] })
+    await fetchedAs(0, { tables: [{ name: "policy", rows: "one", columns }], sample: {}, response_tables: [], store_columns: {} })
     const first = epoch()
     const structural = structure()
 
     // The same, its keys written in another order.
-    await fetchedAs(1, { response_tables: [], sample: {}, tables: [{ columns, rows: "one", name: "policy" }] })
+    await fetchedAs(1, { store_columns: {}, response_tables: [], sample: {}, tables: [{ columns, rows: "one", name: "policy" }] })
     expect(epoch()).toBe(first)
     expect(structure()).toBe(structural)
 
-    await fetchedAs(2, { tables: [{ name: "policy", rows: "one", columns }], sample: { policy: { state: "NY" } }, response_tables: [] })
+    await fetchedAs(2, { tables: [{ name: "policy", rows: "one", columns }], sample: { policy: { state: "NY" } }, response_tables: [], store_columns: {} })
     expect(epoch()).toBe(first + 1)
-    await fetchedAs(3, { tables: [{ name: "policy", rows: "one", columns }], sample: { policy: { state: "NY" } }, response_tables: tables("premiums") })
+    await fetchedAs(3, { tables: [{ name: "policy", rows: "one", columns }], sample: { policy: { state: "NY" } }, response_tables: tables("premiums"), store_columns: {} })
     expect(epoch()).toBe(first + 2)
-    await fetchedAs(4, { tables: [{ name: "policy", rows: "many", columns }], sample: { policy: { state: "NY" } }, response_tables: tables("premiums") })
+    await fetchedAs(4, { tables: [{ name: "policy", rows: "many", columns }], sample: { policy: { state: "NY" } }, response_tables: tables("premiums"), store_columns: {} })
     expect(epoch()).toBe(first + 3)
     // Each change is the graph's structure as every preview, recorded column and job reads it.
     expect(structure()).toBe(structural + 3)
@@ -209,7 +211,7 @@ describe("refreshTables", () => {
     const held = heldResponses()
     const store = useWorkbenchStore.getState
     store().refreshTables()
-    held.answer(0, { tables: tables("policy"), sample: {}, response_tables: [] })
+    held.answer(0, { tables: tables("policy"), sample: {}, response_tables: [], store_columns: {} })
     await vi.waitFor(() => expect(store().tables).not.toBeNull())
     const kept = store().tables
 

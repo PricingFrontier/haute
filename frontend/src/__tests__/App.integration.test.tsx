@@ -48,7 +48,7 @@ import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 // a test says so, and then its tables and its form are blank.
 vi.mock("../api/workbench", () => ({
   fetchWorkbenchStatus: vi.fn(() => Promise.resolve({ enabled: false, form: null })),
-  fetchWorkbenchTables: vi.fn(() => Promise.resolve({ tables: [], sample: {}, response_tables: [] })),
+  fetchWorkbenchTables: vi.fn(() => Promise.resolve({ tables: [], sample: {}, response_tables: [], store_columns: {} })),
   fetchWorkbenchForm: vi.fn(() => Promise.resolve({
     form: {
       version: 1,
@@ -3130,7 +3130,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     useWorkbenchStore.setState({ enabled: false, formPath: null, activeView: "pipeline", tables: null, formDirty: false })
     useWorkbenchFormStore.setState({ form: null, revision: null, status: "idle", undoStack: [], redoStack: [], dirty: false, stale: false })
     vi.mocked(workbenchApi.saveWorkbenchForm).mockClear()
-    vi.mocked(workbenchApi.fetchWorkbenchTables).mockReset().mockImplementation(() => Promise.resolve({ tables: [], sample: {}, response_tables: [] }))
+    vi.mocked(workbenchApi.fetchWorkbenchTables).mockReset().mockImplementation(() => Promise.resolve({ tables: [], sample: {}, response_tables: [], store_columns: {} }))
   })
 
   const policyTables = [{ name: "policy", rows: "one" as const, columns: [{ name: "state", type: "str" as const }] }]
@@ -3143,7 +3143,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     const priced = makeNode("priced", "priced")
     const fromPolicy = { id: "e_policy", source: "wb_in", sourceHandle: "policy", target: "priced", targetHandle: null, data: { _inputName: "policy" } }
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({ nodes: [input, priced], edges: [fromPolicy], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))
-    vi.mocked(workbenchApi.fetchWorkbenchTables).mockResolvedValue({ tables: policyTables, sample: {}, response_tables: [] })
+    vi.mocked(workbenchApi.fetchWorkbenchTables).mockResolvedValue({ tables: policyTables, sample: {}, response_tables: [], store_columns: {} })
   }
   /** The pipeline a save sent: its connections, and the config of its Workbench Input, which holds nothing of the tables. */
   const savedPipeline = (call = 0) => {
@@ -3229,7 +3229,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
 
     // The saved form no longer has the policy table.
     act(() => {
-      answerTables({ tables: [], sample: {}, response_tables: [] })
+      answerTables({ tables: [], sample: {}, response_tables: [], store_columns: {} })
     })
 
     // Then the pipeline is saved without the connection to it, and the milestone asked for.
@@ -3349,7 +3349,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     let answerFirst: () => void = () => {}
     vi.mocked(workbenchApi.fetchWorkbenchTables).mockImplementationOnce(
       () => new Promise<WorkbenchTablesResponse>((resolve) => {
-        answerFirst = () => resolve({ tables: policyTables, sample: {}, response_tables: [] })
+        answerFirst = () => resolve({ tables: policyTables, sample: {}, response_tables: [], store_columns: {} })
       }),
     )
     const save = await screen.findByTestId("toolbar-save", {}, { timeout: 10_000 })

@@ -9,10 +9,10 @@ sample priced live and Preview, and the form on the save ledger. How a deployed 
 reads a quote in the workbench's shape is specified in [the deploy
 specification](../deploy/high-level.md). The packages below are what neither covers: the
 underwriter app, which carries the sheets and the pipeline to the host a project uses; the
-delivery of a workbench project through CI, from a merge to `main` to that app; the store
-the app saves quotes to, which is the form's own tables in the user's database, with the
-schema changes and environments that keep it in step with the form and the server databases
-it runs on; how underwriters manage their quotes in the app;
+delivery of a workbench project through CI, from a merge to `main` to that app; the schema
+changes and environments that keep the quote store, the form's own tables in the user's
+database, in step with the form, and the server databases it runs on; how underwriters
+manage their quotes in the app;
 exports from the app; test quotes analysts keep and price again; and the actions
 that fill the sheets from databases and APIs.
 
@@ -29,7 +29,6 @@ Allowed field.
 | WB-07 | Planned | P3 | The underwriter app runs on a Databricks App, on AWS or on an internal platform as it runs on Azure Container Apps, each signing underwriters in its own way. |
 | WB-08 | Planned | P2 | A merge to `main` takes a workbench project's form, pipeline and app, tested together in CI, to staging and, after approval, to production on the project's host, Azure Container Apps first. |
 | WB-09 | Decision | P2 | An Import on a sheet, or a lookup beside a key cell, runs against a file, a database or an API and fills input cells with what comes back, through the server with no credential in the browser, while pricing stays as pure as it is. |
-| WB-10 | Planned | P1 | The quote store is the form's own tables: each table of the schema a SQL table named and typed as the schema says, holding each quote's current state, read and written with plain SQL, with two stages, an activity log and no revisions. |
 | WB-11 | Decision | P2 | An underwriter exports a final quote from the app in the formats the project needs, naming the release that priced it. |
 | WB-12 | Decision | P3 | Analysts keep test quotes and price them again as the pipeline changes, built again after the first version was taken out. |
 | WB-13 | Planned | P3 | An underwriter records how a final quote ended, and archives or reassigns many quotes at once. |
@@ -152,7 +151,7 @@ that fails after the migrate leaves the previous release running on its own form
 migrated back, and the run failed, or, after a step its plan named irreversible, the app
 stopped, the run failed and the restore point named.
 
-**Dependencies:** WB-10 and WB-42 (the store and its migrate step), WB-11 (the export
+**Dependencies:** WB-42 (the store's migrate step), WB-11 (the export
 the app's tests make, once its formats are decided) and WB-12 (the test quotes). The Azure
 resources and identities, provided by the project's IT team. The generated deploy jobs
 already log in to the registry before a push; impact's input is the `[safety]` portfolio
@@ -249,71 +248,6 @@ other.
 Databricks extra); `docs/deployment/targets/databricks.md` (credentials as CI secrets
 and the editor's data-access pair).
 
-### WB-10 — The quote store
-**Why:** Analysts read the quotes underwriters save for their own reporting and analysis, so
-a quote's data belongs in the user's database as the form's own tables, read with plain SQL.
-Today the store is a schema of Haute's own (`src/haute/_quote_store/_tables.py::METADATA`): a
-quote's values, its request and its response are JSON text in `haute_quote_revisions`, the
-values keyed by table and column id and kept as typed, and only `quote_details` is copied
-into typed columns. Every revision is kept whole with a copy of the form it was keyed into, a
-quote saved on earlier sheets is carried onto the current ones
-(`src/haute/_quote_store/_store.py::carry_values`), and four numbered migrations with an
-oldest-reader record keep that schema in step with Haute. A report reads a premium only by
-parsing JSON with each engine's own functions.
-
-**Plan:** Decided with the owner on 30 October 2026. Haute has no users to carry, so nothing
-migrates from today's store. Each table of the form's schema, inputs, outputs and
-`quote_details` alike, is a SQL table named and typed as the schema says, holding each quote's
-current state: every column of the project's own is nullable, and rows are keyed by
-`quote_reference` and `quote_option` and, in a many-row table, by a `quote_row` Haute numbers.
-Beside them Haute keeps two tables: `haute_store`, one row naming the project, the
-environment, and the release and structural schema last migrated to, by stable id; and
-`haute_activity`, an append-only log of who did what to a quote and when, holding each
-write's operation key. The columns Haute needs beyond the form (`quote_version`, `saved_at`,
-`priced_release`, the quote it was made from, the handover note and `quote_row`) are
-store-only: shown locked in the editor and never part of a request. A save prices first,
-then writes in one transaction: a compare-and-swap on the quote's `quote_details` row by its
-version, its rows in every other table deleted and inserted again, no output rows when it is
-unpriced, and its activity row. There are no revisions. A quote is `draft`, which can be
-edited, or `final`, which later work gates behind (exports, WB-11): Mark final needs a price
-of the running release and a value in every required input and output, and Amend takes a
-final quote back to draft with a reason. A save is refused when a value is not of its
-column's type, naming the columns, and otherwise only as today (a conflict, a final or
-archived quote, a reader, nothing typed); a non-finite or empty output is saved empty. Hidden
-cells are saved blank, `quote_details` is always stored and priced, the details the app
-changes over a quote's life (`stage`, `assignee`, `archived`, `modified_date`, `modified_by`
-and `haute_version`) no longer reach the pipeline, and references are compared exactly,
-case included. This package builds it on SQLite, the store `haute app serve` keeps; WB-42
-keeps the tables in step with the form across environments and WB-43 brings the server
-databases. The workbench specification's [change
-contract](../workbench/high-level.md#approved-change-contract--the-quote-store-as-the-forms-own-tables)
-holds the detail.
-
-**Acceptance:** A quote saved in `haute app serve` is rows of the form's own tables in its
-SQLite file, typed as the schema says and read with plain SQL joined on `quote_reference` and
-`quote_option`, its priced outputs beside its inputs, and saving it again replaces them; a
-save holding a value not of its column's type is refused naming the columns, and nothing
-else its cells or outputs hold refuses one; Mark final is refused, naming them, while a
-required input or output has no value or the price is not the running release's; Amend takes
-a final quote back to draft with its reason in the activity log; a save repeated after its
-answer was lost is written once; a hidden cell is saved blank; the pipeline receives none of
-the details the app changes; `ABC-1` and `abc-1` are two quotes; and no revision, form copy
-or older sheets remain in the app or its routes.
-
-**Dependencies:** None. WB-42 and WB-43 build on it, and WB-11 and WB-13 use its stages and
-activity log.
-
-**Evidence:** `src/haute/_quote_store/_tables.py::METADATA` (Haute's schema, the values as
-JSON text); `src/haute/_quote_store/_store.py::carry_values` and `::_keep_form` (older sheets
-and the forms kept per revision); `src/haute/_quote_store/_book.py::QuoteBook` and
-`::canonical_reference` (the app's book, its three stages, references compared case-folded);
-`src/haute/_workbench_tables.py::quote_request` (the details the app sets in every request,
-and hidden cells left out of it while the store keeps them);
-`src/haute/_workbench_app_quotes.py::_required_left` (required details checked by the New
-quote window alone); `src/haute/_json_safe.py::to_json_safe` (a non-finite output passed on as
-a sentinel); `frontend/src/app/useOpenQuoteStore.ts` (a save whose answer was lost, held and
-repeated with its key).
-
 ### WB-11 — Exports from the app
 **Why:** Underwriters take what they need out of the app themselves: a quote's tables for a
 spreadsheet, a file another system imports, a document for a broker. Nothing in Haute
@@ -329,11 +263,11 @@ release needs (the quote's tables as CSV or a spreadsheet, an import file for an
 system, a document from a template), whether the Export on the sheets is how the app
 exports or the quote's bar offers exports beside it, and whether a quote exported again
 later reproduces the template it was first exported with or uses the current one. Then exports of a final
-quote, which WB-10's stages gate them behind, never of a draft, so every export is of a quote
+quote, which the store's stages gate them behind, never of a draft, so every export is of a quote
 that does not change while it is final and names the release that priced it; run on the
 app's server for the signed-in underwriter and recorded in the quote's activity log. The
 Export's database target is decided here too: once the store is the form's own tables in the
-user's database (WB-10), writing a quote's tables to that database again adds nothing, so
+user's database, writing a quote's tables to that database again adds nothing, so
 the lean is to take the target out unless a project names a destination of its own.
 Templates and mappings, where a format needs them, live in the
 project beside the form and ship in the release, so a change to one starts the workflow of
@@ -344,7 +278,7 @@ holds the quote's values and prices and names the release that priced them; a dr
 exported; each export is recorded in the quote's activity log; a change to a template starts
 the workflow, and the template's output for the test quotes is checked in CI.
 
-**Dependencies:** The decision above, and WB-10 (the stages and the activity log).
+**Dependencies:** The decision above.
 
 **Evidence:** `src/haute/_workbench_form.py::ExportWidget` (the Export's settings, read
 strictly); `frontend/src/workbench/panel/ExportSettings.tsx` (where they are chosen);
@@ -386,7 +320,7 @@ alternatives made from it, with a history of who did what; a reader sees every q
 changes none. What underwriters still keep elsewhere is the rest of a quote's commercial
 life: nothing records whether a final quote was bound, declined or not taken up, so the
 lists cannot tell open work from closed; and archiving or reassigning many quotes is done
-one at a time. WB-10 keeps no revisions, so comparing two of them is not part of this
+one at a time. The store keeps no revisions, so comparing two of them is not part of this
 package.
 
 **Plan:** Decisions first, recorded here before each slice: which outcomes a quote can close
@@ -402,7 +336,7 @@ project used it; a project that needs it keeps a date of its own.
 when, and the quote leaves the open lists; a selection of quotes is archived or reassigned
 at once, a quote moved on since refused by name and the rest changed.
 
-**Dependencies:** The decisions above, and WB-10 (the stages and the activity log).
+**Dependencies:** The decisions above.
 
 **Evidence:** `src/haute/_quote_store/_book.py::QuoteBook` (the quotes, their changes and
 lists, without outcomes); `frontend/src/app/QuotesPage.tsx::QuotesPage` (one quote changed
@@ -446,13 +380,15 @@ specification and the field stop calling the shape older.
 `src/haute/_workbench_form.py::FormSpec`, `frontend/src/utils/workbenchForm.ts`.
 
 ### WB-42 — The store's schema changes and environments
-**Why:** With the store as the form's own tables (WB-10), a change to the form is a change to
+**Why:** With the store as the form's own tables, a change to the form is a change to
 the database's tables, and a project's app runs against several databases: dev on the
 analyst's laptop, where schema changes are tried, and the hosted test and prod environments,
-each in a database or a schema the project's IT team provides. Today `haute app migrate` runs
-Haute's numbered migrations (`src/haute/_quote_store/_store.py::migrate_store`) and a hosted
-app reads one opaque URL (`src/haute/_workbench_app.py::STORE_URL_ENV`): nothing declares the
-environments or picks between them, and nothing changes a table from the form.
+each in a database or a schema the project's IT team provides. Today `haute app migrate` makes
+an empty database's tables and changes none
+(`src/haute/_quote_store/_store.py::prepare_store`), dev builds again each table the form
+changed, its rows dropped, and a hosted app reads one opaque URL
+(`src/haute/_workbench_app.py::STORE_URL_ENV`) under the one environment `hosted`: nothing
+declares the environments or picks between them, and nothing changes a table from the form.
 
 **Plan:** Decided with the owner on 30 October 2026. Dev is the laptop's SQLite file, which
 `haute app serve` keeps, and nothing points a laptop at a hosted environment. `haute.toml`
@@ -500,10 +436,10 @@ project signs in as it declares; a host whose `HAUTE_ENVIRONMENT` is
 column its release uses refuses to start naming it and `haute app migrate`; no credential,
 server or database name appears in `haute.toml`, the form, an API response or a log.
 
-**Dependencies:** WB-10. WB-08 runs the migrate step in the generated workflows.
+**Dependencies:** None. WB-08 runs the migrate step in the generated workflows.
 
-**Evidence:** `src/haute/_quote_store/_store.py::migrate_store` and `::open_store` (Haute's
-numbered migrations, a database not at the newest refused);
+**Evidence:** `src/haute/_quote_store/_store.py::prepare_store` and `::open_engine` (an
+empty database made, dev's tables built again, another form's refused);
 `src/haute/_workbench_app.py::STORE_URL_ENV` and `::quote_store_url` (one URL the host
 supplies); `src/haute/cli/_app.py::handle_app_migrate` and `::_local_store` (the migrate
 command and the local file); `src/haute/_workbench_config.py::read_workbench_config` (the
@@ -513,7 +449,7 @@ by the variable that holds it).
 ### WB-43 — The store on SQL Server and PostgreSQL
 **Why:** Projects bring their own databases: SQL Server, Azure SQL Database and Azure SQL
 Managed Instance, or PostgreSQL in its hosted forms. The store's tables, transactions and
-planner (WB-10, WB-42) are written once against SQLAlchemy Core, but the engines differ where
+planner (WB-42) are written once against SQLAlchemy Core, but the engines differ where
 the store relies on them: exact text comparison (SQL Server's default collation ignores
 case), identifier limits (PostgreSQL truncates a name past 63 bytes), rename DDL, non-finite
 floats, string lengths counted in UTF-16 units, and sign-in through Microsoft Entra ID.
@@ -548,10 +484,9 @@ column; the image built for a `sqlserver` environment signs in to an Azure SQL d
 its managed identity; an environment naming a provider outside the two families is refused
 naming the providers Haute has.
 
-**Dependencies:** WB-10 and WB-42. The databases and identities the project's IT team
-provides.
+**Dependencies:** WB-42. The databases and identities the project's IT team provides.
 
 **Evidence:** `src/haute/deploy/_container.py::prepare_build_directory` (the image's build
 context, pip installs only); `src/haute/_workbench_app.py::STORE_DEPENDENCIES` (SQLAlchemy and
-Alembic, no driver); `src/haute/_quote_store/_tables.py::REFERENCE_KEY_LENGTH` (Haute's
+Alembic, no driver); `src/haute/_quote_store/_schema.py::REFERENCE_LENGTH` (Haute's
 bounded key lengths); `pyproject.toml` (the optional extras).

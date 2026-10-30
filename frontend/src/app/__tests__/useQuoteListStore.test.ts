@@ -15,10 +15,10 @@ import { appQuote } from "./fixtures"
 
 const MINE = quotesQueryOf("")
 const TEAM = quotesQueryOf("?view=team")
-const page = (ids: string[], next: string | null = null): WorkbenchAppQuotesResponse => ({
-  quotes: ids.map((id) => appQuote({ id, reference: id })),
+const page = (references: string[], next: string | null = null): WorkbenchAppQuotesResponse => ({
+  quotes: references.map((reference) => appQuote({ reference })),
   next_cursor: next,
-  counts: { mine: ids.length },
+  counts: { mine: references.length },
 })
 const store = () => useQuoteListStore.getState()
 
@@ -36,9 +36,9 @@ describe("useQuoteListStore", () => {
     expect(fetchAppQuotes).toHaveBeenCalledTimes(1)
 
     const again = store().load(MINE, true)
-    expect(store()).toMatchObject({ status: "ready", quotes: [expect.objectContaining({ id: "a" })] })
+    expect(store()).toMatchObject({ status: "ready", quotes: [expect.objectContaining({ reference: "a" })] })
     await again
-    expect(store().quotes.map((quote) => quote.id)).toEqual(["a", "b"])
+    expect(store().quotes.map((quote) => quote.reference)).toEqual(["a", "b"])
   })
 
   it("loads the list shown again, whichever it is now", async () => {
@@ -63,14 +63,14 @@ describe("useQuoteListStore", () => {
     await mine
 
     expect(store().query).toEqual(TEAM)
-    expect(store().quotes.map((quote) => quote.id)).toEqual(["team"])
+    expect(store().quotes.map((quote) => quote.reference)).toEqual(["team"])
   })
 
   it("loads the next page after the last, and says why one could not be read", async () => {
     vi.mocked(fetchAppQuotes).mockResolvedValueOnce(page(["a"], "c1")).mockResolvedValueOnce(page(["b"], "c2")).mockRejectedValueOnce(new ApiError("HTTP 500", 500, "down"))
     await store().load(MINE)
     await store().more()
-    expect(store().quotes.map((quote) => quote.id)).toEqual(["a", "b"])
+    expect(store().quotes.map((quote) => quote.reference)).toEqual(["a", "b"])
     expect(fetchAppQuotes).toHaveBeenLastCalledWith(MINE, "c1")
 
     await store().more()

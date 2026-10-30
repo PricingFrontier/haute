@@ -57,9 +57,9 @@ from haute._workbench_form import (
 NAME_PATTERN = r"[A-Za-z_][A-Za-z0-9_]*"
 #: Where a component sits, which its sheet's layout file holds, not its sheet's file.
 PLACEMENT = frozenset({"x", "y", "w", "h"})
-#: The settings an output column cannot have: the rules of what is typed into it.
+#: The settings an output column cannot have: the rules of what is typed into it. Required
+#: is not among them: marking a quote final needs a value in an output column as in an input.
 INPUT_ONLY = (
-    "required",
     "min",
     "max",
     "options",

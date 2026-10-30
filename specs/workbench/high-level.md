@@ -57,8 +57,8 @@ In scope:
   which the editor shows, and previews on.
 - The Workbench Output, the node type that reads the output tables from the form folder,
   which the editor shows, and whose ports take the frames that fill them.
-- The quote store: saved quotes and their revisions, each with the form it was keyed
-  into, on a SQLite file, its schema and the migrations that bring a database to it.
+- The quote store: saved quotes as rows of the form's own tables, each quote's latest
+  state, on a SQLite file, its tables derived from the form and the activity of each quote.
 
 Out of scope:
 
@@ -73,9 +73,10 @@ Out of scope:
   ([WB-07](../roadmap/workbench.md#wb-07--the-underwriter-app-on-other-hosts)).
 - The underwriter app's host-side delivery: rolling a host to a release and checking it
   there ([WB-08](../roadmap/workbench.md#wb-08--the-workbench-projects-cicd)).
-- Where a deployment's quote store is configured and migrated, the server databases it
-  will run on, and the app's Save, Open and list of quotes
-  ([WB-10](../roadmap/workbench.md#wb-10--the-quote-store)).
+- Where a deployment's quote store is configured, how a form change reaches its tables
+  ([WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments)),
+  and the server databases it will run on
+  ([WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql)).
 - Running an Import or an Export: reading a file or a database into a table
   ([WB-09](../roadmap/workbench.md#wb-09--actions-that-fill-the-sheets)) and writing the
   quote's tables out ([WB-11](../roadmap/workbench.md#wb-11--exports-from-the-app)).
@@ -147,8 +148,7 @@ Out of scope:
   (`reference`, `quote_reference`), one Haute makes no more is dropped (`valid_until` and
   `currency`), those it holds keep what the project gave them, the missing ones are added,
   and all take today's order, the data it was read from left as it was. That holds wherever
-  a form is read, the project's folder, the editor's save, a release's form and the forms the
-  quote store keeps for older revisions, so every revision still opens. A field, a column
+  a form is read: the project's folder, the editor's save and a release's form. A field, a column
   look or a chart category on a column dropped shows Missing column in the editor and is
   not drawn in Preview or the app, a condition on it is false, and sample values under its
   id are ignored. One whose
@@ -343,8 +343,9 @@ Out of scope:
   folder's path from the project root (`rating/workbench`). The editor reads it once when it starts. While the workbench is not
   enabled nothing in the editor changes on its account.
 - **The tables.** `GET /api/workbench/tables` answers the schema's input tables as `tables`,
-  the sample quote as `sample` and the output tables as `response_tables`, as the form
-  defines them now. It answers 404 while the workbench is not enabled; the tables and the
+  the sample quote as `sample`, the output tables as `response_tables`, as the form defines
+  them now, and, as `store_columns`, the columns the quote store keeps in each table that
+  the form does not, each with what it holds, which the schema editor shows locked. It answers 404 while the workbench is not enabled; the tables and the
   response tables are checked as the pipeline takes them (a table's name a port's, a column's
   name a frame column's, no name twice) and a breach answers the structured 422 of a public
   contract error; the sample is served unchecked, since a sample that does not fit fails the
@@ -484,7 +485,7 @@ Out of scope:
     again.
 - **The schema editor.** The form's tables, each with its name, its role (Input, sent to
   the pricing engine, or Output, returned by it; a table made an Output loses its columns'
-  rules and its sample rows, which only what is typed takes), its rows (One row per quote, or Many
+  rules but Required and its sample rows, which only what is typed takes), its rows (One row per quote, or Many
   rows) and its columns; each column with its type, drawn as the step editor's marker for
   the kind (a number, text, true/false, a date) in the data preview's colour and changed
   from it, its name and, in a many-row table, whether it is a key. A column's label, group
@@ -496,7 +497,8 @@ Out of scope:
   typed, a number's default, and the allowed values the default offers, shown in its
   format, as a cell's are, and the default as typed while it is typed in), its
   placeholder for any type but
-  True/false and Date and its rules: required, a range for an Integer or a Decimal, and the
+  True/false and Date and its rules: required, which an output column takes too, as marking a
+  quote final needs a value in it, a range for an Integer or a Decimal, and the
   allowed values for any type but True/false and Date, never typed in but read from a
   CSV in the pipeline folder's `files/params/`: its file chosen, then its column from the
   file's header, and the column's distinct values, as written, trimmed, blanks left out
@@ -508,8 +510,8 @@ Out of scope:
   stops a file or a column giving them shows under them. Changing a
   column's type drops the rules and the format the new type cannot have, and its default
   when it becomes or stops being True/false, or becomes a Date while it is not a day.
-  Under a column's name, a line sums it up whenever there is something to say: in an
-  input table, required, its range in its own format, its default (in its format, or
+  Under a column's name, a line sums it up whenever there is something to say: in any
+  table, required; in an input table, its range in its own format, its default (in its format, or
   "ticked" for True/false), its allowed values counted with the file they came from and
   "a row each" for the column giving its table's rows; and, in any table, the format of
   a number column other than the index unless it shows numbers as typed (General with
@@ -553,7 +555,9 @@ Out of scope:
   renamed, retyped, moved or removed, and taking no label, group, help, rule, default or
   format; a table added has them at once, and an index goes after them. They are not keys,
   and the sheets are never offered them: a component's fields, a Show when's columns and a
-  Chart's rows leave them out.
+  Chart's rows leave them out. Under each table's own columns are those the quote store keeps
+  in it that the form does not, quote_details' own and a many-row table's `quote_row`, each
+  with what it holds and a lock, and nothing to change; a search shows none of them.
 - **The sheets.** A sheet is a canvas on an 8px snap grid as wide as its width and as
   long as its sections, drawn at the zoom from its viewport's top-left corner, so it
   stays beside the palette and under the tabs: zooming out draws it smaller, the canvas
@@ -956,8 +960,8 @@ Out of scope:
   on its component, which selects and moves it. Nothing is priced while building.
 - **Defaults.** A new quote starts with each one-row input table's row holding its
   columns' defaults, as if typed: while building, and in the underwriter app's new quote.
-  The sample keeps what was typed into it, and a quote made from another quote's revision
-  its values. A default is not typing: a quote holding nothing else typed, the details the
+  The sample keeps what was typed into it, and a quote made from another quote its
+  values. A default is not typing: a quote holding nothing else typed, the details the
   app sets aside, is neither marked nor priced nor saved, as a blank one is not, and a value
   typed equal to its column's default counts as the default. A many-row table's columns
   take no default.
@@ -1217,56 +1221,52 @@ Out of scope:
   loopback keeps other machines out, and the host keeps out a page of a site whose name
   resolves to the analyst's machine, whose requests the browser counts as that page's own.
   No credential reaches the page.
-  Given a quote store, the app keeps the quotes saved in it, each revision's
-  `quote_details` row in a table of its own (the quote store, below). A hosted app reads the store's SQLAlchemy URL from
+  Given a quote store, the app keeps the quotes saved in it as rows of the form's own tables
+  (the quote store, below). A hosted app reads the store's SQLAlchemy URL from
   `HAUTE_QUOTE_STORE_URL`, which the host supplies at runtime, and does not start on a
-  store not migrated, which `haute app migrate` migrates before a release that needs it
-  starts; `haute app serve` keeps its quotes in `.haute/app/quotes.sqlite`, beside the
-  release rather than in it, migrated as it starts, so a rebuild keeps them. Without a
-  store the app keeps nothing, says so on `GET /api/app/release` (`quotes`), and answers
-  its quote routes 503. Its quote routes list a page of quotes
-  (`GET /api/app/quotes`: the list, stage, search, assignee, order, cursor and size),
-  create one (`POST /api/app/quotes`, made from another quote's revision when it names
-  one), open one's newest revision or another (`GET /api/app/quotes/{id}` and
-  `/api/app/quotes/{id}/revisions/{n}`), with the sheets that revision was keyed into when
-  they are not the release's, carry a revision's values onto the release's sheets
-  (`/api/app/quotes/{id}/revisions/{n}/carry`), save its next revision (`POST
-  /api/app/quotes/{id}/revisions`), assign, note, archive, restore, mark final and
-  reopen it (`POST /api/app/quotes/{id}/assignee`, `note`, `archive`, `restore`, `final`
-  and `reopen`, each but the note answering with the revision it wrote), and read its
-  history (`GET
-  /api/app/quotes/{id}/history`) and the people quotes are with (`GET /api/app/people`).
-  A save names the sheets' revision and the release it was drawn for, refused (409) for
-  another, and an operation key; the details the app sets, `quote_reference`, `quote_option`,
-  `stage`, `assignee`, `archived` and the quote's administration, are set over whatever the
-  page sent, which is not read, a save stamped with one instant read before it is priced,
-  and with nothing else typed there is nothing to save (422), what the sheets show
-  decided with the app's details in place, as the page decides it, save a creation, which makes the quote
-  holding what it starts with, unpriced: its reference and option are taken as it is
-  written, and its pricing reads them, so a creation given prices is refused (422) and the
-  quote is priced as it opens. A creation names the reference the underwriter keyed
-  (`reference`), every creation but an alternative's, which takes its source's and names
-  none (422 otherwise); a reference missing or breaking its rules is refused (422), as is,
-  for a creation made in the window, a column of `quote_details` the underwriter types and
-  the analyst made required left empty (text of spaces alone empty, a tick box never), and a
-  reference another quote holds is refused (409, `reference_taken`) naming that quote, its
-  option 1 else its lowest, by id and label. A save keeps the quote unpriced, or, given the prices
-  the page showed, prices it again on the server and keeps that pricing, saying whether
-  it moved from what the page showed, so a price kept is always the release's own. Each
-  change but a note names the quote's version and is refused (409) with the quote as it is now when
-  the quote has moved on, or (409) naming what would let it when the quote does not take
-  it as it stands; a quote the app does not keep is 404. A write whose browser says it
-  came from another site, or, from a browser that does not say, whose origin is not the
-  app's host, is refused (403). The
-  app's pages, `/`, `/quotes/new`, `/quotes/{id}` and `/quotes/{id}/revisions/{n}`, are
-  its one page, which reads its route in the browser.
+  database that does not hold its release's form's tables, which `haute app migrate` makes
+  before the release starts; `haute app serve` keeps its quotes in dev's store,
+  `.haute/app/store.sqlite`, beside the release rather than in it, its tables built from the
+  release's form as it starts, so a rebuild keeps them. Without a store the app keeps
+  nothing, says so on `GET /api/app/release` (`quotes`), and answers its quote routes 503.
+  A quote is named by its reference and option, the reference URL-encoded. The quote routes
+  list a page of quotes (`GET /api/app/quotes`: the list, stage, search, assignee, order,
+  cursor and size), create one (`POST /api/app/quotes`, made from another quote when it names
+  one), open one (`GET /api/app/quotes/{reference}/{option}`: its values, its outputs as the
+  pricing answered them, the request its values price as, and any preset row that no longer
+  fits), save it (`POST /api/app/quotes/{reference}/{option}/save`), assign, note, archive,
+  restore, mark final and amend it (`.../assignee`, `note`, `archive`, `restore`, `final` and
+  `amend`, each answering with the quote as it left it), and read its activity
+  (`.../activity`) and the people quotes are with (`GET /api/app/people`). A creation and a
+  save each carry an operation key, and one repeated with its key is answered first, before
+  anything else is checked; then each names the sheets' revision and the release it was
+  drawn for, refused (409) for another. The details the app sets, `quote_reference`,
+  `quote_option`, `stage`, `assignee`, `archived` and the quote's administration, are set
+  over whatever the page sent, which is not read, a save stamped with one instant read
+  before it is priced, and with nothing else typed there is nothing to save (422), what the
+  sheets show decided with the app's details in place, as the page decides it, save a
+  creation, which makes the quote holding what it starts with, unpriced, priced as it opens.
+  A creation names the reference the underwriter keyed (`reference`), every creation but an
+  alternative's, which takes its source's and names none (422 otherwise); a reference
+  missing or breaking its rules is refused (422), and a reference another quote holds is
+  refused (409, `reference_taken`) naming that quote. A save keeps the quote unpriced, or,
+  given the prices the page showed, checks its values' types, prices it again on the server
+  and keeps that pricing, saying whether it moved from what the page showed, so a price kept
+  is always the release's own. Each change but a note names the quote's version and is
+  refused (409) with the quote as it is now when the quote has moved on, or (409) naming what
+  would let it when the quote does not take it as it stands; Mark final is refused (409)
+  naming each required field without a value, or the release that priced the quote; a quote
+  the app does not keep is 404. A write whose browser says it came from another site, or,
+  from a browser that does not say, whose origin is not the app's host, is refused (403). The
+  app's pages, `/`, `/quotes/new` and `/quotes/{reference}/{option}`, are its one page, which
+  reads its route in the browser.
 - **The Quotes page.** With a quote store, the app opens on the Quotes page, at `/`. On
   the left are the lists, My work (the quotes assigned to the signed-in underwriter), Team
-  (everyone's) and Archived, and the stages of the list showing, Draft, Priced and Final,
-  each with its count; a stage picked narrows the list and picked again widens it. Above
+  (everyone's) and Archived, and the stages of the list showing, Draft and Final, each with
+  its count; a stage picked narrows the list and picked again widens it. Above
   the list are its name, a search box (`/` focuses it) matching every word typed in the
   reference, quote name, insured or broker (`ABC-1/2` matching that option alone, a
-  reference matched however its letters are cased or composed), in Team an assignee to
+  reference matched whatever the case of its letters), in Team an assignee to
   narrow it to, the order (newest saved, Reference, A to Z with each reference's options in
   order, or insured) and New quote (`N`), which opens the new quote's window over the list;
   neither key acts from a control it is typed or picked in, so `N` in a select picks its
@@ -1284,93 +1284,91 @@ Out of scope:
   list as it was. Loading shows placeholder rows, a failure says why with Retry, and an
   empty list says why: no quotes yet, with New quote; none matching, with Clear search;
   none archived.
-- **A quote in the app.** A quote opens at `/quotes/{id}` on the sheets, under its bar:
-  back to Quotes, its reference and option, its name (its `quote_details.quote_name`, typed in the
-  bar as on the sheets and saved with the next Save), its stage and, when archived,
-  Archived, who it is with (reassigned from the people quotes are with, or a name typed),
-  Save, Mark final or, for a final quote, Reopen, which asks why, a menu of Duplicate,
-  Renew, Create alternative, Archive or Restore and Copy link, History, and why the quote
-  has no price. Beneath are its revision, who saved it and when, the release that priced
-  it and the quote it came from. The quote is priced as it is typed, and as it opens while
-  it may change and has no price of this release, unpriced or priced on an earlier one.
-  Save waits for that pricing to settle, a value entered while it waits priced too, and
-  keeps the quote priced when the values settle on a price, and unpriced when they could
-  not be priced, which its label ("Save
-  unpriced") and title say; with nothing typed,
-  the details the app sets and the defaults aside, there is nothing to save, and nothing new to save while
-  the values are as saved and priced as saved on this release (a price made since, or
-  one of an earlier release, is new). A save and a change name the version the values
-  were opened or saved at, which a note does not move, so a save over a quote a colleague
-  moved on meanwhile is refused rather than written over theirs; an answer arriving once
-  another quote is open, or the quote was left, is that quote's no longer and is dropped,
-  and a quote being opened takes nothing typed and saves nothing until it is read. A
-  question asked about a quote (Mark final, Reopen, a name for who it is with) is dropped
-  as the page moves to another quote or is left, and a change only ever changes the quote
-  it was asked about, refused naming it once another is open. A save is written once
+- **A quote in the app.** A quote opens at `/quotes/{reference}/{option}` on the sheets,
+  under its bar: back to Quotes, its reference and option, its name (its
+  `quote_details.quote_name`, typed in the bar as on the sheets and saved with the next
+  Save), its stage, Draft or Final, and, when archived, Archived, who it is with (reassigned
+  from the people quotes are with, or a name typed), Save, Mark final or, for a final quote,
+  Amend, which asks why, a menu of Duplicate, Renew, Create alternative, Archive or Restore
+  and Copy link, History, and why the quote has no price. Beneath are who saved it and when,
+  the release that priced it and the quote it came from. The quote is priced as it is
+  typed, and as it opens while it may change and has no price of this release, unpriced or
+  priced on an earlier one. Save waits for that pricing to settle, a value entered while it
+  waits priced too, and keeps the quote priced when the values settle on a price, and
+  unpriced when they could not be priced, which its label ("Save unpriced") and title say;
+  with nothing typed, the details the app sets and the defaults aside, there is nothing to
+  save, and nothing new to save while the values are as saved and priced as saved on this
+  release (a price made since, or one of an earlier release, is new). A save holding a value
+  not of its column's type is refused, naming each, its values kept on the sheets unsaved.
+  Mark final is off while the quote has unsaved values or no price of this release, and is
+  refused naming each required field without a value. A save and a change name the version
+  the values were opened or saved at, which a note does not move, so a save over a quote a
+  colleague moved on meanwhile is refused rather than written over theirs; an answer
+  arriving once another quote is open, or the quote was left, is that quote's no longer and
+  is dropped, and a quote being opened takes nothing typed and saves nothing until it is
+  read. A question asked about a quote (Mark final, Amend, a name for who it is with) is
+  dropped as the page moves to another quote or is left, and a change only ever changes the
+  quote it was asked about, refused naming it once another is open. A save is written once
   whatever is lost on the way: its operation key stays bound to what it sent, and a save
-  whose answer never came, or came as a server failure (a status of 500 or more), is kept
-  as it was sent, in this browser's draft too, so the next Save repeats it exactly before
-  saving anything typed since as the quote's next revision; only a refusal (a status
-  below 500) lets it go. While a save or a change is being made, Save and every control
-  that changes the quote are off. The cells of the columns the app sets take no typing;
-  assigning,
-  archiving, restoring, marking final and reopening each write a revision of the newest
-  with those details changed, its values and prices kept, which the sheets take on, what
-  was typed kept. A new quote is keyed in a window before it is made. New quote opens it
-  over the Quotes page, its list as it was; Duplicate and Renew over the quote or the Quotes
-  page they are pressed on; and Save as new, after a save conflict, over the quote, its
-  unsaved values kept. The window holds the quote's reference and the other columns of
-  `quote_details` the underwriter types (`quote_name`, `insured`, `broker`,
-  `inception_date`, `expiry_date` and `is_renewal`) in the table's order, each drawn as a
-  Collection draws its column, every one shown and checked whatever the sheets show or
-  hide: the reference required and fitting its rules, a column the analyst made required
-  filled (text of spaces alone empty, a tick box never), and every value fitting its column;
+  whose answer never came, or came as a server failure (a status of 500 or more), is kept as
+  it was sent, in this browser's draft too, so the next Save repeats it exactly before
+  saving anything typed since; only a refusal (a status below 500) lets it go, and a repeat
+  that landed and was changed since by someone else is let go as done, the page offering
+  the newest. While a save or a change is being made, Save and every control that changes
+  the quote are off. The cells of the columns the app sets take no typing; assigning,
+  archiving, restoring, marking final and amending each change the quote's details, its
+  values and prices kept, which the sheets take on, what was typed kept. A new quote is
+  keyed in a window before it is made. New quote opens it over the Quotes page, its list as
+  it was; Duplicate and Renew over the quote or the Quotes page they are pressed on; and
+  Save as new, after a save conflict, over the quote, its unsaved values kept. The window
+  holds the quote's reference and the other columns of `quote_details` the underwriter types
+  (`quote_name`, `insured`, `broker`, `inception_date`, `expiry_date` and `is_renewal`) in
+  the table's order, each drawn as a Collection draws its column, every one shown and
+  checked whatever the sheets show or hide: the reference required and fitting its rules,
+  and every value fitting its column, a required one left empty for Mark final to ask for;
   Create waits on them, and Cancel or `Escape` closes a window that has sent nothing,
   leaving the page behind it as it was. New quote's starts as a new quote's defaults;
-  Duplicate's and Renew's are filled from the source revision carried onto the current
-  sheets, without the details the app set for the source, its reference blank, a renewal
-  with `is_renewal` ticked, which the underwriter can untick, as one not made by Renew can
-  be ticked by hand; Save as new's from the values on the sheets. A reference is trimmed and
-  kept as keyed, 1 to 40 characters, no `/`, which the app puts before the option, and no
-  control character; two are one reference when their canonical forms are, normalized to
-  NFC and case-folded, so `ABC-1` and `abc-1` are one and `cafe` and `café` two. Create
-  makes the quote from what the window holds over a new quote's defaults, the carried
-  values or the sheets' values, under the reference keyed as option 1, and moves to its own
-  address; a reference in use is refused naming the quote holding it, with Open it. The
-  whole creation is kept in the tab before it is sent: while unanswered the window takes no
-  typing; a refusal lets it go and opens the window for typing again; an answer lost, or a
-  failure of the server, offers Try again, which sends the creation as it was, and Close,
-  which keeps it, and a kept creation is offered back with Try again and Discard the next
-  time the app opens in the tab, so a quote is made once and nothing typed is lost.
-  `/quotes/new` is the Quotes page with the window open, `/quotes/new?from=…&revision=…&as=`
-  `duplicate` or `renewal` the Quotes page with the window filled from that revision.
-  Create alternative is made at once from the source's revision carried onto the current
-  sheets under the source's reference as its next option (`as=alternative`), its creation's
-  operation key held in the tab until the answer comes, so a reload before then asks with
-  it again and it is made once. A quote made from another names what it was made from and
-  any value that no longer fits. Made, it is clean: left as it opened it keeps no draft and
-  asks nothing on leaving, and one left with nothing typed stays a draft; an answer
-  arriving once the page moved on does not move it, nor does leaving a quote whose unsaved
-  values the leave guard keeps, and a quote made where the page did not move says so,
-  "Made" and its label; one who may only read quotes makes none. The sheets take no typing and are not priced, and Save is
-  off, while the quote is final, archived, shown at an earlier revision (at
-  `/quotes/{id}/revisions/{n}`, with Open the newest) or saved on earlier sheets (opened
-  on those sheets, with Move to current sheets, which carries its values onto the
-  current ones as unsaved values naming any that no longer fits). A save the server
-  priced differently from the sheets says so and shows the server's price. A save or
-  change over a quote moved on since it was opened names who moved it, keeps the
-  underwriter's values, and offers to open the newest or to save the values as a new
-  quote, made unpriced from the newest, as Duplicate makes one, and priced as it opens; a page drawn for an earlier release says so and offers to reload. Values not
-  yet saved are kept in the browser as they are typed, at once as the quote is left, and
-  again after a save for what was typed during it, and offered back when the quote is
-  opened again, or restored or reopened, as not saved to the server, until they are saved
-  or discarded; only a quote that may change as it is shown offers them, and they are put back on its sheets'
-  columns alone, the details the app sets as the quote has them. Leaving a quote with
-  unsaved values asks first, Back and Forward too, the history's entries kept as they
-  were, and closing the tab warns. Archiving says so with Undo, which restores the quote
-  archived whichever is open by then. History, on the right, holds the handover note, edited there, the
-  revisions, each opened as it was, what was done to the quote, by whom and when, and
-  the quotes it came from or that were made from it. Ctrl+S saves.
+  Duplicate's and Renew's are filled from the source as it is kept, without the details the
+  app set for it, its reference blank, a renewal with `is_renewal` ticked, which the
+  underwriter can untick, as one not made by Renew can be ticked by hand; Save as new's from
+  the values on the sheets. A reference is trimmed and kept as keyed, in Unicode's composed
+  form, 1 to 40 characters, no `/`, which the app puts before the option, no control
+  character, and not `.` or `..`; two are one reference only when they are the same, case
+  included, so `ABC-1` and `abc-1` are two. Create makes the quote from what the window holds
+  over a new quote's defaults, the source's values or the sheets' values, under the reference
+  keyed as option 1, and moves to its own address; a reference in use is refused naming the
+  quote holding it, with Open it. The whole creation is kept in the tab before it is sent:
+  while unanswered the window takes no typing; a refusal lets it go and opens the window for
+  typing again; an answer lost, or a failure of the server, offers Try again, which sends
+  the creation as it was, and Close, which keeps it, and a kept creation is offered back
+  with Try again and Discard the next time the app opens in the tab, so a quote is made once
+  and nothing typed is lost. `/quotes/new` is the Quotes page with the window open,
+  `/quotes/new?from=…&option=…&as=` `duplicate` or `renewal` the Quotes page with the window
+  filled from that quote. Create alternative is made at once from the source's values under
+  the source's reference as its next option (`as=alternative`), its creation's operation key
+  held in the tab until the answer comes, so a reload before then asks with it again and it
+  is made once. A quote made from another names what it was made from and any row of it that
+  no longer fits. Made, it is clean: left as it opened it keeps no draft and asks nothing on
+  leaving, and one left with nothing typed stays a draft; an answer arriving once the page
+  moved on does not move it, nor does leaving a quote whose unsaved values the leave guard
+  keeps, and a quote made where the page did not move says so, "Made" and its label; one who
+  may only read quotes makes none. The sheets take no typing and are not priced, and Save is
+  off, while the quote is final or archived. A save the server priced differently from the
+  sheets says so and shows the server's price. A save or change over a quote moved on since
+  it was opened names who moved it, keeps the underwriter's values, and offers to open the
+  newest or to save the values as a new quote, keyed in the window filled from them, made
+  unpriced as Duplicate makes one and priced as it opens; a page drawn for an earlier
+  release says so and offers to reload. Values not yet saved are kept in the browser as they
+  are typed, at once as the quote is left, and again after a save for what was typed during
+  it, and offered back when the quote is opened again, or restored or amended, as not saved
+  to the server, until they are saved or discarded; only a quote that may change offers
+  them, and they are put back on its sheets' columns alone, the details the app sets as the
+  quote has them. Leaving a quote with unsaved values asks first, Back and Forward too, the
+  history's entries kept as they were, and closing the tab warns. Archiving says so with
+  Undo, which restores the quote archived whichever is open by then. History, on the right,
+  holds the handover note, edited there, the quotes it came from or that were made from it,
+  and what was done to the quote, by whom and when, newest first, with Amend's reasons.
+  Ctrl+S saves.
   Without a quote store the app opens on a new quote, priced as it is typed, and says it
   keeps no quotes. One who may only read quotes is offered nothing that changes them: no
   New quote, Duplicate, Archive or Restore on the Quotes page, and every quote read only,
@@ -1751,101 +1749,134 @@ Out of scope:
   - **The assistant** reads a Workbench Output and connects nodes to its tables, or removes
     such connections, but cannot add, change, rename or delete one: its node card says the
     tables are the workbench's and the analyst adds the node from the palette.
-- **The quote store.** Quotes keyed into the sheets are saved to a store of Haute's, one
-  schema for every database it runs on: a SQLite file, for an analyst's machine and CI,
-  and a server database the project's IT team provides for a hosted underwriter app. A quote has a stable id, a name, its owner, when it was made and numbered
-  revisions. Each revision is written whole, in one transaction: the values as typed into
-  the sheets, in the sample's shape (by table and column id, the cells the sheets hide
-  kept); the request as it was priced; the response's tables in full, or none when it was
-  saved unpriced; the release that priced it; who saved it and when; and the form it was
-  keyed into, by its revision, the form's canonical text kept once for every quote that
-  names it. A new revision names the one it follows and is refused, with nothing
-  written, when the quote has moved on since. The owner is recorded and the list of
-  quotes can be read for one owner. A quote the underwriter app keeps has, for each
-  revision, that revision's `quote_details` row in a table of its own, a column each;
-  the revision's values hold every other table, so the
-  details are kept once. The row holds the details the underwriter typed and those the
-  app sets: the reference keyed in the window as the quote was made, which no later write
-  changes, and an option, 1 for a new quote, a duplicate and a renewal, and for an
-  alternative the next under its source's reference, taken from a counter per reference in
-  the transaction that creates the quote, so two alternatives made at once take two; a new
-  reference's counter row, written in that transaction, refuses a second quote of it, so
-  two creations of one reference at once, in any case, make one. A reference's canonical
-  form, held on the quote and keying its counter, is compared exactly (byte for byte, never
-  through a case- or accent-insensitive collation) in a column of its own bound, 160, as case
-  folding can lengthen a letter. Quotes made before Haute stopped numbering keep their
-  `Q-000123` references; its
-  stage, `draft` or `priced` as the revision was saved, or `final`; who it is assigned
-  to, at first who made it; whether it is archived; when the quote was made and by whom,
-  from the quote's own time and owner, and when the revision was written and by whom, from
-  the revision's, each date the UTC date of its time, as the store keeps its times, which
-  the app shows in the browser's zone, so near midnight they can differ by a day; and the
-  Haute version of the release the app ran as it wrote the revision. Every save reads the
-  clock once, before it prices, and that instant is the priced request's, the revision's
-  and the event's, so they agree; a save repeated with its operation key answers what it
-  wrote, stamped as it was. The reference and option are held
-  on the quote too, unique together among the app's quotes; a quote the store saves
-  alone holds neither. `is_renewal`, added after the others by the store's third
-  migration, is null in the rows written before it, which reads as unticked; the fourth
-  gave every app quote option 1, took `valid_until` and `currency` out of the rows, and gave
-  each its administration from its quote and its revision, its Haute version left null as
-  none was recorded. A revision's request and response stay as they were priced, holding
-  what was sent then. The newest revision's row is the quote as the app lists,
-  searches and orders it.
-  Assigning, archiving, restoring, marking final and reopening each write a revision of
-  the newest, its values, request, prices and release kept and its details changed, its
-  administration saying who changed it, when and on which Haute: the pipeline sees the new
-  details, as any other input, the next time the quote is priced.
-  A quote is made with its reference and option, so its every pricing sees them. A
-  handover note is an event alone, written with the quote's row held as a revision holds
-  it, so a note never lands on a quote archived before it. A quote's name
-  (`quote_name`) is at most 200 characters, a longer one refused naming the limit at
-  any save.
-  Who marked it final and when, when it was archived and by whom, the note, and the
-  quote and revision it was made from and how, a duplicate, a renewal or an
-  alternative, are read from its events; its version is its newest revision's number.
-  Each change but a note names the version it was made on and is refused, with nothing
-  written, when the quote has moved on, naming who moved it, and answers with the quote
-  as its own transaction left it; each writes an event of who did what and when in the
-  transaction that makes it; a save
-  carries an operation key, and one repeated with a key already written answers what
-  that key wrote, the quote as that write left it at the revision it wrote whatever was
-  saved or noted since, with nothing priced or written again; two at once with one key write once,
-  the second answered as a repeat. A final quote takes no save until it is reopened,
-  giving a reason, which names the revision pinned final; marking one final needs its
-  newest revision priced on the running release; an archived quote takes no change but
-  being restored; and a final one stays final through being assigned, archived and
-  restored, each a revision of its own that keeps the pinned final. The app's lists
-  are read a page at a time: the quotes assigned to the signed-in underwriter, the
-  team's, or the archive, of one stage when asked, matching every word searched for in
-  the reference, through its canonical form, quote name, insured or broker (`ABC-1/2`
-  matching that option alone), newest saved first, by reference from A to Z by canonical
-  form with its options in order, or by insured,
-  with each list's count and each stage's. A difference in the quote's reference and
-  option alone is no price that moved. A
-  saved quote opens on its own form, and its values are carried onto the current form
-  through the stable ids: a renamed table or column keeps its values, each filled
-  value whose table or column the current form no longer has is named as
-  `table.column`, by the names it was saved under, and a table that now holds one row
-  keeps its first, each filled value of the rows after it named as `table.column row N`. A database is brought to the schema by
-  the store's migrations, numbered and shipped with Haute, so a Haute upgrade carries
-  them; the store refuses to open a database behind the newest, naming what to run, and
-  nothing migrates as it opens. A migration keeps the previous release's reads and
-  writes working where it can: a column it adds is nullable or has a default, and it
-  drops nothing, save in a migration that names itself the oldest schema, after which the
-  previous release refuses the database already, as the fourth drops `valid_until` and
-  `currency`; and the database records the oldest schema whose Haute can still use
-  it, so a Haute behind the database's schema opens it when its own newest is at least
-  that, as a release rolled back after a migration does, and refuses it, naming the
-  upgrade, when it is not. A migration after which the previous release could not read
-  what this one saves names itself as that oldest schema, so the previous release
-  refuses the database outright rather than failing on the quotes it cannot read: the
-  third does, as the sheets a quote is saved with now hold `is_renewal` in
-  `quote_details`, which a Haute at the second refuses, and the fourth does, as they hold
-  `quote_option` there and the quote's reference and option at the head of every other table,
-  which a Haute at the third refuses. Rolling back past such a
-  migration means restoring the database as it was before it. A SQLite store keeps foreign keys on and its rollback journal, never
-  write-ahead logging, so the file stands alone between writes.
+- **The quote store.** The quotes the underwriter app keeps are rows of the form's own tables
+  in a database, saved and read with plain SQL: a SQLite file on the analyst's machine,
+  dev's, which `haute app serve` keeps, and, hosted, the database the app is given. Each
+  table of the form's schema is a table of the same name: `quote_details`, every input table
+  and every output table, its columns the schema's under their names and in their types, an
+  Integer a 64-bit integer, a Decimal a double, Text unbounded text, True/false a boolean and
+  a Date a date. Every column of the project's own is nullable, so a draft saves with any of
+  them empty; Required is checked as a quote is marked final, never by the database. Every
+  row holds the quote's identity, `quote_reference` and `quote_option`, with which every
+  table but `quote_details` leads, and a row of a many-row table holds `quote_row` too,
+  Haute's number for it: an input row's place on its sheet, blank rows counted, so a grid
+  opens as it was saved, and an output row's place in the pricing's answer. The identity,
+  with `quote_row` in a many-row table, is each table's primary key, and each table's
+  identity refers to its quote's `quote_details` row. A one-row table holds one row for each
+  quote, null where nothing was typed. A report joins the tables on the identity:
+
+  ```sql
+  SELECT d.broker, SUM(p.total_premium) AS premium
+  FROM quote_details AS d
+  JOIN premium AS p ON p.quote_reference = d.quote_reference
+                   AND p.quote_option = d.quote_option
+  WHERE d.stage = 'final'
+  GROUP BY d.broker;
+  ```
+
+  Beside them Haute keeps two tables of its own. `haute_store` holds one row: the project,
+  the environment, the release and Haute version it was made for and when, and the
+  structure of the form's tables it holds, each table's and column's stable id with its
+  name, type, role, rows and whether it is the index. `haute_activity` grows by a row for
+  each thing done to a quote (made, saved, assigned, archived, restored, marked final,
+  amended, noted), holding who did it and when, the quote's version after it, its operation
+  key, and the reason, note, assignee or pricing release it carried; nothing changes or
+  removes a row. Haute writes no other table. `quote_details` also holds the store's own
+  columns, which the schema editor shows locked beside the form's and no request or frame
+  holds: `quote_version`, which every write but a note moves on; `saved_at` and `saved_by`,
+  when the newest save was made, in UTC, and by whom; `priced_release`, the release whose
+  pricing the output tables hold, null while the quote is unpriced; `source_reference`,
+  `source_option` and `source_relation`, the quote this one was made from and how (a
+  duplicate, a renewal or an alternative); and the note as it stands, `handover_note` with
+  `note_by` and `note_at`, so a quote's note is read whole. A many-row table's `quote_row`
+  is the store's own too.
+
+  The details the app changes over a quote's life, `stage`, `assignee`, `archived`,
+  `modified_date`, `modified_by` and `haute_version`, are columns of `quote_details` that no
+  request holds, so changing them never leaves a stored price its stored inputs no longer
+  give; `quote_reference`, `quote_option`, `created_date`, `created_by` and the details the
+  underwriter types do. Every column of `quote_details` is stored, and each that reaches the
+  pipeline is priced, whatever the sheets hide; any other cell a Show when hides is saved
+  blank, as the request leaves it out, so the input tables hold what the quote was priced on.
+
+  A save is priced first, then written in one transaction: the quote's `quote_details` row
+  updated where its `quote_version` is the one the page opened or saved it at and the quote
+  is a draft not archived, the version moved on, when and by whom it was saved, the release
+  that priced it and the administration set; then, in each other table, the quote's rows
+  deleted and its new rows inserted, an output table's from the pricing, each value that is
+  not finite empty, and none when the quote is saved unpriced; then its activity row. Rows
+  are written from typed values, never from the copies made for JSON, so an integer past
+  2^53 is kept exactly, and the clock is read once, before the pricing, so the priced
+  request and the rows hold one instant. A save is refused, with nothing written, when a
+  value is not of its column's type, naming each table, row (as the sheet numbers it) and
+  column, before anything is priced; otherwise only when the quote has moved on since the
+  page read it, naming who moved it, what they did and when, when it is final or archived,
+  for one who may only read quotes, and when nothing is typed. Nothing else a quote's cells
+  or outputs hold refuses a save: a required input or output left empty, a value outside its
+  range or allowed values, and a non-finite output all save. A quote's name (`quote_name`)
+  is at most 200 characters, a longer one refused naming the limit.
+
+  A quote is `draft` or `final`. Mark final makes a draft final once it is priced on the
+  running release and every input and output column marked Required holds a value, and is
+  refused naming each that does not: a required column holds a value when, in a one-row
+  table, its cell does, and in a many-row table, every row's does, a table without rows
+  passing; text of spaces alone is empty, zero and false are values and null is not (an
+  unticked box in a filled row is false; a True/false output left unfilled is null). A
+  final quote takes no save; Amend takes it back to draft, giving a reason, and its next
+  save overwrites what was offered. Assigning, archiving and restoring work in both stages
+  and change the quote's details alone, its values and prices kept; an archived quote takes
+  no change but being restored. Each change is one compare-and-swap on the quote's row over
+  the version it names, refused with nothing written when the quote has moved on, its
+  activity row written in the same transaction. A note moves no version, so it never
+  conflicts with another write, and is refused on an archived quote.
+
+  Each creation and save carries an operation key, bound to who sent it, the quote and what
+  it does, and the first write under a key is the one that counts. One repeated under its
+  key, as the page repeats one whose answer was lost, answers what the first did, before
+  the release it was drawn for is checked, with nothing priced or written again: a
+  creation the quote it made as it stands, a save the quote while that save is still its
+  newest change, and otherwise a refusal of its own (`write_superseded`) saying when the
+  save landed and who changed the quote after it, which the page takes as done; two sent at
+  once under one key are one write. The key of another person, another quote or another
+  kind of write is refused.
+
+  A new quote, a duplicate and a renewal take the reference the underwriter keys, and option
+  1; an alternative takes its source's reference and the next option, its source's option 1
+  held while the highest option is read, so two made at once take two. A reference is
+  trimmed, 1 to 40 characters, holds no `/` or control or format character, and is not `.`
+  or `..`; it is kept in Unicode's composed form (NFC), and two references are one only when
+  they are the same, case included, so `ABC-1` and `abc-1` are two quotes. A reference
+  another quote holds is refused naming it. A quote is made unpriced, and priced as it
+  opens.
+
+  A quote opens from its rows, read together and read again when the quote moved on while
+  they were read: each typed value as the cell text it reads as (an Integer its digits, a
+  Decimal the shortest text that reads back as it, a Date its ISO text, True/false a tick or
+  none, and null a blank), a many-row table's rows in their places by `quote_row`, a gap a
+  blank row, and its outputs as the pricing answered them. A value comes back as its value,
+  so `£1,000` comes back as `1000`, which its column's format shows. A preset row whose
+  value is no longer allowed is named as dropped. The app's lists read `quote_details`
+  alone, a page at a time: the quotes assigned to the signed-in underwriter, the team's or
+  the archive, of one stage when asked, matching every word searched for against the
+  reference, quote name, insured or broker whatever their case (`ABC-1/2` matching that
+  option alone), newest saved first, by reference from A to Z with its options in order, or
+  by insured, with each list's count and each stage's.
+
+  The store holds the tables of one form, as `haute_store` records them. In dev a database
+  holding none takes them as the app starts, and each table the form has changed since is
+  built again, its rows dropped and the table named; elsewhere a database holding another
+  form's tables is refused, naming each difference, and `haute app migrate` makes an empty
+  database's tables. A database of an earlier Haute's store, of another project or
+  environment, or holding a table of the form's name the store did not make, is refused,
+  nothing adopted, and the app does not start on a database that does not hold exactly its
+  release's form's tables. Every table and column name is quoted in the SQL Haute writes, so
+  a reserved word (`order`, `group`) is a name like any other; refused wherever the form is
+  saved, naming each, are two columns of one table whose names differ only in case, a name
+  longer than 63 characters, a name starting `haute_` (Haute's own `haute_version` aside), a
+  column of a many-row table named `quote_row` and a table named starting `sqlite_`. A
+  SQLite store keeps foreign keys on and its rollback journal, never write-ahead logging, so
+  the file stands alone between writes; its DDL runs in the transaction it is part of, and
+  it needs SQLite 3.35 or later.
 
 ## Design rationale
 
@@ -2188,17 +2219,25 @@ Out of scope:
 - **One release.** The form, the sheets and the pipeline ship in one release, so form
   v12 prices on pipeline v12 by construction, and a page that holds another release's
   form is refused rather than priced on a contract it was not drawn for.
-- **One store, two databases.** A quote saved by `haute app serve` on an analyst's
-  machine or in CI and one saved by a hosted app go through the same code, so what the
-  SQLite file proves holds for the server database; only the connection differs. SQLAlchemy Core and Alembic, which
-  MLflow already installs with Haute, speak to SQLite and the server engines alike.
-- **A quote keeps its form.** The current form cannot show a field it no longer has, so
-  each revision names the form it was keyed into, kept under its content hash, the
-  revision the editor already gives a form, once however many quotes name it.
-- **Migrations Haute owns.** The schema is Haute's, not each project's, so its
-  migrations ship with Haute and a project takes a new one by upgrading Haute. A deploy
-  applies them before the new release starts, never the app as it opens, so replicas
-  never race to migrate.
+- **The form's own tables.** Analysts read the quotes underwriters save for their own
+  reporting, so a quote's data is the form's tables in the user's database, typed as the
+  schema says and joined on the quote's identity, rather than a schema of Haute's holding
+  JSON a report would have to parse. A quote is its current state: a save replaces its rows,
+  no revision is kept, and what happened to it is the activity log, so a copy of an offer is
+  made by duplicating the quote.
+- **One store, two databases.** A quote saved by `haute app serve` on an analyst's machine
+  and one saved by a hosted app go through the same code, so what the SQLite file proves
+  holds for the server database; only the connection differs. SQLAlchemy Core, which MLflow
+  already installs with Haute, speaks to SQLite and the server engines alike.
+- **Required gates final, never a save.** An underwriter saves whenever they like, a draft
+  with any field empty; only a value the store cannot hold as its column's type refuses a
+  save, since writing it would lose it. Required is what a quote needs before it is offered,
+  so Mark final checks it, inputs and outputs alike, and what later work gates behind final,
+  exports first, never sees a quote missing one.
+- **What the pipeline sees never moves under a price.** The details the app changes over a
+  quote's life (its stage, who it is with, whether archived, who changed it last and on which
+  Haute) never reach the pipeline, so assigning or archiving a quote leaves its stored price
+  the one its stored inputs give.
 - **The response's tables, filled by name.** The workbench defines what a priced quote fills
   in as it defines the quote, so the pipeline's part is to connect to each table a frame that
   holds its columns under the schema's names and types. Matching names exactly leaves the
@@ -2478,194 +2517,47 @@ Out of scope:
 
 ## Approved change contract — the quote store as the form's own tables
 
-This section specifies the quote store before it is rebuilt. Every record in it is unresolved
-until its roadmap package lands. Each package folds its part into the present-tense sections
-of this specification and of [cli](../cli/high-level.md), WB-43 also into the container build's
-row in [deploy](../deploy/low-level.md)'s module map, and the last package to land removes this
+This section specifies the quote store's environments, schema changes and server databases
+before they are built. Every record in it is unresolved until its roadmap package lands. Each
+package folds its part into the present-tense sections of this specification and of
+[cli](../cli/high-level.md), WB-43 also into the container build's row in
+[deploy](../deploy/low-level.md)'s module map, and the last package to land removes this
 section. The [low-level contract](low-level.md#approved-change-contract--the-quote-store-as-the-forms-own-tables)
 names the seams, shapes and tests.
 
-- **Current limitation.** The quote store is a schema of Haute's own, apart from the form:
-  nine tables prefixed `haute_` that four numbered migrations keep in step with Haute. A
-  quote's values, request and response are JSON text in each revision, the values by table
-  and column id and kept as typed; only `quote_details` is copied into typed columns, so a
-  report reads a premium by parsing JSON. Each revision is kept whole with a copy of the form
-  it was keyed into, so a quote saved on earlier sheets opens on them and is carried onto the
-  current ones. A quote is draft, priced or final, and a final one is reopened to change it.
-  References are compared case-folded. A hosted app reads one opaque URL; nothing names an
-  environment. The details the app sets reach the pipeline in every request, the cells the
-  sheets hide are kept in the store though the request leaves them out, a non-finite output
-  reaches the response as a sentinel, and Required applies to input columns alone, checked
-  only as the New quote window makes a quote.
-- **Unresolved target.** The store is the form's own tables: each table of the schema a SQL
-  table in the user's database, named and typed as the schema says, holding each quote's
-  current state, saved and read with plain SQL, beside two small tables of Haute's own.
-  Quotes are draft or final. A project declares its hosted environments once and a host
-  picks one by name; one planner keeps the tables in step with the form; and the store runs
-  on SQLite, SQL Server and PostgreSQL.
-  [WB-10](../roadmap/workbench.md#wb-10--the-quote-store) builds the store on SQLite,
-  [WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments) the
-  planner and the environments, and
+- **Current limitation.** The store is the form's own tables (the quote store, in Behaviour)
+  on SQLite alone. A hosted app reads one opaque URL and records its quotes under the one
+  environment `hosted`; nothing declares an environment. `haute app migrate` makes an empty
+  database's tables and changes none, so a form change reaches a hosted store only as a new
+  database, and dev builds again each table the form changed, its rows dropped.
+- **Unresolved target.** A project declares its hosted environments once and a host picks
+  one by name; one planner keeps the tables in step with the form, by stable id, in dev and
+  in each hosted environment; and the store runs on SQLite, SQL Server and PostgreSQL.
+  [WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments) builds
+  the planner and the environments, and
   [WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql) the server
   databases.
-- **Non-goals.** No revision history and nothing that rebuilds one: a save replaces the
-  quote's rows. Nothing migrates from today's store; a database holding its tables is
-  refused, naming them, and the old local file is left as it is. In test and prod a type,
-  rows or role change on a column or table that holds values is refused, never converted;
-  Haute drops no column or table there, adopts no table it did not record, and touches none
-  of the database's other tables. No laptop reaches a hosted environment. MySQL, MariaDB,
-  Oracle, Databricks SQL and Snowflake are not store engines. The SQL Export, outcomes and
-  policies are unchanged ([WB-11](../roadmap/workbench.md#wb-11--exports-from-the-app),
-  [WB-13](../roadmap/workbench.md#wb-13--managing-quotes-in-the-underwriter-app)). Preview in
-  the editor keeps no quotes, and the form's own upgrade of an earlier `quote_details` is as
-  it is.
-- **Failure and compatibility semantics.** A save is refused (422), with nothing written,
-  when a value is not of its column's type, naming each table, row and column holding one;
-  otherwise only as today: a quote moved on since the page read it (409, naming who moved
-  it), a final or archived quote (409), one who may only read quotes (403), and nothing typed
-  (422). Mark final is refused (409) naming each required input and output that holds no
-  value, or naming the release when the price is not the running release's. A write repeated
-  under its operation key answers what that write did, or, when the quote has moved on since,
-  a refusal of its own saying the write landed and who changed the quote after it, which the
-  page takes as done. A started app refuses a database that does not hold its release's form,
-  naming each difference and the command that resolves it; a database recorded for another
-  project or environment, naming both; an environment its release does not declare, naming
-  those it does; and a provider Haute does not have, naming those it has. A migrate refuses
-  before any DDL, naming each step it cannot take, a table or column the form still has that
-  the database lacks, and a plan needing a restore point it was not given. Nothing falls back:
-  a value the store
-  cannot hold as its column's type is refused, never kept as something else.
+- **Non-goals.** In test and prod a type, rows or role change on a column or table that holds
+  values is refused, never converted; Haute drops no column or table there, adopts no table it
+  did not record, and touches none of the database's other tables. No laptop reaches a hosted
+  environment. MySQL, MariaDB, Oracle, Databricks SQL and Snowflake are not store engines.
+  The SQL Export, outcomes and policies are unchanged
+  ([WB-11](../roadmap/workbench.md#wb-11--exports-from-the-app),
+  [WB-13](../roadmap/workbench.md#wb-13--managing-quotes-in-the-underwriter-app)).
+- **Failure and compatibility semantics.** A started app refuses a database that does not
+  hold its release's form, naming each difference and the command that resolves it; a
+  database recorded for another project or environment, naming both; an environment its
+  release does not declare, naming those it does; and a provider Haute does not have, naming
+  those it has. A migrate refuses before any DDL, naming each step it cannot take, a table or
+  column the form still has that the database lacks, and a plan needing a restore point it
+  was not given. Nothing falls back: a value the store cannot hold as its column's type is
+  refused, never kept as something else.
 - **Acceptance evidence.** Each package's acceptance tests, in the testing scenarios of the
-  low-level contract, and one browser test that saves a quote in `haute app serve`, reads its
-  rows from the SQLite file with SQL, marks it final, amends it and saves it again.
-- **Roadmap package.** [WB-10](../roadmap/workbench.md#wb-10--the-quote-store),
+  low-level contract.
+- **Roadmap package.**
   [WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments) and
   [WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql), in that
   order.
-
-**The tables.** Each table of the form's schema is a table of the same name in the store's
-database: `quote_details`, every input table and every output table. Its columns are the
-schema's, under their names and in their types: an Integer a 64-bit integer, a Decimal a
-double, Text unbounded text, True/false a boolean and a Date a date. Every column of the
-project's own is nullable, so a draft saves with any of them empty; Required is checked as a
-quote is marked final, never by the database. Every row holds the quote's identity,
-`quote_reference` and `quote_option`, with which every table but `quote_details` already
-leads, and a row of a many-row table holds `quote_row` too, Haute's number for it: an input
-row's place on its sheet, blank rows counted, so a grid opens as it was saved, and an output
-row's place in the pricing's answer. The identity, with `quote_row` in a many-row table, is
-each table's primary key, and each table's identity refers to its quote's `quote_details`
-row. A one-row table holds one row for each quote, null where nothing was typed. The form's
-own index and key columns are untouched, and the pipeline sees them as today. A report joins
-the tables on `quote_reference` and `quote_option`:
-
-```sql
-SELECT d.broker, SUM(p.total_premium) AS premium
-FROM quote_details AS d
-JOIN premium AS p ON p.quote_reference = d.quote_reference
-                 AND p.quote_option = d.quote_option
-WHERE d.stage = 'final'
-GROUP BY d.broker;
-```
-
-**Haute's own tables.** Beside the form's tables Haute keeps two. `haute_store` holds one row:
-the project, the environment, the release and Haute version last migrated and when, and the
-structural schema it migrated to, each table's and column's stable id with its name in the
-database, its type, its role, its rows and whether it is kept though the form has dropped it.
-`haute_activity` grows by one row for each thing done to a quote (made, saved, assigned,
-archived, restored, marked final, amended, noted), holding who did it and when, the quote's
-version after it, its operation key, and the reason, note or assignee it carried; nothing
-changes or removes a row. Haute writes no other table and reads only these and the form's.
-
-**Columns Haute keeps.** `quote_details` holds, besides the form's columns, store-only ones,
-shown locked in the editor beside the form's and held by no request or frame:
-`quote_version`, which every write that changes the quote moves on; `saved_at`, when the
-newest save was made, in UTC; `priced_release`, the release whose pricing the output tables
-hold, null when the quote was saved unpriced; `source_reference`, `source_option` and
-`source_relation`, the quote this one was made from and how (a duplicate, a renewal or an
-alternative); and the note as it stands, with who wrote it and when (`handover_note`, `note_by`
-and `note_at`), so a quote's note is always read whole. Each many-row table's `quote_row` is
-store-only too. They are defined once, by the store's reading of the form, and the editor
-shows them from there.
-
-**What reaches the pipeline.** The details the app changes over a quote's life, `stage`,
-`assignee`, `archived`, `modified_date`, `modified_by` and `haute_version`, are columns of
-`quote_details` in the database but no longer reach the pipeline, so changing them never
-leaves a stored price that its stored inputs no longer give; `quote_reference`,
-`quote_option`, `created_date`, `created_by` and the details the underwriter types still do.
-Every column of `quote_details` is stored, and each that reaches the pipeline is priced,
-whatever the sheets hide. Any other cell a Show when hides is saved blank, as the request
-already leaves it out, so the input tables hold exactly what the quote was priced on; a value
-typed and then hidden is gone once the quote is saved.
-
-**A save.** A save is priced first, as today, then written in one transaction: the quote's
-`quote_details` row updated where its `quote_version` is the one the page opened or saved it
-at, the version moved on, `saved_at`, `priced_release` and the administration set; then, in
-each other table, the quote's rows deleted and its new rows inserted, an output table's from
-the pricing and none when the quote is saved unpriced; then its activity row. Rows are
-written from typed values, never from the copies made for JSON, so an integer past 2^53 is
-kept exactly. A non-finite or empty output is saved empty. A save is refused, with nothing
-written, when a value is not of its column's type, naming each table, row (as the sheet
-numbers it) and column; otherwise only when the quote has moved on since the page read it,
-naming who moved it, when it is final or archived, for one who may only read quotes, and
-when nothing is typed. Nothing else a quote's cells or outputs hold refuses a save: a required
-input or output left empty, a value outside its range or allowed values, and a non-finite
-output all save.
-
-**Stages.** A quote is `draft` or `final`. A draft can be edited and saved. Mark final makes a
-draft final once it is priced on the running release and every input and output column
-marked Required holds a value, and is refused naming each that does not; the schema editor
-offers Required on output columns as on input columns. A required column holds a value when,
-in a one-row table, its cell does, and in a many-row table, every row's does, a table without
-rows passing; text of spaces alone is empty, zero and false are values and null is not (an
-unticked box in a filled row is false; a True/false output left unfilled is null), and an
-output's value is finite. Required is checked
-nowhere else: the New quote window makes a quote with a required detail empty, asking only
-for the reference, the quote's identity. A final
-quote takes no typing and no save, and what later work gates behind final, exports first
-([WB-11](../roadmap/workbench.md#wb-11--exports-from-the-app)), is offered on it alone. Amend
-takes a final quote back to draft, asking why, and its next save overwrites what was offered:
-an underwriter who needs the offer kept copies the quote first. Assigning, archiving and
-restoring work in both stages and change the quote's administration alone, its values and
-prices kept. Whether a draft holds a price is its `priced_release`, which its page shows. The
-Quotes page's stages are Draft and Final.
-
-**The activity log and repeated writes.** Each write carries an operation key, bound to who
-sent it, the quote and what it does, and the first write under a key is the one that counts.
-A write repeated under its key, as the page repeats one whose answer was lost, answers what
-the first did while that write is still the quote's newest, and otherwise a refusal of its
-own, saying the write landed, when, and who changed the quote after it, which the page takes
-as done rather than as never landed; a write sent twice at once under one key is answered as
-the one write it is. A creation repeated under its key answers the quote it made and never
-makes another, an alternative included. A note never conflicts with another write, so it moves
-no version, and a note repeated under its key answers the quote as it stands. A quote's page
-shows its activity: who
-made, saved, assigned, archived, restored, marked final and amended it and when, Amend's
-reasons, and the notes with their authors.
-
-**Making a quote.** A new quote, a duplicate and a renewal take the reference the underwriter
-keys, and option 1; an alternative takes its source's reference and the next option, its
-source's option 1 held while the highest option is read, so two made at once take two. A
-reference is trimmed, 1 to 40 characters, holds no `/` or control or format character, and is
-not `.` or `..`; it is kept in Unicode's composed form (NFC), and two references are one only
-when they are the same, case included, so `ABC-1` and `abc-1` are two quotes. A reference
-another quote holds is refused naming it. A duplicate, a renewal and an alternative are filled
-from their source as it is stored, without the details the app set for it.
-
-**Opening a quote.** A quote opens at `/quotes/{reference}/{option}` on the current sheets:
-its values from its rows, each typed value written back as the cell text it reads as (an
-Integer its digits, a Decimal the shortest text that reads back as it, a Date its ISO text,
-True/false a tick or none, and null a blank), a many-row table's rows in their places by
-`quote_row`, and its outputs as the pricing answers them. A value comes back as its value, so
-`£1,000` comes back as `1000`, which its column's format shows. A preset row whose value is no
-longer allowed is named as dropped. The quote's tables are read together, and read again if
-the quote moved on while they were read. There is no earlier revision to open and there are
-no earlier sheets: a quote saved before a form change opens on the current form, a renamed
-column keeping its values and a new one blank.
-
-**The Quotes page.** Its lists, searches, orders and counts read `quote_details` alone: My
-work, Team and Archived, the stages Draft and Final, a search matching every word against
-the reference, quote name, insured and broker whatever their case, ordered by `saved_at`, by
-reference or by insured, a page at a time.
 
 **Environments.** A project's quotes live in dev, on the analyst's laptop, and in the hosted
 environments its `haute.toml` declares. Dev is the SQLite file `.haute/app/store.sqlite` that
@@ -2747,10 +2639,3 @@ Lakebase), through psycopg; `sqlite` is dev's. Sign-in by managed identity or se
 principal goes through Microsoft Entra ID where the engine is Azure's. MySQL, MariaDB and
 Oracle, whose DDL commits as it runs, and Databricks SQL and Snowflake, whose keys are not
 enforced, are not store engines, though any of them can read the store's tables.
-
-**Names.** Every table and column name is quoted in the SQL Haute writes, so a reserved word
-(`order`, `group`) is a name like any other; a report quotes it too. Refused wherever the form
-is saved, naming each: two columns of one table whose names differ only in case, a name longer
-than 63 characters, a name starting `haute_` (Haute's own `haute_version` aside), a column of
-a many-row table named `quote_row`, and a table named starting `sqlite_`. These rules apply to
-the workbench's tables alone.

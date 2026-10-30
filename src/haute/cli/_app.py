@@ -13,9 +13,11 @@ another is named: the pipeline bundled as ``haute deploy`` bundles it, after the
 validation and test quotes, with the sheets, what the release is and its entry point.
 ``serve`` builds the release there and serves it on the analyst's machine, on loopback
 alone, signed in as the analyst's git identity, so the sheets underwriters will see are
-checked before a merge; the quotes saved there are kept in a SQLite file beside the release,
-not in it, so a rebuild keeps them. ``migrate`` brings a hosted app's quote store to the
-schema this Haute writes, before a release that needs it starts.
+checked before a merge; the quotes saved there are kept in dev's quote store, a SQLite file
+beside the release, not in it, so a rebuild keeps them. Its tables are the form's, built as
+it starts: a table the form changed is built afresh, its rows dropped and named. ``migrate``
+makes a hosted app's quote store hold the tables of a built release's form, before that
+release starts.
 """
 
 from __future__ import annotations
@@ -30,8 +32,9 @@ import click
 #: Where ``build`` writes a release unless told otherwise, and ``serve`` always: the
 #: clone's own state directory, which git ignores, model files and all.
 RELEASE_DIR = Path(".haute") / "app" / "release"
-#: Where ``serve`` keeps the quotes saved in it: beside the release, which a build replaces.
-QUOTES_FILE = Path(".haute") / "app" / "quotes.sqlite"
+#: Where ``serve`` keeps the quotes saved in it, dev's quote store: beside the release,
+#: which a build replaces.
+QUOTES_FILE = Path(".haute") / "app" / "store.sqlite"
 #: ``serve`` binds this address alone: everyone reaching it is signed in as the analyst.
 SERVE_HOST = "127.0.0.1"
 
@@ -118,7 +121,7 @@ def handle_app_serve(config: AppServeConfig) -> None:
         )
     release_dir = (project_dir / RELEASE_DIR).resolve()
     _built(project_dir, release_dir)
-    url = _local_store(project_dir)
+    url = _local_store(project_dir, release_dir)
     with _said():
         application = create_app(
             release_dir,
@@ -134,32 +137,63 @@ def handle_app_serve(config: AppServeConfig) -> None:
     uvicorn.run(application, host=SERVE_HOST, port=config.port, log_level="warning")
 
 
-def _local_store(project_dir: Path) -> str:
-    """The URL of ``serve``'s own quote store, made and migrated as it starts."""
-    from haute._quote_store import migrate_store, store_url
+def _local_store(project_dir: Path, release_dir: Path) -> str:
+    """The URL of ``serve``'s own quote store, dev's, holding the tables of the form of the
+    release in *release_dir* as it starts: each table the form changed built afresh, and each
+    whose rows went named."""
+    from haute._quote_store import DEV, prepare_store, store_url
+    from haute._workbench_app import read_release
 
     path = project_dir / QUOTES_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
     url = store_url(path)
     with _said():
-        migrate_store(url)
+        release, form, _ = read_release(release_dir)
+        dropped = prepare_store(
+            url,
+            form,
+            project=release.pipeline_name,
+            environment=DEV,
+            haute_version=release.haute_version,
+            release=release.id,
+        )
+    for name in dropped:
+        click.echo(f"  ! {name} was built afresh for the changed form: its quotes' rows went")
     return url
 
 
-def handle_app_migrate(url: str | None) -> None:
-    """Bring the quote store at *url*, else at ``HAUTE_QUOTE_STORE_URL``, to the newest
-    schema."""
-    from haute._quote_store import migrate_store
-    from haute._workbench_app import STORE_URL_ENV, quote_store_url
+def handle_app_migrate(url: str | None, release_dir: Path) -> None:
+    """Make the quote store at *url*, else at ``HAUTE_QUOTE_STORE_URL``, hold the tables of
+    the form of the release built in *release_dir*: made on a database holding none, and a
+    database holding another form's refused, naming each table that differs."""
+    from haute._quote_store import HOSTED, prepare_store
+    from haute._workbench_app import (
+        RELEASE_FILE,
+        STORE_URL_ENV,
+        quote_store_url,
+        read_release,
+    )
 
     target = url or quote_store_url()
     if target is None:
         raise click.ClickException(
             f"Name the quote store: pass --url or set {STORE_URL_ENV} to its SQLAlchemy URL."
         )
+    if not (release_dir / RELEASE_FILE).is_file():
+        raise click.ClickException(
+            f"No release is built in {release_dir.as_posix()}: run haute app build first."
+        )
     with _said():
-        migrate_store(target)
-    click.echo("  ✓ The quote store is at the newest schema")
+        release, form, _ = read_release(release_dir.resolve())
+        prepare_store(
+            target,
+            form,
+            project=release.pipeline_name,
+            environment=HOSTED,
+            haute_version=release.haute_version,
+            release=release.id,
+        )
+    click.echo(f"  ✓ The quote store holds the tables of release {release.id}'s form")
 
 
 @click.group(name="app")
@@ -206,7 +240,15 @@ def serve(port: int, static_dir: Path | None, reader: bool) -> None:
     default=None,
     help="The quote store's SQLAlchemy URL; HAUTE_QUOTE_STORE_URL when not given.",
 )
-def migrate(url: str | None) -> None:
-    """Bring the app's quote store to the schema this Haute writes, before a release that
-    needs it starts."""
-    handle_app_migrate(url)
+@click.option(
+    "--release",
+    "release_dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=RELEASE_DIR,
+    show_default=True,
+    help="The built release whose form's tables the store holds.",
+)
+def migrate(url: str | None, release_dir: Path) -> None:
+    """Make the app's quote store hold the tables of a built release's form, before that
+    release starts."""
+    handle_app_migrate(url, release_dir)

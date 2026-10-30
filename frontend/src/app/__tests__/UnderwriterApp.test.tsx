@@ -15,11 +15,10 @@ vi.mock("../../api/app", () => ({
   fetchAppQuotes: vi.fn(),
   fetchAppPeople: vi.fn(),
   openAppQuote: vi.fn(),
-  carryAppQuote: vi.fn(),
   createAppQuote: vi.fn(),
 }))
 
-import { carryAppQuote, fetchAppForm, fetchAppPeople, fetchAppQuotes, fetchAppRelease, openAppQuote, priceAppQuote } from "../../api/app"
+import { fetchAppForm, fetchAppPeople, fetchAppQuotes, fetchAppRelease, openAppQuote, priceAppQuote } from "../../api/app"
 import useAppStore from "../useAppStore"
 import { ApiError } from "../../api/client"
 import type { WorkbenchAppReleaseResponse } from "../../api/types"
@@ -95,14 +94,14 @@ describe("UnderwriterApp", () => {
     expect(screen.getByTestId("quotes-page")).toBeInTheDocument()
   })
 
-  it("opens a duplicate's address, reloaded, as the window filled from that revision", async () => {
-    vi.mocked(carryAppQuote).mockResolvedValue({ values: { quote_details: [{ qd_insured: "Acme" }] }, dropped: [] })
+  it("opens a duplicate's address, reloaded, as the window filled from that quote", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer({ reference: "ABC 1", option: 2 }, { values: { quote_details: [{ qd_insured: "Acme" }] } }))
 
-    await keeping("/quotes/new?from=q1&revision=2&as=duplicate")
+    await keeping("/quotes/new?from=ABC+1&option=2&as=duplicate")
 
     const window_ = await screen.findByRole("dialog", { name: "Duplicate quote" })
     await vi.waitFor(() => expect(within(window_).getByLabelText("Insured")).toHaveValue("Acme"))
-    expect(carryAppQuote).toHaveBeenCalledWith("q1", 2)
+    expect(openAppQuote).toHaveBeenCalledWith("ABC 1", 2)
     await navigate("/", { force: true })
   })
 
@@ -221,9 +220,10 @@ describe("UnderwriterApp", () => {
 
     expect(await screen.findByTestId("quotes-page")).toBeInTheDocument()
     await act(async () => {
-      await navigate("/quotes/q1")
+      await navigate("/quotes/Q-000001/1")
     })
-    expect(await screen.findByTestId("quote-line")).toHaveTextContent("Revision 1")
+    expect(await screen.findByTestId("quote-line")).toHaveTextContent("by ana@example.com")
+    expect(openAppQuote).toHaveBeenCalledWith("Q-000001", 1)
     await act(async () => {
       await navigate("/somewhere", { force: true })
     })

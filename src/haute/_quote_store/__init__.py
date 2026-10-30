@@ -1,67 +1,100 @@
-"""The workbench's quote store (specs/workbench): saved quotes and their revisions, and the
-underwriter app's book of the quotes it keeps.
+"""The workbench's quote store (specs/workbench): the form's own tables in the user's
+database, each quote's current state in them, and Haute's two tables beside them.
 
-One schema, Haute's, on a SQLite file for an analyst's machine and CI, and on the server
-database the project's IT team provides for the underwriter app. Imported where a store is
-used, never on the scorer's import path, so a deployed pipeline loads no database client.
+Imported where a store is used, never on the scorer's import path, so a deployed pipeline
+loads no database client.
 """
 
+from __future__ import annotations
+
+from collections.abc import Callable
+from datetime import datetime
+
 from haute._quote_store._book import (
+    ActivityEntry,
     AppQuote,
+    OpenQuote,
+    PricedOutputs,
+    QuoteActivity,
     QuoteBook,
-    QuoteEvent,
-    QuoteLockedError,
     QuotePage,
-    QuoteTimeline,
-    ReferenceTakenError,
     RelatedQuote,
-    RevisionSummary,
     Source,
-    canonical_reference,
+    as_written,
     check_reference,
     details_of,
+    identity_label,
     with_details,
+    without_app_details,
 )
+from haute._quote_store._rows import input_rows
 from haute._quote_store._store import (
-    CarriedValues,
+    DEV,
+    HOSTED,
+    MisfitCell,
+    QuoteLockedError,
     QuoteNotFoundError,
-    QuoteRevision,
-    QuoteStore,
+    QuoteNotReadyError,
     QuoteStoreError,
-    QuoteStoreNotMigratedError,
-    QuoteSummary,
+    QuoteStoreMismatchError,
+    QuoteValuesError,
+    ReferenceTakenError,
     StaleQuoteError,
-    carry_values,
-    migrate_store,
-    open_store,
+    WriteSupersededError,
+    open_engine,
+    prepare_store,
     store_url,
 )
+from haute._workbench_form import FormSpec
+
+
+def open_book(
+    url: str,
+    form: FormSpec,
+    *,
+    project: str,
+    environment: str = DEV,
+    haute_version: str | None,
+    clock: Callable[[], datetime] | None = None,
+) -> QuoteBook:
+    """The book of quotes on the database at *url*, which must hold *form*'s tables for
+    *project* in *environment* (:func:`open_engine`), written by an app running Haute
+    *haute_version*."""
+    engine, schema = open_engine(url, form, project=project, environment=environment)
+    return QuoteBook(engine, schema, form, haute_version=haute_version, clock=clock)
+
 
 __all__ = [
+    "DEV",
+    "HOSTED",
+    "ActivityEntry",
     "AppQuote",
-    "CarriedValues",
+    "MisfitCell",
+    "OpenQuote",
+    "PricedOutputs",
+    "QuoteActivity",
     "QuoteBook",
-    "QuoteEvent",
     "QuoteLockedError",
+    "QuoteNotFoundError",
+    "QuoteNotReadyError",
     "QuotePage",
-    "QuoteTimeline",
+    "QuoteStoreError",
+    "QuoteStoreMismatchError",
+    "QuoteValuesError",
     "ReferenceTakenError",
     "RelatedQuote",
-    "RevisionSummary",
     "Source",
-    "QuoteNotFoundError",
-    "QuoteRevision",
-    "QuoteStore",
-    "QuoteStoreError",
-    "QuoteStoreNotMigratedError",
-    "QuoteSummary",
     "StaleQuoteError",
-    "canonical_reference",
-    "carry_values",
+    "WriteSupersededError",
+    "as_written",
     "check_reference",
     "details_of",
-    "migrate_store",
-    "open_store",
+    "identity_label",
+    "input_rows",
+    "open_book",
+    "open_engine",
+    "prepare_store",
     "store_url",
     "with_details",
+    "without_app_details",
 ]

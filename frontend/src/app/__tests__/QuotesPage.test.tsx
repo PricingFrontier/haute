@@ -1,8 +1,9 @@
 /**
- * The Quotes page (specs/workbench): the lists and stages with their counts, the list as a
- * table of the quote list's columns, the search and filters in the address, a page at a
- * time, each row's actions, New quote and a row's Duplicate opening the New quote window
- * over the list, the order by Reference, and what an empty, loading or failed list says.
+ * The Quotes page (specs/workbench): the lists and the stages, Draft and Final, with their
+ * counts, the list as a table of the quote list's columns, the search and filters in the
+ * address, a page at a time, each row's actions on the quote it names by reference and
+ * option, New quote and a row's Duplicate opening the New quote window over the list, the
+ * order by Reference, and what an empty, loading or failed list says.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
@@ -11,11 +12,11 @@ vi.mock("../../api/app", () => ({
   fetchAppQuotes: vi.fn(),
   changeAppQuote: vi.fn(),
   fetchAppPeople: vi.fn(),
-  carryAppQuote: vi.fn(),
+  openAppQuote: vi.fn(),
   createAppQuote: vi.fn(),
 }))
 
-import { carryAppQuote, changeAppQuote, fetchAppPeople, fetchAppQuotes, type QuotesQuery } from "../../api/app"
+import { changeAppQuote, fetchAppPeople, fetchAppQuotes, openAppQuote, type QuotesQuery } from "../../api/app"
 import { ApiError } from "../../api/client"
 import type { WorkbenchAppQuote, WorkbenchAppQuotesResponse } from "../../api/types"
 import ToastContainer from "../../components/Toast"
@@ -27,13 +28,13 @@ import { navigate, quotesQueryOf, setLeaveGuard } from "../route"
 import useAppStore from "../useAppStore"
 import useNewQuoteStore from "../useNewQuoteStore"
 import useQuoteListStore from "../useQuoteListStore"
-import { appQuote, release } from "./fixtures"
+import { answer, appQuote, release } from "./fixtures"
 
 const MINE: QuotesQuery = quotesQueryOf("")
 const page = (quotes: WorkbenchAppQuote[], next: string | null = null): WorkbenchAppQuotesResponse => ({
   quotes,
   next_cursor: next,
-  counts: { mine: quotes.length, team: 5, archived: 1, draft: 2, priced: 3, final: 0 },
+  counts: { mine: quotes.length, team: 5, archived: 1, draft: 2, final: 3 },
 })
 
 function show(query: QuotesQuery = MINE) {
@@ -66,8 +67,8 @@ describe("QuotesPage", () => {
   })
 
   it("lists the quotes under their details' columns, with the lists' and stages' counts", async () => {
-    const details = { reference: "Q-000001", quote_name: "Fleet", insured: "Acme", broker: "Marsh", inception_date: "2026-11-01" }
-    vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote({ details, stage: "priced" }), appQuote({ id: "q2", reference: "Q-000002", title: "CA", assignee: "jo@example.com", stage: "draft" })]))
+    const details = { quote_reference: "Q-000001", quote_option: 1, quote_name: "Fleet", insured: "Acme", broker: "Marsh", inception_date: "2026-11-01" }
+    vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote({ details, stage: "final" }), appQuote({ reference: "Q-000002", title: "CA", assignee: "jo@example.com", stage: "draft" })]))
     show()
 
     const row = await screen.findByTestId("quote-row-Q-000001/1")
@@ -76,13 +77,17 @@ describe("QuotesPage", () => {
     expect(within(row).getByText("Marsh")).toBeInTheDocument()
     expect(within(row).getByText(/2026/)).not.toHaveTextContent("2026-11-01")
     expect(within(row).getByText("You")).toBeInTheDocument()
-    expect(within(row).getByTestId("stage-priced")).toBeInTheDocument()
+    expect(within(row).getByTestId("stage-final")).toBeInTheDocument()
+    expect(within(row).getByRole("link", { name: "Q-000001/1" })).toHaveAttribute("href", "/quotes/Q-000001/1")
     expect(within(screen.getByTestId("quote-row-Q-000002/1")).getByText("jo@example.com")).toBeInTheDocument()
     for (const header of ["Ref", "Quote", "Insured", "Placing broker", "Inception date", "Stage", "With", "Saved"]) {
       expect(screen.getByRole("columnheader", { name: header })).toBeInTheDocument()
     }
     expect(screen.getByTestId("list-team")).toHaveTextContent("5")
-    expect(screen.getByTestId("stage-filter-priced")).toHaveTextContent("3")
+    // The stages are Draft and Final.
+    expect(screen.getByTestId("stage-filter-draft")).toHaveTextContent("2")
+    expect(screen.getByTestId("stage-filter-final")).toHaveTextContent("3")
+    expect(screen.queryByTestId("stage-filter-priced")).toBeNull()
     expect(fetchAppQuotes).toHaveBeenCalledWith(MINE)
   })
 
@@ -145,7 +150,7 @@ describe("QuotesPage", () => {
   })
 
   it("loads the next page on Load more", async () => {
-    vi.mocked(fetchAppQuotes).mockResolvedValueOnce(page([appQuote()], "next-1")).mockResolvedValueOnce(page([appQuote({ id: "q2", reference: "Q-000002" })]))
+    vi.mocked(fetchAppQuotes).mockResolvedValueOnce(page([appQuote()], "next-1")).mockResolvedValueOnce(page([appQuote({ reference: "Q-000002" })]))
     show()
 
     fireEvent.click(await screen.findByRole("button", { name: "Load more" }))
@@ -156,20 +161,20 @@ describe("QuotesPage", () => {
   })
 
   it("opens a quote from its row, and duplicates one in the New quote window over the list", async () => {
-    vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote({ latest: 3 })]))
-    vi.mocked(carryAppQuote).mockResolvedValue({ values: { quote_details: [{ qd_insured: "Acme" }] }, dropped: [] })
+    vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote({ reference: "ABC 1", option: 2, version: 3 })]))
+    vi.mocked(openAppQuote).mockResolvedValue(answer({ reference: "ABC 1", option: 2 }, { values: { quote_details: [{ qd_insured: "Acme" }] } }))
     show()
 
-    fireEvent.click(await screen.findByTestId("quote-row-Q-000001/1"))
-    expect(window.location.pathname).toBe("/quotes/q1")
+    fireEvent.click(await screen.findByTestId("quote-row-ABC 1/2"))
+    expect(window.location.pathname).toBe("/quotes/ABC%201/2")
     await navigate("/", { force: true })
-    fireEvent.click(screen.getByRole("button", { name: "Duplicate Q-000001/1" }))
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate ABC 1/2" }))
 
-    const window_ = await screen.findByRole("dialog", { name: "Duplicate Q-000001/1" })
+    const window_ = await screen.findByRole("dialog", { name: "Duplicate ABC 1/2" })
     await vi.waitFor(() => expect(within(window_).getByRole("textbox", { name: "Insured" })).toHaveValue("Acme"))
-    expect(carryAppQuote).toHaveBeenCalledWith("q1", 3)
+    expect(openAppQuote).toHaveBeenCalledWith("ABC 1", 2)
     expect(window.location.pathname).toBe("/")
-    expect(screen.getByTestId("quote-row-Q-000001/1")).toBeInTheDocument()
+    expect(screen.getByTestId("quote-row-ABC 1/2")).toBeInTheDocument()
   })
 
   it("starts a new quote in the window over the list from New quote, and orders the list by Reference", async () => {
@@ -189,7 +194,7 @@ describe("QuotesPage", () => {
 
   it("archives a quote with Undo, which restores it", async () => {
     vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote()]))
-    vi.mocked(changeAppQuote).mockResolvedValueOnce({ quote: appQuote({ archived: true, archived_at: "2026-10-12T10:00:00+00:00", latest: 2 }), revision: null }).mockResolvedValueOnce({ quote: appQuote({ latest: 3 }), revision: null })
+    vi.mocked(changeAppQuote).mockResolvedValueOnce({ quote: appQuote({ archived: true, archived_at: "2026-10-12T10:00:00+00:00", version: 2 }) }).mockResolvedValueOnce({ quote: appQuote({ version: 3 }) })
     show()
 
     fireEvent.click(await screen.findByRole("button", { name: "Archive Q-000001/1" }))
@@ -197,14 +202,14 @@ describe("QuotesPage", () => {
 
     await vi.waitFor(() => expect(changeAppQuote).toHaveBeenCalledTimes(2))
     expect(vi.mocked(changeAppQuote).mock.calls).toEqual([
-      ["q1", "archive", 1, {}],
-      ["q1", "restore", 2, {}],
+      ["Q-000001", 1, "archive", 1, {}],
+      ["Q-000001", 1, "restore", 2, {}],
     ])
   })
 
   it("reloads the list shown when Undo is pressed, though another than the one archived from", async () => {
     vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote()]))
-    vi.mocked(changeAppQuote).mockResolvedValueOnce({ quote: appQuote({ archived: true, archived_at: "2026-10-12T10:00:00+00:00", latest: 2 }), revision: null }).mockResolvedValueOnce({ quote: appQuote({ latest: 3 }), revision: null })
+    vi.mocked(changeAppQuote).mockResolvedValueOnce({ quote: appQuote({ archived: true, archived_at: "2026-10-12T10:00:00+00:00", version: 2 }) }).mockResolvedValueOnce({ quote: appQuote({ version: 3 }) })
     const view = show()
     fireEvent.click(await screen.findByRole("button", { name: "Archive Q-000001/1" }))
     const undo = await screen.findByRole("button", { name: "Undo" })
@@ -228,7 +233,7 @@ describe("QuotesPage", () => {
     ["Archive", "Q-000001/1"],
     ["Restore", "Q-000002/1"],
   ])("reloads the list showing once %s is answered, though the underwriter moved to another meanwhile", async (action, label) => {
-    vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote(), appQuote({ id: "q2", reference: "Q-000002", archived: true })]))
+    vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote(), appQuote({ reference: "Q-000002", archived: true })]))
     let answered: (value: Awaited<ReturnType<typeof changeAppQuote>>) => void = () => {}
     vi.mocked(changeAppQuote).mockImplementation(() => new Promise((resolve) => (answered = resolve)))
     const team = quotesQueryOf("?view=team")
@@ -246,7 +251,7 @@ describe("QuotesPage", () => {
     await vi.waitFor(() => expect(useQuoteListStore.getState().status).toBe("ready"))
     expect(useQuoteListStore.getState().query).toEqual(MINE)
     vi.mocked(fetchAppQuotes).mockClear()
-    await act(async () => answered({ quote: appQuote({ latest: 2 }), revision: null }))
+    await act(async () => answered({ quote: appQuote({ version: 2 }) }))
 
     await vi.waitFor(() => expect(fetchAppQuotes).toHaveBeenCalled())
     expect(vi.mocked(fetchAppQuotes).mock.calls).toEqual([[MINE]])
@@ -267,12 +272,12 @@ describe("QuotesPage", () => {
   it("restores an archived quote from the archive", async () => {
     // A list row knows it is archived, not by whom or when: those are read with the quote.
     vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote({ archived: true })]))
-    vi.mocked(changeAppQuote).mockResolvedValue({ quote: appQuote({ latest: 2 }), revision: null })
+    vi.mocked(changeAppQuote).mockResolvedValue({ quote: appQuote({ version: 2 }) })
     show(quotesQueryOf("?view=archived"))
 
     fireEvent.click(await screen.findByRole("button", { name: "Restore Q-000001/1" }))
 
-    await vi.waitFor(() => expect(changeAppQuote).toHaveBeenCalledWith("q1", "restore", 1, {}))
+    await vi.waitFor(() => expect(changeAppQuote).toHaveBeenCalledWith("Q-000001", 1, "restore", 1, {}))
     expect(await screen.findByText("Restored Q-000001/1")).toBeInTheDocument()
   })
 

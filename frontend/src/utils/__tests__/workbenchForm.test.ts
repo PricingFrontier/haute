@@ -343,6 +343,14 @@ describe("problems", () => {
     expect(spec.sample).toEqual({ t: [{ a: "x" }], u: [{ b: "y" }] })
   })
 
+  it("keeps whether a column is required when its table is made an output, which marking a quote final checks there too", () => {
+    const spec = withTable(column("a", "value", { type: "float", required: true, min: 1, default_value: "2" }))
+
+    const output = updateSchemaTable(spec, "t", { role: "output" })
+
+    expect(output.schema.tables[0].columns[0]).toMatchObject({ required: true, min: null, default_value: "" })
+  })
+
   it("changes a column's type, dropping the rules the new type cannot have", () => {
     let spec = withTable(
       column("a", "value", {

@@ -70,6 +70,7 @@ const workbenchOf = (spec: FormSpec): WorkbenchTablesResponse => ({
   tables: [],
   sample: { policy_details: { exposure: spec.sample.t1?.[0]?.c1 } },
   response_tables: [],
+  store_columns: {},
 })
 
 /** What a Collection would show for the model premium now, and whether it is dimmed. */

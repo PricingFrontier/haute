@@ -208,6 +208,14 @@ class WorkbenchStatusResponse(BaseModel):
     form: str | None = None
 
 
+class WorkbenchStoreColumn(BaseModel):
+    """A column the quote store keeps in a table that the form does not, which the schema
+    editor shows locked: its name and what it holds."""
+
+    name: str
+    kind: Literal["int", "str", "datetime"]
+
+
 class WorkbenchTablesResponse(BaseModel):
     """The workbench's tables, as the pipeline holds them, as its form defines them now.
 
@@ -219,6 +227,8 @@ class WorkbenchTablesResponse(BaseModel):
     tables: list[WorkbenchTable]
     sample: dict[str, Any] = Field(default_factory=dict)
     response_tables: list[WorkbenchTable] = Field(default_factory=list)
+    #: The columns the quote store keeps in each table that the form does not, by table id.
+    store_columns: dict[str, list[WorkbenchStoreColumn]] = Field(default_factory=dict)
 
 
 class WorkbenchFormFile(BaseModel):
@@ -332,15 +342,14 @@ class WorkbenchAppPriceResponse(BaseModel):
     request: dict[str, Any]
 
 
-WorkbenchAppQuoteStage = Literal["draft", "priced", "final"]
+WorkbenchAppQuoteStage = Literal["draft", "final"]
 WorkbenchAppQuoteRelation = Literal["duplicate", "renewal", "alternative"]
 
 
 class WorkbenchAppQuote(BaseModel):
-    """An app quote as the Quotes page and the quote's bar show it: its ``quote_details`` row
-    and what its newest revision and its events say of it. Times are ISO 8601, in UTC."""
+    """An app quote as the Quotes page and the quote's bar show it: its ``quote_details`` row,
+    with who marked it final or archived it and when. Times are ISO 8601, in UTC."""
 
-    id: str
     reference: str
     #: Which of the quotes offered under its reference it is, from 1.
     option: int
@@ -353,17 +362,13 @@ class WorkbenchAppQuote(BaseModel):
     stage: WorkbenchAppQuoteStage
     assignee: str
     archived: bool = False
-    owner: str
-    created_at: str
-    #: The newest revision's number, the release that priced it, its sheets' revision and
-    #: whether it is priced.
-    latest: int
-    release: str | None = None
-    form_revision: str
+    #: The version a change names: every write that changes the quote moves it on.
+    version: int
+    saved_at: str
+    saved_by: str
+    #: Whether the output tables hold a pricing, and the release that priced it.
     priced: bool = False
-    last_saved_by: str
-    last_saved_at: str
-    final_revision: int | None = None
+    priced_release: str | None = None
     final_by: str | None = None
     final_at: str | None = None
     archived_by: str | None = None
@@ -371,12 +376,10 @@ class WorkbenchAppQuote(BaseModel):
     note: str = ""
     note_by: str | None = None
     note_at: str | None = None
-    source_quote_id: str | None = None
     source_reference: str | None = None
     source_option: int | None = None
     #: The source as the app shows it, ``Q-000123/1``.
     source_label: str | None = None
-    source_revision: int | None = None
     relation: WorkbenchAppQuoteRelation | None = None
 
 
@@ -389,64 +392,53 @@ class WorkbenchAppQuotesResponse(BaseModel):
     counts: dict[str, int]
 
 
-class WorkbenchAppQuoteRevision(BaseModel):
-    """One revision of a quote: its values as typed, its prices (null when saved unpriced),
-    the request priced, the release that priced it, and who saved it when."""
-
-    number: int
-    values: WorkbenchValues
-    tables: WorkbenchPricedTables | None = None
-    request: dict[str, Any]
-    release: str | None = None
-    form_revision: str
-    saved_by: str
-    saved_at: str
-
-
 class WorkbenchAppQuoteResponse(BaseModel):
-    """A quote with one revision. ``form`` is the sheets the revision was keyed into when
-    they are not the release's, which it opens on, read only; ``moved`` says a save's
+    """A quote with what it holds: its values as on the release's sheets, its output tables
+    as the pricing rendered them (null while unpriced), the request its values price as, and
+    each row that no longer fits the sheets, ``table row N (value)``. ``moved`` says a save's
     prices, made again on the server, are not the ones the page showed."""
 
     quote: WorkbenchAppQuote
-    revision: WorkbenchAppQuoteRevision
-    form: FormSpec | None = None
+    values: WorkbenchValues
+    tables: WorkbenchPricedTables | None = None
+    request: dict[str, Any]
+    dropped: list[str] = Field(default_factory=list)
     moved: bool = False
 
 
 class WorkbenchAppQuoteSource(BaseModel):
-    """The quote and revision a new quote is made from, and how."""
+    """The quote a new quote is made from, and how."""
 
-    quote_id: BoundedName
-    revision: int = Field(ge=1)
+    reference: str = Field(min_length=1, max_length=400)
+    option: int = Field(ge=1)
     relation: WorkbenchAppQuoteRelation
 
 
-class WorkbenchAppQuoteSaveRequest(BaseModel):
-    """The quote on the sheets, saved. ``operation`` makes a repeated save write once;
-    ``shown`` is the prices the page showed for these values, priced again on the server
-    and kept, or null to save the quote unpriced."""
+class WorkbenchAppQuoteCreateRequest(BaseModel):
+    """A new quote, made unpriced from the values on the sheets and priced as it opens.
+    ``operation`` makes a repeated creation make one quote; ``reference`` is the reference the
+    underwriter keyed, which every creation but an alternative's names; an alternative takes
+    its source's."""
 
     operation: str = Field(min_length=8, max_length=64)
     form_revision: BoundedName
     release: BoundedName
     values: RequestWorkbenchValues = Field(max_length=MAX_REQUEST_ITEMS)
-    shown: RequestWorkbenchPricedTables | None = Field(default=None, max_length=MAX_REQUEST_ITEMS)
-
-
-class WorkbenchAppQuoteCreateRequest(WorkbenchAppQuoteSaveRequest):
-    """A new quote, and the quote it is made from when it is. It is made unpriced, ``shown``
-    null, and priced as it opens. ``reference`` is the reference the underwriter keyed,
-    which every creation but an alternative's names; an alternative takes its source's."""
-
     source: WorkbenchAppQuoteSource | None = None
     reference: str | None = Field(default=None, max_length=400)
 
 
-class WorkbenchAppQuoteReviseRequest(WorkbenchAppQuoteSaveRequest):
-    """A quote's next revision, saved over ``version`` of it."""
+class WorkbenchAppQuoteSaveRequest(BaseModel):
+    """The quote on the sheets, saved over ``version`` of it. ``operation`` makes a repeated
+    save write once; ``shown`` is the prices the page showed for these values, priced again
+    on the server and kept, or null to save the quote unpriced."""
 
+    operation: str = Field(min_length=8, max_length=64)
+    form_revision: BoundedName
+    release: BoundedName
     version: int = Field(ge=1)
+    values: RequestWorkbenchValues = Field(max_length=MAX_REQUEST_ITEMS)
+    shown: RequestWorkbenchPricedTables | None = Field(default=None, max_length=MAX_REQUEST_ITEMS)
 
 
 class WorkbenchAppQuoteChange(BaseModel):
@@ -461,95 +453,61 @@ class WorkbenchAppQuoteAssign(WorkbenchAppQuoteChange):
     assignee: str = Field(min_length=1, max_length=320)
 
 
-class WorkbenchAppQuoteNote(BaseModel):
-    """The quote's handover note; blank clears it. A note is no revision, so it names none."""
-
-    note: str = Field(max_length=4000)
-
-
-class WorkbenchAppQuoteFinal(WorkbenchAppQuoteChange):
-    """The revision the page showed, marked final: it must be the quote's newest."""
-
-    revision: int = Field(ge=1)
-
-
-class WorkbenchAppQuoteReopen(WorkbenchAppQuoteChange):
-    """Why a final quote is reopened."""
+class WorkbenchAppQuoteAmend(WorkbenchAppQuoteChange):
+    """Why a final quote is taken back to draft to amend it."""
 
     reason: str = Field(min_length=1, max_length=1000)
 
 
+class WorkbenchAppQuoteNote(BaseModel):
+    """The quote's handover note; blank clears it. A note moves no version, so it names none."""
+
+    note: str = Field(max_length=4000)
+
+
 class WorkbenchAppQuoteChangeResponse(BaseModel):
-    """The quote as the change left it, and the revision it wrote; a note writes none."""
+    """The quote as the change left it."""
 
     quote: WorkbenchAppQuote
-    revision: WorkbenchAppQuoteRevision | None = None
 
 
-class WorkbenchAppQuoteEvent(BaseModel):
-    """Who did what to a quote, and when."""
+class WorkbenchAppQuoteActivityEntry(BaseModel):
+    """One thing done to a quote: what, by whom and when, the version it left the quote at
+    (none for a note), and what it carried."""
 
-    id: int
-    at: str
-    actor: str
-    kind: Literal[
-        "created",
-        "saved",
-        "assigned",
-        "noted",
-        "archived",
-        "restored",
-        "finalised",
-        "reopened",
-        "derived",
+    action: Literal[
+        "created", "saved", "assigned", "archived", "restored", "finalised", "amended", "noted"
     ]
-    revision: int | None = None
-    detail: dict[str, Any] = Field(default_factory=dict)
-
-
-class WorkbenchAppQuoteRevisionSummary(BaseModel):
-    """A revision as a quote's history lists it, with the stage it was saved at."""
-
-    number: int
-    saved_by: str
-    saved_at: str
-    priced: bool
-    release: str | None = None
-    form_revision: str
-    stage: WorkbenchAppQuoteStage
+    actor: str
+    at: str
+    version: int | None = None
+    assignee: str | None = None
+    note: str | None = None
+    reason: str | None = None
+    priced_release: str | None = None
 
 
 class WorkbenchAppRelatedQuote(BaseModel):
-    """A quote this one was made from, or one made from it, and the revision it came from."""
+    """A quote this one was made from, or one made from it, and how."""
 
-    id: str
     reference: str
     option: int
     #: The quote as the app shows it, ``Q-000123/2``.
     label: str
     relation: WorkbenchAppQuoteRelation
-    revision: int
 
 
-class WorkbenchAppQuoteHistoryResponse(BaseModel):
-    """A quote's revisions, events, the quote it was made from and those made from it."""
+class WorkbenchAppQuoteActivityResponse(BaseModel):
+    """What was done to a quote in order, the quote it was made from and those made from
+    it."""
 
-    revisions: list[WorkbenchAppQuoteRevisionSummary]
-    events: list[WorkbenchAppQuoteEvent]
+    entries: list[WorkbenchAppQuoteActivityEntry]
     source: WorkbenchAppRelatedQuote | None = None
     derived: list[WorkbenchAppRelatedQuote] = Field(default_factory=list)
 
 
-class WorkbenchAppCarryResponse(BaseModel):
-    """A revision's values carried onto the release's sheets, and each filled value with no
-    place there, ``table.column`` by the names it was saved under."""
-
-    values: WorkbenchValues
-    dropped: list[str]
-
-
 class WorkbenchAppPeopleResponse(BaseModel):
-    """Everyone a quote is assigned to, or was made or saved by: those a quote can be
+    """Everyone a quote is with, or was made, saved or changed by: those a quote can be
     assigned to without typing a name."""
 
     people: list[str]

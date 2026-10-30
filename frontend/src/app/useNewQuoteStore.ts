@@ -2,16 +2,17 @@
  * The New quote window (specs/workbench): where the underwriter keys a new quote's reference
  * and the quote_details columns they type before the quote is made, over the page it was
  * asked for from, which it leaves as it was. New quote starts it from a new quote's defaults;
- * Duplicate and Renew from a quote's revision carried onto the current sheets, its reference
- * blank, a renewal ticked as one; Save as new from the values on the open quote's sheets.
- * Create makes the whole creation once and keeps it in the tab before it is sent: refused,
- * it is let go and the window takes typing again, saying why; unanswered, it may have been
- * made, so it is kept and sent again exactly as it was, and offered back the next time the
- * app opens in the tab, before anything else is made. An alternative is not made here: it
- * takes its source's reference (`useOpenQuoteStore.openNew`).
+ * Duplicate and Renew from a quote's values as the store keeps them on the current sheets,
+ * its reference blank, a renewal ticked as one; Save as new from the values on the open
+ * quote's sheets. Only the reference must be keyed: a required detail left empty is asked for
+ * as the quote is marked final. Create makes the whole creation once and keeps it in the tab
+ * before it is sent: refused, it is let go and the window takes typing again, saying why;
+ * unanswered, it may have been made, so it is kept and sent again exactly as it was, and
+ * offered back the next time the app opens in the tab, before anything else is made. An
+ * alternative is not made here: it takes its source's reference (`useOpenQuoteStore.openNew`).
  */
 import { create } from "zustand"
-import { carryAppQuote, createAppQuote, type QuoteSource } from "../api/app"
+import { createAppQuote, openAppQuote, type QuoteSource } from "../api/app"
 import { apiErrorCode, apiErrorMessage, apiErrorRawDetail, apiErrorRefused } from "../api/errors"
 import type { FormSpec } from "../api/types"
 import useToastStore from "../stores/useToastStore"
@@ -32,6 +33,7 @@ import {
   referenceProblem,
   releaseMoved,
   valuesKey,
+  withoutAppDetails,
   type KeptCreation,
   type Values,
 } from "./quoteValues"
@@ -42,17 +44,15 @@ import useOpenQuoteStore, { openDraftKey } from "./useOpenQuoteStore"
 /** The quote_details column of the quote's reference, keyed in the window alone. */
 export const REFERENCE_COLUMN = QUOTE_DETAILS.quote_reference
 
-/** A quote made from another's revision in the window: a duplicate or a renewal. */
-export interface WindowOrigin {
-  quoteId: string
-  revision: number
+/** A quote made from another in the window: a duplicate or a renewal. */
+export interface WindowOrigin extends QuoteSource {
   relation: "duplicate" | "renewal"
 }
 
 /**
- * Where the window is: being filled from a quote's revision, or failing to be; taking
- * typing; sending its creation; sent with no answer, or a server failure, so its creation may
- * have been made; or offering back a creation kept in the tab.
+ * Where the window is: being filled from a quote, or failing to be; taking typing; sending
+ * its creation; sent with no answer, or a server failure, so its creation may have been made;
+ * or offering back a creation kept in the tab.
  */
 export type WindowStatus = "loading" | "failed" | "editing" | "sending" | "unknown" | "offered"
 
@@ -63,18 +63,18 @@ export interface NewQuoteWindow {
   reference: string
   /** The window's quote_details cells, by column id: the columns the underwriter types. */
   details: SampleRow
-  /** The values the creation is made over: a new quote's defaults, the carried values or the sheets'. */
+  /** The values the creation is made over: a new quote's defaults, its source's values or the sheets'. */
   base: Values
   source: QuoteSource | null
-  /** Each carried value that has no place on the current sheets, `table.column`. */
+  /** Each row of its source that has no place on the current sheets, `table row N (value)`. */
   dropped: string[]
   /** Why the last Create was refused or found no answer, or why the window could not be filled. */
   error: string | null
   /** The quote holding the reference keyed, when that refused it. */
-  taken: { quoteId: string; label: string } | null
+  taken: { reference: string; option: number; label: string } | null
   /** The page was drawn for an earlier release: refused until reloaded. */
   releaseMoved: boolean
-  /** Create was pressed with a required field empty: those say so too. */
+  /** Create was pressed with the reference empty: it says so too. */
   checked: boolean
   /** The creation sent and not answered, kept in the tab. */
   kept: KeptCreation | null
@@ -91,7 +91,7 @@ interface NewQuoteState {
   shown: NewQuoteWindow | null
   /** Open the window for a new quote, from its columns' defaults. */
   openNew: (options?: { addressed?: boolean }) => void
-  /** Open the window for a duplicate or a renewal of `from`, filled from that revision. */
+  /** Open the window for a duplicate or a renewal of `from`, filled from it. */
   openDerived: (from: WindowOrigin, options?: { label?: string; addressed?: boolean }) => Promise<void>
   /** Open the window over the open quote, its save refused, filled from the values on its sheets. */
   openSaveAsNew: () => void
@@ -123,14 +123,15 @@ export function windowFields(form: FormSpec): ShownField[] {
 
 /**
  * What stops each field fitting, by `cellKey`: the reference's rules, and each column's
- * (`cellProblem`), checked whatever the sheets show and whatever else is typed.
+ * (`cellProblem`) but whether it is required, which marking the quote final asks, checked
+ * whatever the sheets show and whatever else is typed.
  */
 export function windowProblems(fields: readonly ShownField[], reference: string, details: SampleRow): Record<string, string> {
   const problems: Record<string, string> = {}
   for (const { found } of fields) {
     if (found === null) continue
     const { table, column } = found
-    const problem = column.id === REFERENCE_COLUMN ? referenceProblem(reference) : cellProblem(column, details[column.id])
+    const problem = column.id === REFERENCE_COLUMN ? referenceProblem(reference) : cellProblem({ ...column, required: false }, details[column.id])
     if (problem !== null) problems[cellKey(table.id, 0, column.id)] = problem
   }
   return problems
@@ -148,9 +149,9 @@ function creationValues(base: Values, details: SampleRow): Values {
 }
 
 /** The quote holding a reference, as a `reference_taken` refusal names it. */
-function takenBy(error: unknown): { quoteId: string; label: string } | null {
-  const { quote_id: quoteId, label } = apiErrorRawDetail(error) ?? {}
-  return typeof quoteId === "string" && typeof label === "string" ? { quoteId, label } : null
+function takenBy(error: unknown): { reference: string; option: number; label: string } | null {
+  const { reference, option, label } = apiErrorRawDetail(error) ?? {}
+  return typeof reference === "string" && typeof option === "number" && typeof label === "string" ? { reference, option, label } : null
 }
 
 /** Where the creation is kept in this tab; null before the release is read. */
@@ -182,7 +183,7 @@ function opened(title: string, base: Values, source: QuoteSource | null, address
   }
 }
 
-/** The window filling being read, newest wins: a carry answered after the window closed or opened again fills nothing. */
+/** The window filling being read, newest wins: a quote read after the window closed or opened again fills nothing. */
 const fills = latest()
 
 const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
@@ -201,7 +202,7 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
     update({ status: "sending", kept: creation, error: null, taken: null, releaseMoved: false })
     const { operation, form_revision, release, values, source, reference } = creation
     try {
-      const answer = await createAppQuote({ operation, form_revision, release, values, shown: null }, source, reference)
+      const answer = await createAppQuote({ operation, form_revision, release, values }, source, reference)
       if (key !== null) forgetCreation(key)
       const done = get().shown
       set({ shown: null })
@@ -215,7 +216,7 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
       }
       // Answered once the page moved on, Back included, the quote is made and the page stays,
       // as it does when the leave guard keeps the quote behind the window: either says so.
-      const opened = here() === sentFrom && (await navigate(quotePath(answer.quote.id), { force: savedAsNew })) === "moved"
+      const opened = here() === sentFrom && (await navigate(quotePath(answer.quote.reference, answer.quote.option), { force: savedAsNew })) === "moved"
       if (!opened && !savedAsNew) useToastStore.getState().addToast("success", `Made ${answer.quote.label}`)
     } catch (error: unknown) {
       if (apiErrorRefused(error)) {
@@ -278,15 +279,16 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
       if (!free() || offerKept()) return
       const named = options.label === undefined ? "quote" : options.label
       const title = from.relation === "renewal" ? `Renew ${named}` : `Duplicate ${named}`
-      const source = { quote_id: from.quoteId, revision: from.revision, relation: from.relation }
+      const source = { reference: from.reference, option: from.option, relation: from.relation }
       const ticket = fills.take()
       set({ shown: { ...opened(title, {}, source, options.addressed ?? false), status: "loading" } })
       try {
-        // That revision's values on the current sheets, without the details the app set for it.
-        const carried = await carryAppQuote(from.quoteId, from.revision)
+        // Its values on the current sheets, without the details the app set for it.
+        const read = await openAppQuote(from.reference, from.option)
         if (!fills.is(ticket)) return
-        const values = from.relation === "renewal" ? asRenewal(carried.values as Values) : (carried.values as Values)
-        update({ status: "editing", base: values, details: typedDetails(values), dropped: carried.dropped })
+        const values = withoutAppDetails(read.values as Values)
+        const base = from.relation === "renewal" ? asRenewal(values) : values
+        update({ status: "editing", base, details: typedDetails(base), dropped: read.dropped })
       } catch (error: unknown) {
         if (fills.is(ticket)) update({ status: "failed", error: apiErrorMessage(error) })
       }
@@ -295,11 +297,11 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
     openSaveAsNew: () => {
       if (!free() || offerKept()) return
       const open = useOpenQuoteStore.getState()
-      const origin = open.conflict?.latest ?? open.quote
+      const origin = open.conflict?.quote ?? open.quote
       if (origin === null) return
       // The values on the sheets, unsaved ones and all, as they are now.
       const values = structuredClone(useWorkbenchPreviewStore.getState().quote) as Values
-      const source = { quote_id: origin.id, revision: origin.latest, relation: "duplicate" as const }
+      const source = { reference: origin.reference, option: origin.option, relation: "duplicate" as const }
       fills.bump()
       set({ shown: { ...opened("Save as a new quote", values, source, false), savedFrom: { draftKey: openDraftKey(open), values } } })
     },

@@ -193,8 +193,9 @@ page. Its columns are fixed, in this order: **quote_reference**, **quote_option*
 **modified_date**, **modified_by** and **haute_version**. Put them on the sheets as any
 other columns, and give them labels, groups, help and placeholders, and the ones your
 underwriters type defaults and rules; the pipeline receives the table as it receives any
-other input, so a rule can read a quote's inception date or its stage. Anything else about
-a quote, its currency or how long the offer stands, goes in a table of your own.
+other input, so a rule can read a quote's inception date or whether it is a renewal.
+Anything else about a quote, its currency or how long the offer stands, goes in a table of
+your own.
 **is_renewal** is a tick box: a quote made with the app's **Renew** opens with it ticked,
 and an underwriter ticks it for a renewal started any other way. A project saved by an
 earlier Haute takes today's columns when it is opened: its **reference** is named
@@ -206,18 +207,20 @@ column of your own, and is not shown in Preview or the app.
 The app sets **quote_reference**, **quote_option**, **stage**, **assignee**, **archived**,
 **created_date**, **created_by**, **modified_date**, **modified_by** and **haute_version**
 itself: their cells take no typing on the sheets in the app and take no rules and no
-default, and the pipeline receives them whatever the sheets hide. The underwriter keys the
-**quote_reference** once, in the window that makes the quote; it never changes after. **created_date** and **created_by** say
-when the quote was made and by whom; **modified_date** and **modified_by** when its revision
-was saved and by whom, a save or any change below; **haute_version** is the version of
-Haute the app ran then. The two dates are dates in UTC, so near midnight they can differ by
-a day from the time the app shows you. A rule that reads **modified_date** or
-**haute_version** prices the same quote differently on another day or release, so keep
-prices to what the underwriter typed. In Preview these columns hold what you type into the
-sample, to try a rule that reads them; an app without a quote store leaves them blank.
-Assigning, archiving, restoring, marking final and reopening a quote each save a new
-revision with those details changed and its values and price kept, so the history shows
-when a quote moved; the pipeline sees the new details the next time the quote is priced. A quote takes
+default. The underwriter keys the **quote_reference** once, in the window that makes the
+quote; it never changes after. **created_date** and **created_by** say when the quote was
+made and by whom; **modified_date** and **modified_by** when it was last saved or changed
+and by whom; **haute_version** is the version of Haute the app ran then. The two dates are
+dates in UTC, so near midnight they can differ by a day from the time the app shows you.
+The pipeline receives **quote_reference**, **quote_option**, **created_date** and
+**created_by**, and every other column of `quote_details`, whatever the sheets hide.
+**stage**, **assignee**, **archived**, **modified_date**, **modified_by** and
+**haute_version** are kept with the quote and never reach the pipeline, so assigning or
+archiving a quote never changes what it was priced on. In Preview the columns the pipeline
+receives hold what you type into the sample, to try a rule that reads them; an app without
+a quote store leaves them blank. Assigning, archiving, restoring, marking final and
+amending a quote change those details alone, its values and price kept, and its activity
+shows when a quote moved. A quote takes
 its reference and option when it is made (see [The Quotes page](#the-quotes-page)), so its
 every price has them. Preview prices the sample as `PREVIEW`, option 1, as the app prices
 the one quote it holds without a quote store: a quote's reference and option are never
@@ -644,8 +647,11 @@ builder on screen. With a quote store it is where they manage their quotes too.
   `http://127.0.0.1:8001/`, signed in as your git identity, so you can see the sheets and
   the Quotes page as underwriters will before you merge. Only your machine can reach it, at
   `127.0.0.1` or `localhost`: the app refuses any other name for your machine. The
-  quotes you save there are kept in `.haute/app/quotes.sqlite`, which a rebuild leaves as it
-  is; `haute app serve --reader` signs you in as an underwriter who may only read them.
+  quotes you save there are kept in `.haute/app/store.sqlite`, which a rebuild leaves as it
+  is: its tables are your schema's (see [Reading quotes with SQL](#reading-quotes-with-sql)),
+  so when you change a table, the app builds it again as it starts, drops the quotes' rows
+  in it and names it. `haute app serve --reader` signs you in as an underwriter who may
+  only read quotes.
 - `haute app build` writes a **release** to `.haute/app/release` (or the folder you name):
   the pipeline, checked and bundled
   as `haute deploy` does it (the test quotes included), with the sheets and an `app.py` that
@@ -673,14 +679,14 @@ builder on screen. With a quote store it is where they manage their quotes too.
   base_image = "python:3.11.9-slim"
   ```
 
-- The hosted app keeps quotes in the SQL database your IT team provides. The host gives the
-  app its SQLAlchemy URL in `HAUTE_QUOTE_STORE_URL`; without it the app keeps nothing, says
-  so, and prices its one quote as `PREVIEW`, option 1. The app does not start on a database it has not been migrated to:
-  run `haute app migrate` (with `HAUTE_QUOTE_STORE_URL` set, or `--url`) before a release
-  that needs it starts. Back the database up first: after some migrations, such as those
-  that add **is_renewal** and **quote_option** and that take out **valid_until** and
-  **currency**, an earlier release no longer starts on the
-  database, so rolling back means restoring that backup.
+- The hosted app keeps quotes in the SQL database your IT team provides, as your schema's
+  tables. The host gives the app its SQLAlchemy URL in `HAUTE_QUOTE_STORE_URL`; without it
+  the app keeps nothing, says so, and prices its one quote as `PREVIEW`, option 1. The app
+  does not start on a database that does not hold its release's tables: `haute app migrate`
+  (with `HAUTE_QUOTE_STORE_URL` set, or `--url`) makes them in an empty database from the
+  release built in `.haute/app/release` (or the folder `--release` names) before that
+  release starts. It refuses a database holding another form's tables, naming each table
+  that differs, so a release whose schema changed a table needs a database of its own.
 - The app prices four quotes at once; set `HAUTE_APP_PRICING_WORKERS` to change that. A
   pricing that runs past 60 seconds is answered as timed out but keeps its place until it
   ends, and while every place is taken a quote is refused as busy, to be priced again in a
@@ -690,10 +696,44 @@ A page opened before a new release is refused when it prices or saves, and offer
 **Reload**, which picks up the release; its unsaved values stay in the browser, though an app
 that keeps no quotes keeps nothing typed.
 
+### Reading quotes with SQL
+The app keeps each quote in your schema's own tables, so a report reads them with plain SQL.
+Each table of the schema is a table of the same name, `quote_details` included, with the
+schema's columns under their names: an Integer a 64-bit integer, a Decimal a
+double-precision number, Text text, True/false a boolean and a Date a date. Every row holds
+the quote's **quote_reference** and **quote_option**, and a row of a many-row table its
+**quote_row** too: an input row's place on its sheet, blank rows counted, and an output
+row's place in the pricing. Join the tables on **quote_reference** and **quote_option**:
+
+```sql
+SELECT d.broker, SUM(p.total_premium) AS premium
+FROM quote_details AS d
+JOIN premium AS p ON p.quote_reference = d.quote_reference
+                 AND p.quote_option = d.quote_option
+WHERE d.stage = 'final'
+GROUP BY d.broker;
+```
+
+A table holds each quote as it was last saved: a save replaces the quote's rows, and the
+output tables hold the price it was saved with, none when it was saved unpriced. A value a
+Show when hid is saved blank, and an output that was not a number, such as infinity, is
+saved empty. `quote_details` also holds what the app keeps about each quote:
+**quote_version**, which every change moves on; **saved_at** and **saved_by**, the last
+save; **priced_release**, the release that priced it; **source_reference**,
+**source_option** and **source_relation**, the quote it was made from and how; and the
+handover note with who wrote it and when. The schema shows them under each table, locked.
+Two tables of the app's own sit beside yours: `haute_store`, which says what the database
+holds, and `haute_activity`, a row for each thing done to a quote, who did it and when.
+
+Names reach the database as the schema writes them, so the schema refuses a name the
+database could not keep: two columns of a table whose names differ only in case, a name
+longer than 63 characters, a name starting `haute_`, a column named `quote_row` in a
+many-row table, and a table named starting `sqlite_`.
+
 ### The Quotes page
 The app opens on the Quotes page. On the left are **My work** (the quotes with you),
-**Team** and **Archived**, and the stages of the list showing, **Draft** (saved without a
-price), **Priced** and **Final**, each with its count. Each quote shows its reference and
+**Team** and **Archived**, and the stages of the list showing, **Draft** and **Final**,
+each with its count. Each quote shows its reference and
 option (`ABC-1/2`), its quote name (or its insured, or its reference and option), and
 its insured, broker and inception date under the labels the sheets give them, read from its
 quote details. Search matches every word you type against the reference, however its
@@ -708,15 +748,15 @@ Archive can be undone from the message it shows. `/` jumps to the search.
 the quote details your underwriters type: its name, insured, broker, inception and expiry
 dates and whether it is a renewal, labelled and checked as on the sheets, starting with the
 columns' defaults. The reference is up to 40 characters, without `/`, which the app puts
-before the option, and no two quotes share one: `abc-1` is the same reference as `ABC-1`, so
-a reference already in use is refused, naming the quote that holds it, with **Open it**. The
-details the analyst made required must be filled in. **Create** makes the quote, a
-**Draft** holding what you keyed, and opens it; one left with nothing more typed stays a
+before the option, and is not `.` or `..`. It is kept as you key it, so `ABC-1` and `abc-1`
+are two references; a reference already in use is refused, naming the quote that holds it,
+with **Open it**. A detail the analyst made required can be left empty here: the quote asks
+for it as it is marked final. **Create** makes the quote, a **Draft** holding what you
+keyed, and opens it; one left with nothing more typed stays a
 **Draft** until archived. **Cancel** or `Escape` closes the window and makes nothing. If the
 answer is lost while the quote is being made, the window offers **Try again**, which sends
 exactly what it sent, and keeps it if you close it: the app offers it back, with **Try
 again** or **Discard**, the next time it opens in that tab, so a quote is never made twice.
-Quotes made before references were keyed keep their `Q-000123` references.
 
 ### A quote
 A quote opens at its own address, under a bar holding its reference and option
@@ -727,28 +767,33 @@ A quote opens at its own address, under a bar holding its reference and option
   when it was saved unpriced or priced on an earlier release. **Save** waits for that
   pricing and keeps the quote with its price, or unpriced when it could not be priced (the
   button says **Save unpriced** then, and the bar says why); the app prices it again as it
-  saves, and says so if the price it keeps moved. Each save is a new revision.
-- **Mark final** pins the newest revision as the final quotation, once it is priced on the
-  running release; a final quote cannot be saved over until someone **reopens** it, giving a
-  reason. The final stays in its history.
+  saves, and says so if the price it keeps moved. A save replaces what the quote held, so
+  duplicate a quote first to keep an offer as it stood. A save is refused only when a value
+  is not of its column's type, naming each one; a required value left empty, or a value
+  outside its range, saves.
+- **Mark final** makes the quote the final quotation, once it is saved with a price of the
+  running release and every column the analyst made required, input or output, holds a
+  value; otherwise the app names each one that does not. A final quote cannot be saved until
+  someone **amends** it, giving a reason, which takes it back to **Draft**: its next save
+  replaces the final quotation.
 - **More**: **Duplicate**, **Renew** and **Create alternative** each make a new quote from
-  the revision showing, linked to it, and open it. **Duplicate** and **Renew** open the new
+  this one as it is saved, linked to it, and open it. **Duplicate** and **Renew** open the new
   quote's window over the quote, filled from it with the reference blank, a renewal with
   **is_renewal** ticked: key the new reference and **Create**; **Cancel** leaves the quote as
   it was. With changes to the quote not yet saved, the new quote is made and the app asks
   before leaving them; stay, and a message names the quote made. **Create alternative** makes the quote at once under the same reference as its
   next option (`ABC-1/2` from `ABC-1/1`);
   **Archive** takes it out of the lists (it opens read only until restored); **Copy link**.
-- **History**: the handover note, every revision (each opens as it was saved), what was done
-  to the quote, by whom and when, and the quotes it came from or that were made from it.
+- **History**: the handover note, the quotes it came from or that were made from it, and
+  what was done to the quote, by whom and when, with the reasons given for amending it.
 
-Beneath the bar are the revision, who saved it and when, the release that priced it, where
-the quote came from, and who it is with, which you can change. A quote saved on sheets a
-later release changed opens on the sheets it was keyed into, read only; **Move to current
-sheets** brings its values onto today's, naming any that no longer fit. If a colleague saves
-a quote while you have it open, your save is refused naming who did it, with your values
-kept: open the newest, or save yours as a new quote, keying its reference in the window
-filled from your values; it opens and prices as a duplicate does, and **Save** keeps its
-price. Values you have not saved are kept in
+Beneath the bar are who saved it and when, the release that priced it, where the quote came
+from, and who it is with, which you can change. A quote opens on the release's sheets; a row
+whose value a later release no longer allows is named as no longer fitting. If a colleague
+saves a quote while you have it open, your save is refused naming who did it, with your
+values kept: open the newest, or save yours as a new quote, keying its reference in the
+window filled from your values; it opens and prices as a duplicate does, and **Save** keeps
+its price. If your save's answer was lost and a colleague saved the quote after it landed,
+the app says your save was made and offers the newest. Values you have not saved are kept in
 the browser and offered back when you open the quote again, and leaving with them asks
 first. `Ctrl+S` saves.

@@ -2,14 +2,19 @@
 the quotes it keeps in its quote store, mounted by ``haute._workbench_app.create_app`` when
 the app has a store.
 
-A quote's details are the row of the sheets' ``quote_details`` table, which the app keeps in
-the store's typed table: the app sets the reference, the stage, who the quote is with and
-whether it is archived, over whatever a page sends, before the quote is priced. A save names
-the sheets' revision and the release the page was drawn for, and either saves the quote
-unpriced or prices it again here, keeping this pricing and saying whether it moved from what
-the page showed. Every change names the revision of the quote it was made on. The store's
-refusals answer as the app's: a quote it does not keep 404, a quote moved on 409 with the
-quote as it is now, a quote that does not take the change 409, anything else it refuses 422.
+A quote is named by its reference and option, ``/api/app/quotes/{reference}/{option}``, the
+reference URL-encoded. Its details are the row of the sheets' ``quote_details`` table: the
+app sets the reference, the stage, who the quote is with and the rest of
+``QUOTE_DETAILS_MANAGED`` over whatever a page sends, before the quote is priced. A creation
+and a save are first looked up by their operation key, so one repeated after its answer was
+lost is answered with what it wrote; then they name the sheets' revision and the release the
+page was drawn for. A creation makes the quote unpriced; a save either saves it unpriced or
+prices it again here, keeping this pricing and saying whether it moved from what the page
+showed. Every other change names the version of the quote it was made on. The store's
+refusals answer as the app's: a quote it does not keep 404; a quote moved on 409 with the
+quote as it is now; a quote that does not take the change, one not ready to be marked final,
+a repeated save superseded and a reference held 409; values not of their columns' types, and
+anything else it refuses, 422.
 """
 
 from __future__ import annotations
@@ -23,22 +28,28 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ValidationError
 from starlette.concurrency import run_in_threadpool
 
+from haute._json_safe import to_json_safe
 from haute._quote_store import (
     AppQuote,
+    OpenQuote,
+    PricedOutputs,
     QuoteBook,
     QuoteLockedError,
     QuoteNotFoundError,
-    QuoteRevision,
+    QuoteNotReadyError,
     QuoteStoreError,
+    QuoteValuesError,
     ReferenceTakenError,
+    RelatedQuote,
     Source,
     StaleQuoteError,
-    carry_values,
-    details_of,
-    open_store,
-    with_details,
+    WriteSupersededError,
+    as_written,
+    identity_label,
+    input_rows,
 )
-from haute._quote_store._book import MAX_PAGE_SIZE, PAGE_SIZE, identity_label
+from haute._quote_store._book import MAX_PAGE_SIZE, PAGE_SIZE
+from haute._workbench_app import Pricing
 from haute._workbench_form import QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, FormSpec
 from haute._workbench_tables import (
     IDENTITY_SHAPE,
@@ -55,22 +66,17 @@ from haute.deploy._request_limits import (
 )
 from haute.deploy._validators import response_changes
 from haute.schemas import (
-    WorkbenchAppCarryResponse,
     WorkbenchAppPeopleResponse,
     WorkbenchAppQuote,
+    WorkbenchAppQuoteActivityEntry,
+    WorkbenchAppQuoteActivityResponse,
+    WorkbenchAppQuoteAmend,
     WorkbenchAppQuoteAssign,
     WorkbenchAppQuoteChange,
     WorkbenchAppQuoteChangeResponse,
     WorkbenchAppQuoteCreateRequest,
-    WorkbenchAppQuoteEvent,
-    WorkbenchAppQuoteFinal,
-    WorkbenchAppQuoteHistoryResponse,
     WorkbenchAppQuoteNote,
-    WorkbenchAppQuoteReopen,
     WorkbenchAppQuoteResponse,
-    WorkbenchAppQuoteReviseRequest,
-    WorkbenchAppQuoteRevision,
-    WorkbenchAppQuoteRevisionSummary,
     WorkbenchAppQuoteSaveRequest,
     WorkbenchAppQuotesResponse,
     WorkbenchAppRelatedQuote,
@@ -85,9 +91,12 @@ M = TypeVar("M", bound=BaseModel)
 #: a pricing that differs only in a float's last bits has not moved.
 PRICE_TOLERANCE = 1e-9
 
-#: Prices a quote's values through the release's pipeline: its output tables by name and
-#: the request priced, or an HTTP error saying why not.
-Pricer = Callable[[WorkbenchValues], Awaitable[tuple[WorkbenchPricedTables, dict[str, Any]]]]
+#: Prices a quote's values through the release's pipeline, or raises an HTTP error saying
+#: why not.
+Pricer = Callable[[WorkbenchValues], Awaitable[Pricing]]
+
+#: The quote_details cells the app sets, by table and column id: no typing.
+_APP_SET_CELLS = frozenset((QUOTE_DETAILS_ID, column_id) for column_id in QUOTE_DETAILS_MANAGED)
 
 
 @dataclass(frozen=True)
@@ -102,20 +111,14 @@ class QuoteApp:
     price: Pricer
 
 
-def open_book(url: str, *, haute_version: str) -> QuoteBook:
-    """The book of the store at *url*, which must be migrated, written by an app running
-    Haute *haute_version*."""
-    return QuoteBook(open_store(url), haute_version=haute_version)
-
-
 def _iso(moment: Any) -> str | None:
     return None if moment is None else moment.isoformat()
 
 
 def quote_model(quote: AppQuote) -> WorkbenchAppQuote:
     """An app quote as the routes answer it."""
+    source = quote.source
     return WorkbenchAppQuote(
-        id=quote.id,
         reference=quote.reference,
         option=quote.option,
         label=quote.label,
@@ -124,15 +127,11 @@ def quote_model(quote: AppQuote) -> WorkbenchAppQuote:
         stage=quote.stage,
         assignee=quote.assignee,
         archived=quote.archived,
-        owner=quote.owner,
-        created_at=quote.created_at.isoformat(),
-        latest=quote.latest,
-        release=quote.release,
-        form_revision=quote.form_revision,
+        version=quote.version,
+        saved_at=quote.saved_at.isoformat(),
+        saved_by=quote.saved_by,
         priced=quote.priced,
-        last_saved_by=quote.last_saved_by,
-        last_saved_at=quote.last_saved_at.isoformat(),
-        final_revision=quote.final_revision,
+        priced_release=quote.priced_release,
         final_by=quote.final_by,
         final_at=_iso(quote.final_at),
         archived_by=quote.archived_by,
@@ -140,29 +139,10 @@ def quote_model(quote: AppQuote) -> WorkbenchAppQuote:
         note=quote.note,
         note_by=quote.note_by,
         note_at=_iso(quote.note_at),
-        source_quote_id=quote.source_quote_id,
-        source_reference=quote.source_reference,
-        source_option=quote.source_option,
-        source_label=(
-            None
-            if quote.source_reference is None or quote.source_option is None
-            else identity_label(quote.source_reference, quote.source_option)
-        ),
-        source_revision=quote.source_revision,
-        relation=quote.relation,
-    )
-
-
-def _revision_model(revision: QuoteRevision) -> WorkbenchAppQuoteRevision:
-    return WorkbenchAppQuoteRevision(
-        number=revision.number,
-        values=revision.inputs,
-        tables=revision.response,
-        request=revision.request,
-        release=revision.release,
-        form_revision=revision.form_revision,
-        saved_by=revision.saved_by,
-        saved_at=revision.saved_at.isoformat(),
+        source_reference=None if source is None else source.reference,
+        source_option=None if source is None else source.option,
+        source_label=None if source is None else identity_label(source.reference, source.option),
+        relation=None if source is None else source.relation,
     )
 
 
@@ -172,21 +152,37 @@ def _refusal(status: int, exc: QuoteStoreError, **extra: Any) -> HTTPException:
     )
 
 
-async def _call(app: QuoteApp, work: Callable[[], T], quote_id: str | None = None) -> T:
-    """*work* on a worker thread, the store's refusals answered as the app's."""
+async def _call(app: QuoteApp, work: Callable[[], T], identity: tuple[str, int] | None = None) -> T:
+    """*work* on a worker thread, the store's refusals answered as the app's; a quote moved on
+    with the quote *identity* names as it is now."""
     try:
         return await run_in_threadpool(work)
     except QuoteNotFoundError as exc:
         raise _refusal(404, exc) from None
     except StaleQuoteError as exc:
         current = None
-        if quote_id is not None:
-            current = quote_model(await run_in_threadpool(app.book.get, quote_id)).model_dump()
+        if identity is not None:
+            current = quote_model(await run_in_threadpool(app.book.get, *identity)).model_dump()
         raise _refusal(409, exc, quote=current) from None
+    except QuoteNotReadyError as exc:
+        raise _refusal(409, exc, missing=exc.missing) from None
+    except WriteSupersededError as exc:
+        raise _refusal(
+            409,
+            exc,
+            landed_at=exc.landed_at.isoformat(),
+            changed_by=exc.changed_by,
+            changed_at=exc.changed_at.isoformat(),
+        ) from None
     except QuoteLockedError as exc:
         raise _refusal(409, exc) from None
     except ReferenceTakenError as exc:
-        raise _refusal(409, exc, quote_id=exc.quote_id, label=exc.label) from None
+        raise _refusal(
+            409, exc, reference=exc.reference, option=exc.option, label=exc.label
+        ) from None
+    except QuoteValuesError as exc:
+        cells = [{"table": c.table, "row": c.row, "column": c.column} for c in exc.cells]
+        raise _refusal(422, exc, cells=cells) from None
     except QuoteStoreError as exc:
         raise _refusal(422, exc) from None
 
@@ -225,58 +221,28 @@ async def _body(http: Request, model: type[M]) -> M:
         raise RequestValidationError(exc.errors()) from None
 
 
-@dataclass(frozen=True)
-class _Prepared:
-    """A save as it is kept: the values with the app's details over them, the request priced
-    and its prices (none unpriced)."""
-
-    values: WorkbenchValues
-    request: dict[str, Any]
-    tables: WorkbenchPricedTables | None
-
-
-async def _prepared(
-    app: QuoteApp,
-    body: WorkbenchAppQuoteSaveRequest,
-    managed: dict[str, Any],
-    *,
-    creating: bool = False,
-) -> _Prepared:
-    """*body*'s save made ready: refused (409) for another sheets' revision or release; its
-    details' app columns set to *managed*; refused (422) with nothing typed, unless
-    *creating*, as the app makes a quote, holding its starting values, when the underwriter
-    asks for it; unpriced, or priced again here."""
+def _drawn_for(
+    app: QuoteApp, body: WorkbenchAppQuoteCreateRequest | WorkbenchAppQuoteSaveRequest
+) -> None:
+    """Refuse (409) a write from a page drawn for another release or other sheets."""
     if body.form_revision != app.form_revision or body.release != app.release_id:
         raise HTTPException(
             409,
             "This page was drawn for another release of the app: reload it to save on this one.",
         )
-    # The details the app sets are its own, whatever the page sent, which is not read; the
-    # sheets show what they show by the app's as by any value, but those are not typing, and
-    # nothing the underwriter typed is nothing to save.
-    page = _without_app_details(body.values)
-    values = with_details(page, {**details_of(page), **managed})
-    if not creating and not quote_request(app.form, values, untyped=_APP_SET_CELLS):
-        raise HTTPException(422, "Type the quote first")
-    if body.shown is None:
-        return _Prepared(values, quote_request(app.form, values), None)
-    tables, request = await app.price(values)
-    return _Prepared(values, request, tables)
 
 
-def _moved(form: FormSpec, revision: QuoteRevision, shown: WorkbenchPricedTables | None) -> bool:
-    """Whether the prices *revision* keeps moved from those the page *shown*: a save's, or,
-    for a save repeated with its key, those its first write kept. The quote's reference and
-    option are no price: a page priced under another quote's, saved as a new quote, has not
-    moved."""
-    if shown is None or revision.response is None:
+def _moved(
+    form: FormSpec, kept: WorkbenchPricedTables | None, shown: WorkbenchPricedTables | None
+) -> bool:
+    """Whether the prices *kept*, a save's, moved from those the page *shown*. The quote's
+    reference and option are no price: a page priced under another quote's has not moved."""
+    if shown is None or kept is None:
         return False
     carrying = {table.name for table in output_tables(form) if carries_identity(table)}
     return bool(
         response_changes(
-            _without_identity(revision.response, carrying),
-            _without_identity(shown, carrying),
-            PRICE_TOLERANCE,
+            _without_identity(kept, carrying), _without_identity(shown, carrying), PRICE_TOLERANCE
         )
     )
 
@@ -300,43 +266,10 @@ def _without_identity(tables: Any, carrying: set[str]) -> Any:
     }
 
 
-def _required_left(form: FormSpec, values: dict[str, Any]) -> None:
-    """Refuse a new quote made in the window with a column of quote_details the underwriter
-    types, and the analyst made required, left empty: text of spaces alone is empty, and a
-    tick box, ticked or not, never is. An entry requirement of the window alone: a save, and
-    an alternative made at once, keep a quote its rules mark."""
-    details = next(
-        (table for table in form.data_schema.tables if table.id == QUOTE_DETAILS_ID), None
+def _related(quote: RelatedQuote) -> WorkbenchAppRelatedQuote:
+    return WorkbenchAppRelatedQuote(
+        reference=quote.reference, option=quote.option, label=quote.label, relation=quote.relation
     )
-    if details is None:
-        return
-    rows = values.get(QUOTE_DETAILS_ID) or []
-    row = rows[0] if rows else {}
-    for column in details.columns:
-        if not column.required or column.id in QUOTE_DETAILS_MANAGED or column.type == "bool":
-            continue
-        cell = row.get(column.id)
-        if cell is None or (isinstance(cell, str) and not cell.strip()):
-            raise QuoteStoreError(
-                f"{column.label or column.name} is required: fill it in to make the quote."
-            )
-
-
-#: The quote_details cells the app sets, by table and column id: no typing.
-_APP_SET_CELLS = frozenset((QUOTE_DETAILS_ID, column_id) for column_id in QUOTE_DETAILS_MANAGED)
-
-
-def _without_app_details(values: dict[str, Any]) -> dict[str, Any]:
-    """*values* without the quote_details columns the app sets (`QUOTE_DETAILS_MANAGED`): a
-    reference, stage, assignee and archived flag belong to the quote that has them."""
-    rows = values.get(QUOTE_DETAILS_ID)
-    if rows is None:
-        return values
-    typed = [
-        {column: value for column, value in row.items() if column not in QUOTE_DETAILS_MANAGED}
-        for row in rows
-    ]
-    return {**values, QUOTE_DETAILS_ID: typed}
 
 
 def quote_router(app: QuoteApp) -> APIRouter:
@@ -345,21 +278,24 @@ def quote_router(app: QuoteApp) -> APIRouter:
     router = APIRouter(prefix="/api/app")
 
     def answer(
-        quote: AppQuote, revision: QuoteRevision, *, moved: bool = False
+        opened: OpenQuote, shown: WorkbenchPricedTables | None = None
     ) -> WorkbenchAppQuoteResponse:
-        """*quote* with *revision*, the sheets it was keyed into when not the release's."""
-        form = None
-        if revision.form_revision != app.form_revision:
-            form = book.store.form(revision.form_revision)
+        """*opened* as the routes answer it, with the request its values price as and, for a
+        save, whether its prices moved from those the page *shown*."""
         return WorkbenchAppQuoteResponse(
-            quote=quote_model(quote), revision=_revision_model(revision), form=form, moved=moved
+            quote=quote_model(opened.quote),
+            values=opened.values,
+            tables=opened.outputs,
+            request=to_json_safe(quote_request(app.form, opened.values)),
+            dropped=opened.dropped,
+            moved=_moved(app.form, opened.outputs, shown),
         )
 
     @router.get("/quotes", response_model=WorkbenchAppQuotesResponse)
     async def list_quotes(
         http: Request,
         view: Literal["mine", "team", "archived"] = "mine",
-        stage: Literal["draft", "priced", "final"] | None = None,
+        stage: Literal["draft", "final"] | None = None,
         search: str = Query(default="", max_length=200),
         assignee: str | None = Query(default=None, max_length=320),
         sort: Literal["saved", "reference", "insured"] = "saved",
@@ -386,147 +322,97 @@ def quote_router(app: QuoteApp) -> APIRouter:
             counts=page.counts,
         )
 
-    def saved(quote: AppQuote, shown: WorkbenchPricedTables | None) -> WorkbenchAppQuoteResponse:
-        """A save's answer: *quote* as the save left it, with the revision it wrote, read by
-        its number, and whether its prices moved from those the page *shown*."""
-        revision = book.revision(quote.id, quote.latest)
-        return answer(quote, revision, moved=_moved(app.form, revision, shown))
-
-    async def replayed(
-        body: WorkbenchAppQuoteSaveRequest, actor: str, quote_id: str | None
-    ) -> WorkbenchAppQuoteResponse | None:
-        """A save repeated with its key after its answer was lost: what that key wrote, with
-        nothing priced or written again; None for a key not written."""
-
-        def read() -> WorkbenchAppQuoteResponse | None:
-            quote = book.replayed(body.operation, actor, quote_id)
-            return None if quote is None else saved(quote, body.shown)
-
-        return await _call(app, read, quote_id)
-
     @router.post("/quotes", response_model=WorkbenchAppQuoteResponse)
     async def create_quote(http: Request) -> WorkbenchAppQuoteResponse:
         actor = _editor(http)
         body = await _body(http, WorkbenchAppQuoteCreateRequest)
-        # A quote's reference and option are taken as it is written, and its pricing reads
-        # them: it is made unpriced, and priced as it opens.
-        if body.shown is not None:
-            raise HTTPException(422, "A new quote is made unpriced: it is priced as it opens.")
-        replay = await replayed(body, actor, None)
+        # A creation repeated with its key answers the quote it made, whichever release the
+        # page was drawn for.
+        replay = await _call(app, lambda: book.replayed(body.operation, actor, "created"))
         if replay is not None:
-            return replay
-        # A quote but an alternative is made in the window, keyed there: its reference and
-        # its required details are asked for.
-        if body.source is None or body.source.relation != "alternative":
-            await _call(app, lambda: _required_left(app.form, body.values))
-        at = book.now()
-        managed = book.managed(None, priced=False, at=at, actor=actor)
-        ready = await _prepared(app, body, managed, creating=True)
+            return answer(replay)
+        _drawn_for(app, body)
         source = (
             None
             if body.source is None
-            else Source(body.source.quote_id, body.source.revision, body.source.relation)
+            else Source(body.source.reference, body.source.option, body.source.relation)
         )
-
-        def create() -> WorkbenchAppQuoteResponse:
-            quote = book.create(
+        made = await _call(
+            app,
+            lambda: book.create(
                 operation=body.operation,
                 actor=actor,
-                form=app.form,
-                inputs=ready.values,
-                request=ready.request,
-                response=ready.tables,
-                release=None if ready.tables is None else app.release_id,
-                at=at,
+                values=body.values,
+                at=book.now(),
                 reference=body.reference,
                 source=source,
-            )
-            return saved(quote, body.shown)
+            ),
+        )
+        return answer(made)
 
-        return await _call(app, create)
+    @router.get("/quotes/{reference}/{option}", response_model=WorkbenchAppQuoteResponse)
+    async def open_quote(reference: str, option: int) -> WorkbenchAppQuoteResponse:
+        return answer(await _call(app, lambda: book.read(reference, option)))
 
-    @router.get("/quotes/{quote_id}", response_model=WorkbenchAppQuoteResponse)
-    async def open_quote(quote_id: str) -> WorkbenchAppQuoteResponse:
-        def read() -> WorkbenchAppQuoteResponse:
-            quote = book.get(quote_id)
-            return answer(quote, book.revision(quote_id, quote.latest))
-
-        return await _call(app, read)
-
-    @router.get("/quotes/{quote_id}/revisions/{number}", response_model=WorkbenchAppQuoteResponse)
-    async def open_revision(quote_id: str, number: int) -> WorkbenchAppQuoteResponse:
-        def read() -> WorkbenchAppQuoteResponse:
-            return answer(book.get(quote_id), book.revision(quote_id, number))
-
-        return await _call(app, read)
-
-    @router.get(
-        "/quotes/{quote_id}/revisions/{number}/carry", response_model=WorkbenchAppCarryResponse
-    )
-    async def carry(quote_id: str, number: int, details: bool = False) -> WorkbenchAppCarryResponse:
-        """Revision *number*'s values on this release's sheets: for a quote made from it,
-        without the details the app sets, which are the source's and not the new quote's;
-        with them only when *details* asks, the same quote carried onto newer sheets."""
-
-        def read() -> WorkbenchAppCarryResponse:
-            revision = book.revision(quote_id, number)
-            saved = book.store.form(revision.form_revision)
-            carried = carry_values(revision.inputs, saved, app.form)
-            values = carried.values if details else _without_app_details(carried.values)
-            return WorkbenchAppCarryResponse(values=values, dropped=carried.dropped)
-
-        return await _call(app, read)
-
-    @router.post("/quotes/{quote_id}/revisions", response_model=WorkbenchAppQuoteResponse)
-    async def save_quote(quote_id: str, http: Request) -> WorkbenchAppQuoteResponse:
+    @router.post("/quotes/{reference}/{option}/save", response_model=WorkbenchAppQuoteResponse)
+    async def save_quote(reference: str, option: int, http: Request) -> WorkbenchAppQuoteResponse:
         actor = _editor(http)
-        body = await _body(http, WorkbenchAppQuoteReviseRequest)
-        replay = await replayed(body, actor, quote_id)
+        body = await _body(http, WorkbenchAppQuoteSaveRequest)
+        identity = (reference, option)
+        # A save repeated with its key after its answer was lost is answered with what that key
+        # wrote, nothing priced or written again, whichever release the page was drawn for.
+        replay = await _call(
+            app, lambda: book.replayed(body.operation, actor, "saved", reference, option), identity
+        )
         if replay is not None:
-            return replay
-        current = await _call(app, lambda: book.get(quote_id))
-        # One instant stamps the save: the request priced, the revision and its details.
+            return answer(replay, body.shown)
+        _drawn_for(app, body)
+        current = await _call(app, lambda: book.get(reference, option))
+        # One instant stamps the save: the request priced and the rows written.
         at = book.now()
-        managed = book.managed(current, priced=body.shown is not None, at=at, actor=actor)
-        ready = await _prepared(app, body, managed)
-
-        def save() -> WorkbenchAppQuoteResponse:
-            quote = book.save(
-                quote_id,
+        values = as_written(body.values, book.managed(current, at=at, actor=actor))
+        # The details the app sets show on the sheets as any value does, but are no typing.
+        if not quote_request(app.form, values, untyped=_APP_SET_CELLS):
+            raise HTTPException(422, "Type the quote first")
+        priced = None
+        if body.shown is not None:
+            # A value not of its column's type refuses the save before it is priced, naming each.
+            await _call(app, lambda: input_rows(app.form, values, identity))
+            pricing = await app.price(values)
+            priced = PricedOutputs(app.release_id, pricing.document)
+        saved = await _call(
+            app,
+            lambda: book.save(
+                reference,
+                option,
                 operation=body.operation,
                 version=body.version,
                 actor=actor,
-                form=app.form,
-                inputs=ready.values,
-                request=ready.request,
-                response=ready.tables,
-                release=None if ready.tables is None else app.release_id,
+                values=body.values,
+                priced=priced,
                 at=at,
-            )
-            return saved(quote, body.shown)
-
-        return await _call(app, save, quote_id)
+            ),
+            identity,
+        )
+        return answer(saved, body.shown)
 
     def change(
         path: str,
         model: type[WorkbenchAppQuoteChange],
-        apply: Callable[[str, Any, str], AppQuote],
+        apply: Callable[[str, int, Any, str], AppQuote],
     ) -> None:
-        async def route(quote_id: str, http: Request) -> WorkbenchAppQuoteChangeResponse:
+        async def route(
+            reference: str, option: int, http: Request
+        ) -> WorkbenchAppQuoteChangeResponse:
             actor = _editor(http)
             body = await _body(http, model)
-
-            def made() -> WorkbenchAppQuoteChangeResponse:
-                quote = apply(quote_id, body, actor)
-                revision = book.revision(quote_id, quote.latest)
-                return WorkbenchAppQuoteChangeResponse(
-                    quote=quote_model(quote), revision=_revision_model(revision)
-                )
-
-            return await _call(app, made, quote_id)
+            quote = await _call(
+                app, lambda: apply(reference, option, body, actor), (reference, option)
+            )
+            return WorkbenchAppQuoteChangeResponse(quote=quote_model(quote))
 
         router.add_api_route(
-            f"/quotes/{{quote_id}}/{path}",
+            f"/quotes/{{reference}}/{{option}}/{path}",
             route,
             methods=["POST"],
             response_model=WorkbenchAppQuoteChangeResponse,
@@ -536,78 +422,61 @@ def quote_router(app: QuoteApp) -> APIRouter:
     change(
         "assignee",
         WorkbenchAppQuoteAssign,
-        lambda q, b, a: book.assign(q, version=b.version, actor=a, assignee=b.assignee),
+        lambda r, o, b, a: book.assign(r, o, version=b.version, actor=a, assignee=b.assignee),
     )
     change(
         "archive",
         WorkbenchAppQuoteChange,
-        lambda q, b, a: book.archive(q, version=b.version, actor=a),
+        lambda r, o, b, a: book.archive(r, o, version=b.version, actor=a),
     )
     change(
         "restore",
         WorkbenchAppQuoteChange,
-        lambda q, b, a: book.restore(q, version=b.version, actor=a),
+        lambda r, o, b, a: book.restore(r, o, version=b.version, actor=a),
     )
     change(
         "final",
-        WorkbenchAppQuoteFinal,
-        lambda q, b, a: book.finalise(
-            q, version=b.version, actor=a, revision=b.revision, release=app.release_id
-        ),
+        WorkbenchAppQuoteChange,
+        lambda r, o, b, a: book.finalise(r, o, version=b.version, actor=a, release=app.release_id),
     )
     change(
-        "reopen",
-        WorkbenchAppQuoteReopen,
-        lambda q, b, a: book.reopen(q, version=b.version, actor=a, reason=b.reason),
+        "amend",
+        WorkbenchAppQuoteAmend,
+        lambda r, o, b, a: book.amend(r, o, version=b.version, actor=a, reason=b.reason),
     )
 
-    @router.post("/quotes/{quote_id}/note", response_model=WorkbenchAppQuoteChangeResponse)
-    async def note(quote_id: str, http: Request) -> WorkbenchAppQuoteChangeResponse:
+    @router.post(
+        "/quotes/{reference}/{option}/note", response_model=WorkbenchAppQuoteChangeResponse
+    )
+    async def note(reference: str, option: int, http: Request) -> WorkbenchAppQuoteChangeResponse:
         actor = _editor(http)
         body = await _body(http, WorkbenchAppQuoteNote)
-        quote = await _call(app, lambda: book.set_note(quote_id, actor=actor, note=body.note))
+        quote = await _call(
+            app, lambda: book.set_note(reference, option, actor=actor, note=body.note)
+        )
         return WorkbenchAppQuoteChangeResponse(quote=quote_model(quote))
 
-    @router.get("/quotes/{quote_id}/history", response_model=WorkbenchAppQuoteHistoryResponse)
-    async def history(quote_id: str) -> WorkbenchAppQuoteHistoryResponse:
-        timeline = await _call(app, lambda: book.timeline(quote_id))
-
-        def related(each: Any) -> WorkbenchAppRelatedQuote:
-            return WorkbenchAppRelatedQuote(
-                id=each.id,
-                reference=each.reference,
-                option=each.option,
-                label=identity_label(each.reference, each.option),
-                relation=each.relation,
-                revision=each.revision,
-            )
-
-        return WorkbenchAppQuoteHistoryResponse(
-            revisions=[
-                WorkbenchAppQuoteRevisionSummary(
-                    number=r.number,
-                    saved_by=r.saved_by,
-                    saved_at=r.saved_at.isoformat(),
-                    priced=r.priced,
-                    release=r.release,
-                    form_revision=r.form_revision,
-                    stage=r.stage,
+    @router.get(
+        "/quotes/{reference}/{option}/activity", response_model=WorkbenchAppQuoteActivityResponse
+    )
+    async def activity(reference: str, option: int) -> WorkbenchAppQuoteActivityResponse:
+        done = await _call(app, lambda: book.activity(reference, option))
+        return WorkbenchAppQuoteActivityResponse(
+            entries=[
+                WorkbenchAppQuoteActivityEntry(
+                    action=entry.action,
+                    actor=entry.actor,
+                    at=entry.at.isoformat(),
+                    version=entry.version,
+                    assignee=entry.assignee,
+                    note=entry.note,
+                    reason=entry.reason,
+                    priced_release=entry.priced_release,
                 )
-                for r in timeline.revisions
+                for entry in done.entries
             ],
-            events=[
-                WorkbenchAppQuoteEvent(
-                    id=e.id,
-                    at=e.at.isoformat(),
-                    actor=e.actor,
-                    kind=e.kind,
-                    revision=e.revision,
-                    detail=e.detail,
-                )
-                for e in timeline.events
-            ],
-            source=None if timeline.source is None else related(timeline.source),
-            derived=[related(r) for r in timeline.derived],
+            source=None if done.source is None else _related(done.source),
+            derived=[_related(quote) for quote in done.derived],
         )
 
     @router.get("/people", response_model=WorkbenchAppPeopleResponse)

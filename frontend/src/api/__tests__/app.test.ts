@@ -7,23 +7,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { answer, changed } from "../../app/__tests__/fixtures"
 import {
   validateWorkbenchAppPriceRequest,
+  validateWorkbenchAppQuoteAmend,
   validateWorkbenchAppQuoteAssign,
   validateWorkbenchAppQuoteChange,
   validateWorkbenchAppQuoteCreateRequest,
-  validateWorkbenchAppQuoteFinal,
   validateWorkbenchAppQuoteNote,
-  validateWorkbenchAppQuoteReopen,
-  validateWorkbenchAppQuoteReviseRequest,
+  validateWorkbenchAppQuoteSaveRequest,
 } from "../../generated/api-contracts.workbench-app-requests.validators.mjs"
-import { carryAppQuote, changeAppQuote, createAppQuote, priceAppQuote, saveAppQuote, type QuoteSave } from "../app"
+import { changeAppQuote, createAppQuote, fetchAppQuoteActivity, openAppQuote, priceAppQuote, saveAppQuote, type QuoteCreation, type QuoteSave } from "../app"
 
-const SAVE: QuoteSave = {
+const CREATION: QuoteCreation = {
   operation: "save-0123456789",
   form_revision: "rev-9",
   release: "rel-1",
   values: { policy: [{ "policy.state": "NY" }] },
-  shown: { premiums: [{ item: "Crane", premium: 120 }] },
 }
+const SAVE: QuoteSave = { ...CREATION, shown: { premiums: [{ item: "Crane", premium: 120 }] } }
 
 let fetchMock: ReturnType<typeof vi.fn>
 
@@ -34,7 +33,7 @@ const answering = (body: unknown) =>
 function sent(): { method: string; url: string; body: unknown } {
   expect(fetchMock).toHaveBeenCalledTimes(1)
   const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-  return { method: init.method ?? "GET", url, body: JSON.parse(String(init.body)) }
+  return { method: init.method ?? "GET", url, body: init.body === undefined ? undefined : JSON.parse(String(init.body)) }
 }
 
 describe("the app's quote routes on the wire", () => {
@@ -56,36 +55,36 @@ describe("the app's quote routes on the wire", () => {
     expect(body).toEqual({ form_revision: "rev-9", release: "rel-1", values: SAVE.values })
   })
 
-  it("creates a quote with its operation key, values, prices shown, source and the reference keyed", async () => {
+  it("creates a quote, unpriced, with its operation key, values, source and the reference keyed", async () => {
     answering(answer())
 
-    await createAppQuote(SAVE, { quote_id: "q0", revision: 2, relation: "renewal" }, "ABC-1")
+    await createAppQuote(CREATION, { reference: "Q 0", option: 2, relation: "renewal" }, "ABC-1")
 
     const { method, url, body } = sent()
     expect([method, url]).toEqual(["POST", "/api/app/quotes"])
     expect(validateWorkbenchAppQuoteCreateRequest(body)).toBe(true)
-    expect(body).toEqual({ ...SAVE, source: { quote_id: "q0", revision: 2, relation: "renewal" }, reference: "ABC-1" })
+    expect(body).toEqual({ ...CREATION, source: { reference: "Q 0", option: 2, relation: "renewal" }, reference: "ABC-1" })
   })
 
-  it("carries a revision without the app's details for a quote made from it, and with them for the same quote", async () => {
-    answering({ values: {}, dropped: [] })
-    await carryAppQuote("q 1", 2)
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/app/quotes/q%201/revisions/2/carry")
+  it("opens a quote, and reads its activity, by its reference encoded and its option", async () => {
+    answering(answer())
+    await openAppQuote("Q 1/x?#", 2)
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/app/quotes/Q%201%2Fx%3F%23/2")
 
     fetchMock.mockClear()
-    answering({ values: {}, dropped: [] })
-    await carryAppQuote("q 1", 2, true)
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/app/quotes/q%201/revisions/2/carry?details=true")
+    answering({ entries: [], source: null, derived: [] })
+    await fetchAppQuoteActivity("Q 1", 2)
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/app/quotes/Q%201/2/activity")
   })
 
-  it("saves a quote's next revision over the version it names", async () => {
-    answering(answer({ latest: 3 }))
+  it("saves a quote over the version it names", async () => {
+    answering(answer({ version: 3 }))
 
-    await saveAppQuote("q 1", { ...SAVE, shown: null }, 2)
+    await saveAppQuote("Q 1", 2, { ...SAVE, shown: null }, 2)
 
     const { method, url, body } = sent()
-    expect([method, url]).toEqual(["POST", "/api/app/quotes/q%201/revisions"])
-    expect(validateWorkbenchAppQuoteReviseRequest(body)).toBe(true)
+    expect([method, url]).toEqual(["POST", "/api/app/quotes/Q%201/2/save"])
+    expect(validateWorkbenchAppQuoteSaveRequest(body)).toBe(true)
     expect(body).toEqual({ ...SAVE, shown: null, version: 2 })
   })
 
@@ -93,17 +92,17 @@ describe("the app's quote routes on the wire", () => {
     ["assignee", { assignee: "jo@example.com" }, validateWorkbenchAppQuoteAssign, { version: 4, assignee: "jo@example.com" }],
     ["archive", {}, validateWorkbenchAppQuoteChange, { version: 4 }],
     ["restore", {}, validateWorkbenchAppQuoteChange, { version: 4 }],
-    ["final", { revision: 4 }, validateWorkbenchAppQuoteFinal, { version: 4, revision: 4 }],
-    ["reopen", { reason: "Broker asked" }, validateWorkbenchAppQuoteReopen, { version: 4, reason: "Broker asked" }],
-    // A note is no revision, so it names none.
+    ["final", {}, validateWorkbenchAppQuoteChange, { version: 4 }],
+    ["amend", { reason: "Broker asked" }, validateWorkbenchAppQuoteAmend, { version: 4, reason: "Broker asked" }],
+    // A note moves no version, so it names none.
     ["note", { note: "Call the broker" }, validateWorkbenchAppQuoteNote, { note: "Call the broker" }],
   ] as const)("sends the %s change the body its route reads", async (change, fields, validate, expected) => {
-    answering(changed({ latest: 5 }))
+    answering(changed({ version: 5 }))
 
-    await changeAppQuote("q1", change, 4, fields)
+    await changeAppQuote("ABC-1", 2, change, 4, fields)
 
     const { method, url, body } = sent()
-    expect([method, url]).toEqual(["POST", `/api/app/quotes/q1/${change}`])
+    expect([method, url]).toEqual(["POST", `/api/app/quotes/ABC-1/2/${change}`])
     expect(validate(body)).toBe(true)
     expect(body).toEqual(expected)
   })

@@ -116,11 +116,17 @@ Out of scope, owned elsewhere:
   under `.haute/app/release` and serves the underwriter app on `127.0.0.1` alone (port
   8001 by default), every request signed in as the analyst's git identity, able to
   change quotes unless `--reader` signs it in as one who reads them; without an identity
-  it refuses to start. It keeps the quotes saved in it in `.haute/app/quotes.sqlite`,
-  migrated as it starts, which a rebuild leaves as it is.
-- `haute app migrate [--url URL]` brings the underwriter app's quote store, at `URL` or
-  else at `HAUTE_QUOTE_STORE_URL`, to the schema this Haute writes, before a release that
-  needs it starts; without either it names both and exits non-zero.
+  it refuses to start. It keeps the quotes saved in it in dev's quote store,
+  `.haute/app/store.sqlite`, which a rebuild leaves as it is: the form's own tables, built
+  from the release's form as it starts, each table the form has changed since built again,
+  its rows dropped and its name said.
+- `haute app migrate [--url URL] [--release DIR]` makes the underwriter app's quote store,
+  at `URL` or else at `HAUTE_QUOTE_STORE_URL`, hold the tables of the form of the release
+  built in `DIR` (`.haute/app/release` by default), before that release starts: a database
+  holding none takes them, one holding them already is left as it is, and one holding
+  another form's tables is refused, naming each that differs. Without a URL it names both
+  ways of giving one, and without a release built in `DIR` it names `haute app build`; each
+  exits non-zero.
 - `haute status [model_name] [--version-only]` looks up a model's latest version/stage in the MLflow
   Model Registry.
 - `haute impact [--sample] [--batch-size] [--endpoint-suffix]` scores a configured safety dataset,
@@ -247,24 +253,23 @@ Docker, or rejected build/push operations.
 
 ## Approved change contract — `haute app` and the quote store
 
-This section specifies how `haute app serve` and `haute app migrate` change as the underwriter
-app's quote store becomes the form's own tables; the [workbench
+This section specifies how `haute app migrate` changes as the underwriter app's quote store
+gains declared environments and a planner; the [workbench
 contract](../workbench/high-level.md#approved-change-contract--the-quote-store-as-the-forms-own-tables)
 owns that behaviour. Every record is unresolved until its roadmap package lands and folds it
 into Behaviour above, and the last package removes this section.
 
-- **Current limitation.** `haute app serve` keeps its quotes in `.haute/app/quotes.sqlite`,
-  migrated as it starts, and `haute app migrate [--url URL]` runs Haute's numbered migrations
-  on the store at `URL` or else at `HAUTE_QUOTE_STORE_URL`.
-- **Unresolved target.** `haute app serve` keeps dev's store in `.haute/app/store.sqlite`,
-  built from the project's form as it starts, every change applied and each table whose rows
-  it dropped named ([WB-10](../roadmap/workbench.md#wb-10--the-quote-store)).
-  `haute app migrate [--release DIR] --environment NAME [--plan [--base FORM]] [--sql]
-  [--restore-point NAME]` brings the named hosted environment's tables to the form of the
-  built release at `DIR` (`.haute/app/release` by default), reading its environments from that
-  release, or prints the plan, offline against `FORM` with `--base`, or prints it as SQL; a
-  hosted plan holding a step only a restore reverses is applied only given a restore point,
-  which dev never asks for
+- **Current limitation.** `haute app migrate [--url URL] [--release DIR]` makes an empty
+  database's tables, at `URL` or else at `HAUTE_QUOTE_STORE_URL`, and changes none, and
+  `haute app serve` builds again each table of dev's store that the form changed, its rows
+  dropped.
+- **Unresolved target.** `haute app migrate [--release DIR] --environment NAME [--plan
+  [--base FORM]] [--sql] [--restore-point NAME]` brings the named hosted environment's tables
+  to the form of the built release at `DIR` (`.haute/app/release` by default), reading its
+  environments from that release, or prints the plan, offline against `FORM` with `--base`,
+  or prints it as SQL; a hosted plan holding a step only a restore reverses is applied only
+  given a restore point, which dev never asks for, and `haute app serve` plans dev's changes
+  the same way
   ([WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments)). `--url`
   goes.
 - **Non-goals.** `haute app build` is unchanged but for the drivers its image installs
@@ -273,11 +278,9 @@ into Behaviour above, and the last package removes this section.
   naming each step it refuses, an environment the release does not declare, a location given
   twice or not at all, a database recorded for another project or environment, a table or
   column the form has that the database lacks, and a plan needing a restore point it was not
-  given. Nothing it
-  prints holds a connection URL, a server or database name, or a secret.
-- **Acceptance evidence.** The planner, environment and `haute app serve` scenarios of the
-  [workbench low-level
+  given. Nothing it prints holds a connection URL, a server or database name, or a secret.
+- **Acceptance evidence.** The planner and environment scenarios of the [workbench low-level
   contract](../workbench/low-level.md#approved-change-contract--the-quote-store-as-the-forms-own-tables).
-- **Roadmap package.** [WB-10](../roadmap/workbench.md#wb-10--the-quote-store),
+- **Roadmap package.**
   [WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments) and
   [WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql).

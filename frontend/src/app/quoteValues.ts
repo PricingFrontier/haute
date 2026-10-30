@@ -1,18 +1,19 @@
 /**
  * What the underwriter app works out of a quote's values (specs/workbench): whether two sets
- * of values are the same quote, the price a saved revision shows on the sheets, the
- * quote_details columns the Quotes page lists and how each value shows in them, a moment in
- * full, and the values kept in the browser until they are saved or discarded.
+ * of values are the same quote, the details the app sets on a quote's sheets, the price a
+ * saved quote shows on them, what the quote store's refusals name, the quote_details columns
+ * the Quotes page lists and how each value shows in them, a moment in full, what was done to a
+ * quote, and the values kept in the browser until they are saved or discarded.
  */
 import type { QuoteSave, QuoteSource } from "../api/app"
-import { apiErrorCode, apiErrorStatus } from "../api/errors"
-import type { FormSpec, SchemaColumn, WorkbenchAppQuote, WorkbenchAppQuoteEvent } from "../api/types"
+import { apiErrorCode, apiErrorRawDetail, apiErrorStatus } from "../api/errors"
+import type { FormSpec, SchemaColumn, WorkbenchAppQuote, WorkbenchAppQuoteActivityEntry, WorkbenchAppRelatedQuote } from "../api/types"
 import type { SamplePrice } from "../stores/useWorkbenchPricingStore"
 import { canonicalJson } from "../utils/canonicalJson"
 import { formatValue } from "../utils/formatValue"
 import { formattedNumber } from "../utils/sheetValues"
 import { basisOf, columnKey } from "../utils/sheetVisibility"
-import { QUOTE_DETAILS, QUOTE_DETAILS_ID, readableName, type QuoteDetailName, type SampleRow } from "../utils/workbenchForm"
+import { QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, readableName, type QuoteDetailName, type SampleRow } from "../utils/workbenchForm"
 
 export type Values = Record<string, SampleRow[]>
 
@@ -45,9 +46,6 @@ export function onSheets(form: FormSpec, values: Values): Values {
   return kept
 }
 
-/** A page drawn for another release than the one serving it: 409 without a code of the store's. */
-export const releaseMoved = (error: unknown): boolean => apiErrorStatus(error) === 409 && apiErrorCode(error) === null
-
 /** Where each value of `values` sits on `form`'s sheets, by `tableId:columnId`, named `table.column`. */
 export function cellPlaces(form: FormSpec, values: Values): Record<string, string> {
   const places: Record<string, string> = {}
@@ -75,7 +73,42 @@ export function lostPlaces(values: Values, kept: Values, places: Readonly<Record
   return [...lost]
 }
 
-/** The price a saved revision shows on `form`: its tables, for its values as they are. */
+// ── A quote's identity and the details the app sets ─────────────────────
+
+/** Whether `a` and `b` are one quote: the same reference, case included, and option. */
+export const sameQuote = (a: Pick<WorkbenchAppQuote, "reference" | "option">, b: Pick<WorkbenchAppQuote, "reference" | "option">): boolean =>
+  a.reference === b.reference && a.option === b.option
+
+/** `values` with the quote_details cells the app sets taken from `saved`, the rest as typed. */
+export function withAppDetails(values: Values, saved: Values): Values {
+  const pick = (row: SampleRow | undefined, set: boolean): SampleRow =>
+    Object.fromEntries(Object.entries(row ?? {}).filter(([id]) => QUOTE_DETAILS_MANAGED.has(id) === set))
+  const row = { ...pick(values[QUOTE_DETAILS_ID]?.[0], false), ...pick(saved[QUOTE_DETAILS_ID]?.[0], true) }
+  const others = Object.fromEntries(Object.entries(values).filter(([table]) => table !== QUOTE_DETAILS_ID))
+  return Object.keys(row).length === 0 ? others : { ...others, [QUOTE_DETAILS_ID]: [row] }
+}
+
+/** `values` without the quote_details cells the app sets: a quote's, which a quote made from it does not take. */
+export const withoutAppDetails = (values: Values): Values => withAppDetails(values, {})
+
+/**
+ * The quote_details cells the app sets, as the quote's `details` (its row by column name)
+ * hold them, for `form`'s sheets, as a save's values hold them: a whole number as its text, a
+ * date as its ISO text, a tick for true, and no cell for false or a blank. None on sheets
+ * without quote_details.
+ */
+export function appDetails(form: FormSpec, details: WorkbenchAppQuote["details"]): Values {
+  if (!form.schema.tables.some((table) => table.id === QUOTE_DETAILS_ID)) return {}
+  const row: SampleRow = {}
+  for (const [id, name] of QUOTE_DETAILS_COLUMNS) {
+    const value = details[name]
+    if (!QUOTE_DETAILS_MANAGED.has(id) || value === undefined || value === null || value === false || value === "") continue
+    row[id] = value === true ? true : String(value)
+  }
+  return { [QUOTE_DETAILS_ID]: [row] }
+}
+
+/** The price a saved quote shows on `form`: its tables, for its values as they are. */
 export function savedPrice(
   form: FormSpec,
   values: Values,
@@ -84,6 +117,54 @@ export function savedPrice(
 ): SamplePrice | null {
   if (tables === null || tables === undefined) return null
   return { basis: basisOf(form, values), tables, sample: request }
+}
+
+// ── The quote store's refusals ───────────────────────────────────────────
+
+/** A page drawn for another release than the one serving it: 409 without a code of the store's. */
+export const releaseMoved = (error: unknown): boolean => apiErrorStatus(error) === 409 && apiErrorCode(error) === null
+
+/**
+ * A write repeated under its operation key that landed, the quote changed since by someone
+ * else: it is done, and never sent again.
+ */
+export const writeSuperseded = (error: unknown): boolean => apiErrorCode(error) === "write_superseded"
+
+/** A misfit cell as the store names it: `table, column`, or `table row N, column` in a many-row table. */
+function misfitPlace(cell: unknown): string[] {
+  if (typeof cell !== "object" || cell === null) return []
+  const { table, row, column } = cell as { table?: unknown; row?: unknown; column?: unknown }
+  if (typeof table !== "string" || typeof column !== "string") return []
+  return [typeof row === "number" ? `${table} row ${row}, ${column}` : `${table}, ${column}`]
+}
+
+/** A save or a Mark final refused for what it names: each place, by the labels the sheets give it. */
+export interface Refusal {
+  of: "save" | "final"
+  places: string[]
+}
+
+/**
+ * The places a refusal names as stopping it: a save's values not of their columns' types
+ * (`quote_values_invalid`), or the required fields without a value that kept a quote from
+ * being marked final (`quote_not_ready`); null for any other, and for one naming none.
+ */
+export function refusalOf(error: unknown): Refusal | null {
+  const detail = apiErrorRawDetail(error)
+  const code = apiErrorCode(error)
+  const listed = (field: string): unknown[] => {
+    const value = detail?.[field]
+    return Array.isArray(value) ? value : []
+  }
+  if (code === "quote_values_invalid") {
+    const places = listed("cells").flatMap(misfitPlace)
+    return places.length === 0 ? null : { of: "save", places }
+  }
+  if (code === "quote_not_ready") {
+    const places = listed("missing").filter((field): field is string => typeof field === "string")
+    return places.length === 0 ? null : { of: "final", places }
+  }
+  return null
 }
 
 // ── The Quotes page's columns ────────────────────────────────────────────
@@ -123,7 +204,7 @@ export function listValue(column: ListColumn, value: unknown): string {
 }
 
 /** The stage as the app names it. */
-export const STAGE_LABEL: Record<WorkbenchAppQuote["stage"], string> = { draft: "Draft", priced: "Priced", final: "Final" }
+export const STAGE_LABEL: Record<WorkbenchAppQuote["stage"], string> = { draft: "Draft", final: "Final" }
 
 // ── Time ─────────────────────────────────────────────────────────────────
 
@@ -132,8 +213,8 @@ export const fullTime = (iso: string): string => new Date(iso).toLocaleString(un
 
 // ── Values kept in the browser ───────────────────────────────────────────
 
-/** A write a save sends: a quote's next revision over `version`. */
-export type QuoteWrite = { kind: "save"; quoteId: string; version: number; body: QuoteSave }
+/** A write a save sends: the quote `reference`/`option` saved over `version`. */
+export type QuoteWrite = { kind: "save"; reference: string; option: number; version: number; body: QuoteSave }
 
 /**
  * A write sent and not answered, or answered by a server failure, so it may have landed:
@@ -148,9 +229,8 @@ export interface PendingWrite {
 /** Values typed and not yet saved, kept in this browser as they were left. */
 export interface Draft {
   values: Values
-  /** The quote's version and newest revision they were typed over; null for a new quote. */
+  /** The quote's version they were typed over; null for a new quote. */
   version: number | null
-  latest: number | null
   /**
    * Where each value sat on the sheets it was typed into, by `tableId:columnId`, named
    * `table.column`, so a restore onto other sheets names what has no place on them.
@@ -167,12 +247,12 @@ const isPendingWrite = (value: unknown): value is PendingWrite => {
   if (typeof basis !== "string" || typeof write !== "object" || write === null) return false
   const body = (write as { body?: Partial<QuoteSave> }).body
   if (typeof body !== "object" || body === null || typeof body.operation !== "string" || typeof body.values !== "object") return false
-  return write.kind === "save" && typeof write.quoteId === "string" && typeof write.version === "number"
+  return write.kind === "save" && typeof write.reference === "string" && typeof write.option === "number" && typeof write.version === "number"
 }
 
 const DRAFT_PREFIX = "haute-app-draft"
 
-/** Where a quote's draft is kept: one per app, person and quote, or per new quote. */
+/** Where a quote's draft is kept: one per app, person and quote (its label, `ABC-1/2`), or per new quote. */
 export const draftKey = (app: string, principal: string, quote: string): string => `${DRAFT_PREFIX}:${app}:${principal}:${quote}`
 
 /** The draft kept under `key`, or null: none, or the browser keeps none. */
@@ -219,7 +299,7 @@ const CREATING_PREFIX = "haute-app-creating"
 
 /**
  * Where the operation key of a quote asked for is held in this tab until its answer comes:
- * one per app, person and what was asked, a new quote or one made from a quote's revision.
+ * one per app, person and what was asked, a new quote or one made from a quote.
  */
 export const creationKey = (app: string, principal: string, asked: string): string => `${CREATING_PREFIX}:${app}:${principal}:${asked}`
 
@@ -256,14 +336,16 @@ export const REFERENCE_MOST = 40
 
 /**
  * What stops `reference` being a quote's reference, as the server checks it, or null: it
- * is trimmed and then 1 to 40 characters, holding no `/`, which the app puts before the
- * option, and no control character.
+ * is trimmed and, in Unicode's composed form, 1 to 40 characters, holding no `/`, which the
+ * app puts before the option, and no control character, and more than `.` or `..`, which an
+ * address reads as folders. It is kept as keyed: `ABC-1` and `abc-1` are two references.
  */
 export function referenceProblem(reference: string): string | null {
-  const text = reference.trim()
+  const text = reference.trim().normalize("NFC")
   if (text === "") return "Required"
   if ([...text].length > REFERENCE_MOST) return `At most ${REFERENCE_MOST} characters`
   if (text.includes("/")) return "No / in a reference"
+  if (text === "." || text === "..") return "Not . or .."
   if (/[\p{Cc}\p{Cf}]/u.test(text)) return "No control characters"
   return null
 }
@@ -334,49 +416,38 @@ export function forgetCreation(key: string): void {
   }
 }
 
-/** A renewal's values: those carried from its source, with `is_renewal` ticked in its details. */
+/** A renewal's values: those of its source, with `is_renewal` ticked in its details. */
 export function asRenewal(values: Values): Values {
   const [details = {}] = values[QUOTE_DETAILS_ID] ?? []
   return { ...values, [QUOTE_DETAILS_ID]: [{ ...details, [QUOTE_DETAILS.is_renewal]: true }] }
 }
 
-/**
- * A quote's reference and option as the app shows them, `Q-000123/2`, as an event names
- * them; an event written before options names none, every quote then being option 1.
- */
-const labelOf = (reference: string, option: unknown): string => `${reference}/${typeof option === "number" ? option : 1}`
-
-// ── History ──────────────────────────────────────────────────────────────
+// ── Activity ─────────────────────────────────────────────────────────────
 
 /** How a quote was made from another, in a sentence. */
 export const RELATION_TEXT = { duplicate: "a duplicate", renewal: "a renewal", alternative: "an alternative" } as const
 
-/** What an event says was done, in a sentence after who did it. */
-export function eventText(event: WorkbenchAppQuoteEvent): string {
-  const detail = event.detail as Record<string, unknown>
-  const text = (key: string) => (typeof detail[key] === "string" ? (detail[key] as string) : "")
-  switch (event.kind) {
-    case "created": {
-      const source = detail.source as { reference?: string; option?: number; revision?: number; relation?: keyof typeof RELATION_TEXT } | undefined
-      return source?.reference
-        ? `made it as ${RELATION_TEXT[source.relation ?? "duplicate"]} of ${labelOf(source.reference, source.option)} revision ${source.revision ?? "?"}`
-        : "made it"
-    }
+/**
+ * What an activity entry says was done, in a sentence after who did it: its making as what
+ * it was made from, `source`, when it was.
+ */
+export function activityText(entry: WorkbenchAppQuoteActivityEntry, source: WorkbenchAppRelatedQuote | null = null): string {
+  switch (entry.action) {
+    case "created":
+      return source === null ? "made it" : `made it as ${RELATION_TEXT[source.relation]} of ${source.label}`
     case "saved":
-      return `saved revision ${event.revision ?? "?"}${detail.priced ? ", priced" : ", unpriced"}`
+      return entry.priced_release === null ? "saved it, unpriced" : "saved it, priced"
     case "assigned":
-      return `assigned it to ${text("to")}`
+      return entry.assignee === null ? "assigned it" : `assigned it to ${entry.assignee}`
     case "noted":
-      return text("note") ? "wrote the note" : "cleared the note"
+      return entry.note ? "wrote the note" : "cleared the note"
     case "archived":
       return "archived it"
     case "restored":
       return "restored it"
     case "finalised":
-      return `marked revision ${event.revision ?? "?"} final`
-    case "reopened":
-      return `reopened final revision ${typeof detail.final_revision === "number" ? detail.final_revision : "?"}: ${text("reason")}`
-    case "derived":
-      return `made ${labelOf(text("reference"), detail.option)} from revision ${event.revision ?? "?"}, as ${RELATION_TEXT[(detail.relation as keyof typeof RELATION_TEXT) ?? "duplicate"]}`
+      return "marked it final"
+    case "amended":
+      return entry.reason ? `amended it: ${entry.reason}` : "amended it"
   }
 }

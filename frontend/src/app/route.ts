@@ -2,23 +2,22 @@
  * The underwriter app's routes (specs/workbench): its one page reads where it is from the
  * address, so a quote has a link of its own, a reload stays on it and Back returns to the
  * list as it was. `/` is the Quotes page, its list in the query; `/quotes/new` the Quotes
- * page with the New quote window open, filled from a revision to duplicate or renew when the
- * query names one, or, for an alternative, the alternative made at once; `/quotes/{id}` a
- * quote; and
- * `/quotes/{id}/revisions/{n}` one of its revisions. A leave guard, set while a quote has
- * unsaved values, is asked before the page moves, Back included.
+ * page with the New quote window open, filled from a quote to duplicate or renew when the
+ * query names one, or, for an alternative, the alternative made at once; and
+ * `/quotes/{reference}/{option}` a quote, its reference URL-encoded. A leave guard, set while
+ * a quote has unsaved values, is asked before the page moves, Back included.
  */
 import { useSyncExternalStore, type MouseEvent } from "react"
-import type { QuoteRelation, QuotesQuery } from "../api/app"
+import type { QuoteSource, QuotesQuery } from "../api/app"
 
 export type AppRoute =
   | { page: "quotes"; query: QuotesQuery }
-  | { page: "new"; from: { quoteId: string; revision: number; relation: QuoteRelation } | null }
-  | { page: "quote"; id: string; revision: number | null }
+  | { page: "new"; from: QuoteSource | null }
+  | { page: "quote"; reference: string; option: number }
   | { page: "missing" }
 
 const VIEWS = ["mine", "team", "archived"] as const
-const STAGES = ["draft", "priced", "final"] as const
+const STAGES = ["draft", "final"] as const
 const SORTS = ["saved", "reference", "insured"] as const
 const RELATIONS = ["duplicate", "renewal", "alternative"] as const
 
@@ -49,12 +48,20 @@ export function quotesPath(query: QuotesQuery): string {
   return text === "" ? "/" : `/?${text}`
 }
 
-export const quotePath = (id: string): string => `/quotes/${encodeURIComponent(id)}`
-export const revisionPath = (id: string, revision: number): string => `${quotePath(id)}/revisions/${revision}`
-export const newQuotePath = (from?: { quoteId: string; revision: number; relation: QuoteRelation }): string =>
+export const quotePath = (reference: string, option: number): string => `/quotes/${encodeURIComponent(reference)}/${option}`
+export const newQuotePath = (from?: QuoteSource): string =>
   from === undefined
     ? "/quotes/new"
-    : `/quotes/new?${new URLSearchParams({ from: from.quoteId, revision: String(from.revision), as: from.relation }).toString()}`
+    : `/quotes/new?${new URLSearchParams({ from: from.reference, option: String(from.option), as: from.relation }).toString()}`
+
+/** `text` decoded from an address, or null when it is not text an address encodes. */
+function decoded(text: string): string | null {
+  try {
+    return decodeURIComponent(text)
+  } catch {
+    return null
+  }
+}
 
 /** Where `location` is. */
 export function routeOf(location: { pathname: string; search: string }): AppRoute {
@@ -62,15 +69,16 @@ export function routeOf(location: { pathname: string; search: string }): AppRout
   if (path === "/") return { page: "quotes", query: quotesQueryOf(location.search) }
   if (path === "/quotes/new") {
     const params = new URLSearchParams(location.search)
-    const quoteId = params.get("from")
-    const revision = Number(params.get("revision"))
+    const reference = params.get("from")
+    const option = Number(params.get("option"))
     const relation = oneOf(RELATIONS, params.get("as"))
-    const from = quoteId && Number.isInteger(revision) && revision >= 1 && relation !== null ? { quoteId, revision, relation } : null
+    const from = reference && Number.isInteger(option) && option >= 1 && relation !== null ? { reference, option, relation } : null
     return { page: "new", from }
   }
-  const quote = /^\/quotes\/([^/]+)(?:\/revisions\/(\d+))?$/.exec(path)
-  if (quote !== null) {
-    return { page: "quote", id: decodeURIComponent(quote[1]), revision: quote[2] === undefined ? null : Number(quote[2]) }
+  const quote = /^\/quotes\/([^/]+)\/(\d+)$/.exec(path)
+  const reference = quote === null ? null : decoded(quote[1])
+  if (quote !== null && reference !== null && Number(quote[2]) >= 1) {
+    return { page: "quote", reference, option: Number(quote[2]) }
   }
   return { page: "missing" }
 }

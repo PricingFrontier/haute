@@ -24,7 +24,7 @@ import json
 import os
 import threading
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -56,7 +56,7 @@ from haute._workbench_form import (
     render_form,
 )
 from haute._workbench_input import with_stand_in
-from haute._workbench_tables import input_tables, quote_request
+from haute._workbench_tables import finite_document, input_tables, priced_tables, quote_request
 from haute.deploy._request_limits import (
     RequestBodyHeaderError,
     RequestBodyLimitError,
@@ -105,7 +105,7 @@ STORE_URL_ENV = "HAUTE_QUOTE_STORE_URL"
 #: engine's driver joins them with that engine's backend.
 STORE_DEPENDENCIES = ("sqlalchemy", "alembic")
 #: The app's pages past its home, each the same page, which routes in the browser.
-APP_PAGES = ("/quotes/new", "/quotes/{quote_id}", "/quotes/{quote_id}/revisions/{number}")
+APP_PAGES = ("/quotes/new", "/quotes/{reference}/{option}")
 #: What a browser says of a request's origin that a write is taken from: the page's own.
 _SAME_SITE = frozenset({"same-origin", "none"})
 
@@ -144,6 +144,17 @@ class Release:
     host: str | None
     #: The role that may change quotes; None lets everyone signed in change them.
     edit_role: str | None = None
+
+
+@dataclass(frozen=True)
+class Pricing:
+    """A quote's values priced through the release's pipeline: the output tables as the page
+    shows them, the request priced, and the response's document, every value that is not
+    finite null, which the quote store keeps."""
+
+    tables: WorkbenchPricedTables
+    request: dict[str, Any]
+    document: Mapping[str, Any]
 
 
 #: What of a bundle's manifest prices a quote, and so names the release; when, by whom, from
@@ -582,8 +593,9 @@ def create_app(
     release's host says who is signed in and, for a release with an ``edit_role``, whether
     they hold it. The page and
     its assets come from *static_dir*, Haute's built frontend unless given. *store_url* names
-    the quote store the app keeps quotes in, which must be migrated: the app does not start on
-    one that is not, and keeps no quotes without one.
+    the quote store the app keeps quotes in, which must hold the release's form's tables for
+    its pipeline, dev's on the analyst's machine and the hosted store's otherwise: the app
+    does not start on one that does not, and keeps no quotes without one.
     """
     release, form, manifest = read_release(release_dir)
     # The pipeline reads what it ships from the release, wherever the host starts the app.
@@ -638,9 +650,16 @@ def create_app(
 
     book = None
     if store_url is not None:
-        from haute._workbench_app_quotes import open_book
+        from haute._quote_store import DEV, HOSTED, open_book
 
-        book = open_book(store_url, haute_version=release.haute_version)
+        # A laptop is dev's alone: served there, the app keeps dev's quotes.
+        book = open_book(
+            store_url,
+            form,
+            project=release.pipeline_name,
+            environment=DEV if local_principal is not None else HOSTED,
+            haute_version=release.haute_version,
+        )
 
     # A pricing past its timeout cannot be stopped, so it keeps its place until it ends: the
     # places are given back by the pricings, never by the requests that stopped waiting.
@@ -713,11 +732,8 @@ def create_app(
     # parsed: an oversized body is refused before it is held in memory whole.
     body_limit = deploy_quote_request_body_limit_bytes()
 
-    async def price_values(
-        values: WorkbenchValues,
-    ) -> tuple[WorkbenchPricedTables, dict[str, Any]]:
-        """*values* priced through the release's pipeline: its output tables and the request
-        priced, or an HTTP error saying why not."""
+    async def price_values(values: WorkbenchValues) -> Pricing:
+        """*values* priced through the release's pipeline, or an HTTP error saying why not."""
         request = quote_request(form, values)
         if not request:
             raise HTTPException(422, "Type the quote first")
@@ -727,10 +743,10 @@ def create_app(
             # the app sets for a quote it keeps, whatever the page sent.
             request = with_stand_in(input_tables(form), _without_app_details(request))
 
-        def score() -> WorkbenchPricedTables:
-            # The admission is held until the answer is the tables sent back: rendering and
-            # converting it are the pricing's too, as the MLflow model keeps its admission
-            # through its conversion.
+        def score() -> Mapping[str, Any]:
+            # The admission is held until the answer is the document sent back: rendering
+            # it is the pricing's too, as the MLflow model keeps its admission through its
+            # conversion.
             context = admit_deploy_execution(operation="workbench_app_price", row_count=1)
             failed = False
             try:
@@ -745,11 +761,8 @@ def create_app(
                     retain_admission_on_success=True,
                 )
                 [document] = render_output_document(result)
-                answered = to_json_safe(document)
-                return {
-                    name: rows if isinstance(rows, list) else [rows]
-                    for name, rows in answered.items()
-                }
+                finite: Mapping[str, Any] = finite_document(document)
+                return finite
             except BaseException:
                 failed = True
                 raise
@@ -767,7 +780,7 @@ def create_app(
         running = pricing_pool.submit(contextvars.copy_context().run, score)
         running.add_done_callback(lambda _: places.release())
         try:
-            tables = await asyncio.wait_for(asyncio.wrap_future(running), PRICE_TIMEOUT_SECONDS)
+            document = await asyncio.wait_for(asyncio.wrap_future(running), PRICE_TIMEOUT_SECONDS)
         except TimeoutError:
             raise HTTPException(504, "Pricing the quote took too long; try again.") from None
         except ExecutionAdmissionError as exc:
@@ -786,7 +799,9 @@ def create_app(
             # API says it, so the underwriter can tell the analyst what broke.
             logger.exception("workbench_app_price_failed")
             raise HTTPException(500, f"The pipeline failed on this quote: {exc}") from None
-        return tables, to_json_safe(request)
+        return Pricing(
+            tables=priced_tables(document), request=to_json_safe(request), document=document
+        )
 
     @app.post("/api/app/price", response_model=WorkbenchAppPriceResponse)
     async def price(http: Request) -> Any:
@@ -810,8 +825,8 @@ def create_app(
                 "This page was drawn for another release of the app: reload it to price on "
                 "this one.",
             )
-        tables, request = await price_values(body.values)
-        return WorkbenchAppPriceResponse(tables=tables, request=request)
+        pricing = await price_values(body.values)
+        return WorkbenchAppPriceResponse(tables=pricing.tables, request=pricing.request)
 
     if book is not None:
         from haute._workbench_app_quotes import QuoteApp, quote_router
@@ -845,7 +860,6 @@ def create_app(
     @app.get("/", include_in_schema=False)
     @app.get(APP_PAGES[0], include_in_schema=False)
     @app.get(APP_PAGES[1], include_in_schema=False)
-    @app.get(APP_PAGES[2], include_in_schema=False)
     async def page() -> Response:
         built = static / APP_PAGE
         if not built.is_file():

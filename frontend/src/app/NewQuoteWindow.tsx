@@ -57,7 +57,7 @@ function WindowBody({ shown, form }: { shown: Shown; form: FormSpec }) {
   const [typingIn, setTypingIn] = useState(false)
   const holder = useRef<HTMLDivElement>(null)
 
-  // An empty required field is marked once Create was pressed, its star saying so before;
+  // The reference left empty is marked once Create was pressed, its star saying so before;
   // anything else that does not fit, at once.
   const marked = Object.fromEntries(Object.entries(problems).filter(([, problem]) => shown.checked || problem !== "Required"))
   const values: SheetValues = {
@@ -87,7 +87,7 @@ function WindowBody({ shown, form }: { shown: Shown; form: FormSpec }) {
 
   const openTaken = () => {
     if (shown.taken === null) return
-    const path = quotePath(shown.taken.quoteId)
+    const path = quotePath(shown.taken.reference, shown.taken.option)
     leave()
     void navigate(path)
   }

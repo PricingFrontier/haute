@@ -13,8 +13,9 @@ import { DefaultField } from "./DefaultField"
 const DECIMAL_PLACES = Array.from({ length: PIVOT_DECIMAL_PLACES_MAX + 1 }, (_, places) => places)
 
 /**
- * A column's label, group and help; in an input table, what a new quote starts with in it
- * (in a one-row table), what an empty cell shows, the rules its value must meet and, in a
+ * A column's label, group and help; whether it needs a value before a quote is marked final,
+ * in an input or an output table; in an input table, what a new quote starts with in it (in a
+ * one-row table), what an empty cell shows, the other rules its value must meet and, in a
  * many-row table while it has allowed values, whether the table has a row for each; for a
  * number, how the sheets show it. The boxes hold no hint text: the docs say what each is.
  */
@@ -35,6 +36,8 @@ export function ColumnDetails({
   const change = useWorkbenchFormStore((s) => s.change)
   // The index takes no rules, nor does a column the app sets: nothing is typed into them.
   const input = table.role === "input" && !column.index && !managed
+  // Required, which marking a quote final checks, an output column takes too.
+  const requirable = !column.index && !managed
   // The groups the table's columns are in, offered as one is typed.
   const groupsId = useId()
   const groups = [...new Set(table.columns.map((other) => other.group).filter((group) => group !== ""))]
@@ -138,10 +141,14 @@ export function ColumnDetails({
           />
         </>
       )}
-      {input && (
+      {requirable && (
         <>
           <span style={{ color: "var(--text-muted)" }}>Required</span>
           <ConfigCheckbox label={`${column.name} is required`} checked={column.required} onChange={(required) => set({ required })} />
+        </>
+      )}
+      {input && (
+        <>
           {isNumeric(column.type) && (
             <>
               <span style={{ color: "var(--text-muted)" }}>Range</span>

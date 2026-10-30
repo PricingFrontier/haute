@@ -187,6 +187,14 @@ def test_the_tables_are_served_from_the_form_as_it_is_now(project: Path) -> None
     ]
     assert body["sample"] == {"policy_details": {"state": "NY", "exposure": 1000.0}}
     assert [t["name"] for t in body["response_tables"]] == ["pricing_output"]
+    # The quote store's own columns, which the schema editor shows locked: quote_details'
+    # own here, the form holding no many-row table.
+    assert list(body["store_columns"]) == ["quote_details"]
+    assert body["store_columns"]["quote_details"][:3] == [
+        {"name": "quote_version", "kind": "int"},
+        {"name": "saved_at", "kind": "datetime"},
+        {"name": "saved_by", "kind": "str"},
+    ]
 
     # Nothing is cached: a form changed on disk is served on the next request.
     folder = project / FORM

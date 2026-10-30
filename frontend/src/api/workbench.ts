@@ -1,8 +1,9 @@
 /**
  * The project's workbench (specs/workbench): whether it is enabled in haute.toml
- * (GET /api/workbench), its tables, sample and response tables as its saved form defines
- * them now (GET /api/workbench/tables) or as an unsaved form would (POST
- * /api/workbench/tables), and the form itself with the file's revision
+ * (GET /api/workbench), its tables, sample and response tables, with the columns the quote
+ * store keeps in each table that the form does not, as its saved form defines them now
+ * (GET /api/workbench/tables) or as an unsaved form would (POST /api/workbench/tables), and
+ * the form itself with the file's revision
  * (GET /api/workbench/form), saved against that revision and captured on the save ledger
  * (PUT /api/workbench/form); and a params file's header and a column's values, what
  * allowed values are read from (GET /api/workbench/params).

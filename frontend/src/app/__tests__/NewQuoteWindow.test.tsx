@@ -1,20 +1,21 @@
 /**
  * The New quote window (specs/workbench): the reference and the quote_details columns the
  * underwriter types, drawn as a Collection draws them and checked whatever the sheets show;
- * Create off until every field fits; a quote made over a new quote's defaults, or a revision
- * carried for a duplicate or a renewal, and taken to its own address; Cancel and Escape
- * making nothing; a reference in use refused with Open it; and a creation whose answer is
- * lost kept in the tab, tried again exactly as it was, and offered back after a reload.
+ * Create off until the reference fits, a required detail left for Mark final to ask for; a
+ * reference taken as keyed, its case kept; a quote made over a new quote's defaults, or a
+ * quote's values for a duplicate or a renewal, and taken to its own address; Cancel and
+ * Escape making nothing; a reference in use refused with Open it; and a creation whose answer
+ * is lost kept in the tab, tried again exactly as it was, and offered back after a reload.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 
 vi.mock("../../api/app", () => ({
-  carryAppQuote: vi.fn(),
   createAppQuote: vi.fn(),
+  openAppQuote: vi.fn(),
 }))
 
-import { carryAppQuote, createAppQuote } from "../../api/app"
+import { createAppQuote, openAppQuote } from "../../api/app"
 import { ApiError } from "../../api/client"
 import type { FormSpec, SchemaColumn, WorkbenchAppQuoteResponse } from "../../api/types"
 import ToastContainer from "../../components/Toast"
@@ -29,7 +30,7 @@ import { answer, release } from "./fixtures"
 
 const store = () => useNewQuoteStore.getState()
 const KEPT = keptCreationKey("motor", "ana@example.com")
-const made = (overrides: Parameters<typeof answer>[0] = {}) => answer({ id: "q7", reference: "ABC-1", stage: "draft", priced: false, release: null, ...overrides }, { tables: null })
+const made = (overrides: Parameters<typeof answer>[0] = {}) => answer({ reference: "ABC-1", priced_release: null, ...overrides })
 
 /** The release's form: Haute's quote_details first, as every form holds it, its columns as `set` sets them, by id. */
 function formWith(set: Record<string, Partial<SchemaColumn>> = {}): FormSpec {
@@ -95,9 +96,8 @@ describe("NewQuoteWindow", () => {
     expect(field("Is renewal")).toHaveAttribute("type", "checkbox")
   })
 
-  it("keeps Create off until the reference fits and each required column is filled, though no sheet shows them", () => {
-    // Insured required, as is_renewal: a tick box is never empty, so it asks nothing more.
-    form = formWith({ qd_insured: { required: true }, qd_is_renewal: { required: true } })
+  it("keeps Create off until the reference fits, a required detail left empty for marking the quote final to ask for", () => {
+    form = formWith({ qd_insured: { required: true } })
     useAppStore.setState({ form })
     shown()
     act(() => store().openNew())
@@ -107,43 +107,48 @@ describe("NewQuoteWindow", () => {
     expect(field("Quote reference")).toHaveAttribute("title", "No / in a reference")
     key("Quote reference", "x".repeat(41))
     expect(field("Quote reference")).toHaveAttribute("title", "At most 40 characters")
+    // An address reads them as folders.
+    for (const folder of [".", ".."]) {
+      key("Quote reference", folder)
+      expect(create()).toBeDisabled()
+      expect(field("Quote reference")).toHaveAttribute("title", "Not . or ..")
+    }
     key("Quote reference", "ABC-1")
     key("Insured", "   ")
-    // Text of spaces alone is empty.
-    expect(create()).toBeDisabled()
-    expect(create()).toHaveAttribute("title", "Insured: Required")
-    key("Insured", "Acme")
+
+    // Insured is required: its star says so, but only Mark final asks for it.
+    expect(within(windowShown()).getByTestId("label-quote_details:qd_insured")).toHaveTextContent("Insured *")
     expect(create()).toBeEnabled()
-    expect(field("Is renewal")).not.toBeChecked()
+    expect(field("Insured")).not.toHaveAttribute("aria-invalid")
   })
 
-  it("marks an empty required field when Create is pressed from a field being typed in, then sends what that field holds", async () => {
+  it("marks the reference left empty when Create is pressed from it being typed in, then sends what it holds, a required detail left empty", async () => {
     form = formWith({ qd_insured: { required: true } })
     useAppStore.setState({ form })
     vi.mocked(createAppQuote).mockResolvedValue(made())
     shown()
     act(() => store().openNew())
-    key("Quote reference", "ABC-1")
 
-    act(() => field("Insured").focus())
+    act(() => field("Quote reference").focus())
     expect(create()).toBeEnabled()
-    expect(field("Insured")).not.toHaveAttribute("aria-invalid")
+    expect(field("Quote reference")).not.toHaveAttribute("aria-invalid")
     // The press keeps the focus in the field, so its blur cannot turn Create off first.
     expect(fireEvent.mouseDown(create())).toBe(false)
     fireEvent.click(create())
 
     expect(createAppQuote).not.toHaveBeenCalled()
-    expect(field("Insured")).toHaveAttribute("title", "Required")
-    expect(field("Insured")).not.toHaveFocus()
+    expect(field("Quote reference")).toHaveAttribute("title", "Required")
+    expect(field("Quote reference")).not.toHaveFocus()
 
     // Typed and not yet left, the press commits it before checking.
-    act(() => field("Insured").focus())
-    fireEvent.change(field("Insured"), { target: { value: "Acme" } })
+    act(() => field("Quote reference").focus())
+    fireEvent.change(field("Quote reference"), { target: { value: "ABC-1" } })
     fireEvent.mouseDown(create())
     fireEvent.click(create())
 
     await vi.waitFor(() => expect(createAppQuote).toHaveBeenCalledOnce())
-    expect(vi.mocked(createAppQuote).mock.calls[0][0].values.quote_details).toEqual([{ qd_insured: "Acme" }])
+    const [body, , reference] = vi.mocked(createAppQuote).mock.calls[0]
+    expect([reference, body.values.quote_details]).toEqual(["ABC-1", [{}]])
   })
 
   it("makes the quote with its reference and details over a new quote's defaults, and takes it to its own address", async () => {
@@ -161,9 +166,11 @@ describe("NewQuoteWindow", () => {
     key("Inception date", "2026-11-01")
     fireEvent.click(create())
 
-    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/q7"))
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/ABC-1/1"))
     const [body, source, reference] = vi.mocked(createAppQuote).mock.calls[0]
-    expect([source, reference, body.shown, body.form_revision, body.release]).toEqual([null, "ABC-1", null, "rev-9", "rel-1"])
+    expect([source, reference, body.form_revision, body.release]).toEqual([null, "ABC-1", "rev-9", "rel-1"])
+    // Made unpriced: a creation sends no prices.
+    expect(body).not.toHaveProperty("shown")
     // The default of a column in another one-row input table is held as a new quote holds it.
     expect(body.values).toEqual({
       policy: [{ "policy.state": "NY" }],
@@ -171,6 +178,18 @@ describe("NewQuoteWindow", () => {
     })
     expect(screen.queryByTestId("new-quote-window")).toBeNull()
     expect(readKeptCreation(KEPT)).toBeNull()
+  })
+
+  it("takes the reference as keyed, its case kept, and opens the quote at it, encoded", async () => {
+    vi.mocked(createAppQuote).mockResolvedValue(made({ reference: "abc 1" }))
+    shown()
+    act(() => store().openNew())
+
+    key("Quote reference", "abc 1")
+    fireEvent.click(create())
+
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/abc%201/1"))
+    expect(vi.mocked(createAppQuote).mock.calls[0][2]).toBe("abc 1")
   })
 
   it("makes nothing on Cancel or Escape", () => {
@@ -200,7 +219,7 @@ describe("NewQuoteWindow", () => {
     fireEvent.keyDown(document, { key: "Escape" })
     expect(windowShown()).toBeInTheDocument()
     await act(async () => answering(made()))
-    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/q7"))
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/ABC-1/1"))
   })
 
   it("leaves a page that moved on before its creation was answered where it is, the quote made", async () => {
@@ -224,20 +243,26 @@ describe("NewQuoteWindow", () => {
 
   it("refuses a reference in use, naming the quote holding it, with Open it, and takes typing again", async () => {
     vi.mocked(createAppQuote).mockRejectedValue(
-      new ApiError("HTTP 409", 409, "taken", {}, { message: "ABC-1 is taken: ABC-1/1 holds it.", error_code: "reference_taken", quote_id: "q1", label: "ABC-1/1" }),
+      new ApiError("HTTP 409", 409, "taken", {}, {
+        message: "ABC-1/1 already holds the reference ABC-1: open it, or create an alternative of it.",
+        error_code: "reference_taken",
+        reference: "ABC-1",
+        option: 1,
+        label: "ABC-1/1",
+      }),
     )
     shown()
     act(() => store().openNew())
-    key("Quote reference", "abc-1")
+    key("Quote reference", "ABC-1")
     fireEvent.click(create())
 
-    expect(await screen.findByTestId("new-quote-refused")).toHaveTextContent("ABC-1 is taken: ABC-1/1 holds it.")
+    expect(await screen.findByTestId("new-quote-refused")).toHaveTextContent("ABC-1/1 already holds the reference ABC-1")
     // Refused, nothing was made: the creation is let go, and the window takes typing again.
     expect(readKeptCreation(KEPT)).toBeNull()
     expect(field("Quote reference")).toBeEnabled()
     fireEvent.click(within(windowShown()).getByRole("button", { name: "Open it" }))
 
-    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/q1"))
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/ABC-1/1"))
     expect(screen.queryByTestId("new-quote-window")).toBeNull()
   })
 
@@ -281,7 +306,7 @@ describe("NewQuoteWindow", () => {
     expect(within(windowShown()).getByRole("button", { name: "Discard" })).toBeInTheDocument()
     fireEvent.click(screen.getByTestId("new-quote-try-again"))
 
-    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/q7"))
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/ABC-1/1"))
     const bodies = vi.mocked(createAppQuote).mock.calls
     expect(bodies[1]).toEqual(bodies[0])
     expect(bodies[2]).toEqual(bodies[0])
@@ -307,35 +332,37 @@ describe("NewQuoteWindow", () => {
     expect(within(windowShown()).getByRole("button", { name: "Create" })).toBeInTheDocument()
   })
 
-  it("fills a renewal from the revision carried, its reference blank and is_renewal ticked, and makes it from that revision", async () => {
-    vi.mocked(carryAppQuote).mockResolvedValue({ values: { policy: [{ "policy.state": "CA" }], quote_details: [{ qd_insured: "Acme" }] }, dropped: ["policy.gone"] })
+  it("fills a renewal from the quote as it is kept, its reference blank and is_renewal ticked, and makes it from that quote", async () => {
+    const values = { policy: [{ "policy.state": "CA" }], quote_details: [{ qd_reference: "Q-000001", qd_option: "1", qd_stage: "final", qd_insured: "Acme" }] }
+    vi.mocked(openAppQuote).mockResolvedValue(answer({ stage: "final" }, { values, dropped: ["equipment row 2 (Crane)"] }))
     vi.mocked(createAppQuote).mockResolvedValue(made({ reference: "DEF-2", relation: "renewal" }))
     shown()
 
-    await act(() => store().openDerived({ quoteId: "q1", revision: 2, relation: "renewal" }, { label: "Q-000001/1" }))
+    await act(() => store().openDerived({ reference: "Q-000001", option: 1, relation: "renewal" }, { label: "Q-000001/1" }))
 
     expect(screen.getByRole("dialog", { name: "Renew Q-000001/1" })).toBeInTheDocument()
-    expect(carryAppQuote).toHaveBeenCalledWith("q1", 2)
+    expect(openAppQuote).toHaveBeenCalledWith("Q-000001", 1)
     expect(field("Insured")).toHaveValue("Acme")
     expect(field("Is renewal")).toBeChecked()
     expect(field("Quote reference")).toHaveValue("")
-    expect(screen.getByTestId("new-quote-dropped")).toHaveTextContent("No place on the current sheets for: policy.gone.")
+    expect(screen.getByTestId("new-quote-dropped")).toHaveTextContent("No place on the current sheets for: equipment row 2 (Crane).")
     key("Quote reference", "DEF-2")
     fireEvent.click(create())
 
-    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/q7"))
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/DEF-2/1"))
     const [body, source, reference] = vi.mocked(createAppQuote).mock.calls[0]
-    expect([source, reference]).toEqual([{ quote_id: "q1", revision: 2, relation: "renewal" }, "DEF-2"])
+    expect([source, reference]).toEqual([{ reference: "Q-000001", option: 1, relation: "renewal" }, "DEF-2"])
+    // Without the details the app set for its source, which are not the new quote's.
     expect(body.values).toEqual({ policy: [{ "policy.state": "CA" }], quote_details: [{ qd_insured: "Acme", qd_is_renewal: true }] })
   })
 
-  it("says why the revision to fill it from could not be read, and makes nothing", async () => {
-    vi.mocked(carryAppQuote).mockRejectedValue(new ApiError("HTTP 404", 404, "The app keeps no quote 'q9'."))
+  it("says why the quote to fill it from could not be read, and makes nothing", async () => {
+    vi.mocked(openAppQuote).mockRejectedValue(new ApiError("HTTP 404", 404, "The app keeps no quote Q-000009/1."))
     shown()
 
-    await act(() => store().openDerived({ quoteId: "q9", revision: 1, relation: "duplicate" }))
+    await act(() => store().openDerived({ reference: "Q-000009", option: 1, relation: "duplicate" }))
 
-    expect(within(windowShown()).getByRole("alert")).toHaveTextContent("The quote could not be read: The app keeps no quote 'q9'.")
+    expect(within(windowShown()).getByRole("alert")).toHaveTextContent("The quote could not be read: The app keeps no quote Q-000009/1.")
     expect(create()).toBeDisabled()
   })
 
@@ -350,10 +377,10 @@ describe("NewQuoteWindow", () => {
     expect(screen.queryByTestId("new-quote-window")).toBeNull()
   })
 
-  it("opens one window at a time, filled by no revision answered after it closed", async () => {
-    let carrying: (value: Awaited<ReturnType<typeof carryAppQuote>>) => void = () => {}
-    vi.mocked(carryAppQuote).mockReturnValue(new Promise((resolve) => (carrying = resolve)))
-    const origin = { quoteId: "q1", revision: 1, relation: "duplicate" as const }
+  it("opens one window at a time, filled by no quote read after it closed", async () => {
+    let reading: (value: WorkbenchAppQuoteResponse) => void = () => {}
+    vi.mocked(openAppQuote).mockReturnValue(new Promise((resolve) => (reading = resolve)))
+    const origin = { reference: "Q-000001", option: 1, relation: "duplicate" as const }
     shown()
     act(() => store().openNew())
 
@@ -361,18 +388,18 @@ describe("NewQuoteWindow", () => {
     await act(async () => store().openDerived(origin))
     act(() => store().openSaveAsNew())
     expect(store().shown?.title).toBe("New quote")
-    expect(carryAppQuote).not.toHaveBeenCalled()
+    expect(openAppQuote).not.toHaveBeenCalled()
 
     act(() => store().close())
     const filling = store().openDerived(origin)
     act(() => store().close())
     await act(async () => {
-      carrying({ values: { policy: [{ "policy.state": "CA" }] }, dropped: [] })
+      reading(answer({}, { values: { policy: [{ "policy.state": "CA" }] } }))
       await filling
     })
     expect(store().shown).toBeNull()
     // A failure answered after it closed says nothing either.
-    vi.mocked(carryAppQuote).mockRejectedValueOnce(new ApiError("HTTP 404", 404, "gone"))
+    vi.mocked(openAppQuote).mockRejectedValueOnce(new ApiError("HTTP 404", 404, "gone"))
     const failing = store().openDerived(origin)
     act(() => store().close())
     await act(async () => failing)

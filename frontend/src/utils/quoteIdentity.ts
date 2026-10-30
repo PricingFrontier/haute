@@ -11,7 +11,7 @@ import type { SchemaColumn, SchemaTable } from "../api/types"
 /**
  * The id and name of Haute's own input table of a quote's details, first in every form
  * (`haute._workbench_form.QUOTE_DETAILS_ID`): the underwriter app keeps its row with each
- * revision, and its Quotes page lists them.
+ * quote, and its Quotes page lists them.
  */
 export const QUOTE_DETAILS_ID = "quote_details"
 

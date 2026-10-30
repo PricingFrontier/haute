@@ -1,10 +1,10 @@
 /**
  * A quote in the underwriter app (specs/workbench): the sheets under the quote's bar (back
- * to Quotes, its reference and option, name and stage, Save and Mark final or Reopen, a menu of what
- * else it takes, History, the zoom, and why it has no price), a line of its revision, who
- * saved it, the release that priced it, where it came from and who it is with, and the
- * notices of anything that stands in the way. The quote is priced as it is typed. Values
- * not saved are kept in the browser and leaving with them asks first.
+ * to Quotes, its reference and option, name and stage, Save and Mark final or Amend, a menu
+ * of what else it takes, History, the zoom, and why it has no price), a line of who saved it,
+ * the release that priced it, where it came from and who it is with, and the notices of
+ * anything that stands in the way. The quote is priced as it is typed. Values not saved are
+ * kept in the browser and leaving with them asks first.
  */
 import {
   Archive,
@@ -19,8 +19,8 @@ import {
   MoreHorizontal,
   RefreshCcw,
 } from "lucide-react"
-import { useEffect, useRef, useState } from "react"
-import { changeAppQuote } from "../api/app"
+import { Fragment, useEffect, useRef, useState } from "react"
+import { changeAppQuote, type QuoteRelation, type QuoteSource } from "../api/app"
 import { apiErrorMessage } from "../api/errors"
 import type { WorkbenchAppQuote } from "../api/types"
 import { CommittedTextField } from "../components/form"
@@ -38,12 +38,12 @@ import PageTabs from "../workbench/PageTabs"
 import SheetCanvas from "../workbench/SheetCanvas"
 import AppHeader from "./AppHeader"
 import HistoryPanel from "./HistoryPanel"
-import { fullTime, valuesKey } from "./quoteValues"
-import { followLink, navigate, newQuotePath, quotePath, revisionPath, setLeaveGuard, type AppRoute } from "./route"
+import { fullTime, sameQuote, valuesKey } from "./quoteValues"
+import { followLink, navigate, newQuotePath, quotePath, setLeaveGuard, type AppRoute } from "./route"
 import { BUTTON, Menu, Notice, ReleaseNotice, StageChip, type MenuItem } from "./ui"
 import useAppStore from "./useAppStore"
 import useNewQuoteStore from "./useNewQuoteStore"
-import useOpenQuoteStore, { busy, canEdit, readOnlyReason, type QuoteOrigin } from "./useOpenQuoteStore"
+import useOpenQuoteStore, { busy, canEdit, readOnlyReason } from "./useOpenQuoteStore"
 
 type QuoteRoute = Extract<AppRoute, { page: "new" } | { page: "quote" }>
 
@@ -55,29 +55,29 @@ const NAME_COLUMN = QUOTE_DETAILS.quote_name
 /** Save the open quote. */
 async function saveOpen(): Promise<void> {
   const saved = await useOpenQuoteStore.getState().save()
-  if (saved !== null) useToastStore.getState().addToast("success", `Saved ${saved.label}, revision ${saved.latest}`)
+  if (saved !== null) useToastStore.getState().addToast("success", `Saved ${saved.label}`)
 }
 
 /**
  * Make the alternative the page asks for, as the underwriter asked for it, and move to its
  * own address once it has one, unless the page has moved on meanwhile.
  */
-async function makeAsked(from: QuoteOrigin): Promise<void> {
+async function makeAsked(from: QuoteSource): Promise<void> {
   const asked = window.location.href
   const made = await useOpenQuoteStore.getState().openNew(from)
   if (made === null || window.location.href !== asked) return
-  await navigate(quotePath(made.id), { replace: true, force: true })
+  await navigate(quotePath(made.reference, made.option), { replace: true, force: true })
 }
 
 /** Restore `archived`, as its archive left it: through the open quote while it is open, else on its own. */
 async function undoArchive(archived: WorkbenchAppQuote): Promise<void> {
   const open = useOpenQuoteStore.getState()
-  if (open.quote?.id === archived.id) {
+  if (open.quote !== null && sameQuote(open.quote, archived)) {
     await open.change("restore", {}, archived)
     return
   }
   try {
-    await changeAppQuote(archived.id, "restore", archived.latest, {})
+    await changeAppQuote(archived.reference, archived.option, "restore", archived.version, {})
   } catch (reason: unknown) {
     useToastStore.getState().addToast("error", `Could not restore ${archived.label}: ${apiErrorMessage(reason)}`)
   }
@@ -87,17 +87,15 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
   const status = useOpenQuoteStore((s) => s.status)
   const loadError = useOpenQuoteStore((s) => s.loadError)
   const quote = useOpenQuoteStore((s) => s.quote)
-  const past = useOpenQuoteStore((s) => s.past)
-  const olderSheets = useOpenQuoteStore((s) => s.olderSheets)
   const baseline = useOpenQuoteStore((s) => s.baseline)
   const historyOpen = useOpenQuoteStore((s) => s.historyOpen)
   const values = useWorkbenchPreviewStore((s) => s.quote)
-  const reason = readOnlyReason({ quote, past, olderSheets })
+  const reason = readOnlyReason({ quote })
   // Only a quote open, and as it may change, has values of its own not yet saved.
   const dirty = status === "ready" && reason === null && valuesKey(values) !== baseline
   const [unkept, setUnkept] = useState(false)
 
-  const routeKey = route.page === "new" ? `new:${route.from?.quoteId ?? ""}:${route.from?.revision ?? ""}:${route.from?.relation ?? ""}` : `quote:${route.id}:${route.revision ?? ""}`
+  const routeKey = JSON.stringify(route)
   useEffect(() => {
     // A question asked about the quote the page has left is nobody's now.
     useQuestionStore.getState().answer(null)
@@ -106,7 +104,7 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
       if (route.from?.relation === "alternative") void makeAsked(route.from)
       return
     }
-    void useOpenQuoteStore.getState().openRouted(route.id, route.revision)
+    void useOpenQuoteStore.getState().openRouted(route.reference, route.option)
     // The route's key says all of it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeKey])
@@ -216,9 +214,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   const release = useAppStore((s) => s.release)
   const status = useOpenQuoteStore((s) => s.status)
   const quote = useOpenQuoteStore((s) => s.quote)
-  const revision = useOpenQuoteStore((s) => s.revision)
-  const past = useOpenQuoteStore((s) => s.past)
-  const olderSheets = useOpenQuoteStore((s) => s.olderSheets)
+  const savedTables = useOpenQuoteStore((s) => s.savedTables)
   const saving = useOpenQuoteStore((s) => s.saving)
   const working = useOpenQuoteStore(busy)
   const historyOpen = useOpenQuoteStore((s) => s.historyOpen)
@@ -231,7 +227,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   const error = useWorkbenchPreviewStore((s) => s.error)
   const zoomBy = useWorkbenchViewStore((s) => s.zoomBy)
   const addToast = useToastStore((s) => s.addToast)
-  const reason = readOnlyReason({ quote, past, olderSheets })
+  const reason = readOnlyReason({ quote })
   const editor = release?.can_edit ?? true
   const ready = status === "ready" && form !== null
   // As the server counts typing: what the sheets show, the details the app sets and the defaults aside.
@@ -244,9 +240,8 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   const name = values[QUOTE_DETAILS_ID]?.[0]?.[NAME_COLUMN]
   // A saved quote whose values are as saved, priced as saved on this release, or unpriced as
   // saved, has nothing new to save; a price made since, or one of another release, has.
-  const savedTables = revision?.tables ?? null
   const samePrice = priced
-    ? savedTables !== null && revision?.release === release?.id && canonicalJson(price.tables) === canonicalJson(savedTables)
+    ? savedTables !== null && quote?.priced_release === release?.id && canonicalJson(price.tables) === canonicalJson(savedTables)
     : savedTables === null
   const nothingNew = quote !== null && !dirty && samePrice
 
@@ -258,39 +253,40 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
         ? "Save the quote unpriced: it could not be priced (Ctrl+S)"
         : "Save the quote with its price (Ctrl+S)"
 
+  // Whether each required field holds a value is the server's to say as the quote is marked final.
   const finalBlock = !editor
     ? "Changing quotes needs the app's edit role"
     : quote === null
       ? "The quote is not open yet"
-      : dirty
-        ? "Save your changes first"
-        : !quote.release || quote.stage === "draft"
-          ? "Save the quote with its price first"
-          : quote.release !== release?.id
-            ? "Priced on an earlier release: save it again first"
-            : closed
-              ? "This quote does not take changes as it is"
+      : closed
+        ? "This quote does not take changes as it is"
+        : dirty
+          ? "Save your changes first"
+          : quote.priced_release === null
+            ? "Save the quote with its price first"
+            : quote.priced_release !== release?.id
+              ? "Priced on an earlier release: save it again first"
               : null
 
   const markFinal = async () => {
-    if (quote === null || revision === null) return
+    if (quote === null) return
     const yes = await confirmed({
       title: `Mark ${quote.label} final?`,
-      text: `The quote as revision ${revision.number} holds it is pinned as the final quotation, saved as revision ${revision.number + 1}. It cannot be saved over until someone reopens it, giving a reason; the final stays in its history.`,
+      text: "It becomes the final quotation, and takes no save until someone amends it, giving a reason.",
       confirm: "Mark final",
     })
-    if (yes && (await change("final", { revision: revision.number }, quote)) !== null) addToast("success", `${quote.label} is final`)
+    if (yes && (await change("final", {}, quote)) !== null) addToast("success", `${quote.label} is final`)
   }
 
-  const reopen = async () => {
+  const amend = async () => {
     if (quote === null) return
     const answer = await useQuestionStore.getState().ask({
-      title: `Reopen ${quote.label}?`,
-      text: "Its final stays in its history; the next save is an amendment under the same reference.",
-      confirm: "Reopen",
-      reason: { label: "Why it is being reopened" },
+      title: `Amend ${quote.label}?`,
+      text: "It goes back to draft, and its next save replaces the final quotation.",
+      confirm: "Amend",
+      reason: { label: "Why it is being amended" },
     })
-    if (answer !== null && (await change("reopen", { reason: answer.reason }, quote)) !== null) addToast("success", `${quote.label} is reopened`)
+    if (answer !== null && (await change("amend", { reason: answer.reason }, quote)) !== null) addToast("success", `${quote.label} is a draft again`)
   }
 
   const archive = async () => {
@@ -300,18 +296,19 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
     addToast("success", `Archived ${quote.label}`, { label: "Undo", run: () => void undoArchive(archived) })
   }
 
-  const derive = (relation: "duplicate" | "renewal" | "alternative") => {
-    if (quote === null || revision === null) return
+  const derive = (relation: QuoteRelation) => {
+    if (quote === null) return
+    const from = { reference: quote.reference, option: quote.option }
     // An alternative is made at once under this reference; a duplicate or a renewal takes one
     // keyed in the New quote window, over this quote, which it leaves as it is.
-    if (relation === "alternative") void navigate(newQuotePath({ quoteId: quote.id, revision: revision.number, relation }))
-    else void useNewQuoteStore.getState().openDerived({ quoteId: quote.id, revision: revision.number, relation }, { label: quote.label })
+    if (relation === "alternative") void navigate(newQuotePath({ ...from, relation }))
+    else void useNewQuoteStore.getState().openDerived({ ...from, relation }, { label: quote.label })
   }
 
   const copyLink = async () => {
     if (quote === null) return
     try {
-      await navigator.clipboard.writeText(`${window.location.origin}${quotePath(quote.id)}`)
+      await navigator.clipboard.writeText(`${window.location.origin}${quotePath(quote.reference, quote.option)}`)
       addToast("success", `Link to ${quote.label} copied`)
     } catch {
       addToast("error", "This browser would not copy the link")
@@ -319,9 +316,9 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   }
 
   const items: MenuItem[] = [
-    { label: "Duplicate", icon: Copy, run: () => derive("duplicate"), disabled: quote === null || !editor, title: "A new quote with this revision's values" },
-    { label: "Renew", icon: RefreshCcw, run: () => derive("renewal"), disabled: quote === null || !editor, title: "A new quote renewing this one, from this revision's values" },
-    { label: "Create alternative", icon: GitBranchPlus, run: () => derive("alternative"), disabled: quote === null || !editor, title: "A new quote offering other terms, from this revision's values" },
+    { label: "Duplicate", icon: Copy, run: () => derive("duplicate"), disabled: quote === null || !editor, title: "A new quote with this quote's values" },
+    { label: "Renew", icon: RefreshCcw, run: () => derive("renewal"), disabled: quote === null || !editor, title: "A new quote renewing this one, from its values" },
+    { label: "Create alternative", icon: GitBranchPlus, run: () => derive("alternative"), disabled: quote === null || !editor, title: "A new option under this reference, from this quote's values" },
     quote?.archived
       ? { label: "Restore", icon: ArchiveRestore, run: () => void change("restore", {}, quote), disabled: working || !editor }
       : { label: "Archive", icon: Archive, run: () => void archive(), disabled: quote === null || working || !editor },
@@ -370,18 +367,18 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
           {saving ? "Saving…" : unpriceable && !closed ? "Save unpriced" : "Save"}
         </button>
         {quote?.stage === "final" ? (
-          <ToolbarButton icon={LockOpen} onClick={() => void reopen()} disabled={working || !editor || past || olderSheets !== null || quote.archived} title="Reopen the quote for an amendment, giving a reason">
-            Reopen
+          <ToolbarButton icon={LockOpen} onClick={() => void amend()} disabled={working || !editor || quote.archived} title="Take the quote back to draft to amend it, giving a reason">
+            Amend
           </ToolbarButton>
         ) : (
-          <ToolbarButton icon={BadgeCheck} onClick={() => void markFinal()} disabled={working || finalBlock !== null} title={finalBlock ?? "Pin this revision as the final quotation"}>
+          <ToolbarButton icon={BadgeCheck} onClick={() => void markFinal()} disabled={working || finalBlock !== null} title={finalBlock ?? "Pin the quote as the final quotation"}>
             Mark final
           </ToolbarButton>
         )}
       </ToolbarColumn>
       <ToolbarColumn role="group" aria-label="More">
         <Menu label="More" icon={MoreHorizontal} items={items} testId="quote-more" />
-        <ToolbarButton icon={History} onClick={() => setHistoryOpen(!historyOpen)} aria-pressed={historyOpen} disabled={quote === null} title="The quote's revisions, note and activity">
+        <ToolbarButton icon={History} onClick={() => setHistoryOpen(!historyOpen)} aria-pressed={historyOpen} disabled={quote === null} title="The quote's note, activity and related quotes">
           History
         </ToolbarButton>
       </ToolbarColumn>
@@ -395,13 +392,12 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   )
 }
 
-/** The line under the bar: the revision, who saved it, the release, where it came from, who it is with. */
+/** The line under the bar: who saved the quote, the release that priced it, where it came from, who it is with. */
 function QuoteLine() {
   const release = useAppStore((s) => s.release)
   const people = useAppStore((s) => s.people)
   const loadPeople = useAppStore((s) => s.loadPeople)
   const quote = useOpenQuoteStore((s) => s.quote)
-  const revision = useOpenQuoteStore((s) => s.revision)
   const working = useOpenQuoteStore(busy)
   const change = useOpenQuoteStore((s) => s.change)
 
@@ -426,34 +422,27 @@ function QuoteLine() {
     if (assignee !== quote.assignee) void change("assignee", { assignee }, quote)
   }
   const choices = [...new Set([...(quote === null ? [] : [quote.assignee]), ...(release === null ? [] : [release.principal]), ...people])].sort()
+  const sourcePath = quote === null || quote.source_reference === null || quote.source_option === null ? null : quotePath(quote.source_reference, quote.source_option)
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-1.5 text-[11px]" style={{ borderBottom: "1px solid var(--border)" }} data-testid="quote-line">
-      {quote === null || revision === null ? null : (
+      {quote === null ? null : (
         <>
-          <span style={muted}>
-            Revision {revision.number}
-            {revision.number !== quote.latest && ` of ${quote.latest}`}
-          </span>
-          <span style={muted} title={fullTime(revision.saved_at)}>
-            Saved {relativeTime(new Date(revision.saved_at))} by {revision.saved_by}
+          <span style={muted} title={fullTime(quote.saved_at)}>
+            Saved {relativeTime(new Date(quote.saved_at))} by {quote.saved_by}
           </span>
           <span style={muted}>
-            {revision.tables === null || revision.tables === undefined
+            {quote.priced_release === null
               ? "Unpriced"
-              : revision.release === release?.id
+              : quote.priced_release === release?.id
                 ? `Priced on this release`
-                : `Priced on release ${revision.release ?? "?"}`}
+                : `Priced on release ${quote.priced_release}`}
           </span>
-          {quote.relation !== null && quote.source_quote_id !== null && quote.source_revision !== null && (
+          {quote.relation !== null && sourcePath !== null && (
             <span style={muted}>
               {RELATION_LABEL[quote.relation]} of{" "}
-              <a
-                href={revisionPath(quote.source_quote_id, quote.source_revision)}
-                onClick={(event) => followLink(event, revisionPath(quote.source_quote_id ?? "", quote.source_revision ?? 1))}
-                style={{ color: "var(--text-accent)" }}
-              >
-                {quote.source_label} revision {quote.source_revision}
+              <a href={sourcePath} onClick={(event) => followLink(event, sourcePath)} style={{ color: "var(--text-accent)" }}>
+                {quote.source_label}
               </a>
             </span>
           )}
@@ -481,13 +470,26 @@ function QuoteLine() {
   )
 }
 
+/** The places a refusal names, each set apart, one after another. */
+function Places({ places }: { places: readonly string[] }) {
+  return (
+    <>
+      {places.map((place, index) => (
+        <Fragment key={`${index}:${place}`}>
+          {index > 0 && "; "}
+          <span className="font-medium">{place}</span>
+        </Fragment>
+      ))}
+      .
+    </>
+  )
+}
+
 /** What stands in the way, and what can be done about it, one notice each. */
 function QuoteNotices({ unkept }: { unkept: boolean }) {
   const quote = useOpenQuoteStore((s) => s.quote)
-  const revision = useOpenQuoteStore((s) => s.revision)
-  const past = useOpenQuoteStore((s) => s.past)
-  const olderSheets = useOpenQuoteStore((s) => s.olderSheets)
   const conflict = useOpenQuoteStore((s) => s.conflict)
+  const refusal = useOpenQuoteStore((s) => s.refusal)
   const releaseChanged = useAppStore((s) => s.releaseChanged)
   const error = useOpenQuoteStore((s) => s.error)
   const moved = useOpenQuoteStore((s) => s.moved)
@@ -498,13 +500,13 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
   const change = useOpenQuoteStore((s) => s.change)
   const restoreDraft = useOpenQuoteStore((s) => s.restoreDraft)
   const discardDraft = useOpenQuoteStore((s) => s.discardDraft)
-  const moveToCurrentSheets = useOpenQuoteStore((s) => s.moveToCurrentSheets)
-  const reason = readOnlyReason({ quote, past, olderSheets })
+  const reason = readOnlyReason({ quote })
 
   const openNewest = async () => {
     if (quote === null) return
+    const { reference, option } = quote
     // Moved to the quote's address, its route opens it; there already, nothing else will.
-    if ((await navigate(quotePath(quote.id), { force: true })) === "here") void useOpenQuoteStore.getState().openQuote(quote.id, null)
+    if ((await navigate(quotePath(reference, option), { force: true })) === "here") void useOpenQuoteStore.getState().openQuote(reference, option)
   }
 
   return (
@@ -527,6 +529,12 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
           onDismiss={() => dismiss("conflict")}
         >
           {conflict.message} Your changes are still on the sheets.
+        </Notice>
+      )}
+      {refusal !== null && (
+        <Notice tone="danger" testId={refusal.of === "save" ? "notice-invalid" : "notice-not-ready"} onDismiss={() => dismiss("refusal")}>
+          {refusal.of === "save" ? "Not saved, as these values are not of their columns' types: " : "Not marked final, as these have no value: "}
+          <Places places={refusal.places} />
         </Notice>
       )}
       {error !== null && (
@@ -555,17 +563,7 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
           }
         >
           You have changes to this quote from {relativeTime(new Date(recovered.keptAt))} that were not saved to the server.
-          {quote !== null && recovered.version !== null && recovered.version !== quote.latest && " The quote has been saved since then."}
-        </Notice>
-      )}
-      {reason === "past" && quote !== null && revision !== null && (
-        <Notice tone="info" testId="notice-past" actions={<button type="button" className={BUTTON} onClick={() => void openNewest()}>Open the newest</button>}>
-          Revision {revision.number} as it was saved, read only. The newest is revision {quote.latest}.
-        </Notice>
-      )}
-      {reason === "older-sheets" && (
-        <Notice tone="info" testId="notice-older-sheets" actions={canEdit() && <button type="button" className={BUTTON} onClick={() => void moveToCurrentSheets()}>Move to current sheets</button>}>
-          Saved on earlier sheets: it shows as it was keyed in, read only. Move it to the current sheets to change it.
+          {quote !== null && recovered.version !== null && recovered.version !== quote.version && " The quote has changed since then."}
         </Notice>
       )}
       {reason === "archived" && quote !== null && (
@@ -580,7 +578,7 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
       )}
       {reason === "final" && quote !== null && quote.final_at !== null && (
         <Notice tone="info" testId="notice-final">
-          Final at revision {quote.final_revision}, marked by {quote.final_by} {relativeTime(new Date(quote.final_at))}. Reopen it, giving a reason, to change it.
+          Marked final by {quote.final_by} {relativeTime(new Date(quote.final_at))}. Amend it, giving a reason, to change it.
         </Notice>
       )}
       {moved && (

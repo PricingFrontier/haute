@@ -813,10 +813,10 @@ def test_a_managed_quote_details_column_keeps_its_number_format(project: Path) -
     assert (option.number_format, option.decimal_places) == ("number", 0)
 
 
-def test_an_output_column_s_file_holds_no_rule(project: Path) -> None:
+def test_an_output_column_s_file_holds_no_rule_but_required(project: Path) -> None:
     files = files_of(FORM, project)
 
-    rules = {"required", "min", "max", "options", "options_source", "row_per_value"}
+    rules = {"min", "max", "options", "options_source", "row_per_value"}
     for written in json.loads(files["schema/pricing.json"])["columns"]:
         assert not set(written) & (rules | {"default_value"})
     # A form whose output column holds a rule is one the folder cannot hold: refused naming
@@ -825,10 +825,17 @@ def test_an_output_column_s_file_holds_no_rule(project: Path) -> None:
     column_of(ruled, "t_pricing", "c_premium").update(required=True, min=0.0)
     with pytest.raises(FormFolderNameError) as caught:
         files_of(ruled, project)
-    assert len(caught.value.problems) == 2
-    assert all("pricing.premium" in problem for problem in caught.value.problems)
-    assert "required" in caught.value.problems[0]
-    assert "min" in caught.value.problems[1]
+    assert len(caught.value.problems) == 1
+    assert "pricing.premium" in caught.value.problems[0]
+    assert "min" in caught.value.problems[0]
+    # Required is what marking a quote final checks, in an output column as in an input: it
+    # is written and read back.
+    required = copy.deepcopy(FORM)
+    column_of(required, "t_pricing", "c_premium").update(required=True)
+    write_form(project, required)
+    spec = read_form_document(config(project)).spec
+    pricing = next(table for table in spec.data_schema.tables if table.id == "t_pricing")
+    assert next(column for column in pricing.columns if column.id == "c_premium").required
 
 
 def test_files_name_tables_and_columns_by_name(project: Path) -> None:
@@ -1731,7 +1738,6 @@ _NO_INPUT = "is the sample of no input table: rename it after its table or remov
 _LAYOUT = "sheets/br_coverages.layout.json"
 _CHART_AT = '"chart_c6h7": {"x": 760, "y": 16, "w": 480, "h": 280}'
 _OUTPUT_RULES = [
-    ("required", "true"),
     ("min", "0"),
     ("max", "1"),
     ("options", '["a"]'),

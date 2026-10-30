@@ -368,7 +368,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
       rows: "one",
       columns: names.map((name) => ({ name, type: "float" as const })),
     })
-    await fetchTables({ tables: [policy("exposure", "limit")], sample: {}, response_tables: [] })
+    await fetchTables({ tables: [policy("exposure", "limit")], sample: {}, response_tables: [], store_columns: {} })
     mockPreview.mockResolvedValue(envelope("priced", [], "exposure"))
     const { result } = await renderLoaded([makeNode("priced")])
     const recordedAt = useGraphStore.getState().structuralVersion
@@ -388,7 +388,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     expect(mockPreview.mock.calls[0][0].requestedPreviewColumns).toEqual(["limit", "exposure"])
     await settle(result)
 
-    await fetchTables({ tables: [policy("exposure")], sample: {}, response_tables: [] })
+    await fetchTables({ tables: [policy("exposure")], sample: {}, response_tables: [], store_columns: {} })
     expect(useGraphStore.getState().structuralVersion).toBe(recordedAt + 1)
     act(() => result.current.refreshPreview(priced))
     await waitFor(() => expect(mockPreview.mock.calls.length).toBeGreaterThanOrEqual(2), { timeout: STEP_TIMEOUT_MS })
@@ -400,7 +400,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     // What a Workbench Input is given changes what everything below it previews, though
     // nothing in the graph changes with it.
     const policy: WorkbenchTable = { name: "policy", rows: "one", columns: [{ name: "exposure", type: "float" }] }
-    await fetchTables({ tables: [policy], sample: {}, response_tables: [] })
+    await fetchTables({ tables: [policy], sample: {}, response_tables: [], store_columns: {} })
     mockPreview.mockResolvedValue(envelope("priced"))
     const quote = makeNode("quote", "workbenchInput", {
       data: { label: "quote", nodeType: "workbenchInput", config: {}, _sourceHandleInputNames: {} },
@@ -413,11 +413,11 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     await settle(result)
     expect(mockPreview).toHaveBeenCalledTimes(1)
 
-    await fetchTables({ tables: [policy], sample: {}, response_tables: [] })
+    await fetchTables({ tables: [policy], sample: {}, response_tables: [], store_columns: {} })
     await settle(result)
     expect(mockPreview).toHaveBeenCalledTimes(1)
 
-    await fetchTables({ tables: [policy], sample: { policy: { exposure: 250000 } }, response_tables: [] })
+    await fetchTables({ tables: [policy], sample: { policy: { exposure: 250000 } }, response_tables: [], store_columns: {} })
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(2), { timeout: STEP_TIMEOUT_MS })
     await settle(result)
     expect(useNodeResultsStore.getState().getPreview("priced")?.nodeDataEpoch).toBe(epoch())

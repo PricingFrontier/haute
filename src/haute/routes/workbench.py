@@ -56,6 +56,7 @@ from haute.schemas import (
     WorkbenchFormTablesRequest,
     WorkbenchParamFileResponse,
     WorkbenchStatusResponse,
+    WorkbenchStoreColumn,
     WorkbenchTablesResponse,
 )
 
@@ -80,7 +81,11 @@ async def _enabled_config() -> WorkbenchConfig:
 
 def _tables_response(spec: FormSpec) -> WorkbenchTablesResponse:
     """The tables, sample and response tables of *spec*, holding Haute's ``quote_details``
-    as every form read or saved does, the tables checked as the pipeline's."""
+    as every form read or saved does, the tables checked as the pipeline's, and the columns
+    the quote store keeps in each table that the form does not."""
+    # The store's columns are declared beside its tables, which only the app's store loads.
+    from haute._quote_store._schema import store_columns
+
     spec = with_quote_details(spec)
     try:
         tables = workbench_tables(spec)
@@ -92,6 +97,10 @@ def _tables_response(spec: FormSpec) -> WorkbenchTablesResponse:
         tables=list(tables.tables),
         sample=tables.sample,
         response_tables=list(tables.response_tables),
+        store_columns={
+            table_id: [WorkbenchStoreColumn(name=name, kind=kind) for name, kind in kept]
+            for table_id, kept in store_columns(spec).items()
+        },
     )
 
 

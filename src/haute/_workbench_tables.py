@@ -25,6 +25,8 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from haute._graph_utils import is_frame_label
+from haute._json_safe import to_json_safe
+from haute._output_assembler import prune_document
 from haute._workbench_form import (
     IDENTITY_COLUMNS,
     QUOTE_DETAILS_ID,
@@ -332,7 +334,17 @@ def sample_quote(
     from haute._workbench_visibility import visibility
 
     hidden = visibility(spec, spec.sample).hidden
+    sample, _, typed = _quoted(spec, hidden, untyped)
+    return sample if typed else {}
+
+
+def _quoted(
+    spec: FormSpec, hidden: Collection[tuple[str, str]], untyped: Collection[tuple[str, str]]
+) -> tuple[dict[str, Any], dict[str, list[int]], bool]:
+    """:func:`sample_quote`'s quote whatever is typed, each many-row table's rows' numbers on
+    the sheet, by its name, and whether anything is typed."""
     sample: dict[str, Any] = {}
+    numbers: dict[str, list[int]] = {}
     typed = False
     for table in spec.data_schema.tables:
         if table.role != "input":
@@ -354,14 +366,31 @@ def sample_quote(
             if not column.index and column is not given and (table.id, column.id) not in untyped
         )
         # Numbered as the rows stand, from 1, so deleting a row renumbers those after it.
-        records = [
-            record
+        numbered = [
+            (number, record)
             for number, row in enumerate(rows, 1)
             if (record := _record(columns, row, number))
         ]
-        if records:
+        if numbered:
+            records = [record for _, record in numbered]
             sample[table.name] = records if table.rows == "many" else records[0]
-    return sample if typed else {}
+            if table.rows == "many":
+                numbers[table.name] = [number for number, _ in numbered]
+    return sample, numbers, typed
+
+
+def quote_request_rows(
+    spec: FormSpec, values: Mapping[str, Any]
+) -> tuple[dict[str, Any], dict[str, list[int]]]:
+    """The request :func:`quote_request` builds from *values*, whatever is typed, and each
+    many-row table's rows' numbers on the sheet, by its name, in the request's order: the
+    quote store keeps a row under its sheet number, so a grid opens as it was saved."""
+    # Imported here: the visibility rules read cells as this module types them.
+    from haute._workbench_visibility import visibility
+
+    priced = spec.model_copy(update={"sample": dict(values)})
+    request, numbers, _ = _quoted(priced, visibility(priced, priced.sample).hidden, frozenset())
+    return request, numbers
 
 
 def quote_request(
@@ -374,6 +403,27 @@ def quote_request(
     table's filled rows by name, read as :func:`sample_quote` reads the sample, the cells the
     sheets hide left out, and empty when nothing but the cells of *untyped* is typed."""
     return sample_quote(spec.model_copy(update={"sample": dict(values)}), untyped=untyped)
+
+
+def finite_document(document: Any) -> Any:
+    """A priced quote's response *document* with every float that is not finite as null,
+    then pruned as a response is: what the quote store keeps, and what a pricing answers."""
+
+    def finite(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: finite(each) for key, each in value.items()}
+        if isinstance(value, list):
+            return [finite(each) for each in value]
+        return None if isinstance(value, float) and not math.isfinite(value) else value
+
+    return prune_document(finite(document))
+
+
+def priced_tables(document: Mapping[str, Any]) -> dict[str, list[Any]]:
+    """A pruned response *document* as a pricing answers its tables: each output table's rows
+    by name, a one-row table's one row in a list, JSON-safe."""
+    answered = to_json_safe(document)
+    return {name: rows if isinstance(rows, list) else [rows] for name, rows in answered.items()}
 
 
 def preset_column(table: SchemaTable) -> SchemaColumn | None:

@@ -331,8 +331,9 @@ export const addSchemaTable = (spec: FormSpec, table: SchemaTable): FormSpec =>
 
 /**
  * A table's settings changed; a table made an output loses what only typing gives: the
- * rules only what is typed takes (`INPUT_ONLY_RULES`) and its sample rows, which the form
- * folder writes for no output table.
+ * rules only what is typed takes (`INPUT_ONLY_RULES`), Required aside, which marking a quote
+ * final checks in an output too, and its sample rows, which the form folder writes for no
+ * output table.
  */
 export const updateSchemaTable = (spec: FormSpec, id: string, patch: Partial<SchemaTable>): FormSpec =>
   edit(spec, (draft) => {
@@ -345,8 +346,7 @@ export const updateSchemaTable = (spec: FormSpec, id: string, patch: Partial<Sch
   })
 
 /** The settings only an input column takes, each as a column without it holds it. */
-const INPUT_ONLY_RULES: Pick<SchemaColumn, "required" | "min" | "max" | "options" | "options_source" | "row_per_value" | "default_value"> = {
-  required: false,
+const INPUT_ONLY_RULES: Pick<SchemaColumn, "min" | "max" | "options" | "options_source" | "row_per_value" | "default_value"> = {
   min: null,
   max: null,
   options: [],

@@ -1,7 +1,10 @@
-/** A schema table's block: its name, role and rows, its problems, and its columns, dragged or moved (specs/workbench). */
+/**
+ * A schema table's block: its name, role and rows, its problems, its columns, dragged or
+ * moved, and under them those the quote store keeps in it, locked (specs/workbench).
+ */
 import { ChevronDown, ChevronRight, Lock, Trash2 } from "lucide-react"
 import { useRef, type KeyboardEvent } from "react"
-import type { FormSpec, SchemaTable } from "../../api/types"
+import type { FormSpec, SchemaTable, WorkbenchStoreColumn } from "../../api/types"
 import { CommittedTextField, INPUT_STYLE, QuietAction } from "../../components/form"
 import useListReorder, { type RowDrag } from "../../hooks/useListReorder"
 import useRefocusAfterMove, { altArrowMove, type RefocusAfterMove } from "../../hooks/useRefocusAfterMove"
@@ -9,7 +12,7 @@ import { confirmed } from "../../stores/useQuestionStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { isIdentityColumn } from "../../utils/quoteIdentity"
 import { addSchemaColumn, buttonUses, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, moveSchemaColumn, moveSchemaTable, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_MANAGED, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
-import { ColumnRow } from "./ColumnRow"
+import { ColumnRow, StoreColumnRow } from "./ColumnRow"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
 import { IndexControl } from "./IndexControl"
@@ -45,6 +48,8 @@ interface TableBlockProps {
    * table open and nothing in it added or moved; null while it is not.
    */
   matched: ReadonlySet<string> | null
+  /** The columns the quote store keeps in the table that the form does not, shown under its own while it is not searched. */
+  kept: readonly WorkbenchStoreColumn[]
   added: string | null
   setAdded: (id: string | null) => void
   details: string | null
@@ -54,7 +59,7 @@ interface TableBlockProps {
   problems: string[]
 }
 
-export function TableBlock({ form, table, index, refocus: refocusTable, drag, readOnly, matched, added, setAdded, details, setDetails, collapsed, onToggleCollapsed, problems }: TableBlockProps) {
+export function TableBlock({ form, table, index, refocus: refocusTable, drag, readOnly, matched, kept, added, setAdded, details, setDetails, collapsed, onToggleCollapsed, problems }: TableBlockProps) {
   const change = useWorkbenchFormStore((s) => s.change)
   const block = useRef<HTMLElement>(null)
   const shown = fieldUses(form, table.id).length
@@ -205,6 +210,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
               drag={fixed || filtering || column.index || isIdentityColumn(column) ? undefined : dragColumn(at)}
             />
           ))}
+          {!filtering && kept.map((column) => <StoreColumnRow key={column.name} column={column} />)}
           {locked ? (
             <p className="px-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
               Kept with each quote and listed on the Quotes page; the app sets {APP_SET}.
