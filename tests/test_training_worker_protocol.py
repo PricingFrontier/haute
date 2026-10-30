@@ -484,7 +484,14 @@ def _launch(
     prepared = tmp_path / "prepared.parquet"
     prepared.write_bytes(b"prepared")
     job_id = store.create_job(
-        {"status": "running", "job_type": "training", "start_time": time.monotonic(), "timeout": 60}
+        {
+            "status": "running",
+            "job_type": "training",
+            "node_id": "quoted",
+            "node_label": "quoted",
+            "start_time": time.monotonic(),
+            "timeout": 60,
+        }
     )
     thread = service._launch_background(
         job_id,
@@ -1466,7 +1473,14 @@ def test_completed_job_owns_its_artifact_directory_after_parent_cleanup(
     prepared = tmp_path / "prepared.parquet"
     prepared.write_bytes(b"prepared")
     job_id = store.create_job(
-        {"status": "running", "job_type": "training", "start_time": time.monotonic(), "timeout": 60}
+        {
+            "status": "running",
+            "job_type": "training",
+            "node_id": "quoted",
+            "node_label": "quoted",
+            "start_time": time.monotonic(),
+            "timeout": 60,
+        }
     )
     with patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob):
         thread = service._launch_background(
@@ -1700,6 +1714,8 @@ def test_train_service_publication_wins_late_cancel_and_records_elapsed(tmp_path
         {
             "status": "running",
             "job_type": "training",
+            "node_id": "quoted",
+            "node_label": "quoted",
             "start_time": time.monotonic() - 2,
             "timeout": 60,
         }
@@ -1764,7 +1780,14 @@ def test_live_training_never_auto_logs(tmp_path: Path) -> None:
     prepared.write_bytes(b"prepared")
     output = tmp_path / "outputs"
     job_id = store.create_job(
-        {"status": "running", "job_type": "training", "start_time": time.monotonic(), "timeout": 60}
+        {
+            "status": "running",
+            "job_type": "training",
+            "node_id": "train_node",
+            "node_label": "train_node",
+            "start_time": time.monotonic(),
+            "timeout": 60,
+        }
     )
     with patch.object(service._supervisor, "launch_protocol") as mock_launch:
         service._launch_background(

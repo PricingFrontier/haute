@@ -725,7 +725,12 @@ not exist, listing the catalogs the token can see (many workspaces have no `main
    path while retaining the canonical config unchanged, user code,
    preamble namespace, and executor post-processing);
    `externalFile` with a remapped bundled path (run its user code against the
-   loaded object, or passthrough if no code); `optimiserApply` either file-based-remapped
+   loaded object, or passthrough if no code). The hook forwards the logical
+   source names supplied by the shared `resolve_orig_source_names` builder
+   context and the node's `inputMapping` to `_exec_user_code`, exactly as the
+   editor's Load File builder does. These shared bindings apply to an owner or
+   instance of any submodel, including a one-node wrapper; no deploy-specific
+   logical-name binding is permitted. `optimiserApply` either file-based-remapped
    or MLflow-sourced (`run`/`registered`, downloaded at request time from the node's
    `mlflow_destination` — absent = the local folder of the deployed environment — through
    `load_mlflow_optimiser_artifact(destination=...)`, so a Local artifact is served from Local
@@ -956,7 +961,9 @@ what they cover:
   holding its nodes under runtime ids); the artefacts of two occurrences of one definition
   bundled and staged for MLflow as flat files, one per key, each holding its source's bytes;
   a response inside a submodel found; the scorer refusing a graph that still holds an
-  occurrence, naming it.
+  occurrence, naming it. `test_load_file_deploy_preserves_logical_inputs` checks
+  grouped and wrapped Load File owners and instances whose code reads logical names
+  preserved by `inputMapping`, comparing deployed rows with the editor's rows.
 - **`test_served_haute.py`** — a released haute pinned, an editable one refused, one installed from
   Git repacked into a wheel with its package and metadata but not the installer's records,
   scripts (one recorded by an absolute path among them) or compiled files, a valid RECORD that

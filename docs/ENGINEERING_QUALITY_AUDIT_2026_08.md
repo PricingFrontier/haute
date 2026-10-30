@@ -197,8 +197,6 @@ independent interpretations of the same call/decorator/input identity.
 
 - `_is_simple_literal` is duplicated in `src/haute/_explore_charts.py` and
   `src/haute/_explore_pivots.py`.
-- Trace `instanceOf` effective-code resolution is repeated in three paths in
-  `src/haute/_trace_enrichment.py`.
 - `row_to_json_safe` and trace `_jsonify_row` perform the same wrapper
   conversion around the shared JSON-safe scalar function.
 - Databricks route and SQL IO paths independently resolve the same PAT/OAuth

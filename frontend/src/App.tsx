@@ -62,6 +62,7 @@ import useSubmodelNavigation, { type SubmodelCreateResult } from "./hooks/useSub
 import useSubmodelBoundaryEditing from "./hooks/useSubmodelBoundaryEditing"
 import useKeyboardShortcuts from "./hooks/useKeyboardShortcuts"
 import useWindowFileDropGuard from "./hooks/useWindowFileDropGuard"
+import { WRAPPED_INSTANCE_TYPES } from "./utils/nodeTypes"
 import useNodeHandlers from "./hooks/useNodeHandlers"
 import useEdgeHandlers from "./hooks/useEdgeHandlers"
 import usePanelGraphContext from "./hooks/usePanelGraphContext"
@@ -87,7 +88,6 @@ import { HAUTE_SESSION_EXPIRED_EVENT } from "./api/client"
 
 import {
   NODE_TYPES,
-  isSingletonType,
   singletonTypesInDocument,
   singletonTypesInSubmodelDefinition,
 } from "./utils/nodeTypes"
@@ -283,7 +283,6 @@ function ActiveNodePreviewBody({
 }: Omit<ActiveNodePreviewProps, "run">) {
   const activeNodeType = activeNode ? effectiveNodeType(activeNode) : undefined
   const canRefresh = activeNode
-    && activeNodeType !== NODE_TYPES.SUBMODEL
     && activeNodeType !== NODE_TYPES.SUBMODEL_PORT
     && nodeData(activeNode)._loadAvailability !== "unavailable"
     && nodeData(activeNode)._loadAvailability !== "blocked"
@@ -374,7 +373,7 @@ function ActiveNodePreviewBody({
       }
       inputAction={
         documentCanExecute && canRefresh && activeNode ? (
-          <InputImportButton node={activeNode} allNodes={panelNodes} onImported={onImported} />
+          <InputImportButton node={activeNode} onImported={onImported} />
         ) : undefined
       }
       errorAction={askAssistant ? <AskAssistantButton onClick={askAssistant} /> : undefined}
@@ -1076,6 +1075,10 @@ function FlowEditor() {
       previewData !== null && previewData.nodeId === selectedNode?.id
         ? previewData.selected_frame
         : undefined,
+    previewOutputHandle:
+      previewData !== null && previewData.nodeId === selectedNode?.id
+        ? previewData.outputHandle
+        : undefined,
   })
   // Fetch the lazy trace panel while the trace request runs.
   useEffect(() => {
@@ -1102,13 +1105,12 @@ function FlowEditor() {
     [nodesWithStatus],
   )
 
-
   const {
     viewStack,
     handleDrillIntoSubmodel, handleBreadcrumbNavigate,
     resetToAuthoritativeRoot,
     handleDocumentReload,
-    handleCreateSubmodel, handleDissolveSubmodel,
+    handleCreateSubmodel, handleCreateNodeInstance, handleDissolveSubmodel,
   } = useSubmodelNavigation({
     graphRef, parentGraphRef, activeSubmodelIdentity, setActiveSubmodelIdentity, submodelsRef,
     setNodesRaw, setEdgesRaw, setSubmodelsRaw,
@@ -1491,14 +1493,14 @@ function FlowEditor() {
     setPreviewData, fitView, getInternalNode,
     submodels,
     resolveNodeIdentities: allocateNodeIdentities,
+    createWrappedNodeInstance: handleCreateNodeInstance,
     commitSharedNodeDeletion,
   })
 
   // Toolbar selection actions. These mirror the rules the Ctrl+G shortcut and
   // the node context menu already enforce, so the buttons are a second entry
-  // point rather than a second policy: grouping needs 2+ nodes and a context
-  // that can hold a submodel (they cannot nest), instancing needs exactly one
-  // non-singleton node — the generic `instanceOf` path, not just submodels.
+  // point for the same policy: group 2+ nodes in the parent context, or
+  // reuse an occurrence or wrap one of the supported plain node types.
   // A lone submodel occurrence turns Submodel into Dissolve: the context
   // menu's "Dissolve Submodel" on the same handler.
   const selectedNodes = useMemo(
@@ -1524,9 +1526,10 @@ function FlowEditor() {
   )
   const canCreateInstance = !editingReadOnly
     && selectedNodes.length === 1
-    && !isSingletonType(nodeData(selectedNodes[0]).nodeType)
-    && nodeData(selectedNodes[0]).nodeType !== NODE_TYPES.LIVE_SWITCH
+    && (nodeData(selectedNodes[0]).nodeType === NODE_TYPES.SUBMODEL
+      || WRAPPED_INSTANCE_TYPES.has(nodeData(selectedNodes[0]).nodeType))
     && !selectedSubmodelHasSingleton
+    && (viewStack.length <= 1 || !WRAPPED_INSTANCE_TYPES.has(nodeData(selectedNodes[0]).nodeType))
   // The `can*` flags above drive presentation only. The request paths below
   // enforce policy AND say why they refused, exactly as Ctrl+G does — a
   // toolbar button that swallows the click in silence is the one case where the
@@ -1633,6 +1636,7 @@ function FlowEditor() {
     onConnectStart, onConnectEnd, onConnectionPointerMove, clearEdgeJoinCandidate,
     edgeJoinCandidateEdgeId, onNodeContextMenu, onDragOver, onDrop,
     connectionDropMenu, closeConnectionDropMenu, createNodeFromConnectionDrop,
+    submodelInputMenu, selectSubmodelInput,
   } = useEdgeHandlers({
     selectedNode, graphRef, submodels, nodeIdCounter, lastSelectedNodeRef,
     setNodes, setEdges, setNodesRaw, setEdgesRaw, pushSnapshot,
@@ -2129,6 +2133,17 @@ function FlowEditor() {
                     x={connectionDropMenu.x}
                     y={connectionDropMenu.y}
                     onSelect={createNodeFromConnectionDrop}
+                    onClose={closeConnectionDropMenu}
+                  />
+                </Suspense>
+              )}
+              {submodelInputMenu && !editingReadOnly && (
+                <Suspense fallback={null}>
+                  <ConnectionDropMenu
+                    x={submodelInputMenu.x}
+                    y={submodelInputMenu.y}
+                    inputChoices={submodelInputMenu.choices}
+                    onSelect={selectSubmodelInput}
                     onClose={closeConnectionDropMenu}
                   />
                 </Suspense>

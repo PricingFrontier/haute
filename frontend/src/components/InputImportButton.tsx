@@ -10,11 +10,9 @@ import useInputImportStore, { startInputImport } from "../stores/useInputImportS
 import useNodeDataStore from "../stores/useNodeDataStore"
 import { importedTitle } from "../utils/importedTitle"
 import { inputSnapshotSource } from "../utils/inputSnapshotSource"
-import { instanceOriginal } from "../utils/instanceOriginal"
 
 export interface InputImportButtonProps {
   node: SimpleNode
-  allNodes: SimpleNode[]
   /** Called with the node id after an import that completed and was not stopped. */
   onImported: (nodeId: string) => void
 }
@@ -29,16 +27,11 @@ export interface InputImportButtonProps {
  * The import itself belongs to the node that started it (see
  * `useInputImportStore`), so this button only shows and starts it.
  */
-export default function InputImportButton({ node, allNodes, onImported }: InputImportButtonProps) {
-  // An instance reads its original's input, so it imports that config.
-  const effective = useMemo(
-    () => instanceOriginal(node, new Map(allNodes.map((candidate) => [candidate.id, candidate]))),
-    [allNodes, node],
-  )
+export default function InputImportButton({ node, onImported }: InputImportButtonProps) {
   const source = useMemo(() => {
-    const found = inputSnapshotSource(effective)
+    const found = inputSnapshotSource(node)
     return found && found.node_type !== "apiInput" ? found : null
-  }, [effective])
+  }, [node])
   const sourceKey = source ? JSON.stringify(source) : null
   const run = useInputImportStore((s) => s.runs[node.id])
   // Every import's outcome raises the epoch, so the last-imported time is
@@ -77,7 +70,7 @@ export default function InputImportButton({ node, allNodes, onImported }: InputI
   return (
     <button
       type="button"
-      onClick={() => startInputImport(node.id, effective as never, onImported)}
+      onClick={() => startInputImport(node.id, node, onImported)}
       disabled={importing}
       className={`${PREVIEW_PANEL_ACTION_BUTTON_CLASS} shrink-0 transition-opacity hover:opacity-[0.85] disabled:opacity-70`}
       style={{ border: "1px solid var(--accent)", color: "var(--accent)", background: "transparent" }}

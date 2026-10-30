@@ -34,7 +34,7 @@ from haute._types import (
     WorkbenchInputConfig,
     WorkbenchOutputConfig,
 )
-from haute.errors import ConfigError
+from haute.errors import ConfigError, ParseError
 
 # ---------------------------------------------------------------------------
 # Valid-key registry
@@ -69,7 +69,6 @@ _TYPED_DICT_BY_NODE_TYPE: dict[NodeType, type] = {
 # ``contract`` is the column-contract annotation — may appear on any type.
 _UNIVERSAL_KEYS: frozenset[str] = frozenset(
     {
-        "instanceOf",
         "inputMapping",
         "contract",
     }
@@ -123,12 +122,37 @@ FORM_GIVEN_KEYS: dict[NodeType, frozenset[str]] = {
 }
 
 
+def removed_node_instance_error(form: str) -> ParseError:
+    """One refusal and replacement for every removed node-level reuse form."""
+    remediation = (
+        "Move the node into its own module modules/<name>.py, import it with "
+        "from modules import <name>, and register "
+        'pipeline.submodel(<name>.submodel, "<original>") and '
+        'pipeline.submodel(<name>.submodel, "<instance>", instance_of="<original>"). '
+        'Bind each input with pipeline.connect(..., target_port="<input>").'
+    )
+    return ParseError(
+        f"{form} is a removed node-level instance form. {remediation}",
+        removed_node_instance=form,
+        remediation=remediation,
+    )
+
+
+def reject_removed_node_reuse_kwargs(kwargs: Mapping[str, Any]) -> None:
+    """Reject removed reuse keywords in both parsed and live node decorators."""
+    for removed in ("of", "instanceOf"):
+        if removed in kwargs:
+            raise removed_node_instance_error("of=" if removed == "of" else removed)
+
+
 def reject_removed_config_keys(
     node_type: NodeType | str,
     config: dict[str, Any],
 ) -> None:
     """Reject retired config fields instead of silently migrating or ignoring them."""
     nt = NodeType(node_type) if not isinstance(node_type, NodeType) else node_type
+    if nt != NodeType.SUBMODEL and "instanceOf" in config:
+        raise removed_node_instance_error("instanceOf")
     removed_identity = sorted(
         _REMOVED_INPUT_IDENTITY_KEYS.get(nt, frozenset()).intersection(config)
     )
@@ -395,6 +419,8 @@ def reject_unrecognized_config_keys(
     Raises:
         ConfigError: naming the node, its type and every undeclared key.
     """
+    if node_type != NodeType.SUBMODEL and "instanceOf" in config:
+        raise removed_node_instance_error("instanceOf")
     unrecognized = unrecognized_config_keys(node_type, config)
     if unrecognized:
         keys = ", ".join(repr(key) for key in unrecognized)

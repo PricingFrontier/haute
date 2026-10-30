@@ -463,38 +463,6 @@ def test_null_handle_against_even_a_one_frame_dict_fails_loudly() -> None:
     assert "sourceHandle" in message
 
 
-def test_instance_original_input_names_come_from_original_incoming_edges() -> None:
-    graph = PipelineGraph(
-        nodes=[
-            _node("api", "API Input", NodeType.API_INPUT),
-            _node("ordinary", "Ordinary Source", NodeType.DATA_INPUT),
-            _node("original", "original", NodeType.POLARS),
-            _node("instance_source", "Instance Source", NodeType.DATA_INPUT),
-            _node(
-                "instance",
-                "instance",
-                NodeType.POLARS,
-                config={"instanceOf": "original"},
-            ),
-        ],
-        edges=[
-            GraphEdge(
-                id="api_original",
-                source="api",
-                target="original",
-                sourceHandle="quotes",
-            ),
-            GraphEdge(id="ordinary_original", source="ordinary", target="original"),
-            GraphEdge(id="instance_source_instance", source="instance_source", target="instance"),
-        ],
-    )
-    captured: dict[str, dict[str, Any]] = {}
-
-    _build_graph_funcs(graph, _capture_builder_calls(captured))
-
-    assert captured["instance"]["orig_source_names"] == ["quotes", "Ordinary_Source"]
-
-
 def test_optimiser_linear_builder_uses_original_edge_metadata_for_input_name() -> None:
     """The execution.py chain used by optimiser execution keeps the frame label."""
     from haute.execution import build_linear_execution_chain_functions

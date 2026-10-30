@@ -1189,6 +1189,65 @@ class TestSubmodelOccurrenceSchema:
 
         assert list(schema["inputs"]) == ["factored"]
 
+    @pytest.mark.parametrize("extra_output", [False, True])
+    async def test_instance_inputs_and_brief_use_the_instance_output_name(
+        self, submodel_project: Path, extra_output: bool
+    ):
+        from haute.assistant._render import render_turn_context
+        from haute.assistant._tools import build_tool_executor, build_turn_context
+
+        input_name = "vehicle_copy_factored" if extra_output else "vehicle_copy"
+        path = submodel_project / "pipeline.py"
+        source = path.read_text(encoding="utf-8")
+        source = source.replace("def premium(factored:", f"def premium({input_name}:")
+        source = source.replace("df = factored", f"df = {input_name}")
+        source = source.replace(
+            'pipeline.connect("vehicle_factors", "premium", source_port="factored")',
+            'pipeline.submodel(vehicle_factors.submodel, "vehicle_copy", '
+            'instance_of="vehicle_factors")\n'
+            'pipeline.connect("policies", "vehicle_copy", target_port="vehicles")\n'
+            'pipeline.connect("vehicle_copy", "premium", source_port="factored")',
+        )
+        path.write_text(source, encoding="utf-8", newline="\n")
+        config_path = submodel_project / "config/polars/premium.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["steps"][0]["input"] = input_name
+        config_path.write_text(json.dumps(config), encoding="utf-8", newline="\n")
+        if extra_output:
+            definition_path = submodel_project / "modules/vehicle_factors.py"
+            definition = definition_path.read_text(encoding="utf-8")
+            definition_path.write_text(
+                definition.replace(
+                    "output_ports=[",
+                    'output_ports=[\n        {"name": "audit", '
+                    '"source": {"nodeId": "vehicle_factor", "handleId": None}},',
+                ),
+                encoding="utf-8",
+                newline="\n",
+            )
+
+        result = await build_tool_executor("pipeline.py")(
+            "inspect_node", {"node": "premium", "parts": ["schema"]}
+        )
+        assert {
+            name: [c["name"] for c in cols] for name, cols in result["schema"]["inputs"].items()
+        } == {input_name: [*_POLICY_COLUMNS, "vehicle_age", "vehicle_factor"]}
+        context = render_turn_context(
+            build_turn_context(
+                "pipeline.py", _policy(max_sensitivity="restricted", executable=False)
+            )
+        )
+        assert f"- input `{input_name}` from `vehicle_copy`: [" in context
+        assert (
+            "- output port `factored` (add_edge source_handle `out__factored`, read as input "
+            f"`{input_name}`): [" in context
+        )
+        if extra_output:
+            assert (
+                "- output port `audit` (add_edge source_handle `out__audit`, read as input "
+                "`vehicle_copy_audit`): [" in context
+            )
+
     @pytest.mark.parametrize(
         ("node", "parts", "schema_readable"),
         [("vehicle_factors", ["config"], True), ("vehicle_age", ["schema"], False)],

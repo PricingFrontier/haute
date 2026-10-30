@@ -72,11 +72,7 @@ def _validate_node_parameters(
 
 
 def _declared_input_mapping(config: Mapping[str, Any]) -> Mapping[str, str] | None:
-    """The node's logical-to-connected mapping, or None for instances and unmapped nodes."""
-    if config.get("instanceOf"):
-        # An instance signature is already physical; ``inputMapping`` there
-        # describes the referenced original, not this node's own binding.
-        return None
+    """The node's logical-to-connected mapping, or None for unmapped nodes."""
     mapping = config.get("inputMapping")
     return mapping if isinstance(mapping, Mapping) else None
 

@@ -922,8 +922,8 @@ class TestPrivateChildEndpoints:
                 return result
 
             @pipeline.polars
-            def sink_b(result: pl.LazyFrame) -> pl.LazyFrame:
-                return result
+            def sink_b(b: pl.LazyFrame) -> pl.LazyFrame:
+                return b
 
             pipeline.submodel(child.submodel, "a")
             pipeline.submodel(child.submodel, "b", instance_of="a")
@@ -972,8 +972,8 @@ class TestPrivateChildEndpoints:
                 return result
 
             @pipeline.polars
-            def sink_b(result: pl.LazyFrame) -> pl.LazyFrame:
-                return result
+            def sink_b(b: pl.LazyFrame) -> pl.LazyFrame:
+                return b
 
             pipeline.submodel(child.submodel, "a")
             pipeline.submodel(child.submodel, "b", instance_of="a")

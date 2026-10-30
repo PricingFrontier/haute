@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from uuid import uuid4
 
 from pydantic import ValidationError
 
+from haute._editor_identities import NamingCandidate, name_candidates
+from haute._graph_shape import SINGLETON_NODE_GROUPS
 from haute._graph_utils import _edge_id, edge_input_name
 from haute._submodel_instances import rewrite_boundary_input_names
+from haute._support_code_names import UtilityReader
 from haute._types import (
+    SINK_ONLY_NODE_TYPES,
     GraphEdge,
     GraphNode,
     NodeData,
@@ -66,6 +72,8 @@ def _build_public_interface(
     child_node_ids: set[str],
     node_map: dict[str, GraphNode],
     submodels: dict[str, SubmodelDefinition] | None,
+    *,
+    reserved_output: SubmodelOutputPort | None = None,
 ) -> tuple[
     list[SubmodelInputPort],
     list[SubmodelOutputPort],
@@ -81,7 +89,7 @@ def _build_public_interface(
         else:
             output_groups.setdefault((edge.source, edge.sourceHandle), []).append(edge)
 
-    allocated_port_names: set[str] = set()
+    allocated_port_names = {reserved_output.name} if reserved_output else set()
 
     def _mint_port_name(base: str) -> str:
         candidate = base
@@ -109,9 +117,15 @@ def _build_public_interface(
             )
         )
 
-    output_ports: list[SubmodelOutputPort] = []
-    output_names: dict[tuple[str, str | None], str] = {}
+    output_ports = [reserved_output] if reserved_output else []
+    output_names = (
+        {(reserved_output.source.node_id, reserved_output.source.handle_id): reserved_output.name}
+        if reserved_output
+        else {}
+    )
     for identity, edges in output_groups.items():
+        if identity in output_names:
+            continue
         edge = edges[0]
         source = node_map[edge.source]
         base = _boundary_input_name(edge, source, submodels)
@@ -404,4 +418,219 @@ def create_submodel_graph(
         graph=new_graph,
         sm_file=sm_file,
         sm_name=sm_name,
+    )
+
+
+@dataclass
+class NodeInstanceGraphResult:
+    graph: PipelineGraph
+    sm_file: str
+    definition_id: str
+    owner_name: str
+    instance_name: str
+
+
+def instance_source_node(graph: PipelineGraph, node_id: str) -> GraphNode:
+    """Validate the parent-view selection before allocating any names."""
+    if any(node.data.nodeType == NodeType.SUBMODEL_PORT for node in graph.nodes):
+        raise SubmodelValidationError(
+            code="drilled_definition",
+            status_code=400,
+            detail="Return to the parent pipeline before creating an instance of a node.",
+        )
+    node = graph.node_map.get(node_id)
+    if node is None:
+        raise SubmodelValidationError(
+            code="missing_node",
+            status_code=400,
+            detail=f"Node {node_id!r} is not in the parent graph. Reload and select a node.",
+        )
+    if any(
+        node.data.nodeType in group for group, _ in SINGLETON_NODE_GROUPS
+    ) or node.data.nodeType in {
+        NodeType.SUBMODEL,
+        NodeType.SUBMODEL_PORT,
+        NodeType.LIVE_SWITCH,
+        NodeType.DATA_OUTPUT,
+    }:
+        raise SubmodelValidationError(
+            code="unsupported_instance",
+            status_code=400,
+            detail=(
+                f"Cannot wrap {node.data.label!r}: "
+                f"{node.data.nodeType.value} does not support a node instance."
+            ),
+        )
+    from haute._config_validation import reject_removed_config_keys
+
+    reject_removed_config_keys(node.data.nodeType, node.data.config)
+    return node
+
+
+def create_node_instance_graph(
+    graph: PipelineGraph,
+    node_id: str,
+    definition_name: str,
+    *,
+    read_utility: UtilityReader,
+) -> NodeInstanceGraphResult:
+    """Wrap a plain node and create an unbound occurrence, without file I/O."""
+    node = instance_source_node(graph, node_id)
+    owner_name = _sanitize_func_name(node.data.label)
+    sm_file = f"modules/{definition_name}.py"
+    cross_edges = [edge for edge in graph.edges if node_id in (edge.source, edge.target)]
+    public_output = (
+        None
+        if node.data.nodeType in SINK_ONLY_NODE_TYPES
+        else SubmodelOutputPort(
+            name=owner_name,
+            source=SubmodelEndpoint(nodeId=node_id),
+        )
+    )
+    inputs, outputs, input_names, output_names = _build_public_interface(
+        cross_edges,
+        {node_id},
+        graph.node_map,
+        graph.submodels,
+        reserved_output=public_output,
+    )
+    renames = {
+        _boundary_input_name(edge, graph.node_map[edge.source], graph.submodels): input_names[
+            (edge.source, edge.sourceHandle)
+        ]
+        for edge in cross_edges
+        if edge.target == node_id
+    }
+    (child,) = rewrite_boundary_input_names([node], {node_id: renames})
+    child = child.model_copy(deep=True, update={"position": {"x": 0.0, "y": 0.0}})
+    definition = SubmodelDefinition(
+        definitionId=definition_name,
+        file=sm_file,
+        graph=PipelineGraph(
+            nodes=[child],
+            edges=[],
+            pipeline_name=definition_name,
+            source_file=sm_file,
+            preamble=graph.preamble,
+            preserved_blocks=list(graph.preserved_blocks),
+        ),
+        inputPorts=inputs,
+        outputPorts=outputs,
+    )
+    owner = GraphNode(
+        id=owner_name,
+        type="submodel",
+        position=dict(node.position),
+        data=NodeData(
+            label=owner_name,
+            nodeType=NodeType.SUBMODEL,
+            config={"definitionId": definition_name, "alias": owner_name},
+        ),
+    )
+    definitions = {**(graph.submodels or {}), definition_name: definition}
+    parent_nodes = [owner if n.id == node_id else n for n in graph.nodes]
+    rewired = _rewire_canonical_boundary_edges(
+        cross_edges,
+        instance_id=owner_name,
+        child_node_ids={node_id},
+        input_names=input_names,
+        output_names=output_names,
+    )
+    result = graph.model_copy(
+        update={
+            "nodes": parent_nodes,
+            "edges": [e for e in graph.edges if e not in cross_edges] + rewired,
+            "submodels": definitions,
+        }
+    )
+    names, _ = name_candidates(
+        result,
+        [
+            NamingCandidate(
+                node_id=node_id,
+                label=f"{owner_name}_node",
+                node_type=node.data.nodeType,
+                alias=None,
+                submodel=definition_name,
+            )
+        ],
+        read_utility,
+        allocate=True,
+    )
+    child_name = _sanitize_func_name(names[0].label)
+    child = child.model_copy(
+        update={
+            "id": child_name,
+            "data": child.data.model_copy(update={"label": child_name}),
+        }
+    )
+    definition = definition.model_copy(
+        update={
+            "graph": definition.graph.model_copy(update={"nodes": [child]}),
+            "input_ports": [
+                port.model_copy(
+                    update={
+                        "targets": [
+                            target.model_copy(update={"node_id": child_name})
+                            for target in port.targets
+                        ]
+                    }
+                )
+                for port in inputs
+            ],
+            "output_ports": [
+                port.model_copy(
+                    update={
+                        "source": port.source.model_copy(update={"node_id": child_name}),
+                    }
+                )
+                for port in outputs
+            ],
+        }
+    )
+    result = result.model_copy(update={"submodels": {**definitions, definition_name: definition}})
+    # Match the browser's copy numbering, including copies numbered above nine.
+    base = re.sub(r"_([2-9]|[1-9]\d+)$", "", owner_name)
+    candidate = GraphNode(
+        id=uuid4().hex,
+        data=NodeData(
+            label=base,
+            nodeType=NodeType.SUBMODEL,
+            config={"definitionId": definition_name, "alias": base, "instanceOf": owner_name},
+        ),
+    )
+    names, _ = name_candidates(
+        result.model_copy(update={"nodes": [*result.nodes, candidate]}),
+        [
+            NamingCandidate(
+                node_id=candidate.id,
+                label=base,
+                node_type=NodeType.SUBMODEL,
+                alias=base,
+            )
+        ],
+        read_utility,
+        allocate=True,
+    )
+    instance_name = names[0].label
+    instance = GraphNode(
+        id=instance_name,
+        type="submodel",
+        position={"x": node.position["x"] + 60, "y": node.position["y"] + 80},
+        data=NodeData(
+            label=instance_name,
+            nodeType=NodeType.SUBMODEL,
+            config={
+                "definitionId": definition_name,
+                "alias": instance_name,
+                "instanceOf": owner_name,
+            },
+        ),
+    )
+    return NodeInstanceGraphResult(
+        graph=result.model_copy(update={"nodes": [*result.nodes, instance]}),
+        sm_file=sm_file,
+        definition_id=definition_name,
+        owner_name=owner_name,
+        instance_name=instance_name,
     )

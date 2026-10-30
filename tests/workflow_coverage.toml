@@ -468,7 +468,7 @@ tests = [
   "frontend/src/utils/__tests__/nodeUpdatePlan.test.ts::6. collision rejected when rename collides with another input without mutating graph",
   "frontend/src/utils/__tests__/nodeUpdatePlan.test.ts::7. logical collision rejected when logical name is already bound",
   "frontend/src/utils/__tests__/nodeUpdatePlan.test.ts::8. API-frame rename reaches the rule and binds logical name",
-  "frontend/src/utils/__tests__/nodeUpdatePlan.test.ts::9. instance keys still migrate exactly as before",
+  "tests/test_removed_node_instances.py::test_config_refuses_instanceof_on_every_non_occurrence",
   "frontend/src/utils/__tests__/nodeUpdatePlan.test.ts::10. sanitised label uses identity identifier in binding",
   "frontend/src/__tests__/App.integration.test.tsx::renames an ordinary source and migrates every downstream input identity atomically",
   "tests/test_rename_stable_binding.py::test_rename_stable_binding_execution_and_round_trip",
@@ -501,7 +501,7 @@ tests = [
   "frontend/src/hooks/__tests__/useKeyboardShortcuts.test.ts::Ctrl+V resolves copied node and edge identities before one atomic paste",
   "frontend/src/hooks/__tests__/useKeyboardShortcuts.test.ts::Ctrl+V filters out singleton nodes that already exist in the graph",
   "frontend/src/hooks/__tests__/useKeyboardShortcuts.test.ts::Ctrl+G inside submodel shows nesting warning instead of dialog",
-  "frontend/src/hooks/__tests__/useNodeHandlers.test.ts::handleCreateInstance creates an instance node with toast",
+  "frontend/src/hooks/__tests__/useNodeHandlers.test.ts::a plain node's Create Instance commits the resolved wrapped graph as one undo step",
   "frontend/src/hooks/__tests__/useNodeHandlers.test.ts::refuses to instance a submodel definition containing a singleton",
   "frontend/src/hooks/__tests__/useNodeHandlers.test.ts::handleDeleteNode removes node and connected edges in ONE atomic step",
   "frontend/src/hooks/__tests__/useSubmodelNavigation.test.ts::handleDissolveSubmodel calls API and updates nodes",
@@ -553,7 +553,7 @@ tests = [
   "tests/test_submodel_ops.py::TestGroupingPreservesConsumerBindings::test_grouping_preserves_the_consumer_input_name",
   "tests/test_pipeline_recovery.py::test_editor_identity_route_requires_an_alias_for_submodel_nodes",
 ]
-invariant = "A Polars node's positional parameters are exactly its connected inputs by name (an ordinary source's node name, an API frame handle, a sanitized public submodel output port name, or a declared inputMapping): the parser infers nothing, an unbound parameter or unconsumed input is a ParseError carried into the editor as a degraded document that refuses Save, a mapped or port-named consumer parses, executes and regenerates byte-identically, and the input chips show the same names the executor binds."
+invariant = "A Polars node's positional parameters are exactly its connected inputs by name (an ordinary source's node name, an API frame handle, an owner's public submodel output port name, an instance's name (or <instance>_<port> for multiple outputs), or a declared inputMapping): the parser infers nothing, an unbound parameter or unconsumed input is a ParseError carried into the editor as a degraded document that refuses Save, a consumer using these names parses, executes and regenerates byte-identically, and the input chips show the same names the executor binds."
 
 [scenarios.evidence]
 commit = "f8af18c67"

@@ -109,16 +109,16 @@ pipeline.submodel(
 )
 """
     ]
-    # A consumer of an occurrence output names its parameter after the public
-    # output port ("result"), exactly as codegen emits it; that is the
-    # physical edge input the executor binds after flattening.
+    # The owner exports its public port name ("result"); the single-output
+    # instance exports its own name ("b"). Consumers use those logical names,
+    # which flattening binds to each occurrence's qualified child.
     sink_a_has_input = any("sink_a" in c for c in rendered_connects)
     sink_b_has_input = any("sink_b" in c for c in rendered_connects)
 
     sink_a_param = "result: pl.LazyFrame" if sink_a_has_input else ""
     sink_a_body = "return result" if sink_a_has_input else "return pl.LazyFrame()"
-    sink_b_param = "result: pl.LazyFrame" if sink_b_has_input else ""
-    sink_b_body = "return result" if sink_b_has_input else "return pl.LazyFrame()"
+    sink_b_param = "b: pl.LazyFrame" if sink_b_has_input else ""
+    sink_b_body = "return b" if sink_b_has_input else "return pl.LazyFrame()"
 
     sinks = [
         f"""
@@ -357,6 +357,12 @@ def test_private_child_endpoints_are_rejected_with_exactly_the_authored_edges(
 
 
 @pr_budget(25)
+@example(
+    chain_name_prefix="n",
+    chain_len=1,
+    ints=[0],
+    occ_count=2,
+)
 @example(
     chain_name_prefix="n",
     chain_len=1,

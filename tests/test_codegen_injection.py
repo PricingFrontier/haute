@@ -26,7 +26,6 @@ from haute._codegen_builders import _sanitize_description
 from haute._config_io import collect_node_configs
 from haute._contracts import Contract
 from haute.codegen import (
-    _instance_to_code,
     _node_to_code,
     graph_to_code,
 )
@@ -374,18 +373,6 @@ class TestTripleQuoteInjection:
         _compile_node_code(code)
         assert "single" in code
         assert "double" in code
-
-    def test_instance_node_triple_quote_description(self):
-        """Instance nodes also handle triple-quote descriptions."""
-        node = _make_node(
-            "polars",
-            {"code": "", "instanceOf": "original"},
-            label="Instance1",
-            description='Instance """special"""',
-        )
-        code = _instance_to_code(node, "original_func", source_names=["src"])
-        _compile_node_code(code)
-        _ast_parse_node_code(code)
 
     def test_output_node_triple_quote_description(self):
         """Output declaration (the docstring is its whole body) handles triple quotes."""

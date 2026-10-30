@@ -29,7 +29,7 @@
 | `src/haute/_node_builder.py` | `NodeBuildHooks` and `wrap_builder`, the interception seam used by deploy scoring while preserving the canonical runtime builders. |
 | `src/haute/_topo.py` | Strict `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), explicit `topo_sort_ids_filtered` (opt-in subset traversal returning both the order and every dropped edge/endpoint), `canonical_topological_order` (the same graphlib sorter driven lexically: the smallest ready node id always comes next, so it is independent of input order; projection diagnostics rank nodes by it), and `ancestors` (a node and its ancestors over reversed edges, walked by `upstream_node_ids`). The default sorter never silently ignores an unknown endpoint. It is the one topological sort; `_find_cycle_nodes` peels in-degrees only to report every node in a cycle. |
 | `src/haute/graph_utils.py` | Canonical outward re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. Low-level engine modules import canonical graph models from `_types.py` and pure helpers from `_graph_utils.py` directly; importing back through this heavyweight facade would re-enter `_execute_lazy.py` and create an execution/RAM-estimation cycle. |
-| `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids` (the one ancestor walk, over any parents mapping, in depth-first preorder from the node's parents; `ancestors`, the trace waterfall's lineage check, the recovery route's ancestor closure and the optimiser's upstream node-type search all use it), `_sanitize_func_name`, `edge_input_name` (the single edge->input-name derivation: apiInput-frame edge -> its frame label verbatim, submodel-output edge -> its sanitised public output port name, else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `build_instance_mapping`, `resolve_orig_source_names`, and edge-id construction. |
+| `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids` (the one ancestor walk, over any parents mapping, in depth-first preorder from the node's parents; `ancestors`, the trace waterfall's lineage check, the recovery route's ancestor closure and the optimiser's upstream node-type search all use it), `_sanitize_func_name`, `edge_input_name` (the single edge->input-name derivation: apiInput-frame edge -> its frame label verbatim, submodel-output edge -> its sanitised public output port name from an owner and, from an instance, the instance's sanitised name (one output) or `<instance>_<port>` (several), else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `resolve_orig_source_names`, and edge-id construction. |
 | `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional address-space resource cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state; the shared supervisor helpers `isolated_worker_failure_is_memory()` (RSS breach, unsupported cap, memory-looking crash exit code, or a memory-typed remote exception) and `isolated_worker_memory_detail()` (the closed memory-limit payload whose reason is one of worker_rss_limit_exceeded, native_memory_cap_unavailable, worker_may_have_exceeded_memory_limit, or worker_memory_limit) that the Data Output writer, training preparation, and the deployed batch path all map their 507 outcomes through. |
 | `src/haute/_native_memory_limit.py` | Required/best-effort native memory enforcement for isolated workers: aggregate Linux cgroup and Windows Job Object leases, single-process RLIMIT compatibility, fork-safe ownership, and the context-local active-backend proof used to prevent unaccounted descendant parallelism. |
 | `src/haute/routes/_isolated_worker_async.py` | Async route bridge for cancellable isolated-worker transactions: runs the blocking supervisor off-loop, propagates route cancellation/timeout without thread-compute fallback, drains the supervisor to termination, preserves the primary failure when cleanup also fails, and provides the shared linearizable cancellation/publication gate. |
@@ -1778,10 +1778,7 @@ present a structural or schema result as execution evidence.
   maps; the graph walker,
   `executor.py`'s preview path, and `execution.py`'s linear/optimiser execution all
   pass their node's incoming edges through the same derivation. There is no parent-name reconstruction path.
-  `resolve_orig_source_names` likewise derives an instance's
-  *original* input names from the original node's incoming edges (edge-derived, not
-  parent-node-id-derived), so instance alias injection speaks the same names as the
-  original's signature. Duplicate derived names among one node's incoming edges
+  Duplicate derived names among one node's incoming edges
   raise `ConfigError` naming the node and the colliding name (matching codegen's
   save-time rejection); the executor never suffixes or renames. Detection is
   the shared pure helper `duplicate_input_names(names)` (`_graph_utils.py`):
@@ -1874,29 +1871,46 @@ present a structural or schema result as execution evidence.
   next operation resolves a fresh fingerprint and therefore sees helper edits. There is no
   process-lifetime marker: a namespace is never reused across operations under a
   dependency identity other than the one it was compiled for.
-- **`resolve_orig_source_names`/`build_instance_mapping` reject ambiguity rather than
-  guessing.** A substring-match pairing between an instance node's upstream sources
-  and the original node's parameter names that is ambiguous in either direction
-  raises `ConfigError` instead of falling back to greedy first-fit — the code
-  docstring notes a prior greedy implementation could silently swap two inputs and
-  produce a clean-looking but wrong run.
-- **A non-instance Transform or Load File `inputMapping` preserves authored input
-  identity across parent replacement.** Both are the surfaces whose code names its
-  inputs (`stepped_surface_allows_input_references`), and an instance of either
-  resolves its original's logical names through the original's mapping the same way. `resolve_orig_source_names` derives the current input names
+- **A Transform or Load File `inputMapping` preserves authored input identity across
+  parent replacement.** Both are the surfaces whose code names its inputs
+  (`stepped_surface_allows_input_references`). `resolve_orig_source_names` derives the current input names
   from the node's incoming edges, validates the mapping as a one-to-one
   `{logical_name: current_edge_name}` relation, and returns logical names in current
   edge order. `_exec_user_code` therefore exposes both the current binding and the
-  stable logical alias during canvas execution. Stale, malformed, or colliding
-  mappings raise `ConfigError`; they never fall back positionally. Instance nodes
-  retain the existing original-node mapping path and take precedence over this
-  ordinary-transform behaviour.
+  stable logical alias during canvas execution. Aliases are bound from the original
+  input frames together, so swapping two logical names cannot overwrite either
+  frame before the other alias is bound. Stale, malformed, or colliding
+  mappings raise `ConfigError`; they never fall back positionally. No node carries
+  `instanceOf`: an instance is a submodel occurrence, expanded before execution, and
+  flattening records the `inputMapping` its nodes need when a bound frame's name differs
+  from the public input their code reads.
 - **An instance's missing-column warnings compare the frames its edges carry.** For
-  each node with an `instanceOf`, every preview (full, target-only, a run of the
-  whole graph) reports as `missing` the columns the original's incoming edges carry
-  that the instance's do not, read from the walk's recorded schemas rather than a
-  materialised frame, so a source the preview did not materialise still counts. A
-  request input emits one frame per table it declares, and its edge carries the
+  each public input that an instance occurrence and its owner both bind (flattening
+  carries each instance's shared bindings in the private
+  `PipelineGraph._submodel_shared_bindings` attribute), every preview
+  (full, target-only, a run of the whole graph) that reaches one of the instance's
+  nodes reports as `missing`, under the occurrence's id and naming the input
+  (`SchemaWarning.input`), the columns the owner's bound frame carries that the
+  instance's does not. Columns come from schemas, never rows: the walk's recorded
+  schemas, and a lazy schema-only resolution of a bound frame the walk did not
+  reach; a frame whose schema cannot be resolved gives one `unavailable` warning
+  for that input, carrying the error (`SchemaWarning.detail`). A schema
+  warning has `input` and `detail`; only `unavailable` omits `column`,
+  and it requires the input name and error detail. `executor._submodel_schema_warnings`
+  reads the original walk's schemas first and uses the same `walk_graph` with
+  `schema_only=True` and an empty collection set for unvisited sources, under
+  `recording_schema_tiers`. It compiles the preamble at most once per warning pass,
+  only when an unvisited lineage needs it, retaining a compilation failure for
+  each affected input. Only `ValueError`, `OSError`, Polars errors and `HauteError`
+  become `unavailable` warnings; missing endpoint nodes and other invariant or
+  programming errors propagate. Comparisons run again on preview cache hits, so
+  a change to an unvisited owner's lineage updates its instance's warnings.
+  The occurrence has a metadata-only `NodeResult` carrying its warnings
+  (including an empty list to clear an earlier comparison). These entries are
+  excluded from per-node execution reports, node counts, statuses and timing/memory lists;
+  preview responses retain them in `node_schema_warnings`. Occurrence output
+  schemas still come from the expanded output source nodes.
+  A request input emits one frame per table it declares, and its edge carries the
   declared schema of the frame its `sourceHandle` names (the schema the walk reports
   for that frame), never the bundle; an edge naming no table the input declares
   carries none, even from a one-frame source. Its consumer reports that binding as
@@ -2740,6 +2754,10 @@ present a structural or schema result as execution evidence.
   typed-error surface external callers are expected to catch by type.
 
 ## Testing
+
+- `tests/test_executable_names.py::test_execution_preserves_swapped_logical_input_bindings`
+  checks the rows read through two swapped logical input names after ordinary
+  input mappings have been resolved into edge order.
 
 - **`tests/test_row_order_parity.py`** — a pipeline with an ordered Edge Join, a Join step
   and a Sort rows with ties over Parquet scans gives the same rows in the same order from a

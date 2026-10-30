@@ -4,6 +4,7 @@
  * Results are keyed by node ID and survive panel unmount/remount. This is the
  * core persistence layer that prevents losing expensive computation results
  * when clicking away from a node and back.
+ * Occurrence outputs use individual cache keys; their data retains the visible node ID.
  *
  * Cache invalidation:
  *   - Previews/columns: keyed on (nodeId, source, rowLimit, structuralVersion);
@@ -890,6 +891,10 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
   setPreview: (nodeId, data, structuralVersion, source, rowLimit, nodeDataEpoch) =>
     set((s) => {
       touchCachedResult(previewRecency, nodeId)
+      const pinnedKey = s.pinnedPreviewNodeId === data.nodeId ? nodeId
+        : Object.keys(s.previews)
+          .filter((key) => key === s.pinnedPreviewNodeId || s.previews[key].data.nodeId === s.pinnedPreviewNodeId)
+          .sort((a, b) => (previewRecency.get(b) ?? 0) - (previewRecency.get(a) ?? 0))[0]
       const bounded = trimCacheByRecency(
         {
           ...s.previews,
@@ -897,7 +902,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         },
         previewRecency,
         MAX_CACHED_PREVIEWS,
-        s.pinnedPreviewNodeId,
+        pinnedKey,
       )
       return {
         previews: bounded.records,
@@ -1597,7 +1602,11 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     dropCachedResult(solveResultRecency, nodeId)
     dropCachedResult(trainResultRecency, nodeId)
     set((s) => {
-      const { [nodeId]: _rp, ...previews } = s.previews; void _rp
+      const previews = Object.fromEntries(Object.entries(s.previews).filter(([key, entry]) => {
+        if (key !== nodeId && entry.data.nodeId !== nodeId) return true
+        dropCachedResult(previewRecency, key)
+        return false
+      }))
       const columnCache = Object.fromEntries(
         Object.entries(s.columnCache).filter(([k]) => k !== nodeId && !k.startsWith(`${nodeId}:`))
       )

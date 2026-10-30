@@ -64,10 +64,22 @@ copies no internal graph or file, starts with no bindings, and participates in t
 undo/redo snapshot. It is available only in the parent view; nesting remains
 unsupported.
 
+A plain node is reused the same way, once it is wrapped in a one-node
+submodel (see
+[submodels](../submodels/high-level.md#reuse-instances-of-nodes-and-submodels-normative)).
+Its **Create instance** sends `POST /api/submodel/instance` with the node, the
+graph and the document's revision, and commits the returned graph (the node
+replaced in place by a submodel holding it, an unbound instance beside it) as
+one undo step, as a grouping is committed. From then on both are ordinary
+submodel occurrences, drawn, opened and previewed as any other; how many
+nodes a definition holds changes nothing on the canvas.
+
 Each occurrence owns its label, position, selection, and incident edges.
 One identity per submodel occurrence: the occurrence node id is its name
 (`node.id == data.label == config.alias`). Renaming an occurrence renames its
-alias and rebinds downstream consumers without code edits; as for an ordinary
+alias and rebinds downstream consumers without code edits (an instance's
+outputs are named after it, so its consumers' frames are renamed as an
+ordinary node's are); as for an ordinary
 node, the React Flow node id stays until Save, when codegen emits the name and
 the reparse re-keys the id. It never renames the definition file. A proposed occurrence rename is refused early if
 the name is not a canonical identifier (error: `Occurrence names must be identifiers; use "<functionName>".`),
@@ -82,9 +94,17 @@ Removing or dissolving targets the clicked occurrence name, and an owner cannot
 be dissolved while instances reference it.
 
 Submodel cards render only declared public ports. Handles are
-`in__<name>`/`out__<name>` and labels come from the port name; internal
+`in__<name>`/`out__<name>`; input labels come from the port name and output
+labels show each output's name (the port name on an owner; on an instance, its
+name, or `<instance>_<port>` when the definition has several outputs); internal
 child ids are neither rendered nor accepted as parent endpoints. Each canonical
-input handle accepts at most one parent binding. A connection
+input handle accepts at most one parent binding. A connection dropped on an
+instance's inputs socket binds by the submodels binding rule: the public input
+named like the incoming frame, else the one input the instance has not bound,
+else the input the user picks from a list shown at the drop; a drop on an
+instance whose every input is bound is refused with a message naming it. An
+occurrence's panel lists its public inputs with the connection feeding each,
+and choosing another connection re-targets the edge. A connection
 between occurrences is allowed only output-public-port to input-public-port.
 Stale, missing, wrong-direction, or internal-child handles are blocked with an
 actionable error rather than repaired heuristically.
@@ -235,8 +255,10 @@ candidate, with the error toast.
   the edit is atomic and undoable. A read-only drilled occurrence renders the
   list without remove controls. Output keeps one target handle;
   every child-to-Output mapping carries an immutable public output `name` and
-  one internal source endpoint. A canonical occurrence contributes each output
-  port's sanitised public name downstream, independent of its alias. Parent bindings stay on
+  one internal source endpoint. A canonical occurrence contributes each
+  output's name downstream: the owner its sanitised public port names, an
+  instance its own name or, with several outputs, `<instance>_<port>` (see
+  submodels Output names). Parent bindings stay on
   `in__<name>`/`out__<name>`. Changing internal endpoints while retaining
   a port name and direction is a compatible shared-definition edit. Incidental
   removal or direction changes of a bound port are rejected atomically across
@@ -314,20 +336,16 @@ candidate, with the error toast.
   it as one atomic undo step. Duplicating offsets the copy's position and is a
   no-op for singleton node types (the request inputs, Quote Input and Workbench Input,
   which share one slot, and the response nodes, Quote Response and Workbench Output, which
-  share another). Generic Duplicate is unavailable for reusable-submodel occurrences,
+  share another). Generic Duplicate is unavailable for a submodel occurrence,
   and the handler directs callers to Create Instance. The palette, duplicate,
   paste, instance, and context-menu paths consume the same singleton metadata,
-  matching the backend save invariant. Create Instance also refuses a Source
+  matching the backend save invariant. Create Instance also refuses a Data Output (two writers to one destination) and a Source
   Switch, which routes by its own input names; the instance guard lives in the shared
   handler rather than in each caller's enabled-state check, so a new entry
   point cannot reach an unguarded path. Creating an
-  instance of an ordinary node stamps `config.instanceOf` at the ORIGINAL id —
-  instancing an existing instance yields a sibling pointing at the same
-  original, never a chain, because instance resolution does not walk chains.
-  A selected instance whose pointer is dangling, type-mismatched, self-pointing,
-  or itself points to another instance is rejected explicitly; the client does
-  not walk or repair invalid chains.
-  Creating an instance of a canonical `SUBMODEL` instead retains only its
+  instance of an ordinary node wraps it in a one-node submodel through
+  `POST /api/submodel/instance` (above); no ordinary node carries
+  `config.instanceOf`. Creating an instance of a canonical `SUBMODEL` retains only its
   `definitionId`, allocates a fresh immutable node id and collision-free alias,
   labels the copy with its alias,
   copies presentation defaults, and starts with no boundary bindings as one undo
@@ -547,9 +565,10 @@ candidate, with the error toast.
   is a second entry point, not a second policy: the same three rules gate both
   triggers (editable
   context, main canvas, 2+ nodes) and both answer a refusal with the same
-  toast. The toolbar pair also exposes Instance, which stamps `instanceOf` for
-  a single selected non-singleton node — the context menu offers Create Instance
-  only for submodel occurrences. Singleton availability is derived from the
+  toast. The toolbar pair also exposes Instance, which runs Create Instance on
+  a single selected node a definition can hold (a plain node is wrapped in a
+  one-node submodel) — the context menu offers Create Instance only for
+  submodel occurrences. Singleton availability is derived from the
   same canonical node-type metadata used by the shared handler; an attempted
   unavailable action remains explainable without being presented as enabled.
   The context menu's entry for an existing submodel node
@@ -561,8 +580,9 @@ candidate, with the error toast.
   selecting a submodel does not reflow the toolbar. A repeat click while
   that dissolve is in flight sends nothing: a second transform would
   supersede the first and report it as not applied. Clicking a submodel node
-  opens the standard node inspector but fetches no preview — submodel is a
-  non-previewable node type. Create and dissolve are main-canvas
+  opens the standard node inspector and previews its first output, or another
+  chosen from the preview's frame selector (see
+  [submodels](../submodels/high-level.md#reuse-instances-of-nodes-and-submodels-normative)). Create and dissolve are main-canvas
   operations: while a drilled submodel view is active both handlers refuse to
   run and toast an instruction to return to the main pipeline — the same
   client-side gate as save — instead of sending a mis-scoped request that the
@@ -659,7 +679,9 @@ candidate, with the error toast.
   time.** Every ordinary incoming edge contributes its API frame label or
   sanitised source label. A canonical drilled Input contributes its sanitised
   public input port ID, and a canonical occurrence output contributes its
-  sanitised public output port name. A connection whose derived name duplicates an existing
+  output name (the sanitised public output port name from an owner and, from
+  an instance, the instance's name or, with several outputs,
+  `<instance>_<port>`). A connection whose derived name duplicates an existing
   executable input on the target is refused with a named toast, mirroring the
   backend's save-time `ParseError`. The
   alternative — accepting the edge and letting codegen suffix a parameter —

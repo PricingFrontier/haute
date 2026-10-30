@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, type CSSProperties } from "react"
 import { Handle, Position, useStore, useUpdateNodeInternals, type InternalNode, type NodeProps, type ReactFlowState } from "@xyflow/react"
-import { AlertTriangle, Link2, Radio } from "lucide-react"
+import { AlertTriangle, Radio } from "lucide-react"
 import PolarsIcon from "../components/PolarsIcon"
 import { NODE_TYPES, NODE_TYPE_META, SOURCE_ONLY_TYPES, SINK_ONLY_TYPES, PILL_TYPES, isRequestInputType, nodeTypeIcons, nodeTypeColors, nodeTypeLabels, type NodeTypeValue } from "../utils/nodeTypes"
 import { formatValueCompact } from "../utils/formatValue"
@@ -109,7 +109,6 @@ function _SourceHandle({
   )
 }
 
-
 function _EdgeJoinTargetHandles({
   accent,
   edgeJoinJoinHandlePosition,
@@ -166,7 +165,6 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
     nodeType === NODE_TYPES.WORKBENCH_INPUT || isWorkbenchOutput ? state.tables : null
   ))
   const isLiveSwitch = nodeType === NODE_TYPES.LIVE_SWITCH
-  const isInstance = !!(nodeData.config?.instanceOf)
   const isSourceOnly = SOURCE_ONLY_TYPES.has(nodeType)
   const isSinkOnly = SINK_ONLY_TYPES.has(nodeType)
   const isPill = PILL_TYPES.has(nodeType)
@@ -271,7 +269,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   const typeName = NODE_TYPE_META[nodeType as NodeTypeValue]?.name || typeLabel
   const statusText = visualStatus ? `, status: ${visualStatus}` : ""
   const loadStatusText = loadAvailability === "ready" ? "" : `, load status: ${loadAvailability}`
-  const ariaLabel = `${typeName} node: ${nodeData.label}${loadStatusText}${statusText}${isInstance ? ", instance" : ""}${traceActive ? ", trace active" : ""}`
+  const ariaLabel = `${typeName} node: ${nodeData.label}${loadStatusText}${statusText}${traceActive ? ", trace active" : ""}`
 
   if (nodeType === NODE_TYPES.EDGE_JOIN) {
     const markerBackground = `${accent}30`
@@ -353,9 +351,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
     ? `3px solid ${loadAccent}`
     : traceActive || selected
     ? `3px solid ${accent}`
-    : isInstance
-      ? `3px dashed color-mix(in srgb, ${accent} 38%, var(--bg-canvas))`
-      : `3px solid color-mix(in srgb, ${accent} 19%, var(--bg-canvas))`
+    : `3px solid color-mix(in srgb, ${accent} 19%, var(--bg-canvas))`
   const shadow = traceActive
     ? `0 0 12px ${accent}40, var(--node-shadow)`
     : "var(--node-shadow)"
@@ -409,16 +405,6 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
         >
           {typeLabel}
         </span>
-        {isInstance && (
-          <span
-            className="ml-auto inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-[0.08em] shrink-0"
-            style={{ background: `${accent}15`, color: accent, border: `1px solid ${accent}25` }}
-            title={`Instance of ${nodeData.config?.instanceOf}`}
-          >
-            <Link2 size={8} />
-            Instance
-          </span>
-        )}
         {isDeployInput && (
           <span
             className="ml-auto inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-[0.08em] shrink-0"

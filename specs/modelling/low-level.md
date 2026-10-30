@@ -502,6 +502,18 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    starts a daemon supervisor thread around a spawn child. The node's `output_dir` applies only
    to scripted `TrainingJob` runs; canvas training artifacts are server-owned job state that
    users take away with Save model to file or Log run to MLflow.
+   The default model/artifact stem is the selected expanded node's executable
+   name (`_sanitize_func_name(node.data.label)`), never its editor/runtime id.
+   An owner's child keeps its executable name; an instance's child carries the
+   occurrence alias prefix established by submodel expansion. An explicit
+   modelling config `name` still names the model, as for scripted training.
+   Every occurrence retains its full qualified `node_id` in job identity and
+   retirement checks, and every run has its own marked artifact directory, so
+   even equal explicit names cannot overwrite another occurrence's files.
+   The worker, validation, job response and artifact handle use the same stem.
+   Model export reads the recorded handle; Model Score, preview and deploy read
+   the exported model and adjacent feature contract, never reconstruct a path
+   from a runtime id. Script export uses the same executable-name default.
    `TrainService` consumes the execution facade's typed projection result throughout
    materialisation; its final feature inclusion/exclusion provenance is retained in the
    job response rather than re-derived by a modelling-owned planner. Preparation owns
@@ -1591,6 +1603,10 @@ rows/features) and retry.
 
 ## Testing
 
+- `tests/test_node_instance_proof.py::test_training_occurrences_publish_distinct_readable_artifacts`
+  trains an owner and two instances on different targets, checks executable artifact
+  names and separate job directories, reloads all models and contracts, exports them,
+  and compares Model Score preview and deployed scores with each trained model.
 - `tests/test_service_domain_boundaries.py` keeps the training facade explicit,
   the extracted service-module graph acyclic, and lifecycle state ownership out
   of preparation, evaluation, worker-protocol, and artifact leaves.

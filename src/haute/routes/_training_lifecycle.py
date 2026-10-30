@@ -28,6 +28,7 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
+from haute._graph_utils import _sanitize_func_name
 from haute._logging import get_logger
 from haute._native_memory_limit import model_thread_address_space_allowance
 from haute._pipeline_settings import project_pipeline_settings
@@ -1011,7 +1012,7 @@ class TrainService:
             job_kwargs = build_training_job_kwargs(
                 stub_config,
                 data=str(Path(tmp_parquet).resolve()),
-                default_name=node_id,
+                default_name=_sanitize_func_name(stored_job["node_label"]),
             )
             request = WorkerRequest(
                 request_id=job_id,
@@ -1803,7 +1804,7 @@ class TrainService:
             job_kwargs = build_training_job_kwargs(
                 config,
                 data=str(Path(tmp_parquet).resolve()),
-                default_name=node_id,
+                default_name=_sanitize_func_name(stored_job["node_label"]),
             )
             job_kwargs["params"] = train_params
             job_kwargs["mlflow_experiment"] = (

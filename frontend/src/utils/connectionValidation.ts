@@ -3,11 +3,11 @@ import { isSubmodelDefinition, isSubmodelInstanceConfig } from "../types/node"
 import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 import { SUBMODEL_INPUT_HANDLE } from "./flowHandles"
 import { workbenchNodePorts, type WorkbenchTables } from "./workbenchTables"
+import { chooseInstanceInput } from "./canonicalSubmodelBoundaryEditing"
 import {
   edgeInputName,
   incomingEdgeInputNames,
   resolveSubmodelBoundaryNode,
-  resolveSubmodelBoundaryNodes,
 } from "./apiInputPorts"
 
 type ConnectionLike = {
@@ -32,7 +32,7 @@ export type ConnectionValidationFailure =
   | { kind: "invalid-connection"; message: string }
 
 export type ConnectionValidationResult =
-  | { ok: true }
+  | { ok: true; inputChoices?: string[] }
   | { ok: false; reason: ConnectionValidationFailure }
 
 /**
@@ -204,11 +204,12 @@ export function validatePipelineConnection(
         if (!isSubmodelDefinition(definition, targetNode.data.config.definitionId)) {
           throw new Error("Canonical submodel definition is unavailable")
         }
+        if (targetNode.data.config.instanceOf !== undefined) {
+          const selection = chooseInstanceInput(targetNode, definition.inputPorts, edges, candidateName)
+          return "choices" in selection ? { ok: true, inputChoices: selection.choices } : { ok: true }
+        }
         const port = definition.inputPorts.find((p) => p.name === candidateName)
         if (!port) {
-          if (targetNode.data.config.instanceOf !== undefined) {
-            throw new Error("New public inputs can only be added through the definition owner")
-          }
           return { ok: true }
         }
         if (edges.some(
@@ -222,39 +223,15 @@ export function validatePipelineConnection(
         }
         return { ok: true }
       }
-      const targets = resolveSubmodelBoundaryNodes(
-        targetNode,
-        candidate.targetHandle,
-        "in",
-        submodels,
-      )
-      if (targets.length === 0) {
-        throw new Error(
-          "Canonical submodel input " + String(candidate.targetHandle)
-          + " has no declared targets",
-        )
+      const config = targetNode.data.config
+      const definition = submodels?.[config.definitionId]
+      if (!isSubmodelDefinition(definition, config.definitionId)) {
+        throw new Error("Canonical submodel definition is unavailable")
       }
-      const existingBinding = edges.some(
-        (edge) =>
-          edge.target === candidate.target
-          && edge.targetHandle === candidate.targetHandle,
-      )
+      const port = definition.inputPorts.find((port) => candidate.targetHandle === `in__${port.name}`)
+      if (!port) throw new Error(`Canonical submodel input ${String(candidate.targetHandle)} is not declared`)
+      const existingBinding = edges.some((edge) => edge.target === candidate.target && edge.targetHandle === candidate.targetHandle)
       if (existingBinding) {
-        const portName = candidate.targetHandle?.slice("in__".length)
-        if (!portName) {
-          throw new Error("Canonical submodel input handle is malformed")
-        }
-        const config = targetNode.data.config
-        const definition = isSubmodelInstanceConfig(config)
-          ? submodels?.[config.definitionId]
-          : undefined
-        if (!isSubmodelDefinition(definition, config?.definitionId)) {
-          throw new Error("Canonical submodel definition is unavailable")
-        }
-        const port = definition.inputPorts.find((candidatePort) => candidatePort.name === portName)
-        if (!port) {
-          throw new Error(`Canonical submodel input ${portName} has no authoritative identity`)
-        }
         return {
           ok: false,
           reason: {

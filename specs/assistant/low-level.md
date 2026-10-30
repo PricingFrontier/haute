@@ -97,7 +97,9 @@ orphaned halves).
   input-naming rule of `haute._graph_utils.executable_input_name` in words (an
   input is named after its incoming edge: the upstream node's name, except that
   an edge from a Quote Input or Workbench Input frame, which `add_edge`'s `source_handle` selects,
-  is named by that frame, and an edge from a submodel output by its port); the
+  is named by that frame, and an edge from a submodel output by its port on the owner
+  and, on an instance, by the instance's name, or `<instance>_<port>` when its submodel
+  has several outputs); the
   system prompt, the authoring guide's "Names and wiring" and the `input names`
   field of the Polars, Quote Response and Source Switch cards state it verbatim,
   held so by test, and no card says an input is "the upstream node's name"
@@ -266,8 +268,8 @@ orphaned halves).
     the palette's (a Data Input or Data Output provider, a Model Score or Apply
     Optimisation source, an Optimiser mode or a training algorithm, the discriminants
     config recovery also uses) keeps only the palette's `steps`, as the palette belongs
-    to one branch and must not fill another's fields. A config naming `instanceOf` takes
-    no palette config, because an instance's configuration is its original's.
+    to one branch and must not fill another's fields. A config naming `instanceOf` is
+    refused: only a submodel occurrence carries it.
   - `update_node {node, config}` — shallow key merge into the existing config; an explicit
     JSON `null` value removes that key. The operation schema's `config` description
     states both rules to the model: a written top-level key replaces its whole value, so
@@ -287,9 +289,7 @@ orphaned halves).
     error whose `where.step` names that id. The operation needs a node holding a `steps`
     list on a stepped surface: a code-mode node is refused pointing at `update_node
     {code}`, and a stepped-type node with neither steps nor code is refused pointing at
-    `update_node {steps}` with the surface's free-code form. An instance (`instanceOf`
-    set) runs its original's configuration, so it is refused pointing at the original
-    node, the one to edit.
+    `update_node {steps}` with the surface's free-code form.
   - All three node operations follow the stepped-node write contract in Edge cases: a write
     that would change how a stepped-type node is authored is refused, and a write that
     does not land in the materialised config fails the plan with `op_not_applied`.
@@ -679,7 +679,7 @@ excluded count; its path and content never cross the tool boundary.
    proved and admits no pre-existing excuse at all.
 
    **Steps are proved to survive a save before apply.** For each stepped node the plan
-   adds or updates (the complete set, however many; instances excepted), the verification phase generates the planned
+   adds or updates (the complete set, however many), the verification phase generates the planned
    pipeline source in memory with the save path's codegen (`graph_to_code_multi`),
    takes the node's sidecar exactly as `collect_node_configs` would write it, and
    resolves the node's generated function through the parser's own node resolution
@@ -692,7 +692,7 @@ excluded count; its path and content never cross the tool boundary.
    **Written Modelling and Load File nodes are proved ready.** Save validation already
    refuses malformed modelling values (`validate_modelling_config_values`). After schema
    evidence resolves, `_application._prove_nodes_ready` checks each Modelling and Load File
-   node the plan adds or updates (the complete set, however many; instances excepted); a
+   node the plan adds or updates (the complete set, however many); a
    failure raises
    `AssistantOperationError("node_not_ready", "Node '<id>' is not ready: <message>")` and
    stores no plan. A Modelling node needs a `target`, no `training_objective_issue` and an
@@ -708,8 +708,7 @@ excluded count; its path and content never cross the tool boundary.
 
    **Authored config is verified after reparse.** Besides the structural
    postconditions, every plan carries a `node_config {node, sha256}` postcondition for
-   each node it adds or updates whose type carries code (the seven stepped types;
-   instances excepted) — every such node, never a truncated subset. It is appended to
+   each node it adds or updates whose type carries code (the seven stepped types) — every such node, never a truncated subset. It is appended to
    the automatic or supplied postconditions, without duplicates, so a replayed plan
    carries the identical list. A plan holds at most `MAX_PLAN_OPERATIONS` (100)
    operations. Each adds or updates at most one node, except `rename_node`, which also
@@ -907,7 +906,8 @@ the turn that follows.
      `add_edge` `source_handle` that selects it and the input name
      `executable_input_name` derives for an edge from it: a Quote Input frame is
      selected and read by its label, a submodel output port `<port>` is selected by
-     `out__<port>` and read as `<port>`), and for a Source Switch the
+     `out__<port>` and read as `<port>` from an owner and, from an instance, as the
+     instance's name (one output) or `<instance>_<port>` (several)), and for a Source Switch the
      sorted names of the scenarios its `input_scenario_map` routes (scenario names are
      pipeline metadata; which input each routes is configuration and is not listed).
      Schemas resolve schema-only in
@@ -1867,7 +1867,7 @@ the turn that follows.
   (it fails loudly at execution instead).
 - **Assistant-authored free-code steps keep their result and their surface's scope.**
   Every node the batch adds, or whose `steps` it sets or edits, that carries a step list on a
-  stepped surface (instances excepted) is rendered with the product's renderer
+  stepped surface is rendered with the product's renderer
   (`render_polars_steps`, against the node's incoming input names in the surface's start
   mode), so an invalid step list is an op error naming its step (`where.step` holds the
   id of the step the renderer's error names), worded as the step-render rule below
@@ -1918,11 +1918,6 @@ the turn that follows.
     is out of scope. A stepped-type node with no `steps` and no code has nothing to
     lose and accepts a step list;
   - in `add_node` of a stepped type: a `code` key or a `steps` value that is not a list;
-  - on a node that is, or that the operation leaves, an instance (`instanceOf` set,
-    whatever its type): any `steps` or `code` key, since an instance runs its original's
-    configuration and its own would never be read. The refusal names the original and
-    points there; writing `instanceOf: null` with the logic detaches the node first and
-    the rules above then apply.
   Code-mode nodes keep `code` editing. Each refusal names the node, its surface
   (`STEPPED_SURFACE_LABELS`) and the free-code form to write instead: on a surface
   whose steps choose their input (`start == "input"`, the Transform)
@@ -1931,8 +1926,7 @@ the turn that follows.
   `[{"id": "logic", "kind": "free_code", "code": "..."}]`.
   `edit_steps` keeps the same transitions: it only changes a list the node already
   holds, so it never switches a node between steps and code, and it is refused on a
-  code-mode node (edit its `code` instead), on a stepped-type node without a list, and on
-  an instance (edit its original instead).
+  code-mode node (edit its `code` instead) and on a stepped-type node without a list.
   After each operation's `with_config`, every key the model wrote must hold the written
   value in the materialised config (a key written as `null` must be absent; for
   `edit_steps`, `steps` must hold the edited list), and when the operation wrote `steps`
@@ -1956,8 +1950,7 @@ the turn that follows.
   on an Explore was redirected to free code, which took the model further from the
   `pivots` entry the analyst asked for.
 - **The model sees how each stepped node is authored, without values.** `get_pipeline`
-  and the turn context's graph brief carry, for every node of a stepped type (an
-  instance has none: its configuration is its original's), `_render.node_authoring`'s
+  and the turn context's graph brief carry, for every node of a stepped type, `_render.node_authoring`'s
   facts, read from the saved config alone: its state
   (`stepped` when its `steps` list renders, `incomplete` when the list does not render
   or the node has neither steps nor code, `code` otherwise), whether the editor
@@ -1990,8 +1983,7 @@ the turn that follows.
   External File's steps (`input` on a source or join, `inputs` on a concat, through
   `haute._polars_steps.rename_step_inputs`), `inputMapping` values,
   `input_scenario_map` keys, `data_input`, `banding_source`, `analysis_input` and
-  `ratebook_input`, `outputMapping` rows' `source_port`, and the `inputMapping` keys of
-  every instance of the target. An instance's own steps or code are never rewritten.
+  `ratebook_input` and `outputMapping` rows' `source_port`.
   Each rewritten node is an updated node of the semantic diff, with one config change
   per field: `<node>:steps[<id>].input` (or `.inputs`), `<node>:inputMapping.<logical>`,
   `<node>:input_scenario_map.<name>`, `<node>:<field>` and
@@ -2000,8 +1992,7 @@ the turn that follows.
   naming the target. Code is never rewritten: the operation lists `steps[i].code` when
   a free-code step reads the old name, a code-mode node's `code` when it reads the name
   (unparsable code is listed, since it cannot be shown not to) unless its
-  `inputMapping` binds that name to another edge, and `instanceOf` on any node whose
-  `instanceOf` names the renamed node's id. When that list is not empty the plan fails
+  `inputMapping` binds that name to another edge. When that list is not empty the plan fails
   with the stable code `rename_has_consumers`, a message naming each consumer and
   field, and a `consumers` array of `{node, field}` records; nothing is renamed. The
   check runs against the working graph, so an earlier operation of the batch that
@@ -2260,7 +2251,7 @@ the turn that follows.
 | Working-branch state `"git-unavailable"` | `_config.mutations_readiness` | Status 200 with `mutations_enabled: false` and the fixed Git-unavailable reason; a mutation tool call returns `authority_denied` with it |
 | A node write that would not land (a written key missing from the materialised config, a `steps` write whose rendering fails, steps the save's reparse would discard) | `_ops` operation replay, `_application` dry-run reparse proof | Structured `op_not_applied` tool error naming the node and the key or step problem; nothing is written |
 | A Modelling or Load File node the plan adds or updates that is not ready (no target, an incomplete objective, a configured column its input lacks, a file that is missing or does not load as its `fileType`) | `_application._prove_nodes_ready` | Structured `node_not_ready` tool error naming the node and the product's message; nothing is written. A malformed modelling value fails earlier as save validation's 400, `operation_failed` |
-| A rename whose consumers' code reads the old input name, or whose node an instance names | `_ops` operation replay | Structured `rename_has_consumers` tool error listing each consumer and field, with a `consumers` array of `{node, field}`; nothing is written |
+| A rename whose consumers' code reads the old input name | `_ops` operation replay | Structured `rename_has_consumers` tool error listing each consumer and field, with a `consumers` array of `{node, field}`; nothing is written |
 | Unexpected exception inside `dry_run_graph_edits` | `_tools` tool boundary | `operation_failed`, never `invalid_plan`. `invalid_plan` is a specific authorization verdict the domain layer raises; reusing it as the catch-all told the model its plan had been judged and rejected when nothing had judged it |
 | Turn timeout / tool-call cap | `_loop` | Terminal `failed` event naming the limit |
 | Any unexpected exception in the loop | `_loop` outermost handler | Logged server-side with `exc_info=True`; terminal `failed` event carrying the sanitized `_INTERNAL_ERROR_DETAIL` text only |
@@ -2306,16 +2297,14 @@ fixture for route tests). The implemented coverage is:
   expression refused with its step, a Rating Step step reading its input by name refused
   with "Rating Step code sees only df", and a step calling a preamble or local helper
   accepted); the palette defaults `add_node` merges (and their omission on another
-  branch or an instance); the stepped-node transition refusals and
+  branch); the stepped-node transition refusals and
   `op_not_applied` landing check; `edit_steps` inserting, replacing and removing in
   order with deterministic assigned ids, its refusals on an unknown or duplicate step
-  id, a code-mode node, a node without a list and an instance (as are `add_node` and
-  `update_node` writing an instance's `steps` or `code`, each pointing at the
-  original), its `steps[<id>]` diff entries, and
+  id, a code-mode node or a node without a list, its `steps[<id>]` diff entries, and
   an edited free-code step reaching the authored-step checks with `where.step` set;
   a rename rewriting each structured consumer field in one plan and listing them in
   the diff, its collision refusals, the `rename_has_consumers` refusal for each code
-  consumer and `instanceOf`, edge-only and API Input renames applying, and parity with
+  consumer, edge-only and API Input renames applying, and parity with
   the fields the editor's `nodeUpdatePlan.ts` reconciles, read from source.
   Also covers canonical revision/plan hashing, semantic diff boundaries,
   closed postconditions, single-use plan transitions (a fresh identical dry-run of an
@@ -2351,10 +2340,13 @@ fixture for route tests). The implemented coverage is:
   later apply's rename and ends at an apply's deletion, so a node a later apply renames
   onto the deleted read node's id is `config_unread`, and an apply that commits but
   fails verification drops every read; a submodel occurrence's schema part
-  names its `factored` output and `vehicles` input ports, its consumer's input is named
-  by the port, its config part and an inner node stay `submodel_boundary`, and the turn
+  names its `factored` output and `vehicles` input ports, its owner's consumer input is named
+  by the port, an instance's consumer input is named after the instance (qualified by
+  the port when several outputs are declared, including unconnected outputs), its
+  config part and an inner node stay `submodel_boundary`, and the turn
   context lists the occurrence's input and output port (selected by `out__factored`, read
-  as `factored`) and the consumer's input from the occurrence; a parser refusal is located
+  as `factored` for the owner and by the instance output name for an instance) and
+  the consumer's input from the occurrence; a parser refusal is located
   at the
   node and operation that wrote it (`invalid_config` for a rating row without its factor,
   `schema_unresolvable` with the parser's fix for number breakpoints on a Date column),

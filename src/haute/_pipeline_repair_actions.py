@@ -206,11 +206,10 @@ def _reset_node(
         isinstance(attribute, ast.Attribute)
         and isinstance(attribute.value, ast.Name)
         and attribute.value.id == receiver
-        and attribute.attr != "instance"
     ):
-        raise _unsupported("Node instances cannot be reset independently of their original node.")
-    if decorator_call and any(kw.arg in {"of", "instanceOf"} for kw in decorator_call.keywords):
-        raise _unsupported("Node instances cannot be reset independently of their original node.")
+        raise _unsupported(
+            "Reset requires a recognised node decorator on its owning pipeline or submodel."
+        )
     graph = _target_graph(document, target)
     if any(
         target.recovery_id in (edge.source_recovery_id, edge.target_recovery_id)
@@ -247,6 +246,20 @@ def _reset_node(
             raise _unsupported(
                 "The upstream node's identity is unknown; repair it before changing this node."
             )
+        instance_of = None
+        source_handles = None
+        if source.node_type == NodeType.SUBMODEL:
+            source_config = source.config or {}
+            definition_id = source_config.get("definitionId")
+            definitions = graph.submodels or {}
+            if not isinstance(definition_id, str) or definition_id not in definitions:
+                raise _unsupported(
+                    f"The upstream submodel {source.label!r} has no definition; "
+                    "repair it before changing this node."
+                )
+            definition = definitions[definition_id]
+            instance_of = source_config.get("instanceOf")
+            source_handles = [f"out__{port['name']}" for port in definition.output_ports]
         named_inputs.append(
             (
                 edge.target_handle,
@@ -254,6 +267,8 @@ def _reset_node(
                     node_type=source.node_type,
                     label=source.label,
                     source_handle=edge.source_handle,
+                    instance_of=instance_of,
+                    source_handles=source_handles,
                 ),
             )
         )
@@ -512,6 +527,12 @@ def build_recovery_action_plan(
         target_source_file=_wire_path(path, root),
         target_recovery_id=request.target_recovery_id,
     )
+    for diagnostic in document.diagnostics:
+        if (
+            diagnostic.diagnostic_id in target.diagnostic_ids
+            and diagnostic.code == "node_instance_removed"
+        ):
+            raise _unsupported(diagnostic.message)
     field_changes: list[PipelineRepairFieldChange] = []
     completeness: list[PipelineNodeCompleteness] = []
     previous_config: dict[str, Any] | None = None

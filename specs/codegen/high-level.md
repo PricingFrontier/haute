@@ -107,13 +107,18 @@ Out of scope (owned by neighbouring components):
   - node function names and submodel occurrence aliases are unique across the root graph and
     every submodel graph, compared with `str.casefold`, so `Claims` and `claims` collide, as
     do two labels that sanitize to one identifier or are identical;
+  - an instance also reserves every generated clone name, `<instance>__<child>`,
+    sanitized and compared with `str.casefold` against authored names and other
+    clones. A collision names the instance, definition child and conflicting
+    node. Creation and renaming of any of these use the same rule, including
+    editor identity requests and allocation; allocation skips a colliding name;
   - none is a *reserved name*, one the generated module binds itself: `haute`, `pl`,
     `pipeline`, `submodel` (a submodel file's binding) and `global_constants`, compared
     exactly;
   - none is a public name of Python's `builtins` (`max`, `filter`, `id`, `ValueError`,
     `Ellipsis`); the comparison is exact, so `Max premium` and `Filter` stay valid;
   - no input a node body receives, as the executor binds it (a sanitized source label, an API
-    frame label, a submodel port name, an `inputMapping` alias, including an instance's), is
+    frame label, a submodel port name, an `inputMapping` alias), is
     reserved. (`df` keeps its own rule: an input of that name is refused where node code reads
     it and is an ordinary input on a node type without code.)
 
@@ -163,7 +168,8 @@ Out of scope (owned by neighbouring components):
   `haute._graph_utils.edge_input_name` in edge order: an `apiInput`-frame edge
   contributes its frame label verbatim (labels are validated as ASCII Python
   identifiers by the api-input schema), a submodel-output edge contributes the
-  sanitised public output port name (independent of alias or port count), and every ordinary
+  sanitised public output port name from an owner and, from an instance, the instance's
+  name (one output) or `<instance>_<port>` (several), and every ordinary
   edge contributes the sanitised source-node label. A frame emitted as `quotes` is therefore callable as
   `quotes` in every downstream body — the same string the editor lists as the
   input. When a canvas topology rewrite replaces a Polars node's parent while
@@ -194,9 +200,10 @@ Out of scope (owned by neighbouring components):
   aliases are never inferred. Parent connections name declared public port
   names; `in__<name>`/`out__<name>` exist only in graph JSON and are not
   emitted as authored parameter names. Inside a definition, child
-  parameters use sanitised public input port names. Downstream, each output port
-  contributes its sanitised public port name as the executable input name,
-  independent of the occurrence alias; public ports declare a single
+  parameters use sanitised public input port names. Downstream, each output
+  contributes its output name as the executable input name (its sanitised
+  public port name from an owner; from an instance, the instance's name, or
+  `<instance>_<port>` when the definition has several outputs); public ports declare a single
   canonical name: portId and label are not emitted.
   `graph_to_code` refuses a hierarchical graph rather than returning an
   arbitrary file. Each definition file carries its declared
@@ -275,10 +282,14 @@ Out of scope (owned by neighbouring components):
   output) therefore saves the refreshed annotation instead of a stale one the
   post-save parse check rejects. The keyword is rendered with the rest of the
   decorator; no generated source is edited after the fact.
-- **Instance mappings are persisted.** An instance is a declaration whose
-  decorator carries `of=...` and its explicit `inputMapping=...`. Parsing
-  therefore restores the mapping metadata needed for a later graph edit or save
-  instead of relying on name heuristics after the first reload.
+- **Instances are submodel registrations.** An instance of a node or of a submodel
+  is an occurrence of a definition: its definition module is emitted once, each
+  occurrence is one `pipeline.submodel(<module>.submodel, "<name>"[, instance_of=...])`
+  registration, and its input mapping is its connections,
+  `pipeline.connect("<frame>", "<name>", target_port="<input>")`, so parsing restores
+  every binding without name heuristics. A reused node's definition is emitted as
+  the module holding that one node, as any definition is. No node declaration carries
+  `of=`.
 - **Polars transforms bind inputs by name only.** A `polars` node's function
   parameters are its logical inputs, one per incoming edge in edge order; `df` is
   purely the output variable and is never pre-bound to an input. The body is the
@@ -286,7 +297,7 @@ Out of scope (owned by neighbouring components):
   the body first declares `df: pl.LazyFrame` as an unbound local, so a
   same-named preamble global cannot satisfy the missing output assignment.
   Normally the logical name is the edge-derived
-  name; a non-instance Polars `inputMapping` may preserve an earlier logical
+  name; a Polars `inputMapping` may preserve an earlier logical
   name across a structural rewrite. Mapping values must match distinct current
   edge names and the resulting logical names must remain distinct valid Haute
   identifiers, otherwise generation and execution fail loudly. The user starts
@@ -367,7 +378,7 @@ the body with the shared step renderer against the generated parameter names ins
 `config["code"]`, references the node's `config/polars/<name>.json` sidecar through the
 decorator `config=` keyword, and on a render failure emits the same incomplete placeholder
 body that a code-less transform emits; the save warning for incomplete transforms then
-names the failing step. A stepped original that also carries `inputMapping` is rejected
+names the failing step. A stepped node that also carries `inputMapping` is rejected
 with a `ConfigError`. Generating, parsing, and extracting a stepped transform reproduces
 the rendered code exactly, which is what lets the parser tell a hand-edited body from a
 rendered one; the parser compares the two as programs (the same syntax tree and
@@ -566,4 +577,3 @@ suffix-agnostic: its decorator scores through `score_from_config`, which selects
 artifact, and the loader dispatches `.cbm`, `.rsglm`,
 `.ubj`, `.lgbm`, `.ebm` and `.tboost` to their flavors, so an XGBoost, LightGBM, EBM or t-boost model scores
 through the same adapter as the GUI.
-

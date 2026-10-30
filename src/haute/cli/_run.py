@@ -68,6 +68,11 @@ def handle_run(config: RunConfig) -> None:
         click.echo(f"Error executing pipeline: {e}", err=True)
         raise SystemExit(1)
 
+    # Occurrence entries carry warnings only, with no executed rows or columns.
+    results = {
+        nid: res for nid, res in results.items() if nid not in graph._submodel_shared_bindings
+    }
+
     # Report per-node results
     errors = 0
     for nid, res in results.items():

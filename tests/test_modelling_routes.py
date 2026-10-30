@@ -658,6 +658,8 @@ class TestTrainBackgroundLaunchFailures:
             {
                 "status": "running",
                 "job_type": "training",
+                "node_id": "train",
+                "node_label": "train",
                 "start_time": time.monotonic(),
                 "timeout": 60,
             }
@@ -717,6 +719,8 @@ class TestTrainBackgroundLaunchFailures:
             {
                 "status": "running",
                 "job_type": "training",
+                "node_id": "train",
+                "node_label": "train",
                 "progress": 0.0,
                 "message": "Starting",
                 "start_time": time.monotonic(),
@@ -4304,6 +4308,8 @@ class TestDispersionErrorPaths:
             {
                 "status": "running",
                 "job_type": "dispersion_estimate",
+                "node_id": "train",
+                "node_label": "train",
                 "param": "theta",
                 "start_time": time.monotonic(),
                 "timeout": 60,
@@ -4331,6 +4337,8 @@ class TestDispersionErrorPaths:
             {
                 "status": "running",
                 "job_type": "dispersion_estimate",
+                "node_id": "train",
+                "node_label": "train",
                 "param": "theta",
                 "start_time": time.monotonic(),
                 "timeout": 60,
@@ -4831,6 +4839,8 @@ class TestDispersionErrorPaths:
             {
                 "status": "running",
                 "job_type": "dispersion_estimate",
+                "node_id": "train",
+                "node_label": "train",
                 "param": "theta",
                 "start_time": time.monotonic(),
                 "timeout": 60,
@@ -5033,7 +5043,7 @@ class TestExportScriptDirect:
                     {
                         "id": "model",
                         "data": {
-                            "label": "my_model",
+                            "label": "My model",
                             "nodeType": "modelling",
                             "config": {
                                 "target": "y",
@@ -5055,7 +5065,7 @@ class TestExportScriptDirect:
         assert "TrainingJob" in result.script
         assert "feature_columns=['x1', 'x2']," in result.script
         assert "exclude=" not in result.script
-        assert result.filename == "train_my_model.py"
+        assert result.filename == "train_My_model.py"
 
     @pytest.mark.asyncio
     async def test_default_data_path(self):

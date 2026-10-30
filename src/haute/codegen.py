@@ -17,7 +17,6 @@ from typing import Literal
 
 from haute._codegen_builders import (
     NodeSource,
-    _params,
     _sanitize_description,
     render_node_source,
 )
@@ -35,13 +34,10 @@ from haute._graph_shape import (
 )
 from haute._graph_utils import (
     _sanitize_func_name,
-    build_instance_mapping,
     duplicate_input_names,
     edge_input_name,
-    resolve_input_mapping_names,
 )
 from haute._logging import get_logger
-from haute._polars_steps import stepped_surface_allows_input_references
 from haute._registry import NODE_REGISTRY
 from haute._source_layout import (
     INDENT,
@@ -137,9 +133,7 @@ def _contract_keyword(
     annotation that the post-save parse check rejects.
 
     *contract_source* picks the derivation (see :data:`ContractSource`).
-    Instance nodes, and ``"declared"`` generation, start from the
-    declaration alone: an instance's own config does not describe the
-    columns it references.
+    ``"declared"`` generation starts from the declaration alone.
 
     The keyword is emitted only when it tells the parser something it cannot
     derive offline from the node's config (:func:`resolve_parse_time_contract`):
@@ -149,8 +143,7 @@ def _contract_keyword(
     """
     config = node.data.config
     declared = Contract.from_user_declared(config.get("contract"))
-    instance = bool(config.get("instanceOf"))
-    if instance or contract_source == "declared":
+    if contract_source == "declared":
         contract = declared
     else:
         derived = (
@@ -169,10 +162,7 @@ def _contract_keyword(
     if contract is None:
         return None
     value = _contract_value(contract, parent_name_by_id=parent_name_by_id)
-    # The parser reads an instance as a Polars node, whose contract it cannot derive.
-    offline = (
-        Contract.opaque() if instance else resolve_parse_time_contract(node.data.nodeType, config)
-    )
+    offline = resolve_parse_time_contract(node.data.nodeType, config)
     adds_information = (
         "inputs_by_parent" in value
         or (value["inputs"] is not None and offline.inputs is None)
@@ -363,49 +353,6 @@ def _generate_node_code(node: GraphNode, source_names: list[str] | None = None) 
     return entry.codegen(node, source_names)
 
 
-def _instance_to_code(
-    node: GraphNode,
-    original_func_name: str,
-    source_names: list[str] | None = None,
-    source_ids: list[str] | None = None,
-    orig_source_names: list[str] | None = None,
-    *,
-    receiver: str = "pipeline",
-) -> str:
-    """Generate the declaration of an instance node.
-
-    The decorator names the original node (``of=``) and persists an explicit
-    ``inputMapping``; the executor runs the original's logic on the
-    instance's inputs. An inconsistent mapping fails here rather than later.
-    """
-    data = node.data
-    if source_names is None:
-        source_names = []
-    explicit_map = data.config.get("inputMapping")
-    if explicit_map is not None and not isinstance(explicit_map, dict):
-        raise ConfigError(
-            "inputMapping must be an object mapping original input names to instance input names.",
-            node_id=node.id,
-            input_mapping=explicit_map,
-        )
-    if orig_source_names and source_names:
-        # Stale or ambiguous pairings fail loudly now, not at execution.
-        build_instance_mapping(
-            orig_source_names, source_names, dict(explicit_map) if explicit_map else None
-        )
-    keywords: list[tuple[str, object]] = [("of", original_func_name)]
-    if explicit_map is not None:
-        keywords.append(("inputMapping", explicit_map))
-    source = NodeSource(
-        "instance", tuple(keywords), _params(source_names), description=data.description
-    )
-    contract = _contract_keyword(
-        node,
-        parent_name_by_id=_parent_name_by_id(source_ids or [], source_names),
-    )
-    return _render(node, source, contract, receiver)
-
-
 # ---------------------------------------------------------------------------
 # Pipeline assembly helpers
 # ---------------------------------------------------------------------------
@@ -537,16 +484,6 @@ def _order_edge_join_incoming_edges(
     return ordered
 
 
-def _build_instance_of_map(sorted_nodes: list[GraphNode]) -> dict[str, str]:
-    """Map instance node ID -> original node ID for nodes with ``instanceOf``."""
-    result: dict[str, str] = {}
-    for node in sorted_nodes:
-        ref = node.data.config.get("instanceOf")
-        if ref:
-            result[node.id] = ref
-    return result
-
-
 _ConnectPair = tuple[str, str, str | None, str | None]
 
 _WIRE_COMMENT = "# Wire nodes together - edges define data flow"
@@ -647,16 +584,11 @@ def _node_functions(
     nodes: list[GraphNode],
     edges: list[GraphEdge],
     *,
-    id_to_func: dict[str, str],
     node_sources: dict[str, list[str]],
     node_source_ids: dict[str, list[str]] | None,
     receiver: str,
 ) -> list[str]:
-    """Every node's function: originals in emission order, then instances."""
-    instance_of_map = _build_instance_of_map(nodes)
-    node_by_id = {node.id: node for node in nodes}
-    originals = [n for n in nodes if n.id not in instance_of_map]
-    instances = [n for n in nodes if n.id in instance_of_map]
+    """Every node's function in emission order."""
     source_ids = node_source_ids or {}
     functions = [
         _node_to_code(
@@ -665,26 +597,8 @@ def _node_functions(
             source_ids.get(node.id, []),
             receiver=receiver,
         )
-        for node in _emission_order(originals, edges)
+        for node in _emission_order(nodes, edges)
     ]
-    for node in instances:
-        orig_id = instance_of_map[node.id]
-        orig_src = node_sources.get(orig_id, [])
-        original = node_by_id.get(orig_id)
-        if original is not None and stepped_surface_allows_input_references(original.data.nodeType):
-            input_mapping = original.data.config.get("inputMapping")
-            if input_mapping is not None:
-                orig_src = resolve_input_mapping_names(orig_src, input_mapping)
-        functions.append(
-            _instance_to_code(
-                node,
-                id_to_func.get(orig_id, orig_id),
-                source_names=node_sources.get(node.id, []),
-                source_ids=source_ids.get(node.id, []),
-                orig_source_names=orig_src,
-                receiver=receiver,
-            )
-        )
     return functions
 
 
@@ -1116,7 +1030,6 @@ def _graph_to_code_multi_instances(
             functions=_node_functions(
                 sorted_child_nodes,
                 child_edges,
-                id_to_func=child_id_to_func,
                 node_sources=child_node_sources,
                 node_source_ids=child_node_source_ids,
                 receiver="submodel",
@@ -1265,7 +1178,6 @@ def _graph_to_code_multi_instances(
         functions=_node_functions(
             sorted_root_nodes,
             root_edges,
-            id_to_func=root_id_to_func,
             node_sources=root_node_sources,
             node_source_ids=root_node_source_ids,
             receiver="pipeline",
@@ -1342,7 +1254,6 @@ def graph_to_code_multi(
         functions=_node_functions(
             sorted_nodes,
             edges,
-            id_to_func=id_to_func,
             node_sources=node_sources,
             node_source_ids=node_source_ids,
             receiver="pipeline",

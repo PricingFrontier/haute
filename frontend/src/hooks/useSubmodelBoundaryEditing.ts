@@ -28,6 +28,7 @@ import useToastStore from "../stores/useToastStore"
 import { resolveEditorGraphIdentities } from "../utils/editorIdentities"
 import { structuralFingerprint } from "../utils/structuralFingerprint"
 import { reconcileGraphInputBindings } from "../utils/nodeUpdatePlan"
+import { captureParentOutputState } from "../utils/submodelViewGraph"
 
 type GraphRef = React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
 type ParentGraphRef = React.MutableRefObject<{ nodes: Node[]; edges: PipelineEdge[]; submodels: Record<string, unknown> } | null>
@@ -202,6 +203,14 @@ export default function useSubmodelBoundaryEditing({
     submodelsRef,
   ])
   const commit = useCallback((result: SubmodelBoundaryEditResult) => {
+    const outputState = captureParentOutputState(result.definitionId, result.parentNodes, result.parentEdges)
+    result = {
+      ...result,
+      viewNodes: result.viewNodes.map((node) => (
+        node.type === "submodelPort" && node.data.portDirection === "output"
+          ? { ...node, data: { ...node.data, _parentOutputState: outputState } } : node
+      )),
+    }
     graphRef.current = { nodes: result.viewNodes, edges: result.viewEdges }
     parentGraphRef.current = { nodes: result.parentNodes, edges: result.parentEdges, submodels: result.submodels }
     submodelsRef.current = result.submodels

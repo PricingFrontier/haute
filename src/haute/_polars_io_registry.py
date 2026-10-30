@@ -68,7 +68,6 @@ InputMode = Literal["read", "scan"]
 OutputMode = Literal["write", "sink"]
 IoGroup = Literal["file", "database", "lakehouse", "inline"]
 _IO_UNIVERSAL_KEYS = {
-    "instanceOf",
     "inputMapping",
     "selected_columns",
     "column_renames",

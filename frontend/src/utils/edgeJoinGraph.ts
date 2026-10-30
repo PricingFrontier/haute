@@ -387,7 +387,7 @@ function assertDownstreamInputMappingCanBeRewritten(
   }
   const hasInputMapping = isPlainObject(rawInputMapping)
   // A Transform's or Load File's code names its inputs, so it keeps the old name.
-  const shouldCreateMapping = steppedSurfaceAllowsInputReferences(String(target.data.nodeType)) && !config.instanceOf
+  const shouldCreateMapping = steppedSurfaceAllowsInputReferences(String(target.data.nodeType))
   if (!hasInputMapping && !shouldCreateMapping) return
 
   let matchedOldCurrentInput = false
@@ -431,7 +431,7 @@ function rewriteDownstreamInputMapping(
     throw new Error("Cannot rewrite a malformed inputMapping; expected an object")
   }
   const hasInputMapping = isPlainObject(rawInputMapping)
-  const shouldCreateMapping = steppedSurfaceAllowsInputReferences(String(node.data.nodeType)) && !config.instanceOf
+  const shouldCreateMapping = steppedSurfaceAllowsInputReferences(String(node.data.nodeType))
   if (!hasInputMapping && !shouldCreateMapping) return node
 
   const inputMapping = hasInputMapping ? rawInputMapping : {}

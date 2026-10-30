@@ -41,7 +41,7 @@ from haute._ast_helpers import (
     _strip_docstring,
 )
 from haute._code_extraction import _unwrap_chain_assignment, extract_user_code
-from haute._config_builder import _build_node_config, _copy_config_keys, _resolve_node_config
+from haute._config_builder import _copy_config_keys, _resolve_node_config
 from haute._config_io import has_config_folder
 from haute._graph_builders import _build_edges, _build_rf_nodes, _extract_decorated_nodes
 from haute._types import NodeType
@@ -732,22 +732,6 @@ class TestExtractPreservedBlocks:
         source = "# haute:preserve-start\n\nX = 1\n\n# haute:preserve-end\n"
         blocks = _extract_preserved_blocks(source)
         assert blocks[0] == "X = 1"
-
-
-# ===========================================================================
-# _build_node_config — additional edge cases
-# ===========================================================================
-
-
-class TestBuildNodeConfigExtended:
-    def test_instance_reference_added_to_config(self):
-        config = _build_node_config(
-            NodeType.POLARS,
-            {"of": "original_node"},
-            "",
-            [],
-        )
-        assert config["instanceOf"] == "original_node"
 
 
 # ===========================================================================

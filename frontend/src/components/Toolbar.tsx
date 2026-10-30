@@ -10,7 +10,6 @@ import useUIStore from "../stores/useUIStore"
 import { formatBytes } from "../utils/formatBytes"
 import MlflowSettingsModal from "./MlflowSettingsModal"
 
-
 function formatTiming(ms: number): string {
   const rounded = Math.round(ms)
   return rounded < 1000 ? `${rounded} ms` : `${(ms / 1000).toFixed(2)} s`
@@ -33,8 +32,7 @@ interface ToolbarProps {
   submodelAction: "create" | "dissolve"
   canRunSubmodelAction: boolean
   onSubmodelAction: () => void
-  /** Create a linked instance of the single selected non-singleton node (the
-   *  generic `instanceOf` path, not just submodels). */
+  /** Reuse the selected supported node by wrapping it, or add another submodel occurrence. */
   canCreateInstance: boolean
   onCreateInstance: () => void
   onCentre: () => void

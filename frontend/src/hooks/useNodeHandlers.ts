@@ -18,12 +18,14 @@ import {
 import {
   NODE_TYPES,
   NODE_TYPE_META,
+  WRAPPED_INSTANCE_TYPES,
   isSingletonType,
   singletonTypesInSubmodelDefinition,
 } from "../utils/nodeTypes"
 import { getLayoutedElements } from "../utils/layout"
 import type { PreviewData } from "../panels/DataPreview"
 import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
+import type { SubmodelCreateResult } from "./useSubmodelNavigation"
 
 type UseNodeHandlersParams = {
   graphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
@@ -41,6 +43,7 @@ type UseNodeHandlersParams = {
   getInternalNode?: (id: string) => InternalNode | undefined
   submodels: Record<string, unknown>
   resolveNodeIdentities: (nodes: readonly Node[]) => Promise<Node[]>
+  createWrappedNodeInstance?: (nodeId: string) => Promise<SubmodelCreateResult>
   commitSharedNodeDeletion?: (
     nodeIds: ReadonlySet<string>,
     selectedEdgeIds?: ReadonlySet<string>,
@@ -64,7 +67,6 @@ function nextSubmodelAlias(alias: string, aliases: Set<string>): string {
   return `${base}_${suffix}`
 }
 
-
 export default function useNodeHandlers({
   graphRef,
   nodeIdCounter: nodeIdCounterRef,
@@ -78,6 +80,7 @@ export default function useNodeHandlers({
   getInternalNode,
   submodels,
   resolveNodeIdentities,
+  createWrappedNodeInstance,
   commitSharedNodeDeletion,
 }: UseNodeHandlersParams) {
   const layoutInFlightRef = useRef(false)
@@ -210,7 +213,22 @@ export default function useNodeHandlers({
       return
     }
 
-    let instanceConfig: Record<string, unknown>
+    if (WRAPPED_INSTANCE_TYPES.has(origNodeType)) {
+      if (!createWrappedNodeInstance) {
+        throw new Error("Create Instance requires the parent document transform handler")
+      }
+      const result = await createWrappedNodeInstance(id)
+      if (!result.ok) addToast("error", result.error)
+      return
+    }
+
+    if (!isSubmodel) {
+      addToast("info", origNodeType === NODE_TYPES.DATA_OUTPUT
+        ? "Data Output cannot be reused."
+        : `Cannot create instance of "${origData.label}": this node type cannot be reused.`)
+      return
+    }
+
     const occupiedIdentities = new Set(n.map((node) => node.id))
     for (const node of n) {
       const nodeConfig = nodeData(node).config
@@ -221,97 +239,57 @@ export default function useNodeHandlers({
         occupiedIdentities.add(nodeConfig.alias)
       }
     }
-    if (isSubmodel) {
-      const config = origData.config
-      if (!isSubmodelInstanceConfig(config)) {
-        addToast("error", `Cannot create instance of "${origData.label}": missing submodel definition identity`)
-        return
-      }
-      const containedSingletons = singletonTypesInSubmodelDefinition(
-        config.definitionId,
-        submodels,
+    const config = origData.config
+    if (!isSubmodelInstanceConfig(config)) {
+      addToast("error", `Cannot create instance of "${origData.label}": missing submodel definition identity`)
+      return
+    }
+    const containedSingletons = singletonTypesInSubmodelDefinition(
+      config.definitionId,
+      submodels,
+    )
+    if (containedSingletons.size > 0) {
+      const names = [...containedSingletons]
+        .map((nodeType) => NODE_TYPE_META[nodeType].name)
+        .join(", ")
+      addToast(
+        "info",
+        `Cannot create instance of "${origData.label}": its definition contains ${names}, and only one node of each singleton type is allowed per pipeline`,
       )
-      if (containedSingletons.size > 0) {
-        const names = [...containedSingletons]
-          .map((nodeType) => NODE_TYPE_META[nodeType].name)
-          .join(", ")
-        addToast(
-          "info",
-          `Cannot create instance of "${origData.label}": its definition contains ${names}, and only one node of each singleton type is allowed per pipeline`,
-        )
-        return
-      }
-      const ownerId = config.instanceOf ?? original.id
-      const owner = n.find((node) => node.id === ownerId)
-      const ownerConfig = owner ? nodeData(owner).config : undefined
-      if (
-        !owner
-        || nodeData(owner).nodeType !== NODE_TYPES.SUBMODEL
-        || !isSubmodelInstanceConfig(ownerConfig)
-        || ownerConfig.definitionId !== config.definitionId
-        || ownerConfig.instanceOf !== undefined
-      ) {
-        addToast(
-          "error",
-          `Cannot create instance of "${origData.label}": its editable definition owner is invalid`,
-        )
-        return
-      }
-      const newAlias = nextSubmodelAlias(config.alias, occupiedIdentities)
-      occupiedIdentities.add(newAlias)
-      instanceConfig = {
-        definitionId: config.definitionId,
-        alias: newAlias,
-        instanceOf: ownerId,
-      }
-    } else {
-      // Point at the ORIGINAL, not at whatever was selected: instancing an
-      // instance must produce a sibling, not a chain. `resolveInstanceOriginal`
-      // (NodePanel) does no chain-walking, so a chained `instanceOf` would
-      // resolve the "original" to another pointer with no content of its own.
-      // This mirrors the `ownerId` flattening the submodel branch does above.
-      const instanceOf = origData.config?.instanceOf
-      let ownerId = id
-      if (instanceOf !== undefined) {
-        if (typeof instanceOf !== "string" || instanceOf.trim() === "") {
-          addToast("error", `Cannot create instance of "${origData.label}": its original node identity is invalid`)
-          return
-        }
-        const owner = n.find((node) => node.id === instanceOf)
-        if (!owner) {
-          addToast("error", `Cannot create instance of "${origData.label}": original node "${instanceOf}" does not exist`)
-          return
-        }
-        const ownerData = nodeData(owner)
-        if (ownerData.nodeType !== origNodeType) {
-          addToast("error", `Cannot create instance of "${origData.label}": original node "${instanceOf}" has a different node type`)
-          return
-        }
-        if (ownerData.config?.instanceOf !== undefined) {
-          addToast("error", `Cannot create instance of "${origData.label}": original node "${instanceOf}" is itself an instance`)
-          return
-        }
-        ownerId = instanceOf
-      }
-      instanceConfig = { instanceOf: ownerId }
+      return
+    }
+    const ownerId = config.instanceOf ?? original.id
+    const owner = n.find((node) => node.id === ownerId)
+    const ownerConfig = owner ? nodeData(owner).config : undefined
+    if (
+      !owner
+      || nodeData(owner).nodeType !== NODE_TYPES.SUBMODEL
+      || !isSubmodelInstanceConfig(ownerConfig)
+      || ownerConfig.definitionId !== config.definitionId
+      || ownerConfig.instanceOf !== undefined
+    ) {
+      addToast(
+        "error",
+        `Cannot create instance of "${origData.label}": its editable definition owner is invalid`,
+      )
+      return
+    }
+    const newAlias = nextSubmodelAlias(config.alias, occupiedIdentities)
+    occupiedIdentities.add(newAlias)
+    const instanceConfig = {
+      definitionId: config.definitionId,
+      alias: newAlias,
+      instanceOf: ownerId,
     }
 
-    let newId: string
-    if (isSubmodel) {
-      newId = String(instanceConfig.alias)
-    } else {
-      do {
-        nodeIdCounterRef.current += 1
-        newId = `${origNodeType}_${nodeIdCounterRef.current}`
-      } while (occupiedIdentities.has(newId))
-    }
+    const newId = String(instanceConfig.alias)
     const newNode: Node = {
       id: newId,
       type: original.type,
       position: { x: original.position.x + 60, y: original.position.y + 80 },
       selected: true,
       data: {
-        label: isSubmodel ? String(instanceConfig.alias) : `${origData.label} instance`,
+        label: String(instanceConfig.alias),
         description: `Instance of ${origData.label}`,
         nodeType: origNodeType,
         config: instanceConfig,
@@ -336,7 +314,7 @@ export default function useNodeHandlers({
     } catch (err: unknown) {
       addToast("error", `Create node failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast, submodels, resolveNodeIdentities])
+  }, [graphRef, setNodes, setSelectedNode, setLastSelectedId, addToast, submodels, resolveNodeIdentities, createWrappedNodeInstance])
 
   const handleRenameNode = useCallback((id: string) => {
     const { nodes: n } = graphRef.current

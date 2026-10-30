@@ -67,7 +67,7 @@ one of those operations inside an unlabelled transform.
 - An input is named after its incoming edge: the upstream node's name, except
   that an edge from a Quote Input or Workbench Input frame, which `add_edge`'s `source_handle`
   selects, is named by that frame, and an edge from a submodel output by its
-  port. Steps, code and config fields read inputs by these names.
+  port on the owner and, on an instance, by the instance's name, or `<instance>_<port>` when its submodel has several outputs. Steps, code and config fields read inputs by these names.
 - Use `pipeline.connect("source", "target")` when a graph branches, has more
   than one input, or needs named ports.  Keep explicit connections together at
   the bottom of the module so the topology is easy to audit.

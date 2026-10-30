@@ -37,6 +37,8 @@ A frame block has:
 
 Each mapping row has a tick box (include this field in the response), the source column (**- column -** until you choose one), its output path (placeholder `$[:].field`) and a **×** to remove it. An empty path shows **An output path is required.**, and a path that clashes with another field's path in the same frame is flagged.
 
+Renaming an incoming frame updates its mapping rows, including disabled rows. Disabled rows do not block a rename because their paths duplicate another row; enabled mappings must remain distinct.
+
 An output path uses the same path notation as the Quote Input tables: `$[:].final_premium` is a field of each top-level response object, and `$[:].drivers[:].age_factor` is a field of each object in a nested `drivers` array. Every path starts at the root array `$[:]`. A child frame nests under its parent by the parent-level fields it also maps, for example `$[:].quote_id`. A deployment whose response nests a quote's own rows, such as its drivers, answers a request of several quotes one quote at a time, so each quote's drivers are its own (see [Requests with several quotes](../../deployment/index.md#requests-with-several-quotes)).
 
 The panel warns when two connected frames resolve to the same name (give the sources distinct names before mapping them), and when two frames emit at the same array level (join them upstream or map one of them to a different level).

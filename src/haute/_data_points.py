@@ -193,15 +193,8 @@ class PointColumnsMissingError(ValueError):
         self.missing = missing
 
 
-def _effective_graph(graph: PipelineGraph) -> PipelineGraph:
-    from haute._builders import resolve_instance_nodes
-
-    return resolve_instance_nodes(graph)
-
-
 def consumer_point(graph: PipelineGraph, consumer_node_id: str) -> ConsumerPoint:
     """Map a consumer node to the data point it reads and its column demand."""
-    graph = _effective_graph(graph)
     node = _node(graph, consumer_node_id)
     node_type = node.data.nodeType
     if node_type == NodeType.BANDING:
@@ -215,7 +208,7 @@ def consumer_point(graph: PipelineGraph, consumer_node_id: str) -> ConsumerPoint
 
 
 def point_kind(graph: PipelineGraph, point: DataPoint) -> PointKind:
-    node = _node(_effective_graph(graph), point.producer_node_id)
+    node = _node(graph, point.producer_node_id)
     node_type = node.data.nodeType
     if node_type in REQUEST_INPUT_NODE_TYPES and point.port_label is not None:
         return "api_input_table"
@@ -273,7 +266,7 @@ class DataPointResolver:
     ) -> None:
         from haute.execution import canonical_dataframe_execution_graph
 
-        self.graph = canonical_dataframe_execution_graph(_effective_graph(graph))
+        self.graph = canonical_dataframe_execution_graph(graph)
         self.source = source
         self.store = store if store is not None else _default_store()
         self._building = building

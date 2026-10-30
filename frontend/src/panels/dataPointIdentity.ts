@@ -68,21 +68,10 @@ function consumerDemand(node: SimpleNode): Record<string, unknown> | null {
   return null
 }
 
-function instanceOriginalId(node: SimpleNode | undefined): string | null {
-  const reference = node?.data.config?.instanceOf
-  return typeof reference === "string" && reference ? reference : null
-}
-
-/**
- * Every node whose configuration can change the data the consumer reads: its
- * upstream subgraph, plus the original of any instance in it, because execution
- * runs an instance with its original's configuration and the original may sit
- * outside the consumer's own edges.
- */
+/** Every upstream node whose configuration can change the consumer's data. */
 function dataAffectingNodeIds(
   nodeId: string,
   edges: SimpleEdge[],
-  nodesById: Map<string, SimpleNode>,
 ): Set<string> {
   const ids = new Set([nodeId])
   let changed = true
@@ -92,13 +81,6 @@ function dataAffectingNodeIds(
     for (const edge of edges) {
       if (ids.has(edge.target) && !ids.has(edge.source)) {
         ids.add(edge.source)
-        changed = true
-      }
-    }
-    for (const id of Array.from(ids)) {
-      const original = instanceOriginalId(nodesById.get(id))
-      if (original && !ids.has(original)) {
-        ids.add(original)
         changed = true
       }
     }
@@ -127,7 +109,7 @@ export function buildNodeDataCacheIdentity({
 }: NodeDataCacheIdentityInput): Record<string, unknown> {
   const nodesById = new Map(allNodes.map((graphNode) => [graphNode.id, graphNode]))
   nodesById.set(node.id, node)
-  const nodeIds = dataAffectingNodeIds(node.id, edges, nodesById)
+  const nodeIds = dataAffectingNodeIds(node.id, edges)
 
   const nodes = Array.from(nodeIds)
     .map((nodeId) => nodesById.get(nodeId))

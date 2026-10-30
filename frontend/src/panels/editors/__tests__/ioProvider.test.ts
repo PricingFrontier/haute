@@ -38,12 +38,12 @@ const databaseGroup = {
 } as unknown as IoCapabilityGroup
 
 describe("ioBranchConfig", () => {
-  const config = { instanceOf: "base", selected_columns: ["a"], path: "old.csv", stale: true }
+  const config = { contract: { columns: [] }, selected_columns: ["a"], path: "old.csv", stale: true }
 
   it("keeps the common keys and starts the side's first format and mode", () => {
-    expect(ioBranchConfig({ direction: "input", config, group: fileGroup, commonKeys: ["instanceOf", "selected_columns"] }))
+    expect(ioBranchConfig({ direction: "input", config, group: fileGroup, commonKeys: ["contract", "selected_columns"] }))
       .toEqual({
-        instanceOf: "base",
+        contract: { columns: [] },
         selected_columns: ["a"],
         inputType: "file",
         format: "csv",
@@ -52,9 +52,9 @@ describe("ioBranchConfig", () => {
         path: "",
         rows: [],
       })
-    expect(ioBranchConfig({ direction: "output", config, group: fileGroup, commonKeys: ["instanceOf"] }))
+    expect(ioBranchConfig({ direction: "output", config, group: fileGroup, commonKeys: ["contract"] }))
       .toEqual({
-        instanceOf: "base",
+        contract: { columns: [] },
         outputType: "file",
         format: "xlsx",
         mode: "write",

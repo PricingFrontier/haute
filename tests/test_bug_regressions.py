@@ -432,34 +432,6 @@ class TestBugB7DissolveTargetOnly:
 # ---------------------------------------------------------------------------
 
 
-class TestBugB11InstanceSelectedColumns:
-    def test_instance_inherits_selected_columns(self) -> None:
-        """Instance nodes should apply the original's selected_columns filter."""
-        from haute._builders import resolve_instance_node
-        from haute._types import PipelineGraph
-
-        def _node(nid, ntype="polars", config=None):
-            return {
-                "id": nid,
-                "position": {"x": 0, "y": 0},
-                "data": {"label": nid, "nodeType": ntype, "config": config or {}},
-            }
-
-        graph = PipelineGraph.model_validate(
-            {
-                "nodes": [
-                    _node("original", "polars", {"selected_columns": ["a", "b"], "code": ""}),
-                    _node("instance", "polars", {"instanceOf": "original"}),
-                ],
-                "edges": [],
-            }
-        )
-        node_map = {n.id: n for n in graph.nodes}
-        resolved = resolve_instance_node(node_map["instance"], node_map)
-        # The resolved config should include selected_columns from the original
-        assert resolved.data.config.get("selected_columns") == ["a", "b"]
-
-
 # ---------------------------------------------------------------------------
 # B16: validate_deploy not called in programmatic path
 # ---------------------------------------------------------------------------

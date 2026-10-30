@@ -1845,6 +1845,8 @@ class TestProtocolCallbackValidation:
             {
                 "status": "running",
                 "job_type": "training",
+                "node_id": "quoted",
+                "node_label": "quoted",
                 "start_time": time.monotonic(),
                 "timeout": 60,
             }
@@ -1894,6 +1896,7 @@ class TestProtocolCallbackValidation:
             {
                 "status": "running",
                 "job_type": "dispersion_estimate",
+                "node_label": "quoted",
                 "param": "theta",
                 "start_time": time.monotonic(),
                 "timeout": 60,
@@ -2262,6 +2265,7 @@ class TestProtocolLaunchCleanup:
             {
                 "status": "running",
                 "job_type": job_type,
+                "node_label": "quoted",
                 "param": "theta" if job_type == "dispersion_estimate" else None,
                 "start_time": time.monotonic(),
                 "timeout": 1.0,

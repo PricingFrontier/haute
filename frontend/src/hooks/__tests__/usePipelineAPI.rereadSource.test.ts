@@ -200,17 +200,6 @@ describe("usePipelineAPI - Refresh re-reads a structured Quote Input", () => {
     expect(useToastStore.getState().toasts).toEqual([])
   })
 
-  it("re-reads the original's file for an instance", async () => {
-    const original = quoteInput("quotes", quotesConfig)
-    const instance = quoteInput("quotes_copy", { instanceOf: "quotes" })
-    const { result } = await renderPipelineAPI([original, instance])
-
-    act(() => result.current.refreshPreview(instance, { rereadSource: true }))
-
-    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1), { timeout: STEP_TIMEOUT_MS })
-    expect(forcedBuilds()).toEqual([[{ schema_version: 1, node_type: "apiInput", config: quotesConfig, refresh: true }]])
-  })
-
   it.each([
     ["a re-preview that is not the frame's Refresh", quoteInput("quotes", quotesConfig), {}],
     ["a Data Input, whose forced re-read is Import", makeNode("quotes", "dataInput", {

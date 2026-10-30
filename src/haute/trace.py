@@ -44,7 +44,6 @@ from typing import Any, cast
 import polars as pl
 
 import haute.execution as execution_facade
-from haute._builders import resolve_instance_nodes
 from haute._cache import GraphFingerprintMemo
 from haute._env import int_env
 from haute._execute_lazy import lineage_preparation_order
@@ -539,7 +538,7 @@ def _open_trace_seed_plan(
     try:
         records = prepare_input_snapshots(
             executed,
-            resolve_instance_nodes(graph).node_map,
+            graph.node_map,
             profile=execution_context.profile,
             execution_context=execution_context,
             base_dir=preparation_base_dir(graph),

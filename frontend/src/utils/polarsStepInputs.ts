@@ -68,9 +68,9 @@ export function authoredPolarsConfig(config: Record<string, unknown>): Record<st
   return Object.fromEntries(Object.entries(config).filter(([key]) => key !== "code" && key !== "_steps_error"))
 }
 
-/** Whether `config` belongs to an ordinary (non-instance) stepped transform. */
+/** Whether `config` belongs to an stepped transform. */
 export function isSteppedTransformConfig(config: unknown): config is Record<string, unknown> & { steps: unknown[] } {
-  return isPlainObject(config) && !("instanceOf" in config) && Array.isArray(config.steps)
+  return isPlainObject(config) && Array.isArray(config.steps)
 }
 
 /** Distinct input names the steps reference, in first-seen order. */

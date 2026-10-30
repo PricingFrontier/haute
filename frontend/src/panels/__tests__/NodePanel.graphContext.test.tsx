@@ -1,28 +1,4 @@
-/**
- * Phase 2 Package 3C — NodePanel graph context + fail-loud instanceOf.
- *
- * These tests pin two linked changes:
- *
- * 1) Issue #68 — prop drilling.  Before this package NodePanel threaded
- *    `allNodes`, `edges`, `submodels`, and `preamble` through ~6 nested
- *    children (InstancePanel, DataOutputEditor, ModellingConfig, OptimiserConfig,
- *    OutputEditor, RatingStepEditor).  The refactor introduces a React
- *    `GraphContext` so every nested consumer can read graph data from
- *    context rather than from explicit props.
- *
- * 2) Issue #84 — fail loud on missing `instanceOf`.  The inline IIFE at
- *    `NodePanel.tsx:83-86` silently fell back to `String(config.instanceOf)`
- *    when the referenced original node was missing from `allNodes`.
- *    Per CLAUDE.md §12 (fail loudly) the UI should render a clear
- *    diagnostic naming the missing id, so authors see the broken reference
- *    without losing the panel close button to the app-level ErrorBoundary.
- *
- * The tests deliberately exercise both the *public* regression surface
- * (rendered DOM is unchanged for correct graphs) and a *structural*
- * invariant (nested components' prop type has dropped `allNodes`).
- * Structural assertions guard against a half-finished refactor where
- * the context exists but children still accept the stale props.
- */
+/** NodePanel supplies context to graph-aware editors without repeated graph scans. */
 
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { readFileSync } from "node:fs"
@@ -146,7 +122,7 @@ function renderWithGraph(opts: {
 
 // ─── Suite ────────────────────────────────────────────────────────
 
-describe("NodePanel - Phase 2 Package 3C (graph context + fail-loud instanceOf)", () => {
+describe("NodePanel - Phase 2 Package 3C (graph context)", () => {
   beforeEach(() => {
     Object.defineProperty(window, "innerWidth", { value: 1920, writable: true, configurable: true })
     useUIStore.setState({ nodePanelWidth: 600, paletteOpen: true })
@@ -175,23 +151,6 @@ describe("NodePanel - Phase 2 Package 3C (graph context + fail-loud instanceOf)"
       expect(screen.getByTestId("DataInputEditor")).toBeInTheDocument()
     })
 
-    it("instance of a present original still resolves to its label (regression)", () => {
-      // This mirrors the pre-refactor test — must keep passing after the
-      // refactor to graph context.
-      const orig = makeNode({
-        id: "orig_1",
-        data: { label: "Original", description: "", nodeType: "polars", config: {} },
-      })
-      const instance = makeNode({
-        id: "inst_1",
-        data: { label: "Instance", description: "", nodeType: "polars", config: { instanceOf: "orig_1" } },
-      })
-      renderWithGraph({ node: instance, allNodes: [orig, instance] })
-      expect(screen.getByText("Instance of")).toBeInTheDocument()
-      // The original node's label — NOT the stringified id — should appear.
-      expect(screen.getByText("Original")).toBeInTheDocument()
-      expect(screen.queryByText("orig_1")).not.toBeInTheDocument()
-    })
   })
 
   // ─── Nested editors read graph data from context, not props ─────
@@ -281,42 +240,4 @@ describe("NodePanel - Phase 2 Package 3C (graph context + fail-loud instanceOf)"
     })
   })
 
-  // ─── Fail loud: missing instanceOf ──────────────────────────────
-
-  describe("missing instanceOf - fail loud (#84)", () => {
-    it("renders a diagnostic naming the missing id when the referenced original is absent", () => {
-      const instance = makeNode({
-        id: "inst_1",
-        data: {
-          label: "Instance",
-          description: "",
-          nodeType: "polars",
-          config: { instanceOf: "missing_id" },
-        },
-      })
-
-      renderWithGraph({ node: instance, allNodes: [instance] })
-
-      expect(screen.getByRole("alert")).toHaveTextContent("Broken instance reference")
-      expect(screen.getByRole("alert")).toHaveTextContent("missing_id")
-      expect(screen.getByTitle("Close")).toBeInTheDocument()
-    })
-
-    it("does NOT silently render the stringified id as a fallback label", () => {
-      const instance = makeNode({
-        id: "inst_1",
-        data: {
-          label: "Instance",
-          description: "",
-          nodeType: "polars",
-          config: { instanceOf: "ghost_node" },
-        },
-      })
-
-      renderWithGraph({ node: instance, allNodes: [instance] })
-
-      expect(screen.queryByText("Instance of")).toBeNull()
-      expect(screen.getByRole("alert")).toHaveTextContent("ghost_node")
-    })
-  })
 })

@@ -310,6 +310,55 @@ async def resolve_pipeline_editor_identities(
     # files the graph's support code star-imports, as save and the executor do.
     read_utility = utility_reader(pipeline_dir(), Path.cwd().resolve())
     try:
+        occurrence_definitions: dict[str, str] = {}
+        if body.graph is not None:
+            for node in body.nodes:
+                if node.node_type != NodeType.SUBMODEL:
+                    continue
+                if node.submodel is not None and node.submodel not in (body.graph.submodels or {}):
+                    raise ValueError(f"Submodel {node.submodel!r} is not in the naming context.")
+                scoped = (
+                    body.graph
+                    if node.submodel is None
+                    else (body.graph.submodels or {})[node.submodel].graph
+                )
+                occurrence = scoped.node_map.get(node.node_id)
+                if occurrence is None:
+                    if node.instance_of is None:
+                        continue
+                    # New copies arrive separately from the graph. Their owner supplies
+                    # the definition whose clone names the candidate must reserve.
+                    owner = scoped.node_map.get(node.instance_of)
+                    if (
+                        owner is None
+                        or owner.data.nodeType != NodeType.SUBMODEL
+                        or owner.data.config.get("instanceOf") is not None
+                    ):
+                        raise ValueError(
+                            f"Submodel {node.node_id!r} requires an editable owner "
+                            f"{node.instance_of!r} in the naming context."
+                        )
+                    definition_id = owner.data.config.get("definitionId")
+                elif node.instance_of != occurrence.data.config.get("instanceOf"):
+                    raise ValueError(
+                        f"Submodel {node.node_id!r} instance_of differs from the naming context."
+                    )
+                else:
+                    definition_id = occurrence.data.config.get("definitionId")
+                if not isinstance(definition_id, str):
+                    raise ValueError(f"Submodel {node.node_id!r} requires a definitionId.")
+                definition = (body.graph.submodels or {}).get(definition_id)
+                if definition is None:
+                    raise ValueError(
+                        f"Submodel {node.node_id!r} has no definition in the naming context."
+                    )
+                if set(node.source_handles) != {
+                    f"out__{port.name}" for port in definition.output_ports
+                }:
+                    raise ValueError(
+                        f"Submodel {node.node_id!r} source_handles differ from the naming context."
+                    )
+                occurrence_definitions[node.node_id] = definition_id
         candidates = [
             NamingCandidate(
                 node_id=node.node_id,
@@ -317,6 +366,8 @@ async def resolve_pipeline_editor_identities(
                 node_type=node.node_type,
                 alias=node.alias,
                 submodel=node.submodel,
+                definition_id=occurrence_definitions.get(node.node_id),
+                instance_of=node.instance_of,
             )
             for node in body.nodes
         ]
@@ -334,6 +385,7 @@ async def resolve_pipeline_editor_identities(
                 label=name.label,
                 source_handles=node.source_handles,
                 alias=name.alias,
+                instance_of=node.instance_of,
             )
             identities.append(
                 EditorIdentityResponseNode(
@@ -1323,8 +1375,8 @@ def _occurrence_output_columns(
 ) -> dict[str, dict[str, list[ColumnInfo]]]:
     """Columns of every submodel occurrence's output ports, keyed like its edges.
 
-    The executor runs the flattened graph, so its results are keyed by the
-    cloned internal nodes and never by the occurrence the editor draws. An
+    The executor's frame results are keyed by cloned internal nodes; its
+    occurrence entries carry only schema warnings, not output columns. An
     edge from an occurrence leaves the ``out__<port>`` handle; this maps
     that handle to the columns of the port's internal source (its frame
     when the source is multi-frame), so the editor can offer them downstream.
@@ -1409,7 +1461,7 @@ def _preview_response_from_results(
     node_schema_warnings = {
         node_id: result.schema_warnings
         for node_id, result in results.items()
-        if node_id in node_map and node_id in relevant
+        if node_id in relevant or node_id in graph._submodel_shared_bindings
     }
     return PreviewNodeResponse(
         node_id=body.node_id,

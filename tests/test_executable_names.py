@@ -21,10 +21,11 @@ from haute._executable_names import (
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
 from haute._user_exec import _exec_user_code
 from haute.assistant._ops import OpValidationError, apply_ops, parse_ops
-from haute.codegen import graph_to_code
+from haute.codegen import graph_to_code, graph_to_code_multi
 from haute.errors import ExecutionError, ParseError, RequestRefusedError
-from haute.parser import parse_pipeline_source
+from haute.parser import parse_pipeline_file, parse_pipeline_source
 from haute.routes._save_pipeline import SavePipelineService
+from tests._git_helpers import init_repo
 
 # ---------------------------------------------------------------------------
 # Graph builders
@@ -76,6 +77,7 @@ def _with_submodel(
     root: tuple[GraphNode, ...] = (),
     alias: str = "rates",
     input_ports: list[dict[str, Any]] | None = None,
+    output_ports: list[dict[str, Any]] | None = None,
 ) -> PipelineGraph:
     occurrence = _node(alias, node_type="submodel", definitionId="rates", alias=alias)
     definition = SubmodelDefinition(
@@ -83,7 +85,7 @@ def _with_submodel(
         file="modules/rates.py",
         graph=PipelineGraph(nodes=list(children), edges=[], pipeline_name="rates"),
         inputPorts=input_ports or [],
-        outputPorts=[],
+        outputPorts=output_ports or [],
     )
     return _graph(*root, occurrence, submodels={"rates": definition})
 
@@ -141,13 +143,6 @@ _RULE_CASES = [
         id="input-mapping-alias",
     ),
     pytest.param(
-        _consumes(
-            _node("claims"), _node("copy", instanceOf="rated", inputMapping={"pl": "claims"})
-        ),
-        [("reserved_input", "pl")],
-        id="instance-input-mapping",
-    ),
-    pytest.param(
         _with_submodel(
             _node("child"), input_ports=[{"name": "pl", "targets": [{"nodeId": "child"}]}]
         ),
@@ -179,9 +174,86 @@ def test_a_case_collision_names_every_node_and_its_module() -> None:
     )
 
 
+@pytest.mark.parametrize("label", ["copy__calc", "COPY__CALC"])
+def test_generated_clone_name_collision_is_refused_before_execution(
+    tmp_path: Path, label: str
+) -> None:
+    init_repo(tmp_path)
+    graph = _with_submodel(
+        _node("calc", code="df = pl.DataFrame({'value': [1]}).lazy()"),
+        output_ports=[{"name": "result", "source": {"nodeId": "calc"}}],
+        root=(
+            _node("other", code="df = pl.DataFrame({'value': [2]}).lazy()"),
+            _node("consumer", code="df = pl.concat([copy, other])"),
+            _node(
+                "copy", node_type="submodel", definitionId="rates", alias="copy", instanceOf="rates"
+            ),
+        ),
+    )
+    graph.edges = [_edge("copy", "consumer", "out__result"), _edge("other", "consumer")]
+    # A legal graph really runs; the colliding rename must be refused at authoring boundaries.
+    from haute._flatten import flatten_executable_graph
+    from haute.executor import execute_graph
+
+    assert execute_graph(flatten_executable_graph(graph))["consumer"].preview == [
+        {"value": 1},
+        {"value": 2},
+    ]
+    files = graph_to_code_multi(graph, pipeline_name="main", source_file="main.py")
+    for name, source in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source.replace("other", label), encoding="utf-8")
+    graph.node_map["other"].data.label = label
+    graph.node_map["consumer"].data.config["code"] = f"df = pl.concat([copy, {label}])"
+
+    (violation,) = executable_name_violations(graph)
+    assert {"copy", "calc", "other"} <= set(violation.node_ids)
+    assert "copy__calc" in violation.message().casefold()
+    assert "rates" in violation.message()
+    with pytest.raises(RequestRefusedError, match="(?i)copy__calc"):
+        SavePipelineService(tmp_path).validate_graph(graph, source_file="main.py")
+    with pytest.raises(ParseError, match="(?i)copy__calc"):
+        graph_to_code_multi(graph, pipeline_name="main", source_file="main.py")
+    with pytest.raises(ParseError, match="(?i)copy__calc"):
+        parse_pipeline_file(tmp_path / "main.py")
+
+
 # ---------------------------------------------------------------------------
 # Entry points
 # ---------------------------------------------------------------------------
+
+
+def test_generated_names_from_two_instances_cannot_collide() -> None:
+    graph = _with_submodel(_node("part__leaf"))
+    assert graph.submodels is not None
+    graph.submodels["second"] = SubmodelDefinition(
+        definitionId="second",
+        file="modules/second.py",
+        graph=_graph(_node("leaf")),
+        inputPorts=[],
+        outputPorts=[],
+    )
+    graph.nodes.extend(
+        [
+            _node(
+                "second_owner", node_type="submodel", definitionId="second", alias="second_owner"
+            ),
+            _node(
+                "copy", node_type="submodel", definitionId="rates", alias="copy", instanceOf="rates"
+            ),
+            _node(
+                "copy__part",
+                node_type="submodel",
+                definitionId="second",
+                alias="copy__part",
+                instanceOf="second_owner",
+            ),
+        ]
+    )
+    (violation,) = executable_name_violations(graph)
+    assert violation.name == "copy__part__leaf"
+    assert set(violation.node_ids) == {"copy", "part__leaf", "copy__part", "leaf"}
 
 
 @pytest.mark.parametrize(
@@ -359,9 +431,7 @@ def test_execution_refuses_an_input_mapping_alias_that_is_reserved() -> None:
     frame = pl.LazyFrame({"x": [1]})
 
     with pytest.raises(ExecutionError, match="An input is named `pl`"):
-        _exec_user_code(
-            "df = claims", ["claims"], (frame,), orig_source_names=["pl"], input_mapping=None
-        )
+        _exec_user_code("df = claims", ["claims"], (frame,), orig_source_names=["pl"])
 
 
 @pytest.mark.parametrize(
@@ -397,3 +467,15 @@ def test_one_message_lists_every_violation() -> None:
     message = format_name_violations(executable_name_violations(_labels("pl", "max")))
 
     assert message.count("\n  - ") == 2
+
+
+def test_execution_preserves_swapped_logical_input_bindings() -> None:
+    first = pl.LazyFrame({"value": [10]})
+    second = pl.LazyFrame({"value": [20]})
+    result = _exec_user_code(
+        "df = pl.concat([right, left])",
+        ["left", "right"],
+        (first, second),
+        orig_source_names=["right", "left"],
+    )
+    assert result.collect().to_dicts() == [{"value": 10}, {"value": 20}]

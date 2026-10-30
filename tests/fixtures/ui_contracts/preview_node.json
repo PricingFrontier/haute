@@ -65,7 +65,9 @@
   "schema_warnings": [
     {
       "column": "premium",
-      "status": "computed"
+      "status": "computed",
+      "input": null,
+      "detail": null
     }
   ],
   "notes": [],
@@ -162,7 +164,9 @@
     "score": [
       {
         "column": "premium",
-        "status": "computed"
+        "status": "computed",
+        "input": null,
+        "detail": null
       }
     ]
   },

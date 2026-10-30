@@ -162,14 +162,13 @@ export async function cancelInputSnapshotBuild(jobId: string): Promise<void> {
   }
 }
 
-
 /**
  * Build (or join the build of) every unavailable snapshot the graph needs.
  * A ready snapshot is served as published even when its freshness is stale,
  * unless ``force`` asks for every snapshot and cache to be rebuilt.
  */
 export async function ensureInputSnapshots(
-  nodes: Node[],
+  nodes: Pick<Node, "data">[],
   options: EnsureInputSnapshotsOptions = {},
 ): Promise<void> {
   const sources = nodes.flatMap((node) => {

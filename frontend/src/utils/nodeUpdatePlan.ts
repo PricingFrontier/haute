@@ -269,7 +269,6 @@ function targetInputCollision(affected: AffectedRenameTarget): string | null {
 function isSteppedOrdinaryTransform(node: Node): boolean {
   if (!steppedSurfaceAllowsInputReferences(String(node.data.nodeType))) return false
   const config = (node.data.config ?? {}) as Record<string, unknown>
-  if ("instanceOf" in config) return false
   return Array.isArray(config.steps)
 }
 
@@ -277,7 +276,6 @@ function isSteppedOrdinaryTransform(node: Node): boolean {
 function isCodedOrdinaryTransform(node: Node): boolean {
   if (!steppedSurfaceAllowsInputReferences(String(node.data.nodeType))) return false
   const config = (node.data.config ?? {}) as Record<string, unknown>
-  if ("instanceOf" in config) return false
   // A stepped transform's `code` is the rendering of its steps; renames
   // rewrite the step references instead of recording an inputMapping.
   if (Array.isArray(config.steps)) return false
@@ -388,12 +386,37 @@ function preserveCodedTransformBindings(
 }
 
 function collectMappingChanges(
-  rootScope: RenameGraphScope,
   affectedByScope: AffectedTargets,
 ): MappingChanges | NodeUpdatePlanFailure {
   const changes: MappingChanges = new Map()
   for (const targets of affectedByScope.values()) {
     for (const affected of targets.values()) {
+      if (affected.target.data.nodeType === NODE_TYPES.OUTPUT) {
+        const scopeChanges = changes.get(affected.scope) ?? new Map<string, Record<string, unknown>>()
+        const config = (affected.target.data.config ?? {}) as Record<string, unknown>
+        if (config.outputMapping !== undefined) {
+          if (!Array.isArray(config.outputMapping)) return { ok: false, error: "Quote Response outputMapping must be a list." }
+          const renames = new Map(affected.pairs.map(({ from, to }) => [from, to]))
+          const destinations = new Set<string>()
+          const mapping = []
+          for (const entry of config.outputMapping) {
+            if (!isPlainObject(entry) || typeof entry.source_port !== "string" || !entry.source_port) {
+              return { ok: false, error: "Quote Response outputMapping entry requires source_port." }
+            }
+            const source_port = renames.get(entry.source_port) ?? entry.source_port
+            const destination = JSON.stringify([entry.output_path, source_port])
+            if (entry.enabled !== false) {
+              if (destinations.has(destination)) {
+                return { ok: false, error: `Quote Response "${String(affected.target.data.label)}" output mapping collides on "${source_port}".` }
+              }
+              destinations.add(destination)
+            }
+            mapping.push({ ...entry, source_port })
+          }
+          scopeChanges.set(affected.target.id, { ...config, outputMapping: mapping })
+          changes.set(affected.scope, scopeChanges)
+        }
+      }
       if (affected.target.data.nodeType === NODE_TYPES.LIVE_SWITCH) {
         const failure = applyConfigMapping(
           changes,
@@ -425,26 +448,6 @@ function collectMappingChanges(
     }
   }
 
-  const instanceScopes = new Set<RenameGraphScope>([rootScope, ...affectedByScope.keys()])
-  for (const targets of affectedByScope.values()) {
-    for (const affected of targets.values()) {
-      for (const scope of instanceScopes) {
-        for (const node of scope.nodes) {
-          const config = (node.data.config ?? {}) as Record<string, unknown>
-          if (config.instanceOf !== affected.target.id) continue
-          const failure = applyConfigMapping(
-            changes,
-            scope,
-            node,
-            "inputMapping",
-            affected.pairs,
-            true,
-          )
-          if (failure) return failure
-        }
-      }
-    }
-  }
   return changes
 }
 
@@ -510,7 +513,7 @@ function reconcileConsumerBindings(
   rebound: readonly { edge: Edge; from: string; to: string }[],
 ): NodeUpdatePlanFailure | null {
   const affected = collectAffectedTargets(scope, rebound)
-  const changes = collectMappingChanges(scope, affected)
+  const changes = collectMappingChanges(affected)
   if ("ok" in changes) return changes
   applyMappingChanges(changes)
   return findInputCollision(affected)

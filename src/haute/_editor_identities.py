@@ -76,6 +76,7 @@ def resolve_editor_identity(
     source_handles: list[str] | tuple[str, ...] = (),
     config_reference_override: str | None = None,
     alias: str | None = None,
+    instance_of: str | None = None,
 ) -> ResolvedEditorIdentity:
     """Resolve one node's editor identities without filesystem access."""
     kind = NodeType(node_type)
@@ -103,7 +104,13 @@ def resolve_editor_identity(
         if not isinstance(alias, str) or not alias:
             raise ValueError(f"Submodel node {label!r} requires an alias.")
     mapping = {
-        handle: executable_input_name(node_type=kind, label=label, source_handle=handle)
+        handle: executable_input_name(
+            node_type=kind,
+            label=label,
+            source_handle=handle,
+            instance_of=instance_of,
+            source_handles=handles,
+        )
         for handle in handles
     }
     return ResolvedEditorIdentity(
@@ -124,6 +131,9 @@ class NamingCandidate:
     alias: str | None
     #: The definition holding the node, or ``None`` for the pipeline itself.
     submodel: str | None = None
+    #: The definition invoked by a submodel occurrence, distinct from its containing scope.
+    definition_id: str | None = None
+    instance_of: str | None = None
 
 
 @dataclass(frozen=True)
@@ -168,6 +178,10 @@ def _with_name(graph: PipelineGraph, candidate: NamingCandidate, label: str) -> 
         nodes = [renamed(n) if n.id == candidate.node_id else n for n in scoped.nodes]
     else:
         config: dict[str, Any] = {} if alias is None else {"alias": alias}
+        if candidate.definition_id is not None:
+            config["definitionId"] = candidate.definition_id
+        if candidate.instance_of is not None:
+            config["instanceOf"] = candidate.instance_of
         added = GraphNode(
             id=candidate.node_id,
             data=NodeData(label=label, nodeType=candidate.node_type, config=config),

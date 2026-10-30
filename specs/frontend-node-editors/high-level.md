@@ -31,9 +31,11 @@ backend API modules own validation and persistence.
   code**, 1:1 with the generated function signature: an API-input frame edge's chip shows the
   frame label carried on the edge (`quotes` is displayed as `quotes` and callable as `quotes`),
   an ordinary source's chip shows the sanitised node label, and a submodel `out__` edge's input name
-  is the sanitised public output port name, independent of the occurrence alias and
-  number of output ports. Renaming an occurrence leaves its output frame names
-  unchanged. Connections contributing duplicate input names are rejected explicitly.
+  is the output's name: the sanitised public output port name from an owner
+  and, from an instance, the instance's name (one output) or
+  `<instance>_<port>` (several). Renaming an owner leaves its output frame names
+  unchanged; renaming an instance renames them, as renaming an ordinary node
+  does. Connections contributing duplicate input names are rejected explicitly.
   Polars input chips, their tooltips, and connection-removal controls always use
   this frame name. A source card's display label, occurrence alias, internal child
   label, or structural handle must never replace a declared frame name, including
@@ -275,8 +277,8 @@ backend API modules own validation and persistence.
   keys; every other mode requires either one-or-more same-name `on` keys or equal-length,
   non-empty `leftOn`/`rightOn` pairs, and the two key forms cannot coexist.
 - Renaming an ordinary source or an API-input frame atomically migrates downstream
-  `input_scenario_map`, instance `inputMapping`, and exact-name Optimiser/Optimiser Apply input
-  selectors. A duplicate post-rename input
+  `input_scenario_map`, `inputMapping`, a Quote Response's `outputMapping[].source_port`, and
+  exact-name Optimiser/Optimiser Apply input selectors. A duplicate post-rename input
   name rejects the entire edit and is shown inline; no graph or mapping change is partially
   applied.
 - Data Input and Data Output obtain a fresh capability payload when an editor mounts; mounts
@@ -741,7 +743,7 @@ scanner or claim whole-application WCAG conformance.
 
 Display identity and executable identity are one identity. `InputSource.name` is the input's
 single name — the chip text, the code argument, and the key persisted contracts use (the
-live-switch `input_scenario_map` and the instance `inputMapping`, both consumed by the
+live-switch `input_scenario_map` and a Transform's or Load File's `inputMapping`, both consumed by the
 backend). It is read per edge by the shared `edgeInputName` helper from server-owned editor
 identity metadata, so the panel can never advertise a name the code does not
 recognise.

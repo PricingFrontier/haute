@@ -15,6 +15,7 @@ import { resolveGraphFromRefs } from "../utils/buildGraph"
 import {
   qualifiedRuntimeNodeId,
   runtimeNodeIdForVisibleNode,
+  submodelOutputPreview,
   type DrilledOccurrenceIdentity,
 } from "../utils/submodelRuntimeTarget"
 import {
@@ -54,6 +55,8 @@ interface TracingParams {
   previewSeedPlan?: PreviewSeedPlanEntry[]
   /** The table of the preview shown for the selected node, when it has several frames. */
   previewFrame?: string
+  /** Stable public handle of the occurrence output represented by the displayed rows. */
+  previewOutputHandle?: string
 }
 
 export type TraceRequestState =
@@ -242,6 +245,7 @@ export default function useTracing({
   refreshPreview,
   previewSeedPlan,
   previewFrame,
+  previewOutputHandle,
 }: TracingParams): TracingReturn {
   const rowLimit = useSettingsStore((s) => s.rowLimit)
   const activeSource = useSettingsStore((s) => s.activeSource)
@@ -304,7 +308,7 @@ export default function useTracing({
   const semanticContext = stableValue({
     recoveryContext,
     // The table the explained preview shows; a refresh replaces it, as it does the seed plan.
-    frame: previewFrame ?? null,
+    frame: previewOutputHandle ?? previewFrame ?? null,
     // The generations the explained preview read, and the node-data epoch:
     // a snapshot published, refreshed, or cleared invalidates the evidence.
     seedPlan: (previewSeedPlan ?? []).map(
@@ -368,6 +372,10 @@ export default function useTracing({
         current.graphSynchronized &&
         current.capabilities?.can_execute === true
     }
+    const output = nodeData(selectedNode).nodeType === NODE_TYPES.SUBMODEL
+      ? submodelOutputPreview(selectedNode, submodelsRef.current, previewOutputHandle)
+      : undefined
+    if (output === null) return
     const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
     const requestId = traceRequestSeq.current + 1
     traceRequestSeq.current = requestId
@@ -400,7 +408,7 @@ export default function useTracing({
     traceCell({
       graph,
       row_index: rowIndex,
-      target_node_id: runtimeNodeIdForVisibleNode(
+      target_node_id: output?.nodeId ?? runtimeNodeIdForVisibleNode(
         nodes,
         selectedNode.id,
         activeSubmodelIdentity,
@@ -409,7 +417,7 @@ export default function useTracing({
       row_limit: rowLimit,
       source: activeSource,
       row_values: rowValues,
-      port_label: previewFrame,
+      port_label: output ? output.portLabel : previewFrame,
       seed_plan: (previewSeedPlan ?? []).map((entry) => ({
         node_id: entry.node_id,
         port_label: null,
@@ -478,7 +486,7 @@ export default function useTracing({
           traceAbort.current = null
         }
       })
-  }, [selectedNode, nodes, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, rowLimit, activeSource, semanticContext, semanticContextToken, recoveryContextToken, refreshPreview, previewSeedPlan, previewFrame])
+  }, [selectedNode, nodes, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, rowLimit, activeSource, semanticContext, semanticContextToken, recoveryContextToken, refreshPreview, previewSeedPlan, previewFrame, previewOutputHandle])
 
   const handleCellClick = startTrace
   const cancelTrace = clearTrace

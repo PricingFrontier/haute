@@ -634,9 +634,11 @@ async def export_script(body: ExportScriptRequest) -> ExportScriptResponse:
     node = _find_modelling_node(body.graph, body.node_id)
     config = dict(node.data.config)
 
-    # Use the node label as the default name
+    # Script and live training share the executable node name, never an editor/runtime id.
     if "name" not in config:
-        config["name"] = node.data.label
+        from haute._node_builder import node_fn_name
+
+        config["name"] = node_fn_name(node)
 
     from haute.modelling import generate_training_script
 

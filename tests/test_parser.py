@@ -570,6 +570,10 @@ class TestSubmodelFileParsing:
 
     def test_parse_submodel_file_returns_graph(self, tmp_path):
         from haute.parser import parse_submodel_file
+        from tests._git_helpers import init_repo
+
+        init_repo(tmp_path)
+        (tmp_path / "haute.toml").write_text("", encoding="utf-8", newline="\n")
 
         code = '''\
 import polars as pl

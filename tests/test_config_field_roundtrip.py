@@ -399,9 +399,9 @@ def _examples():
 # These fields represent graph relationships rather than independent settings.
 # Their round-trip contracts are tested with real owner/copy and boundary graphs.
 _STRUCTURAL_POLICY = {
-    NodeType.POLARS: {"instanceOf", "inputMapping"},
-    NodeType.MODEL_SCORE: {"instanceOf", "inputMapping"},
-    NodeType.SUBMODEL: {"definitionId", "alias"},
+    NodeType.POLARS: {"inputMapping"},
+    NodeType.MODEL_SCORE: {"inputMapping"},
+    NodeType.SUBMODEL: {"definitionId", "alias", "instanceOf"},
 }
 
 
