@@ -656,8 +656,11 @@ builder on screen. With a quote store it is where they manage their quotes too.
 - `haute app build` writes a **release** to `.haute/app/release` (or the folder you name):
   the pipeline, checked and bundled
   as `haute deploy` does it (the test quotes included), with the sheets and an `app.py` that
-  serves them. The release's id changes when anything that prices a quote changes, and the
-  app names it in its bar.
+  serves them. Once the pipeline reads the workbench, each test quote in `tests/quotes` is a
+  quote of your form: its tables by name, with `quote_details` holding the quote's
+  `quote_reference` and `quote_option`. The example `haute init` wrote is not, so rewrite it;
+  until then the build names it and what to add. The release's id changes when anything
+  that prices a quote changes, and the app names it in its bar.
 - Say where the app runs in `haute.toml`. Azure Container Apps is the host so far; its
   built-in authentication signs underwriters in, and the app refuses anyone it has not.
   `edit_role`, if you set it, is the app role that may change quotes: everyone else the

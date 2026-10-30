@@ -115,10 +115,18 @@ def _identity(
 ) -> dict[str, Any] | None:
     """The quote's reference and option by name, read from its ``quote_details``; None when
     the tables hold no ``quote_details`` with them. Refused, naming the spot, when either is
-    missing or does not fit: a quote's identity is never blank."""
+    missing or does not fit: a quote's identity is never blank. A quote holding no
+    ``quote_details`` at all, as a test quote written before the pipeline read a workbench's
+    does, is told what to add."""
     if not _names_identity(tables):
         return None
     part = quote.get(QUOTE_DETAILS_ID)
+    if part is None:
+        raise WorkbenchInputError(
+            f"{what} holds no {QUOTE_DETAILS_ID}: a quote names its {_REFERENCE} and {_OPTION} "
+            f'there, as "{QUOTE_DETAILS_ID}": {{"{_REFERENCE}": "Q-1", "{_OPTION}": 1}}, '
+            "beside the workbench's other tables by name"
+        )
     held = part if isinstance(part, dict) else {}
     reference = held.get(_REFERENCE)
     option = held.get(_OPTION)

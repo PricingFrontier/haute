@@ -805,7 +805,16 @@ def test_a_request_names_the_quote_in_quote_details_and_every_table_takes_it() -
 @pytest.mark.parametrize(
     ("change", "refusal"),
     [
-        (lambda r: r.pop("quote_details"), "quote_details.quote_reference is None"),
+        # A quote written before the pipeline read a workbench's is told what to add.
+        (
+            lambda r: r.pop("quote_details"),
+            "the request holds no quote_details: a quote names its quote_reference and "
+            "quote_option there",
+        ),
+        (
+            lambda r: r["quote_details"].pop("quote_reference"),
+            "quote_details.quote_reference is None",
+        ),
         (
             lambda r: r["quote_details"].update(quote_reference=" "),
             "quote_details.quote_reference is ' '",

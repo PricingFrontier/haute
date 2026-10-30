@@ -1565,7 +1565,9 @@ Out of scope:
   - **The quote's identity.** A request and a frame differ in shape. A request's tables
     hold their own columns, and the quote's reference and option are named in its
     `quote_details` alone: a request without them, with an option below 1, or giving either
-    in another table, is refused naming the spot. Reading it puts them on every row of every
+    in another table, is refused naming the spot, and one holding no `quote_details` at all,
+    as a test quote written before the pipeline read a workbench's does, is told the shape to
+    add. Reading it puts them on every row of every
     table leading with them. Every quote has them: the sample, read in editor runs, previews
     and `run()`, the null quote, which an empty sample and deploy's dry run read, and the one
     quote of an underwriter app without a quote store are priced under the stand-in,
