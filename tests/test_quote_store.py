@@ -217,6 +217,76 @@ def test_an_earlier_haute_s_store_is_refused_naming_its_tables(url: str) -> None
             attempt()
 
 
+def _raw(url: str, *statements: str) -> None:
+    """*statements* run on the file as someone working on the SQL side would run them."""
+    with sqlite3.connect(url.removeprefix("sqlite:///")) as raw:
+        raw.execute("PRAGMA foreign_keys=OFF")
+        for statement in statements:
+            raw.execute(statement)
+
+
+def _refusal(url: str, environment: str = "test") -> QuoteStoreMismatchError:
+    with pytest.raises(QuoteStoreMismatchError) as refused:
+        open_book(
+            url, form(POLICY, VEHICLES), project=PROJECT, environment=environment, haute_version="1"
+        )
+    return refused.value
+
+
+def test_a_started_app_refuses_a_database_its_catalogue_says_is_not_the_stores(url: str) -> None:
+    prepare_store(url, form(POLICY, VEHICLES), project=PROJECT, environment="test")
+    _raw(
+        url,
+        "ALTER TABLE vehicles DROP COLUMN value",
+        "ALTER TABLE policy ADD COLUMN reviewed TEXT NOT NULL DEFAULT 'no'",
+    )
+
+    refused = _refusal(url)
+
+    assert refused.differences == [
+        "policy.reviewed is no column of the release's and takes no null, so no row of it could "
+        "be saved",
+        "vehicles.value is missing",
+    ]
+    assert "Run haute app migrate --environment test" in str(refused)
+
+
+def test_a_table_gone_retyped_or_keyed_otherwise_is_named(url: str) -> None:
+    prepare_store(url, form(POLICY, VEHICLES), project=PROJECT, environment="test")
+    _raw(
+        url,
+        "DROP TABLE policy",
+        "DROP TABLE vehicles",
+        "CREATE TABLE vehicles (quote_reference VARCHAR(40) NOT NULL, quote_option BIGINT "
+        "NOT NULL, quote_row BIGINT NOT NULL, reg TEXT, value TEXT, "
+        "PRIMARY KEY (quote_reference, quote_option))",
+    )
+
+    assert _refusal(url).differences == [
+        "the table policy is missing",
+        "vehicles.value holds string, not float",
+        "vehicles is keyed by quote_reference, quote_option, not quote_reference, quote_option, "
+        "quote_row",
+        "vehicles does not refer to its quote's quote_details row",
+    ]
+
+
+def test_a_column_the_sql_side_added_that_takes_a_null_is_no_difference(url: str) -> None:
+    prepare_store(url, form(POLICY, VEHICLES), project=PROJECT, environment="test")
+    _raw(url, "ALTER TABLE policy ADD COLUMN notes TEXT")
+
+    open_book(
+        url, form(POLICY, VEHICLES), project=PROJECT, environment="test", haute_version="1"
+    ).close()
+
+
+def test_dev_s_refusal_says_to_start_haute_app_serve_again(url: str) -> None:
+    prepare_store(url, form(POLICY, VEHICLES), project=PROJECT)
+    _raw(url, "ALTER TABLE vehicles DROP COLUMN value")
+
+    assert "Start haute app serve again" in str(_refusal(url, environment="dev"))
+
+
 def test_ddl_in_a_write_that_fails_is_rolled_back_whole(url: str) -> None:
     engine = make_engine(url)
     try:

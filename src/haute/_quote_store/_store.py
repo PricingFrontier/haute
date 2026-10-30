@@ -29,9 +29,15 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import (
+    Boolean,
     Connection,
+    Date,
+    DateTime,
     Engine,
+    Float,
+    Integer,
     MetaData,
+    String,
     Table,
     create_engine,
     event,
@@ -41,11 +47,13 @@ from sqlalchemy import (
     select,
     update,
 )
+from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.schema import DropTable
+from sqlalchemy.types import TypeDecorator, TypeEngine
 
 from haute._quote_store._schema import STORE_TABLE, StoreSchema, store_schema, structure_text
 from haute._workbench_config import DEV_ENVIRONMENT, WorkbenchError
-from haute._workbench_form import FormSpec
+from haute._workbench_form import QUOTE_DETAILS_ID, FormSpec
 
 #: The table an earlier Haute's quote store kept its migrations' version in, which a database
 #: of that store holds: it is refused, never read.
@@ -379,23 +387,97 @@ def _rebuild(connection: Connection, schema: StoreSchema, recorded: str, wanted:
     return [name for name in dropped if name != schema.activity.name]
 
 
+#: The kinds a column's SQL type is told apart by, the first one it is wins: what the store
+#: reads and writes it as, whatever each engine names it.
+_KINDS: tuple[type[TypeEngine[Any]], ...] = (Boolean, Integer, Float, DateTime, Date, String)
+
+
+def _kind(sql_type: TypeEngine[Any]) -> str:
+    """The kind of *sql_type*, a type decorator's its implementation's."""
+    if isinstance(sql_type, TypeDecorator):
+        sql_type = sql_type.impl_instance
+    for kind in _KINDS:
+        if isinstance(sql_type, kind):
+            return kind.__name__.lower()
+    return type(sql_type).__name__.lower()
+
+
+def _resolve(environment: str) -> str:
+    """What brings the database to the release's tables in *environment*."""
+    if environment == DEV:
+        return "Start haute app serve again, which builds dev's tables for the form."
+    return f"Run haute app migrate --environment {environment} to bring it to this release's form."
+
+
+def _catalogue_differences(catalogue: Inspector, schema: StoreSchema) -> list[str]:
+    """Each way the database's own catalogue differs from the tables *schema* derives, which
+    every write and read of the store takes as they are: a table or a column missing, of
+    another kind, taking a null where the store needs a value or none where it writes one,
+    keyed otherwise or not referring to its quote; and a column of those tables the store does
+    not write that takes no null, so no row could be inserted."""
+    present = set(catalogue.get_table_names())
+    details = schema.details.table.name
+    differences: list[str] = []
+    tables = [(stored.table, stored.form.id != QUOTE_DETAILS_ID) for stored in schema.tables]
+    tables.extend([(schema.store, False), (schema.activity, False)])
+    for table, refers in tables:
+        if table.name not in present:
+            differences.append(f"the table {table.name} is missing")
+            continue
+        reflected = {column["name"]: column for column in catalogue.get_columns(table.name)}
+        for column in table.columns:
+            found = reflected.pop(column.name, None)
+            if found is None:
+                differences.append(f"{table.name}.{column.name} is missing")
+                continue
+            if _kind(found["type"]) != _kind(column.type):
+                differences.append(
+                    f"{table.name}.{column.name} holds {_kind(found['type'])}, not "
+                    f"{_kind(column.type)}"
+                )
+            if bool(found["nullable"]) != bool(column.nullable):
+                takes = "takes a null" if found["nullable"] else "takes no null"
+                differences.append(f"{table.name}.{column.name} {takes}, unlike the store's")
+        for name, extra in reflected.items():
+            if not extra["nullable"]:
+                differences.append(
+                    f"{table.name}.{name} is no column of the release's and takes no null, so "
+                    "no row of it could be saved"
+                )
+        keyed = list(catalogue.get_pk_constraint(table.name).get("constrained_columns") or [])
+        wanted = [column.name for column in table.primary_key.columns]
+        if keyed != wanted:
+            differences.append(
+                f"{table.name} is keyed by {', '.join(keyed) or 'nothing'}, not {', '.join(wanted)}"
+            )
+        if refers and not any(
+            foreign.get("referred_table") == details
+            and list(foreign.get("constrained_columns") or [])
+            == ["quote_reference", "quote_option"]
+            for foreign in catalogue.get_foreign_keys(table.name)
+        ):
+            differences.append(f"{table.name} does not refer to its quote's {details} row")
+    return differences
+
+
 def open_engine(
     url: str, form: FormSpec, *, project: str, environment: str = DEV
 ) -> tuple[Engine, StoreSchema]:
     """An engine on the database at *url* with *form*'s store schema, once the database holds
-    exactly the form's tables for *project* in *environment*; refused otherwise, naming what
-    differs and what resolves it."""
+    exactly the form's tables for *project* in *environment*, as ``haute_store`` records them
+    and as its own catalogue holds them; refused otherwise, naming each difference and what
+    resolves it."""
     schema = store_schema(form)
     engine = make_engine(url)
     try:
         with engine.connect() as connection:
-            names = set(inspect(connection).get_table_names())
+            catalogue = inspect(connection)
+            names = set(catalogue.get_table_names())
             _refuse_old_store(names)
             recorded = _recorded(connection, schema) if STORE_TABLE in names else None
             if recorded is None:
                 raise QuoteStoreMismatchError(
-                    "This database holds no quote store yet: run haute app migrate to make its "
-                    "tables."
+                    f"This database holds no quote store yet. {_resolve(environment)}"
                 )
             _refuse_other(recorded, project, environment)
             wanted = structure_text(form)
@@ -404,7 +486,15 @@ def open_engine(
                 raise QuoteStoreMismatchError(
                     "This database holds another form's tables: "
                     + "; ".join(differences)
-                    + ". Run haute app migrate to bring them to this release's form.",
+                    + f". {_resolve(environment)}",
+                    differences=differences,
+                )
+            differences = _catalogue_differences(catalogue, schema)
+            if differences:
+                raise QuoteStoreMismatchError(
+                    "This database's tables are not as the store made them: "
+                    + "; ".join(differences)
+                    + f". {_resolve(environment)}",
                     differences=differences,
                 )
     except Exception:

@@ -1039,6 +1039,24 @@ def test_serving_locally_as_a_reader_changes_no_quote(release_dir: Path, dev_url
 # ── The commands ──────────────────────────────────────────────────────────
 
 
+def test_no_log_or_answer_of_the_app_names_where_its_database_is(
+    page: Page, path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("DEBUG")
+    quote = page.priced()
+    answers = [
+        page.client.get("/api/app/release", headers=ANA),
+        page.client.get("/api/app/quotes?view=team", headers=ANA),
+        page.client.get(address(quote), headers=ANA),
+        page.client.get(f"{address(quote)}/activity", headers=ANA),
+        page.save(quote),
+        page.client.get("/api/app/quotes/nope/1", headers=ANA),
+    ]
+
+    seen = [answer.text for answer in answers] + [record.getMessage() for record in caplog.records]
+    assert not [text for text in seen if str(path.parent) in text or path.name in text]
+
+
 def test_a_hosted_app_opens_the_store_of_the_environment_the_host_names(
     release_dir: Path, path: Path, url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

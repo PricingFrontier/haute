@@ -1885,7 +1885,11 @@ Out of scope:
   database's tables. A database of an earlier Haute's store, of another project or
   environment, or holding a table of the form's name the store did not make, is refused,
   nothing adopted, and the app does not start on a database that does not hold exactly its
-  release's form's tables. Every table and column name is quoted in the SQL Haute writes, so
+  release's form's tables, as `haute_store` records them and as the database's own
+  catalogue holds them: every table and column the release uses there, of its kind, taking
+  a null as the store's does, keyed and referring to its quote as the store keys it, and
+  every other column of those tables taking a null. It refuses to start naming each
+  difference and what resolves it. Every table and column name is quoted in the SQL Haute writes, so
   a reserved word (`order`, `group`) is a name like any other; refused wherever the form is
   saved, naming each, are two columns of one table whose names differ only in case, a name
   longer than 63 characters, a name starting `haute_` (Haute's own `haute_version` aside), a
@@ -2545,13 +2549,15 @@ names the seams, shapes and tests.
   environments a project declares (the quote store, in Behaviour), on SQLite alone. `haute app
   migrate` makes an empty database's tables and changes none, so a form change reaches a
   hosted store only as a new database, and dev builds again each table the form changed, its
-  rows dropped; a started app checks its database against `haute_store`'s record alone.
+  rows dropped; a started app checks its database's catalogue but not what the store may
+  do there.
 - **Unresolved target.** One planner keeps the tables in step with the form, by stable id,
-  in dev and in each hosted environment; a started app checks its database's own catalogue;
+  in dev and in each hosted environment; a started app checks the privileges the store
+  needs;
   and the store runs on SQL Server and PostgreSQL besides SQLite, each signing the app in as
   its environment declares.
   [WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments) builds
-  the planner and the startup check, and
+  the planner, and
   [WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql) the server
   databases.
 - **Non-goals.** In test and prod a type, rows or role change on a column or table that holds
@@ -2626,11 +2632,8 @@ table is empty, else refused) and a removed one shown kept, its DROP for the DBA
 test and prod plan; and `--sql` prints it as the SQL a DBA runs. `haute app serve` migrates dev as it
 starts.
 
-**Starting the app.** A hosted app, before it serves, checks its database without changing it:
-every table and column its release uses is there under its id, with its name, its type and
-its keys; every other column of those tables is nullable; the project and environment are its
-own; and it holds the privileges the store needs. It refuses to start naming each difference
-and the command that resolves it.
+**Starting the app.** A hosted app, before it serves, checks besides its catalogue that it
+holds the privileges the store needs, and refuses to start naming each it lacks.
 
 **Database providers.** A provider is a family of engines the store runs on, one interface
 each: how it connects and signs in, its types, the binary collation that keeps the identity
