@@ -11,10 +11,9 @@ from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
-from fastapi import HTTPException
 
 from haute.codegen import graph_to_code
-from haute.errors import ConfigError
+from haute.errors import ConfigError, RequestRefusedError
 from haute.executor import _build_node_fn
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_service import OptimiserSolveService
@@ -893,7 +892,7 @@ def test_validate_and_project_rejects_null_quote_id_loudly() -> None:
         }
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         service._validate_and_project(
             source_lf,
             {
@@ -998,11 +997,11 @@ def _solver_input(quote_ids: list[str], steps: list[int]) -> pl.LazyFrame:
     )
 
 
-def _build_grid_failure(scored_lf: pl.LazyFrame) -> tuple[HTTPException, dict]:
+def _build_grid_failure(scored_lf: pl.LazyFrame) -> tuple[RequestRefusedError, dict]:
     store = JobStore()
     service = OptimiserSolveService(store)
     job_id = store.create_job({"status": "running"})
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         service._build_grid(
             scored_lf,
             ["volume"],

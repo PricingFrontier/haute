@@ -15,7 +15,6 @@ import numpy as np
 import polars as pl
 import pytest
 
-from haute._config_builder import _build_node_config
 from haute._mlflow_io import ScoringModel
 from haute.codegen import graph_to_code
 from tests.conftest import make_edge, make_file_input_config, make_graph
@@ -366,44 +365,6 @@ class TestModelScoreStandaloneRun:
 # ---------------------------------------------------------------------------
 # Parser helpers — _build_node_config
 # ---------------------------------------------------------------------------
-
-
-class TestBuildNodeConfigModelScore:
-    def test_build_config_run_based(self):
-        """Builds correct config from run-based decorator kwargs."""
-        kwargs = {
-            "model_score": True,
-            "source_type": "run",
-            "run_id": "abc123",
-            "artifact_path": "model.cbm",
-            "task": "regression",
-            "output_column": "prediction",
-        }
-        config = _build_node_config("modelScore", kwargs, "", ["df"])
-
-        assert config["sourceType"] == "run"
-        assert config["run_id"] == "abc123"
-        assert config["artifact_path"] == "model.cbm"
-        assert config["task"] == "regression"
-        assert config["output_column"] == "prediction"
-
-    def test_build_config_registered(self):
-        """Builds correct config from registered model decorator kwargs."""
-        kwargs = {
-            "model_score": True,
-            "source_type": "registered",
-            "registered_model": "my-model",
-            "version": "2",
-            "task": "classification",
-            "output_column": "pred",
-        }
-        config = _build_node_config("modelScore", kwargs, "", ["df"])
-
-        assert config["sourceType"] == "registered"
-        assert config["registered_model"] == "my-model"
-        assert config["version"] == "2"
-        assert config["task"] == "classification"
-        assert config["output_column"] == "pred"
 
 
 # ---------------------------------------------------------------------------

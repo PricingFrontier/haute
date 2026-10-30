@@ -170,7 +170,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "pipeline-config",
     "polars-2",
     "polars-node-clarity",
-    "sandbox-security",
     "server-api",
     "t-boost",
     "tracing",

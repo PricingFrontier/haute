@@ -155,15 +155,16 @@ document, alike for either ([workbench](../workbench/high-level.md)).
 exist on disk, schemas are non-empty, configured `output_fields` are distinct non-empty
 column names present in the inferred output schema, and every retained Data Input has a
 validated, deploy-ready direct Parquet source or snapshot), and every global constant the
-pruned graph reads has a `live` value, since deployed scoring runs under `live`. In a
-project whose workbench is enabled, each Workbench Input and Workbench Output in the pruned
-graph must hold the tables the form defines for it, its input tables and its output tables as
-the editor copies them, read from the form strictly: a form file that does not exist is
-refused, not read as the blank form the editor starts from, and a table or a column the form
-has and the copy lacks, or the copy has and the form lacks, a table's rows per quote, a
-column's type and their order are each named, with the way to bring the copies up to date, a
-Save in the editor. A project whose workbench is off, or a pipeline with no Workbench node, is
-not checked against a form. The test quotes are read from `test_quotes.dir`, or
+pruned graph reads has a `live` value, since deployed scoring runs under `live`. A
+pipeline's Workbench Input and Workbench Output hold none of their tables: resolution reads
+the project's form folder once, strictly, and gives each its tables, the Workbench Input its
+input tables and sample and the Workbench Output its output tables, a folder that does not
+exist refused rather than read as the blank form the editor starts from, a form that cannot
+be read refused naming the file and what is wrong, a project whose workbench is not enabled
+refused naming the node, and a connection to a table the form does not have refused naming
+it, each before anything is pruned, built or run; validation then refuses a table holding a
+column of its own under a name of the quote's identity and a sheet naming a table or column
+the schema does not hold. A pipeline with no Workbench node reads no form. The test quotes are read from `test_quotes.dir`, or
 `tests/quotes` when `haute.toml` names none, which is checked only when it holds test
 quotes; the folder is the project's own, one outside it or reached through a link or
 junction refused naming why. When `test_quotes.dir` is configured, the path must exist, be
@@ -408,8 +409,10 @@ approving it.
   filtering it out answers a batch quote by quote, where that quote fails the batch.
 - **The pruned graph JSON, not the `.py` file, is the deployment unit.** This was a
   deliberate design decision: `_utils.py::build_manifest` embeds `resolved.pruned_graph.model_dump()` into
-  `deploy_manifest.json`, every Workbench Input's `sample` left out (`shipped_graph`; the
-  quote typed while building, which nothing deployed reads), and at runtime `HauteModel.load_context`
+  `deploy_manifest.json`, the Workbench nodes holding the form's tables resolution gave
+  them and every Workbench Input's `sample` left out (`shipped_graph`; the quote typed while
+  building, which nothing deployed reads), so a deployed pipeline never reads a form
+  folder, and at runtime `HauteModel.load_context`
   (`_model_code.py`) reconstructs the graph via `PipelineGraph.model_validate(manifest["pruned_graph"])`
   rather than re-parsing any source file. The graph JSON is inspectable without the
   original source and cannot drift from what was validated. Its embedded preamble still

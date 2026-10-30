@@ -219,7 +219,7 @@ describe("usePipelineAPI - gap tests", () => {
       let saveCallCount = 0
       mockSave.mockImplementation(() => {
         saveCallCount++
-        return Promise.resolve({ file: `pricing_${saveCallCount}.py`, pipeline_name: "pricing", source_revision: "revision-test" })
+        return Promise.resolve({ file: `pricing_${saveCallCount}.py`, pipeline_name: "pricing", source_revision: "revision-test", document_fingerprint: "fingerprint-saved" })
       })
 
       const params = makeParams()
@@ -248,7 +248,7 @@ describe("usePipelineAPI - gap tests", () => {
       let callIdx = 0
       mockSave.mockImplementation(() => {
         callIdx++
-        if (callIdx === 1) return Promise.resolve({ file: "ok.py", pipeline_name: "p", source_revision: "revision-test" })
+        if (callIdx === 1) return Promise.resolve({ file: "ok.py", pipeline_name: "p", source_revision: "revision-test", document_fingerprint: "fingerprint-saved" })
         return Promise.reject(new Error("conflict"))
       })
 

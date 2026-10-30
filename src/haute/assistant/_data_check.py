@@ -54,6 +54,7 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
+from haute._flatten import flatten_with_form_tables
 from haute._graph_walker import (
     AttributedFailure,
     CollectPolicy,
@@ -82,7 +83,7 @@ from haute._json_shred._snapshots import (
 from haute._json_shred._source_proof import freshness_record
 from haute._logging import get_logger
 from haute._mlflow_io import DiskCachedRunModel, disk_cached_run_model
-from haute._path_resolution import runtime_project_root_scope
+from haute._path_resolution import current_runtime_project_root, runtime_project_root_scope
 from haute._rating import (
     RatingTableMissError,
     apply_banding_factors,
@@ -111,7 +112,6 @@ from haute.execution import (
     source_lineage_graph,
 )
 from haute.executor import _build_node_fn, _compile_preamble, _pipeline_dir
-from haute.graph_utils import flatten_graph
 from haute.routes._supersession import SupersededRequestError, SupersessionCoordinator
 from haute.routes.input_cache import input_snapshot_read_status
 
@@ -718,7 +718,7 @@ async def _bound(
     graph: PipelineGraph, plan_hash: str | None
 ) -> tuple[PipelineGraph, DataCheckBinding]:
     """The flattened graph and a binding naming its digest and scenario."""
-    flat = await asyncio.to_thread(flatten_graph, graph)
+    flat = await asyncio.to_thread(flatten_with_form_tables, graph, project_root=Path.cwd())
     digest = await asyncio.to_thread(graph_fingerprint, flat)
     return flat, DataCheckBinding(plan_hash, digest, graph.active_source)
 
@@ -1220,7 +1220,7 @@ def measure_candidate(job: DataCheckJob, execution_context: ExecutionContext) ->
     """
     graph = job.candidate_graph
     with runtime_project_root_scope(graph.source_file):
-        flat = flatten_graph(graph)
+        flat = flatten_with_form_tables(graph, project_root=current_runtime_project_root())
         lineages = {node: _lineage(flat, node, job.scenario) for node in job.candidates}
         unreadable = _unreadable_inputs(flat, lineages.values())
         records: dict[str, Mapping[str, object]] = {}
@@ -1423,7 +1423,7 @@ def data_check_visibility(result: DataCheckResult, graph: PipelineGraph) -> Find
     re-observes the tokens.
     """
     binding = result.binding
-    flat = flatten_graph(graph)
+    flat = flatten_with_form_tables(graph, project_root=Path.cwd())
     if graph_fingerprint(flat) != binding.graph_digest:
         return "other_graph"
     if graph.active_source != binding.scenario:

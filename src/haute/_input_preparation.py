@@ -16,7 +16,7 @@ import dataclasses
 import threading
 import time
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -27,6 +27,7 @@ from haute._execution_admission import (
     isolated_execution_budget,
 )
 from haute._execution_context import (
+    ExecutionCancellationToken,
     ExecutionCancelledError,
     ExecutionContext,
     ExecutionProfile,
@@ -40,11 +41,13 @@ from haute._source_cache import (
     SourceCacheBuildError,
     SourceCacheCorruptError,
     SourceCacheGeneration,
+    SourceCacheIdentity,
     SourceCacheStatus,
     SourceCacheStore,
     new_staging_token,
 )
 from haute._worker_isolation import (
+    IsolatedWorkerConfig,
     IsolatedWorkerRemoteError,
     WorkerTerminalReason,
     isolated_worker_failure_is_memory,
@@ -198,6 +201,15 @@ class InputPreparationOutcome:
     row_count: int
     size_bytes: int
 
+    @classmethod
+    def of(cls, generation: SourceCacheGeneration) -> InputPreparationOutcome:
+        """What a build that published *generation* reports."""
+        return cls(
+            generation_id=generation.generation_id,
+            row_count=generation.metadata.row_count,
+            size_bytes=generation.metadata.size_bytes,
+        )
+
 
 def build_input_snapshot_worker(
     request: InputPreparationRequest,
@@ -344,6 +356,198 @@ def _reused_record(
     )
 
 
+def _built_record(
+    *,
+    node_id: str,
+    digest: str,
+    action: PreparationAction,
+    build_class: str,
+    execution: PreparationExecution,
+    memory_limit_bytes: int | None,
+    built: InputPreparationOutcome,
+    elapsed_seconds: float,
+    warning_code: str | None,
+) -> InputPreparationRecord:
+    return InputPreparationRecord(
+        node_id=node_id,
+        identity_digest=digest,
+        action=action,
+        build_class=build_class,
+        execution=execution,
+        memory_limit_bytes=memory_limit_bytes,
+        elapsed_seconds=elapsed_seconds,
+        row_count=built.row_count,
+        size_bytes=built.size_bytes,
+        generation_id=built.generation_id,
+        warning_code=warning_code,
+    )
+
+
+def capped_worker_config(
+    budget: IsolatedExecutionBudget,
+    *,
+    timeout_seconds: float,
+    stop_reason: Callable[[], WorkerTerminalReason | None],
+    process_name: str,
+) -> IsolatedWorkerConfig:
+    """A spawned snapshot build's worker config: the budget's native memory cap, required.
+
+    The cap is mandatory whatever the process-memory enforcement policy says, so
+    a host that cannot install it refuses the build rather than running it uncapped.
+    """
+    return dataclasses.replace(
+        worker_config_for_memory_policy(
+            memory_limit_bytes=budget.memory_limit_bytes,
+            timeout_seconds=timeout_seconds,
+            stop_reason=stop_reason,
+            process_name=process_name,
+        ),
+        require_memory_limit=True,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class SupervisedBuild:
+    """What a supervised build came to, once any reconciliation has run.
+
+    ``failure`` is the worker's own failure when the build published nothing.
+    Otherwise the build published, and ``outcome`` is what the worker returned,
+    or ``None`` when it died after publishing.
+    """
+
+    outcome: object | None = None
+    failure: Exception | None = None
+
+
+def supervise_build(
+    spawn: Callable[..., Any],
+    worker: Callable[..., Any],
+    request: Any,
+    budget: IsolatedExecutionBudget,
+    *,
+    config: IsolatedWorkerConfig,
+    reconcile: Callable[[], bool],
+) -> SupervisedBuild:
+    """Run one snapshot build in a spawned hard-capped worker and settle exactly that build.
+
+    The parent chose every generation id and staging token *request* carries, so
+    after the worker fails or dies *reconcile* settles exactly those and reports
+    whether the build had published everything: a generation the child already
+    published stays current, and anything unpublished is removed without touching
+    a previous current generation.
+
+    The worker's failure is returned, never raised, so whatever does raise here
+    (the reconciliation's own failure) is this process's and is never taken for
+    the worker's. A base exception (an interrupt, a system exit) is re-raised after
+    the reconciliation, never turned into this build's success. The child deferred
+    retirement, because only this process knows which generations its own
+    executions still lease: the caller retires a build that published.
+    """
+    try:
+        return SupervisedBuild(outcome=spawn(worker, request, budget, config=config))
+    except BaseException as exc:
+        published = reconcile()
+        if not isinstance(exc, Exception):
+            raise
+        return SupervisedBuild() if published else SupervisedBuild(failure=exc)
+
+
+def run_supervised_data_input_build(
+    spawn: Callable[..., Any],
+    config: Mapping[str, Any],
+    *,
+    store: SourceCacheStore,
+    identity: SourceCacheIdentity,
+    base_dir: Path,
+    project_root: Path,
+    profile: ExecutionProfile,
+    refresh: bool,
+    budget: IsolatedExecutionBudget,
+    worker_config: IsolatedWorkerConfig,
+) -> SupervisedBuild:
+    """Build one Data Input's snapshot in a spawned worker under parent-chosen ids.
+
+    See :func:`supervise_build`; :func:`published_data_input` settles a build
+    that published.
+    """
+    generation_id = str(uuid.uuid4())
+    staging_token = new_staging_token()
+    request = InputPreparationRequest(
+        config=dict(config),
+        base_dir=str(base_dir),
+        cache_root=str(store.root),
+        project_root=str(project_root),
+        profile=profile,
+        refresh=refresh,
+        generation_id=generation_id,
+        staging_token=staging_token,
+    )
+    return supervise_build(
+        spawn,
+        build_input_snapshot_worker,
+        request,
+        budget,
+        config=worker_config,
+        reconcile=lambda: (
+            store.reconcile_unpublished(identity, generation_id, staging_token) == "published"
+        ),
+    )
+
+
+def published_data_input(
+    store: SourceCacheStore, identity: SourceCacheIdentity, build: SupervisedBuild
+) -> InputPreparationOutcome:
+    """Retire for a supervised Data Input build that published, and say what it published.
+
+    The child deferred retirement; this process, whose own leases count, retires now.
+    """
+    store.retire_unleased(identity)
+    outcome = build.outcome
+    if outcome is None:
+        # The worker died after publishing: the build succeeded.
+        return InputPreparationOutcome.of(store.open_generation(identity))
+    if not isinstance(outcome, InputPreparationOutcome):
+        raise RuntimeError("input snapshot build worker returned an unexpected outcome")
+    return outcome
+
+
+def _preparation_worker_config(
+    budget: IsolatedExecutionBudget, token: ExecutionCancellationToken, deadline: float
+) -> IsolatedWorkerConfig:
+    """An automatic build's worker config, stopped when its execution is cancelled.
+
+    One deadline covers the whole preparation, including any time already spent
+    waiting on another execution's build.
+    """
+
+    def stop_reason() -> WorkerTerminalReason | None:
+        return "cancelled" if token.cancelled else None
+
+    return capped_worker_config(
+        budget,
+        timeout_seconds=max(1.0, deadline - time.monotonic()),
+        stop_reason=stop_reason,
+        process_name="haute-input-prep",
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _DataInputTarget:
+    """One snapshot-backed Data Input, and the execution that prepares it."""
+
+    node_id: str
+    config: Mapping[str, Any]
+    identity: SourceCacheIdentity
+    signature: str | None
+    build_class: str
+    warning_code: str | None
+    store: SourceCacheStore
+    profile: ExecutionProfile
+    execution_context: ExecutionContext
+    base_dir: str | Path | None
+    spawn: Any
+
+
 def prepare_input_snapshots(
     order: Iterable[str],
     node_map: Mapping[str, Any],
@@ -398,22 +602,24 @@ def prepare_input_snapshots(
                 execution_context.record_input_preparation(record)
             continue
         record = _prepare_one(
-            node_id=node_id,
-            config=config,
-            store=cache_store,
-            profile=effective_profile,
-            execution_context=execution_context,
-            base_dir=base_dir,
-            spawn=spawn or run_isolated_worker,
-            identity=source_cache_identity(config, base_dir=base_dir),
-            signature=source_signature(config, base_dir=base_dir),
-            build_class=input_snapshot_build_class(
-                config,
-                base_dir=base_dir,
+            _DataInputTarget(
+                node_id=node_id,
+                config=config,
+                identity=source_cache_identity(config, base_dir=base_dir),
+                signature=source_signature(config, base_dir=base_dir),
+                build_class=input_snapshot_build_class(
+                    config,
+                    base_dir=base_dir,
+                    profile=effective_profile,
+                    allow_admitted_eager=True,
+                ),
+                warning_code=input_snapshot_warning_code(config, base_dir=base_dir),
+                store=cache_store,
                 profile=effective_profile,
-                allow_admitted_eager=True,
+                execution_context=execution_context,
+                base_dir=base_dir,
+                spawn=spawn or run_isolated_worker,
             ),
-            warning_code=input_snapshot_warning_code(config, base_dir=base_dir),
             deadline=deadline,
         )
         records.append(record)
@@ -463,34 +669,20 @@ def _open_cache_store(
         ) from exc
 
 
-def _prepare_one(
-    *,
-    node_id: str,
-    config: Mapping[str, Any],
-    store: SourceCacheStore,
-    profile: ExecutionProfile,
-    execution_context: ExecutionContext,
-    base_dir: str | Path | None,
-    spawn: Any,
-    identity: Any,
-    signature: str | None,
-    build_class: str,
-    warning_code: str | None,
-    deadline: float | None,
-) -> InputPreparationRecord:
+def _prepare_one(target: _DataInputTarget, *, deadline: float | None) -> InputPreparationRecord:
     started_at = time.monotonic()
     # A caller's own deadline (a job's) bounds the build as well: preparing an
     # input never outlasts the run it prepares for.
     deadline = _build_deadline() if deadline is None else min(_build_deadline(), deadline)
-    digest = identity.digest
+    node_id, digest, build_class = target.node_id, target.identity.digest, target.build_class
     while True:
-        status = store.status(identity, source_signature=signature)
+        status = target.store.status(target.identity, source_signature=target.signature)
         if status.state == "corrupt":
             raise SourceCacheCorruptError(
                 "source-cache generation is corrupt; clear and rebuild this Data Input snapshot"
             )
         generation = status.generation
-        if signature == "missing":
+        if target.signature == "missing":
             # An absent local source cannot refresh anything. A published
             # generation stays authoritative; without one there is nothing to
             # run from, and this is refused before any slot or worker is taken.
@@ -529,7 +721,7 @@ def _prepare_one(
                 build_class=build_class,
                 generation=generation,
                 elapsed_seconds=time.monotonic() - started_at,
-                warning_code=warning_code,
+                warning_code=target.warning_code,
             )
         refresh = status.state == "ready"
         waiting = _acquire_single_flight(digest)
@@ -541,7 +733,7 @@ def _prepare_one(
         # apply while another execution owns the build.
         _wait_for_single_flight(
             waiting.event,
-            execution_context=execution_context,
+            execution_context=target.execution_context,
             node_id=node_id,
             digest=digest,
             build_class=build_class,
@@ -564,17 +756,7 @@ def _prepare_one(
     build_error: BaseException | None = None
     try:
         return _run_build(
-            node_id=node_id,
-            config=config,
-            store=store,
-            profile=profile,
-            execution_context=execution_context,
-            base_dir=base_dir,
-            spawn=spawn,
-            identity=identity,
-            signature=signature,
-            build_class=build_class,
-            warning_code=warning_code,
+            target,
             refresh=refresh,
             started_at=started_at,
             deadline=deadline,
@@ -687,18 +869,8 @@ def _classify_worker_failure(exc: BaseException) -> str:
 
 
 def _run_build(
+    target: _DataInputTarget,
     *,
-    node_id: str,
-    config: Mapping[str, Any],
-    store: SourceCacheStore,
-    profile: ExecutionProfile,
-    execution_context: ExecutionContext,
-    base_dir: str | Path | None,
-    spawn: Any,
-    identity: Any,
-    signature: str | None,
-    build_class: str,
-    warning_code: str | None,
     refresh: bool,
     started_at: float,
     deadline: float,
@@ -706,7 +878,9 @@ def _run_build(
 ) -> InputPreparationRecord:
     from haute._input_providers import build_input_snapshot
 
-    digest = identity.digest
+    node_id, store, identity = target.node_id, target.store, target.identity
+    digest, build_class = identity.digest, target.build_class
+    execution_context = target.execution_context
     action: PreparationAction = "refreshed" if refresh else "built"
     in_process = current_native_memory_backend() is not None
     execution: PreparationExecution = "in_process" if in_process else "worker"
@@ -758,14 +932,27 @@ def _run_build(
         memory_limit_bytes=memory_limit_bytes,
     )
 
+    def built(outcome: InputPreparationOutcome) -> InputPreparationRecord:
+        return _built_record(
+            node_id=node_id,
+            digest=digest,
+            action=action,
+            build_class=build_class,
+            execution=execution,
+            memory_limit_bytes=memory_limit_bytes,
+            built=outcome,
+            elapsed_seconds=time.monotonic() - started_at,
+            warning_code=target.warning_code,
+        )
+
     if in_process:
         token = execution_context.cancellation_token
         try:
             generation = build_input_snapshot(
-                config,
+                target.config,
                 store=store,
-                base_dir=base_dir,
-                profile=profile,
+                base_dir=target.base_dir,
+                profile=target.profile,
                 refresh=refresh,
                 cancellation=lambda: token.cancelled,
                 deadline=deadline,
@@ -784,85 +971,29 @@ def _run_build(
                 ),
                 message="Preparing this Data Input's snapshot failed.",
             ) from exc
-        return InputPreparationRecord(
-            node_id=node_id,
-            identity_digest=digest,
-            action=action,
-            build_class=build_class,
-            execution=execution,
-            memory_limit_bytes=memory_limit_bytes,
-            elapsed_seconds=time.monotonic() - started_at,
-            row_count=generation.metadata.row_count,
-            size_bytes=generation.metadata.size_bytes,
-            generation_id=generation.generation_id,
-            warning_code=warning_code,
-        )
+        return built(InputPreparationOutcome.of(generation))
 
     if budget is None:
         raise RuntimeError("a spawned snapshot build requires an admitted budget")
-    generation_id = str(uuid.uuid4())
-    staging_token = new_staging_token()
-    cancellation_token = execution_context.cancellation_token
-
-    def stop_reason() -> WorkerTerminalReason | None:
-        return "cancelled" if cancellation_token.cancelled else None
-
-    worker_config = dataclasses.replace(
-        worker_config_for_memory_policy(
-            memory_limit_bytes=budget.memory_limit_bytes,
-            # One deadline covers the whole preparation, including any time
-            # already spent waiting on another execution's build.
-            timeout_seconds=max(1.0, deadline - time.monotonic()),
-            stop_reason=stop_reason,
-            process_name="haute-input-prep",
-        ),
-        require_memory_limit=True,
-    )
     from haute._sandbox import _get_project_root
 
-    request = InputPreparationRequest(
-        config=dict(config),
-        base_dir=str(Path(base_dir).resolve() if base_dir is not None else Path.cwd().resolve()),
-        cache_root=str(store.root),
-        project_root=str(_get_project_root()),
-        profile=profile,
+    base_dir = target.base_dir
+    build = run_supervised_data_input_build(
+        target.spawn,
+        target.config,
+        store=store,
+        identity=identity,
+        base_dir=Path(base_dir).resolve() if base_dir is not None else Path.cwd().resolve(),
+        project_root=_get_project_root(),
+        profile=target.profile,
         refresh=refresh,
-        generation_id=generation_id,
-        staging_token=staging_token,
+        budget=budget,
+        worker_config=_preparation_worker_config(
+            budget, execution_context.cancellation_token, deadline
+        ),
     )
-    try:
-        outcome = spawn(
-            build_input_snapshot_worker,
-            request,
-            budget,
-            config=worker_config,
-        )
-    except BaseException as exc:
-        reason_code = _classify_worker_failure(exc)
-        settled = store.reconcile_unpublished(identity, generation_id, staging_token)
-        # Reconcile first so nothing is left behind, but never convert a base
-        # exception (an interrupt, a system exit) into this build's success.
-        if not isinstance(exc, Exception):
-            raise
-        if settled == "published":
-            generation = store.open_generation(identity)
-            # The child deferred retirement; retire here, where this process's
-            # own lease counts are visible.
-            store.retire_unleased(identity)
-            return InputPreparationRecord(
-                node_id=node_id,
-                identity_digest=digest,
-                action=action,
-                build_class=build_class,
-                execution=execution,
-                memory_limit_bytes=memory_limit_bytes,
-                elapsed_seconds=time.monotonic() - started_at,
-                row_count=generation.metadata.row_count,
-                size_bytes=generation.metadata.size_bytes,
-                generation_id=generation.generation_id,
-                warning_code=warning_code,
-            )
-        successor = store.status(identity, source_signature=signature)
+    if build.failure is not None:
+        successor = store.status(identity, source_signature=target.signature)
         successor_generation = successor.generation
         if (
             successor.state == "ready"
@@ -875,31 +1006,16 @@ def _run_build(
                 build_class=build_class,
                 generation=successor_generation,
                 elapsed_seconds=time.monotonic() - started_at,
-                warning_code=warning_code,
+                warning_code=target.warning_code,
             )
         raise _failure(
             node_id=node_id,
             digest=digest,
             build_class=build_class,
-            reason_code=reason_code,
+            reason_code=_classify_worker_failure(build.failure),
             message="Preparing this Data Input's snapshot failed.",
-        ) from exc
-    # The child deferred retirement; retire here, where this process's own lease
-    # counts are visible.
-    store.retire_unleased(identity)
-    return InputPreparationRecord(
-        node_id=node_id,
-        identity_digest=digest,
-        action=action,
-        build_class=build_class,
-        execution=execution,
-        memory_limit_bytes=memory_limit_bytes,
-        elapsed_seconds=time.monotonic() - started_at,
-        row_count=outcome.row_count,
-        size_bytes=outcome.size_bytes,
-        generation_id=outcome.generation_id,
-        warning_code=warning_code,
-    )
+        ) from build.failure
+    return built(published_data_input(store, identity, build))
 
 
 def _api_input_reused_records(
@@ -1149,20 +1265,6 @@ def _run_api_input_build(
     else:
         if budget is None:
             raise RuntimeError("a spawned snapshot build requires an admitted budget")
-        cancellation_token = execution_context.cancellation_token
-
-        def stop_reason() -> WorkerTerminalReason | None:
-            return "cancelled" if cancellation_token.cancelled else None
-
-        worker_config = dataclasses.replace(
-            worker_config_for_memory_policy(
-                memory_limit_bytes=budget.memory_limit_bytes,
-                timeout_seconds=max(1.0, deadline - time.monotonic()),
-                stop_reason=stop_reason,
-                process_name="haute-input-prep",
-            ),
-            require_memory_limit=True,
-        )
         try:
             run_supervised_api_input_build(
                 source,
@@ -1170,7 +1272,9 @@ def _run_api_input_build(
                 store=store,
                 profile=profile,
                 budget=budget,
-                worker_config=worker_config,
+                worker_config=_preparation_worker_config(
+                    budget, execution_context.cancellation_token, deadline
+                ),
                 spawn=spawn,
             )
         except Exception as exc:
@@ -1199,25 +1303,27 @@ def _run_api_input_build(
         generation = status.generation
         if generation is None:
             raise RuntimeError(f"API Input table {table.label!r} has no generation after its build")
-        action: PreparationAction = (
-            "reused"
-            if table.label not in building
-            else "refreshed"
-            if table.identity.digest in refreshed
-            else "built"
-        )
+        digest = table.identity.digest
         records.append(
-            InputPreparationRecord(
+            _reused_record(
                 node_id=node_id,
-                identity_digest=table.identity.digest,
-                action=action,
+                digest=digest,
                 build_class="bounded",
-                execution="in_process" if action == "reused" else execution,
-                memory_limit_bytes=None if action == "reused" else memory_limit_bytes,
+                generation=generation,
                 elapsed_seconds=time.monotonic() - started_at,
-                row_count=generation.metadata.row_count,
-                size_bytes=generation.metadata.size_bytes,
-                generation_id=generation.generation_id,
+                warning_code=None,
+            )
+            if table.label not in building
+            else _built_record(
+                node_id=node_id,
+                digest=digest,
+                action="refreshed" if digest in refreshed else "built",
+                build_class="bounded",
+                execution=execution,
+                memory_limit_bytes=memory_limit_bytes,
+                built=InputPreparationOutcome.of(generation),
+                elapsed_seconds=time.monotonic() - started_at,
+                warning_code=None,
             )
         )
     return records

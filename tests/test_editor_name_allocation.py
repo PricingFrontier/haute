@@ -11,10 +11,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
+from haute.errors import RequestRefusedError
 from haute.routes._save_pipeline import SavePipelineService
 
 
@@ -205,7 +205,7 @@ def test_the_identity_endpoint_and_save_agree(
     body = _post(client, graph, [], allocate=False)
     try:
         SavePipelineService(project).validate_graph(graph, source_file="main.py")
-    except HTTPException as exc:
+    except RequestRefusedError as exc:
         saved: str | None = str(exc.detail)
     else:
         saved = None

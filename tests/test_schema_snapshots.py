@@ -69,12 +69,13 @@ def _schema_summary(model: type[Any]) -> dict[str, Any]:
     [
         (
             SavePipelineResponse,
-            ["file", "pipeline_name", "source_revision"],
+            ["file", "pipeline_name", "source_revision", "document_fingerprint"],
             {
                 "status": {"type": "string", "default": "saved"},
                 "file": {"type": "string"},
                 "pipeline_name": {"type": "string"},
                 "source_revision": {"type": "string"},
+                "document_fingerprint": {"type": "string"},
                 "warnings": {"type": "array", "items": "string"},
             },
         ),

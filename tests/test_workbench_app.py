@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -26,8 +27,6 @@ from haute._workbench_app import (
     write_release,
 )
 from haute._workbench_form import (
-    IDENTITY_COLUMNS,
-    QUOTE_DETAILS_COLUMNS,
     FormSpec,
     OptionsSource,
     WorkbenchFormError,
@@ -41,6 +40,8 @@ from tests.test_workbench_routes import POLICY, PRICING, form
 FORM = form(POLICY, PRICING, sample={"t1": [{"c_state": "NY", "c_exposure": "1000"}]})
 VALUES = {"t1": [{"c_state": "NY", "c_exposure": "$1,000"}]}
 SIGNED_IN = {EASY_AUTH_NAME: "uw@example.com"}
+#: Where ``haute app serve`` is reached: served so, the app takes a loopback host alone.
+LOOPBACK = "http://127.0.0.1:8001"
 
 
 #: The runtime a test release prices on, as a build reads it from the installed versions.
@@ -110,7 +111,8 @@ def release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 def _client(directory: Path, **options: Any) -> TestClient:
-    return TestClient(create_app(directory, **options))
+    base_url = LOOPBACK if "local_principal" in options else "http://testserver"
+    return TestClient(create_app(directory, **options), base_url=base_url)
 
 
 def _price(
@@ -291,6 +293,18 @@ def test_azure_signs_in_the_principal_its_authentication_sets(release: Any) -> N
     by_id = client.get("/api/app/form", headers={"x-ms-client-principal-id": "0b1d"})
     assert by_id.status_code == 200
 
+    # Azure's front passes each request on under the app's own name, forwarded.
+    fronted = client.get(
+        "/api/app/release",
+        headers={
+            **SIGNED_IN,
+            "host": "motor.example.azurecontainerapps.io",
+            "x-forwarded-for": "203.0.113.9",
+            "x-forwarded-proto": "https",
+        },
+    )
+    assert fronted.status_code == 200, fronted.text
+
 
 def test_a_release_with_no_host_refuses_everything_but_the_health_check(release: Any) -> None:
     client = _client(release(host=None))
@@ -426,6 +440,42 @@ def test_a_pricing_that_runs_too_long_answers_that_it_timed_out(
     assert answered.json()["detail"] == "Pricing the quote took too long; try again."
 
 
+def test_pricings_holding_every_place_refuse_another_at_once_until_one_ends(
+    release: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(workbench_app.PRICING_WORKERS_ENV, "2")
+    end = threading.Event()
+    reached: list[int] = []
+    score = workbench_app.score_graph
+
+    def stuck(**options: Any) -> Any:
+        reached.append(1)
+        end.wait(10)
+        return score(**options)
+
+    monkeypatch.setattr(workbench_app, "score_graph", stuck)
+    client = _client(release())
+
+    # Two pricings outrun the timeout; neither can be stopped, so each keeps its place.
+    monkeypatch.setattr(workbench_app, "PRICE_TIMEOUT_SECONDS", 0.05)
+    assert [_price(client).status_code for _ in range(2)] == [504, 504]
+    monkeypatch.setattr(workbench_app, "PRICE_TIMEOUT_SECONDS", 60.0)
+    began = time.monotonic()
+    busy = _price(client)
+
+    assert busy.status_code == 503, busy.text
+    assert time.monotonic() - began < 5
+    assert busy.headers["retry-after"] == str(workbench_app.BUSY_RETRY_SECONDS)
+    assert "busy pricing other quotes" in busy.json()["detail"]
+    assert len(reached) == 2
+
+    end.set()
+    deadline = time.monotonic() + 10
+    while (served := _price(client)).status_code == 503 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert served.status_code == 200, served.text
+
+
 def test_a_pipeline_failing_on_the_quote_answers_why(
     release: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -556,33 +606,11 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         '[workbench.app]\nhost = "azure-container-apps"\n',
         encoding="utf-8",
     )
-    _write(with_details_copy(_priced()), tmp_path, "main")
+    # Its Workbench nodes hold no tables: they are given the form's wherever it runs.
+    _write(_priced(), tmp_path, "main")
     write_sheets(tmp_path, PROJECT_TABLES)
     yield tmp_path
     set_project_root(original)
-
-
-def with_details_copy(graph: PipelineGraph) -> PipelineGraph:
-    """*graph* with its Workbench nodes' copies of the tables as the editor copies them from
-    a form: Haute's ``quote_details`` table first in the Workbench Input's, and every other
-    table leading with the quote's reference and option."""
-    from tests.test_workbench_output import _column, _table
-
-    identity = [_column(name, type_) for _, name, type_ in IDENTITY_COLUMNS]
-    for node in graph.nodes:
-        if node.data.nodeType not in (NodeType.WORKBENCH_INPUT, NodeType.WORKBENCH_OUTPUT):
-            continue
-        tables = [
-            {**table, "columns": [*identity, *table["columns"]]}
-            for table in node.data.config["tables"]
-        ]
-        if node.data.nodeType == NodeType.WORKBENCH_INPUT:
-            details = _table(
-                "quote_details", *((name, type_) for _, name, type_ in QUOTE_DETAILS_COLUMNS)
-            )
-            tables = [details, *tables]
-        node.data.config["tables"] = tables
-    return graph
 
 
 def write_sheets(project: Path, tables: list[dict[str, Any]]) -> None:
@@ -668,7 +696,10 @@ from fastapi.testclient import TestClient
 
 from haute._workbench_app import create_app
 
-client = TestClient(create_app(Path(sys.argv[1]), local_principal="analyst@example.com"))
+client = TestClient(
+    create_app(Path(sys.argv[1]), local_principal="analyst@example.com"),
+    base_url="http://127.0.0.1:8001",
+)
 revision = client.get("/api/app/form").json()["revision"]
 answered = client.post(
     "/api/app/price",
@@ -690,7 +721,7 @@ def test_the_app_prices_on_the_utility_code_the_release_carries(project: Path) -
 
     from tests.test_workbench_output import _priced, _write
 
-    graph = with_details_copy(_priced())
+    graph = _priced()
     graph.preamble = "from utility import RATE\n"
     graph.node_map["priced"].data.config["code"] = (
         "df = policy.with_columns(premium=pl.col('limit') / 10 * RATE, referral=pl.lit('none'))"
@@ -766,6 +797,8 @@ def test_a_release_allows_what_its_params_files_hold_when_it_is_built(
 
 
 def test_a_release_is_refused_for_what_the_project_cannot_ship(project: Path) -> None:
+    from haute.errors import DeployError
+
     def refused() -> str:
         with pytest.raises(WorkbenchAppError) as caught:
             build_release(project, project / "build" / "app")
@@ -778,11 +811,15 @@ def test_a_release_is_refused_for_what_the_project_cannot_ship(project: Path) ->
     assert (other / "notes.txt").is_file()
     (other / "notes.txt").unlink()
 
-    # A form disagreeing with the pipeline's Workbench nodes does not validate.
-    pricing = _form_table("t_pricing", "pricing", "output", ("premium", "float"), ("tax", "float"))
-    write_sheets(project, [*PROJECT_TABLES[:2], pricing, PROJECT_TABLES[3]])
-    assert "The pipeline did not validate" in refused()
-    assert "tax" in refused()
+    # A form without a table the pipeline fills is refused, naming the connection.
+    write_sheets(project, PROJECT_TABLES[:3])
+    with pytest.raises(DeployError) as unconnectable:
+        build_release(project, project / "build" / "app")
+    assert unconnectable.value.message == (
+        "'item_premiums' fills table 'item_prices' of Workbench Output 'response', which "
+        "workbench does not have."
+    )
+    write_sheets(project, PROJECT_TABLES)
 
     # A folder gone is restored from version history, never built from a blank form.
     import shutil
@@ -890,14 +927,14 @@ def test_haute_app_serve_serves_the_release_on_loopback_as_the_analyst(
     assert (project / ".haute" / "app" / "release" / "release.json").is_file()
     assert (project / ".haute" / "app" / "quotes.sqlite").is_file()
     assert "Quotes kept in .haute/app/quotes.sqlite" in result.output
-    with TestClient(served["app"]) as client:
+    with TestClient(served["app"], base_url=LOOPBACK) as client:
         signed_in = client.get("/api/app/release").json()
     assert (signed_in["principal"], signed_in["quotes"]) == ("ana@example.com", True)
 
     reading = CliRunner().invoke(cli, ["app", "serve", "--reader"])
     assert reading.exit_code == 0, reading.output
     assert "reading quotes only" in reading.output
-    with TestClient(served["app"]) as client:
+    with TestClient(served["app"], base_url=LOOPBACK) as client:
         assert client.get("/api/app/release").json()["can_edit"] is False
 
     monkeypatch.setattr(git_setup, "get_identity", lambda cwd=None: (None, None))
@@ -1112,7 +1149,8 @@ def test_a_release_without_a_quote_store_prices_without_its_packages(release: An
         "from pathlib import Path\n"
         "from fastapi.testclient import TestClient\n"
         "from haute._workbench_app import create_app\n"
-        "client = TestClient(create_app(Path(sys.argv[1]), local_principal='uw@example.com'))\n"
+        "client = TestClient(create_app(Path(sys.argv[1]), local_principal='uw@example.com'),\n"
+        "    base_url='http://127.0.0.1:8001')\n"
         "revision = client.get('/api/app/form').json()['revision']\n"
         "release = client.get('/api/app/release').json()['id']\n"
         "priced = client.post('/api/app/price', json={'form_revision': revision,\n"

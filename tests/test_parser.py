@@ -1303,3 +1303,14 @@ pipeline.submodel(broken_sub.submodel, "broken_sub")
             parse_pipeline_file(p)
 
         assert exc_info.value.context["source_file"].endswith("broken_sub.py")
+
+
+def test_a_source_parsed_without_a_file_names_none(tmp_path):
+    """A base directory alone names no source file, so nothing reports a file that does
+    not exist."""
+    from haute.parser import parse_pipeline_source
+
+    graph = parse_pipeline_source(
+        'import haute\npipeline = haute.Pipeline("p")\n', _base_dir=tmp_path
+    )
+    assert graph.source_file is None or graph.source_file == ""

@@ -4,10 +4,10 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/_io.py` | API-input flat-file adapters, source/schema validation, direct CSV/JSON/NDJSON/Parquet reads (a Parquet file with a map column refused), and external-object loading. |
+| `src/haute/_io.py` | API-input flat-file adapters, source/schema validation, direct CSV/JSON/NDJSON/Parquet reads (a Parquet file with a map column refused), external-object loading, and the readers of user text: `read_user_source` and `decode_user_source` for pipeline and submodel sources (strict UTF-8 with a leading byte order mark dropped; a byte that is not UTF-8 is a `ParseError` naming the file and the byte with its line and column, located by `utf8_decode_failure` as a `Utf8DecodeFailure`), and the tolerant `read_user_text` for other user files. |
 | `src/haute/_polars_io_registry.py` | Canonical Data Input/Output format registry, strict config and argument validation, capability publication, and Polars invocation; `parquet_source_map_columns` finds a Parquet source's map columns in its files' own schema, `refuse_direct_map_columns` refuses a direct Parquet scan whose files hold a map, and `read_parquet_map_entries_for_snapshot` reads such a file for its snapshot through pyarrow and refuses a map in a source of several files (*Map columns* under Edge cases and invariants). |
 | `src/haute/_input_providers.py` | Provider dispatch, source identity/signature construction, explicit snapshot build, and leased snapshot resolution. |
-| `src/haute/_input_preparation.py` | Automatic snapshot preparation planned before execution: freshness check, cap gate, in-process or worker build, per-process single-flight, preparation records, and staging-token cleanup. |
+| `src/haute/_input_preparation.py` | Automatic snapshot preparation planned before execution: freshness check, cap gate, in-process or worker build, per-process single-flight, preparation records, and staging-token cleanup; also the one supervised-build mechanism (`supervise_build`, `run_supervised_data_input_build`, `capped_worker_config`) that preparation, the explicit build route and an API Input's table build share. |
 | `src/haute/_database_io.py` | Credential-free database locator/query validation and bounded read-only SQLite snapshot batches. |
 | `src/haute/_credential_security.py` | Shared URI credential detection and provider-diagnostic redaction. |
 | `src/haute/_source_cache.py` | Primary owner of source-cache identities, generations, metadata, publication, leases, status, and cleanup. A generation's metadata records `build_seconds`, the wall-clock span from allocating its staging directory to writing that metadata — how long caching it took — absent on a generation published before it was recorded, which reads as unknown rather than instant. |
@@ -55,18 +55,24 @@ relationship is recorded in `specs/ownership.toml`.
   (`data_paths`, `part-00000.parquet`, `part-00001.parquet`, …; `lazy_frame` scans exactly
   that list). A generation written in layout 1 or 2 reads as absent
   (`SourceCacheLegacyLayoutError`, a `SourceCacheGenerationMissingError`), never as
-  corruption, so a build replaces it. Before a generation is trusted, its directory must be
-  a plain directory inside its identity and every artifact a plain, single-link file inside
-  the generation; each part's size, xxh64 `digest`, footer row count, and schema must match
-  its record; `SourceCacheGenerationMissingError` (a `SourceCacheCorruptError`) reports a
-  named generation that does not exist.
+  corruption, so a build replaces it. So does a generation the current pointer names whose
+  directory is gone (evicted by another process, deleted by hand): `open_generation` and a
+  current lease raise `FileNotFoundError` for both, `status` reports `missing`, and
+  preparation or an explicit build builds it again. Before a generation is trusted, its
+  directory must be a plain directory inside its identity and every artifact a plain,
+  single-link file inside the generation; each part's size, xxh64 `digest`, footer row
+  count, and schema must match its record; `SourceCacheGenerationMissingError` (a
+  `SourceCacheCorruptError`) reports a named generation that does not exist.
 - `SourceCacheStore` coordinates same-root handles in-process, publishes generations, tracks
   local leases and verified-generation memos, reclaims provably stale
   staging, and exposes `build`, `lease`, `lease_generation`, `clear`, and `status`. Leases
   protected across processes by lease markers and a shared lock. A
   superseded generation is normally retired after `HAUTE_INPUT_CACHE_RETIRE_GRACE_SECONDS`
   (default 1800) have elapsed since the current generation was published; explicit clear
-  bypasses the grace period while preserving live readers. A reconcile removal that leaves
+  bypasses the grace period while preserving live readers. Retirement is the node outputs'
+  (*Retirement* under Node-output snapshots): a generation is renamed to `.retired-<hex>`
+  under the lease lock and its files are deleted after the lock is released, never removed
+  with a bare `rmtree` under it. A reconcile removal that leaves
   its directory behind is logged (`source_cache_reconcile_removal_failed`) and reported as
   `unremovable`.
 - `source_signature` is the shared content signature
@@ -81,7 +87,9 @@ relationship is recorded in `specs/ownership.toml`.
   reused across processes from its durable record
   ([caching](../caching/low-level.md#durable-source-proofs)). Reuse follows the one freshness guarantee in the
   [caching](../caching/low-level.md) specification: a native revision where the platform has
-  one, otherwise a stat trusted only for a file modified at least two seconds earlier,
+  one (a POSIX revision whose ctime is a whole second, from a filesystem stamping whole
+  seconds, only once settled), otherwise a stat trusted only for a file modified at least two
+  seconds earlier,
   because a filesystem stamps mtimes at its own granularity and a same-size rewrite inside
   that window would otherwise keep a stale signature (git's racy-index rule).
   `signed_source_files` names the files `source_signature` hashes: the files a `file`
@@ -156,26 +164,34 @@ platforms, and on Windows with long paths on, nothing is renamed.
 2. `source_cache_identity()` canonicalises the logical source. Database named connections
    retain only the environment reference; Databricks retains fixed host/token references and
    excludes `batch_size`; inline records contribute only a canonical content digest and row
-   count, never raw record values. Relative file/lakehouse locators are resolved through the
-   shared runtime path resolver — project root first, configured pipeline directory as
-   fallback, an existing file beating a missing candidate, the project-root copy winning when
-   both exist — identically for build, execution, execution fingerprinting, and RAM metadata
-   inspection, so one locator names one file at every seam. Raw SQLite URIs remain anchored to
-   the configured pipeline directory.
+   count, never raw record values. Relative file/lakehouse locators are anchored by the one
+   rule below. Raw SQLite URIs remain anchored to the configured pipeline directory.
+
+   **The anchoring rule.** A relative local path a node's config reads from (a Data Input's,
+   API Input's or External File's `path`, a Model Score's model file and feature contract,
+   an Optimiser Apply's file artifact) is resolved by
+   `_path_resolution.resolve_node_input_path`: the project root first, where the editor's
+   file browser writes paths from, then the pipeline directory, an existing file (or a glob
+   pattern matching a path) beating a missing candidate and the project-root copy winning
+   when both exist. Windows backslashes read as separators, neither candidate may leave the
+   runtime project root, a path found in neither place keeps the project-root candidate,
+   and one with no candidate inside the root raises `RuntimePathOutsideProjectError`. Every
+   reader applies it: the registry (`anchor_config_source_path`, behind
+   `source_cache_identity`, `source_signature`, direct Parquet resolution, data points and
+   the RAM estimate), the engine's canonical graph (`canonical_dataframe_execution_graph`)
+   and runtime-input fingerprint, the node builders, the standalone sidecar run, the
+   explicit snapshot build, the preview request's path check and the API Input's schema
+   inference, so one locator names one file at every seam. Deploy bundles a Data Input's
+   file by its own rule, the pipeline directory first ([deploy](../deploy/low-level.md)).
 3. `data_input_is_direct()` derives the execution mode: file-backed Parquet with
    effective mode `scan` is direct; every other canonical Data Input is snapshot-backed.
    No cache-mode field is stored — validation rejects a config still carrying the removed
    `cacheMode` field as inactive; nothing is normalised or migrated.
-4. Direct Parquet resolution anchors the configured path (`anchor_config_source_path`,
-   through the shared runtime path resolver: the pipeline directory first, then the
-   project root, Windows backslashes read as separators, neither candidate leaving the
-   runtime project root, as deploy validates and bundles it; a pipeline directory outside
-   the runtime project is its own root, as `_infer_project_root` treats a pipeline outside
-   the selected project. A glob pattern is found where it matches a path. A path found in
-   neither place keeps the first candidate inside the root, and one with no candidate
-   inside raises `RuntimePathOutsideProjectError`)
-   and returns the registry's
-   `scan_parquet` lazy scan without creating or consulting a source snapshot.
+4. Direct Parquet resolution anchors the configured path by the anchoring rule
+   (`anchor_config_source_path`; a pipeline directory outside the runtime project is its
+   own root, as `_infer_project_root` treats a pipeline outside the selected project) and
+   returns the registry's `scan_parquet` lazy scan without creating or consulting a source
+   snapshot.
 5. Snapshot creation calls `build_input_snapshot()`, selects a provider builder, creates a
    `SourceCacheBuildContext`, and calls `SourceCacheStore.build()`.
 6. Snapshot execution calls `resolve_data_input()`, which leases the current generation
@@ -212,9 +228,9 @@ platforms, and on Windows with long paths on, nothing is renamed.
    `input_snapshot_missing` rejection. With `current_native_memory_backend()` set the
    build runs in-process through `build_input_snapshot()` with the context's cancellation,
    deadline, and stages; otherwise the build is spawned through `run_isolated_worker` with
-   `worker_config_for_memory_policy(memory_limit_bytes=budget.memory_limit_bytes, ...)`
-   where `budget = isolated_execution_budget(execution_context)`, with
-   `require_memory_limit=True` whatever `HAUTE_WORKER_MEMORY_ENFORCEMENT` says, and the
+   `capped_worker_config(budget, ...)`, where `budget = isolated_execution_budget(execution_context)`:
+   `worker_config_for_memory_policy(memory_limit_bytes=budget.memory_limit_bytes, ...)` with
+   `require_memory_limit=True` whatever `HAUTE_WORKER_MEMORY_ENFORCEMENT` says. The
    child creates `create_isolated_execution_context(budget)` and runs the same
    `build_input_snapshot()`. A host that cannot install the native cap reuses a
    ready-but-stale generation with warning code `cap_unavailable_stale_reused`, and refuses
@@ -240,7 +256,23 @@ platforms, and on Windows with long paths on, nothing is renamed.
 7. A spawned build sets `defer_retirement=True`; its supervising parent calls
    `SourceCacheStore.retire_unleased(identity)` after success or reconciliation reporting
    `published`. Shared lease markers protect readers in either process. There is no
-   retained-generation list on the worker request or build context.
+   retained-generation list on the worker request or build context. One mechanism
+   supervises every spawned build, automatic or explicit: `supervise_build(spawn, worker,
+   request, budget, config=, reconcile=)` spawns the worker on a request carrying the
+   parent-chosen generation ids and staging tokens, and after any failure calls `reconcile`
+   (settle exactly those, reporting whether everything was published). It returns a
+   `SupervisedBuild`: the worker's outcome, no outcome when the worker died after
+   publishing, or the worker's own failure when the build published nothing, which is
+   returned, never raised, so an exception that does leave it (the reconciliation's own)
+   is the parent's and never reaches a caller's handling of a worker failure. A base
+   exception is re-raised after the reconciliation, never turned into success. The caller
+   retires a build that published, after deciding about any worker failure:
+   `run_supervised_data_input_build` (preparation's spawned build and the explicit
+   admitted-eager build) is settled by `published_data_input`, which retires, checks the
+   outcome and describes the published generation, so a retirement failure propagates
+   rather than being read as a successor; `run_supervised_api_input_build` (an API Input's
+   tables, removing the build's scratch directory as it reconciles) raises the worker's
+   failure, then retires its tables itself.
 8. Worker failure classification maps the child's own exception type name carried by
    `IsolatedWorkerRemoteError.remote_type` first: `NativeMemoryLimitUnsupportedError` /
    `NativeMemoryLimitCleanupError` are `cap_unavailable`, and `PathTooLongError` is
@@ -322,8 +354,11 @@ inventory and consume physical disk space.
    retains any locally leased generation.
 4. The idempotent callback exits the lease once. The count is decremented under
    the identity lock, and when the final holder releases, every non-current
-   unleased generation is retired. Thus refresh/clear affect future selection
-   immediately without invalidating an already-derived scan.
+   unleased generation is retired (renamed out of selection under the lease lock,
+   its files deleted after it). Thus refresh/clear affect future selection
+   immediately without invalidating an already-derived scan. A pointer that names
+   a generation whose directory is gone leases nothing: the lease raises
+   `FileNotFoundError`, which resolution reports as `input_snapshot_missing`.
 
 ### Node-output snapshots
 
@@ -465,7 +500,9 @@ generations to their owners when readable. Inventory takes no lock and mutates n
   deepest path inside the traditional Windows limit beneath long temporary roots.
 - **Status.** `latest_generation(identity)` validates the pointer's generation through the
   store's metadata/digest/verified-memo path and reports its columns, dependencies,
-  freshness, retention, and last use. `slot_status(slot, signature)` is `current` or
+  freshness, retention, and last use; a pointer naming a generation whose directory is gone
+  has no latest generation (`None`, as a retired layout has), so the node's data is missing
+  and the next capture publishes over it. `slot_status(slot, signature)` is `current` or
   `stale` from that generation, `stale` when another indexed identity has a current
   generation, `missing` otherwise, and `corrupt` when validation fails. Because a slot holds
   one signature, the "another indexed identity" case is now the window in which a reader
@@ -497,8 +534,10 @@ generations to their owners when readable. Inventory takes no lock and mutates n
   retention in the slot index, renames staging to the generation, seeds the verified memo,
   creates the publisher's marker and in-process count, then commits the pointer. Indexing
   before exposure keeps interrupted candidates discoverable; an existing slot pin protects
-  the previous current data until commit. It retires the superseded generation when no live marker holds
-  it. **One dataset per slot.** It then retires every *other* signature the slot index
+  the previous current data until commit. It then retires every generation of the identity
+  other than the new current one that no live marker holds: the one it replaced, and any a
+  deferred retirement or Clear left unpointed, so recapturing the same signature completes
+  a deferred Clear. **One dataset per slot.** It then retires every *other* signature the slot index
   lists, by `clear_slot`'s mechanics — drop the pointer so nothing selects that signature
   again, then retire its generations — and drops each from the index. A node therefore holds
   one dataset, and a re-cache after an edit replaces what was there rather than adding a
@@ -518,12 +557,22 @@ generations to their owners when readable. Inventory takes no lock and mutates n
 - **Retention.** Neither explicit nor automatic datasets are removed to admit another
   dataset. Pins and last-used metadata remain available, but do not control storage limits.
 - **Clear and pin.** `clear_slot(slot)` removes every indexed identity's pointer, retires
-  each unheld generation, and deletes the index; `clear(identity)` does the same for one
-  identity. `pin(identity)` pins a slot to an identity that has a current generation.
-- **Retirement.** Under the lease lock a generation directory is renamed to
-  `.retired-<hex>` beside `generations/`; the files are deleted after the lock is released,
-  and store construction removes any leftover retired directory. A rename refused by an open
-  Windows handle is logged (`node_snapshot_retirement_deferred`) and left selectable.
+  each unheld generation, and drops the slot's pin; `clear(identity)` does the same for one
+  identity, dropping the pin when it names that identity. Both unindex an identity only once
+  no generation of it remains (`_retire_identities_locked`, which publication's
+  supersession shares): one a reader holds, or whose rename an open Windows handle refused,
+  stays indexed and unpointed, so the slot's next publication or Clear, or the budget
+  check, retires it, and the index file goes when it lists no identity. `pin(identity)`
+  pins a slot to an identity that has a current generation.
+- **Retirement.** Every retirement in the store, an input snapshot's included
+  (`SourceCacheStore._retire_generation_locked`), renames the generation directory under
+  the lease lock to `.retired-<hex>` beside `generations/`; the files are deleted after the
+  lock is released (`_delete_retired`, logging `source_cache_retired_delete_failed` for one
+  that survives), and the first store a process opens on a root removes any leftover
+  retired directory. A rename refused by an open Windows handle is logged
+  (`source_cache_retirement_deferred`) and the generation is left whole, unpointed and
+  selectable by id; the next retirement of its identity (a release, refresh, clear or
+  publication) renames it.
 
 ### Staging reclamation and publication
 
@@ -733,7 +782,10 @@ is no eager dataframe or collect-then-write fallback.
   against the remote-IO, object-valued, and execution-owned exclusions, and an argument only
   the committed schema has would otherwise stay on offer while resting on whatever
   deprecation shim still accepts it. Rejection names the version boundary when
-  `haute._polars_io_schema.retired_argument_names()` explains the miss.
+  `haute._polars_io_schema.retired_argument_names()` explains the miss. Iceberg's `catalog`
+  (`scan_iceberg`, `sink_iceberg`) is object-valued: a pyiceberg catalog object locates the
+  table and JSON cannot construct one, so it is excluded and absent from
+  `registry_capabilities()`, like `storage_options`.
 - The registry supplies each node's source/target fields positionally — one leading argument
   for a path or inline source and for every output target, two (query, uri) for a database
   input — so a Polars release inside the specifier may append or rename later parameters but
@@ -951,7 +1003,14 @@ failure sections above are the maintained answers.
 - `tests/test_source_cache.py` covers canonical/redacted identity, atomic refresh,
   immutable generations, leases, corruption, no-budget retention, same-identity single flight,
   age-gated staging reclamation, digest memoization, non-destructive
-  generation startup, and transient OS failures.
+  generation startup, and transient OS failures. A generation whose directory was deleted
+  reads as missing, a current lease raises `FileNotFoundError` and holds nothing, and a build
+  replaces it. A refresh or clear while a reader holds a part open (Windows' refusals of the
+  rename and the delete, simulated) leaves the superseded generation whole and raises nothing,
+  and the next retirement removes it. A retirement whose delete fails logs
+  `source_cache_retired_delete_failed` and leaves its renamed directory, which the next
+  process's sweep removes while leaving a stray file named like one; a generation another
+  actor removes while it is being retired counts as retired.
 - `tests/test_input_providers.py` covers direct-Parquet and offline snapshot reads,
   provider identities, execution-lifetime leases, SQLite empty/mixed storage classes,
   typed conversion failures, missing database rejection, and the inferred schema tier:
@@ -961,7 +1020,8 @@ failure sections above are the maintained answers.
   refused with the preview remedy.
 - `tests/test_polars_io_registry.py`, `tests/test_polars_io_interface_contracts.py`, and
   `tests/test_bounded_sink_contract.py` cover registry/schema drift, validation, engine
-  gates, and partitioned sink publication.
+  gates, and partitioned sink publication; Iceberg's `catalog` is offered by no mode of
+  `registry_capabilities()`.
 - `tests/test_io.py`, `tests/test_data_io_nodes.py`, `tests/test_data_io_roundtrips.py`, and
   `tests/test_json_read_documented.py` cover format dispatch, generated-node integration,
   declared schemas, projections, round trips, and bounded-memory policy.
@@ -981,6 +1041,12 @@ failure sections above are the maintained answers.
   `test_bounded_hashed_sink_cancels_native_query_and_publishes_nothing`,
   `test_hashed_streaming_sink_cleans_up_after_a_partial_write`) verifies native streaming
   execution, cancellation without publication, and cleanup after partial writes.
+- `tests/test_saved_path_resolution.py` places the same relative path at the project root and
+  a decoy beside the pipeline: the registry's anchoring and the canonical graph both name the
+  project-root file and the read returns its rows; a path only beside the pipeline is found
+  there, and one found nowhere keeps the project-root candidate.
+  `tests/test_input_cache_route.py::test_build_identity_names_the_file_execution_opens`
+  holds the explicit build's identity equal to the registry's for the saved locator.
 - `tests/test_discovery.py` and `tests/test_path_case_audit.py` cover pipeline discovery,
   deduplication, unreadable files, retained resolver seams, and cross-platform path spelling.
 - `tests/test_input_cache_route.py` covers HTTP build/status/cancel/clear lifecycle and
@@ -1035,7 +1101,9 @@ failure sections above are the maintained answers.
   `published` and recorded `built`, and one whose generation was superseded before
   reconciliation by a fresh generation another process published (simulated by publishing
   through a second store handle) is recorded `reused` with the successor's generation id
-  and no failure; (15) a host without a native cap under
+  and no failure, while a failure of the parent's own (its retirement after a worker that
+  published, its reconciliation after one that failed, a worker outcome of the wrong type)
+  propagates as itself rather than being read as the worker's; (15) a host without a native cap under
   `HAUTE_WORKER_MEMORY_ENFORCEMENT=best_effort` yields `cap_unavailable` before any
   provider access; (16) cache invalidation — a warmed preview (`execute_graph` preview
   cache) returns the new rows and records `refreshed`
@@ -1064,14 +1132,20 @@ failure sections above are the maintained answers.
   by an automatic capture and replaced by an explicit build),
   the automatic-capture budget (the least recently leased evicted first; pinned, leased
   and input generations never; an explicit build evicting nothing; the re-checks under
-  the lease lock; a deferred eviction staying indexed until a later check retires it;
+  the lease lock; a deferred eviction staying indexed until a later check retires it, and
+  a deferred `clear_slot` or `clear` staying indexed, unpointed and unpinned until the
+  slot's next capture, of the same signature or another, retires it;
   unclassifiable generations counted and kept; the default and configured budget; a
   store fault never failing the capture, and a misconfigured budget failing it with its
   lease released) and `usage()`,
   staged-artifact handover on supersession, pin inheritance and explicit pinning, no rehash
   on a second lease, named-generation leases through refresh and clear, validation only
   after the lease marker exists, malformed generation ids, the publisher's lease released
-  when its handoff fails, lease markers, and recorded metadata.
+  when its handoff fails, lease markers, and recorded metadata; a generation whose directory
+  was deleted is `missing`, never `corrupt`, and an automatic capture replaces it.
+  `tests/test_seed_plans.py` resolves such a node as recomputed rather than raising
+  `SnapshotCorruptError`, `tests/test_input_preparation.py` builds such an input again, and
+  `tests/test_cache_nodes_routes.py` reports its row `missing` and `current` after a build.
   `test_the_budget_never_evicts_a_pinned_leased_or_input_generation` and the source-store
   `test_input_cache_keeps_datasets_without_byte_or_entry_budgets` prove that input
   snapshots and explicit builds are never evicted or refused for size.
@@ -1122,7 +1196,7 @@ generation markers as node outputs. Both `SourceCacheStore` and
 `NodeSnapshotStore` handles participate. Acquisition records the marker before
 metadata/content validation, and nested local readers retain it until the last
 reader releases. Clear, replacement and reconciliation check
-live holders under the shared lock before deleting a generation.
+live holders under the shared lock before retiring or discarding a generation.
 Dead owner markers can be reclaimed; age alone never overrides a live marker.
 
 A current-generation lease preserves the ordinary open contract for retired

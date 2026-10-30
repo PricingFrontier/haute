@@ -7,6 +7,9 @@ import keyword
 from os.path import normcase
 from pathlib import Path
 
+from haute._sandbox import contained_path
+from haute.errors import PathOutsideProjectError
+
 #: The package beside a pipeline that holds its submodel modules, one per definition:
 #: ``modules/<name>.py``, imported by the pipeline as ``from modules import <name>``.
 SUBMODEL_PACKAGE = "modules"
@@ -95,14 +98,13 @@ def resolve_submodel_reference(
         raise MalformedSubmodelPathError(
             "Submodel reference must be a non-empty path without traversal segments.",
         )
-    resolved_root = project_root.resolve()
     active_dir = (pipeline_dir or project_root).resolve()
-
-    submodel_path = (active_dir / rel_path).resolve()
-    if not submodel_path.is_relative_to(resolved_root):
+    try:
+        submodel_path = contained_path(project_root, (active_dir / rel_path).resolve())
+    except PathOutsideProjectError:
         raise SubmodelPathOutsideProjectError(
             f"Submodel path {rel_path!r} escapes project directory"
-        )
+        ) from None
     return submodel_path, active_dir
 
 

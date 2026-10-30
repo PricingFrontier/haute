@@ -478,7 +478,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    the worker's own catch-all, so a cancellation is never reported as a pipeline failure. Every
    child failure removes the parquet first — no partial training artifact ever exists.
    The parent maps the outcome: a `failure` transitions to its `terminal_reason` and raises
-   the paired `HTTPException`; a success whose `parquet_path` differs from the parent's, or
+   the paired `RequestRefusedError`; a success whose `parquet_path` differs from the parent's, or
    whose file is missing or empty, is a 500 `error` ("Training preparation worker did not
    produce its prepared data."); `IsolatedWorkerStoppedError` raises `ExecutionCancelledError`
    (the outer branch reads the registry for cancelled vs. timed_out);
@@ -715,7 +715,7 @@ experiment logs nothing.
    `cancel_dispersion` during preparation stops the preparation worker, whose owner then
    releases admission and the registry entry. A preparation failure lands in the job through
    `_record_preparation_failure`, shared with training: a cancellation takes the token's
-   reason, an admission or memory failure is `memory_limited` (507), an `HTTPException` keeps
+   reason, an admission or memory failure is `memory_limited` (507), a `RequestRefusedError` keeps
    its `contract_error`/`error` parts, and anything else is `error` with `_friendly_error`'s
    curated "Dispersion estimation of …" message (the raw text stays in `error`).
 4. `_estimate_ram` and `_execute_and_sink` reuse the exact same helpers `start()` uses
@@ -1445,8 +1445,8 @@ rows/features) and retry.
   a distinct failure payload (`cancelled`, `memory_limited`, `contract_error`
   respectively); parent-side cancellation/timeout additionally terminates the child
   through the supervisor stop callback.
-- **`HTTPException`** — raised directly by route handlers and by `TrainService.start`
-  for 400/409/422/500/507. `TrainService.start`'s `except HTTPException` block
+- **`RequestRefusedError`** — raised by `TrainService.start` (route handlers raise
+  `HTTPException` directly) for 400/409/422/500/507. A refusal in `TrainService.start`
   additionally transitions the job record to the matching terminal state
   (`memory_limited` for 507, `contract_error` for other 4xx, `error` otherwise) before
   re-raising, so the job store and the HTTP response can never disagree about outcome.
@@ -1590,7 +1590,7 @@ rows/features) and retry.
   Decimal scalar, and directs the author to an explicit upstream `String` or
   `Float64` cast. The original Decimal descriptor is named; no value is
   inspected or coerced.
-- **Dispersion estimation** — `_validate_dispersion_config` raises `HTTPException(400)`
+- **Dispersion estimation** — `_validate_dispersion_config` raises `InvalidRequestError` (400)
   for an unknown parameter, a non-GLM node, a family/link mismatch, a parameter/family
   pairing mismatch, a missing target, or any other incomplete training objective;
   raised before any job record is created. Inside `estimate_glm_dispersion`,

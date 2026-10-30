@@ -19,7 +19,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NotRequired, cast
 
 import numpy as np
-from fastapi import HTTPException
+
+from haute.errors import (
+    ConflictError,
+    InsufficientMemoryError,
+    InvalidRequestError,
+    NotFoundError,
+    RequestRefusedError,
+    ServiceFailedError,
+    UnprocessableError,
+)
 
 if TYPE_CHECKING:
     import polars as pl
@@ -93,10 +102,10 @@ from haute.routes._background_jobs import (
 )
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
-    contract_error_http_exception,
     contract_error_job_fields,
+    contract_error_refusal,
     contract_error_terminal_reason,
-    memory_limit_http_exception,
+    memory_limit_refusal,
 )
 from haute.routes._job_lifecycle import (
     TERMINAL_REASONS,
@@ -236,6 +245,10 @@ _GRAPH_NODE_SETUP_COORDINATION_TYPE = "optimiser_graph_node_setup"
 _FRONTIER_AUTO_RANGE_CANCELLED_STATUS = "cancelled"
 _FRONTIER_AUTO_RANGE_SUPERSEDED_STATUS = "superseded"
 _FRONTIER_AUTO_RANGE_TERMINAL_STATUSES = TERMINAL_REASONS
+# How long a start waits for a graph/node owner whose job has already ended to
+# exit (it records its metrics and returns its admission after the terminal
+# transition) before refusing with the conflict.
+_FINISHED_OWNER_EXIT_SECONDS = 5.0
 
 
 class _OptimiserSolveRunningJob(RunningJobFields):
@@ -317,7 +330,7 @@ def _with_flattened_optimiser_graph(
     return body.model_copy(update={"graph": flat_graph})
 
 
-def _is_memory_limit_http_exception(exc: HTTPException) -> bool:
+def _is_memory_limit_refusal(exc: RequestRefusedError) -> bool:
     return (
         exc.status_code == 507
         and isinstance(exc.detail, Mapping)
@@ -335,7 +348,7 @@ def _normalise_memory_limit_payload(detail: object) -> dict[str, object]:
 
 
 def _memory_limit_message(payload: Mapping[str, object]) -> str:
-    # A "message" key can only have been stamped by memory_limit_http_exception
+    # A "message" key can only have been stamped by memory_limit_refusal
     # (the exceptions' to_payload() carries no message) — prefer that curated
     # wording so the job's terminal message matches the HTTP surface.
     message = payload.get("message")
@@ -371,7 +384,7 @@ def _memory_limit_job_update(
     }
 
 
-def _http_error_job_update(
+def _refusal_job_update(
     *,
     status_code: int,
     detail: object,
@@ -391,14 +404,14 @@ def _http_error_job_update(
     }
 
 
-def _http_exception_job_update(
+def _refusal_exception_job_update(
     *,
-    exc: HTTPException,
+    exc: RequestRefusedError,
     elapsed_seconds: float,
     execution_context: ExecutionContext,
     terminal_reason: TerminalReason,
 ) -> dict[str, object]:
-    return _http_error_job_update(
+    return _refusal_job_update(
         status_code=exc.status_code,
         detail=exc.detail,
         elapsed_seconds=elapsed_seconds,
@@ -1252,6 +1265,7 @@ class OptimiserSolveService:
         )
         setup_job_key = self._graph_node_setup_job_key(body.graph, body.node_id)
 
+        self._wait_out_finished_setup_owner(setup_job_key)
         with self._start_lock:
             self._check_no_concurrent_jobs()
             active_setup = self._active_graph_node_setup(setup_job_key)
@@ -1343,9 +1357,8 @@ class OptimiserSolveService:
                 elapsed_seconds=_job_elapsed_seconds(self._store.require_job(job_id)),
             )
             self._release_job_ownership(job_id, setup_singleflight_key=setup_job_key)
-            raise HTTPException(
-                status_code=500,
-                detail="Optimiser setup worker failed to start. Check the server logs for details.",
+            raise ServiceFailedError(
+                "Optimiser setup worker failed to start. Check the server logs for details."
             ) from exc
 
     def _run_solve_setup_and_launch(
@@ -1658,10 +1671,7 @@ class OptimiserSolveService:
         except InteractiveWorkerError as exc:
             self._record_solve_setup_failure(
                 job_id,
-                HTTPException(
-                    status_code=500,
-                    detail=f"The optimiser's solver process could not run: {exc}",
-                ),
+                ServiceFailedError(f"The optimiser's solver process could not run: {exc}"),
                 node_id=body.node_id,
                 execution_context=execution_context,
                 start_time=start_time,
@@ -2002,13 +2012,12 @@ class OptimiserSolveService:
             raise on_timeout() from None
         except IsolatedWorkerError as exc:
             if isolated_worker_failure_is_memory(exc):
-                raise HTTPException(
-                    status_code=507,
-                    detail=isolated_worker_memory_detail(
+                raise InsufficientMemoryError(
+                    isolated_worker_memory_detail(
                         exc,
                         operation=budget.operation,
                         memory_limit_bytes=budget.memory_limit_bytes,
-                    ),
+                    )
                 ) from None
             logger.error(
                 "optimiser_worker_failed",
@@ -2018,9 +2027,8 @@ class OptimiserSolveService:
                 error=str(exc),
                 error_type=type(exc).__name__,
             )
-            raise HTTPException(
-                status_code=500,
-                detail="Optimiser worker failed. Check the server logs for details.",
+            raise ServiceFailedError(
+                "Optimiser worker failed. Check the server logs for details."
             ) from None
 
     def _record_solve_setup_failure(
@@ -2072,10 +2080,10 @@ class OptimiserSolveService:
                 ),
                 elapsed_seconds=elapsed_seconds,
             )
-        elif isinstance(exc, HTTPException):
+        elif isinstance(exc, RequestRefusedError):
             http_terminal_reason: TerminalReason = (
                 "memory_limited"
-                if _is_memory_limit_http_exception(exc)
+                if _is_memory_limit_refusal(exc)
                 else "contract_error"
                 if exc.status_code in (400, 422)
                 else "error"
@@ -2097,20 +2105,20 @@ class OptimiserSolveService:
                 elapsed_seconds=elapsed_seconds,
             )
         elif isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
-            http_exc = memory_limit_http_exception(exc, operation_noun="Optimisation")
+            refusal = memory_limit_refusal(exc, operation_noun="Optimisation")
             if execution_context is not None:
                 memory_error_update = _memory_limit_job_update(
-                    detail=http_exc.detail,
+                    detail=refusal.detail,
                     elapsed_seconds=elapsed_seconds,
                     execution_context=execution_context,
                 )
             else:
-                payload = _normalise_memory_limit_payload(http_exc.detail)
+                payload = _normalise_memory_limit_payload(refusal.detail)
                 memory_error_update = {
                     "message": str(payload),
                     "elapsed_seconds": elapsed_seconds,
                     "error_code": payload.get("error_code", "memory_limit"),
-                    "http_status_code": http_exc.status_code,
+                    "http_status_code": refusal.status_code,
                     "error_detail": payload,
                 }
             self._lifecycle.transition(
@@ -2193,6 +2201,7 @@ class OptimiserSolveService:
         setup_job_key = self._graph_node_setup_job_key(body.graph, body.node_id)
         node, prepared = self._prepare_frontier_auto_range(body)
         config = prepared["config"]
+        self._wait_out_finished_setup_owner(setup_job_key)
         with self._start_lock:
             active = self._active_frontier_auto_range_start(setup_job_key)
             if active is not None:
@@ -2264,7 +2273,7 @@ class OptimiserSolveService:
         """Return status for a background auto-range job."""
         job = self._store.require_job(job_id)
         if job.get(_JOB_TYPE_KEY) != _FRONTIER_AUTO_RANGE_JOB_TYPE:
-            raise HTTPException(status_code=404, detail=f"Auto-range job '{job_id}' not found")
+            raise NotFoundError(f"Auto-range job '{job_id}' not found")
 
         if job.get("status") == "running":
             start = job.get("start_time")
@@ -2291,7 +2300,7 @@ class OptimiserSolveService:
         """Cancel a running optimiser solve job."""
         job = self._store.require_job(job_id)
         if job.get(_JOB_TYPE_KEY) != _SOLVE_JOB_TYPE:
-            raise HTTPException(status_code=404, detail=f"Solve job '{job_id}' not found")
+            raise NotFoundError(f"Solve job '{job_id}' not found")
         if job.get("status") != "running":
             return job
         self._jobs.cancel(job_id, reason="cancelled")
@@ -2383,15 +2392,32 @@ class OptimiserSolveService:
             return None
         return active
 
+    def _wait_out_finished_setup_owner(self, key: tuple[str, str, str]) -> None:
+        """Let a graph/node owner whose job has ended exit before the start's check.
+
+        A worker publishes its terminal state before it frees the graph/node, so
+        a caller that saw the job finish could otherwise meet a 409 from a job
+        that is over. A running owner is not waited for, and one still holding
+        the key when the wait ends is refused by the check as before.
+        """
+        active = self._graph_node_setup_singleflight.active(key)
+        if active is None:
+            return
+        job = self._store.get_job(active.job_id)
+        if job is None or job.get("status") == "running":
+            return
+        self._graph_node_setup_singleflight.wait_released(
+            key,
+            job_id=active.job_id,
+            timeout=_FINISHED_OWNER_EXIT_SECONDS,
+        )
+
     @staticmethod
-    def _graph_node_setup_conflict(active: SingleFlightHandle) -> HTTPException:
-        return HTTPException(
-            status_code=409,
-            detail=(
-                "Optimiser work is already running for this graph/node "
-                f"(job_id={active.job_id}, job_type={active.kind}). "
-                "Wait for it to finish or cancel it before starting another run."
-            ),
+    def _graph_node_setup_conflict(active: SingleFlightHandle) -> RequestRefusedError:
+        return ConflictError(
+            "Optimiser work is already running for this graph/node "
+            f"(job_id={active.job_id}, job_type={active.kind}). "
+            "Wait for it to finish or cancel it before starting another run."
         )
 
     def _release_job_ownership(
@@ -2437,7 +2463,7 @@ class OptimiserSolveService:
             raise ValueError(f"Unsupported auto-range stop status: {status!r}")
         job = self._store.require_job(job_id)
         if job.get(_JOB_TYPE_KEY) != _FRONTIER_AUTO_RANGE_JOB_TYPE:
-            raise HTTPException(status_code=404, detail=f"Auto-range job '{job_id}' not found")
+            raise NotFoundError(f"Auto-range job '{job_id}' not found")
         if job.get("status") in _FRONTIER_AUTO_RANGE_TERMINAL_STATUSES:
             return job
 
@@ -2502,7 +2528,7 @@ class OptimiserSolveService:
     ) -> None:
         try:
             job = self._store.require_job(job_id)
-        except HTTPException:
+        except RequestRefusedError:
             return
         payload_status = status or str(job.get("status", "running"))
         stored_reason = job.get("terminal_reason")
@@ -2589,7 +2615,7 @@ class OptimiserSolveService:
             # The settings file, not this config, is invalid: the application answers 409.
             raise
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise InvalidRequestError(str(exc)) from exc
         return node, {
             "config": config,
             "mode": mode,
@@ -2653,13 +2679,13 @@ class OptimiserSolveService:
             reason = self._jobs.cancellation_reason(job_id) or "cancelled"
             raise BackgroundJobStoppedError(job_id, reason) from exc
         except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
-            http_exc = memory_limit_http_exception(exc, operation_noun="Auto-range")
+            refusal = memory_limit_refusal(exc, operation_noun="Auto-range")
             self._lifecycle.transition(
                 job_id,
                 to="memory_limited",
-                message=str(http_exc.detail),
+                message=str(refusal.detail),
             )
-            raise http_exc from None
+            raise refusal from None
         try:
             bind_running_execution_metrics_publisher(self._store, job_id, owned_context)
             return self._run_admitted_frontier_auto_range_job(
@@ -2671,7 +2697,7 @@ class OptimiserSolveService:
         finally:
             try:
                 stored_reason = self._store.require_job(job_id).get("terminal_reason")
-            except HTTPException:
+            except RequestRefusedError:
                 stored_reason = None
             self._record_execution_metrics(
                 job_id,
@@ -2771,27 +2797,26 @@ class OptimiserSolveService:
                 message=failure.message,
                 fields=fields,
             )
-            raise HTTPException(
-                status_code=failure.http_status_code,
-                detail=failure.http_detail,
+            raise RequestRefusedError(
+                failure.http_detail, status_code=failure.http_status_code
             ) from None
         except ExecutionCancelledError as exc:
             reason = self._jobs.cancellation_reason(job_id) or "cancelled"
             raise BackgroundJobStoppedError(job_id, reason) from exc
         except ExecutionMemoryLimitExceededError as exc:
-            http_exc = memory_limit_http_exception(exc, operation_noun="Auto-range")
+            refusal = memory_limit_refusal(exc, operation_noun="Auto-range")
             self._lifecycle.transition(
                 job_id,
                 to="memory_limited",
                 fields=_memory_limit_job_update(
-                    detail=http_exc.detail,
+                    detail=refusal.detail,
                     elapsed_seconds=self._job_elapsed(job_id),
                     execution_context=execution_context,
                 ),
             )
-            raise http_exc from None
-        except HTTPException as exc:
-            if _is_memory_limit_http_exception(exc):
+            raise refusal from None
+        except RequestRefusedError as exc:
+            if _is_memory_limit_refusal(exc):
                 self._lifecycle.transition(
                     job_id,
                     to="memory_limited",
@@ -2808,7 +2833,7 @@ class OptimiserSolveService:
             self._lifecycle.transition(
                 job_id,
                 to=terminal_reason,
-                fields=_http_exception_job_update(
+                fields=_refusal_exception_job_update(
                     exc=exc,
                     elapsed_seconds=self._job_elapsed(job_id),
                     execution_context=execution_context,
@@ -2826,7 +2851,7 @@ class OptimiserSolveService:
                 terminal_reason=contract_reason,
             )
             self._lifecycle.transition(job_id, to=contract_reason, fields=fields)
-            raise contract_error_http_exception(exc) from None
+            raise contract_error_refusal(exc) from None
         except BoundedMemoryUnsupportedError as exc:
             detail = f"Frontier auto range cannot run in bounded streaming mode: {exc}"
             logger.warning(
@@ -2838,7 +2863,7 @@ class OptimiserSolveService:
             self._lifecycle.transition(
                 job_id,
                 to="contract_error",
-                fields=_http_error_job_update(
+                fields=_refusal_job_update(
                     status_code=422,
                     detail=detail,
                     elapsed_seconds=self._job_elapsed(job_id),
@@ -2846,13 +2871,13 @@ class OptimiserSolveService:
                     terminal_reason="contract_error",
                 ),
             )
-            raise HTTPException(status_code=422, detail=detail) from exc
+            raise UnprocessableError(detail) from exc
         except ValueError as exc:
             detail = str(exc)
             self._lifecycle.transition(
                 job_id,
                 to="contract_error",
-                fields=_http_error_job_update(
+                fields=_refusal_job_update(
                     status_code=400,
                     detail=detail,
                     elapsed_seconds=self._job_elapsed(job_id),
@@ -2860,7 +2885,7 @@ class OptimiserSolveService:
                     terminal_reason="contract_error",
                 ),
             )
-            raise HTTPException(status_code=400, detail=detail) from exc
+            raise InvalidRequestError(detail) from exc
         except Exception as exc:
             logger.error(
                 "frontier_auto_range_failed",
@@ -2877,9 +2902,8 @@ class OptimiserSolveService:
                     "execution_metrics": execution_context.metrics_payload(status="error"),
                 },
             )
-            raise HTTPException(
-                status_code=500,
-                detail="Frontier auto range failed. Check the server logs for details.",
+            raise ServiceFailedError(
+                "Frontier auto range failed. Check the server logs for details."
             ) from exc
 
     def _frontier_ranges(
@@ -3090,7 +3114,7 @@ class OptimiserSolveService:
                     )
                 except BackgroundJobStoppedError:
                     return
-                except HTTPException:
+                except RequestRefusedError:
                     return
                 except Exception as exc:
                     logger.error(
@@ -3116,9 +3140,8 @@ class OptimiserSolveService:
                 message=f"Failed to start auto-range worker: {exc}",
                 elapsed_seconds=time.monotonic() - start_time,
             )
-            raise HTTPException(
-                status_code=500,
-                detail="Auto-range worker failed to start. Check the server logs for details.",
+            raise ServiceFailedError(
+                "Auto-range worker failed to start. Check the server logs for details."
             ) from exc
 
     # ------------------------------------------------------------------
@@ -3187,18 +3210,14 @@ class OptimiserSolveService:
         """Validate optimiser config; return the mode ('online' or 'ratebook')."""
         objective = config.get("objective")
         if not objective:
-            raise HTTPException(
-                status_code=400,
-                detail="No objective column configured."
-                " Open the config panel and set an objective.",
+            raise InvalidRequestError(
+                "No objective column configured. Open the config panel and set an objective."
             )
 
         mode = config.get("mode", "online")
         if mode not in ("online", "ratebook"):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported optimiser mode '{mode}'."
-                " Currently supported: online, ratebook.",
+            raise InvalidRequestError(
+                f"Unsupported optimiser mode '{mode}'. Currently supported: online, ratebook."
             )
 
         constraints = config.get("constraints") or {}
@@ -3206,22 +3225,18 @@ class OptimiserSolveService:
             name for name in constraints if name in RESERVED_OPTIMISER_CONSTRAINT_NAMES
         )
         if reserved:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Constraint name(s) {reserved} are reserved: price-contour already names "
-                    "its outputs total_objective, optimal_step and optimal_scenario_value, so "
-                    "a constraint called objective, step or scenario_value would overwrite "
-                    "one of them. Rename the constraint."
-                ),
+            raise InvalidRequestError(
+                f"Constraint name(s) {reserved} are reserved: price-contour already names "
+                "its outputs total_objective, optimal_step and optimal_scenario_value, so "
+                "a constraint called objective, step or scenario_value would overwrite "
+                "one of them. Rename the constraint."
             )
 
         if mode == "ratebook":
             factor_columns = config.get("factor_columns")
             if not factor_columns:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Ratebook mode requires factor_columns. Add at least one factor group.",
+                raise InvalidRequestError(
+                    "Ratebook mode requires factor_columns. Add at least one factor group."
                 )
 
         try:
@@ -3230,11 +3245,11 @@ class OptimiserSolveService:
             # The settings file, not this config, is invalid: the application answers 409.
             raise
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise InvalidRequestError(str(exc)) from exc
         try:
             validate_optimiser_analysis_config(config)
         except ConfigError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise InvalidRequestError(str(exc)) from exc
 
         return str(mode)
 
@@ -3251,9 +3266,8 @@ class OptimiserSolveService:
     def _check_no_concurrent_jobs(self) -> None:
         """Reject if an optimisation solve job is already running."""
         if self._has_running_solve_job():
-            raise HTTPException(
-                status_code=409,
-                detail="An optimisation job is already running. Please wait for it to finish.",
+            raise ConflictError(
+                "An optimisation job is already running. Please wait for it to finish."
             )
 
     @staticmethod
@@ -3433,7 +3447,7 @@ class OptimiserSolveService:
         """Record and translate a failure while opening or executing setup's pipeline."""
         try:
             yield
-        except HTTPException:
+        except RequestRefusedError:
             raise
         except PUBLIC_CONTRACT_ERROR_TYPES as exc:
             self._record_setup_failure(
@@ -3443,7 +3457,7 @@ class OptimiserSolveService:
                 fields=contract_error_job_fields(exc),
                 execution_context=execution_context,
             )
-            raise contract_error_http_exception(exc) from None
+            raise contract_error_refusal(exc) from None
         except (ContractMismatchError, SchemaMismatchError) as exc:
             error_msg = f"Pipeline execution failed: {exc}"
             logger.warning(
@@ -3458,7 +3472,7 @@ class OptimiserSolveService:
                 detail=error_msg,
                 execution_context=execution_context,
             )
-            raise HTTPException(status_code=400, detail=error_msg) from exc
+            raise InvalidRequestError(error_msg) from exc
         except (ExecutionCancelledError, ExecutionMemoryLimitExceededError):
             raise
         except BoundedMemoryUnsupportedError as exc:
@@ -3474,7 +3488,7 @@ class OptimiserSolveService:
                 detail=error_msg,
                 execution_context=execution_context,
             )
-            raise HTTPException(status_code=422, detail=error_msg) from exc
+            raise UnprocessableError(error_msg) from exc
         except Exception as exc:
             error_msg = f"Pipeline execution failed: {exc}"
             logger.error(
@@ -3489,9 +3503,8 @@ class OptimiserSolveService:
                 message=error_msg,
                 execution_context=execution_context,
             )
-            raise HTTPException(
-                status_code=500,
-                detail="Pipeline execution failed. Check the server logs for details.",
+            raise ServiceFailedError(
+                "Pipeline execution failed. Check the server logs for details."
             ) from exc
         finally:
             if execution_context is not None:
@@ -3519,7 +3532,7 @@ class OptimiserSolveService:
         )
         # No explicit cause. Python still sets the setup error as the answer's
         # implicit context, which the worker's memory-error detection walks.
-        raise failure.http_exception()
+        raise failure.refusal()
 
     def _resolve_data_input_frame(
         self,
@@ -3600,7 +3613,7 @@ class OptimiserSolveService:
                 artifact_dir=artifact_dir,
             )
         except OptimiserSetupError as failure:
-            raise failure.http_exception() from failure
+            raise failure.refusal() from failure
 
     def _write_solver_input(
         self,
@@ -3992,7 +4005,6 @@ class OptimiserSolveService:
                     job_id=job_id,
                     event="solve_worker_start_orphan_ratebook_factors_cleanup_failed",
                 )
-            raise HTTPException(
-                status_code=500,
-                detail="Optimiser worker failed to start. Check the server logs for details.",
+            raise ServiceFailedError(
+                "Optimiser worker failed to start. Check the server logs for details."
             ) from exc

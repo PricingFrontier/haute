@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 import polars as pl
 
-from haute._types import _Frame
+from haute._types import NodeType, _Frame
 
 if TYPE_CHECKING:
     from haute._workbench_output import WorkbenchOutputTables
@@ -48,15 +48,20 @@ def constant_frame(values: list[Mapping[str, Any]]) -> pl.LazyFrame:
 
     Each named value becomes a column, as a number when it reads as one and as
     the raw value otherwise; an entry without a name is skipped, and a node
-    with no named values yields the single column ``constant``. Two entries
-    with one name are refused rather than the later value replacing the
-    earlier.
+    with no named values yields the single column ``constant``. A name that is
+    not text, and two entries with one name, are refused rather than the frame
+    failing to build or the later value replacing the earlier.
     """
     from haute.errors import NodeConfigError
 
     data: dict[str, list[Any]] = {}
     for entry in values:
         name = entry.get("name", "")
+        if not isinstance(name, str):
+            raise NodeConfigError(
+                f"Constant name {name!r} is not text; give each value a name.",
+                setting="values",
+            )
         if not name:
             continue
         if name in data:
@@ -129,17 +134,11 @@ def _anchored_required_path(config: Mapping[str, Any], base_dir: str | Path | No
         raise ValueError("retained input config requires non-empty 'path'")
 
     from haute._path_case_audit import warn_if_case_ambiguous
-    from haute._path_resolution import current_runtime_project_root, resolve_runtime_file_path
+    from haute._path_resolution import current_runtime_project_root, resolve_node_input_path
 
     project_root = current_runtime_project_root()
 
-    resolved = resolve_runtime_file_path(
-        path,
-        pipeline_dir=base_dir,
-        project_root=project_root,
-        prefer="project",
-        enforce_project_root=True,
-    )
+    resolved = resolve_node_input_path(path, pipeline_dir=base_dir, project_root=project_root)
     warn_if_case_ambiguous(resolved, stop=project_root)
     return str(resolved)
 
@@ -198,21 +197,80 @@ def resolve_api_input_from_config(
     )
 
 
+def _workbench_node_config(
+    node_type: NodeType,
+    config_or_path: Mapping[str, Any] | str | PathLike[str],
+    base_dir: str | Path | None,
+) -> dict[str, Any]:
+    """A workbench node's config with its tables, and a Workbench Input's sample.
+
+    A run builds the node from a config given them already (``haute._workbench_nodes``);
+    a saved file's own ``run()`` loads the node's sidecar, which holds neither, and gives it
+    those of the form folder of the project the file is in (specs/workbench).
+    """
+    config = _resolve_node_config(config_or_path, base_dir)
+    if isinstance(config_or_path, Mapping):
+        return config
+    from haute._project import get_project_root
+    from haute._workbench_nodes import given_config, project_form_tables
+
+    owner = "Workbench Input" if node_type is NodeType.WORKBENCH_INPUT else "Workbench Output"
+    root = get_project_root(Path(base_dir) if base_dir is not None else None)
+    return given_config(node_type, config, project_form_tables(root, owner=owner))
+
+
 def resolve_workbench_input_from_config(
     config_or_path: Mapping[str, Any] | str | PathLike[str],
     *,
     base_dir: str | Path | None = None,
     port_columns: Mapping[str, frozenset[str] | set[str] | None] | None = None,
 ) -> dict[str, _Frame]:
-    """Load a Workbench Input's frames from its inline config or JSON sidecar.
+    """Load a Workbench Input's frames from the config a run gives it, or from its JSON
+    sidecar and the project's form (:func:`_workbench_node_config`).
 
-    It reads no file: each table is its sample's rows, or one row of nulls with its
+    It reads no data file: each table is its sample's rows, or one row of nulls with its
     declared dtypes when the sample gives it none (specs/workbench).
     """
     from haute._workbench_input import workbench_table_frames
 
-    config = _resolve_node_config(config_or_path, base_dir)
+    config = _workbench_node_config(NodeType.WORKBENCH_INPUT, config_or_path, base_dir)
     return dict(workbench_table_frames(config, port_columns=port_columns))
+
+
+def workbench_input_ports_from_config(
+    config_or_path: Mapping[str, Any] | str | PathLike[str],
+    *,
+    base_dir: str | Path | None = None,
+) -> tuple[str, ...]:
+    """A Workbench Input's ports, its tables given as a run gives them
+    (:func:`_workbench_node_config`), its sample left unread."""
+    from haute._workbench_input import workbench_table_labels
+
+    return workbench_table_labels(
+        _workbench_node_config(NodeType.WORKBENCH_INPUT, config_or_path, base_dir)
+    )
+
+
+def validate_external_file_config(config: Mapping[str, Any]) -> None:
+    """Refuse External File settings its object cannot be loaded with, naming the setting.
+
+    Loading checks them first and Recover reports their refusal, so both apply
+    one rule. A ``ConfigSettingError`` is a ``ValueError``: a preview reports it
+    on the node.
+    """
+    from haute._io import EXTERNAL_FILE_TYPES, unsupported_external_file_type
+    from haute._validation_error import ConfigSettingError
+
+    path = config.get("path")
+    if not isinstance(path, str) or not path.strip():
+        raise ConfigSettingError("external file config requires non-empty 'path'", setting="path")
+    file_type = config.get("fileType")
+    if not isinstance(file_type, str) or not file_type.strip():
+        raise ConfigSettingError(
+            "external file config requires non-empty 'fileType'", setting="fileType"
+        )
+    if file_type not in EXTERNAL_FILE_TYPES:
+        raise ConfigSettingError(unsupported_external_file_type(file_type), setting="fileType")
 
 
 def load_external_object_from_config(
@@ -222,14 +280,12 @@ def load_external_object_from_config(
 ) -> object:
     """Load an external object from its current inline config or sidecar."""
     config = _resolve_node_config(config_or_path, base_dir)
+    validate_external_file_config(config)
     path = _anchored_required_path(config, base_dir)
-    file_type = config.get("fileType")
-    if not isinstance(file_type, str) or not file_type.strip():
-        raise ValueError("external file config requires non-empty 'fileType'")
 
     from haute._io import load_external_object
 
-    return load_external_object(path, file_type)
+    return load_external_object(path, config["fileType"])
 
 
 # ---------------------------------------------------------------------------
@@ -595,7 +651,7 @@ def assemble_workbench_output_from_config(
         workbench_output_tables,
     )
 
-    cfg = _resolve_node_config(config, base_dir)
+    cfg = _workbench_node_config(NodeType.WORKBENCH_OUTPUT, config, base_dir)
     tables = workbench_output_tables(cfg)
     labels = [table.name for table in tables]
     if ports is None or len(ports) != len(dfs):

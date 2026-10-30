@@ -12,10 +12,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any
 
-from haute._ast_helpers import _extract_function_bodies, _is_pipeline_authored_decorator
+from haute._ast_helpers import _is_pipeline_authored_decorator
 from haute._banding_config import normalise_banding_factors
 from haute._builders import load_external_file_object
 from haute._config_io import collect_node_configs, config_path_for_node, node_emits_sidecar
+from haute._flatten import flatten_with_form_tables
 from haute._git import commit_parent
 from haute._graph_builders import _extract_decorated_node_skeletons, _resolve_node_skeleton
 from haute._graph_utils import _sanitize_func_name, edge_input_name
@@ -29,6 +30,7 @@ from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._polars_steps import is_stepped_config, render_polars_steps, stepped_surface_for
 from haute._rating import normalise_combined_outputs, validate_banding_config
 from haute._rating_step_config import normalise_rating_step_config
+from haute._sandbox import contained_path
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute._user_exec import user_code_line
 from haute.assistant._catalog import INPUT_NAMING_RULE, new_logic_steps
@@ -64,6 +66,7 @@ from haute.errors import (
     HauteError,
     HauteValidationError,
     ParseError,
+    PathOutsideProjectError,
     PreambleError,
     failing_node,
 )
@@ -73,7 +76,6 @@ from haute.executor import (
     _compile_preamble,
     _pipeline_dir,
 )
-from haute.graph_utils import flatten_graph
 from haute.modelling._train_config import (
     MISSING_TARGET_MESSAGE,
     TrainingConfigError,
@@ -382,7 +384,8 @@ class _PreparedGraph:
             raise PreambleFailedError(exc, graph=graph) from exc
         return cls(
             graph=graph,
-            flattened=flatten_graph(graph),
+            # Run as the project's pipeline: its workbench nodes take the form's tables.
+            flattened=flatten_with_form_tables(graph, project_root=Path.cwd()),
             preamble_ns=preamble_ns or None,
         )
 
@@ -886,7 +889,6 @@ def _prove_steps_survive_save(
         for skeleton in _extract_decorated_node_skeletons(
             tree,
             _is_pipeline_authored_decorator,
-            _extract_function_bodies(source, tree=tree),
             source=source,
         )
     }
@@ -1124,9 +1126,10 @@ class PipelineApplicationService:
         project_sources: ProjectSources | None = None,
     ) -> None:
         self._project_root = project_root.resolve()
-        self._pipeline_root = pipeline_root.resolve()
-        if not self._pipeline_root.is_relative_to(self._project_root):
-            raise ValueError("pipeline_root must resolve inside project_root")
+        try:
+            self._pipeline_root = contained_path(self._project_root, pipeline_root.resolve())
+        except PathOutsideProjectError:
+            raise ValueError("pipeline_root must resolve inside project_root") from None
         self._mutations_readiness = mutations_readiness
         self._publish_document_update = publish_document_update
         self._parse_graph = parse_graph
@@ -1134,13 +1137,13 @@ class PipelineApplicationService:
         self.plan_store = plan_store if plan_store is not None else PlanStore()
 
     def _source_path(self, source_file: str) -> Path:
-        source = (self._project_root / source_file).resolve()
-        if not source.is_relative_to(self._project_root):
+        try:
+            return contained_path(self._project_root, source_file)
+        except PathOutsideProjectError:
             raise AssistantOperationError(
                 "project_source_forbidden",
                 "Pipeline source is outside the project root",
-            )
-        return source
+            ) from None
 
     def _save_service(self) -> SavePipelineService:
         return SavePipelineService(

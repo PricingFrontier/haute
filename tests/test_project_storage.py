@@ -1466,6 +1466,18 @@ class TestPublishDispatch:
         assert terminal is False
         assert message == "'main' is now on 'origin' as your merge target"
 
+    def test_an_unreachable_remote_stays_retryable_transport(self) -> None:
+        """The analyst's message for a remote Haute could not reach is a domain error, but
+        publishing must keep retrying it on the next save, not stop as for a refusal."""
+        failure, message, terminal = _project_storage._classify_push_failure(
+            _git.GitRemoteUnavailableError(
+                "Could not refresh 'origin'. Check your connection or credentials and try again."
+            )
+        )
+        assert failure == "transport"
+        assert terminal is False
+        assert "Could not reach the project's remote" in message
+
 
 class TestUcContainerDeathSurvival:
     """Bind to a volume, work, lose the container, and get the work back."""

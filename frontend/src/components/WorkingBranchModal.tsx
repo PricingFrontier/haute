@@ -5,6 +5,7 @@ import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 import { apiErrorMessage } from "../api/errors"
 import { GitIdentityFields, ModalFormActions, ModalFormHeader, ModalTextInput } from "./ModalForm"
+import BrokenPairs from "./BrokenPairs"
 import ModalShell from "./ModalShell"
 
 interface WorkingBranchModalProps {
@@ -73,7 +74,8 @@ export default function WorkingBranchModal({ onConfirmed, onClose }: WorkingBran
     }
   }
 
-  const invalidReason = status?.state === "invalid" ? status.errors[0] : null
+  // An invalid project can be so for more than one reason: each is said.
+  const invalidReasons = status?.state === "invalid" ? status.errors : []
 
   return (
     <ModalShell
@@ -93,14 +95,20 @@ export default function WorkingBranchModal({ onConfirmed, onClose }: WorkingBran
           void submit()
         }}
       >
-        {invalidReason && (
-          <p
-            className="text-[12px] px-2.5 py-1.5 rounded-md"
+        {invalidReasons.length > 0 && (
+          <ul
+            data-testid="working-branch-invalid"
+            className="text-[12px] px-2.5 py-1.5 rounded-md flex flex-col gap-1"
             style={{ background: "var(--bg-input)", color: "var(--danger)" }}
           >
-            {invalidReason}
-          </p>
+            {invalidReasons.map((reason, index) => (
+              <li key={index}>{reason}</li>
+            ))}
+          </ul>
         )}
+
+        {/* A repair that leaves the project ready answers the chooser, as a choice does. */}
+        <BrokenPairs onRepaired={(next) => { if (next?.state === "ready") onConfirmed() }} />
 
         <div>
           <label

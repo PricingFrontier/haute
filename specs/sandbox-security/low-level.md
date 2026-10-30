@@ -4,7 +4,7 @@
 
 | File | Responsibility |
 | --- | --- |
-| `src/haute/_sandbox.py` | The accident guard for project code (`validate_user_code`), the execution namespace (`safe_globals`), the one path-containment check (`contained_path`) and its project-root form (`validate_project_path`), and the restricted pickle/joblib unpicklers (`safe_unpickle`, `safe_joblib_load`). |
+| `src/haute/_sandbox.py` | The accident guard for project code (`validate_user_code`), the execution namespace (`safe_globals`), the one path-containment check (`contained_path`), its answer as a boolean (`is_contained`) and its project-root form (`validate_project_path`), and the restricted pickle/joblib unpicklers (`safe_unpickle`, `safe_joblib_load`). |
 | `src/haute/_user_exec.py` | The single dynamic-execution call site for pipeline node code (`_exec_user_code`): namespace assembly, validation call, execution, and traceback line annotation, which `user_code_line` reads back for error reporting. |
 | `src/haute/_local_security.py` | Local-session protection for the FastAPI/WebSocket server: session-token generation/comparison, exact authority parsing, loopback/forwarded-header middleware, HttpOnly-cookie bootstrap policy, HTTP middleware, and WebSocket pre-accept rejection helper. |
 | `src/haute/_path_resolution.py` | Cross-platform runtime path normalization, project/pipeline candidate resolution, symlink-aware containment, and the context-local execution root shared by eager/lazy builders. |
@@ -175,7 +175,8 @@ reaches node code exactly as the preamble made it.
    `_blocked_pickle_error(..., "allowlisted, but `<package>` is not installed in
    this environment")`, and a `ModuleNotFoundError` deeper in the tree — a
    broken install — propagates unchanged.
-5. `safe_joblib_load` defines a private `NumpyUnpickler` subclass whose
+5. `restricted_joblib_load` (which `safe_joblib_load` calls once the path is
+   contained) defines a private `NumpyUnpickler` subclass whose
    `find_class` routes through `_resolve_allowed_global`, then uses joblib's
    file-object validation/decompression context and instantiates that subclass
    directly, driving its `load()` inside the same
@@ -183,12 +184,104 @@ reaches node code exactly as the preamble made it.
    never mutates `NumpyUnpickler.find_class` process-wide. Haute
    declares `joblib>=1.5,<2` directly because this restricted path requires the
    private file-object validator and native-byte-order constructor contract
-   introduced in joblib 1.5. A missing `joblib` package logs a warning and falls
-   back to `safe_unpickle(validated)`; an installed joblib missing those private
-   APIs, or exposing an incompatible unpickler constructor, raises `RuntimeError`.
+   introduced in joblib 1.5. There is one code path: a `joblib` that cannot be
+   imported raises the import's `ModuleNotFoundError`, and an installed joblib
+   missing those private APIs, or exposing an incompatible unpickler
+   constructor, raises `RuntimeError`.
    If joblib's file-object validator reports a legacy string-backed persistence
    format, the loader raises `ValueError` rather than bypassing the restricted
    subclass.
+
+**Containment callers (`contained_path`)**
+
+Every comparison of a path against a directory it must stay in calls `contained_path`,
+or `is_contained(root, path)`, which returns the same check's answer as a boolean, where
+the caller needs only the answer. A caller with its own contract translates
+`PathOutsideProjectError` (or acts on `False`); an
+`InvalidPathError` (a NUL byte, which only request input can carry this far, since
+resolving a path that holds one raises `ValueError` first) propagates to the
+application handler's 400. Request input is passed as received, so an absolute request
+path outside the root is refused before anything resolves it:
+
+- the file-browse, schema, read-json, recovery-preview, save, submodel, utility and
+  optimiser-save routes and the assistant's dataset tools: 403 (400) from the handler;
+- assistant apply's pipeline source (`PipelineApplicationService._source_path`):
+  `AssistantOperationError` `project_source_forbidden`; the project-knowledge pipeline
+  source (`_project_knowledge._graph_fact`): `ValueError`;
+- a repair's source identity (`_pipeline_repair._resolve_project_file`):
+  `PipelineRepairError` `repair_path_outside_project` (403);
+- a model export destination (`resolve_model_export_destination`):
+  `RuntimePathOutsideProjectError`;
+- a static file of the built SPA (`server._spa_static_file`, which `serve_spa` asks):
+  none is found, so the index page is served instead.
+
+Every other caller holds a configured, project-file or server-made path. A relative one
+is joined to the root and an absolute one is resolved before the call, so the comparison
+is the resolved path against the resolved root:
+
+- a project file before deserialising (`validate_project_path`):
+  `PathOutsideProjectError`;
+- runtime paths (`_path_resolution`): a relative candidate outside the root is
+  dropped; an absolute configured path outside it, or a pipeline source spelled inside
+  the project that resolves outside, raises `RuntimePathOutsideProjectError`;
+- executor outputs: the sink path (`_contain_output_path`) raises
+  `RuntimePathOutsideProjectError`; the final and staging paths before each
+  publication (`_validate_output_publish_paths`) raise `ValueError`; a staging path
+  outside at cleanup (`_cleanup_output_staging_path`) is logged and left in place;
+- node config sidecars (`_config_io.config_path_for_node`, `load_node_config`) and the
+  Model Score config (`_model_scorer.score_from_config`): `ValueError`;
+- submodel references (`resolve_submodel_reference`): `SubmodelPathOutsideProjectError`;
+- recovery: artifact paths (`_artifact_paths.safe_path`) give the repair 409; the
+  editor document (`load_pipeline_editor_document`) and revision artifacts
+  (`pipeline_recovery_revision`) raise `ValueError`; a config reference outside the
+  root is not collected as a recovery artifact (`_recovery_artifacts`); a repair's
+  config reference (`_resolve_config_reference`) raises `PipelineRepairError`
+  `repair_config_outside_project` (403);
+- the save service (`SavePipelineService`): a pipeline root outside the project root
+  raises `ValueError`; a source file outside the pipeline root, a codegen output path
+  and a config file outside the pipeline folder answer 400; a stale or on-disk
+  config file outside the pipeline folder is skipped by the stale sweep;
+- the assistant: a pipeline root outside the project root (`PipelineApplicationService`)
+  and project knowledge's `haute.toml`, `docs/` and cache file raise `ValueError`, and a
+  document resolving outside is left out; session storage (`_sessions_storage_dir`)
+  raises `ConfigError`;
+- the configured pipeline `haute.toml` names, refused by its one reader
+  (`_project._toml_configured_pipeline`, which the route helper `routes/_helpers.pipeline_dir`,
+  pipeline binding and the project layout read through): `ConfigError`;
+- worker artifacts (`WorkerRuntime.staged_path`, `validate_result_manifest`,
+  `build_artifact_manifest`): `WorkerProtocolError`;
+- the MLflow artifact cache (`_mlflow_io._artifact_cache_path`) and optimiser artifact
+  handles (`_validate_server_owned_parquet_handle`): `ValueError`;
+- deploy: a configured pipeline outside the project root (`resolve_config`) and a
+  shipped Data Input file outside the pipeline folder
+  (`refuse_data_outside_pipeline_folder`): `DeployError`;
+- SQLite locators: `ValueError`; the MLflow settings write target: `MlflowConfigError`.
+
+An `is_relative_to` or `commonpath` call that is not a containment check carries a
+`# not contained_path: <reason>` comment on its line or the line above:
+
+- choosing a root between two valid ones: `_infer_project_root` (whether a pipeline
+  source is spelled inside the project, and whether a resolved one lies there),
+  `anchor_config_source_path`, `parse_pipeline_to_graph`;
+- classifying a path whose either answer is valid: the pipeline folder a project
+  versions (`_project_layout.pipeline_folder`), a candidate run's provenance
+  (`capture_provenance`), the artifacts a save governs (`_require_artifact_identity`),
+  the folder deploy names in its message, and how the file watcher routes a change
+  (`server._file_watcher`);
+- overlap in the other direction: the underwriter app refuses a release folder that
+  holds the project or the working directory (`_workbench_app._check_output`);
+- names that are not filesystem paths, compared lexically: git's repository-relative
+  names (`_git_transactions._refuse_unversionable`) and the case audit's walk bound
+  (`_path_case_audit.case_equivalent_siblings`);
+- the build hook's input and asset checks (`hatch_build.py`), which run before haute can
+  be imported.
+
+`tests/test_path_containment.py` parses `src/haute` and `hatch_build.py` and fails on a
+call that is neither inside `contained_path` nor marked. `relative_to` is not scanned: it
+computes a path's relative form, and the few calls whose `ValueError` refuses an outside
+path (the workbench form folder in `_workbench_config` and `cli/_init_cmd`,
+`assistant/_ops._project_relative_path`, `_pipeline_repair._wire_path`) compare resolved
+paths.
 
 **Local session enforcement (per-request, `server.py` + `_local_security.py`)**
 1. `LocalTrustedHostMiddleware` runs first (outermost of the two added
@@ -211,6 +304,13 @@ reaches node code exactly as the preamble made it.
    `websocket.accept()`: auth-disabled short-circuit, explicit exact matching
    Origin, then the session cookie. Browser WebSockets receive the HttpOnly cookie
    automatically; URL query parameters are never read.
+
+The underwriter app (`_workbench_app.create_app`) given a `local_principal` adds
+`LocalTrustedHostMiddleware(allowed_hosts=DEFAULT_TRUSTED_HOSTS)` after its sign-in
+middleware, so the gate runs first and a foreign Host or forwarded header is refused
+(400) before the analyst's identity is assigned. It installs no `LocalSessionMiddleware`:
+the app's own origin check refuses another site's writes. Its tests are in
+`tests/test_workbench_app_quotes.py`.
 
 **Runtime local-file containment (`_path_resolution.py` + execution core)**
 1. `canonical_dataframe_execution_graph` derives the execution root from the
@@ -288,9 +388,12 @@ reaches node code exactly as the preamble made it.
   returned `ns` and sets `ns["__builtins__"] = inner` (so nested scopes like
   comprehensions resolve names correctly) — so mutating one exec call's builtins
   cannot leak into a subsequent `safe_globals()` call's namespace.
-- **`safe_joblib_load` falls back only when the top-level `joblib` package is
-  absent.** That path degrades to `safe_unpickle`, not unrestricted loading.
-  An installed joblib with missing/incompatible private APIs fails loudly.
+- **Restricted joblib loading has no fallback.** `joblib` is a required
+  dependency, so a `joblib` that cannot be imported fails with the import's
+  `ModuleNotFoundError`; the file is never read as a plain pickle instead, whose
+  `safe_unpickle` would apply the project-root check `restricted_joblib_load`
+  does not. An installed joblib with missing/incompatible private APIs fails
+  loudly.
 - **A validated-but-evicted cache entry is not "trusted by omission."**
   `_validation_cache` is bounded at 1024 entries; when it's flooded past that
   size, older entries (including ones already proven safe) are evicted and
@@ -317,10 +420,14 @@ reaches node code exactly as the preamble made it.
   callers).
 - `PathOutsideProjectError` / `InvalidPathError` (`errors.py`) — raised by
   `contained_path` (and so `validate_project_path`); mapped by
-  `routes/_error_handlers.py` to 403 / 400 with the bare message.
+  `routes/_error_handlers.py` to 403 / 400 with the bare message. A caller with its
+  own contract translates `PathOutsideProjectError` (see Containment callers);
+  `InvalidPathError` propagates.
 - `ValueError` — raised by `safe_joblib_load` when joblib exposes a legacy
   string-backed persistence format that cannot use the restricted unpickler. Not
   caught inside this component.
+- `ModuleNotFoundError` — `joblib`, a required dependency, cannot be imported;
+  propagated unchanged by `restricted_joblib_load` and `safe_joblib_load`.
 - `RuntimeError` — raised when installed joblib lacks the private
   `NumpyUnpickler`/file-object validation APIs required to enforce the allowlist,
   or when its private unpickler constructor is incompatible with the supported
@@ -369,9 +476,10 @@ reaches node code exactly as the preamble made it.
 - `tests/test_sandbox_coverage_gaps.py` — targets the *accept* arms of
   `_RestrictedUnpickler.find_class`/the restricted joblib subclass specifically (the exhaustive
   suite above concentrates on the *reject* arms): exact 2-tuple accepts for both
-  the `_ALLOWED_PICKLE_GLOBALS` and `_ALLOWED_PICKLE_CLASSES` tiers, the top-level
-  joblib-package-absent → `safe_unpickle` fallback, and installed-private-API
-  failure.
+  the `_ALLOWED_PICKLE_GLOBALS` and `_ALLOWED_PICKLE_CLASSES` tiers, a hidden
+  `joblib` failing `restricted_joblib_load` with `ModuleNotFoundError` for a file
+  outside the project root (not with a containment refusal), and
+  installed-private-API failure.
 
 - `tests/test_user_exec_imports.py` — a structural regression pin (not a
   behavioral test of `_exec_user_code` itself): asserts no file under `src/haute`
@@ -420,11 +528,16 @@ reaches node code exactly as the preamble made it.
 - `tests/test_path_traversal_fixes.py` — route/config traversal regressions for
   optimiser save, submodel lookup/create/dissolve, dissolve-sidecar files, and the
   containment check.
-- `tests/test_path_containment.py` — the SBX-R01 acceptance matrix: for every former
-  caller (each route that used the removed route helper, the project-path check before
-  deserialising, recovery artifact paths, the save service's codegen output paths (400),
-  SQLite locators, the MLflow settings write target) a `..` escape and a symlink escape are refused and an in-project path is
-  accepted; plus the check's own policy (NUL byte, absolute input, resolution).
+- `tests/test_path_containment.py` — the containment matrix: for every caller in
+  Containment callers, a `..` escape and a symlink escape are refused with the
+  caller's own contract and an in-project path is accepted (a fixed path no input
+  reaches, such as the assistant's session storage, has only the link case); the
+  check's own policy (NUL byte, absolute input, resolution); and the marker scan,
+  which fails on an `is_relative_to` or `commonpath` call in `src/haute` or
+  `hatch_build.py` that is neither inside `contained_path` nor marked
+  `# not contained_path:`. Deploy's shipped-data cases are in
+  `tests/test_deploy_data_location.py`, and project knowledge's linked `docs/` and
+  cache in `tests/test_assistant_project_knowledge.py`.
 - `tests/test_write_sandbox_guard.py` and `tests/test_write_sandbox_lint.py` — prove
   restricted tests cannot write outside their per-test roots and statically enforce
   guarded filesystem APIs. The `strict` list in `tests/write_sandbox.toml` is the

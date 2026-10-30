@@ -11,10 +11,11 @@ project in `haute.toml`, and its form is a folder of files in the pipeline folde
 `workbench/`, versioned with the pipeline.
 
 The workbench's schema is where the pipeline's quote tables come from. The pipeline reads
-them through a Workbench Input, a node type of its own beside the Quote Input, and keeps its
-own copy of them, with the sample quote its previews run on. The schema's output tables are
-what a priced quote fills in: the pipeline fills them through a Workbench Output, a node
-type of its own beside the Quote Response, whose input ports are those tables.
+them through a Workbench Input, a node type of its own beside the Quote Input, which takes
+them, and the sample quote its previews run on, from the form folder wherever the pipeline
+runs. The schema's output tables are what a priced quote fills in: the pipeline fills them
+through a Workbench Output, a node type of its own beside the Quote Response, whose input
+ports are those tables, read from the form folder alike.
 
 This component owns the switch, the form folder with its reading, its saving and its
 revision, the routes that serve the form and its tables to the editor, the
@@ -22,9 +23,9 @@ revision, the routes that serve the form and its tables to the editor, the
 Haute (its host beside the pipeline editor, its toolbar and shortcuts, its schema editor,
 its sheets, drawn while building as an underwriter's new quote opens, and Preview, the
 sheets as an underwriter uses them, with the sample typed into them and priced live), and
-the two workbench node types: where their tables come from, how the editor keeps them
-current, what a Workbench Input gives without a request and how a Workbench Output's
-frames fill the response.
+the two workbench node types: where their tables come from, how the editor shows them,
+what a Workbench Input gives without a request and how a Workbench Output's frames fill
+the response.
 
 ## Scope
 
@@ -52,10 +53,10 @@ In scope:
   while building as a new quote,
   Preview, where the sample is keyed into the sheets as an underwriter keys a quote and
   priced live on the pipeline, and how the form is read into it and saved from it.
-- The Workbench Input, the node type that holds a copy of the tables and sample, which the
-  editor keeps current and shows, and previews on.
-- The Workbench Output, the node type that holds a copy of the output tables, which the
-  editor keeps current and shows, and whose ports take the frames that fill them.
+- The Workbench Input, the node type that reads the tables and sample from the form folder,
+  which the editor shows, and previews on.
+- The Workbench Output, the node type that reads the output tables from the form folder,
+  which the editor shows, and whose ports take the frames that fill them.
 - The quote store: saved quotes and their revisions, each with the form it was keyed
   into, on a SQLite file, its schema and the migrations that bring a database to it.
 
@@ -96,9 +97,9 @@ Out of scope:
   file, is refused saying that the form is the pipeline folder's `workbench/` now. The
   form is the folder `workbench/` in the pipeline folder, the folder of the pipeline file
   `[project]` names (`rating/workbench/` in a new project), never configured. `haute
-  deploy`'s whole-file check of `haute.toml` accepts the table, and while `enabled` is true
-  deploy holds each Workbench node's copy of the tables to the form, read strictly, naming
-  each table or column that differs ([deploy](../deploy/high-level.md)).
+  deploy`'s whole-file check of `haute.toml` accepts the table, and deploy reads the form a
+  pipeline's Workbench nodes take their tables from strictly, refusing one it cannot read or
+  that does not fit the pipeline ([deploy](../deploy/high-level.md)).
   `haute init --workbench` writes the table and a blank form folder in a new project, and
   in a project that already has a `haute.toml` it adds the two and nothing else, refusing
   when either is there; either way a path of the folder reached through a link or a
@@ -438,25 +439,22 @@ Out of scope:
   - **Save.** Save and Ctrl/Cmd+S save the project, the same from either toolbar, with a
     focused field's edit included: the form is saved first when it holds unsaved edits or
     a save the ledger did not capture (for want of an identity, or because the capture
-    failed), the Workbench Input's and Workbench Output's copies follow it, and then the
-    pipeline is saved, so what is saved runs on the form that was saved. The tables are
-    fetched afresh for that, and a fetch that fails refuses the pipeline's save, with a
-    toast saying the pipeline was not saved, rather than record copies behind the form. A
-    form save refused, as stale or failed, saves no pipeline, so the pipeline never carries
-    copies of a form the view does not show; and a save of a pipeline document that cannot
-    be saved (read-only, or changed on disk under unsaved edits), one asked for inside a
-    submodel, or one asked for while the assistant's turn runs, is refused before the form
-    is saved, with the pipeline save's own reason, so the form is never saved ahead of a
-    pipeline that is not: the fence that disables Save in both toolbars holds for
-    Ctrl/Cmd+S and the git flows too, and is read again after each wait, so a submodel
+    failed), then the tables are fetched afresh, so the Workbench Input's and Workbench
+    Output's ports are the saved form's and a connection to a table it no longer has is
+    removed (the Workbench Input, below), and then the pipeline is saved, so what is saved
+    runs on the form that was saved. A fetch that fails refuses the pipeline's save, with a
+    toast saying the pipeline was not saved, rather than save connections the form may not
+    hold. A form save refused, as stale or failed, saves no pipeline, so the pipeline is
+    never saved over a form the view does not show; and a save of a pipeline document that
+    cannot be saved (read-only, or changed on disk under unsaved edits), one asked for
+    inside a submodel, or one asked for while the assistant's turn runs, is refused before
+    the form is saved, with the pipeline save's own reason, so the form is never saved
+    ahead of a pipeline that is not: the fence that disables Save in both toolbars holds
+    for Ctrl/Cmd+S and the git flows too, and is read again after each wait, so a submodel
     opened, the assistant's turn started or the document changed while the form was being
     saved or the tables fetched refuses the rest of the save, the pipeline unsaved until
-    the next Save; an update of a node the document refuses outright is reported as
-    copies not brought up to date, never as a pipeline ready to save. A Save pressed
-    while one runs waits for it and then
-    saves the project as it stands, as the form's own saves queue behind one another; two
-    running at once would each fetch the tables, and the second fetch would supersede the
-    first's updates of the nodes, which a save counts as a failure. Save passes the pipeline
+    the next Save. A Save pressed while one runs waits for it and then saves the project
+    as it stands, as the form's own saves queue behind one another. Save passes the pipeline
     editor's git readiness gate first, as it does there: with no working branch chosen, or
     a divergent one, the gate's modal opens and the save follows its confirmation. Each
     save is reported as the pipeline's is: "Saved → rating/workbench", the form folder as
@@ -856,15 +854,27 @@ Out of scope:
   all, in a frame of its own with its own Add condition and a cross that removes it, as
   removing its last condition does. Each condition is a row of its
   column (a select of the one-row input tables' columns, by table, each by its label, and of
-  each many-row input table's rows, "Rows of" the table), its
+  each many-row input table's rows, "Rows of" the table, and, in the Show when of what takes
+  nothing typed, below, the output tables' columns and rows, tested on the price), its
   test (for True/false "is ticked" and "is not ticked"; for Text "equals", "does not
-  equal", "is one of", "is not one of", "is filled" and "is empty"; for a number those and
+  equal", "contains", "does not contain", "starts with", "ends with", "is one of", "is not
+  one of", "is filled" and "is empty"; for a number those but the four on text within text and
   "is greater than", "is at least", "is less than" and "is at most"; for a Date "is on",
   "is not on", "is after", "is on or after", "is before", "is on or before", "is filled"
   and "is empty"), its value, the control the column's cell is (a dropdown of the allowed
   values, a date picker, else a text field, committing on blur or Enter), or for "is one
   of" and "is not one of" a tick box per allowed value, or the values typed comma-separated
-  when the column allows any, and a cross that removes it. A condition on a table's rows
+  when the column allows any, a number's written without a thousands separator, which the
+  comma would split: "1,000" in a number column's list is refused, saying to write 1000,
+  and never read as 1 and 0; and a cross that removes it. A test of one value may take
+  another field of its column's type in place of a value typed: beside the test, while
+  there is such a field, a select of "Value" and those fields, a one-row input table's
+  columns by table, or, in a test of a row, the other columns of its table but the index;
+  a Date tested against another Date then takes a whole number of days added to that
+  date, a negative number taking them away, up to 36,500 either way, `completion_date`
+  "is after" `start_date` + 365 days. There is no test against today: a saved quote would
+  show other sheets, and be priced otherwise, on another day, so a date field on the
+  form stands in for it. A condition on a table's rows
   says which rows, Any row, Every row, Number of rows, or the Sum, Smallest, Largest or
   Average of a number column of the table other than its index, chosen beside it, then its
   tests of a row, all passing in the same row, each a column of the table other than its
@@ -873,11 +883,15 @@ Out of scope:
   test, a number's ("equals" to "is at most"), and a whole number of rows, 0 or more, or a
   number, typed into a field that refuses anything else.
   Choosing another column, for a condition or a test of a row, keeps
-  the test while the column's type takes it, else the type's first, and the values while
-  they fit the test. Choosing a table's rows starts Any row with a test of its first column
+  the test while the column's type takes it, else the type's first, the values while
+  they fit the test, and the field it is tested against while that is of the column's
+  type and not the column itself; a test that takes no value or several leaves the field
+  and its days. Choosing a table's rows starts Any row with a test of its first column
   but the index, or, for a condition on a column of the table, a test of that column as
-  the condition has it; choosing a one-row table's column for a condition on rows keeps its
-  test of that column, if it has one. Choosing Number of rows starts it at "is at least"
+  the condition has it, against the same field while that is another column of the table;
+  choosing a one-row table's column for a condition on rows keeps its test of that column,
+  if it has one, against the same column of the table, which a test of a row names alone.
+  Choosing Number of rows starts it at "is at least"
   1, a total at "is greater than" with no value, and Any row or Every row adds a test of the
   first column while there is none, each keeping the tests there are. While a condition's
   table has switched between one row and many since, its column select holds it, not
@@ -1014,10 +1028,9 @@ Out of scope:
   the pipeline may have changed meanwhile; a price made on anything since changed is
   dimmed until the next answer, and an answer to a pricing that started before such a
   change is shown dimmed too. Laying the sheet out differently prices
-  nothing, and nothing is priced while building. A pipeline without a Workbench Input at
-  its top level, which alone is given the sheets' values, is not priced: Preview says to
-  replace the Quote Input the sheets never fill, or to add a Workbench Input or move the
-  one inside a submodel out of it. There is no Price and no Clear; Reset (above) starts
+  nothing, and nothing is priced while building. A pipeline without a Workbench Input, which
+  alone is given the sheets' values, is not priced: Preview says to replace the Quote Input
+  the sheets never fill, or to add a Workbench Input. There is no Price and no Clear; Reset (above) starts
   the sample again as a new quote. The
   sample is priced whatever its cells hold, a value that breaks its column's rules
   included; with nothing typed in the cells the sheets show, the defaults a new quote
@@ -1028,10 +1041,10 @@ Out of scope:
   column giving a table its rows and a column's default. A pricing asks `POST /api/workbench/tables` for the tables
   and sample Haute takes from the form as it stands, then previews the Workbench Output a
   table at a time through the preview route on the document as the editor holds it, the
-  whole pipeline even while a submodel is open, with the active source: the document's
-  top-level Workbench Input and Workbench Output take the form's tables and sample for that
-  request alone, as a fetch gives them, a workbench node inside a submodel keeps its copy,
-  and the document itself is untouched. One pricing runs at a time; asked again meanwhile,
+  whole pipeline even while a submodel is open, with the active source and the form as it
+  stands: every Workbench Input and Workbench Output of that request, at the top level or
+  inside a submodel, takes the tables and sample the form sent defines, rather than the
+  folder's, and nothing is written. One pricing runs at a time; asked again meanwhile,
   it prices once more when it finishes, on the form as it is then. A Collection's output
   column shows its table's value in the answer in its column's format, or as the data
   preview formats a value while that format is General with automatic decimal places,
@@ -1161,9 +1174,7 @@ Out of scope:
   release is also the image's build context, the container's Dockerfile copying it,
   and `haute app build --image TAG` builds the image with Docker; the image installs
   what a scoring container installs and the quote store's packages, SQLAlchemy and
-  Alembic, pinned as the scoring runtime is, nothing more; a release whose Workbench
-  Input copied the tables before the form held `quote_details` is refused as a deploy
-  refuses it, asking for the project to be saved in the editor. The app
+  Alembic, pinned as the scoring runtime is, nothing more. The app
   serves the sheets on a page of their own, drawn as Preview draws them, with the same
   components filled from the app's routes rather than the builder's and nothing of the
   builder mounted: the sheets' tabs, the sheet showing, the release and who is signed in,
@@ -1176,10 +1187,16 @@ Out of scope:
   was loaded with. A page drawn for another
   revision or another release is refused (409), so a page loaded from an earlier release
   reloads rather than price on a newer contract or model, a release that changed the
-  model alone included. The request is built as Preview's pricing builds it and priced through the deployed
+  model alone included: the page says it was drawn for an earlier release and offers
+  Reload, with or without a quote store, an app without one saying that what is typed is
+  not kept. The request is built as Preview's pricing builds it and priced through the deployed
   pipeline's engine, one quote per request, off the server's event loop, under the deploy's
   admission limit and a timeout, and answered whole: each output table's rows, with the
-  request priced. `GET /api/app/release` and `GET /api/app/form` serve the release and the
+  request priced. The app prices at most a bounded number of quotes at once, four unless
+  `HAUTE_APP_PRICING_WORKERS` says otherwise, a save's pricing among them: a pricing past
+  its timeout is answered 504 but cannot be stopped, so it holds its place until it ends,
+  and a pricing asked for while every place is held is refused at once (503, `Retry-After`
+  saying when to try again) rather than queued behind them to time out too. `GET /api/app/release` and `GET /api/app/form` serve the release and the
   form; `GET /health` answers without sign-in, for the host's probes. Every other route
   needs the principal the host signed in. The identity follows `[workbench.app] host`:
   `azure-container-apps` reads the principal Azure's built-in authentication sets on each
@@ -1193,8 +1210,13 @@ Out of scope:
   since who may change quotes cannot be told. `haute app serve` builds a release of the
   project as it is saved and serves it on the analyst's machine, the principal the
   analyst's git identity, able to change quotes unless `--reader` signs them in as a
-  reader, so the sheets underwriters will see are checked before a merge. No credential
-  reaches the page.
+  reader, so the sheets underwriters will see are checked before a merge. Served so, the
+  app binds loopback and takes a request only for a loopback host (`localhost`,
+  `127.0.0.1` or `::1`, on any port) and only without forwarded metadata (`Forwarded` or
+  an `X-Forwarded-*` header), refusing any other (400) before it signs the request in:
+  loopback keeps other machines out, and the host keeps out a page of a site whose name
+  resolves to the analyst's machine, whose requests the browser counts as that page's own.
+  No credential reaches the page.
   Given a quote store, the app keeps the quotes saved in it, each revision's
   `quote_details` row in a table of its own (the quote store, below). A hosted app reads the store's SQLAlchemy URL from
   `HAUTE_QUOTE_STORE_URL`, which the host supplies at runtime, and does not start on a
@@ -1246,13 +1268,18 @@ Out of scope:
   reference, quote name, insured or broker (`ABC-1/2` matching that option alone, a
   reference matched however its letters are cased or composed), in Team an assignee to
   narrow it to, the order (newest saved, Reference, A to Z with each reference's options in
-  order, or insured) and New quote (`N`), which opens the new quote's window over the list. The list is a table at Haute's
+  order, or insured) and New quote (`N`), which opens the new quote's window over the list;
+  neither key acts from a control it is typed or picked in, so `N` in a select picks its
+  option. The list is a table at Haute's
   density, 50 quotes at a time with Load more, read from the quotes' `quote_details`: each
   quote's reference and option, `ABC-1/2`, its title (its quote name, else its insured,
   else its reference and option), its insured, broker and inception date under their columns'
   labels on the sheets, the date as a day, its stage, who it is with and when it was saved,
-  relative, with the time on hover. A row opens its quote, its reference a link of its
-  own; on hover or focus it offers Open, Duplicate, and Archive or Restore. The list,
+  relative, with the time on hover. Relative times in the app read as everywhere in Haute:
+  "just now" under a minute, then minutes, hours and days ago ("5m ago", "3h ago", "2d
+  ago") below a week, then the day and month, with the year when it is not this year. A row opens its quote, its reference a link of its
+  own; on hover or focus it offers Open, Duplicate, and Archive or Restore, each reloading,
+  once answered, the list showing then, whichever list the underwriter has moved to. The list,
   stage, search, assignee and order are in the page's address, so Back returns to the
   list as it was. Loading shows placeholder rows, a failure says why with Retry, and an
   empty list says why: no quotes yet, with New quote; none matching, with Clear search;
@@ -1323,8 +1350,9 @@ Out of scope:
   it again and it is made once. A quote made from another names what it was made from and
   any value that no longer fits. Made, it is clean: left as it opened it keeps no draft and
   asks nothing on leaving, and one left with nothing typed stays a draft; an answer
-  arriving once the page moved on does not move it, and one who may only read quotes makes
-  none. The sheets take no typing and are not priced, and Save is
+  arriving once the page moved on does not move it, nor does leaving a quote whose unsaved
+  values the leave guard keeps, and a quote made where the page did not move says so,
+  "Made" and its label; one who may only read quotes makes none. The sheets take no typing and are not priced, and Save is
   off, while the quote is final, archived, shown at an earlier revision (at
   `/quotes/{id}/revisions/{n}`, with Open the newest) or saved on earlier sheets (opened
   on those sheets, with Move to current sheets, which carries its values onto the
@@ -1359,18 +1387,31 @@ Out of scope:
     text without the spaces around it, compared exactly; a tick box ticked or not, one
     never touched unticked; a number read as the sample's numbers are (a currency sign,
     separators and spaces allowed) and compared as a number; a date as the day it names;
-    and a cell blank or untouched as empty. Of the tests other than the ticks, an empty
-    value passes `empty`, `not_equals` and `not_one_of` alone, and a value not of its
-    column's type (text in a number column, or a tick left in a column since retyped)
-    `filled`, `not_equals` and `not_one_of` alone. A condition that cannot hold as written
-    never holds: one naming a column that is not in a one-row input table (gone, an output
-    table's or a many-row table's), a condition on rows naming a table that is not a
-    many-row input table, a test of a row naming a column that is not its table's or is its
-    index, a total of a column that is not a number column of its table other than its
+    and a cell blank or untouched as empty. Text within text compares as equals does:
+    `contains`, `starts_with` and `ends_with` pass a value holding the text tested for,
+    at its start or at its end, exactly, without the spaces around either. Of the tests
+    other than the ticks, an empty value passes `empty`, `not_equals`, `not_contains`
+    and `not_one_of` alone, and a value not of its column's type (text in a number
+    column, or a tick left in a column since retyped) `filled`, `not_equals`,
+    `not_contains` and `not_one_of` alone. A test against another field holds only while
+    that field shows too, as its own column must, so hiding still only hides more, and
+    reads the other field's value as it reads its own: one in a one-row table's first
+    row, or, in a test of a row, the same row's. A value there that is not one of its
+    type, blank among them, gives nothing to test against, which `not_equals` and
+    `not_contains` alone pass. A Date against another Date compares the day with that
+    day and its days added. A condition on an output column holds here whatever the price
+    (On the price, below). A condition that cannot hold as written
+    never holds: one naming a column that is not in a one-row table (gone, or a many-row
+    table's), a condition on rows naming a table that is not a many-row table, a test of a
+    row naming a column that is not its table's or is its index, a condition on an output
+    tested against another field, a total of a column that is not a number column of its table other than its
     index or against a value that is not a number, a test its column's type does not take, a number of
     values its test does not take (none for the ticks, `filled` and `empty`, at least one
     for `one_of` and `not_one_of`, else one), or a value its column could not hold (blank,
-    not a number, a fraction for an Integer, not a `YYYY-MM-DD` day).
+    not a number, a fraction for an Integer, not a `YYYY-MM-DD` day); a test against
+    another field that takes no value or several, that has values typed too, whose field
+    is not a column of a one-row input table (in a test of a row, of its table other than
+    its index) or not of its column's type; and days added but to another Date field.
   - **On a list.** A condition on a many-row input table's rows holds while each column it
     tests, and a total's column, is on a Table that shows it (for a count without tests,
     one of its table's columns other than the index), and its rows pass: any of the table's rows
@@ -1393,6 +1434,23 @@ Out of scope:
     section that shows while the cover is Comprehensive and either a driver is under 25 or
     the claims count is at least 2 needs all of the cover's condition and a group needing
     any of the other two.
+  - **On the price.** A condition on an output column, or on an output table's rows, tests
+    the price the sheets show, in the Show when of what takes nothing typed: a Heading, a
+    Chart, a Collection or a Table of output columns alone, a field of an output column,
+    or a section or a sheet holding only those. What shows is decided from the inputs
+    first, such conditions holding, so the price never decides what is priced; they are
+    then applied to the price the sheets show, the last one while a new one is on its way,
+    and, before the first and after a pricing that fails, every output read as empty,
+    hiding what holds them as any condition hides. An output's value is tested as a typed
+    one is (a number as a number, a tick as a tick), a many-row output table's rows as a
+    list's, against values typed alone, never another field, whether or not a component
+    that shows has the output. A Table of referral reasons shown while `referral_count` is
+    above 0 is hidden until a price gives a count above 0, and again once one gives none.
+    The server, which decides what a quote leaves out, holds them all, as they change
+    nothing there. One on what takes values typed, or on a section or a sheet holding such
+    a component, a Collection of input fields or a section holding one placed there later,
+    is a problem the view names, and is never applied: hiding by the price there would hide
+    values still priced.
   - **Fields.** A Table's column or a Collection's field with a Show when of its own hides
     by it as a component does, within its component: a Collection's fields after it close
     up, flowing on through its columns, a spacer going with the fields after it, up to the
@@ -1422,7 +1480,7 @@ Out of scope:
     values are kept, not cleared: they stay in the sample and the
     quote as typed, the sample saved with them, and are in the quote again once their
     column shows. The server leaves them out where it makes a quote of the form's values,
-    so the sample priced in Preview, the sample the Workbench Input's copy holds and the
+    so the sample priced in Preview, the sample a Workbench Input previews on and the
     app's quote leave out the same values.
   - **While building** a new quote decides, its defaults alone typed: a hidden sheet's tab, a hidden section, a
     hidden component and a hidden field are drawn faded, still shown, selected and edited
@@ -1460,7 +1518,7 @@ Out of scope:
     as a tick box in the very section it shows is. None is refused: the form is saved as it is.
 - **Saved.** A successful save of the form adopts the folder's new revision; the project
   save then fetches the tables afresh, so the Workbench Input's and Workbench Output's
-  copies follow the schema, as after any fetch, and saves the pipeline with them. A save refused
+  ports follow the schema, as after any fetch, and saves the pipeline. A save refused
   as stale keeps the edits and says so, in a toast and in a banner in the view whose
   Reload reads the folder again, dropping the edits and the history.
 - **The tables as the pipeline holds them.** The input tables are the Workbench Input's, in
@@ -1480,10 +1538,11 @@ Out of scope:
 - **The Workbench Input.** A pipeline takes the tables through the Workbench Input:
   `workbenchInput` in the pipeline document, declared in the pipeline file with
   `@pipeline.workbench_input(config=...)` (a submodel's file uses `@submodel.workbench_input`)
-  and configured in `config/workbench_input/<function>.json`. In the editor it is "Workbench
-  Input", badged "WORKBENCH IN", in the entry group with the Quote Input's colour and shape
-  and an icon of its own. Its config has `tables` and `sample`, copies of the workbench's
-  tables and sample quote.
+  and configured in `config/workbench_input/<function>.json`, which holds neither its tables
+  nor its sample. In the editor it is "Workbench Input", badged "WORKBENCH IN", in the entry
+  group with the Quote Input's colour and shape and an icon of its own. Its tables are the
+  form's input tables and its sample the form's sample quote (The tables as the pipeline
+  holds them), read from the form folder wherever the pipeline runs (below).
   - **Read as dataframes.** A Workbench Input has one port per table with a column, named by
     the table, and reads a quote into them with no JSON path: a one-row table is its one row
     (of nulls when the quote does not hold it) and a many-row table the rows the quote holds.
@@ -1501,8 +1560,7 @@ Out of scope:
     The memory estimate of a deployed run sizes each consumer from the table that feeds it,
     not from the one-row request that holds them all. None of them reads the sample. Haute calls the two the request inputs and decides this
     once, from one set holding both types; tests fail when a check in the code names the Quote
-    Input alone where it means a request input. The pipeline never needs the workbench: the
-    copies are an ordinary `tables` list and `sample` object.
+    Input alone where it means a request input.
   - **The quote's identity.** A request and a frame differ in shape. A request's tables
     hold their own columns, and the quote's reference and option are named in its
     `quote_details` alone: a request without them, with an option below 1, or giving either
@@ -1516,7 +1574,7 @@ Out of scope:
     may leave out, null then: a deploy caller's values are priced as sent, the null quote
     holds them null, the sample holds what the analyst typed, and an app without a quote
     store drops whatever its page sends for them.
-  - **No file; the sample.** A Workbench Input reads no file. Without a request, in editor
+  - **No data file; the sample.** A Workbench Input reads no data file. Without a request, in editor
     runs and previews and in generated code's `run()`, it reads its sample as it reads a
     request, so the sample prices as the quote it stands for would when deployed: each port
     is the rows the sample gives its table, typed as declared, a many-row table the sample
@@ -1560,39 +1618,48 @@ Out of scope:
     or pasting another is refused.
   - **The palette.** While the workbench is enabled, the palette shows the Workbench Input
     where the Quote Input was, and otherwise the Quote Input; never both. A Workbench Input
-    dragged from it starts with the newest tables and sample fetched, or none while the first
-    fetch is running, and gets them when it finishes. Enabling or disabling the workbench
-    changes only what the palette offers: a pipeline keeps the request input it has, and a
-    Quote Input becomes a Workbench Input, or back, only by deleting it and dragging in the
-    other.
-  - **Kept current.** The editor fetches the tables, with the sample, when it finds the
-    workbench enabled and each time it adopts a pipeline document (opening one, or reloading
-    it after a branch switch or a change on disk). Only the newest fetch counts. A fetch
-    brings the Workbench Input of the document it was made for up to date, once, through the
-    same update an edit in its panel makes, as one undoable step saved with the pipeline. A
-    copy whose tables and sample both match is left alone, a missing sample matching an empty
-    one, a read-only document is never changed, and while a submodel is open the update waits
-    until the top level shows. Undo and redo restore earlier copies like any other edit, and
-    the next fetch brings the copy up to date again. An update that does not commit, as when
-    a submodel is opened while it is under way, is tried again when the top level shows. A
-    fetch never changes a Quote Input, and a Workbench Input inside a submodel keeps the copy
-    it has.
-  - **Connections follow table names.** A connection to a table whose name the new tables
-    still have stays, however the tables were reordered or replaced; one to a table whose name
-    has gone is removed and reported, as removals are for any request input edit. A renamed
-    table is a new port. A Quote Input's connections still follow a renamed table by position.
-  - **Its panel** shows the tables read-only under "Tables from the workbench", with whatever
-    the editor finds wrong with a table's name as a port (not an identifier, a reserved word,
-    a repeat), and a note on what previews run on: "Previews run on the workbench's sample
-    values, read as a request is: a table with many rows and nothing typed has none." while
-    the copy has a sample, and
-    "Previews run on one row of nulls per table until the workbench supplies values." while
-    it has none. While the workbench is not enabled the title is "Tables" and the panel says
-    "The workbench is not enabled in haute.toml, so these tables are the last copy and
-    nothing updates them.", and while a submodel is open "The editor updates these tables
-    only at the pipeline's top level." A name another node already has is refused when the
-    pipeline is saved, as it is for any request input. The Quote Input's panel is its table
-    editor, whatever the project enables.
+    dragged from it has the tables fetched as its ports at once, or none until the first
+    fetch finishes. Enabling or disabling the workbench changes only what the palette
+    offers: a pipeline keeps the request input it has, and a Quote Input becomes a Workbench
+    Input, or back, only by deleting it and dragging in the other.
+  - **Read from the form folder.** Wherever the pipeline runs from its source, a Workbench
+    Input's tables and sample are those the form folder of its project defines, as
+    `GET /api/workbench/tables` answers them, the tables checked as the pipeline takes them:
+    in the editor's previews, runs and traces, each request reading the folder anew, so an
+    edit made outside the view reaches the next one (Preview's pricing gives the form the
+    view holds instead, above); in the pipeline file's own `run()` and `score()`, from the
+    project the file is in, `score()`, which gives the Workbench Input the frames it is
+    given, still reading its config file and the form and refusing a connection to a table
+    the form does not have; and in `haute deploy` and `haute app build`, which read the
+    folder once and carry the tables in the bundle, the sample left out (No data file;
+    the sample, below), so a deployed pipeline and a release run on the tables they were built
+    with and never read a folder. A Workbench Input inside a submodel reads the same form.
+    Its config holds neither: `tables` or `sample` in it is refused (Failure model).
+  - **Shown in the editor.** The editor fetches the tables, with the sample, when it finds
+    the workbench enabled, each time it adopts a pipeline document (opening one, or reloading
+    it after a branch switch or a change on disk), whenever the form folder changes on disk
+    and after each save of the form; only the newest fetch counts. A Workbench Input's ports
+    are the tables fetched, at the top level and inside a submodel alike. Nothing of them is
+    in the node, so an edit of the graph, an undo and a redo never change them, and a fetch
+    never changes a Quote Input.
+  - **Connections follow table names.** A connection to a table whose name the tables
+    fetched still have stays, however the tables were reordered or replaced; one to a table
+    whose name has gone is removed and reported, as removals are for any request input edit,
+    once the tables are fetched, in the graph the editor shows while the document can
+    change, as a change of its own outside the undo history, and again whenever an undo or a
+    redo brings one back, since the tables are the form's and not the history's. A renamed
+    table is a new port. A connection to a table the tables do not have, as one written into
+    the pipeline file by hand can be, fails the run naming the table. A Quote Input's
+    connections still follow a renamed table by position.
+  - **Its panel** shows the tables fetched, read-only, under "Tables from the workbench",
+    with whatever the editor finds wrong with a table's name as a port (not an identifier, a
+    reserved word, a repeat), and a note on what previews run on: "Previews run on the
+    workbench's sample values, read as a request is: a table with many rows and nothing
+    typed has none." while the sample has values, and "Previews run on one row of nulls per
+    table until the workbench supplies values." while it has none. Saving the pipeline
+    refuses a connection from a table named like another node, which the saved file could
+    not be read back with. The Quote Input's panel is its table editor, whatever the
+    project enables.
   - **The assistant** reads a Workbench Input and connects nodes to its tables, or removes
     such connections, as it does a Quote Input's, but cannot add, change, rename or delete one,
     nor edit its steps: its node card says the tables are the workbench's and the analyst adds
@@ -1600,9 +1667,10 @@ Out of scope:
 - **The Workbench Output.** A pipeline fills the output tables through the Workbench Output:
   `workbenchOutput` in the pipeline document, declared in the pipeline file with
   `@pipeline.workbench_output(config=...)` (a submodel's file uses `@submodel.workbench_output`)
-  and configured in `config/workbench_output/<function>.json`, whose `tables` are a copy of
-  the workbench's output tables. In the editor it is "Workbench Output", badged "WORKBENCH
-  OUT", in the exit group with the Quote Response's colour and shape and an icon of its own.
+  and configured in `config/workbench_output/<function>.json`, which holds none of its
+  tables: they are the form's output tables, read from the form folder as a Workbench
+  Input's tables are. In the editor it is "Workbench Output", badged "WORKBENCH OUT", in the
+  exit group with the Quote Response's colour and shape and an icon of its own.
   - **A port per table.** A Workbench Output has one input port per table with a column,
     named by the table, in the tables' order, and nothing downstream. A connection lands on
     one table's port: its `targetHandle` is the table's name, and the pipeline file says
@@ -1662,18 +1730,16 @@ Out of scope:
     row of every quote under one.
   - **The palette.** While the workbench is enabled, the palette shows the Workbench Output
     where the Quote Response was, and otherwise the Quote Response; never both. A Workbench
-    Output dragged from it starts with the newest tables fetched, or none while the first
-    fetch is running, and gets them when it finishes. Enabling or disabling the workbench
-    changes only what the palette offers: a pipeline keeps the response node it has.
-  - **Kept current.** The fetch that keeps each Workbench Input current brings each Workbench
-    Output's tables up to date at the same moments and in the same way: once per fetch, through
-    the same update an edit in its panel makes, as one undoable step saved with the pipeline,
-    never in a read-only document, and only while the top level shows. A copy whose tables
-    match is left alone, a Workbench Output inside a submodel keeps the copy it has, and a
-    fetch never changes a Quote Response.
-  - **Connections follow table names.** A connection to a table whose name the new tables
-    still have stays, wherever the table has moved; one to a table whose name has gone is
-    removed and reported, as for a Workbench Input. A renamed table is a new port.
+    Output dragged from it has the response tables fetched as its ports at once, or none
+    until the first fetch finishes. Enabling or disabling the workbench changes only what
+    the palette offers: a pipeline keeps the response node it has.
+  - **Shown in the editor.** The fetch that gives each Workbench Input its ports gives each
+    Workbench Output its tables, at the same moments and in the same way: its ports are the
+    response tables fetched, at the top level and inside a submodel alike, nothing of them
+    is in the node, and a fetch never changes a Quote Response.
+  - **Connections follow table names.** A connection to a table whose name the tables
+    fetched still have stays, wherever the table has moved; one to a table whose name has
+    gone is removed and reported, as for a Workbench Input. A renamed table is a new port.
   - **Its panel** shows each table: its name, whether it has one row per quote or many, the
     node connected to it or "Not connected", and whatever the editor finds wrong with its name
     as a port; then each of its columns, its name and type in a box of its own. The box's
@@ -1681,9 +1747,7 @@ Out of scope:
     or nothing is connected to the table) and orange while the frame's column is of a type
     that does not fit, judged by the columns and types the frame's last preview recorded; a
     connected frame not previewed yet is judged by neither. The panel changes nothing: the
-    tables themselves are read-only, and the panel has
-    the Workbench Input panel's title and its notes for when the workbench is not enabled and
-    while a submodel is open.
+    tables themselves are read-only, under the Workbench Input panel's title.
   - **The assistant** reads a Workbench Output and connects nodes to its tables, or removes
     such connections, but cannot add, change, rename or delete one: its node card says the
     tables are the workbench's and the analyst adds the node from the palette.
@@ -1851,10 +1915,10 @@ Out of scope:
   milestone without the view's help.
 - **One Save.** The form and the pipeline are one project on one ledger, so Save, Ctrl/Cmd+S
   and Commit save both, the same from either toolbar, and which view shows never decides
-  what a save records. A form saved alone would leave the pipeline's copies behind it on
-  disk until the next pipeline save, and a pipeline saved alone would carry copies of a
-  form the view does not show; one save, the form before the pipeline with the nodes'
-  copies following in between, records a pipeline that runs on the form it records. The
+  what a save records. A pipeline saved alone would run on a form the view does not show,
+  and its connections would follow tables the folder may no longer hold; one save, the
+  form before the pipeline with the tables fetched afresh in between, records a pipeline
+  that runs on the form it records and connects only to tables it has. The
   form is saved only when there is something to save, unsaved edits, so a save from the
   pipeline editor costs the form no request and no toast while it is as saved; a form
   file left uncaptured is captured as it is, never written again.
@@ -1882,8 +1946,8 @@ Out of scope:
   pipeline's answer for the values entered.
 - **The form as it stands.** Pricing asks the server for the tables of the unsaved form
   rather than reading the saved file, so a Collection shows the pipeline's answer for what
-  is on the sheet now, as a rater's cell would; the pipeline's own Workbench Input still
-  follows the saved form, so a save is still what changes the pipeline.
+  is on the sheet now, as a rater's cell would; every other run reads the saved folder, so
+  a save is still what changes the pipeline.
 - **One sheet, three sets of values.** The components draw a new quote, the sample and
   the app's quote through one set of values given to the sheet, rather than a body for
   each: what a cell holds, how it changes, what the last pricing gave and which cells are
@@ -1933,12 +1997,17 @@ Out of scope:
   Leaving hidden values out makes a quote what its sheets show, whatever order it was
   typed in; keeping them, rather than clearing them, means hiding a section and showing it
   again loses nothing. The server leaves them out where it makes the quote, the one place
-  the sample priced in Preview, the Workbench Input's copy and the app's quote all come
+  the sample priced in Preview, the Workbench Input's sample and the app's quote all come
   from, and the view, which hides and shows as each value is typed, applies the same
   rules, the two held to one set of cases both test against.
+- **The price decides what shows, never what is priced.** A section of referral reasons
+  matters only once the price gives some, but the price is made of what the sheets show:
+  letting it hide what takes values would make what is priced depend on its own price. So
+  what takes values is decided from the inputs alone, and the price only hides what takes
+  nothing typed, after, where hiding changes nothing priced.
 - **Decided at once, by hiding.** Conditions test the values as typed, except that a
-  condition on a column no component that shows has never holds, so hiding only ever hides
-  more: starting from everything shown and hiding until nothing changes gives one answer
+  condition on a column no component that shows has, or tested against such a field,
+  never holds, so hiding only ever hides more: starting from everything shown and hiding until nothing changes gives one answer
   whatever the order of the sheets and components, a chain of conditions (a sheet shown by
   a box on a sheet shown by another box) is followed without being written twice, and no
   value the underwriter cannot see decides what they see.
@@ -1948,6 +2017,11 @@ Out of scope:
   nothing more and be harder to read and to lay out in the panel. Neither takes "none of
   these": a condition fails once its column hides, so "none" could come to hold as hiding
   went on and show something again, and hiding has to only ever hide more.
+- **Hiding, never reading a hidden value as empty.** Reading a hidden value as empty in
+  the form's dependency order would allow "none of", "at most", "exactly" and "not" over a
+  group, but let that order decide what shows; the rounds stay (decided 2026-10-20). Rules
+  named once and used by many sheets were offered then and not taken, nor were a Table's
+  cells shown row by row through "this row" tests, offered again on 2026-10-22.
 - **At least, never at most.** "At least 2 of these" says two or three of three boxes
   without writing out every pair as a group of its own. Neither takes "at most" or
   "exactly", for the reason neither takes "none": hiding a column makes fewer conditions
@@ -2071,14 +2145,26 @@ Out of scope:
   The two share one decision, that either is the request input, and nothing else: the Quote
   Input's reader stays its own, the workbench's tables carry nothing derived, and a test
   reports a check that names the Quote Input alone where it means a request input.
-- **A copy, not a reference.** The pipeline file is canonical and runs without the GUI, so a
-  Workbench Input holds the tables it runs from instead of pointing at the form: runs, tests,
-  generated code and deploy never read the form, and the editor, which has both, keeps the
-  copy current.
+- **Read from the form folder, not copied.** A Workbench Input and a Workbench Output once
+  kept copies of the tables in their configs, and the Input a copy of the sample, so that
+  runs, tests, generated code and deploy never read the form; the editor kept the copies
+  current and deploy held them to the form. Every schema change then showed twice in a pull
+  request, and a copy out of step was a failure that existed only because there was a copy.
+  The reason for the copies went once the form was a folder in the pipeline folder,
+  versioned with the pipeline file and read by deploy anyway, so the nodes read the folder
+  wherever the pipeline runs from its source (decided 2026-10-28): the schema gives the
+  ports and the request's shape, and the sample is made as the sheets make a quote, its
+  hidden values and preset rows as they give them, never its typed rows read raw. A
+  deployed pipeline and a release run from a bundle, which carries the tables they were
+  built with, so nothing deployed reads a folder. The tables and sample a node runs on are
+  in its cache key, so no cached result outlives them, while the pipeline's own revision,
+  which its saves are checked against, stays its own files: a form saved, edited by hand or
+  switched with a branch reaches the editor as the form's own change does, and saving the
+  form never makes the pipeline's save that follows it stale.
 - **The workbench's sample, not a file.** Quotes keyed in through a workbench leave no sample
   file, and the workbench is where the quote's tables are laid out, so it is where a pricing
-  analyst types the quote previews run on. Copied into the config like the tables, it lets
-  the pipeline file run and preview without the form; read as a request is, it gives
+  analyst types the quote previews run on. Read from the form folder like the tables, it is
+  the quote Preview shows and prices, saved with the form; read as a request is, it gives
   the rows a request would; read whole, every reader finds the same misfit, and resolving
   points, which reads only the tables, never does. A table it gives no rows is one row of
   nulls rather than none, so every node's expressions still run on a row and its preview
@@ -2088,10 +2174,11 @@ Out of scope:
   table's position says nothing about which table it is, and matching by position would
   quietly reconnect a downstream input to another table. A table's name is also its key in
   the request.
-- **Fetched for a document.** A fetch belongs to the document it was made for, and fetches can
-  settle out of order, so only the newest publishes and none applies to a document adopted
-  after it started, including through an update still waiting on identity resolution. Graph
-  edits, undo and redo never start one, so the refresh never fights the user's history.
+- **The tables are the form's, not the history's.** Fetches can settle out of order, so only
+  the newest publishes, and graph edits, undo and redo never start one. Nothing of the
+  tables is in the graph, so the history never holds them and an undo never puts back
+  tables the form no longer has; a connection the history puts back to a table that has
+  gone is removed again, as it was when the table went.
 - **Preview's drawing, the app's data.** Preview already shows the sheets as an
   underwriter uses them: nothing selected or moved, the tabs read-only, no section bars.
   The app mounts the same components over the same stores, which it fills from its own
@@ -2157,13 +2244,15 @@ Out of scope:
   folder, in a new project or in one that has a `haute.toml` without them.
 - [pipeline-config](../pipeline-config/high-level.md): the `[workbench]` table in the shared
   `haute.toml` schema, the starter form folder among the scaffold's templates, and the
-  `workbench_input` and `workbench_output` decorators and their config folders.
+  `workbench_input` and `workbench_output` decorators and their config folders, whose
+  files hold neither tables nor a sample.
 - [deploy](../deploy/high-level.md): `DeployConfig.from_toml`'s whole-file check accepts the
   `[workbench]` table; save and deploy refuse a second request input or response node, deploy
-  takes a Workbench Input's request schema and dry-run quote from its tables and reads a
-  served request into them, and a deployed pipeline answers with a Workbench Output's
-  response as with a Quote Response's; deploy refuses a form that names a column its schema
-  does not hold.
+  reads the form's tables into the bundle, takes a Workbench Input's request schema and
+  dry-run quote from them and reads a served request into them, and a deployed pipeline
+  answers with a Workbench Output's response as with a Quote Response's; deploy refuses a
+  form it cannot read, one that does not fit the pipeline and one that names a column its
+  schema does not hold.
 - [git-integration](../git-integration/high-level.md): an unborn repository's seed commit
   takes the pipeline folder's `workbench/` with the pipeline's files; a form save is one
   save on the clone's ledger through the pipeline save's capture, its commit message naming
@@ -2193,24 +2282,20 @@ Out of scope:
 - [frontend-graph-canvas](../frontend-graph-canvas/high-level.md): the editor shell hosts
   the view, hiding and fencing the pipeline editor while it shows, hands it the whole
   document as it holds it for pricing the sample, and its keyboard shortcuts register
-  nothing then; a palette drop reports the node it creates, the commit
-  controller checks an update's `isCurrent`, the request inputs share one singleton slot
-  and the response nodes another, and a Workbench Output's connections land on its
-  tables' ports.
-- [caching](../caching/high-level.md): a Workbench Input's `tables` and `sample`, and a
-  Workbench Output's `tables`, are classified as node config, and a Workbench Input's tables
-  have no input snapshots.
+  nothing then; the request inputs share one singleton slot and the response nodes
+  another, a workbench node's ports are the tables the workbench store fetched, its
+  connections to a table they no longer have removed outside the undo history, and a
+  Workbench Output's connections land on its tables' ports.
+- [caching](../caching/high-level.md): the tables and sample a Workbench Input runs on, and
+  the tables a Workbench Output fills, are given to the node from the form before it runs
+  and classified as node config, so they are in its cache key, and a Workbench Input's
+  tables have no input snapshots.
 - [assistant](../assistant/high-level.md): the Workbench Input's and Workbench Output's node
   cards and the operations that refuse to author either.
 - [frontend-preview-explore](../frontend-preview-explore/high-level.md): a Chart draws
   through the lazy chart runtime and the theme Explore's charts use.
 
 ## Failure model
-
-> NOTE: The local-principal app currently accepts foreign Host headers before
-> assigning the analyst's identity; loopback binding alone does not enforce the
-> browser request boundary. Local Host and forwarded-request enforcement is
-> tracked in [WB-39](../roadmap/workbench.md#wb-39--enforce-the-local-apps-request-boundary).
 
 - A `[workbench]` table that is not a table, lacks `enabled`, gives `enabled` something other
   than `true` or `false`, or holds any other key, and a `haute.toml` that cannot be read, is
@@ -2242,12 +2327,10 @@ Out of scope:
   section's `height`), or a sheet one reaches past (its `x` plus its `w` above the
   sheet's `width`), as a merge or an edit by hand can leave them, is grown to hold it
   as the folder is read, nothing moved, and the editor says what grew; a save of a form
-  laid out so is refused, naming the section or the sheet and the component. A fetch of the tables that fails shows one
-  error toast and changes no Workbench Input or Workbench Output; a fetch made for an
-  earlier document never changes the current one, and an update it started that is still
-  waiting on identity resolution is dropped with the commit controller's usual message. A
-  read of the form that fails is shown in the view in place of the sheets, with a way to
-  try again.
+  laid out so is refused, naming the section or the sheet and the component. A fetch of the
+  tables that fails shows one error toast and leaves the ports as the last fetch gave them,
+  removing no connection; only the newest fetch counts. A read of the form that fails is
+  shown in the view in place of the sheets, with a way to try again.
 - `GET /api/workbench/params` answers whether or not the workbench is enabled, since
   Banding's Import from params reads it too, and 409
   with why a file or a column cannot give values: the project has no pipeline folder,
@@ -2309,6 +2392,11 @@ Out of scope:
   anything is typed, and nothing is refused. A pricing of the app's quote that fails shows
   "Pricing failed: …" in its bar and empties the output columns, as the sample's does, and
   a save then keeps the quote unpriced.
+- An app served by `haute app serve` refuses a request for a host that is not loopback, or
+  one carrying `Forwarded` or an `X-Forwarded-*` header, with 400 before it signs the
+  request in, so such a request reads, prices and changes nothing as the analyst, the
+  health check included. A hosted app is reached through its host's front, which sets
+  those headers, and is not held to it.
 - The schema editor refuses nothing: a problem is shown beside its table, and a save
   writes the form as it is. The tables route then answers the structured 422 for a table
   the pipeline cannot take, which the tables fetch shows as one toast, so the problem is
@@ -2316,11 +2404,12 @@ Out of scope:
 - A condition that cannot hold as written is refused nowhere: the form reads, saves and
   serves its tables with it, the condition never holds, so what it is on stays hidden and
   the values only hidden components or fields show are left out of the quote, and the view
-  names the problem on the sheet or component while building. A `show_when`, a condition or a
+  names the problem on the sheet or component while building. A condition on the price on
+  what takes values typed is named so too, and never applied. A `show_when`, a condition or a
   test the form's shape does not have (an unknown `op`, a `values` entry that is not text,
   a group with no conditions or with a group among them, a condition in any or every row
   with no test, a total that is not a sum, least, greatest or average, a count that is not a
-  whole number of 0 or more)
+  whole number of 0 or more, days that are not a whole number from -36,500 to 36,500)
   is a form that does not fit, refused as any other.
 - `GET /api/workbench/tables` answers 404 while the workbench is not enabled; the editor
   never asks then. Tables or response tables the pipeline cannot take, such as a table named
@@ -2329,16 +2418,24 @@ Out of scope:
   the table.
 - A failed status request shows one error toast; the editor behaves as it does with the
   workbench not enabled.
-- A Workbench Input or Workbench Output in a project whose workbench is not enabled keeps its
-  copy and runs from it; its panel says so and nothing updates it.
+- A Workbench Input and a Workbench Output take their tables from the project's form, so
+  previewing or running either in a project whose workbench is not enabled fails with "The
+  Workbench Input reads its tables from the project's workbench, which haute.toml does not
+  enable." (the Workbench Output's alike), one whose form folder cannot be read fails with
+  the folder's own reason (above), and deploying either and building a release are refused
+  the same way.
 - A Workbench Input with no tables has no ports, and nor has one whose tables have no
   columns yet. Previewing either fails with "This Workbench Input has no tables: add input
   tables to the workbench's schema and save it." or "This Workbench Input's tables have no
   columns yet: add their columns in the workbench's schema and save it.", and deploying it
-  fails for the same reason. A copy that is not as the workbench writes it, such as one
-  holding a key the workbench does not write, fails wherever it is read with "The Workbench
-  Input's tables are not as the workbench writes them (<where>: <what>). Open the pipeline in
-  the editor and save it.", the editor's fetch being what rewrites the copy.
+  fails for the same reason. A config holding `tables` or `sample`, as one an earlier Haute
+  wrote holds its copies of them, is refused wherever it is read, the pipeline file running
+  on its own included, with "workbenchInput config contains the removed tables and sample
+  fields. A Workbench Input reads its tables and sample from the form folder: delete them.",
+  naming the keys it holds; the editor opens such a pipeline in recovery, where the node's
+  repair removes them. A connection out of a Workbench Input from a table it does not
+  have, as one written into the pipeline file by hand can be, fails the run naming the
+  table.
 - A sample that does not fit its Workbench Input's tables fails whatever reads its rows
   (previews, `run()`, leasing a table point), and planning a preview that sizes the tables,
   with "The workbench's sample does not fit this Workbench Input's tables: <reason>. Correct
@@ -2356,7 +2453,9 @@ Out of scope:
   since the request is read from its records.
 - Two request inputs of either type, at the top level or in a submodel, fail save and deploy
   with "Only one Quote Input or Workbench Input node is allowed per pipeline (found 2)." and
-  `Pipeline.score` as two Quote Inputs do. A config key a Workbench Input does not declare,
+  `Pipeline.score` as two Quote Inputs do. `Pipeline.score` refuses a Workbench Input
+  connected on a table its form does not have with "Workbench Input '<node>' is connected
+  on '<table>', which the workbench's form does not have.". A config key a Workbench Input does not declare,
   `path` among them, is refused as it is for any node type.
 - Running a Workbench Output, in a preview, `run()`, `score()` or a deployed pipeline, fails
   with a message naming its table:
@@ -2364,7 +2463,6 @@ Out of scope:
     workbench's schema and save it.", and with tables that have no columns yet, "This
     Workbench Output's tables have no columns yet: add their columns in the workbench's
     schema and save it.";
-  - with a copy that is not as the workbench writes it, as a Workbench Input's fails;
   - for a connection to a port that is no table of the node's;
   - for a one-row table whose frame has other than one row, saying how many it has.
 
@@ -2372,7 +2470,8 @@ Out of scope:
   not fit fill with nulls and fail nothing. A config key a Workbench Output does not
   declare is refused as it is for any node type; `mapping`, which it no longer has, is
   refused wherever its config is read, the pipeline file running on its own included,
-  saying each column is filled from the frame's column of exactly its name.
+  saying each column is filled from the frame's column of exactly its name, and `tables`
+  is refused as a Workbench Input's is, saying the tables are read from the form folder.
 - Two response nodes of either type, at the top level or in a submodel, fail save and deploy
   with "Only one Quote Response or Workbench Output node is allowed per pipeline (found 2).",
   and `Pipeline.run` and `Pipeline.score` refuse the pipeline, naming both.

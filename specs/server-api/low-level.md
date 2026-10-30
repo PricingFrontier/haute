@@ -5,24 +5,24 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/_editor_identities.py` | Pure derivation of node function names, default/handle input identities, and config references used by editor documents and the bounded prospective-identity endpoint. |
-| `src/haute/server.py` | App factory (`app = FastAPI(...)`), lifespan (bytecode clear, logging config, env load, marked optimiser-artifact reaping, pipeline-index priming, watcher task lifecycle), middleware registration, router inclusion, `/api/session` health/bootstrap routes, bounded request-ID selection, the API/WS 404 guard, the `/ws/sync` WebSocket endpoint, the debounced file watcher (the workbench's form file announced through
+| `src/haute/server.py` | App factory (`app = FastAPI(...)`), lifespan (logging config, env load, marked optimiser-artifact reaping, pipeline-index priming, watcher task lifecycle), middleware registration, router inclusion, `/api/session` health/bootstrap routes, bounded request-ID selection, the API/WS 404 guard, the `/ws/sync` WebSocket endpoint, the debounced file watcher (the workbench's form file announced through
 `workbench.form.changed`, forwarded as `workbench_form_changed`), and credential-free static SPA serving. |
 | `src/haute/_local_security.py` | [sandbox-security](../sandbox-security/low-level.md)-owned per-process local-session token, trusted-Origin/Host parsing (including bracketed IPv6), `LocalSessionMiddleware`, `LocalTrustedHostMiddleware`, and the HTTP/WebSocket token-validation contract. |
 | `src/haute/schemas.py` | Stable shared Pydantic request/response import surface used across the app — re-exports canonical graph types from `_types.py`, re-exports execution-strategy DTOs from `_execution_schemas.py`, and defines the remaining per-feature model groups, including the structurally separate pipeline editor-recovery document and diagnostics. The OUTPUT dry-run models are the deliberate route-local exception. |
-| `src/haute/errors.py` | The `HauteError` hierarchy, including execution, bounded-memory, schema/contract, deployment, and feature errors. Route-visible public subclasses carry stable `error_code` and `public_fields` metadata consumed by `_contract_errors.py`. |
+| `src/haute/errors.py` | The `HauteError` hierarchy, including execution, bounded-memory, schema/contract, deployment, and feature errors. Route-visible public subclasses carry stable `error_code` and `public_fields` metadata consumed by `_contract_errors.py`. `RequestRefusedError` is a service's refusal of a request, with the `status_code` and `detail` its caller hears; its subclasses name the reason (`InvalidRequestError`, `ForbiddenError`, `NotFoundError`, `ConflictError`, `GoneError`, `UnprocessableError`, `ServiceFailedError`, `InsufficientMemoryError`). |
 | `src/haute/_validation_error.py` | `HauteValidationError` — the ValueError-derived marker for haute-authored validation messages (re-exported by `errors.py`); the modelling worker boundary keys its curated-message promotion on it. |
 | `src/haute/_logging.py` | `configure_logging()` (structlog + stdlib bridge, dev-console vs. JSON-lines modes) and `get_logger()`. |
 | `src/haute/_event_bus.py` | `EventBus` — thread-safe synchronous pub/sub with typed `parse.error` and `pipeline.document.update` overloads; `default_bus` is the module-level singleton the watcher and server wire together. The git routes publish the git.tree.changed event, carrying the pipelines on disk before the action, after a git action that rewrote the files. |
 | `src/haute/_types.py` | `NodeType` (`StrEnum`), the decorator↔NodeType maps, `SINK_ONLY_NODE_TYPES` (the types with no output, mirrored by the editor), every per-node-type config `TypedDict`, the `SolveResultLike` Protocol family, and the canonical `NodeData` / `GraphNode` / `GraphEdge` / `PipelineGraph` Pydantic models (with `PipelineGraph`'s cached-property-invalidating `model_copy` override). `GlobalConstant` (a named, typed constant, uniform or split by source, validated as the global constants file requires) and the `PipelineGraph` fields `global_constants` and `global_constants_error`, which every field-by-field graph copy carries. |
 | `src/haute/_pipeline_revision.py` | [submodels](../submodels/low-level.md)-owned canonical parsed-graph revision plus the editor recovery revision over a contained, role-qualified raw-artifact manifest with explicit missing sentinels. |
-| `src/haute/_pipeline_recovery.py` | Side-effect-free editor loader: AST skeleton discovery (a syntax-invalid file becomes a source-only document carrying the syntax error), isolated node resolution, availability/diagnostic propagation, typed sidecar merge, raw-artifact revision assembly, and ready/degraded/source-only classification, plus `pipeline_document_fingerprint`, the one digest of a dumped editor document shared by the load routes, resync, and live-sync frames. It never returns a canonical `PipelineGraph`. Submodel imports are read one statement at a time (`_recover_ast_submodel_registrations`), so a malformed import is its own diagnostic while the well-formed ones still name their files, and each registration is then extracted against that import table. Both load paths carry the global constants and their load error into the document, read once through the load's capture, and `_source_references` lists the declared constants file so the revision authenticates the bytes the document carries. |
+| `src/haute/_pipeline_recovery.py` | Side-effect-free editor loader: AST skeleton discovery (a syntax-invalid file becomes a source-only document carrying the syntax error, and a file that is not UTF-8 one carrying the first byte it cannot decode; each source, editor sidecar, node config and constants file is read once, as bytes, by `_SourceCaptures`, a file missing when first read staying missing, so the revision authenticates exactly the bytes the document shows; sources are decoded strictly through `src/haute/_io.py::decode_user_source`, node configs read through it by `src/haute/_config_io.py::node_configs_read_through`), recovery ids minted once over a graph's nodes and submodel occurrences together (`_recovery_ids`) before any diagnostic records one, isolated node resolution, availability/diagnostic propagation, typed sidecar merge, raw-artifact revision assembly, and ready/degraded/source-only classification, plus `pipeline_document_fingerprint`, the one digest of a dumped editor document shared by the load routes, resync, and live-sync frames. It never returns a canonical `PipelineGraph`. Submodel imports are read one statement at a time (`_recover_ast_submodel_registrations`), so a malformed import is its own diagnostic while the well-formed ones still name their files, and each registration is then extracted against that import table. Both load paths carry the global constants and their load error into the document, read once through the load's capture, and `_source_references` lists the declared constants file so the revision authenticates the bytes the document carries. |
 | `src/haute/_pipeline_repair.py` | Unavailable-node removal planner and shared revision/plan verification, conservation and rollback service for explicit removal, reset and settings recovery. It never accepts client-authored bytes. |
 | `src/haute/_pipeline_repair_actions.py` | Bounded ordinary-node reset and settings-recovery planners (`build_recovery_action_plan`; a submodel has neither, and no registration or port form is updated); single-node codegen, shared palette defaults, isolated artifact-only preview and strict postconditions. Node-scoped saves and resets write a sidecar for every node that emits one (`node_emits_sidecar`), so a stepped transform's optional polars sidecar is updated alongside its regenerated body. |
 | `src/haute/_submodel_recovery.py` | Literal submodel registration identity evidence (`submodel_registration_evidence`) used only by recovery and raw revision discovery: a registration's definition is `<module>.submodel` for a module the file's submodel imports map to its file, or a file-path literal, the removed form, whose occurrence is still identified so it shows unavailable with the parser's message. A module the file does not import names the file its import would read (`modules/<name>.py`), so its occurrence shows unavailable too. Conflicting identities, computed values and chained statements have no evidence. |
-| `src/haute/_sidecar.py` | Core read-side `.haute.json` contract: `SidecarModel`, the typed absent/valid/corrupt/unreadable read state, and the sidecar source/position normalisers. Lives outside the web layer so editor recovery never imports routes. |
+| `src/haute/_sidecar.py` | Core read-side `.haute.json` contract: `SidecarModel`, the typed absent/valid/corrupt/unreadable read state (a sidecar that is not UTF-8 is corrupt; a leading byte order mark is dropped), and the sidecar source/position normalisers. Lives outside the web layer so editor recovery never imports routes. |
 | `src/haute/routes/__init__.py` | Package docstring only — no code. |
-| `src/haute/routes/_helpers.py` | Re-exports the core sidecar read contract and `load_pipeline_editor_document` for route consumers; path/index/watcher/WebSocket helpers; strict `parse_pipeline_to_graph`; the sidecar write path (`save_sidecar`); historical-commit parsing; the shared `save_lock`; and `project_write(project_root, work)`, the one way into the project for the editor's writes (the form's save, a Files panel's upload or delete): in turn with every other save (`save_lock`), in the thread pool, under the repository's lock a branch switch holds too (`repository_mutation`), so a write's checks, the write and its capture on the save ledger are never split. |
-| `src/haute/routes/pipeline.py` | `/api/pipelines`, `/api/pipeline`, `/api/pipeline/{name}`, `/api/pipeline/editor-identities`, `/api/pipeline/polars-steps/render`, `/api/pipeline/polars-steps/free-code-columns`, `/api/pipeline/save`, `/api/pipeline/repair/remove/dry-run`, `/api/pipeline/repair/remove/apply`, `/api/pipeline/read-json`, `/api/pipeline/trace`, `/api/pipeline/preview`, `/api/pipeline/preview/inputs`, `/api/pipeline/recovery-preview`, `/api/pipeline/write-output`, `/api/pipeline/output-destination` — plus the supersession-key builders, shared output-request preparation, `_prepare_runtime_graph` request containment, runtime-input/output path validators, and memory-limit-to-HTTP-exception translators shared across graph-executing route families. |
+| `src/haute/routes/_helpers.py` | Re-exports the core sidecar read contract and `load_pipeline_editor_document` for route consumers; path/index/watcher/WebSocket helpers, among them `pipelines_naming_artifacts` (the pipelines whose recovery document reads a changed file, for the watcher and the save) and `shared_document_updates` (the other documents a save's writes changed); strict `parse_pipeline_to_graph`; the sidecar write path (`save_sidecar`); historical-commit parsing; the shared `save_lock`; and `project_write(project_root, work)`, the one way into the project for the editor's writes (the form's save, a Files panel's upload or delete): in turn with every other save (`save_lock`), in the thread pool, under the repository's lock a branch switch holds too (`repository_mutation`), so a write's checks, the write and its capture on the save ledger are never split. |
+| `src/haute/routes/pipeline.py` | `/api/pipelines`, `/api/pipeline`, `/api/pipeline/{name}`, `/api/pipeline/editor-identities`, `/api/pipeline/polars-steps/render`, `/api/pipeline/polars-steps/free-code-columns`, `/api/pipeline/save`, `/api/pipeline/repair/remove/apply`, `/api/pipeline/repair/connection/remove/apply`, `/api/pipeline/repair/recover/apply`, `/api/pipeline/node/save`, `/api/pipeline/read-json`, `/api/pipeline/trace`, `/api/pipeline/preview`, `/api/pipeline/preview/inputs`, `/api/pipeline/recovery-preview`, `/api/pipeline/write-output`, `/api/pipeline/output-destination` — plus the supersession-key builders, shared output-request preparation, `_prepare_runtime_graph` request containment, runtime-input/output path validators, and memory-limit-to-HTTP-exception translators shared across graph-executing route families. One interactive run serves preview, trace, the OUTPUT dry run and the free-code columns (`_InteractiveRun`, `_run_interactive`, and for the HTTP answers `_interactive_failures`), and one transport, `_apply_repair`, the three repair-apply routes and the node-scoped save. |
 | `src/haute/routes/files.py` | `/api/files` (directory browse), `/api/schema` (flat-file plus XML structured-record schema/preview) and `/api/model-file` (model-file inspection for the Model Scoring editor). |
 | `src/haute/routes/project_files.py` | `/api/project-files`: list, write (raw streamed body), download and delete the files of the two places, the pipeline folder's versioned `files/` and the root's local `data/` and `outputs/`, with the save-ledger capture of a pipeline-place write or delete. |
 | `src/haute/routes/io_capabilities.py` | `/api/io-capabilities`, the versioned provider/format/cache capability contract consumed by the input and output editors. |
@@ -32,18 +32,19 @@
 | `src/haute/routes/cache.py` | `POST /api/cache/nodes`, the per-node inventory of stored datasets plus owners outside the open graph; `POST /api/cache/clear`, which clears the identities a report's row names; and `GET /api/cache/usage`, the store's size for the preview status bar. The inventory answers explicit requests rather than polling. |
 | `src/haute/routes/banding.py` | FastAPI router (`/api/banding`): whole-dataset statistics for the banding factor being edited, delegating to `_banding_stats.py`. |
 | `src/haute/routes/rating.py` | FastAPI router (`/api/rating`): whole-dataset levels for the raw factor columns a Rating Step rates on, delegating to `_rating_levels.py`. |
-| `src/haute/routes/_rating_levels.py` | Reads those levels over the node's shared data point under `run_synchronous_analysis`, keyed by the rating lookup's own key expression. |
+| `src/haute/routes/_rating_levels.py` | Reads those levels over the node's shared data point as a `PointAnalysisService`, keyed by the rating lookup's own key expression. |
+| `src/haute/routes/_point_analysis.py` | `PointAnalysisService`, the base of the banding-statistics and rating-levels services: consumer resolution (400 for invalid wiring), the demand widened by the columns a request reads, `run_synchronous_analysis` over the service's own cache, the cache-required answer for a point that is not current or whose data changed, and 422 for a column the data lacks (`columns_missing`). `most_common_values` counts, sorts and caps a column's values inside the lazy plan and takes the distinct count from a separate unique count. |
 | `src/haute/routes/_node_data_service.py` | `NodeDataService`: consumer point responses, delegation, explicit node-output build jobs in isolated workers, the data-profile job, supersession, cancellation, and clear. `points_for_graph` resolves every node of a graph against one resolver for the per-node cache report, returning each node's input-snapshot identity digest alongside its point. |
 | `src/haute/routes/_synchronous_analysis.py` | Request-time analyses of a leased point: admitted execution, memoisation by data version, and client-disconnect cancellation. |
-| `src/haute/routes/utility.py` | `/api/utility` CRUD (list/read/create/update/delete) for `utility/*.py` helper modules, with AST syntax validation on every write; create first refuses (`_validate_new_module_name`) a hard keyword or `is_windows_reserved_filename` stem (400) and a case-folded duplicate of an existing `utility/*.py` (409); create and update first run `_refuse_new_name_violations`, which parses each discovered pipeline mentioning `utility` with the current and the edited utility reader and refuses the support-code violations only the edit adds. |
-| `src/haute/routes/_save_pipeline.py` | `SavePipelineService` — the transactional save orchestrator: singleton/name-collision/load-error validation, codegen invocation (`_write_generated_code_files` stages every generated file through the output allowlist, then an empty package marker in each `modules/` folder it wrote a definition module into that has none, never overwriting one), config-file + sidecar writes, stale-config cleanup, and rollback. Global constants: save takes the constants load state from the file on disk (`_adopt_disk_global_constants_state`), `validate_graph` refuses what would shadow the reserved name or read an undefined constant (`_validate_global_constants`), and the constants file is written with the node configs, retired with the stale ones, and left untouched while it fails to load. `capture_save_in_ledger` commits a save's files on the clone's ledger — no repository, no capture; no working branch chosen a warning with the files left uncaptured; a missing identity reported; a failure a warning — for the pipeline save and the workbench's form save alike. |
+| `src/haute/routes/utility.py` | `/api/utility` CRUD (list/read/create/update/delete) for `utility/*.py` helper modules, with AST syntax validation on every write; create first refuses (`_validate_new_module_name`) a hard keyword or `is_windows_reserved_filename` stem (400) and a case-folded duplicate of an existing `utility/*.py` (409); create and update first run `_refuse_new_name_violations`, which parses each discovered pipeline mentioning `utility` with the current and the edited utility reader and refuses the support-code violations only the edit adds. Every route first resolves the folder with `contained_path(project root, pipeline_dir() / "utility")` (`_utility_root`, 403 when it leads outside) and each file with `contained_path(folder, "<module>.py")`. Create, update and delete run under `project_write`: create publishes a staged file without replacing one (`atomic_create_text`; 409 when one appeared), update replaces it with `atomic_write_text`, and update and delete first compare the file's revision (`file_revision`, size and modification time) with the request's (412 when it changed); each write is captured with `capture_save_in_ledger`, a create together with the package marker file it adds, and answers the revision the file had as it was published, read before that capture as a project file's write reads it, so a change another editor makes during the capture refuses the next write (412) rather than being answered as this one's. |
+| `src/haute/routes/_save_pipeline.py` | `SavePipelineService` — the transactional save orchestrator: singleton/name-collision validation, codegen invocation (`_write_generated_code_files` stages every generated file through the output allowlist, then an empty package marker in each `modules/` folder it wrote a definition module into that has none, never overwriting one), config-file + sidecar writes, stale-config cleanup, and rollback. Global constants: save takes the constants load state from the file on disk (`_adopt_disk_global_constants_state`), `validate_graph` refuses what would shadow the reserved name or read an undefined constant (`_validate_global_constants`), and the constants file is written with the node configs, retired with the stale ones, and left untouched while it fails to load. `capture_save_in_ledger` commits a save's files on the clone's ledger — no repository, no capture; no working branch chosen a warning with the files left uncaptured; a missing identity reported; a failure a warning — for the pipeline save and the workbench's form save alike. Before anything is written, the pipeline file's editor document and its strict graph are each loaded once (`_read_on_disk`): the document for the revision check (`_require_base_revision`) and, for the editor's Save (`require_ready`), its readiness; the graph for the definition lifecycle and the stale-config baseline. Only the verification after the write loads them again. `_project_relative` is the one check of a codegen output or delete path (400 for an empty, absolute or climbing path) and `resolve_definition_file` the one resolution of a recorded definition file (400 malformed, 403 outside the project), which the submodel routes use too. |
 | `src/haute/routes/_supersession.py` | `SupersessionCoordinator` / `_SupersessionState` — generation-counted "run latest, cancel/skip the rest" concurrency primitive used by preview, trace and the free-code column resolution. |
 | `src/haute/routes/output_assemble.py` | `POST /api/output-assemble/dry-run` — validates an unsaved `outputMapping`, swaps it into the target node's in-memory config, executes up to that node, returns the rendered document. |
 | `src/haute/routes/_contract_errors.py` | Shared public-contract-error adapter: validates the closed public error set, emits stable payloads, maps synchronous failures to HTTP 422, and supplies the matching contract-error fields for background jobs. Also owns `memory_limit_http_exception`, the one memory-limit → 507 mapping; a job-backed surface passes its operation noun so the detail also carries the curated message. |
 | `src/haute/routes/_validation_errors.py` | `request_validation_error_handler`: FastAPI's 422 for a request its models refuse, the list of errors as FastAPI gives them, `loc`, `msg` and `type` each, without the `input` refused or its `ctx`, so a refused form is never repeated in the answer; the editor's server and the underwriter app both install it. |
 | `src/haute/routes/_error_handlers.py` | The application exception handlers, installed by `install_exception_handlers(app)`: a request its models refuse → `request_validation_error_handler`, public contract errors → `contract_error_http_exception`, `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → `memory_limit_http_exception`, `GitError` → `git_error_http_exception`, `PathOutsideProjectError` / `InvalidPathError` → 403 / 400 with the bare message. A handler reached from a WebSocket re-raises, because an HTTP response cannot answer it. |
 | `src/haute/routes/_runtime_path_errors.py` | Closed HTTP mapping for runtime-path failures: malformed path → 400, project-root escape → 403, selected by concrete exception type rather than message text. |
-| `src/haute/_node_config_recovery.py` | Current contracts and field reconciliation. |
+| `src/haute/_node_config_recovery.py` | Current contracts and field reconciliation, its issues taken from the engine's own validators at JSON-pointer paths. |
 | `src/haute/_artifact_paths.py` | Contained project-relative artifact paths (traversal/alias/reparse-point rejection) and bounded artifact reads shared by recovery and the mutation lock; `ordinary_path_problem` reports which rule a path breaks, so recovery and project files word their refusals themselves, and `PATH_PROBLEMS` words them for the workbench's form and deploy's test-quote folder, after the path it names. |
 | `src/haute/_recovery_sources.py` | Raw authored settings/code evidence and scaffold matching for the recover action. For a stepped node type it reconciles the recovered `steps` against the extracted body through the parser's own `_reconcile_steps`, so a hand-edited body is never regenerated from stale steps when the candidate materialises; a discarded list is reported as a `/steps` `removed` change. A step list the parser rejects outright (a malformed container, or a list beside an `inputMapping` an edges surface refuses) is dropped with the same change record rather than propagated, because recovery never raises on a bad field and the route would otherwise answer HTTP 500; the key is removed rather than defaulted to `[]`, which would materialise as empty code and discard the authored body. |
 | `src/haute/_recovery_schemas.py` | Engine field-outcome and issue types. |
@@ -261,7 +262,7 @@ when a path/query/body fails model validation):
 | `GET /api/pipeline` | No body | First discovered authored `PipelineEditorDocument`, irrespective of load status; a new empty ready document only when no authored document exists. Readable authored errors remain HTTP 200. The `x-haute-document-fingerprint` header carries `pipeline_document_fingerprint` of the returned document. |
 | `GET /api/pipeline/{name}` | Pipeline name path parameter | Named `PipelineEditorDocument`; a readable non-ready document is found by recovered metadata or file stem and remains HTTP 200. Carries the same `x-haute-document-fingerprint` header. |
 | `POST /api/pipeline/editor-identities` | `EditorIdentitiesRequest {nodes:[{node_id,label,node_type,source_handles}], graph?, allocate=false}` | `EditorIdentitiesResponse {identities:[{node_id,label,alias,collision,function_name,config_reference,default_input_name,source_handle_input_names}], violations}` in exact request order; public handles are sanitised server-side, each node's `label`/`alias` is its resolved name (allocated with `allocate`), `collision` is the naming rule's refusal of it (only with a naming context and without `allocate`), `violations` lists the naming context's name violations after the nodes are applied (`null` without one), and the operation writes no project state. |
-| `POST /api/pipeline/save` | `SavePipelineRequest {name="main", description="", graph={}, preamble=null, preserved_blocks=[], source_file="", sources=["live"], active_source="live", base_revision}`; `base_revision` is a required `RevisionToken | null` | `SavePipelineResponse {status="saved", file, pipeline_name, source_revision, warnings=[], git_sha=null, identity_required=false, uncaptured=[]}`, or `409` with a flat `detail` beginning `stale_document_revision:` when `base_revision` does not equal the on-disk `source_revision` (`null` versus an existing file, or a token versus a missing file, are mismatches) |
+| `POST /api/pipeline/save` | `SavePipelineRequest {name="main", description="", graph={}, preamble=null, preserved_blocks=[], source_file="", sources=["live"], active_source="live", base_revision, connection_id=null}`; `base_revision` is a required `RevisionToken | null`; an `active_source` not in `sources` is a 422 before anything is staged; `connection_id` names the saving tab's socket, left out of the route's broadcast of the saved document | `SavePipelineResponse {status="saved", file, pipeline_name, source_revision, document_fingerprint, warnings=[], git_sha=null, identity_required=false, uncaptured=[]}`, or `409` with a flat `detail` beginning `stale_document_revision:` when `base_revision` does not equal the on-disk `source_revision` (`null` versus an existing file, or a token versus a missing file, are mismatches) |
 | `POST /api/pipeline/read-json` | `ReadJsonRequest {path}` | `ReadJsonResponse`, a root JSON object (arrays/scalars are rejected) |
 | `POST /api/pipeline/polars-steps/render` | `PolarsStepsRenderRequest {steps:[object], input_names:[str], start:"input"|"frame"}` (`start` is required: `input` renders a transform's list, `frame` a surface whose `df` is already bound) | `PolarsStepsRenderResponse {ok, code, step_lines:[[start,end]], step_index, message}`; a step validation failure is `ok: false` with HTTP 200, an empty frame-mode list is `ok: true` with empty code, and the call touches no project state and executes no authored code |
 | `POST /api/pipeline/polars-steps/free-code-columns` | `PolarsFreeCodeColumnsRequest {node_id, steps:[object], input_names:[str], start:"input"|"frame", input_columns:{name:[ColumnInfo]}, frame_columns:[ColumnInfo]}` (all required; `node_id` keys supersession, `input_columns` holds the columns the editor knows for each input and names only `input_names`, `frame_columns` those of a frame-mode surface's `df` and must be empty in `input` mode) | `PolarsFreeCodeColumnsResponse {free_code_columns:[{step_index, columns:[ColumnInfo] or null, message}]}`: one entry per `free_code` step, in step order (none, without running anything, for a list with no `free_code` step); a list that does not render is 422 with the step's message. Each entry is the schema of `df` after that step, resolved by `_polars_steps.resolve_free_code_columns`, which executes the rendered lines up to the end of the step through `_exec_user_code` (no preamble) over empty `LazyFrame`s built from the supplied columns (each dtype rebuilt from its `str(dtype)` rendering by `_polars_dtypes.parse_rendered_dtype`) and reads `collect_schema()`. An entry whose code names an input with no supplied columns, whose frame-mode `df` has none, whose supplied dtype cannot be rebuilt, or whose execution or schema resolution raises has `columns: null` and a one-line `message`; a resolved entry has an empty `message`. The route admits a `PREVIEW_EAGER` context (operation `polars_free_code_columns`) and, in process mode, runs the resolution in the interactive worker pool under that budget (affinity and `_free_code_supersession` key `("polars_free_code_columns", node_id)`) with `timeout_seconds=FREE_CODE_COLUMNS_TIMEOUT_SECONDS` (5.0, read per call); a newer request for the same node stops the running one through `stop_reason` and a disconnected client does through `await_until_disconnected`, both answering 409 / 499. A worker timeout, memory limit, crash, remote or start failure, or an admission refusal is not an error: every `free_code` entry gets `columns: null` and one parent-authored message (`"The code did not finish within 5 seconds."` for a timeout). Thread mode runs it through `run_blocking_with_response_timeout` with the same deadline and returns the same timeout entries; the thread runs on, holding its admission until it ends |
@@ -285,12 +286,12 @@ when a path/query/body fails model validation):
 | `POST /api/input-cache/status` | Canonical `dataInput` config | Current published-generation readiness, freshness, metadata, and active job. It reads through `input_snapshot_read_status`, which reports `building` from a running build or this process's preparation of the snapshot before touching the store, and otherwise the store's verified status; the assistant's data check uses the same helper's metadata-only form |
 | `POST /api/input-cache/clear` | Canonical `dataInput` config | Clears published cache generations when no active lease prevents deletion |
 | `GET /api/input-cache/jobs/{job_id}` / `DELETE /api/input-cache/jobs/{job_id}` | Job id | Polls or requests cancellation of a cache build |
-| `GET /api/utility` | No body | `UtilityListResponse {files:[{name,module}]}` |
-| `GET /api/utility/{module}` | Python-identifier module path | `UtilityReadResponse {name,module,content}` |
-| `POST /api/utility` | `UtilityCreateRequest {name, content=""}` | `UtilityWriteResponse {status="ok", name, module, import_line, error=null, error_line=null}` |
-| `PUT /api/utility/{module}` | `UtilityWriteRequest {content}` | `UtilityWriteResponse` |
-| `DELETE /api/utility/{module}` | Module path | `UtilityDeleteResponse {status="ok", module}` |
-| `POST /api/output-assemble/dry-run` | Route-local `OutputAssembleDryRunRequest {graph, node_id, output_mapping=[], output_format="json", row_limit=100 (1..10000), source="live"}` | Route-local `OutputAssembleDryRunResponse {status, document=[], row_count=0, error=null}` |
+| `GET /api/utility` | No body | `UtilityListResponse {files:[{name,module}]}`; 403 when `utility/` resolves outside the project, as for every utility route |
+| `GET /api/utility/{module}` | Python-identifier module path | `UtilityReadResponse {name,module,content,revision}`; 404 when the file is missing |
+| `POST /api/utility` | `UtilityCreateRequest {name, content=""}` | `UtilityWriteResponse {status="ok", name, module, import_line, revision, git_sha, identity_required, warnings, uncaptured}`; 409 `file_exists` for a file that appeared since the name check |
+| `PUT /api/utility/{module}` | `UtilityWriteRequest {content, revision}` | `UtilityWriteResponse`; 404 when the file is missing, 412 `file_changed` when its revision is not the request's (nothing written) |
+| `DELETE /api/utility/{module}` | Module path, query `revision` | `UtilityDeleteResponse {status="ok", module, git_sha, identity_required, warnings, uncaptured}`; 404 when the file is missing, 412 `file_changed` when its revision is not the request's (nothing deleted) |
+| `POST /api/output-assemble/dry-run` | `OutputAssembleDryRunRequest {graph, node_id, output_mapping=[], output_format="json", row_limit=100 (1..10000), source="live"}` | `OutputAssembleDryRunResponse {status: "ok"|"error", document=[], row_count=0, error=null}` |
 
 `TraceResultResponse` requires `omissions`, `correlation_diagnostics`, `generated_at`, and
 `execution_origin`; these are not compatibility defaults. Each successful step requires a
@@ -308,7 +309,9 @@ The client sends `{"type":"resync","source_file":str,"document_schema_version":1
 "document_fingerprint"?:sha256}`; a resync whose `document_schema_version` is not the
 current literal `1` receives a `parse_error` frame naming the unsupported version, and
 plain text, malformed JSON, non-object JSON, and unknown message types are keep-alive
-no-ops. The server sends exactly three frame types: a complete
+no-ops. The server sends exactly four frame types: first, on every connection,
+`{"type":"sync_connection","connection_id":str}`, the id it gave that socket; then a
+complete
 `{"type":"pipeline_document_update","schema_version":1,"document":object,
 "document_fingerprint":sha256,"source_file":str,"origin"?:object}`,
 `{"type":"parse_error","error":str,"source_file":str}`, or
@@ -316,7 +319,10 @@ no-ops. The server sends exactly three frame types: a complete
 folder, named as the workbench's status names it, changed on disk (see [workbench](../workbench/low-level.md)). `origin` is present only on an
 update an assistant apply or undo published: `{"kind":"assistant","session_id":str,
 "change_id":str,"node_ids":[str]}` (see [assistant](../assistant/high-level.md)); the
-watcher and resyncs never send it.
+watcher and resyncs never send it. A save publishes its document update with
+`exclude_connection` (`{connection_id, owner}`), which the forwarder removes from the
+frame and hands to `broadcast`: the socket with that id is skipped only when its owner
+(the `PlatformProxyBoundary` user when hosted, `None` locally) is the save's.
 A matching document fingerprint produces no frame. Every fingerprint — in these frames, in a
 resync comparison, and in the load routes' `x-haute-document-fingerprint` header — is
 `pipeline_document_fingerprint`: SHA-256 over `canonical_json` of the document's JSON-mode,
@@ -350,8 +356,7 @@ used plans fail at the tool boundary before save. Runtime execution and
 external writes remain separate user-initiated operations; v1 exposes no
 assistant execution tool.
 
-**Startup.** `_lifespan()`: `_clear_bytecache()` (rmtree every `__pycache__` under
-`src/haute/`) → `configure_logging()` → `_load_env(Path.cwd())` → validate and cache
+**Startup.** `_lifespan()`: `configure_logging()` → `_load_env(Path.cwd())` → validate and cache
 execution-telemetry and optimiser-housekeeping configuration →
 `recover_json_runtime_storage()` (reaps dead-process spills and orphaned runtime storage under `.haute_cache`) →
 `_ensure_pipeline_index()` (builds the name→path index once, under a double-checked lock) →
@@ -391,7 +396,8 @@ inside the `if static_build_ready(STATIC_DIR)` block, and is absent entirely in 
 **`/ws/sync` connection.** Reject (close code 1008) if `websocket_rejection_reason` finds a
 problem with headers/query params (or if that check itself raises `AttributeError` — treated
 as "missing metadata", also rejected). Otherwise accept, register in `ws_clients` (lock-
-guarded), and loop `receive_text()` → `_handle_ws_sync_message`: a plain non-JSON string is a
+guarded) with a fresh `secrets.token_urlsafe` connection id and the scope's owner, send
+the `sync_connection` frame, and loop `receive_text()` → `_handle_ws_sync_message`: a plain non-JSON string is a
 no-op keep-alive; a JSON `{"type": "resync", ...}` runs `_prepare_ws_resync` in a thread pool
 (discover pipelines, hash-check the fingerprint, parse if changed) and replies only to the
 requesting socket — an unchanged fingerprint short-circuits to no reply at all. Disconnect
@@ -400,7 +406,7 @@ its send-state.
 
 **File watcher loop.** `_watcher_forever()` wraps `_file_watcher()` in a crash-restart loop
 (`_WATCHER_RESTART_DELAY_SECONDS = 0.1`; `CancelledError` propagates, everything else logs
-and restarts). `_file_watcher()` watches `cwd`, the pipeline directory, `modules/`, and
+and restarts). `_file_watcher()` watches `cwd`, the pipeline directory and its
 `config/` (each only if it exists and differs from `cwd`) via `watchfiles.awatch`
 (recursive); if `watchfiles` isn't installed, live sync is disabled with a warning, not a
 crash. Every filesystem event batches into `pending_changes`; a 300ms debounce timer
@@ -422,9 +428,12 @@ crash. Every filesystem event batches into `pending_changes`; a 300ms debounce t
    last-broadcast fingerprint, so an external restore of previously broadcast content is
    broadcast rather than deduplicated.
 4. Classifies each remaining `.py`/`.json` change: `config/*.json` → re-parse every
-   discovered pipeline; `modules/*.py` → re-parse only pipelines importing that module stem
-   (case-insensitively, via `_module_dep_key`); any other `.py` (excluding `utility/` and
-   dunder-prefixed files) → re-parse that pipeline directly when added/modified. Any direct
+   discovered pipeline; a `.py` file some pipeline imports (`pipelines_importing_module`,
+   the module-dependency map keyed by each registration's `modules/<name>.py` resolved
+   beside its own pipeline, case-insensitively via `_module_dep_key`) → re-parse only
+   those importers, whether it was added, modified or deleted; any other `.py`
+   (excluding `utility/` and dunder-prefixed files) → re-parse that pipeline directly when
+   added/modified, and nothing when it is not a discovered pipeline. Any direct
    pipeline `.py` addition, modification, or deletion invalidates the pipeline name→path
    index before discovery; a deletion is not reparsed. Module and config changes (including
    deletion) do not discard an otherwise valid pipeline index.
@@ -468,17 +477,26 @@ already showing that document drops the frame (see
 
 **Pipeline save (`SavePipelineService.save`)**, run inside the process-wide `save_lock` (an
 `asyncio.Lock`, so it serialises against concurrent submodel create/dissolve as well as
-concurrent plain saves, but does not coordinate another worker process):
+concurrent plain saves, but does not coordinate another worker process). In its worker
+thread the whole of steps 1–11 also holds the repository's `repository_mutation` lock that
+every Git mutation holds, entered after `save_lock` as `project_write` enters it, so a
+milestone, restore or switch never meets a half-written save
+([git-integration](../git-integration/low-level.md)):
 1. Flatten submodel occurrences and validate the singleton groups with
    `validate_singleton_groups` (at most one request input, `apiInput` or `workbenchInput`, and
    one response node, `output` or `workbenchOutput`; any number of `liveSwitch` nodes, each routed by the active source) across the resulting executable pipeline, then validate
    unique sanitized node names (per-graph, then cross-module against every embedded submodel
-   graph), that no Quote Input table is labelled like another node's sanitized name, and
-   that no node carries a `_load_error` marker. A submodel boundary cannot hide a
+   graph), and that no Quote Input table is labelled like another node's sanitized name. A
+   submodel boundary cannot hide a
    second singleton, and creating another occurrence of a definition that contains one counts
    as another executable singleton. A node other than a submodel occurrence carrying
    `instanceOf` is refused.
-2. Resolve and validate `source_file` against the active pipeline root.
+2. Resolve and validate `source_file` against the active pipeline root, and load
+   the file's editor document and its strict graph, once each: they serve every
+   later step, and only the reparse of what was written (step 10) loads them again.
+   The editor's Save first refuses a document that is not ready on disk (409 with its
+   diagnostics); the assistant may save over a degraded document whose revision it
+   holds.
    Then require `base_revision` to equal the on-disk document's `source_revision`
    (`null` only when the target file does not exist); a mismatch raises
    `StaleDocumentRevisionError`, which the route returns as a `409` whose flat `detail`
@@ -490,12 +508,13 @@ concurrent plain saves, but does not coordinate another worker process):
    conflict before the artifact changes. An application lock cannot make the multi-file
    commit atomic against external writers, so this is the guarantee: no owned artifact is
    replaced after it moved, and the window is the single atomic rename of each file.
-   Before the remaining preflights, parse the current persisted parent and
-   diff its canonical definition registry against the submitted graph. Every
+   Before the remaining preflights, diff the canonical definition registry of
+   the persisted parent's strict graph against the submitted graph. Every
    added definition path becomes both a no-clobber target and a
    transaction-local managed ownership claim. Every removed definition path
    becomes a deletion candidate only when its persisted sidecar names this
-   parent and a complete project-wide reference audit finds no other parent.
+   parent and a complete project-wide reference audit, one for every removed
+   definition together, finds no other parent.
    When the same canonical child path exists in both registries, its exact
    `definitionId` must also match; identity substitution fails `409`.
 3. Resolve every derived no-clobber entry against the same module allowlist and
@@ -518,11 +537,11 @@ concurrent plain saves, but does not coordinate another worker process):
    folder found elsewhere on `sys.path`. Like every staged write it is checked against the
    step-2 observation and rolled back with the rest.
 6. Emit non-blocking warnings for structured `apiInput` nodes with no `tables[]` yet.
-7. Write per-node config JSON sidecars (collision-checked against protected load-error paths
-   and against each other, casefolded).
+7. Write per-node config JSON sidecars (collision-checked against each other, casefolded).
 8. Write the parent `.haute.json` position sidecar. For each child whose
    ownership passed step 3, write positions plus `managed_parent`. All sidecar
-   writes are transactional.
+   writes are transactional, and `save_sidecar` marks each one a self-write with the
+   bytes it commits.
 9. Stage deletion of any derived submodel source and
     its sibling `.haute.json` sidecar (skipping any that casefold-collide with a path this
     same save just wrote).
@@ -533,7 +552,8 @@ concurrent plain saves, but does not coordinate another worker process):
    staged delete); an external edit that landed mid-transaction is left in place and logged
    as `rollback_skipped_external_change`.
 11. Only after every write commits: delete stale config files (the diff from step 4, minus
-    what this save just wrote or protects), invalidate the pipeline index, and — if the
+    what this save just wrote or protects), each marked a self-write deletion first,
+    invalidate the pipeline index, and — if the
     project has a recorded git working branch — capture the save in the git ledger
     (`_git.commit_save`); `GitDomainError`/`GitError` become response warnings because the
     on-disk save already succeeded (if version capture was skipped because git lacks a
@@ -541,7 +561,18 @@ concurrent plain saves, but does not coordinate another worker process):
     other capture failure leaves it `false`; either way `uncaptured` names the files the
     capture left off the ledger), while an unexpected exception still propagates
     after the filesystem transaction and stale cleanup have committed. Return the
-    committed `source_revision` with the normal response fields.
+    committed `source_revision` and the committed document's fingerprint with the normal
+    response fields, keeping the committed document as `committed_document` for the
+    route, which publishes it (`pipeline_document_update_payload`) with the request's
+    `connection_id` excluded. The watcher skips the save's own writes, so the route
+    then publishes, to every tab, each other pipeline's document the save changed
+    (`shared_document_updates`): one importing a module the save wrote, or whose
+    recovery manifest names a file it wrote (`pipelines_naming_artifacts`), as when
+    two pipelines share a submodel. The save has committed by then, so nothing there
+    changes its answer: a document that cannot be loaded is logged
+    (`save_shared_document_unpublished`) and left out, and a failure to find them at
+    all (an unreadable candidate pipeline file, say) is logged
+    (`save_shared_documents_unpublished`) with none published.
 
 **Executable graph request containment.** Before work starts, every route that
 executes or profiles a client-supplied graph confines it to the configured
@@ -587,6 +618,26 @@ crash whose exit code looks memory-limited under a configured growth cap
 `builtins.MemoryError` (`reason="worker_memory_exhausted"`), and a remote exact
 `NativeMemoryLimitUnsupportedError` (`reason="native_memory_cap_unavailable"`). Any
 other pool-worker crash logs and returns the redacted internal 500.
+
+**One interactive run** (`routes/pipeline.py`). Preview, trace, the OUTPUT dry run and
+the free-code columns each do their work through `_run_interactive`, with an
+`_InteractiveRun` holding the operation's name, its cancellation token and its admission.
+It admits a `PREVIEW_EAGER` context under the token. In process mode it calls the
+operation's worker function with the arguments it builds for the admitted budget, under
+the run's affinity key and time limit, a `stop_reason` that reads the token, the budget's
+process and growth limits and the required-memory policy, then runs the operation's
+`after_worker` once that call settles (the preview's staging discard). In thread mode it
+runs the operation's thread function on the admitted context through
+`run_blocking_with_response_timeout`. Each operation has one body the worker and the
+thread both run (`_preview_response`, `_trace_payload`, the dry run's
+`_assembled_document`); the worker wraps it in a child-local context. The three HTTP
+routes answer through one ladder, `_interactive_failures`: the memory budget 507, a
+deadline 504 with the operation's message and the token cancelled, a newer request 409,
+a crashed or failed worker through the crash and remote mappers, a public contract error
+its payload; it then releases the admission, or for a thread still running past its
+deadline defers the release until the thread ends. Each route answers its own
+conditions inside it first and re-raises the public contract errors to it. The
+free-code columns turn every failure but a stop into the steps' messages themselves.
 
 **OUTPUT dry-run** (`routes/output_assemble.py`): validate the mapping shape
 (`validate_v2_output_mapping`, data-independent) → flatten the graph → locate and type-check
@@ -900,6 +951,13 @@ is aligned to the user's rules and `unmatched_count` is the rest, both from
 [`banding_rule_claim_expr`](../rating/low-level.md#which-rule-claimed-a-row--bandingruleclaimexpr-ratingpy),
 so the editor shows the counts a run would produce.
 
+The skeleton of this answer (consumer resolution, the widened demand, the analysis and its
+memo, `cache_required`, the missing-column 422) is `PointAnalysisService`
+(`routes/_point_analysis.py`), which the rating levels below share. Its
+`most_common_values` counts, sorts and caps the values inside the lazy plan and takes
+`distinct_count` from `n_unique()`, so a column of many distinct values collects only the
+ones returned.
+
 Three conditions are HTTP 422: a column the data does not have (whether the projection or the
 schema finds it), a numeric mode on a column it cannot compare, and rules execution itself would
 refuse — the last carrying execution's own message. The repository keeps `HTTPException.detail` a
@@ -974,9 +1032,9 @@ later write and cleanup checks still compare against the captured identities.
 - **Windows `.js` MIME type.** The Windows registry commonly maps `.js` to `text/plain`,
   which browsers reject as a script; `mimetypes.add_type` is patched at module import, before
   any `StaticFiles`/`FileResponse` construction.
-- **Self-write cooldown vs. per-path content tracking.** `is_self_write()` supports two modes: a
-  bare cooldown check (`now - _last_self_write < 2.0s`) for callers with no specific path, and
-  a per-path content match for the file watcher's per-event check. A path marker records the
+- **Self-writes are tracked per path, by content.** `mark_self_write(path, ...)` and
+  `is_self_write(path)` always name a path: the file watcher checks each event against the
+  marker for its own path. A path marker records the
   SHA-256 of the bytes the server committed, or a deletion flag; it matches only while the
   current file bytes (or absence) still equal that identity, and `consume=True` removes the
   entry on match. A marker whose identity no longer matches is discarded so a later external
@@ -1009,12 +1067,14 @@ later write and cleanup checks still compare against the captured identities.
   snapshots the pipeline-index generation; it publishes only if that generation is still
   current, otherwise it rescans. Invalidators therefore remain short and a stale in-flight
   dependency scan cannot overwrite them.
-- **Module-dependency keys are casefolded** (`_module_dep_key`) because the build side
-  derives a module stem from the `from modules import <name>` a registration names its
-  definition by (`extract_submodel_registrations`, each registration's derived
-  `modules/<name>.py`) while the watcher derives it from an *on-disk filename* — on
-  case-insensitive filesystems (macOS, Windows) those can differ in case and must still
-  match, or live-sync silently goes stale for that module.
+- **Module-dependency keys are resolved, casefolded paths** (`_module_dep_key`) because
+  the build side derives a module file from the `from modules import <name>` a
+  registration names its definition by (`extract_submodel_registrations`, each
+  registration's derived `modules/<name>.py` beside its own pipeline) while the watcher
+  passes an *on-disk path* — on case-insensitive filesystems (macOS, Windows) those can
+  differ in case and must still match, or live-sync silently goes stale for that
+  module. Two pipelines in different folders importing their own `modules/rates.py`
+  have two keys, so an edit refreshes only the importer beside the file.
 - **One refused pipeline leaves the module-dependency map whole.** `_ensure_module_deps`
   skips, with a `module_deps_parse_failed` warning, a pipeline that does not parse or whose
   submodel imports or registrations the parser refuses (the removed path form, an unused or
@@ -1060,7 +1120,9 @@ later write and cleanup checks still compare against the captured identities.
 | `ConfigError` | save, preview, output-assemble dry-run | 400 / embedded `NodeResult.error` / 422 | Save: bad `haute.toml`. Preview: swallowed into the node result so the canvas shows it in-situ. A public contract error that is also a `ConfigError` or `SchemaMismatchError` (`NodeConfigError`, `RatingFactorMissingError`) is not swallowed: in thread and process mode alike the preview answers its public 422, and the preview worker re-raises it with its payload. |
 | `ContractMismatchError` | trace, preview, output-assemble dry-run | 422 / embedded `NodeResult.error` / 422 | Message already names the node + symmetric column diff. |
 | `SchemaMismatchError` | preview | embedded `NodeResult.error` | Adapted identically to `ContractMismatchError`, so a propagated join-key dtype mismatch never becomes a generic 500. |
-| `ParseError` | preview | embedded `NodeResult.error` | Preview surfaces graph-shape issues per node. An unreadable document on the editor-document routes propagates to the request-ID backstop as a sanitized 500 (authored failures arrive as 200 degraded/source-only documents). |
+| `ParseError` | any route (application handler); preview execution | 400 / embedded `NodeResult.error` | `_parse_error_handler` answers a graph the browser sent that `flatten_executable_graph` refuses (a name collision, an undeclared handle) and save's structural refusals with the message and its context (`str(exc)`: the edge or definition it names), logged as `graph_refused`; every route that takes a graph flattens it before anything else. The preview shows that refusal on the node instead, as it does a graph-shape issue raised while it runs. An unreadable document on the editor-document routes propagates to the request-ID backstop as a sanitized 500 (authored failures arrive as 200 degraded/source-only documents). |
+| `TraceNodeFailedError` | trace | 422 | A failure the graph walk marked with the node it was building or running (`failing_node`) that is the node's own, not a run-level contract, schema, cancellation or memory error, raised as the public contract error `trace_node_failed` with `node_id` and a message naming the node with the failure's text, in the thread (`_trace_node_failures`) and in the worker alike. |
+| `TraceRequestError` family | trace | 409 / 400 / 404 | Mapped by type (`_TRACE_REFUSAL_STATUS`), by the `error_code` a worker's payload carries for an exact remote type: `trace_row_mismatch` and `trace_row_ambiguous` 409 (the preview is refreshed), `trace_row_out_of_range` and `trace_target_unsupported` (a multi-frame target, a Workbench Output table the trace cannot take) 400, `trace_target_not_found` 404. The detail is the message. |
 | `WorkbenchTablesError`, `WorkbenchInputError` | workbench tables; preview execution | 422 | A workbench node's tables the pipeline cannot take, or a Workbench Input with no port or a sample or request that does not fit its tables; the tables route and the preview worker (which maps a remote error by its exact class) answer the public payload. |
 | `ApiInputSchemaError` | json-cache; preview/write execution | 422 | JSON cache retains its `type` discriminator envelope; execution routes use the public-contract adapter (`api_input_schema_invalid`). |
 | `OutputMappingSchemaError` | output-assemble dry-run | 422 | Raised both by the schema-only pre-check and if execution surfaces it deeper (an unmapped port). |
@@ -1074,7 +1136,8 @@ later write and cleanup checks still compare against the captured identities.
 | `DataOutputDestinationExistsError` | `POST /api/pipeline/write-output` | 409 | `overwrite=false` refuses an existing file/table before publication and returns the destination in the detail. |
 | `SupersededRequestError` | preview, trace, free-code columns | 409 | Raised by `SupersessionCoordinator`; the worker never runs for a superseded generation. |
 | `IsolatedWorkerTimeoutError`, `BlockingWorkTimeoutError`, `TimeoutError` | preview, trace, input-snapshot and API Input table builds, output write, output-assemble, Explore | 504 / timed-out job | Production process mode kills and joins the exact worker before returning or transitioning the job. Explicit thread compatibility mode is opt-in and retains cooperative/deferred cleanup; it is never selected after a process-start failure. |
-| `HTTPException` (raised directly) | path validation, node lookup, syntax checks | 400 / 403 / 404 / 409 | `raise_node_not_found`, `raise_node_type_error`, `raise_pipeline_not_found`, `raise_validation_error` centralise the structured-log + raise pattern. |
+| `RequestRefusedError` family | any route (application handler); background jobs | its `status_code`: 400 `InvalidRequestError`, 403 `ForbiddenError`, 404 `NotFoundError`, 409 `ConflictError`, 410 `GoneError`, 422 `UnprocessableError`, 500 `ServiceFailedError`, 507 `InsufficientMemoryError`, or the status a refusal carries | Services raise these, never an HTTP type: `_request_refused_handler` answers `status_code` with `detail` (a message, or a structured detail), a background job records the same two as `http_status_code` and `error_detail`, and the assistant shows the message. `contract_error_refusal` and `memory_limit_refusal` are a public contract error and a memory failure as refusals, and `raise_node_not_found`, `raise_node_type_error` and `raise_pipeline_not_found` centralise the structured-log + raise pattern. A route that lets a service's error through ahead of a broader clause lets a refusal through too. Only the route modules, the application handlers, the HTTP adapters (`_contract_errors`, `_runtime_path_errors`, `_mlflow_log_errors`) and the underwriter app's routes import `HTTPException` (`tests/test_service_domain_boundaries.py`). |
+| `HTTPException` (raised directly) | route modules: path validation, node lookup, syntax checks | 400 / 403 / 404 / 409 | A route's own refusals. |
 | Any other remote exception (`InteractiveWorkerRemoteError`) | preview, trace, output-assemble dry-run | 500 | `_raise_interactive_remote_http_error` logs `interactive_worker_remote_failure` with the operation, the remote type and module, and the worker's message and traceback; the client gets only `_INTERNAL_ERROR_DETAIL`. |
 | Any other `Exception` | `_RequestIdMiddleware` | 500 | Logged as `unhandled_exception` with `error_class` and traceback; detail `_INTERNAL_ERROR_DETAIL`. |
 
@@ -1092,6 +1155,7 @@ use the same stable codes and named fields under terminal `contract_error` (or `
 | `InputPreparationError` | `input_preparation_failed` | `node_id`, `identity_digest`, `build_class`, `reason_code`, `remediation` |
 | `GroupByExecutionUnsupportedError` | `group_by_execution_unsupported` | `node_id`, `operator`, `profile`, `reason_code`, `remediation`, `estimated_peak_bytes`, `headroom_bytes` |
 | `TraceCorrelationUnsupportedError` | `trace_correlation_unsupported` | `node_id`, `key_columns`, `dtypes`, `reason_code` |
+| `TraceNodeFailedError` | `trace_node_failed` | `node_id` |
 | `RatingExtremaUndefinedError` | `rating_extrema_undefined` | `output_column`, `operation` |
 | `RatingFactorMissingError` | `rating_factor_missing` | `table`, `factor` |
 | `RatingFactorDtypeContractError` | `rating_factor_dtype_contract` | `table`, `factor`, `saved_dtype`, `input_dtype` |
@@ -1109,7 +1173,20 @@ new ones. Both are the same 422 the frontend already handles.
 
 Except for handlers that return a `JSONResponse` directly, `HTTPException` responses use
 FastAPI's `{"detail": <string-or-object>}` envelope; this includes structured 507 memory
-payloads nested under `detail`. Pydantic request/query validation uses
+payloads nested under `detail`. Every request model bounds its free strings and its
+lists and mappings, at every depth and a mapping's keys too, through `schemas.py`'s
+`BoundedName` (512 characters: an id, a name, a token), `BoundedPath` (4096: a path or
+URL), `BoundedText` (16 MiB: code or text) and `MAX_REQUEST_ITEMS` (10,000 items), a
+revision token through `RevisionToken` (512), and a utility module's name through
+`UTILITY_MODULE_NAME_MAX` (200), in a body and in the utility routes' path alike, so an
+over-long value is a 422 before a route acts on it; other path and query parameters are
+bounded by the request line the server accepts. Where a request carries values of no
+fixed shape (a node's config, a step, an output mapping's row, as `RequestEntry` holds
+them), their names and their number are bounded and each value is checked where it is
+read; the two documents a request carries whole, a pipeline graph with its global
+constants and a workbench form, are checked as the files that hold them are. `tests/test_request_bounds.py` walks every route's request body, and the
+underwriter app's, for a string, list or mapping without a limit.
+Pydantic request/query validation uses
 `{"detail": [validation-error...]}`. `_RequestIdMiddleware` constructs its 500 JSON directly.
 The JSON-cache router's `ApiInputSchemaError` is another deliberate direct-response exception:
 `{"detail": str, "type": "ApiInputSchemaError"}`. Any load failure for a discovered file
@@ -1377,14 +1454,28 @@ positions/target keys as ambiguous. The display patch in the apply response is
 bounded; the server writes the complete untruncated edits. The post-apply
 document is authoritative.
 
-Each apply route acquires `save_lock`, reloads the document and computes the
-complete plan under the lock; a stale revision is HTTP 409 before staging. Staged writes/deletes and
+Each apply route, and the node-scoped save, goes through one transport, `_apply_repair`: it
+acquires `save_lock` and runs the apply in the thread pool, answering a `PipelineRepairError`
+with its structured detail and an `OSError` with 409 `repair_artifact_unavailable`. The
+apply reloads the document and computes the complete plan under the lock; a stale revision
+is HTTP 409 before staging. The four routes
+(remove, connection remove, recover and `POST /api/pipeline/node/save`) answer it with one
+`detail` shape, `{code: "repair_revision_conflict", message, current_revision}`, built by
+`_pipeline_repair._document_at_revision`; `current_revision` is the revision on disk, and
+the commit's own revision re-check refuses in the same shape. `_commit_repair_plan`
+then holds the repository's `repository_mutation` lock from its revision and artifact
+re-checks through staging, verification and rollback, so a Git action never sees part of a
+repair or a node-scoped save. Staged writes/deletes and
 rollback reuse `_save_pipeline.py`'s touched-file and `Writer` primitives so
 each forward and rollback write participates in self-write suppression. After
 staging, recovery parsing must conserve the remaining source and the selected
 identity must be absent. Strict parse success is recorded by the returned
 editor document; an independent authored error may validly remain degraded.
-Any verification or write failure rolls back all touched artifacts.
+Any verification or write failure rolls back all touched artifacts. Rollback is
+best-effort, so a restore that fails is named: the apply answers 500
+`repair_rollback_failed` with the project-relative `paths` it could not put back. Any
+other read or write failure, raised before anything was written or after every artifact
+was restored, answers 409 `repair_artifact_unavailable`: the repair changed nothing.
 
 The additional `/api/pipeline/repair/recover/apply` route accepts
 `PipelineRepairRecoverRequest`, replacing the removal-only `delete_config` option with

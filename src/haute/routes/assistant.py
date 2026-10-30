@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 
 from haute._git import GitHistoryReadError
 from haute._logging import get_logger
-from haute._sandbox import contained_path
+from haute._sandbox import contained_path, is_contained
 from haute.assistant import _loop, assistant_readiness
 from haute.assistant._catalog import tool_title
 from haute.assistant._config import AssistantConfig, resolve_assistant_config
@@ -29,7 +29,13 @@ from haute.assistant._tools import (
     build_turn_context,
     context_update,
 )
-from haute.errors import ConfigError, HauteError, InvalidPathError, PathOutsideProjectError
+from haute.errors import (
+    ConfigError,
+    HauteError,
+    InvalidPathError,
+    PathOutsideProjectError,
+    RequestRefusedError,
+)
 from haute.routes._helpers import (
     _INTERNAL_ERROR_DETAIL,
     discover_pipelines,
@@ -63,7 +69,7 @@ def _sessions_storage_dir() -> Path:
 
     project_root = Path.cwd().resolve()
     storage = project_root / ".haute" / "assistant" / "sessions"
-    if not storage.resolve().is_relative_to(project_root):
+    if not is_contained(project_root, storage.resolve()):
         raise ConfigError("Assistant session storage must resolve inside the project root")
     return storage
 
@@ -107,7 +113,7 @@ async def _bound_source_file(source_file: str) -> str:
 
     try:
         return await asyncio.to_thread(_canonical_source_file, source_file)
-    except (HTTPException, PathOutsideProjectError, InvalidPathError):
+    except (HTTPException, RequestRefusedError, PathOutsideProjectError, InvalidPathError):
         raise
     except HauteError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None

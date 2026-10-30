@@ -793,7 +793,10 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms. A set
   with `FSCTL_READ_FILE_USN_DATA` plus `FILE_ID_INFO` on Windows), so an in-place
   same-size rewrite followed by an mtime restore and an atomic same-stat replacement
   both force a new hash. Haute does not substitute the weaker
-  `FILE_BASIC_INFO.ChangeTime`. Where no native revision can be read, the token is
+  `FILE_BASIC_INFO.ChangeTime`. A POSIX change token that is a whole second comes
+  from a filesystem stamping whole seconds, which a same-size rewrite within that
+  second leaves unchanged, so it too is trusted only once the file is two seconds old.
+  Where no native revision can be read, the token is
   the file's stat and is trusted only once the file is two seconds old, the rule
   every source kind shares (see [caching](../caching/low-level.md)). The published
   table generations themselves are verified by the store (part digests, footers and

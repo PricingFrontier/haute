@@ -12,19 +12,17 @@ from haute._logging import get_logger
 from haute._sandbox import contained_path
 from haute._submodel_paths import (
     MalformedSubmodelPathError,
-    SubmodelPathOutsideProjectError,
-    resolve_submodel_reference,
     validate_submodel_definition_id,
 )
 from haute._types import NodeType, PipelineGraph, SubmodelInstanceConfig
-from haute.errors import ConfigError, ParseError
+from haute.errors import ConfigError
 from haute.routes._helpers import (
-    _INTERNAL_ERROR_DETAIL,
     load_pipeline_editor_document,
     load_sidecar_positions,
     parse_pipeline_to_graph,
     pipeline_dir,
 )
+from haute.routes._save_pipeline import resolve_definition_file
 from haute.schemas import (
     CreateNodeInstanceRequest,
     CreateNodeInstanceResponse,
@@ -97,19 +95,9 @@ def _resolve_recorded_child(
             status_code=400,
             detail="Submodel metadata has no valid source file path.",
         )
-    try:
-        child_path, config_base = resolve_submodel_reference(
-            recorded_path,
-            pipeline_dir=parent_path.parent,
-            project_root=project_root,
-        )
-    except MalformedSubmodelPathError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
-    except SubmodelPathOutsideProjectError:
-        raise HTTPException(
-            status_code=403,
-            detail="Cannot access paths outside the project root",
-        ) from None
+    child_path, config_base = resolve_definition_file(
+        recorded_path, parent_path=parent_path, project_root=project_root
+    )
     return recorded_path, child_path, config_base
 
 
@@ -218,17 +206,6 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
             result = create_submodel_graph(submitted_graph, body.node_ids, body.name)
         except SubmodelValidationError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
-        except ValueError:
-            # The ValueError message may embed graph walk details, absolute
-            # paths, or internal identifiers — all unsafe for the HTTP body.
-            # Log full detail server-side, emit a sanitized 400 to the client.
-            logger.warning(
-                "submodel_create_invalid",
-                name=body.name,
-                node_count=len(body.node_ids or []),
-                exc_info=True,
-            )
-            raise HTTPException(status_code=400, detail=_INTERNAL_ERROR_DETAIL) from None
 
         _refuse_new_name_violations(
             submitted_graph,
@@ -314,8 +291,6 @@ async def create_node_instance(body: CreateNodeInstanceRequest) -> CreateNodeIns
             )
         except SubmodelValidationError as exc:
             raise HTTPException(exc.status_code, exc.detail) from None
-        except ParseError as exc:
-            raise HTTPException(400, exc.message) from None
         _refuse_new_name_violations(
             graph,
             result.graph,
@@ -464,10 +439,7 @@ async def dissolve_submodel(body: DissolveSubmodelRequest) -> DissolveSubmodelRe
             parent_path=parent_path,
             project_root=project_root,
         )
-        try:
-            flat = flatten_graph(graph, target_instance_id=target_instance_id)
-        except ParseError as exc:
-            raise HTTPException(status_code=400, detail=exc.message) from None
+        flat = flatten_graph(graph, target_instance_id=target_instance_id)
 
         response_graph = flat.model_copy(update={"source_revision": source_revision})
 

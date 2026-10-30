@@ -33,7 +33,7 @@ from haute._worker_protocol import (
     WorkerProtocolError,
     WorkerResultManifest,
 )
-from haute.errors import BoundedMemoryUnsupportedError, PreambleError
+from haute.errors import BoundedMemoryUnsupportedError, PreambleError, RequestRefusedError
 from haute.projection import AllExcept
 from haute.routes._job_store import JobStore
 from haute.routes._train_service import TrainService
@@ -153,7 +153,7 @@ class TestEstimateRamFailure:
             "haute.routes._training_lifecycle.estimate_training_memory",
             side_effect=RuntimeError("probe blew up"),
         ):
-            with pytest.raises(HTTPException) as exc_info:
+            with pytest.raises(RequestRefusedError) as exc_info:
                 service._estimate_ram(
                     graph,
                     "n",
@@ -966,7 +966,7 @@ class TestPreparationCleanupAbsentPaths:
         """An HTTPException raised inside the body keeps its status code."""
 
         def lazy(*a, **k):
-            raise HTTPException(status_code=418, detail="teapot")
+            raise RequestRefusedError("teapot", status_code=418)
 
         outcome = self._run_with_absent_paths(lazy, tmp_path)
         assert outcome.failure is not None
@@ -1142,7 +1142,7 @@ class TestStartExecutionContextLifecycle:
                 "haute.routes._training_lifecycle.threading.Thread.start",
                 side_effect=RuntimeError("thread unavailable"),
             ),
-            pytest.raises(HTTPException) as exc_info,
+            pytest.raises(RequestRefusedError) as exc_info,
         ):
             service.start(self._min_graph())
 
@@ -1322,7 +1322,7 @@ class TestCancelGuards:
         service = TrainService(store)
         job_id = store.create_job({"status": "running", "job_type": "scoring"})
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             service.cancel(job_id)
         assert exc_info.value.status_code == 404
 
@@ -1514,7 +1514,7 @@ class TestEvaluationPreviewFailures:
                 "execute_lazy_graph",
                 return_value=(lazy_outputs,),
             ),
-            pytest.raises(HTTPException) as exc_info,
+            pytest.raises(RequestRefusedError) as exc_info,
         ):
             service.evaluation_preview(
                 _evaluation_preview_request(),
@@ -1550,7 +1550,7 @@ class TestEvaluationPreviewFailures:
                 return_value=context,
             ),
             patch.object(TrainService, "_compile_preamble", side_effect=error),
-            pytest.raises(HTTPException) as exc_info,
+            pytest.raises(RequestRefusedError) as exc_info,
         ):
             service.evaluation_preview(
                 _evaluation_preview_request(),
@@ -1608,7 +1608,7 @@ class TestPreparationTerminalPaths:
             }
         )
 
-        service._persist_preparation_http_failure(
+        service._persist_preparation_refusal(
             job_id,
             HTTPException(status_code=500, detail="preparation exploded"),
         )
@@ -1814,7 +1814,7 @@ class TestLaunchBackgroundWorker:
                 "haute.routes._background_jobs.IsolatedSupervisorThread.start",
                 side_effect=RuntimeError("no threads available"),
             ),
-            pytest.raises(HTTPException) as exc_info,
+            pytest.raises(RequestRefusedError) as exc_info,
         ):
             service._launch_background(
                 job_id,

@@ -656,7 +656,7 @@
           "width": 1280,
           "show_when": {
             "match": "all",
-            "conditions": [{"table": "t_policy", "column": "c_bi", "op": "ticked", "values": []}]
+            "conditions": [{"table": "t_policy", "column": "c_bi", "op": "ticked", "values": [], "field": null, "days": 0}]
           },
           "sections": [
             {
@@ -708,7 +708,7 @@
           "width": 1280,
           "show_when": {
             "match": "all",
-            "conditions": [{"table": "t_bi", "column": "c_bi_more", "op": "ticked", "values": []}]
+            "conditions": [{"table": "t_bi", "column": "c_bi_more", "op": "ticked", "values": [], "field": null, "days": 0}]
           },
           "sections": [
             {
@@ -781,7 +781,7 @@
                   ],
                   "show_when": {
                     "match": "all",
-                    "conditions": [{"table": "t_policy", "column": "c_class", "op": "one_of", "values": ["Property"]}]
+                    "conditions": [{"table": "t_policy", "column": "c_class", "op": "one_of", "values": ["Property"], "field": null, "days": 0}]
                   },
                   "rows": 3,
                   "row_numbers": true,
@@ -819,7 +819,7 @@
                   "fields": [{"table": "t_policy", "column": "c_name"}],
                   "show_when": {
                     "match": "all",
-                    "conditions": [{"table": "t_policy", "column": "c_class", "op": "equals", "values": ["Fleet"]}]
+                    "conditions": [{"table": "t_policy", "column": "c_class", "op": "equals", "values": ["Fleet"], "field": null, "days": 0}]
                   },
                   "columns": 3,
                   "labels": "above",
@@ -1907,7 +1907,7 @@
               "show_when": {
                 "match": "all",
                 "conditions": [
-                  {"table": "t_policy", "column": "c_flood", "op": "ticked", "values": []}
+                  {"table": "t_policy", "column": "c_flood", "op": "ticked", "values": [], "field": null, "days": 0}
                 ]
               },
               "widgets": [
@@ -1976,7 +1976,9 @@
                         "table": "t_policy",
                         "column": "c_class",
                         "op": "equals",
-                        "values": ["Marine"]
+                        "values": ["Marine"],
+                        "field": null,
+                        "days": 0
                       }
                     ]
                   },
@@ -2012,7 +2014,7 @@
               "show_when": {
                 "match": "all",
                 "conditions": [
-                  {"table": "t_flood", "column": "c_barrier", "op": "ticked", "values": []}
+                  {"table": "t_flood", "column": "c_barrier", "op": "ticked", "values": [], "field": null, "days": 0}
                 ]
               },
               "widgets": [
@@ -2061,7 +2063,7 @@
               "show_when": {
                 "match": "all",
                 "conditions": [
-                  {"table": "t_policy", "column": "c_note", "op": "filled", "values": []}
+                  {"table": "t_policy", "column": "c_note", "op": "filled", "values": [], "field": null, "days": 0}
                 ]
               },
               "widgets": [
@@ -2109,7 +2111,7 @@
           "show_when": {
             "match": "all",
             "conditions": [
-              {"table": "t_policy", "column": "c_cover", "op": "ticked", "values": []}
+              {"table": "t_policy", "column": "c_cover", "op": "ticked", "values": [], "field": null, "days": 0}
             ]
           },
           "sections": [
@@ -2858,7 +2860,7 @@
               "height": 320,
               "show_when": {
                 "match": "all",
-                "conditions": [{"table": "t_policy", "column": "c_extras", "op": "ticked", "values": []}]
+                "conditions": [{"table": "t_policy", "column": "c_extras", "op": "ticked", "values": [], "field": null, "days": 0}]
               },
               "widgets": [
                 {
@@ -3484,6 +3486,526 @@
         }
       ],
       "sample": {}
+    },
+    "compare": {
+      "version": 1,
+      "name": "compare",
+      "theme": {
+        "sheet_color": null,
+        "background_color": null,
+        "border_color": null,
+        "font_color": null,
+        "input_cell_color": null,
+        "output_cell_color": null
+      },
+      "schema": {
+        "tables": [
+          {
+            "id": "t_policy",
+            "name": "policy",
+            "role": "input",
+            "rows": "one",
+            "columns": [
+              {
+                "id": "quote_reference",
+                "name": "quote_reference",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "quote_option",
+                "name": "quote_option",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_limit",
+                "name": "limit",
+                "type": "float",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_mga",
+                "name": "mga_limit",
+                "type": "float",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_insured",
+                "name": "insured",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_name",
+                "name": "name",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_start",
+                "name": "start",
+                "type": "date",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_end",
+                "name": "end",
+                "type": "date",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_flag",
+                "name": "flag",
+                "type": "bool",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          },
+          {
+            "id": "t_items",
+            "name": "items",
+            "role": "input",
+            "rows": "many",
+            "columns": [
+              {
+                "id": "quote_reference",
+                "name": "quote_reference",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "quote_option",
+                "name": "quote_option",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_value",
+                "name": "value",
+                "type": "float",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_cap",
+                "name": "cap",
+                "type": "float",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          },
+          {
+            "id": "t_target",
+            "name": "target",
+            "role": "input",
+            "rows": "one",
+            "columns": [
+              {
+                "id": "quote_reference",
+                "name": "quote_reference",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "quote_option",
+                "name": "quote_option",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "id": "c_x",
+                "name": "x",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          }
+        ]
+      },
+      "pages": [
+        {
+          "id": "p_main",
+          "title": "Main",
+          "width": 1280,
+          "show_when": {"match": "all", "conditions": []},
+          "sections": [
+            {
+              "id": "s_main",
+              "title": "Section 1",
+              "height": 520,
+              "show_when": {"match": "all", "conditions": []},
+              "widgets": [
+                {
+                  "id": "w_policy",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 120,
+                  "type": "collection",
+                  "title": "",
+                  "fields": [
+                    {"table": "t_policy", "column": "c_limit"},
+                    {"table": "t_policy", "column": "c_mga"},
+                    {"table": "t_policy", "column": "c_insured"},
+                    {"table": "t_policy", "column": "c_name"},
+                    {"table": "t_policy", "column": "c_start"},
+                    {"table": "t_policy", "column": "c_end"},
+                    {"table": "t_policy", "column": "c_flag"}
+                  ],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
+                  "spacers": []
+                },
+                {
+                  "id": "w_items",
+                  "x": 0,
+                  "y": 160,
+                  "w": 720,
+                  "h": 200,
+                  "type": "tableInput",
+                  "title": "",
+                  "fields": [{"table": "t_items", "column": "c_value"}, {"table": "t_items", "column": "c_cap"}],
+                  "show_when": {"match": "all", "conditions": []},
+                  "rows": 3,
+                  "row_numbers": true,
+                  "density": "compact",
+                  "gridlines": "rows",
+                  "striped": true,
+                  "fixed_rows": false,
+                  "header": "caps",
+                  "frame": true,
+                  "transposed": false,
+                  "groups": false,
+                  "font_size": 12,
+                  "header_font_size": null,
+                  "header_bold": true,
+                  "header_wrap": false,
+                  "header_orientation": "horizontal",
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "grid_color": null,
+                  "grid_weight": "thin",
+                  "grid_style": "solid",
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "p_target",
+          "title": "Target",
+          "width": 1280,
+          "show_when": {"match": "all", "conditions": []},
+          "sections": [
+            {
+              "id": "s_target",
+              "title": "Section 1",
+              "height": 120,
+              "show_when": {"match": "all", "conditions": []},
+              "widgets": [
+                {
+                  "id": "w_target",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 120,
+                  "type": "collection",
+                  "title": "",
+                  "fields": [{"table": "t_target", "column": "c_x"}],
+                  "show_when": {"match": "all", "conditions": []},
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
+                  "spacers": []
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "sample": {}
     }
   },
   "cases": [
@@ -3580,7 +4102,7 @@
       "show_when": {
         "w_bi": {
           "match": "all",
-          "conditions": [{"table": "t_policy", "column": "c_class", "op": "equals", "values": ["Motor"]}]
+          "conditions": [{"table": "t_policy", "column": "c_class", "op": "equals", "values": ["Motor"], "field": null, "days": 0}]
         }
       },
       "values": {"t_policy": [{"c_class": "Motor"}]},
@@ -3601,7 +4123,7 @@
       "show_when": {
         "p_items": {
           "match": "all",
-          "conditions": [{"table": "t_policy", "column": "c_ref", "op": "filled", "values": []}]
+          "conditions": [{"table": "t_policy", "column": "c_ref", "op": "filled", "values": [], "field": null, "days": 0}]
         }
       },
       "values": {"t_policy": [{"c_ref": "Q-1", "c_class": "Property"}]},
@@ -3637,7 +4159,7 @@
       "show_when": {
         "w_chart": {
           "match": "all",
-          "conditions": [{"table": "t_policy", "column": "c_bi", "op": "ticked", "values": []}]
+          "conditions": [{"table": "t_policy", "column": "c_bi", "op": "ticked", "values": [], "field": null, "days": 0}]
         }
       },
       "values": {"t_policy": [{"c_rate": "0.5"}]},
@@ -3658,7 +4180,7 @@
       "show_when": {
         "p_items": {
           "match": "all",
-          "conditions": [{"table": "t_policy", "column": "c_rate", "op": "filled", "values": []}]
+          "conditions": [{"table": "t_policy", "column": "c_rate", "op": "filled", "values": [], "field": null, "days": 0}]
         }
       },
       "values": {"t_policy": [{"c_rate": "0.5", "c_class": "Property"}]},
@@ -3679,7 +4201,7 @@
       "show_when": {
         "p_bi": {
           "match": "all",
-          "conditions": [{"table": "t_bi", "column": "c_bi_more", "op": "ticked", "values": []}]
+          "conditions": [{"table": "t_bi", "column": "c_bi_more", "op": "ticked", "values": [], "field": null, "days": 0}]
         }
       },
       "values": {"t_bi": [{"c_bi_more": true}]},
@@ -3694,7 +4216,7 @@
       "show_when": {
         "p_bi": {
           "match": "all",
-          "conditions": [{"table": "t_bi", "column": "c_bi_more", "op": "ticked", "values": []}]
+          "conditions": [{"table": "t_bi", "column": "c_bi_more", "op": "ticked", "values": [], "field": null, "days": 0}]
         }
       },
       "values": {},
@@ -3716,8 +4238,8 @@
         "p_ext": {
           "match": "any",
           "conditions": [
-            {"table": "t_bi", "column": "c_bi_more", "op": "ticked", "values": []},
-            {"table": "t_policy", "column": "c_class", "op": "equals", "values": ["Fleet"]}
+            {"table": "t_bi", "column": "c_bi_more", "op": "ticked", "values": [], "field": null, "days": 0},
+            {"table": "t_policy", "column": "c_class", "op": "equals", "values": ["Fleet"], "field": null, "days": 0}
           ]
         }
       },
@@ -3734,8 +4256,8 @@
         "p_ext": {
           "match": "all",
           "conditions": [
-            {"table": "t_policy", "column": "c_bi", "op": "ticked", "values": []},
-            {"table": "t_policy", "column": "c_class", "op": "equals", "values": ["Fleet"]}
+            {"table": "t_policy", "column": "c_bi", "op": "ticked", "values": [], "field": null, "days": 0},
+            {"table": "t_policy", "column": "c_class", "op": "equals", "values": ["Fleet"], "field": null, "days": 0}
           ]
         }
       },
@@ -3752,8 +4274,8 @@
         "p_ext": {
           "match": "all",
           "conditions": [
-            {"table": "t_policy", "column": "c_bi", "op": "ticked", "values": []},
-            {"table": "t_policy", "column": "c_class", "op": "equals", "values": ["Fleet"]}
+            {"table": "t_policy", "column": "c_bi", "op": "ticked", "values": [], "field": null, "days": 0},
+            {"table": "t_policy", "column": "c_class", "op": "equals", "values": ["Fleet"], "field": null, "days": 0}
           ]
         }
       },
@@ -3777,7 +4299,7 @@
       "name": "ticked passes a tick",
       "form": "tests",
       "show_when": {
-        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_tick", "op": "ticked", "values": []}]}
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_tick", "op": "ticked", "values": [], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{"c_tick": true}]},
       "hidden_pages": [],
@@ -3789,7 +4311,7 @@
       "name": "ticked fails an untouched box",
       "form": "tests",
       "show_when": {
-        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_tick", "op": "ticked", "values": []}]}
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_tick", "op": "ticked", "values": [], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{}]},
       "hidden_pages": ["p_target"],
@@ -3801,7 +4323,7 @@
       "name": "ticked fails an unticked box",
       "form": "tests",
       "show_when": {
-        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_tick", "op": "ticked", "values": []}]}
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_tick", "op": "ticked", "values": [], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{"c_tick": false}]},
       "hidden_pages": ["p_target"],
@@ -3815,7 +4337,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_tick", "op": "not_ticked", "values": []}]
+          "conditions": [{"table": "t_in", "column": "c_tick", "op": "not_ticked", "values": [], "field": null, "days": 0}]
         }
       },
       "values": {},
@@ -3830,7 +4352,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_tick", "op": "not_ticked", "values": []}]
+          "conditions": [{"table": "t_in", "column": "c_tick", "op": "not_ticked", "values": [], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_tick": true}]},
@@ -3843,7 +4365,7 @@
       "name": "filled passes text",
       "form": "tests",
       "show_when": {
-        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_text", "op": "filled", "values": []}]}
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_text", "op": "filled", "values": [], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{"c_text": "x"}]},
       "hidden_pages": [],
@@ -3855,7 +4377,7 @@
       "name": "filled fails blank text",
       "form": "tests",
       "show_when": {
-        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_text", "op": "filled", "values": []}]}
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_text", "op": "filled", "values": [], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{"c_text": "   "}]},
       "hidden_pages": ["p_target"],
@@ -3867,7 +4389,7 @@
       "name": "filled passes a value not of its column's type",
       "form": "tests",
       "show_when": {
-        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_num", "op": "filled", "values": []}]}
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_num", "op": "filled", "values": [], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{"c_num": "abc"}]},
       "hidden_pages": [],
@@ -3879,7 +4401,7 @@
       "name": "empty passes blank text",
       "form": "tests",
       "show_when": {
-        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_text", "op": "empty", "values": []}]}
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_text", "op": "empty", "values": [], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{"c_text": "   "}]},
       "hidden_pages": [],
@@ -3891,7 +4413,7 @@
       "name": "empty passes an untouched cell",
       "form": "tests",
       "show_when": {
-        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_text", "op": "empty", "values": []}]}
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_text", "op": "empty", "values": [], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{}]},
       "hidden_pages": [],
@@ -3903,7 +4425,7 @@
       "name": "empty fails text",
       "form": "tests",
       "show_when": {
-        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_text", "op": "empty", "values": []}]}
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_text", "op": "empty", "values": [], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{"c_text": "x"}]},
       "hidden_pages": ["p_target"],
@@ -3917,7 +4439,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_text", "op": "equals", "values": ["Motor"]}]
+          "conditions": [{"table": "t_in", "column": "c_text", "op": "equals", "values": ["Motor"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_text": "  Motor "}]},
@@ -3932,7 +4454,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_text", "op": "equals", "values": ["Motor"]}]
+          "conditions": [{"table": "t_in", "column": "c_text", "op": "equals", "values": ["Motor"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_text": "motor"}]},
@@ -3947,7 +4469,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_text", "op": "not_equals", "values": ["Motor"]}]
+          "conditions": [{"table": "t_in", "column": "c_text", "op": "not_equals", "values": ["Motor"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{}]},
@@ -3962,7 +4484,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_text", "op": "not_equals", "values": ["Motor"]}]
+          "conditions": [{"table": "t_in", "column": "c_text", "op": "not_equals", "values": ["Motor"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_text": "Motor"}]},
@@ -3977,7 +4499,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_choice", "op": "one_of", "values": ["A", "B"]}]
+          "conditions": [{"table": "t_in", "column": "c_choice", "op": "one_of", "values": ["A", "B"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_choice": "B"}]},
@@ -3992,7 +4514,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_choice", "op": "one_of", "values": ["A", "B"]}]
+          "conditions": [{"table": "t_in", "column": "c_choice", "op": "one_of", "values": ["A", "B"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_choice": "C"}]},
@@ -4007,7 +4529,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_choice", "op": "one_of", "values": ["A", "B"]}]
+          "conditions": [{"table": "t_in", "column": "c_choice", "op": "one_of", "values": ["A", "B"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{}]},
@@ -4022,7 +4544,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_choice", "op": "not_one_of", "values": ["A", "B"]}]
+          "conditions": [{"table": "t_in", "column": "c_choice", "op": "not_one_of", "values": ["A", "B"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{}]},
@@ -4037,7 +4559,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_choice", "op": "not_one_of", "values": ["A", "B"]}]
+          "conditions": [{"table": "t_in", "column": "c_choice", "op": "not_one_of", "values": ["A", "B"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_choice": "A"}]},
@@ -4052,7 +4574,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_choice", "op": "equals", "values": ["Z"]}]
+          "conditions": [{"table": "t_in", "column": "c_choice", "op": "equals", "values": ["Z"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_choice": "Z"}]},
@@ -4067,7 +4589,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_num", "op": "equals", "values": ["1000"]}]
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "equals", "values": ["1000"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_num": "£1,000.00"}]},
@@ -4082,7 +4604,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_num", "op": "equals", "values": ["1,000"]}]
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "equals", "values": ["1,000"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_num": "1000"}]},
@@ -4097,7 +4619,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_num", "op": "equals", "values": ["1000"]}]
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "equals", "values": ["1000"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_num": "abc"}]},
@@ -4112,7 +4634,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_num", "op": "not_equals", "values": ["1000"]}]
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "not_equals", "values": ["1000"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_num": "abc"}]},
@@ -4127,7 +4649,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1000"]}]
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1000"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_num": "1500"}]},
@@ -4142,7 +4664,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1000"]}]
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1000"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_num": "1000"}]},
@@ -4157,7 +4679,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_num", "op": "at_least", "values": ["1000"]}]
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "at_least", "values": ["1000"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_num": "1000"}]},
@@ -4172,7 +4694,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_num", "op": "below", "values": ["1000"]}]
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "below", "values": ["1000"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_num": "999.5"}]},
@@ -4187,7 +4709,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_num", "op": "at_most", "values": ["1000"]}]
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "at_most", "values": ["1000"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_num": "1000.5"}]},
@@ -4202,7 +4724,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1000"]}]
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1000"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_num": "abc"}]},
@@ -4217,7 +4739,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1000"]}]
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1000"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{}]},
@@ -4232,7 +4754,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_num", "op": "below", "values": ["1000"]}]
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "below", "values": ["1000"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{}]},
@@ -4247,7 +4769,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1e3"]}]
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1e3"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_num": "1001"}]},
@@ -4260,7 +4782,7 @@
       "name": "above compares whole numbers",
       "form": "tests",
       "show_when": {
-        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_int", "op": "above", "values": ["2"]}]}
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_int", "op": "above", "values": ["2"], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{"c_int": "3"}]},
       "hidden_pages": [],
@@ -4272,7 +4794,7 @@
       "name": "a whole number past 2^53 is told from the one before it",
       "form": "tests",
       "show_when": {
-        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_int", "op": "not_equals", "values": ["9007199254740992"]}]}
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_int", "op": "not_equals", "values": ["9007199254740992"], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{"c_int": "9007199254740993"}]},
       "hidden_pages": [],
@@ -4284,7 +4806,7 @@
       "name": "a whole number past 2^53 compares exactly",
       "form": "tests",
       "show_when": {
-        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_int", "op": "above", "values": ["9007199254740992"]}]}
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_int", "op": "above", "values": ["9007199254740992"], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{"c_int": "9007199254740993"}]},
       "hidden_pages": [],
@@ -4296,7 +4818,7 @@
       "name": "a whole number too large for a float still compares",
       "form": "tests",
       "show_when": {
-        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_int", "op": "above", "values": ["1"]}]}
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_int", "op": "above", "values": ["1"], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{"c_int": "1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"}]},
       "hidden_pages": [],
@@ -4310,7 +4832,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_int", "op": "one_of", "values": ["1", "2"]}]
+          "conditions": [{"table": "t_in", "column": "c_int", "op": "one_of", "values": ["1", "2"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_int": "2.0"}]},
@@ -4325,7 +4847,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1e999"]}]
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1e999"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_num": "5"}]},
@@ -4338,7 +4860,7 @@
       "name": "a cell too large to be finite is no number",
       "form": "tests",
       "show_when": {
-        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1"]}]}
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1"], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{"c_num": "1e999"}]},
       "hidden_pages": ["p_target"],
@@ -4352,7 +4874,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_day", "op": "above", "values": ["2026-04-01"]}]
+          "conditions": [{"table": "t_in", "column": "c_day", "op": "above", "values": ["2026-04-01"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_day": "2026-05-01"}]},
@@ -4367,7 +4889,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_day", "op": "below", "values": ["2026-04-01"]}]
+          "conditions": [{"table": "t_in", "column": "c_day", "op": "below", "values": ["2026-04-01"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_day": "2026-05-01"}]},
@@ -4382,7 +4904,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_day", "op": "equals", "values": ["2026-05-01"]}]
+          "conditions": [{"table": "t_in", "column": "c_day", "op": "equals", "values": ["2026-05-01"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_day": " 2026-05-01 "}]},
@@ -4397,7 +4919,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_day", "op": "at_least", "values": ["2026-05-01"]}]
+          "conditions": [{"table": "t_in", "column": "c_day", "op": "at_least", "values": ["2026-05-01"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_day": "2026-05-01"}]},
@@ -4412,7 +4934,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_day", "op": "above", "values": ["2026-04-01"]}]
+          "conditions": [{"table": "t_in", "column": "c_day", "op": "above", "values": ["2026-04-01"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_day": "01/05/2026"}]},
@@ -4427,7 +4949,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_day", "op": "not_equals", "values": ["2026-04-01"]}]
+          "conditions": [{"table": "t_in", "column": "c_day", "op": "not_equals", "values": ["2026-04-01"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_day": "01/05/2026"}]},
@@ -4440,7 +4962,7 @@
       "name": "a column gone never holds",
       "form": "tests",
       "show_when": {
-        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_gone", "op": "empty", "values": []}]}
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_gone", "op": "empty", "values": [], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{}]},
       "hidden_pages": ["p_target"],
@@ -4452,7 +4974,7 @@
       "name": "a table gone never holds",
       "form": "tests",
       "show_when": {
-        "p_target": {"match": "all", "conditions": [{"table": "t_gone", "column": "c_x", "op": "empty", "values": []}]}
+        "p_target": {"match": "all", "conditions": [{"table": "t_gone", "column": "c_x", "op": "empty", "values": [], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{}]},
       "hidden_pages": ["p_target"],
@@ -4464,7 +4986,7 @@
       "name": "a condition on one row on a many-row table's column never holds",
       "form": "tests",
       "show_when": {
-        "p_target": {"match": "all", "conditions": [{"table": "t_many", "column": "c_v", "op": "filled", "values": []}]}
+        "p_target": {"match": "all", "conditions": [{"table": "t_many", "column": "c_v", "op": "filled", "values": [], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{}], "t_many": [{"c_key": "a", "c_v": "1"}]},
       "hidden_pages": ["p_target"],
@@ -4473,16 +4995,16 @@
       "hidden_columns": [["t_target", "c_x"]]
     },
     {
-      "name": "an output table's column never holds",
+      "name": "an output table's column holds while what shows is decided, whatever the price would say",
       "form": "tests",
       "show_when": {
-        "p_target": {"match": "all", "conditions": [{"table": "t_out", "column": "c_o", "op": "empty", "values": []}]}
+        "p_target": {"match": "all", "conditions": [{"table": "t_out", "column": "c_o", "op": "empty", "values": [], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{}]},
-      "hidden_pages": ["p_target"],
-      "hidden_sections": ["s_target"],
-      "hidden_widgets": ["w_target"],
-      "hidden_columns": [["t_target", "c_x"]]
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
     },
     {
       "name": "a comparison on a tick box never holds",
@@ -4490,7 +5012,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_tick", "op": "above", "values": ["1"]}]
+          "conditions": [{"table": "t_in", "column": "c_tick", "op": "above", "values": ["1"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_tick": true}]},
@@ -4503,7 +5025,7 @@
       "name": "a tick on a text column never holds",
       "form": "tests",
       "show_when": {
-        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_text", "op": "ticked", "values": []}]}
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_text", "op": "ticked", "values": [], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{"c_text": "x"}]},
       "hidden_pages": ["p_target"],
@@ -4517,7 +5039,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_day", "op": "one_of", "values": ["2026-01-01"]}]
+          "conditions": [{"table": "t_in", "column": "c_day", "op": "one_of", "values": ["2026-01-01"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_day": "2026-01-01"}]},
@@ -4530,7 +5052,7 @@
       "name": "filled on a tick box never holds",
       "form": "tests",
       "show_when": {
-        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_tick", "op": "filled", "values": []}]}
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_tick", "op": "filled", "values": [], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{"c_tick": true}]},
       "hidden_pages": ["p_target"],
@@ -4544,7 +5066,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_text", "op": "above", "values": ["a"]}]
+          "conditions": [{"table": "t_in", "column": "c_text", "op": "above", "values": ["a"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_text": "b"}]},
@@ -4557,7 +5079,7 @@
       "name": "equals with no value never holds",
       "form": "tests",
       "show_when": {
-        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_text", "op": "equals", "values": []}]}
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_text", "op": "equals", "values": [], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{}]},
       "hidden_pages": ["p_target"],
@@ -4571,7 +5093,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_choice", "op": "one_of", "values": []}]
+          "conditions": [{"table": "t_in", "column": "c_choice", "op": "one_of", "values": [], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_choice": "A"}]},
@@ -4586,7 +5108,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_tick", "op": "ticked", "values": ["x"]}]
+          "conditions": [{"table": "t_in", "column": "c_tick", "op": "ticked", "values": ["x"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_tick": true}]},
@@ -4601,7 +5123,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1", "2"]}]
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "above", "values": ["1", "2"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_num": "5"}]},
@@ -4616,7 +5138,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_text", "op": "filled", "values": ["x"]}]
+          "conditions": [{"table": "t_in", "column": "c_text", "op": "filled", "values": ["x"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_text": "x"}]},
@@ -4631,7 +5153,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_text", "op": "equals", "values": ["  "]}]
+          "conditions": [{"table": "t_in", "column": "c_text", "op": "equals", "values": ["  "], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{}]},
@@ -4646,7 +5168,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_num", "op": "not_equals", "values": ["abc"]}]
+          "conditions": [{"table": "t_in", "column": "c_num", "op": "not_equals", "values": ["abc"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_num": "5"}]},
@@ -4661,7 +5183,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_int", "op": "above", "values": ["2.5"]}]
+          "conditions": [{"table": "t_in", "column": "c_int", "op": "above", "values": ["2.5"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_int": "3"}]},
@@ -4676,7 +5198,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_day", "op": "equals", "values": ["2026-02-30"]}]
+          "conditions": [{"table": "t_in", "column": "c_day", "op": "equals", "values": ["2026-02-30"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_day": "2026-02-30"}]},
@@ -4691,7 +5213,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_day", "op": "above", "values": ["2026-1-5"]}]
+          "conditions": [{"table": "t_in", "column": "c_day", "op": "above", "values": ["2026-1-5"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_day": "2026-05-01"}]},
@@ -4706,7 +5228,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_day", "op": "below", "values": ["0000-01-01"]}]
+          "conditions": [{"table": "t_in", "column": "c_day", "op": "below", "values": ["0000-01-01"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_day": "2026-05-01"}]},
@@ -4719,7 +5241,7 @@
       "name": "a tick in a number column is filled",
       "form": "tests",
       "show_when": {
-        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_int", "op": "filled", "values": []}]}
+        "p_target": {"match": "all", "conditions": [{"table": "t_in", "column": "c_int", "op": "filled", "values": [], "field": null, "days": 0}]}
       },
       "values": {"t_in": [{"c_int": true}]},
       "hidden_pages": [],
@@ -4733,7 +5255,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_int", "op": "equals", "values": ["1"]}]
+          "conditions": [{"table": "t_in", "column": "c_int", "op": "equals", "values": ["1"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_int": true}]},
@@ -4748,7 +5270,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_int", "op": "at_least", "values": ["0"]}]
+          "conditions": [{"table": "t_in", "column": "c_int", "op": "at_least", "values": ["0"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_int": true}]},
@@ -4763,7 +5285,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_in", "column": "c_int", "op": "not_one_of", "values": ["1"]}]
+          "conditions": [{"table": "t_in", "column": "c_int", "op": "not_one_of", "values": ["1"], "field": null, "days": 0}]
         }
       },
       "values": {"t_in": [{"c_int": true}]},
@@ -4779,8 +5301,8 @@
         "p_target": {
           "match": "any",
           "conditions": [
-            {"table": "t_in", "column": "c_tick", "op": "above", "values": ["1"]},
-            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": []}
+            {"table": "t_in", "column": "c_tick", "op": "above", "values": ["1"], "field": null, "days": 0},
+            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": [], "field": null, "days": 0}
           ]
         }
       },
@@ -4797,8 +5319,8 @@
         "p_target": {
           "match": "any",
           "conditions": [
-            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": []},
-            {"table": "t_in", "column": "c_text", "op": "filled", "values": []}
+            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": [], "field": null, "days": 0},
+            {"table": "t_in", "column": "c_text", "op": "filled", "values": [], "field": null, "days": 0}
           ]
         }
       },
@@ -4814,7 +5336,7 @@
       "show_when": {
         "w_heading": {
           "match": "all",
-          "conditions": [{"table": "t_policy", "column": "c_bi", "op": "ticked", "values": []}]
+          "conditions": [{"table": "t_policy", "column": "c_bi", "op": "ticked", "values": [], "field": null, "days": 0}]
         }
       },
       "values": {"t_policy": [{"c_bi": false}]},
@@ -4835,7 +5357,7 @@
       "show_when": {
         "w_heading": {
           "match": "all",
-          "conditions": [{"table": "t_policy", "column": "c_bi", "op": "ticked", "values": []}]
+          "conditions": [{"table": "t_policy", "column": "c_bi", "op": "ticked", "values": [], "field": null, "days": 0}]
         }
       },
       "values": {"t_policy": [{"c_bi": true}]},
@@ -4850,7 +5372,7 @@
       "show_when": {
         "p_main": {
           "match": "all",
-          "conditions": [{"table": "t_policy", "column": "c_bi", "op": "ticked", "values": []}]
+          "conditions": [{"table": "t_policy", "column": "c_bi", "op": "ticked", "values": [], "field": null, "days": 0}]
         }
       },
       "values": {"t_policy": [{"c_bi": false}]},
@@ -4999,7 +5521,7 @@
         "s_policy": {
           "match": "all",
           "conditions": [
-            {"table": "t_policy", "column": "c_class", "op": "equals", "values": ["Fleet"]}
+            {"table": "t_policy", "column": "c_class", "op": "equals", "values": ["Fleet"], "field": null, "days": 0}
           ]
         }
       },
@@ -5034,12 +5556,12 @@
         "p_target": {
           "match": "all",
           "conditions": [
-            {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Comprehensive"]},
+            {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Comprehensive"], "field": null, "days": 0},
             {
               "match": "any",
               "conditions": [
-                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"]},
-                {"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "below", "values": ["25"]}]}
+                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"], "field": null, "days": 0},
+                {"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "below", "values": ["25"], "field": null, "days": 0}]}
               ]
             }
           ]
@@ -5061,12 +5583,12 @@
         "p_target": {
           "match": "all",
           "conditions": [
-            {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Third party"]},
+            {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Third party"], "field": null, "days": 0},
             {
               "match": "any",
               "conditions": [
-                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"]},
-                {"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "below", "values": ["25"]}]}
+                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"], "field": null, "days": 0},
+                {"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "below", "values": ["25"], "field": null, "days": 0}]}
               ]
             }
           ]
@@ -5088,12 +5610,12 @@
         "p_target": {
           "match": "all",
           "conditions": [
-            {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Comprehensive"]},
+            {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Comprehensive"], "field": null, "days": 0},
             {
               "match": "any",
               "conditions": [
-                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"]},
-                {"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "below", "values": ["25"]}]}
+                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"], "field": null, "days": 0},
+                {"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "below", "values": ["25"], "field": null, "days": 0}]}
               ]
             }
           ]
@@ -5112,12 +5634,12 @@
         "p_target": {
           "match": "any",
           "conditions": [
-            {"table": "t_policy", "column": "c_extras", "op": "ticked", "values": []},
+            {"table": "t_policy", "column": "c_extras", "op": "ticked", "values": [], "field": null, "days": 0},
             {
               "match": "all",
               "conditions": [
-                {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Comprehensive"]},
-                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"]}
+                {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Comprehensive"], "field": null, "days": 0},
+                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"], "field": null, "days": 0}
               ]
             }
           ]
@@ -5136,12 +5658,12 @@
         "p_target": {
           "match": "any",
           "conditions": [
-            {"table": "t_policy", "column": "c_extras", "op": "ticked", "values": []},
+            {"table": "t_policy", "column": "c_extras", "op": "ticked", "values": [], "field": null, "days": 0},
             {
               "match": "all",
               "conditions": [
-                {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Comprehensive"]},
-                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"]}
+                {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Comprehensive"], "field": null, "days": 0},
+                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"], "field": null, "days": 0}
               ]
             }
           ]
@@ -5163,8 +5685,8 @@
             {
               "match": "any",
               "conditions": [
-                {"table": "t_policy", "column": "c_gone", "op": "filled", "values": []},
-                {"table": "t_policy", "column": "c_cover", "op": "filled", "values": []}
+                {"table": "t_policy", "column": "c_gone", "op": "filled", "values": [], "field": null, "days": 0},
+                {"table": "t_policy", "column": "c_cover", "op": "filled", "values": [], "field": null, "days": 0}
               ]
             }
           ]
@@ -5186,8 +5708,8 @@
             {
               "match": "all",
               "conditions": [
-                {"table": "t_policy", "column": "c_gone", "op": "filled", "values": []},
-                {"table": "t_policy", "column": "c_cover", "op": "filled", "values": []}
+                {"table": "t_policy", "column": "c_gone", "op": "filled", "values": [], "field": null, "days": 0},
+                {"table": "t_policy", "column": "c_cover", "op": "filled", "values": [], "field": null, "days": 0}
               ]
             }
           ]
@@ -5205,7 +5727,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "below", "values": ["25"]}]}]
+          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "below", "values": ["25"], "field": null, "days": 0}]}]
         }
       },
       "values": {"t_drivers": [{"c_name": "Ann", "c_age": "30"}, {"c_name": "Bo", "c_age": "22"}]},
@@ -5220,7 +5742,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "below", "values": ["25"]}]}]
+          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "below", "values": ["25"], "field": null, "days": 0}]}]
         }
       },
       "values": {"t_drivers": [{"c_age": "30"}, {"c_age": "41"}]},
@@ -5235,7 +5757,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "empty", "values": []}]}]
+          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "empty", "values": [], "field": null, "days": 0}]}]
         }
       },
       "values": {"t_drivers": [{}, {"c_row": "2"}]},
@@ -5250,7 +5772,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "empty", "values": []}]}]
+          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "empty", "values": [], "field": null, "days": 0}]}]
         }
       },
       "values": {"t_drivers": [{"c_age": "30"}, {"c_name": "Bo"}]},
@@ -5265,7 +5787,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_drivers", "rows": "every", "where": [{"column": "c_age", "op": "at_least", "values": ["25"]}]}]
+          "conditions": [{"table": "t_drivers", "rows": "every", "where": [{"column": "c_age", "op": "at_least", "values": ["25"], "field": null, "days": 0}]}]
         }
       },
       "values": {"t_drivers": [{"c_age": "30"}, {}, {"c_age": "41"}, {"c_row": "4"}]},
@@ -5280,7 +5802,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_drivers", "rows": "every", "where": [{"column": "c_age", "op": "at_least", "values": ["25"]}]}]
+          "conditions": [{"table": "t_drivers", "rows": "every", "where": [{"column": "c_age", "op": "at_least", "values": ["25"], "field": null, "days": 0}]}]
         }
       },
       "values": {"t_drivers": [{"c_name": "Ann", "c_age": "30"}, {"c_name": "Bo", "c_age": "22"}]},
@@ -5295,7 +5817,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_drivers", "rows": "every", "where": [{"column": "c_age", "op": "empty", "values": []}]}]
+          "conditions": [{"table": "t_drivers", "rows": "every", "where": [{"column": "c_age", "op": "empty", "values": [], "field": null, "days": 0}]}]
         }
       },
       "values": {},
@@ -5310,7 +5832,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_drivers", "rows": "every", "where": [{"column": "c_age", "op": "at_least", "values": ["25"]}]}]
+          "conditions": [{"table": "t_drivers", "rows": "every", "where": [{"column": "c_age", "op": "at_least", "values": ["25"], "field": null, "days": 0}]}]
         }
       },
       "values": {"t_drivers": [{"c_age": "30"}, {"c_age": "old"}]},
@@ -5325,7 +5847,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_drivers", "rows": "every", "where": [{"column": "c_age", "op": "filled", "values": []}]}]
+          "conditions": [{"table": "t_drivers", "rows": "every", "where": [{"column": "c_age", "op": "filled", "values": [], "field": null, "days": 0}]}]
         }
       },
       "values": {"t_drivers": [{"c_age": "30"}, {"c_name": "Bo"}]},
@@ -5340,7 +5862,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_occupation", "op": "filled", "values": []}]}]
+          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_occupation", "op": "filled", "values": [], "field": null, "days": 0}]}]
         }
       },
       "values": {"t_drivers": [{"c_occupation": "Nurse"}]},
@@ -5355,7 +5877,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_occupation", "op": "filled", "values": []}]}]
+          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_occupation", "op": "filled", "values": [], "field": null, "days": 0}]}]
         }
       },
       "values": {"t_policy": [{"c_extras": true}], "t_drivers": [{"c_occupation": "Nurse"}]},
@@ -5480,7 +6002,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_perils", "rows": "any", "where": [{"column": "c_limit", "op": "above", "values": ["1000000"]}]}]
+          "conditions": [{"table": "t_perils", "rows": "any", "where": [{"column": "c_limit", "op": "above", "values": ["1000000"], "field": null, "days": 0}]}]
         }
       },
       "values": {"t_perils": [{"c_peril": "Flood", "c_limit": "2000000"}]},
@@ -5495,7 +6017,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_policy", "rows": "any", "where": [{"column": "c_cover", "op": "filled", "values": []}]}]
+          "conditions": [{"table": "t_policy", "rows": "any", "where": [{"column": "c_cover", "op": "filled", "values": [], "field": null, "days": 0}]}]
         }
       },
       "values": {"t_policy": [{"c_cover": "Comprehensive", "c_claims": "0"}]},
@@ -5510,7 +6032,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_gone", "op": "empty", "values": []}]}]
+          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_gone", "op": "empty", "values": [], "field": null, "days": 0}]}]
         }
       },
       "values": {"t_drivers": [{"c_name": "Ann"}]},
@@ -5525,7 +6047,7 @@
       "show_when": {
         "p_target": {
           "match": "all",
-          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "above", "values": ["young"]}]}]
+          "conditions": [{"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "above", "values": ["young"], "field": null, "days": 0}]}]
         }
       },
       "values": {"t_drivers": [{"c_name": "Ann", "c_age": "30"}, {"c_name": "Bo", "c_age": "22"}]},
@@ -5545,14 +6067,14 @@
       "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
     },
     {
-      "name": "a count of an output table never holds",
+      "name": "a count of an output table's rows holds while what shows is decided",
       "form": "lists",
       "show_when": {"p_target": {"match": "all", "conditions": [{"table": "t_quotes", "where": [], "op": "at_least", "count": 0}]}},
       "values": {},
-      "hidden_pages": ["p_target"],
-      "hidden_sections": ["s_extra", "s_target"],
-      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
-      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
+      "hidden_pages": [],
+      "hidden_sections": ["s_extra"],
+      "hidden_widgets": ["w_claims", "w_occupations"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"]]
     },
     {
       "name": "a count of a table gone never holds",
@@ -5571,9 +6093,9 @@
         "p_target": {
           "match": 2,
           "conditions": [
-            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": []},
-            {"table": "t_in", "column": "c_text", "op": "equals", "values": ["a"]},
-            {"table": "t_in", "column": "c_int", "op": "above", "values": ["5"]}
+            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": [], "field": null, "days": 0},
+            {"table": "t_in", "column": "c_text", "op": "equals", "values": ["a"], "field": null, "days": 0},
+            {"table": "t_in", "column": "c_int", "op": "above", "values": ["5"], "field": null, "days": 0}
           ]
         }
       },
@@ -5590,9 +6112,9 @@
         "p_target": {
           "match": 2,
           "conditions": [
-            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": []},
-            {"table": "t_in", "column": "c_text", "op": "equals", "values": ["a"]},
-            {"table": "t_in", "column": "c_int", "op": "above", "values": ["5"]}
+            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": [], "field": null, "days": 0},
+            {"table": "t_in", "column": "c_text", "op": "equals", "values": ["a"], "field": null, "days": 0},
+            {"table": "t_in", "column": "c_int", "op": "above", "values": ["5"], "field": null, "days": 0}
           ]
         }
       },
@@ -5609,9 +6131,9 @@
         "p_target": {
           "match": 2,
           "conditions": [
-            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": []},
-            {"table": "t_in", "column": "c_text", "op": "equals", "values": ["a"]},
-            {"table": "t_in", "column": "c_int", "op": "above", "values": ["5"]}
+            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": [], "field": null, "days": 0},
+            {"table": "t_in", "column": "c_text", "op": "equals", "values": ["a"], "field": null, "days": 0},
+            {"table": "t_in", "column": "c_int", "op": "above", "values": ["5"], "field": null, "days": 0}
           ]
         }
       },
@@ -5628,9 +6150,9 @@
         "p_target": {
           "match": 1,
           "conditions": [
-            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": []},
-            {"table": "t_in", "column": "c_text", "op": "equals", "values": ["a"]},
-            {"table": "t_in", "column": "c_int", "op": "above", "values": ["5"]}
+            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": [], "field": null, "days": 0},
+            {"table": "t_in", "column": "c_text", "op": "equals", "values": ["a"], "field": null, "days": 0},
+            {"table": "t_in", "column": "c_int", "op": "above", "values": ["5"], "field": null, "days": 0}
           ]
         }
       },
@@ -5647,8 +6169,8 @@
         "p_target": {
           "match": 3,
           "conditions": [
-            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": []},
-            {"table": "t_in", "column": "c_text", "op": "equals", "values": ["a"]}
+            {"table": "t_in", "column": "c_tick", "op": "ticked", "values": [], "field": null, "days": 0},
+            {"table": "t_in", "column": "c_text", "op": "equals", "values": ["a"], "field": null, "days": 0}
           ]
         }
       },
@@ -5675,9 +6197,9 @@
         "p_other": {
           "match": 2,
           "conditions": [
-            {"table": "t_policy", "column": "c_cover", "op": "ticked", "values": []},
-            {"table": "t_policy", "column": "c_flood", "op": "ticked", "values": []},
-            {"table": "t_flood", "column": "c_barrier", "op": "ticked", "values": []}
+            {"table": "t_policy", "column": "c_cover", "op": "ticked", "values": [], "field": null, "days": 0},
+            {"table": "t_policy", "column": "c_flood", "op": "ticked", "values": [], "field": null, "days": 0},
+            {"table": "t_flood", "column": "c_barrier", "op": "ticked", "values": [], "field": null, "days": 0}
           ]
         }
       },
@@ -5700,9 +6222,9 @@
         "p_other": {
           "match": 2,
           "conditions": [
-            {"table": "t_policy", "column": "c_cover", "op": "ticked", "values": []},
-            {"table": "t_policy", "column": "c_flood", "op": "ticked", "values": []},
-            {"table": "t_flood", "column": "c_barrier", "op": "ticked", "values": []}
+            {"table": "t_policy", "column": "c_cover", "op": "ticked", "values": [], "field": null, "days": 0},
+            {"table": "t_policy", "column": "c_flood", "op": "ticked", "values": [], "field": null, "days": 0},
+            {"table": "t_flood", "column": "c_barrier", "op": "ticked", "values": [], "field": null, "days": 0}
           ]
         }
       },
@@ -5719,13 +6241,13 @@
         "p_target": {
           "match": "all",
           "conditions": [
-            {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Comprehensive"]},
+            {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Comprehensive"], "field": null, "days": 0},
             {
               "match": 2,
               "conditions": [
-                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"]},
-                {"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "below", "values": ["25"]}]},
-                {"table": "t_policy", "column": "c_extras", "op": "ticked", "values": []}
+                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"], "field": null, "days": 0},
+                {"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "below", "values": ["25"], "field": null, "days": 0}]},
+                {"table": "t_policy", "column": "c_extras", "op": "ticked", "values": [], "field": null, "days": 0}
               ]
             }
           ]
@@ -5747,13 +6269,13 @@
         "p_target": {
           "match": "all",
           "conditions": [
-            {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Comprehensive"]},
+            {"table": "t_policy", "column": "c_cover", "op": "equals", "values": ["Comprehensive"], "field": null, "days": 0},
             {
               "match": 2,
               "conditions": [
-                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"]},
-                {"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "below", "values": ["25"]}]},
-                {"table": "t_policy", "column": "c_extras", "op": "ticked", "values": []}
+                {"table": "t_policy", "column": "c_claims", "op": "at_least", "values": ["2"], "field": null, "days": 0},
+                {"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "below", "values": ["25"], "field": null, "days": 0}]},
+                {"table": "t_policy", "column": "c_extras", "op": "ticked", "values": [], "field": null, "days": 0}
               ]
             }
           ]
@@ -5779,8 +6301,8 @@
               "table": "t_drivers",
               "rows": "any",
               "where": [
-                {"column": "c_name", "op": "equals", "values": ["Bo"]},
-                {"column": "c_age", "op": "below", "values": ["25"]}
+                {"column": "c_name", "op": "equals", "values": ["Bo"], "field": null, "days": 0},
+                {"column": "c_age", "op": "below", "values": ["25"], "field": null, "days": 0}
               ]
             }
           ]
@@ -5803,8 +6325,8 @@
               "table": "t_drivers",
               "rows": "any",
               "where": [
-                {"column": "c_name", "op": "equals", "values": ["Ann"]},
-                {"column": "c_age", "op": "below", "values": ["25"]}
+                {"column": "c_name", "op": "equals", "values": ["Ann"], "field": null, "days": 0},
+                {"column": "c_age", "op": "below", "values": ["25"], "field": null, "days": 0}
               ]
             }
           ]
@@ -5827,8 +6349,8 @@
               "table": "t_drivers",
               "rows": "every",
               "where": [
-                {"column": "c_name", "op": "filled", "values": []},
-                {"column": "c_age", "op": "at_least", "values": ["18"]}
+                {"column": "c_name", "op": "filled", "values": [], "field": null, "days": 0},
+                {"column": "c_age", "op": "at_least", "values": ["18"], "field": null, "days": 0}
               ]
             }
           ]
@@ -5851,8 +6373,8 @@
               "table": "t_drivers",
               "rows": "every",
               "where": [
-                {"column": "c_name", "op": "filled", "values": []},
-                {"column": "c_age", "op": "at_least", "values": ["18"]}
+                {"column": "c_name", "op": "filled", "values": [], "field": null, "days": 0},
+                {"column": "c_age", "op": "at_least", "values": ["18"], "field": null, "days": 0}
               ]
             }
           ]
@@ -5873,7 +6395,7 @@
           "conditions": [
             {
               "table": "t_drivers",
-              "where": [{"column": "c_age", "op": "below", "values": ["25"]}],
+              "where": [{"column": "c_age", "op": "below", "values": ["25"], "field": null, "days": 0}],
               "op": "at_least",
               "count": 2
             }
@@ -5895,7 +6417,7 @@
           "conditions": [
             {
               "table": "t_drivers",
-              "where": [{"column": "c_age", "op": "below", "values": ["25"]}],
+              "where": [{"column": "c_age", "op": "below", "values": ["25"], "field": null, "days": 0}],
               "op": "at_least",
               "count": 2
             }
@@ -5917,7 +6439,7 @@
           "conditions": [
             {
               "table": "t_perils",
-              "where": [{"column": "c_limit", "op": "filled", "values": []}],
+              "where": [{"column": "c_limit", "op": "filled", "values": [], "field": null, "days": 0}],
               "op": "equals",
               "count": 1
             }
@@ -5941,8 +6463,8 @@
               "table": "t_perils",
               "rows": "any",
               "where": [
-                {"column": "c_peril", "op": "equals", "values": ["Flood"]},
-                {"column": "c_limit", "op": "above", "values": ["1000"]}
+                {"column": "c_peril", "op": "equals", "values": ["Flood"], "field": null, "days": 0},
+                {"column": "c_limit", "op": "above", "values": ["1000"], "field": null, "days": 0}
               ]
             }
           ]
@@ -5982,7 +6504,7 @@
               "table": "t_perils",
               "total": "sum",
               "column": "c_limit",
-              "where": [{"column": "c_peril", "op": "equals", "values": ["Flood"]}],
+              "where": [{"column": "c_peril", "op": "equals", "values": ["Flood"], "field": null, "days": 0}],
               "op": "equals",
               "value": "2500"
             }
@@ -6023,7 +6545,7 @@
               "table": "t_perils",
               "total": "sum",
               "column": "c_limit",
-              "where": [{"column": "c_peril", "op": "equals", "values": ["Earthquake"]}],
+              "where": [{"column": "c_peril", "op": "equals", "values": ["Earthquake"], "field": null, "days": 0}],
               "op": "equals",
               "value": "0"
             }
@@ -6047,7 +6569,7 @@
               "table": "t_perils",
               "total": "min",
               "column": "c_limit",
-              "where": [{"column": "c_peril", "op": "equals", "values": ["Earthquake"]}],
+              "where": [{"column": "c_peril", "op": "equals", "values": ["Earthquake"], "field": null, "days": 0}],
               "op": "not_equals",
               "value": "0"
             }
@@ -6089,7 +6611,7 @@
           "conditions": [
             {
               "table": "t_drivers",
-              "where": [{"column": "c_occupation", "op": "empty", "values": []}],
+              "where": [{"column": "c_occupation", "op": "empty", "values": [], "field": null, "days": 0}],
               "op": "at_least",
               "count": 0
             }
@@ -6111,7 +6633,7 @@
           "conditions": [
             {
               "table": "t_drivers",
-              "where": [{"column": "c_occupation", "op": "empty", "values": []}],
+              "where": [{"column": "c_occupation", "op": "empty", "values": [], "field": null, "days": 0}],
               "op": "at_least",
               "count": 0
             }
@@ -6151,7 +6673,7 @@
         "p_target": {
           "match": "all",
           "conditions": [
-            {"table": "t_drivers", "rows": "any", "where": [{"column": "c_row", "op": "filled", "values": []}]}
+            {"table": "t_drivers", "rows": "any", "where": [{"column": "c_row", "op": "filled", "values": [], "field": null, "days": 0}]}
           ]
         }
       },
@@ -6225,7 +6747,7 @@
         "p_target": {
           "match": "all",
           "conditions": [
-            {"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "not_equals", "values": ["9007199254740993"]}]}
+            {"table": "t_drivers", "rows": "any", "where": [{"column": "c_age", "op": "not_equals", "values": ["9007199254740993"], "field": null, "days": 0}]}
           ]
         }
       },
@@ -6279,7 +6801,7 @@
           "column": "c_eq_limit",
           "show_when": {
             "match": "all",
-            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": [], "field": null, "days": 0}]
           }
         },
         {
@@ -6288,7 +6810,7 @@
           "column": "c_eq_ded",
           "show_when": {
             "match": "all",
-            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": [], "field": null, "days": 0}]
           }
         }
       ],
@@ -6309,7 +6831,7 @@
           "column": "c_eq_limit",
           "show_when": {
             "match": "all",
-            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": [], "field": null, "days": 0}]
           }
         },
         {
@@ -6318,7 +6840,7 @@
           "column": "c_eq_ded",
           "show_when": {
             "match": "all",
-            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": [], "field": null, "days": 0}]
           }
         }
       ],
@@ -6339,7 +6861,7 @@
           "column": "c_flood_limit",
           "show_when": {
             "match": "all",
-            "conditions": [{"table": "t_rating", "column": "c_flood", "op": "ticked", "values": []}]
+            "conditions": [{"table": "t_rating", "column": "c_flood", "op": "ticked", "values": [], "field": null, "days": 0}]
           }
         }
       ],
@@ -6360,7 +6882,7 @@
           "column": "c_flood_limit",
           "show_when": {
             "match": "all",
-            "conditions": [{"table": "t_rating", "column": "c_flood", "op": "ticked", "values": []}]
+            "conditions": [{"table": "t_rating", "column": "c_flood", "op": "ticked", "values": [], "field": null, "days": 0}]
           }
         },
         {
@@ -6369,7 +6891,7 @@
           "column": "c_flood_limit",
           "show_when": {
             "match": "all",
-            "conditions": [{"table": "t_rating", "column": "c_combined", "op": "ticked", "values": []}]
+            "conditions": [{"table": "t_rating", "column": "c_combined", "op": "ticked", "values": [], "field": null, "days": 0}]
           }
         }
       ],
@@ -6386,7 +6908,7 @@
       "show_when": {
         "s_eq": {
           "match": "all",
-          "conditions": [{"table": "t_rating", "column": "c_eq_limit", "op": "filled", "values": []}]
+          "conditions": [{"table": "t_rating", "column": "c_eq_limit", "op": "filled", "values": [], "field": null, "days": 0}]
         }
       },
       "field_show_when": [
@@ -6396,7 +6918,7 @@
           "column": "c_eq_limit",
           "show_when": {
             "match": "all",
-            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": [], "field": null, "days": 0}]
           }
         }
       ],
@@ -6417,7 +6939,7 @@
           "column": "c_eq_limit",
           "show_when": {
             "match": "all",
-            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": [], "field": null, "days": 0}]
           }
         },
         {
@@ -6426,7 +6948,7 @@
           "column": "c_eq_ded",
           "show_when": {
             "match": "all",
-            "conditions": [{"table": "t_rating", "column": "c_eq_limit", "op": "filled", "values": []}]
+            "conditions": [{"table": "t_rating", "column": "c_eq_limit", "op": "filled", "values": [], "field": null, "days": 0}]
           }
         }
       ],
@@ -6447,7 +6969,7 @@
           "column": "c_eq_limit",
           "show_when": {
             "match": "all",
-            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": [], "field": null, "days": 0}]
           }
         },
         {
@@ -6456,7 +6978,7 @@
           "column": "c_eq_ded",
           "show_when": {
             "match": "all",
-            "conditions": [{"table": "t_rating", "column": "c_eq_limit", "op": "filled", "values": []}]
+            "conditions": [{"table": "t_rating", "column": "c_eq_limit", "op": "filled", "values": [], "field": null, "days": 0}]
           }
         }
       ],
@@ -6473,7 +6995,7 @@
       "show_when": {
         "s_eq": {
           "match": "all",
-          "conditions": [{"table": "t_rating", "column": "c_combined", "op": "ticked", "values": []}]
+          "conditions": [{"table": "t_rating", "column": "c_combined", "op": "ticked", "values": [], "field": null, "days": 0}]
         }
       },
       "field_show_when": [
@@ -6483,7 +7005,7 @@
           "column": "c_eq_limit",
           "show_when": {
             "match": "all",
-            "conditions": [{"table": "t_rating", "column": "c_note", "op": "filled", "values": []}]
+            "conditions": [{"table": "t_rating", "column": "c_note", "op": "filled", "values": [], "field": null, "days": 0}]
           }
         }
       ],
@@ -6504,7 +7026,7 @@
           "column": "c_ded",
           "show_when": {
             "match": "all",
-            "conditions": [{"table": "t_rating", "column": "c_combined", "op": "not_ticked", "values": []}]
+            "conditions": [{"table": "t_rating", "column": "c_combined", "op": "not_ticked", "values": [], "field": null, "days": 0}]
           }
         }
       ],
@@ -6528,7 +7050,7 @@
           "column": "c_ded",
           "show_when": {
             "match": "all",
-            "conditions": [{"table": "t_rating", "column": "c_combined", "op": "not_ticked", "values": []}]
+            "conditions": [{"table": "t_rating", "column": "c_combined", "op": "not_ticked", "values": [], "field": null, "days": 0}]
           }
         }
       ],
@@ -6546,7 +7068,7 @@
         "s_eq": {
           "match": "all",
           "conditions": [
-            {"table": "t_perils", "rows": "any", "where": [{"column": "c_ded", "op": "filled", "values": []}]}
+            {"table": "t_perils", "rows": "any", "where": [{"column": "c_ded", "op": "filled", "values": [], "field": null, "days": 0}]}
           ]
         }
       },
@@ -6557,7 +7079,7 @@
           "column": "c_ded",
           "show_when": {
             "match": "all",
-            "conditions": [{"table": "t_rating", "column": "c_combined", "op": "not_ticked", "values": []}]
+            "conditions": [{"table": "t_rating", "column": "c_combined", "op": "not_ticked", "values": [], "field": null, "days": 0}]
           }
         }
       ],
@@ -6577,7 +7099,7 @@
       "show_when": {
         "w_rating": {
           "match": "all",
-          "conditions": [{"table": "t_rating", "column": "c_note", "op": "filled", "values": []}]
+          "conditions": [{"table": "t_rating", "column": "c_note", "op": "filled", "values": [], "field": null, "days": 0}]
         }
       },
       "field_show_when": [
@@ -6587,7 +7109,7 @@
           "column": "c_eq_limit",
           "show_when": {
             "match": "all",
-            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": [], "field": null, "days": 0}]
           }
         },
         {
@@ -6596,7 +7118,7 @@
           "column": "c_eq_ded",
           "show_when": {
             "match": "all",
-            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []}]
+            "conditions": [{"table": "t_rating", "column": "c_eq", "op": "ticked", "values": [], "field": null, "days": 0}]
           }
         }
       ],
@@ -6623,7 +7145,7 @@
           "column": "c_eq_limit",
           "show_when": {
             "match": "all",
-            "conditions": [{"table": "t_rating", "column": "c_eq_limit", "op": "filled", "values": []}]
+            "conditions": [{"table": "t_rating", "column": "c_eq_limit", "op": "filled", "values": [], "field": null, "days": 0}]
           }
         }
       ],
@@ -6644,7 +7166,7 @@
           "column": "c_eq_limit",
           "show_when": {
             "match": "all",
-            "conditions": [{"table": "t_rating", "column": "c_eq_limit", "op": "filled", "values": []}]
+            "conditions": [{"table": "t_rating", "column": "c_eq_limit", "op": "filled", "values": [], "field": null, "days": 0}]
           }
         }
       ],
@@ -6666,12 +7188,12 @@
           "show_when": {
             "match": 1,
             "conditions": [
-              {"table": "t_rating", "column": "c_flood", "op": "ticked", "values": []},
+              {"table": "t_rating", "column": "c_flood", "op": "ticked", "values": [], "field": null, "days": 0},
               {
                 "match": "all",
                 "conditions": [
-                  {"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []},
-                  {"table": "t_rating", "column": "c_combined", "op": "ticked", "values": []}
+                  {"table": "t_rating", "column": "c_eq", "op": "ticked", "values": [], "field": null, "days": 0},
+                  {"table": "t_rating", "column": "c_combined", "op": "ticked", "values": [], "field": null, "days": 0}
                 ]
               }
             ]
@@ -6696,12 +7218,12 @@
           "show_when": {
             "match": 1,
             "conditions": [
-              {"table": "t_rating", "column": "c_flood", "op": "ticked", "values": []},
+              {"table": "t_rating", "column": "c_flood", "op": "ticked", "values": [], "field": null, "days": 0},
               {
                 "match": "all",
                 "conditions": [
-                  {"table": "t_rating", "column": "c_eq", "op": "ticked", "values": []},
-                  {"table": "t_rating", "column": "c_combined", "op": "ticked", "values": []}
+                  {"table": "t_rating", "column": "c_eq", "op": "ticked", "values": [], "field": null, "days": 0},
+                  {"table": "t_rating", "column": "c_combined", "op": "ticked", "values": [], "field": null, "days": 0}
                 ]
               }
             ]
@@ -6714,6 +7236,954 @@
       "hidden_widgets": [],
       "hidden_fields": [["w_rating", "t_rating", "c_flood_limit"]],
       "hidden_columns": []
+    },
+    {
+      "name": "a number tested against another field passes above that field's number, both typed with separators",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_limit",
+              "op": "above",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_mga"},
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_limit": "2,000,000", "c_mga": "1500000"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a number tested against another field fails at that field's number",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_limit",
+              "op": "above",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_mga"},
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_limit": "1,500,000", "c_mga": "$1,500,000"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a section tested against another field fails while that field hides, whatever both hold",
+      "form": "compare",
+      "show_when": {
+        "s_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_limit",
+              "op": "above",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_mga"},
+              "days": 0
+            }
+          ]
+        }
+      },
+      "field_show_when": [
+        {
+          "widget": "w_policy",
+          "table": "t_policy",
+          "column": "c_mga",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_policy", "column": "c_flag", "op": "ticked", "values": [], "field": null, "days": 0}]
+          }
+        }
+      ],
+      "values": {"t_policy": [{"c_limit": "2,000,000", "c_mga": "1500000"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_fields": [["w_policy", "t_policy", "c_mga"]],
+      "hidden_columns": [["t_policy", "c_mga"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "a test against another field fails while its own column hides",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_limit",
+              "op": "above",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_mga"},
+              "days": 0
+            }
+          ]
+        }
+      },
+      "field_show_when": [
+        {
+          "widget": "w_policy",
+          "table": "t_policy",
+          "column": "c_limit",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_policy", "column": "c_flag", "op": "ticked", "values": [], "field": null, "days": 0}]
+          }
+        }
+      ],
+      "values": {"t_policy": [{"c_limit": "2,000,000", "c_mga": "1500000"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_policy", "c_limit"], ["t_target", "c_x"]],
+      "hidden_fields": [["w_policy", "t_policy", "c_limit"]]
+    },
+    {
+      "name": "not_equals against another field passes while that field holds no value of its type",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_limit",
+              "op": "not_equals",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_mga"},
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_limit": "100", "c_mga": "lots"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "equals against another field fails while that field is blank",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_limit",
+              "op": "equals",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_mga"},
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_limit": "100", "c_mga": "  "}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "equals against another field passes the same number written otherwise",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_limit",
+              "op": "equals",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_mga"},
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_limit": "1000", "c_mga": "1,000.0"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "contains passes text holding the value",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_insured",
+              "op": "contains",
+              "values": ["Holdings"],
+              "field": null,
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_insured": "Acme Holdings Ltd"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "contains compares text exactly",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_insured",
+              "op": "contains",
+              "values": ["Holdings"],
+              "field": null,
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_insured": "Acme holdings Ltd"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a section shown while the insured contains a value fails while the insured hides",
+      "form": "compare",
+      "show_when": {
+        "s_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_insured",
+              "op": "contains",
+              "values": ["Holdings"],
+              "field": null,
+              "days": 0
+            }
+          ]
+        }
+      },
+      "field_show_when": [
+        {
+          "widget": "w_policy",
+          "table": "t_policy",
+          "column": "c_insured",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_policy", "column": "c_flag", "op": "ticked", "values": [], "field": null, "days": 0}]
+          }
+        }
+      ],
+      "values": {"t_policy": [{"c_insured": "Acme Holdings Ltd"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_fields": [["w_policy", "t_policy", "c_insured"]],
+      "hidden_columns": [["t_policy", "c_insured"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "not_contains passes an empty value",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_insured",
+              "op": "not_contains",
+              "values": ["Holdings"],
+              "field": null,
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "not_contains fails text holding the value",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_insured",
+              "op": "not_contains",
+              "values": ["Holdings"],
+              "field": null,
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_insured": "Acme Holdings"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "starts_with tests the text without the spaces around it",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_insured",
+              "op": "starts_with",
+              "values": [" Acme"],
+              "field": null,
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_insured": "  Acme Holdings Ltd  "}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "ends_with fails text ending otherwise",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_insured",
+              "op": "ends_with",
+              "values": ["Holdings"],
+              "field": null,
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_insured": "Acme Holdings Ltd"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "contains against another field tests for that field's text",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_insured",
+              "op": "contains",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_name"},
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_insured": "Acme Holdings Ltd", "c_name": " Holdings "}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a date more than 365 days after another passes",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_end",
+              "op": "above",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_start"},
+              "days": 365
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_start": "2026-01-01", "c_end": "2027-01-02"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a date exactly 365 days after another is not more than 365 days after it",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_end",
+              "op": "above",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_start"},
+              "days": 365
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_start": "2026-01-01", "c_end": "2027-01-01"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a section shown while a date is more than 365 days after another fails while that other date hides",
+      "form": "compare",
+      "show_when": {
+        "s_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_end",
+              "op": "above",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_start"},
+              "days": 365
+            }
+          ]
+        }
+      },
+      "field_show_when": [
+        {
+          "widget": "w_policy",
+          "table": "t_policy",
+          "column": "c_start",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_policy", "column": "c_flag", "op": "ticked", "values": [], "field": null, "days": 0}]
+          }
+        }
+      ],
+      "values": {"t_policy": [{"c_start": "2026-01-01", "c_end": "2027-06-01"}]},
+      "hidden_pages": [],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_fields": [["w_policy", "t_policy", "c_start"]],
+      "hidden_columns": [["t_policy", "c_start"], ["t_target", "c_x"]]
+    },
+    {
+      "name": "days count the calendar's days, a leap day among them",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_end",
+              "op": "equals",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_start"},
+              "days": 2
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_start": "2024-02-28", "c_end": "2024-03-01"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "days taken away move the other date back",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_start",
+              "op": "at_most",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_end"},
+              "days": -30
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_start": "2026-01-01", "c_end": "2026-01-31"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a date tested against another field fails while that field holds no real day",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_end",
+              "op": "above",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_start"},
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_start": "2026-02-30", "c_end": "2027-01-01"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a date with nothing typed counts as not equal to another date",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_end",
+              "op": "not_equals",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_start"},
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_start": "2026-01-01"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a date that is no real day is never after another date",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_end",
+              "op": "above",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_start"},
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_start": "2026-01-01", "c_end": "2026-13-01"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a date a day past another plus 365 days is not equal to it",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_end",
+              "op": "not_equals",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_start"},
+              "days": 365
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_start": "2026-01-01", "c_end": "2027-01-02"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a date exactly another plus 365 days fails a not-equal test against it",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_end",
+              "op": "not_equals",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_start"},
+              "days": 365
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_start": "2026-01-01", "c_end": "2027-01-01"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a test of a row against another column of the same row passes in a row where it holds",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_items",
+              "rows": "any",
+              "where": [{"column": "c_value", "op": "above", "values": [], "field": "c_cap", "days": 0}]
+            }
+          ]
+        }
+      },
+      "values": {"t_items": [{"c_value": "120", "c_cap": "100"}, {"c_value": "50", "c_cap": "80"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a test of a row against another column never reads another row's value",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_items",
+              "rows": "any",
+              "where": [{"column": "c_value", "op": "above", "values": [], "field": "c_cap", "days": 0}]
+            }
+          ]
+        }
+      },
+      "values": {"t_items": [{"c_value": "120"}, {"c_cap": "100"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a test of a row against another column fails while that column hides",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_items",
+              "rows": "any",
+              "where": [{"column": "c_value", "op": "above", "values": [], "field": "c_cap", "days": 0}]
+            }
+          ]
+        }
+      },
+      "field_show_when": [
+        {
+          "widget": "w_items",
+          "table": "t_items",
+          "column": "c_cap",
+          "show_when": {
+            "match": "all",
+            "conditions": [{"table": "t_policy", "column": "c_flag", "op": "ticked", "values": [], "field": null, "days": 0}]
+          }
+        }
+      ],
+      "values": {"t_items": [{"c_value": "120", "c_cap": "100"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_items", "c_cap"], ["t_target", "c_x"]],
+      "hidden_fields": [["w_items", "t_items", "c_cap"]]
+    },
+    {
+      "name": "a test against a field of another type never holds",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_limit",
+              "op": "equals",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_insured"},
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_limit": "100", "c_insured": "100"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a test against a field in a table with many rows never holds",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_limit",
+              "op": "equals",
+              "values": [],
+              "field": {"table": "t_items", "column": "c_value"},
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_limit": "100"}], "t_items": [{"c_value": "100"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a test against another field with a value typed too never holds",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_limit",
+              "op": "above",
+              "values": ["5"],
+              "field": {"table": "t_policy", "column": "c_mga"},
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_limit": "100", "c_mga": "50"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a test of several values against another field never holds",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_limit",
+              "op": "one_of",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_mga"},
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_limit": "100", "c_mga": "100"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "days without another field never hold",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_policy", "column": "c_end", "op": "above", "values": ["2026-01-01"], "field": null, "days": 5}]
+        }
+      },
+      "values": {"t_policy": [{"c_end": "2027-01-01"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "days added to a number never hold",
+      "form": "compare",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_policy",
+              "column": "c_limit",
+              "op": "above",
+              "values": [],
+              "field": {"table": "t_policy", "column": "c_mga"},
+              "days": 3
+            }
+          ]
+        }
+      },
+      "values": {"t_policy": [{"c_limit": "100", "c_mga": "50"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a condition on the price holds while what shows is decided, so it leaves nothing out of the quote",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_out", "column": "c_o", "op": "above", "values": ["1000000"], "field": null, "days": 0}]
+        }
+      },
+      "values": {"t_in": [{}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a condition on the price on an input Collection leaves its values in the quote",
+      "form": "tests",
+      "show_when": {
+        "w_in": {
+          "match": "all",
+          "conditions": [{"table": "t_out", "column": "c_o", "op": "below", "values": ["0"], "field": null, "days": 0}]
+        }
+      },
+      "values": {"t_in": [{"c_text": "Motor"}]},
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a condition on the price that does not fit never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [{"table": "t_out", "column": "c_o", "op": "ticked", "values": [], "field": null, "days": 0}]
+        }
+      },
+      "values": {"t_in": [{}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a condition on the price tested against another field never holds",
+      "form": "tests",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_out",
+              "column": "c_o",
+              "op": "above",
+              "values": [],
+              "field": {"table": "t_in", "column": "c_num"},
+              "days": 0
+            }
+          ]
+        }
+      },
+      "values": {"t_in": [{"c_num": "1"}]},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_target"],
+      "hidden_widgets": ["w_target"],
+      "hidden_columns": [["t_target", "c_x"]]
+    },
+    {
+      "name": "a test of an output table's rows against another column never holds",
+      "form": "lists",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "t_quotes",
+              "rows": "any",
+              "where": [{"column": "c_price", "op": "above", "values": [], "field": "c_price", "days": 0}]
+            }
+          ]
+        }
+      },
+      "values": {},
+      "hidden_pages": ["p_target"],
+      "hidden_sections": ["s_extra", "s_target"],
+      "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
+      "hidden_columns": [["t_claims", "c_amount"], ["t_drivers", "c_occupation"], ["t_target", "c_x"]]
     }
   ]
 }

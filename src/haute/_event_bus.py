@@ -103,13 +103,27 @@ class _PipelineDocumentUpdateFields(TypedDict):
     source_file: str
 
 
+class DocumentUpdateExclusion(TypedDict):
+    """The saving tab's socket, which the save's broadcast of its own document leaves out.
+
+    ``owner`` is the authorised session the save came from (the platform user when hosted,
+    ``None`` locally): a socket is left out only while its owner is the same.
+    """
+
+    connection_id: str
+    owner: str | None
+
+
 class PipelineDocumentUpdatePayload(_PipelineDocumentUpdateFields, total=False):
     """Emitted when a readable pipeline editor document changes.
 
-    ``origin`` is present only on an update an assistant apply or undo published.
+    ``origin`` is present only on an update an assistant apply or undo published, and
+    ``exclude_connection`` only on one a save published; the WebSocket forwarder never sends
+    the latter.
     """
 
     origin: AssistantDocumentOrigin
+    exclude_connection: DocumentUpdateExclusion
 
 
 EventType = Literal["parse.error", "pipeline.document.update"]

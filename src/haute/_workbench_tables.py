@@ -1,8 +1,8 @@
 """The workbench's tables as the pipeline holds them (specs/workbench).
 
 The schema's input tables are the Workbench Input's and its output tables the Workbench
-Output's. Each node's ``tables`` config is a copy, which the editor keeps current, so the
-pipeline runs without the form: a table is its name, whether a quote holds one row of it or
+Output's, given to each node's ``tables`` config from the form wherever the pipeline runs
+(``haute._workbench_nodes``): a table is its name, whether a quote holds one row of it or
 many, and its typed columns, ``{"name": "equipment", "rows": "many", "columns": [{"name":
 "value", "type": "float"}]}``. The form's rules, labels and keys stay in the form. In a
 quote, and in a priced quote, a one-row table is an object under its name and a many-row
@@ -50,7 +50,7 @@ _NAME_RULE = "letters, digits and underscores, not starting with a digit and not
 
 
 class WorkbenchTablesError(HauteError):
-    """A workbench node's tables, as its config holds them, cannot be the pipeline's.
+    """A workbench node's tables cannot be the pipeline's: the form's, or a bundle's.
 
     A public contract error: the message says what to fix, and a route answers it as 422.
     """
@@ -102,8 +102,9 @@ _TABLES = TypeAdapter(list[WorkbenchTable])
 def parse_workbench_tables(value: object, *, owner: str) -> tuple[WorkbenchTable, ...]:
     """*value*, a workbench node's ``tables`` config, as the tables it holds.
 
-    *owner* names the node in a refusal. A shape the workbench does not write is refused
-    naming the spot, and the names are checked as :func:`check_tables` checks them.
+    *owner* names the node in a refusal. Haute gives the tables (``haute._workbench_nodes``),
+    so a shape it does not give, a node built without them included, is refused naming the
+    spot, and the names are checked as :func:`check_tables` checks them.
     """
     try:
         tables = tuple(_TABLES.validate_python(value, strict=True))
@@ -114,8 +115,7 @@ def parse_workbench_tables(value: object, *, owner: str) -> tuple[WorkbenchTable
             f"[{part}]" if isinstance(part, int) else f".{part}" for part in first["loc"]
         )
         raise WorkbenchTablesError(
-            f"The {owner}'s tables are not as the workbench writes them ({where}: "
-            f"{first['msg']}). Open the pipeline in the editor and save it."
+            f"The {owner}'s tables are not as the workbench gives them ({where}: {first['msg']})."
         ) from exc
     check_tables(tables, owner=owner)
     return tables
@@ -162,7 +162,7 @@ def port_tables(tables: Iterable[WorkbenchTable]) -> tuple[WorkbenchTable, ...]:
     return tuple(table for table in tables if table.columns)
 
 
-#: The quote's identity at the head of a table, as a node's copy holds it: each column's
+#: The quote's identity at the head of a table, as a node's tables hold it: each column's
 #: name and type.
 IDENTITY_SHAPE: tuple[tuple[str, ColumnType], ...] = tuple(
     (name, column_type) for _, name, column_type in IDENTITY_COLUMNS
@@ -172,7 +172,7 @@ IDENTITY_SHAPE: tuple[tuple[str, ColumnType], ...] = tuple(
 def carries_identity(table: WorkbenchTable) -> bool:
     """Whether *table* leads with the quote's identity, its reference and option: every
     table the form makes but ``quote_details``, which holds the identity itself. A node's
-    copy has no ids, so the columns are known by their place, names and types."""
+    tables have no ids, so the columns are known by their place, names and types."""
     held = tuple((column.name, column.type) for column in table.columns[: len(IDENTITY_SHAPE)])
     return table.name != QUOTE_DETAILS_ID and held == IDENTITY_SHAPE
 
@@ -190,60 +190,6 @@ def request_schema(tables: Iterable[WorkbenchTable]) -> pl.Schema:
         struct = pl.Struct({column.name: column.dtype for column in request_columns(table)})
         schema[table.name] = struct if table.one_row else pl.List(struct)
     return pl.Schema(schema)
-
-
-def table_disagreements(
-    defined: Sequence[WorkbenchTable], copied: Sequence[WorkbenchTable]
-) -> list[str]:
-    """Where a node's *copied* tables differ from the tables the form *defined* for it.
-
-    Each difference names its table, or its column as ``table.column``: one the form has and
-    the copy lacks, or the copy has and the form lacks, a table's rows per quote and a
-    column's type. The copy is written in the form's order, so a copy whose tables or columns
-    are otherwise the same in another order differs too. Nothing when the two are equal.
-    """
-    found: list[str] = []
-    held = {table.name: table for table in copied}
-    for table in defined:
-        copy = held.get(table.name)
-        if copy is None:
-            found.append(f"table {table.name!r} is in the form but not in the copy")
-            continue
-        before = len(found)
-        if copy.rows != table.rows:
-            found.append(
-                f"table {table.name!r} is {table.rows} rows per quote in the form and "
-                f"{copy.rows} in the copy"
-            )
-        copy_columns = {column.name: column for column in copy.columns}
-        form_columns = {column.name for column in table.columns}
-        for column in table.columns:
-            spot = f"{table.name}.{column.name}"
-            other = copy_columns.get(column.name)
-            if other is None:
-                found.append(f"column {spot!r} is in the form but not in the copy")
-            elif other.type != column.type:
-                found.append(
-                    f"column {spot!r} is {column.type} in the form and {other.type} in the copy"
-                )
-        found.extend(
-            f"column {f'{table.name}.{column.name}'!r} is in the copy but not in the form"
-            for column in copy.columns
-            if column.name not in form_columns
-        )
-        if len(found) == before and copy.columns != table.columns:
-            found.append(
-                f"the columns of table {table.name!r} are in a different order in the copy"
-            )
-    form_tables = {table.name for table in defined}
-    found.extend(
-        f"table {table.name!r} is in the copy but not in the form"
-        for table in copied
-        if table.name not in form_tables
-    )
-    if not found and tuple(copied) != tuple(defined):
-        found.append("the tables are in a different order in the copy")
-    return found
 
 
 def quote_schema(tables: Iterable[WorkbenchTable]) -> pl.Schema:

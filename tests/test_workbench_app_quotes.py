@@ -832,11 +832,56 @@ def test_with_an_edit_role_only_those_holding_it_change_quotes(tmp_path: Path, u
         set_project_root(original)
 
 
+#: Where ``haute app serve`` is reached on the analyst's machine.
+LOOPBACK = "http://127.0.0.1:8001"
+
+
+def test_serving_locally_refuses_another_host_and_forwarded_requests(
+    release_dir: Path, url: str
+) -> None:
+    app = create_app(release_dir, local_principal="ana@example.com", store_url=url)
+    foreign = {"host": "rebound.example:8001"}
+    # A page of a site whose name resolves to the analyst's machine: the browser calls its
+    # requests the page's own.
+    rebound = {**foreign, "origin": "http://rebound.example:8001", "sec-fetch-site": "same-origin"}
+    forwarded = ({"x-forwarded-for": "203.0.113.9"}, {"forwarded": "for=203.0.113.9"})
+    with TestClient(app, base_url=LOOPBACK) as client:
+        page = Page(client)
+        priced = {"form_revision": page.revision, "release": page.release, "values": VALUES}
+        for headers in (foreign, rebound, *forwarded):
+            answers = [
+                client.get("/health", headers=headers),
+                client.get("/api/app/release", headers=headers),
+                client.get("/api/app/form", headers=headers),
+                client.get("/api/app/quotes", headers=headers),
+                client.post("/api/app/price", json=priced, headers=headers),
+                page.create(headers=headers),
+            ]
+            assert [answer.status_code for answer in answers] == [400] * 6, headers
+            assert not any("ana@example.com" in answer.text for answer in answers)
+        with QuoteBook(open_store(url), haute_version="9.9.9") as book:
+            assert book.page(actor="ana@example.com", view="team").counts["team"] == 0
+
+        for host in ("127.0.0.1:8001", "localhost:8001"):
+            own = {"host": host}
+            release = client.get("/api/app/release", headers=own)
+            assert release.json()["principal"] == "ana@example.com", host
+            made = page.create(headers=own)
+            assert made.status_code == 200, made.text
+            values = made.json()["revision"]["values"]
+            price = client.post("/api/app/price", json={**priced, "values": values}, headers=own)
+            assert price.status_code == 200, price.text
+            saved = page.save(made.json()["quote"], headers=own)
+            assert saved.status_code == 200, saved.text
+        with QuoteBook(open_store(url), haute_version="9.9.9") as book:
+            assert book.page(actor="ana@example.com", view="team").counts["team"] == 2
+
+
 def test_serving_locally_as_a_reader_changes_no_quote(release_dir: Path, url: str) -> None:
     app = create_app(
         release_dir, local_principal="ana@example.com", store_url=url, local_reader=True
     )
-    with TestClient(app) as client:
+    with TestClient(app, base_url=LOOPBACK) as client:
         release = client.get("/api/app/release").json()
         refused = client.post(
             "/api/app/quotes",

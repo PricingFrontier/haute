@@ -411,6 +411,24 @@ def test_node_instance_preflight_refuses_orphan_sidecar(client: TestClient, tmp_
     assert not (tmp_path / "modules" / "calc.py").exists()
 
 
+def test_node_instance_refuses_removed_node_reuse_without_writing(
+    client: TestClient, tmp_path: Path
+) -> None:
+    body = _instance_body()
+    body["graph"]["nodes"][1]["data"]["config"]["instanceOf"] = "load"
+    with _patch_parent_document(tmp_path):
+        before = {
+            p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()
+        }
+        response = client.post("/api/submodel/instance", json=body)
+    assert response.status_code == 400, response.text
+    assert "instanceOf" in response.json()["detail"]
+    assert 'pipeline.submodel(<name>.submodel, "<instance>"' in response.json()["detail"]
+    assert {
+        p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()
+    } == before
+
+
 class TestCreateSubmodel:
     def test_invalid_node_ids(self, client: TestClient, tmp_path: Path) -> None:
         """An unknown selected id is a stale-selection conflict."""

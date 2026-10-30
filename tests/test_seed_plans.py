@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pickle
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -843,6 +844,24 @@ def test_corrupt_generation_fails_resolution_naming_the_node(
     payload = raised.value.to_payload()
     assert payload["error_code"] == "snapshot_corrupt"
     assert payload["node_id"] == "C"
+
+
+def test_a_generation_whose_directory_is_gone_is_recomputed_not_reported_unreadable(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    """Evicted by another process or deleted by hand, a node's data is missing, not corrupt."""
+    graph = _chain(project)
+    a1 = _publish(store, graph, "A")
+    c1 = _publish(store, graph, "C")
+    vanished = _generation_dir(store, _identity(store, graph, "C"), c1)
+    shutil.rmtree(project / vanished.relative_to(project))
+
+    decision = resolve_seed_plan(
+        _request(graph, required={"T": ["a"]}), store=NodeSnapshotStore(project)
+    )
+
+    assert {node: seed.generation_id for node, seed in decision.seeds.items()} == {"A": a1}
+    assert {"B", "C"} <= decision.executed_node_ids
 
 
 def test_resolution_drops_across_rounds_until_stable(

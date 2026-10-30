@@ -7,14 +7,16 @@ root and pipeline dir both tried, backslashes read as separators), but a direct
 Parquet Data Input and deploy's schema inference and scoring joined it onto the
 pipeline dir alone. On Linux CI ``data\\x.parquet`` then named one file with a
 backslash in it, under the pipeline dir, and the dry-run deploy failed. Every reader now
-resolves as deploy bundles: pipeline dir first, then the project root, and never
-outside the project root.
+tries both places and never leaves the project root. The registry and the engine share
+one rule, the project root first (``resolve_node_input_path``); deploy bundles a Data
+Input's file from the pipeline dir first, as its specification states.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
@@ -60,19 +62,49 @@ def test_a_direct_input_finds_a_project_root_path_written_on_windows(project: Pa
     assert _anchored("data/policies.parquet", project / "rating") == saved
 
 
-def test_a_direct_inputs_pipeline_relative_file_wins(project: Path) -> None:
-    _file(project / "data" / "policies.parquet")
+def test_a_direct_input_falls_back_to_the_file_beside_the_pipeline(project: Path) -> None:
     beside_pipeline = _file(project / "rating" / "data" / "policies.parquet")
 
     assert _anchored("data\\policies.parquet", project / "rating") == beside_pipeline
 
 
-def test_a_direct_input_found_nowhere_keeps_the_pipeline_anchoring(project: Path) -> None:
-    # A glob names no one file, so it resolves where it always has.
+def test_a_direct_input_found_nowhere_keeps_the_project_root_anchoring(project: Path) -> None:
+    # A glob that matches nothing names no file, so it keeps the first candidate.
     assert (
         _anchored("data/*.parquet", project / "rating")
-        == (project / "rating" / "data" / "*.parquet").resolve()
+        == (project / "data" / "*.parquet").resolve()
     )
+
+
+def test_the_registry_and_the_walker_read_the_project_root_file_over_a_decoy(
+    project: Path,
+) -> None:
+    """A path present in both places names one file at every seam: the project root's."""
+    from haute._input_providers import resolve_data_input
+    from haute.execution import canonical_dataframe_execution_graph
+
+    saved = project / "data" / "policies.parquet"
+    saved.parent.mkdir()
+    pl.DataFrame({"read": ["project root"]}).write_parquet(saved)
+    decoy = project / "rating" / "data" / "policies.parquet"
+    decoy.parent.mkdir()
+    pl.DataFrame({"read": ["beside the pipeline"]}).write_parquet(decoy)
+    config = {
+        "inputType": "file",
+        "format": "parquet",
+        "mode": "scan",
+        "path": "data/policies.parquet",
+        "arguments": {},
+    }
+    graph = _graph(project, "data/policies.parquet")
+    graph = graph.model_copy(update={"nodes": [graph.nodes[0].with_config(config)]})
+
+    registry = _anchored("data/policies.parquet", project / "rating")
+    [walked] = canonical_dataframe_execution_graph(graph).nodes
+
+    assert registry == Path(walked.data.config["path"]).resolve() == saved.resolve()
+    rows = resolve_data_input(config, base_dir=project / "rating").collect()
+    assert rows["read"].to_list() == ["project root"]
 
 
 def test_an_absolute_direct_input_path_is_left_alone(project: Path) -> None:

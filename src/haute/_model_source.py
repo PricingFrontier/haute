@@ -177,14 +177,12 @@ def _resolve_project_file(
     input, so the preview, a standalone run and the deploy bundler pick the same
     file. *project_root* defaults to the execution-scoped project root.
     """
-    from haute._path_resolution import current_runtime_project_root, resolve_runtime_file_path
+    from haute._path_resolution import current_runtime_project_root, resolve_node_input_path
 
-    resolved = resolve_runtime_file_path(
+    resolved = resolve_node_input_path(
         raw_path,
         pipeline_dir=base_dir,
         project_root=project_root if project_root is not None else current_runtime_project_root(),
-        prefer="project",
-        enforce_project_root=True,
     )
     if not resolved.is_file():
         raise ConfigError(

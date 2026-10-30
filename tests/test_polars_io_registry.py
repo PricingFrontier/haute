@@ -273,6 +273,23 @@ class TestRegistrySchemaCompleteness:
                         assert "lazy" not in allowed
                         assert "optimizations" not in allowed
 
+    def test_an_iceberg_catalog_object_is_not_config_expressible(self) -> None:
+        """A pyiceberg catalog object locates the table, and JSON cannot construct one."""
+        iceberg = next(
+            entry
+            for group in registry_capabilities()["groups"]
+            for entry in group["formats"]
+            if entry["name"] == "iceberg"
+        )
+        offered = {
+            (side, mode): set(arguments)
+            for side in ("input", "output")
+            for mode, arguments in iceberg[side]["arguments"].items()
+        }
+
+        assert {("input", "scan"), ("output", "sink")} <= set(offered)
+        assert not any("catalog" in arguments for arguments in offered.values())
+
     def test_registry_capabilities_payload_shape(self) -> None:
         payload = registry_capabilities()
         assert payload["schema_version"] == 1

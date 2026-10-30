@@ -960,7 +960,7 @@ class TestInitWorkbench:
         refused = runner.invoke(cli, ["init", "--workbench"])
 
         assert refused.exit_code == 1
-        assert "the pipeline folder is outside the project" in refused.output
+        assert "[project].pipeline must name a file inside the project" in refused.output
         assert (project_dir / "haute.toml").read_bytes() == toml_before
         assert not (outside / "workbench").exists()
 

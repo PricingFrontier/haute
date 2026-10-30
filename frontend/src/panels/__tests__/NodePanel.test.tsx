@@ -11,6 +11,7 @@ import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStor
 import { buildNodeDataCacheIdentity } from "../dataPointIdentity"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 import { apiInputFrameLabels } from "../../utils/apiInputPorts"
 
@@ -118,9 +119,7 @@ vi.mock("../LazyNodeEditors", async () => {
   OutputEditor: () => <div data-testid="OutputEditor" />,
   ExternalFileEditor: () => <div data-testid="ExternalFileEditor" />,
   ApiInputEditor: () => <div data-testid="ApiInputEditor" />,
-  WorkbenchInputEditor: ({ insideSubmodel }: { insideSubmodel?: boolean }) => (
-    <div data-testid="WorkbenchInputEditor" data-inside-submodel={String(insideSubmodel)} />
-  ),
+  WorkbenchInputEditor: () => <div data-testid="WorkbenchInputEditor" />,
   LiveSwitchEditor: () => <div data-testid="LiveSwitchEditor" />,
   DataInputEditor: (props: Record<string, unknown>) => {
     dataInputEditorProps.push(props)
@@ -1049,16 +1048,12 @@ describe("NodePanel", () => {
     expect(screen.queryByTestId("WorkbenchInputEditor")).not.toBeInTheDocument()
   })
 
-  it("renders WorkbenchInputEditor for workbenchInput nodes, told whether a submodel is open", () => {
+  it("renders WorkbenchInputEditor for workbenchInput nodes", () => {
     const node = makeNode({ data: { label: "Quote", description: "", nodeType: "workbenchInput", config: {} } })
-    const { unmount } = renderPanel({ node })
-    expect(screen.getByTestId("WorkbenchInputEditor")).toHaveAttribute("data-inside-submodel", "false")
+    renderPanel({ node })
+    expect(screen.getByTestId("WorkbenchInputEditor")).toBeInTheDocument()
     expect(screen.queryByTestId("ApiInputEditor")).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /^columns$/i })).not.toBeInTheDocument()
-    unmount()
-
-    renderPanel({ node, insideSubmodel: true })
-    expect(screen.getByTestId("WorkbenchInputEditor")).toHaveAttribute("data-inside-submodel", "true")
   })
 
   it("renders DataInputEditor for dataInput nodes", () => {
@@ -2145,6 +2140,36 @@ describe("NodePanel", () => {
         "title",
         expect.stringMatching(/eligible|emitted|resolv/i),
       )
+    })
+
+    it("names a Workbench Input's frame by its table, and marks one the newest fetch of the tables lacks unresolved", () => {
+      const target = makeNode({
+        id: "target",
+        data: { label: "Target", description: "", nodeType: "polars", config: {} },
+      })
+      const workbenchInput = makeNode({
+        id: "wb_in",
+        data: { label: "Quote", description: "", nodeType: "workbenchInput", config: {} },
+      })
+      const policy = { name: "policy", rows: "one" as const, columns: [{ name: "state", type: "str" as const }] }
+      useWorkbenchStore.setState({ tables: { tables: [policy], sample: {}, responseTables: [], fetch: 1 } })
+      try {
+        renderPanel({
+          node: target,
+          allNodes: [workbenchInput, target],
+          edges: [
+            { id: "edge_policy", source: workbenchInput.id, target: target.id, sourceHandle: "policy" },
+            { id: "edge_gone", source: workbenchInput.id, target: target.id, sourceHandle: "gone" },
+          ],
+        })
+
+        const [current, gone] = latestTransformInputSources()
+        expect(current).toMatchObject({ edgeId: "edge_policy", name: "policy" })
+        expect(current.frameUnresolved).not.toBe(true)
+        expect(gone).toMatchObject({ edgeId: "edge_gone", name: "gone", frameUnresolved: true })
+      } finally {
+        useWorkbenchStore.setState({ tables: null })
+      }
     })
 
     it("keeps a null-handle apiInput edge visible as explicitly unresolved", () => {

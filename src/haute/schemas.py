@@ -19,10 +19,10 @@ from pydantic import (
     ConfigDict,
     Field,
     RootModel,
+    Strict,
     StrictBool,
     StrictFloat,
     StrictInt,
-    StrictStr,
     field_validator,
     model_validator,
 )
@@ -97,7 +97,26 @@ TimeLimitMinutes = Annotated[
     BeforeValidator(_reject_bool),
 ]
 
-RevisionToken = Annotated[str, Field(min_length=1, pattern=r"^\S+$")]
+RevisionToken = Annotated[str, Field(min_length=1, max_length=512, pattern=r"^\S+$")]
+
+# Every free string a request carries is bounded, so an over-long one is refused (422)
+# before a route acts on it, never failing as a 500 deep in a write.
+#: An id, a name or a token: a node, a source, a column, a job, a branch, a revision.
+BoundedName = Annotated[str, Field(max_length=512)]
+#: A name or identity a response hands the browser to show or act on: never blank.
+NonBlankStr = Annotated[str, Field(pattern=r"\S")]
+#: A path, relative to the project, or a URL.
+BoundedPath = Annotated[str, Field(max_length=4096)]
+#: Code or text a person writes: a preamble, a utility file, a description, a message.
+BoundedText = Annotated[str, Field(max_length=16 * 1024 * 1024)]
+#: How many items a list or a mapping in a request may hold.
+MAX_REQUEST_ITEMS = 10_000
+#: One entry of a node's config a request carries, a step or an output mapping's row: its
+#: fields are bounded, and their values, of no fixed shape, are checked where they are read.
+RequestEntry = Annotated[dict[BoundedName, Any], Field(max_length=MAX_REQUEST_ITEMS)]
+#: A utility module's name: its file, ``<name>.py``, and the write's staging sibling must
+#: both fit a file name.
+UTILITY_MODULE_NAME_MAX = 200
 
 JobStatus = Literal[
     "running",
@@ -146,6 +165,13 @@ def _normalise_frontier_range_pair(value: Any, *, field: str) -> tuple[float, fl
 class ColumnInfo(BaseModel):
     name: str
     dtype: str
+
+
+class RequestColumnInfo(BaseModel):
+    """A column as a request names it: a name and a dtype, each bounded."""
+
+    name: BoundedName
+    dtype: BoundedName
 
 
 class SessionStatusResponse(BaseModel):
@@ -222,7 +248,7 @@ class WorkbenchFormSaveRequest(BaseModel):
     """
 
     form: FormSpec
-    base_revision: str
+    base_revision: BoundedName
 
 
 class WorkbenchFormSaveResponse(WorkbenchFormFile, SaveCapture):
@@ -247,6 +273,22 @@ class WorkbenchParamFileResponse(BaseModel):
 WorkbenchValues = dict[str, list[dict[str, Cell]]]
 #: Priced output tables: each table's rows by its name, as Preview's pricing gives them.
 WorkbenchPricedTables = dict[str, list[dict[str, Any]]]
+#: The two as a request carries them: every table, row, cell and text bounded.
+_RequestCell = Annotated[BoundedText, Strict()] | StrictBool
+RequestWorkbenchValues = dict[
+    BoundedName,
+    Annotated[
+        list[Annotated[dict[BoundedName, _RequestCell], Field(max_length=MAX_REQUEST_ITEMS)]],
+        Field(max_length=MAX_REQUEST_ITEMS),
+    ],
+]
+RequestWorkbenchPricedTables = dict[
+    BoundedName,
+    Annotated[
+        list[Annotated[dict[BoundedName, Any], Field(max_length=MAX_REQUEST_ITEMS)]],
+        Field(max_length=MAX_REQUEST_ITEMS),
+    ],
+]
 
 
 class WorkbenchAppReleaseResponse(BaseModel):
@@ -278,9 +320,9 @@ class WorkbenchAppPriceRequest(BaseModel):
     """A quote typed into the app's sheets, with the form revision and the release the page
     was drawn from."""
 
-    form_revision: str
-    release: str
-    values: WorkbenchValues
+    form_revision: BoundedName
+    release: BoundedName
+    values: RequestWorkbenchValues = Field(max_length=MAX_REQUEST_ITEMS)
 
 
 class WorkbenchAppPriceResponse(BaseModel):
@@ -375,7 +417,7 @@ class WorkbenchAppQuoteResponse(BaseModel):
 class WorkbenchAppQuoteSource(BaseModel):
     """The quote and revision a new quote is made from, and how."""
 
-    quote_id: str
+    quote_id: BoundedName
     revision: int = Field(ge=1)
     relation: WorkbenchAppQuoteRelation
 
@@ -386,10 +428,10 @@ class WorkbenchAppQuoteSaveRequest(BaseModel):
     and kept, or null to save the quote unpriced."""
 
     operation: str = Field(min_length=8, max_length=64)
-    form_revision: str
-    release: str
-    values: WorkbenchValues
-    shown: WorkbenchPricedTables | None = None
+    form_revision: BoundedName
+    release: BoundedName
+    values: RequestWorkbenchValues = Field(max_length=MAX_REQUEST_ITEMS)
+    shown: RequestWorkbenchPricedTables | None = Field(default=None, max_length=MAX_REQUEST_ITEMS)
 
 
 class WorkbenchAppQuoteCreateRequest(WorkbenchAppQuoteSaveRequest):
@@ -551,10 +593,10 @@ class AssistantSessionRequest(BaseModel):
 
     # The project-relative source file of the pipeline document the canvas
     # shows. The session is bound to it; the server never picks a pipeline.
-    source_file: str = Field(min_length=1)
+    source_file: BoundedPath = Field(min_length=1)
     # A previously issued session id the client wants to resume. Resume is an
     # offer: unknown/pruned ids or a different pipeline yield a fresh session.
-    session_id: str | None = None
+    session_id: BoundedName | None = None
 
 
 AssistantTurnOutcomeKind = Literal[
@@ -841,9 +883,9 @@ class AssistantMessageContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # Top-level node ids of the saved pipeline, in selection order.
-    selected_node_ids: list[str] = Field(max_length=20)
+    selected_node_ids: list[BoundedName] = Field(max_length=20)
     # The node whose schema-resolution error the turn context reports.
-    preview_error_node_id: str | None = None
+    preview_error_node_id: BoundedName | None = None
 
     @model_validator(mode="after")
     def _unique_selection(self) -> AssistantMessageContext:
@@ -857,11 +899,11 @@ class AssistantUndoRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    session_id: str
+    session_id: BoundedName
     # The change card's id, the hash of the plan that saved it.
-    change_id: str = Field(min_length=1)
+    change_id: BoundedName = Field(min_length=1)
     # The canvas document's source file; one other than the session's is refused.
-    source_file: str = Field(min_length=1)
+    source_file: BoundedPath = Field(min_length=1)
 
 
 class AssistantUndoResponse(BaseModel):
@@ -875,10 +917,10 @@ class AssistantUndoResponse(BaseModel):
 class AssistantMessageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    session_id: str
-    message: str
+    session_id: BoundedName
+    message: BoundedText
     # The canvas document's source file; one other than the session's is refused.
-    source_file: str = Field(min_length=1)
+    source_file: BoundedPath = Field(min_length=1)
     context: AssistantMessageContext | None = None
 
 
@@ -1363,10 +1405,10 @@ class PipelineRepairRemoveRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    source_file: str = Field(min_length=1)
+    source_file: BoundedPath = Field(min_length=1)
     source_revision: RevisionToken
-    target_source_file: str = Field(min_length=1)
-    target_recovery_id: str = Field(min_length=1)
+    target_source_file: BoundedPath = Field(min_length=1)
+    target_recovery_id: BoundedName = Field(min_length=1)
     delete_config: StrictBool = False
 
 
@@ -1375,10 +1417,10 @@ class PipelineRepairRecoverRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    source_file: str = Field(min_length=1)
+    source_file: BoundedPath = Field(min_length=1)
     source_revision: RevisionToken
-    target_source_file: str = Field(min_length=1)
-    target_recovery_id: str = Field(min_length=1)
+    target_source_file: BoundedPath = Field(min_length=1)
+    target_recovery_id: BoundedName = Field(min_length=1)
     action: Literal["reset", "recover"]
 
 
@@ -1387,10 +1429,10 @@ class PipelineRepairRemoveConnectionRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    source_file: str = Field(min_length=1)
+    source_file: BoundedPath = Field(min_length=1)
     source_revision: RevisionToken
-    target_source_file: str = Field(min_length=1)
-    target_connection_id: str = Field(min_length=1)
+    target_source_file: BoundedPath = Field(min_length=1)
+    target_connection_id: BoundedName = Field(min_length=1)
 
 
 class PipelineNodeSaveRequest(BaseModel):
@@ -1398,11 +1440,11 @@ class PipelineNodeSaveRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    source_file: str = Field(min_length=1)
+    source_file: BoundedPath = Field(min_length=1)
     source_revision: RevisionToken
-    target_source_file: str = Field(min_length=1)
-    target_recovery_id: str = Field(min_length=1)
-    config: dict[str, Any]
+    target_source_file: BoundedPath = Field(min_length=1)
+    target_recovery_id: BoundedName = Field(min_length=1)
+    config: dict[BoundedName, Any] = Field(max_length=MAX_REQUEST_ITEMS)
 
 
 class PipelineRepairChange(BaseModel):
@@ -1469,20 +1511,40 @@ class PipelineRepairApplyResponse(BaseModel):
 
 
 class SavePipelineRequest(BaseModel):
-    name: str = "main"
-    description: str = ""
+    name: BoundedName = "main"
+    description: BoundedText = ""
     graph: Graph = Field(default_factory=Graph)
-    preamble: str | None = None
-    preserved_blocks: list[str] = Field(default_factory=list)
-    source_file: str = ""
-    sources: list[str] = Field(default_factory=lambda: ["live"])
-    active_source: str = "live"
+    preamble: BoundedText | None = None
+    preserved_blocks: list[BoundedText] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
+    source_file: BoundedPath = ""
+    sources: list[BoundedName] = Field(
+        default_factory=lambda: ["live"], max_length=MAX_REQUEST_ITEMS
+    )
+    active_source: BoundedName = "live"
     base_revision: RevisionToken | None = Field(
         description=(
             "The source_revision the client loaded; null only when creating a file "
             "that does not exist yet."
         ),
     )
+    connection_id: str | None = Field(
+        default=None,
+        max_length=64,
+        description=(
+            "The saving tab's live-sync connection, as its socket was told: the save's "
+            "broadcast of the saved document leaves that socket out."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _active_source_is_a_source(self) -> SavePipelineRequest:
+        # Refused before anything is staged, rather than by the sidecar model mid-save.
+        if self.active_source not in self.sources:
+            raise ValueError(
+                f"active_source {self.active_source!r} is not one of the pipeline's "
+                f"sources {self.sources!r}."
+            )
+        return self
 
 
 class SavePipelineResponse(SaveCapture):
@@ -1492,6 +1554,8 @@ class SavePipelineResponse(SaveCapture):
     file: str
     pipeline_name: str
     source_revision: RevisionToken
+    # The saved document's fingerprint, as live sync names it, for the saver to keep.
+    document_fingerprint: str
 
 
 # ---------------------------------------------------------------------------
@@ -1569,13 +1633,15 @@ class PolarsStepsRenderRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    steps: list[dict[str, Any]]
-    input_names: list[str] = Field(default_factory=list)
+    steps: list[RequestEntry] = Field(max_length=MAX_REQUEST_ITEMS)
+    input_names: list[BoundedName] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
     #: Where ``df`` comes from: ``input`` for a Transform (the first step
     #: chooses an input), ``frame`` for a surface whose ``df`` is already bound.
     start: Literal["input", "frame"]
     #: The pipeline's constants; given, each Constant operand is checked against them.
-    global_constants: list[GlobalConstant] | None = None
+    global_constants: list[GlobalConstant] | None = Field(
+        default=None, max_length=MAX_REQUEST_ITEMS
+    )
 
 
 class PolarsStepsRenderResponse(BaseModel):
@@ -1600,18 +1666,22 @@ class PolarsFreeCodeColumnsRequest(BaseModel):
 
     #: The node the steps belong to: one resolution runs per node, a newer
     #: request stopping an older one.
-    node_id: str = Field(min_length=1)
-    steps: list[dict[str, Any]]
-    input_names: list[str]
+    node_id: BoundedName = Field(min_length=1)
+    steps: list[RequestEntry] = Field(max_length=MAX_REQUEST_ITEMS)
+    input_names: list[BoundedName] = Field(max_length=MAX_REQUEST_ITEMS)
     start: Literal["input", "frame"]
     #: The columns the editor knows for each input, as a preview reported them.
-    input_columns: dict[str, list[ColumnInfo]]
+    input_columns: dict[
+        BoundedName, Annotated[list[RequestColumnInfo], Field(max_length=MAX_REQUEST_ITEMS)]
+    ] = Field(max_length=MAX_REQUEST_ITEMS)
     #: The columns the editor knows for a frame-mode surface's ``df``.
-    frame_columns: list[ColumnInfo]
+    frame_columns: list[RequestColumnInfo] = Field(max_length=MAX_REQUEST_ITEMS)
     #: The pipeline's global constants and the source the code reads them for.
-    global_constants: list[GlobalConstant] = Field(default_factory=list)
-    global_constants_error: str | None = None
-    source: str = "live"
+    global_constants: list[GlobalConstant] = Field(
+        default_factory=list, max_length=MAX_REQUEST_ITEMS
+    )
+    global_constants_error: BoundedText | None = None
+    source: BoundedName = "live"
 
     @model_validator(mode="after")
     def _frame_columns_need_a_frame(self) -> PolarsFreeCodeColumnsRequest:
@@ -1642,21 +1712,29 @@ PREVIEW_REQUEST_ID_PATTERN = r"^[A-Za-z0-9-]{1,64}$"
 
 class PreviewNodeRequest(BaseModel):
     graph: Graph
-    node_id: str
+    node_id: BoundedName
     row_limit: int = Field(default=100, ge=1, le=10000)
-    source: str = "live"
-    requested_preview_columns: list[str] | None = Field(default=None, min_length=1)
+    source: BoundedName = "live"
+    requested_preview_columns: list[BoundedName] | None = Field(
+        default=None, min_length=1, max_length=MAX_REQUEST_ITEMS
+    )
     # Frame label selected for a multi-frame target. Single-frame targets
     # ignore it. It is part of the preview cache identity.
-    port_label: str | None = None
+    port_label: BoundedName | None = None
     # Several frames of a multi-frame target, each previewed from one run into
     # ``port_previews`` (the workbench's Preview, a Workbench Output's tables). Not with
     # ``port_label``. Part of the supersession identity, not the cache's: every frame of
     # the target is computed and kept whichever are previewed.
-    port_labels: list[str] | None = Field(default=None, min_length=1)
+    port_labels: list[BoundedName] | None = Field(
+        default=None, min_length=1, max_length=MAX_REQUEST_ITEMS
+    )
     # Chosen by the client so it can poll this request's step progress. Not part
     # of any cache or supersession identity.
-    request_id: str | None = Field(default=None, pattern=PREVIEW_REQUEST_ID_PATTERN)
+    request_id: BoundedName | None = Field(default=None, pattern=PREVIEW_REQUEST_ID_PATTERN)
+    # The form the workbench view holds, saved or not: the workbench nodes run on its
+    # tables and sample in this request rather than the form folder's (the workbench's
+    # Preview pricing its sample). In the cache identity through the nodes' configs.
+    workbench_form: FormSpec | None = None
 
     @model_validator(mode="after")
     def _one_frame_or_several(self) -> PreviewNodeRequest:
@@ -1684,14 +1762,16 @@ class RecoveryPreviewRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    source_file: str = Field(min_length=1)
+    source_file: BoundedPath = Field(min_length=1)
     source_revision: RevisionToken
-    target_recovery_id: str = Field(min_length=1)
+    target_recovery_id: BoundedName = Field(min_length=1)
     row_limit: int = Field(default=100, ge=1, le=10000)
-    source: str = "live"
-    requested_preview_columns: list[str] | None = Field(default=None, min_length=1)
-    port_label: str | None = None
-    request_id: str | None = Field(default=None, pattern=PREVIEW_REQUEST_ID_PATTERN)
+    source: BoundedName = "live"
+    requested_preview_columns: list[BoundedName] | None = Field(
+        default=None, min_length=1, max_length=MAX_REQUEST_ITEMS
+    )
+    port_label: BoundedName | None = None
+    request_id: BoundedName | None = Field(default=None, pattern=PREVIEW_REQUEST_ID_PATTERN)
 
 
 class NodeTimingInfo(BaseModel):
@@ -1766,10 +1846,12 @@ class PreviewInputsRequest(BaseModel):
     """Which inputs a preview would read, so the browser prepares only those."""
 
     graph: Graph
-    node_id: str
-    source: str = "live"
-    requested_preview_columns: list[str] | None = Field(default=None, min_length=1)
-    port_label: str | None = None
+    node_id: BoundedName
+    source: BoundedName = "live"
+    requested_preview_columns: list[BoundedName] | None = Field(
+        default=None, min_length=1, max_length=MAX_REQUEST_ITEMS
+    )
+    port_label: BoundedName | None = None
 
 
 class PreviewInputsResponse(BaseModel):
@@ -1786,26 +1868,26 @@ class PreviewInputsResponse(BaseModel):
 class TraceSeedPlanEntry(BaseModel):
     """One generation the preview a trace explains was computed from."""
 
-    node_id: str
+    node_id: BoundedName
     port_label: None = None
-    identity_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    generation_id: str = Field(min_length=1)
+    identity_digest: str = Field(max_length=64, pattern=r"^[0-9a-f]{64}$")
+    generation_id: BoundedName = Field(min_length=1)
 
 
 class TraceRequest(BaseModel):
     graph: Graph
     row_index: int = Field(default=0, ge=0)
-    target_node_id: str | None = None
-    column: str | None = None
+    target_node_id: BoundedName | None = None
+    column: BoundedName | None = None
     row_limit: int = Field(default=100, ge=1, le=10000)
-    source: str = "live"
-    row_values: dict[str, Any] | None = None
+    source: BoundedName = "live"
+    row_values: dict[BoundedName, Any] | None = Field(default=None, max_length=MAX_REQUEST_ITEMS)
     # The table of a Workbench Output target the row is from: the cell is traced
     # from the node connected to it. Ignored for any other target.
-    port_label: str | None = None
+    port_label: BoundedName | None = None
     # The ``seed_plan`` of the preview this trace explains: the trace reads
     # exactly those generations and nothing else, even if snapshots now exist.
-    seed_plan: list[TraceSeedPlanEntry]
+    seed_plan: list[TraceSeedPlanEntry] = Field(max_length=MAX_REQUEST_ITEMS)
 
 
 class SchemaDiffResponse(BaseModel):
@@ -2015,7 +2097,7 @@ class PipelineSettingsResponse(BaseModel):
 
 class OutputDestinationRequest(BaseModel):
     graph: Graph
-    node_id: str
+    node_id: BoundedName
 
 
 class OutputDestinationResponse(BaseModel):
@@ -2026,8 +2108,8 @@ class OutputDestinationResponse(BaseModel):
 
 class WriteOutputRequest(BaseModel):
     graph: Graph
-    node_id: str
-    source: str = "live"
+    node_id: BoundedName
+    source: BoundedName = "live"
     overwrite: StrictBool = False
 
 
@@ -2038,6 +2120,26 @@ class WriteOutputResponse(BaseModel):
     path: str = ""
     format: str = "parquet"
     execution_metrics: ExecutionMetricsPayload | None = None
+
+
+class OutputAssembleDryRunRequest(BaseModel):
+    graph: Graph
+    node_id: BoundedName
+    #: The in-progress (volatile, unsaved) outputMapping to preview.
+    output_mapping: list[RequestEntry] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
+    output_format: BoundedName = "json"
+    #: Cap upstream source rows so the preview stays cheap.
+    row_limit: int = Field(default=100, ge=1, le=10000)
+    source: BoundedName = "live"
+
+
+class OutputAssembleDryRunResponse(BaseModel):
+    #: ``error`` carries why the document could not be assembled.
+    status: Literal["ok", "error"]
+    #: The assembled response document (already pruned by the render path).
+    document: list[Any] = Field(default_factory=list)
+    row_count: int = 0
+    error: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -2060,7 +2162,7 @@ class InputCacheSourceRequest(_StrictInputCacheModel):
 
     schema_version: Literal[1] = 1
     node_type: Literal["dataInput", "apiInput"] = "dataInput"
-    config: dict[str, Any]
+    config: dict[BoundedName, Any] = Field(max_length=MAX_REQUEST_ITEMS)
 
 
 class InputCacheBuildRequest(InputCacheSourceRequest):
@@ -2273,8 +2375,8 @@ class NodeDataRequest(BaseModel):
     """Name a consumer node; the service resolves the data point it reads."""
 
     graph: Graph
-    node_id: str
-    source: str = "live"
+    node_id: BoundedName
+    source: BoundedName = "live"
 
 
 class NodeDataRunRequest(NodeDataRequest):
@@ -2380,7 +2482,7 @@ class CacheNodesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     graph: Graph
-    source: str = "live"
+    source: BoundedName = "live"
 
 
 class CacheNodeEntry(BaseModel):
@@ -2394,7 +2496,7 @@ class CacheNodeEntry(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    node_id: str
+    node_id: NonBlankStr
     kind: NodeDataPointKind | None = None
     state: NodeDataPointState | None = None
     reads_directly: bool = False
@@ -2406,7 +2508,7 @@ class CacheNodeEntry(BaseModel):
     # one configuration, or one submodel instantiated twice. Every sharer names
     # the others, and exactly one of them carries the bytes: the one with a
     # size. One identity, one set of bytes, whichever row you read first.
-    shares_snapshot_with: list[str] = Field(default_factory=list)
+    shares_snapshot_with: list[NonBlankStr] = Field(default_factory=list)
     row_count: int | None = None
     generations: int = Field(default=0, ge=0)
     size_bytes: int = Field(default=0, ge=0)
@@ -2416,7 +2518,7 @@ class CacheNodeEntry(BaseModel):
     build_seconds: float | None = None
     #: The store identities this row is responsible for, and therefore what
     #: clearing this row clears. Empty when the row carries nothing.
-    identity_digests: list[str] = Field(default_factory=list)
+    identity_digests: list[NonBlankStr] = Field(default_factory=list)
     retention: Literal["pinned", "automatic"] | None = None
     # Why this node has no point at all — unwired Banding, say. Never an
     # internal error: an unreportable node is a row, not a failed request.
@@ -2434,7 +2536,7 @@ class CacheOwnerEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     bucket: Literal["node_output", "input"]
-    label: str
+    label: NonBlankStr
     node_id: str | None = None
     source: str | None = None
     generations: int = Field(ge=0)
@@ -2442,7 +2544,7 @@ class CacheOwnerEntry(BaseModel):
     size_bytes: int = Field(ge=0)
     newest_created_at: float | None = None
     build_seconds: float | None = None
-    identity_digests: list[str] = Field(default_factory=list)
+    identity_digests: list[NonBlankStr] = Field(default_factory=list)
 
 
 class CacheClearRequest(BaseModel):
@@ -2450,7 +2552,7 @@ class CacheClearRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    digests: list[str] = Field(min_length=1)
+    digests: list[BoundedName] = Field(min_length=1, max_length=MAX_REQUEST_ITEMS)
 
 
 class CacheClearResponse(BaseModel):
@@ -2464,7 +2566,7 @@ class CacheClearResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal[1] = 1
-    cleared: list[str]
+    cleared: list[NonBlankStr]
     freed_bytes: int = Field(ge=0)
 
 
@@ -2573,9 +2675,9 @@ class ExplorePivotResult(BaseModel):
 
 class ExplorePivotRunRequest(BaseModel):
     graph: Graph
-    node_id: str
-    pivot: dict[str, Any]
-    source: str = "live"
+    node_id: BoundedName
+    pivot: dict[BoundedName, Any] = Field(max_length=MAX_REQUEST_ITEMS)
+    source: BoundedName = "live"
 
 
 class ExplorePivotRunResponse(BaseModel):
@@ -2611,9 +2713,9 @@ class BandingStatsRequest(BaseModel):
     """
 
     graph: Graph
-    node_id: str
-    factor: dict[str, Any]
-    source: str = "live"
+    node_id: BoundedName
+    factor: dict[BoundedName, Any] = Field(max_length=MAX_REQUEST_ITEMS)
+    source: BoundedName = "live"
     histogram_bins: int = Field(default=40, ge=1, le=200)
     value_limit: int = Field(default=500, ge=1, le=10_000)
 
@@ -2669,11 +2771,11 @@ class RatingLevelsRequest(BaseModel):
     """
 
     graph: Graph
-    node_id: str
+    node_id: BoundedName
     # Each column is one pass over the data, so the request is bounded; the
     # editor asks for the factors in use, which is far fewer than this.
-    columns: list[str] = Field(min_length=1, max_length=100)
-    source: str = "live"
+    columns: list[BoundedName] = Field(min_length=1, max_length=100)
+    source: BoundedName = "live"
     value_limit: int = Field(default=1000, ge=1, le=10_000)
 
 
@@ -2714,10 +2816,14 @@ EXPLORE_KEY_COLUMN_LIMIT = 8
 class ExploreRelationshipsRequest(NodeDataRequest):
     """Target relationships and a key check over the data point an Explore node reads."""
 
-    target: str | None = None
-    weight: str | None = None
-    features: list[str] = Field(default_factory=list, max_length=EXPLORE_RELATIONSHIP_FEATURE_LIMIT)
-    key_columns: list[str] = Field(default_factory=list, max_length=EXPLORE_KEY_COLUMN_LIMIT)
+    target: BoundedName | None = None
+    weight: BoundedName | None = None
+    features: list[BoundedName] = Field(
+        default_factory=list, max_length=EXPLORE_RELATIONSHIP_FEATURE_LIMIT
+    )
+    key_columns: list[BoundedName] = Field(
+        default_factory=list, max_length=EXPLORE_KEY_COLUMN_LIMIT
+    )
     level_limit: int = Field(default=12, ge=2, le=50)
 
 
@@ -2760,10 +2866,10 @@ class ExploreRelationshipsResponse(BaseModel):
 
 class ExplorePivotMembersRequest(BaseModel):
     graph: Graph
-    node_id: str
-    field: str
-    source: str = "live"
-    search: str | None = None
+    node_id: BoundedName
+    field: BoundedName
+    source: BoundedName = "live"
+    search: BoundedName | None = None
 
 
 class ExplorePivotMembersResponse(BaseModel):
@@ -2872,7 +2978,7 @@ class ModelFileInspectionResponse(BaseModel):
 
 
 class ReadJsonRequest(BaseModel):
-    path: str
+    path: BoundedPath
 
 
 class ReadJsonResponse(RootModel[dict[str, Any]]):
@@ -2961,7 +3067,7 @@ class JsonCacheInferRequest(BaseModel):
     mismatch fails loud with a clear error rather than silently).
     """
 
-    path: str
+    path: BoundedPath
     sample_size: int | None = None
 
 
@@ -2992,31 +3098,38 @@ class UtilityReadResponse(BaseModel):
     name: str
     module: str
     content: str
+    # The revision an update or delete of this file must send (``file_revision``).
+    revision: str
 
 
 class UtilityWriteRequest(BaseModel):
-    content: str
+    content: BoundedText
+    # The revision the edit was made against: a file changed since is refused (412).
+    revision: BoundedName
 
 
 class UtilityCreateRequest(BaseModel):
     # Pattern validation lives in ``_validate_module_name`` so bad names
     # surface as a 400 with a flat string ``detail`` rather than the
     # structured-list body that Pydantic ``Field(pattern=)`` would produce
-    # via FastAPI's 422 handler.
-    name: str  # filename without .py extension
-    content: str = ""
+    # via FastAPI's 422 handler; only the length is the model's.
+    name: str = Field(max_length=UTILITY_MODULE_NAME_MAX)  # filename without .py
+    content: BoundedText = ""
 
 
-class UtilityWriteResponse(BaseModel):
+class UtilityWriteResponse(SaveCapture):
+    """A written utility file, with its new revision and its save-ledger capture."""
+
     status: str = "ok"
     name: str = ""
     module: str = ""
     import_line: str = ""  # e.g. "from utility.features import *"
-    error: str | None = None
-    error_line: int | None = None
+    revision: str
 
 
-class UtilityDeleteResponse(BaseModel):
+class UtilityDeleteResponse(SaveCapture):
+    """A deleted utility file, with the save-ledger capture of its removal."""
+
     status: str = "ok"
     module: str
 
@@ -3027,15 +3140,15 @@ class UtilityDeleteResponse(BaseModel):
 
 
 class CreateSubmodelRequest(BaseModel):
-    name: str
-    node_ids: list[str]
+    name: BoundedName
+    node_ids: list[BoundedName] = Field(max_length=MAX_REQUEST_ITEMS)
     graph: Graph
-    preamble: str = ""
-    preserved_blocks: list[str] = Field(default_factory=list)
-    source_file: str = ""
+    preamble: BoundedText = ""
+    preserved_blocks: list[BoundedText] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
+    source_file: BoundedPath = ""
     base_revision: RevisionToken
-    pipeline_name: str = "main"
-    pipeline_description: str | None = None
+    pipeline_name: BoundedName = "main"
+    pipeline_description: BoundedText | None = None
 
 
 class CreateSubmodelResponse(BaseModel):
@@ -3072,7 +3185,7 @@ class DissolveSubmodelRequest(BaseModel):
     """Request to dissolve a submodel occurrence back into parent nodes."""
 
     # instance_id is the occurrence's node id, which is its name.
-    instance_id: str = Field(
+    instance_id: BoundedName = Field(
         description="The occurrence's node id, which is its name.",
     )
 
@@ -3084,12 +3197,12 @@ class DissolveSubmodelRequest(BaseModel):
         return value
 
     graph: Graph
-    preamble: str = ""
-    preserved_blocks: list[str] = Field(default_factory=list)
-    source_file: str = ""
+    preamble: BoundedText = ""
+    preserved_blocks: list[BoundedText] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
+    source_file: BoundedPath = ""
     base_revision: RevisionToken
-    pipeline_name: str = "main"
-    pipeline_description: str | None = None
+    pipeline_name: BoundedName = "main"
+    pipeline_description: BoundedText | None = None
 
 
 class DissolveSubmodelResponse(BaseModel):
@@ -3117,8 +3230,8 @@ class SubmodelGraphResponse(BaseModel):
 
 class TrainRequest(BaseModel):
     graph: Graph
-    node_id: str
-    source: str = "live"
+    node_id: BoundedName
+    source: BoundedName = "live"
 
 
 TrainingFeatureSelectionMode = Literal["explicit", "glm_terms"]
@@ -3724,8 +3837,8 @@ class TrainStatusResponse(BaseModel):
 
 class TrainEstimateRequest(BaseModel):
     graph: Graph
-    node_id: str
-    source: str = "live"
+    node_id: BoundedName
+    source: BoundedName = "live"
 
 
 class EvaluationDateRangePayload(BaseModel):
@@ -3917,8 +4030,8 @@ class DispersionEstimateRequest(BaseModel):
     """
 
     graph: Graph
-    node_id: str
-    source: str = "live"
+    node_id: BoundedName
+    source: BoundedName = "live"
     param: Literal["theta", "var_power"]
 
 
@@ -3942,9 +4055,9 @@ class DispersionEstimateStatusResponse(BaseModel):
 
 
 class ExportScriptRequest(BaseModel):
-    node_id: str
+    node_id: BoundedName
     graph: Graph
-    data_path: str = ""
+    data_path: BoundedPath = ""
 
 
 class ExportScriptResponse(BaseModel):
@@ -3953,8 +4066,8 @@ class ExportScriptResponse(BaseModel):
 
 
 class LogExperimentRequest(BaseModel):
-    job_id: str
-    experiment_name: str | None = None
+    job_id: BoundedName
+    experiment_name: BoundedName | None = None
     destination: Literal["", "databricks", "server", "local"] = ""
     # One user action. A retry with the same ID returns the recorded outcome
     # instead of creating a second run.
@@ -3964,7 +4077,7 @@ class LogExperimentRequest(BaseModel):
 
 
 class ModelSaveDestinationRequest(BaseModel):
-    output_path: str = Field(min_length=1)
+    output_path: BoundedPath = Field(min_length=1)
     algorithm: Literal["catboost", "glm", "xgboost", "lightgbm", "ebm", "tboost"]
 
 
@@ -3974,8 +4087,8 @@ class ModelSaveDestinationResponse(BaseModel):
 
 
 class SaveModelRequest(BaseModel):
-    job_id: str
-    output_path: str = Field(min_length=1)
+    job_id: BoundedName
+    output_path: BoundedPath = Field(min_length=1)
     overwrite: bool = False
 
 
@@ -4063,14 +4176,14 @@ class MlflowSettingsResponse(BaseModel):
 
 
 class MlflowSettingsUpdateRequest(BaseModel):
-    tracking_uri: str = ""
-    folder: str = ""
+    tracking_uri: BoundedPath = ""
+    folder: BoundedPath = ""
 
 
 class MlflowTestConnectionRequest(BaseModel):
-    destination: str = ""
-    tracking_uri: str | None = None
-    folder: str | None = None
+    destination: BoundedName = ""
+    tracking_uri: BoundedPath | None = None
+    folder: BoundedPath | None = None
 
 
 class MlflowTestConnectionResponse(BaseModel):
@@ -4139,7 +4252,7 @@ class MlflowModelVersionList(RootModel[list[MlflowModelVersionSummary]]):
 
 class OptimiserSolveRequest(BaseModel):
     graph: Graph
-    node_id: str
+    node_id: BoundedName
 
 
 class OptimiserSolveResponse(BaseModel):
@@ -4160,8 +4273,8 @@ class OptimiserEstimateRequest(BaseModel):
     """
 
     graph: Graph
-    node_id: str
-    source: str = "live"
+    node_id: BoundedName
+    source: BoundedName = "live"
 
 
 class OptimiserEstimateResponse(BaseModel):
@@ -4183,7 +4296,7 @@ class OptimiserEstimateResponse(BaseModel):
 
 class OptimiserFrontierAutoRangeRequest(BaseModel):
     graph: Graph
-    node_id: str
+    node_id: BoundedName
 
 
 class OptimiserFrontierRange(BaseModel):
@@ -4217,8 +4330,10 @@ class OptimiserFrontierAutoRangeStatusResponse(BaseModel):
 
 
 class OptimiserFrontierRequest(BaseModel):
-    job_id: str
-    threshold_ranges: dict[str, list[float]] = Field(default_factory=dict)
+    job_id: BoundedName
+    threshold_ranges: dict[
+        BoundedName, Annotated[list[float], Field(max_length=MAX_REQUEST_ITEMS)]
+    ] = Field(default_factory=dict, max_length=MAX_REQUEST_ITEMS)
     n_points_per_dim: int = Field(default=5, ge=1, le=100)
 
     @field_validator("threshold_ranges", mode="after")
@@ -4691,12 +4806,12 @@ class OptimiserSegmentRow(BaseModel):
 
 
 class OptimiserSegmentsRequest(BaseModel):
-    job_id: str
+    job_id: BoundedName
     # ``None`` is the as-solved result; an integer, that frontier point.
     point_index: int | None = Field(default=None, ge=0)
-    key: str = Field(min_length=1)
+    key: BoundedName = Field(min_length=1)
     # ``"quotes"`` or a choice-frame value column at the chosen scenario.
-    weight: str = "quotes"
+    weight: BoundedName = "quotes"
 
 
 class OptimiserSegmentsResponse(BaseModel):
@@ -4935,7 +5050,9 @@ class OptimiserStatusResponse(BaseModel):
 APPLY_PREVIEW_ROW_LIMIT = 100
 """The most rows one Quotes page (``POST /apply``) returns."""
 
-OptimiserQuoteEqualityValue = StrictStr | StrictInt | StrictFloat | StrictBool | None
+OptimiserQuoteEqualityValue = (
+    Annotated[BoundedName, Strict()] | StrictInt | StrictFloat | StrictBool | None
+)
 
 
 class OptimiserQuoteFilters(BaseModel):
@@ -4949,7 +5066,9 @@ class OptimiserQuoteFilters(BaseModel):
     # Quotes at the first or last step of the recorded scenario grid.
     at_range_edge: bool = False
     # ``{analysis column: value}``; ``None`` matches a missing value.
-    analysis_equals: dict[str, OptimiserQuoteEqualityValue] = Field(default_factory=dict)
+    analysis_equals: dict[BoundedName, OptimiserQuoteEqualityValue] = Field(
+        default_factory=dict, max_length=MAX_REQUEST_ITEMS
+    )
     # Ratebook only: the deployed factor differs from the evaluated step.
     deployed_factor_differs: bool = False
 
@@ -4959,12 +5078,12 @@ class OptimiserApplyRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    job_id: str
+    job_id: BoundedName
     point_index: int | None = Field(default=None, ge=0)
     # ``None`` keeps the apply frame's quote order; ties always break by quote id.
-    sort_by: str | None = Field(default=None, min_length=1)
+    sort_by: BoundedName | None = Field(default=None, min_length=1)
     descending: bool = False
-    quote_id_prefix: str | None = Field(default=None, min_length=1)
+    quote_id_prefix: BoundedName | None = Field(default=None, min_length=1)
     filters: OptimiserQuoteFilters = Field(default_factory=OptimiserQuoteFilters)
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=APPLY_PREVIEW_ROW_LIMIT, ge=1, le=APPLY_PREVIEW_ROW_LIMIT)
@@ -5025,7 +5144,7 @@ class OptimiserApplyResponse(BaseModel):
 
 
 class OptimiserFrontierSelectRequest(BaseModel):
-    job_id: str
+    job_id: BoundedName
     point_index: int | None = Field(..., ge=0)
     include_ratebook_tables: bool = False
     # Also answer the point's adjustment report (OPT-V10), materialising its choices.
@@ -5081,10 +5200,10 @@ class OptimiserFrontierSelectResponse(BaseModel):
 
 
 class OptimiserSaveRequest(BaseModel):
-    job_id: str
+    job_id: BoundedName
     # Relative to the project root; an absolute path must stay inside it.
-    output_path: str
-    version: str = ""  # optional user-specified version label; auto-generated if empty
+    output_path: BoundedPath
+    version: BoundedName = ""  # optional user-specified version label; auto-generated if empty
     # ``None`` publishes the job's own solve; a number publishes that frontier point.
     point_index: int | None = Field(default=None, ge=0)
     # An existing file is replaced only when this is true; otherwise the save is a 409.
@@ -5103,10 +5222,10 @@ class OptimiserSaveResponse(BaseModel):
 
 
 class OptimiserMlflowLogRequest(BaseModel):
-    job_id: str
+    job_id: BoundedName
     # ``None`` logs the job's own solve; a number logs that frontier point.
     point_index: int | None = Field(default=None, ge=0)
-    experiment_name: str | None = None
+    experiment_name: BoundedName | None = None
     destination: Literal["", "databricks", "server", "local"] = ""
     # Whether the node configuration changed since the solve; recorded as ``stale_at_publish``.
     stale: bool = False
@@ -5183,6 +5302,16 @@ class GitStorageSync(BaseModel):
     message: str | None = None
 
 
+class GitBrokenPair(BaseModel):
+    # A working pair a crash split, which POST /api/git/repair-pair makes whole:
+    # "orphan-ledger" — the save ledger `ledger` lost its working branch `working`;
+    # "half-archived" — the archived working branch `working` lost its ledger, which is
+    # still the live `ledger`.
+    kind: Literal["orphan-ledger", "half-archived"]
+    ledger: str
+    working: str
+
+
 class GitWorkingBranchResponse(BaseModel):
     # The branch recorded against this clone in .haute/state.json, or None.
     working_branch: str | None = None
@@ -5218,11 +5347,13 @@ class GitWorkingBranchResponse(BaseModel):
     identity_set: bool = True
     user_name: str | None = None
     user_email: str | None = None
+    # Pairs a crash left in two parts, reported at startup for Repair.
+    broken_pairs: list[GitBrokenPair] = Field(default_factory=list)
 
 
 class GitBindStorageRequest(BaseModel):
     # HTTPS repository URL; credentials come from the app's secret, never here.
-    remote_url: str
+    remote_url: BoundedPath
 
 
 class GitBindStorageResponse(BaseModel):
@@ -5238,8 +5369,8 @@ class GitBindStorageResponse(BaseModel):
 
 class GitForkStorageRequest(BaseModel):
     # Both uc:// locations; the target must be empty.
-    source_url: str
-    target_url: str
+    source_url: BoundedPath
+    target_url: BoundedPath
 
 
 class GitForkStorageResponse(BaseModel):
@@ -5252,7 +5383,7 @@ class GitForkStorageResponse(BaseModel):
 
 
 class GitSetWorkingBranchRequest(BaseModel):
-    branch: str
+    branch: BoundedName
     # Create the branch off current HEAD before adopting it.
     create: bool = False
 
@@ -5264,8 +5395,8 @@ class GitSetWorkingBranchResponse(BaseModel):
 
 
 class GitSetIdentityRequest(BaseModel):
-    user_name: str
-    user_email: str
+    user_name: BoundedName
+    user_email: BoundedName
     # Write to the global git config rather than this repo's local config.
     set_global: bool = False
 
@@ -5280,7 +5411,7 @@ class GitCaptureRequest(BaseModel):
     """Files earlier writes reported ``uncaptured``, relative to the project in POSIX form,
     to capture on the save ledger as they are on disk now."""
 
-    paths: list[str] = Field(min_length=1)
+    paths: list[BoundedPath] = Field(min_length=1, max_length=MAX_REQUEST_ITEMS)
 
 
 # ---------------------------------------------------------------------------
@@ -5291,7 +5422,7 @@ class GitCaptureRequest(BaseModel):
 
 class GitRestoreVersionRequest(BaseModel):
     # A milestone or save in the current branch's history.
-    sha: str
+    sha: BoundedName
 
 
 class GitRestoreVersionResponse(BaseModel):
@@ -5312,9 +5443,9 @@ class GitRestoreVersionResponse(BaseModel):
 
 class GitCommitRequest(BaseModel):
     # User-supplied milestone message (rides the merge commit, S18).
-    message: str
+    message: BoundedText
     # Optional version label → annotated git tag on the milestone (S18).
-    version_label: str | None = None
+    version_label: BoundedText | None = None
     # Escape hatch for the P7 fork-gate (U4/D4): when the working branch is behind
     # the remote, a milestone would fork it. False (default) makes the engine
     # refuse with GitMilestoneFork data so the UI can warn; True is the user's
@@ -5501,7 +5632,7 @@ class GitWorkingBranchesResponse(BaseModel):
 
 
 class GitRestoreRequest(BaseModel):
-    branch: str
+    branch: BoundedName
 
 
 class GitRestoreResponse(BaseModel):
@@ -5510,11 +5641,11 @@ class GitRestoreResponse(BaseModel):
 
 class GitCreateWorkingBranchRequest(BaseModel):
     # New working-branch name.
-    name: str
+    name: BoundedName
     # Fork point: a milestone sha, or the sha of a pending save or of a save
     # folded into a milestone (crystallized into an anchoring milestone). None →
     # the current branch's latest milestone (S38).
-    at: str | None = None
+    at: BoundedName | None = None
     # Relocate the work after the fork point onto the new branch and switch to
     # it, rewinding the current branch (vs. spinning off a parallel line).
     move: bool = False
@@ -5539,7 +5670,7 @@ class GitPrefs(BaseModel):
 
 
 class GitArchiveRequest(BaseModel):
-    branch: str
+    branch: BoundedName
 
 
 class GitArchiveResponse(BaseModel):
@@ -5547,7 +5678,7 @@ class GitArchiveResponse(BaseModel):
 
 
 class GitDeleteBranchRequest(BaseModel):
-    branch: str
+    branch: BoundedName
     # Override the unmerged-ledger-saves refusal (S32: loss is real on delete).
     confirm: bool = False
 
@@ -5561,14 +5692,25 @@ class GitDeleteBranchResponse(BaseModel):
 
 class GitUndeleteRequest(BaseModel):
     # The trash entry to restore.
-    id: str
+    id: BoundedName
     # Restore under this name instead of the branch's own (when that is taken).
-    as_name: str | None = None
+    as_name: BoundedName | None = None
 
 
 class GitUndeleteResponse(BaseModel):
     status: str = "ok"
     branch: str
+
+
+class GitRepairPairRequest(BaseModel):
+    # The ledger of a broken pair, as readiness's `broken_pairs` names it.
+    ledger: BoundedName
+
+
+class GitRepairPairResponse(BaseModel):
+    # The whole pair after the repair: its working branch and its save ledger.
+    working: str
+    ledger: str
 
 
 class GitRemoteLeg(BaseModel):
@@ -5603,7 +5745,7 @@ class GitRemotesResponse(BaseModel):
 
 
 class GitPushRequest(BaseModel):
-    remote: str
+    remote: BoundedName
 
 
 class GitCiSecrets(BaseModel):
@@ -5619,7 +5761,7 @@ class GitCiSecrets(BaseModel):
 
 
 class GitCiSecretsRequest(BaseModel):
-    remote: str
+    remote: BoundedName
 
 
 class GitPushResponse(BaseModel):
@@ -5635,7 +5777,7 @@ class GitPushResponse(BaseModel):
 
 
 class GitBranchAwayRequest(BaseModel):
-    remote: str
+    remote: BoundedName
 
 
 class GitBranchAwayResponse(BaseModel):
@@ -5649,7 +5791,7 @@ class GitBranchAwayResponse(BaseModel):
 
 
 class GitFastForwardRequest(BaseModel):
-    remote: str
+    remote: BoundedName
 
 
 class GitFastForwardResponse(BaseModel):

@@ -86,7 +86,7 @@ const premium = () => {
 function pricerOnRequest() {
   const asked: { workbench: WorkbenchTablesResponse; answer: () => void }[] = []
   const pricer = vi.fn(
-    (workbench: WorkbenchTablesResponse) =>
+    (_form: FormSpec, workbench: WorkbenchTablesResponse) =>
       new Promise<PricedSample>((resolve) => {
         const exposure = Number((workbench.sample.policy_details as { exposure: string }).exposure)
         asked.push({ workbench, answer: () => resolve(priced(exposure / 50)) })
@@ -113,14 +113,16 @@ describe("useWorkbenchPricingStore", () => {
   })
 
   it("prices the sample as the form stands, saved or not", async () => {
-    const pricer = vi.fn((_workbench: WorkbenchTablesResponse) => Promise.resolve(priced(2000)))
+    const pricer = vi.fn((_form: FormSpec, _workbench: WorkbenchTablesResponse) => Promise.resolve(priced(2000)))
     useWorkbenchPricingStore.getState().setPricer(pricer)
     type("250000")
 
     await useWorkbenchPricingStore.getState().priceNow()
 
     expect(fetchWorkbenchFormTables).toHaveBeenCalledWith(useWorkbenchFormStore.getState().form)
-    expect(pricer).toHaveBeenCalledWith(workbenchOf(useWorkbenchFormStore.getState().form!))
+    // The pricer is given the form whose tables it was given, which the preview sends.
+    const spec = useWorkbenchFormStore.getState().form!
+    expect(pricer).toHaveBeenCalledWith(spec, workbenchOf(spec))
     expect(premium()).toEqual({ value: 2000, stale: false })
     expect(useWorkbenchPricingStore.getState().error).toBeNull()
   })
@@ -155,7 +157,7 @@ describe("useWorkbenchPricingStore", () => {
 
   it("prices once typing pauses", async () => {
     vi.useFakeTimers()
-    const pricer = vi.fn((_workbench: WorkbenchTablesResponse) => Promise.resolve(priced(2000)))
+    const pricer = vi.fn((_form: FormSpec, _workbench: WorkbenchTablesResponse) => Promise.resolve(priced(2000)))
     useWorkbenchPricingStore.getState().setPricer(pricer)
 
     useWorkbenchPricingStore.getState().schedule()
@@ -234,7 +236,7 @@ describe("useWorkbenchPricingStore", () => {
   })
 
   it("prices nothing, and says nothing, while the sample holds nothing typed in the cells the sheets show", async () => {
-    const pricer = vi.fn((_workbench: WorkbenchTablesResponse) => Promise.resolve(priced(1)))
+    const pricer = vi.fn((_form: FormSpec, _workbench: WorkbenchTablesResponse) => Promise.resolve(priced(1)))
     useWorkbenchPricingStore.getState().setPricer(pricer)
     useWorkbenchPricingStore.setState({ price: { basis: "b", sample: {}, tables: priced(1).tables }, error: "x" })
     // Nothing typed, or only a value in a column since removed.
@@ -245,7 +247,7 @@ describe("useWorkbenchPricingStore", () => {
       expect(useWorkbenchPricingStore.getState()).toMatchObject({ price: null, error: null })
     }
     // The exposure's box on a sheet that shows only once it is 0: hidden, it is nothing typed.
-    const hiding = { match: "all" as const, conditions: [{ table: "t1", column: "c1", op: "equals" as const, values: ["0"] }] }
+    const hiding = { match: "all" as const, conditions: [{ table: "t1", column: "c1", op: "equals" as const, values: ["0"], field: null, days: 0 }] }
     const exposure = { id: "w", type: "collection" as const, x: 0, y: 0, w: 400, h: 100, title: "", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "t1", column: "c1" }], show_when: { match: "all" as const, conditions: [] } }
     const [sheet] = form.pages
     useWorkbenchFormStore.setState({ form: { ...form, pages: [{ ...sheet, show_when: hiding, sections: [{ ...sheet.sections[0], widgets: [exposure] }] }] } })
@@ -254,7 +256,7 @@ describe("useWorkbenchPricingStore", () => {
   })
 
   it("prices nothing while the only value typed is in a row its table's rows leave out, the column giving them hidden", async () => {
-    const pricer = vi.fn((_workbench: WorkbenchTablesResponse) => Promise.resolve(priced(1)))
+    const pricer = vi.fn((_form: FormSpec, _workbench: WorkbenchTablesResponse) => Promise.resolve(priced(1)))
     useWorkbenchPricingStore.getState().setPricer(pricer)
     const perils = hiddenPerilsForm()
     // A limit held for NW, which the perils no longer hold.
@@ -274,7 +276,7 @@ describe("useWorkbenchPricingStore", () => {
     await useWorkbenchPricingStore.getState().priceNow()
     expect(fetchWorkbenchFormTables).not.toHaveBeenCalled()
 
-    const pricer = vi.fn((_workbench: WorkbenchTablesResponse) => Promise.resolve(priced(1)))
+    const pricer = vi.fn((_form: FormSpec, _workbench: WorkbenchTablesResponse) => Promise.resolve(priced(1)))
     useWorkbenchPricingStore.getState().setPricer(pricer)
     useWorkbenchFormStore.setState({ status: "loading" })
     await useWorkbenchPricingStore.getState().priceNow()

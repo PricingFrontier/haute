@@ -154,7 +154,7 @@ describe("usePipelineAPI - settings captured at fetch start (#33, #34)", () => {
     vi.mocked(await import("../../api/client")).savePipeline.mockImplementation(
       (payload) => {
         savePayloads.push(payload as unknown as Record<string, unknown>)
-        return Promise.resolve({ file: "t.py", pipeline_name: "t", source_revision: "revision-test" })
+        return Promise.resolve({ file: "t.py", pipeline_name: "t", source_revision: "revision-test", document_fingerprint: "fingerprint-saved" })
       },
     )
 

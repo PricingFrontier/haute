@@ -94,6 +94,7 @@ vi.mock("../../stores/useGraphStore.ts", () => {
 })
 
 import useWebSocketSync from "../../hooks/useWebSocketSync.ts"
+import { syncConnectionId } from "../../api/syncConnection.ts"
 import useGraphStore from "../../stores/useGraphStore.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore.ts"
@@ -234,6 +235,49 @@ describe("useWebSocketSync - partial failure rolls back consistently (#37)", () 
   // behaviour for the graph-apply step is still covered below via
   // `loadGraphSnapshot` throwing, which exercises the same try/catch/rollback
   // machinery through its actual reachable failure point.
+
+  it("keeps the connection id the server gave the socket until it closes", () => {
+    renderHook(() => useWebSocketSync(makeHookParams()))
+    act(() => { latestWS().onopen?.(new Event("open")) })
+
+    act(() => {
+      latestWS().onmessage?.(new MessageEvent("message", {
+        data: JSON.stringify({ type: "sync_connection", connection_id: "tab-1" }),
+      }))
+    })
+    expect(syncConnectionId()).toBe("tab-1")
+
+    act(() => { latestWS().onclose?.(new CloseEvent("close", { code: 1000 })) })
+    expect(syncConnectionId()).toBeNull()
+  })
+
+  it("keeps a replacement socket's connection id when the socket it replaced closes late", () => {
+    const { rerender } = renderHook((params) => useWebSocketSync(params), {
+      initialProps: makeHookParams(),
+    })
+    const first = latestWS()
+    act(() => { first.onopen?.(new Event("open")) })
+    act(() => {
+      first.onmessage?.(new MessageEvent("message", {
+        data: JSON.stringify({ type: "sync_connection", connection_id: "tab-1" }),
+      }))
+    })
+
+    // New refs re-run the effect, which replaces the socket.
+    rerender(makeHookParams())
+    const second = latestWS()
+    expect(second).not.toBe(first)
+    act(() => { second.onopen?.(new Event("open")) })
+    act(() => {
+      second.onmessage?.(new MessageEvent("message", {
+        data: JSON.stringify({ type: "sync_connection", connection_id: "tab-2" }),
+      }))
+    })
+    // The replaced socket's close arrives after its replacement's handshake.
+    act(() => { first.onclose?.(new CloseEvent("close", { code: 1000 })) })
+
+    expect(syncConnectionId()).toBe("tab-2")
+  })
 
   it("atomic snapshot failure leaves the previous graph untouched", async () => {
     const params = makeHookParams()

@@ -293,6 +293,7 @@ def test_scoped_save_route_saves_and_rejects_stale_revisions(client, monkeypatch
     stale = client.post("/api/pipeline/node/save", json=body)
     assert stale.status_code == 409
     assert stale.json()["detail"]["code"] == "repair_revision_conflict"
+    assert stale.json()["detail"]["current_revision"] == payload["source_revision"]
 
 
 def test_scoped_save_route_maps_io_failures_without_leaking_details(client, monkeypatch, tmp_path):
@@ -319,7 +320,7 @@ def test_scoped_save_route_maps_io_failures_without_leaking_details(client, monk
     payload = response.json()
     assert payload["detail"]["code"] == "repair_artifact_unavailable"
     assert payload["detail"]["message"] == (
-        "A save artifact could not be written; original artifacts were restored."
+        "A save artifact could not be read or written, so the save changed nothing."
     )
     assert "private marker" not in response.text
 

@@ -38,7 +38,7 @@ Preview. Preview prices the sample on the source the dropdown shows.
 
 **Save** and Ctrl+S save the project, the same from either view: the workbench's files
 that changed first, when the workbench has unsaved edits, then the pipeline, with the
-Workbench Input's and Workbench Output's tables brought up to date in between, and each
+Workbench Input's and Workbench Output's tables fetched again in between, and each
 save is recorded on your branch's save ledger, so it shows in the Git panel's history.
 **Commit** records a milestone of the whole project after that save. A save is refused
 when one of the workbench's files changed on disk since the workbench read them (an edit
@@ -201,8 +201,7 @@ earlier Haute takes today's columns when it is opened: its **reference** is name
 **quote_reference**, **valid_until** and **currency** are taken out, and the newer columns
 are added, the labels and rules you gave the others kept. A field on a column taken out
 shows **Missing column** on the sheets while you build, for you to remove or move to a
-column of your own, and is not shown in Preview or the app. Save once so the Workbench Input
-copies the table.
+column of your own, and is not shown in Preview or the app.
 
 The app sets **quote_reference**, **quote_option**, **stage**, **assignee**, **archived**,
 **created_date**, **created_by**, **modified_date**, **modified_by** and **haute_version**
@@ -224,9 +223,10 @@ every price has them. Preview prices the sample as `PREVIEW`, option 1, as the a
 the one quote it holds without a quote store: a quote's reference and option are never
 blank.
 
-A table or a column you add reaches the pipeline when you save: the editor fetches the
-tables again, the Workbench Input's and Workbench Output's tables follow the schema, and
-the pipeline is saved with them in the same save. Until then it is on the sheets alone.
+A table or a column you add reaches the pipeline when you save: the Workbench Input and
+the Workbench Output read their tables from the workbench's files wherever the pipeline
+runs, and the editor fetches them again, so their ports follow the schema. Until then it
+is on the sheets alone.
 
 ### Joining the schema's tables
 
@@ -479,11 +479,29 @@ component's **Display** pane. **Add condition** tests a column of an input table
 - a tick box **is ticked** or **is not ticked**;
 - any other column **is filled** or **is empty**, and **equals** or **does not equal** a
   value;
+- a text column **contains**, **does not contain**, **starts with** or **ends with** some
+  text, its letters cased as typed: an insured containing "Holdings";
 - a text or number column **is one of** or **is not one of** some values, ticked from its
-  allowed values or typed comma-separated;
+  allowed values or typed comma-separated, each number without its thousands separator;
 - a number **is greater than**, **is at least**, **is less than** or **is at most** a
   value, and a date **is after**, **is on or after**, **is before** or **is on or before**
   one.
+
+What shows nothing to type can also show by the price: a Heading, a Chart, a Table or
+Collection of output columns alone, an output's own column or field, or a section or sheet
+holding only those can test an output column, such as a referral reasons Table shown while
+**referral_count is greater than 0**. What shows is decided from what is typed first, so
+the price never decides what is priced; these then show and hide with the price on screen,
+the last one while a new price is on its way, and stay hidden until there is one. A condition
+on the price on anything you type into is flagged and does nothing.
+
+A test of one value can compare with another field of the same type instead of a value
+you type: pick it beside the test, in place of **Value**. A policy limit **is greater
+than** the MGA limit; a completion date **is after** the start date **+ 365** days, a
+negative number of days taking them away. In a test of a row, the other field is a column
+of the same row. The test holds only while both fields show. There is no test against
+today, since a saved quote would then show other sheets on another day: add a date field
+for it.
 
 With two or more conditions, choose whether **all** or **any** of them must hold, or **at
 least** a number of them: a section shown while two or three of three cover boxes are
@@ -547,8 +565,8 @@ button down on the sheet nothing moves, so a click is never pulled from under th
 when a section above them opens or closes the sheet scrolls to keep their place.
 
 A quote is what the sheets show. Values typed into hidden cells are left out of what is
-priced, as if they had never been typed, for the sample priced in Preview (and the
-Workbench Input's copy of it) and for a quote in the underwriter app, and a hidden required
+priced, as if they had never been typed, for the sample priced in Preview (and what the
+Workbench Input's previews run on) and for a quote in the underwriter app, and a hidden required
 cell is never marked. The values are kept, so ticking the cover again brings them back. A Chart takes
 nothing typed, so a column only a Chart plots never hides and a condition on it never
 holds, and a value only a hidden component or a hidden field takes is left out even when a
@@ -624,7 +642,8 @@ builder on screen. With a quote store it is where they manage their quotes too.
 
 - `haute app serve` builds the app from the project as it is saved and serves it at
   `http://127.0.0.1:8001/`, signed in as your git identity, so you can see the sheets and
-  the Quotes page as underwriters will before you merge. Only your machine can reach it. The
+  the Quotes page as underwriters will before you merge. Only your machine can reach it, at
+  `127.0.0.1` or `localhost`: the app refuses any other name for your machine. The
   quotes you save there are kept in `.haute/app/quotes.sqlite`, which a rebuild leaves as it
   is; `haute app serve --reader` signs you in as an underwriter who may only read them.
 - `haute app build` writes a **release** to `.haute/app/release` (or the folder you name):
@@ -662,9 +681,14 @@ builder on screen. With a quote store it is where they manage their quotes too.
   that add **is_renewal** and **quote_option** and that take out **valid_until** and
   **currency**, an earlier release no longer starts on the
   database, so rolling back means restoring that backup.
+- The app prices four quotes at once; set `HAUTE_APP_PRICING_WORKERS` to change that. A
+  pricing that runs past 60 seconds is answered as timed out but keeps its place until it
+  ends, and while every place is taken a quote is refused as busy, to be priced again in a
+  few seconds, rather than waiting.
 
-A page opened before a new release is refused when it prices or saves, and reloading it
-picks up the release; its unsaved values stay in the browser.
+A page opened before a new release is refused when it prices or saves, and offers
+**Reload**, which picks up the release; its unsaved values stay in the browser, though an app
+that keeps no quotes keeps nothing typed.
 
 ### The Quotes page
 The app opens on the Quotes page. On the left are **My work** (the quotes with you),
@@ -711,7 +735,8 @@ A quote opens at its own address, under a bar holding its reference and option
   the revision showing, linked to it, and open it. **Duplicate** and **Renew** open the new
   quote's window over the quote, filled from it with the reference blank, a renewal with
   **is_renewal** ticked: key the new reference and **Create**; **Cancel** leaves the quote as
-  it was. **Create alternative** makes the quote at once under the same reference as its
+  it was. With changes to the quote not yet saved, the new quote is made and the app asks
+  before leaving them; stay, and a message names the quote made. **Create alternative** makes the quote at once under the same reference as its
   next option (`ABC-1/2` from `ABC-1/1`);
   **Archive** takes it out of the lists (it opens read only until restored); **Copy link**.
 - **History**: the handover note, every revision (each opens as it was saved), what was done

@@ -16,7 +16,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from fastapi import HTTPException
 from pydantic import ValidationError
 
 from haute._analysis_results import AnalysisKey, AnalysisResultStore
@@ -75,7 +74,14 @@ from haute._worker_isolation import (
     run_isolated_worker,
     worker_config_for_memory_policy,
 )
-from haute.errors import BoundedMemoryUnsupportedError, ContractMismatchError, SchemaMismatchError
+from haute.errors import (
+    BoundedMemoryUnsupportedError,
+    ContractMismatchError,
+    InvalidRequestError,
+    NotFoundError,
+    RequestRefusedError,
+    SchemaMismatchError,
+)
 from haute.routes._background_jobs import CancellableJobRegistry, JobCancellation
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
@@ -604,7 +610,7 @@ class NodeDataService:
         try:
             consumer = consumer_point(body.graph, body.node_id)
         except NodeDataPointInvalidError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise InvalidRequestError(str(exc)) from exc
         resolver = DataPointResolver(
             body.graph,
             source=body.source,
@@ -680,7 +686,7 @@ class NodeDataService:
                 )
             except NodeDataPointInvalidError as exc:
                 resolved.append((node.id, None, str(exc), ()))
-            except HTTPException as exc:
+            except RequestRefusedError as exc:
                 # `_resolve` reports an invalid point this way; one node's bad
                 # wiring is a row in the report, not a failed request.
                 resolved.append((node.id, None, str(exc.detail), ()))
@@ -866,7 +872,7 @@ class NodeDataService:
         try:
             return resolver.resolve(consumer.point, consumer.demand)
         except NodeDataPointInvalidError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise InvalidRequestError(str(exc)) from exc
 
     def run(self, body: NodeDataRunRequest) -> NodeDataRunResponse:
         consumer, resolver = self._resolver(body)
@@ -992,7 +998,7 @@ class NodeDataService:
             try:
                 resolution = resolver.resolve(consumer.point, NodeSnapshotColumns.all())
             except NodeDataPointInvalidError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+                raise InvalidRequestError(str(exc)) from exc
             if resolution.state != "current" or resolution.data_version is None:
                 return NodeDataProfileResponse(
                     status="cache_required",
@@ -1132,7 +1138,7 @@ class NodeDataService:
     def status(self, job_id: str) -> NodeDataStatusResponse:
         job = self._store.require_job(job_id)
         if job.get("kind") not in ("node_data", "node_profile"):
-            raise HTTPException(status_code=404, detail="Node data job not found")
+            raise NotFoundError("Node data job not found")
         return NodeDataStatusResponse(
             status=job["status"],
             progress=float(job.get("progress", 0.0)),

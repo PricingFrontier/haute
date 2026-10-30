@@ -12,8 +12,6 @@ import {
   ArchiveRestore,
   BadgeCheck,
   Calculator,
-  ChevronDown,
-  ChevronRight,
   CircleDashed,
   Copy,
   FileText,
@@ -29,11 +27,12 @@ import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, 
 import { changeAppQuote, type QuotesQuery } from "../api/app"
 import { apiErrorMessage } from "../api/errors"
 import type { WorkbenchAppQuote } from "../api/types"
-import { inModalDialog, isTypingTarget } from "../hooks/keyboardTargets"
+import { inModalDialog, isFormControl } from "../hooks/keyboardTargets"
 import useToastStore from "../stores/useToastStore"
-import { fullTime, listColumns, listValue, relativeTime } from "./quoteValues"
+import { relativeTime } from "../utils/relativeTime"
+import { fullTime, listColumns, listValue } from "./quoteValues"
 import { followLink, navigate, newQuotePath, quotePath, quotesPath, quotesQueryOf } from "./route"
-import { BUTTON, FILL_BUTTON, FILL_STYLE, ICON_BUTTON, StageChip } from "./ui"
+import { BUTTON, Collapsible, FILL_BUTTON, FILL_STYLE, ICON_BUTTON, StageChip } from "./ui"
 import useAppStore from "./useAppStore"
 import useNewQuoteStore from "./useNewQuoteStore"
 import useQuoteListStore from "./useQuoteListStore"
@@ -80,26 +79,6 @@ function RailItem({ icon: Icon, label, count, picked, onPick, testId }: { icon: 
         {count ?? ""}
       </span>
     </button>
-  )
-}
-
-/** A collapsible group of the rail. */
-function RailGroup({ title, children }: { title: string; children: React.ReactNode }) {
-  const [open, setOpen] = useState(true)
-  return (
-    <div className="flex flex-col gap-0.5">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        aria-expanded={open}
-        className="flex h-6 items-center gap-1 px-1 text-[10px] font-semibold tracking-wider uppercase"
-        style={{ color: "var(--text-muted)" }}
-      >
-        {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-        {title}
-      </button>
-      {open && children}
-    </div>
   )
 }
 
@@ -154,8 +133,9 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      // A key pressed in a window over the page, New quote's among them, is the window's.
-      if (event.defaultPrevented || inModalDialog(event.target) || isTypingTarget(event.target) || event.ctrlKey || event.metaKey || event.altKey) return
+      // A key pressed in a window over the page, New quote's among them, is the window's, and
+      // one in a control is the control's: a select's type-ahead takes its letters.
+      if (event.defaultPrevented || inModalDialog(event.target) || isFormControl(event.target) || event.ctrlKey || event.metaKey || event.altKey) return
       if (event.key === "/") {
         event.preventDefault()
         searchBox.current?.focus()
@@ -171,7 +151,8 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
   const archive = async (quote: WorkbenchAppQuote) => {
     try {
       const { quote: archived } = await changeAppQuote(quote.id, "archive", quote.latest, {})
-      void load(query, true)
+      // The list shown once it is answered, which may be another than the one archived from.
+      void useQuoteListStore.getState().reload()
       addToast("success", `Archived ${quote.label}`, {
         label: "Undo",
         run: () => {
@@ -189,7 +170,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
   const restore = async (quote: WorkbenchAppQuote) => {
     try {
       await changeAppQuote(quote.id, "restore", quote.latest, {})
-      void load(query, true)
+      void useQuoteListStore.getState().reload()
       addToast("success", `Restored ${quote.label}`)
     } catch (reason: unknown) {
       addToast("error", `Could not restore ${quote.label}: ${apiErrorMessage(reason)}`)
@@ -208,7 +189,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
   return (
     <div className="flex min-h-0 flex-1" data-testid="quotes-page">
       <nav aria-label="Lists" className="flex w-[200px] shrink-0 flex-col gap-3 overflow-y-auto p-2" style={{ borderRight: "1px solid var(--chrome-border)", background: "var(--bg-panel)" }}>
-        <RailGroup title="Quotes">
+        <Collapsible title="Quotes">
           {VIEWS.map((each) => (
             <RailItem
               key={each.view}
@@ -220,8 +201,8 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
               onPick={() => go({ view: each.view, stage: null, assignee: null })}
             />
           ))}
-        </RailGroup>
-        <RailGroup title="Stage">
+        </Collapsible>
+        <Collapsible title="Stage">
           {STAGES.map((each) => (
             <RailItem
               key={each.stage}
@@ -233,7 +214,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
               onPick={() => go({ stage: query.stage === each.stage ? null : each.stage })}
             />
           ))}
-        </RailGroup>
+        </Collapsible>
       </nav>
 
       <main className="flex min-w-0 flex-1 flex-col" aria-label="Quotes">
@@ -382,7 +363,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                       {quote.assignee === principal ? "You" : quote.assignee}
                     </td>
                     <td className="px-2 whitespace-nowrap" style={{ color: "var(--text-secondary)" }} title={`${fullTime(quote.last_saved_at)} by ${quote.last_saved_by}`}>
-                      {relativeTime(quote.last_saved_at)}
+                      {relativeTime(new Date(quote.last_saved_at))}
                     </td>
                     <td className="px-2" onClick={(event) => event.stopPropagation()}>
                       <span className="flex justify-end gap-0.5 opacity-0 group-focus-within/row:opacity-100 group-hover/row:opacity-100">

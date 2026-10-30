@@ -31,6 +31,7 @@ from haute._native_memory_limit import (
 )
 from haute._parent_watch import exit_with_parent
 from haute._polars_environment import release_polars_spill_dir
+from haute._sandbox import contained_path
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
     IsolatedWorkerCrashedError,
@@ -49,6 +50,7 @@ from haute._worker_isolation import (
     start_process_with_environment,
     start_worker_queue_feeder,
 )
+from haute.errors import PathOutsideProjectError
 
 SCHEMA_VERSION = 1
 # Curated-message routing key. A failure payload whose ``fields`` carry this
@@ -309,9 +311,10 @@ class WorkerRuntime:
 
     def staged_path(self, relative_path: str) -> Path:
         _validate_relative_path(relative_path)
-        path = (self._artifact_root / relative_path).resolve()
-        if not path.is_relative_to(self._artifact_root):
-            raise WorkerProtocolError("staged path escapes artifact root")
+        try:
+            path = contained_path(self._artifact_root, relative_path)
+        except PathOutsideProjectError:
+            raise WorkerProtocolError("staged path escapes artifact root") from None
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -519,8 +522,11 @@ def validate_result_manifest(
         if artifact.size_bytes > max_artifact_size_bytes:
             raise WorkerProtocolError("artifact exceeds declared maximum size")
         path = root / artifact.relative_path
-        resolved = path.resolve()
-        if not resolved.is_relative_to(root) or path.is_symlink() or not resolved.is_file():
+        try:
+            resolved = contained_path(root, artifact.relative_path)
+        except PathOutsideProjectError:
+            raise WorkerProtocolError("artifact is not a contained regular file") from None
+        if path.is_symlink() or not resolved.is_file():
             raise WorkerProtocolError("artifact is not a contained regular file")
         if resolved.stat().st_size != artifact.size_bytes:
             raise WorkerProtocolError("artifact size does not match manifest")
@@ -537,8 +543,11 @@ def build_artifact_manifest(
 ) -> WorkerArtifactManifest:
     """Build an integrity manifest for a contained, regular staged artifact."""
     root = artifact_root.resolve()
-    resolved = path.resolve()
-    if path.is_symlink() or not resolved.is_relative_to(root) or not resolved.is_file():
+    try:
+        resolved = contained_path(root, path.resolve())
+    except PathOutsideProjectError:
+        raise WorkerProtocolError("artifact is not a contained regular file") from None
+    if path.is_symlink() or not resolved.is_file():
         raise WorkerProtocolError("artifact is not a contained regular file")
     relative_path = resolved.relative_to(root).as_posix()
     return WorkerArtifactManifest(

@@ -7,8 +7,9 @@ and its ``artifacts``), the form without its sample (``form.json``), what the re
 The app serves the sheets' page from Haute's built frontend, the release, the form and the
 pricing, and, given a quote store, the quotes it keeps (``haute._workbench_app_quotes``). Every
 route but the health check needs the principal the host signed in: the identity follows the
-release's host, and a release with no host refuses everything else. A write from a page of
-another site is refused.
+release's host, and a release with no host refuses everything else. Served on an analyst's
+machine, it takes only a request for a loopback host that was not forwarded. A write from a
+page of another site is refused.
 """
 
 from __future__ import annotations
@@ -21,8 +22,10 @@ import contextvars
 import copy
 import json
 import os
+import threading
 import uuid
 from collections.abc import AsyncIterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -34,10 +37,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 from starlette.middleware.base import RequestResponseEndpoint
 
+from haute._env import int_env
 from haute._execution_admission import ExecutionAdmissionError
 from haute._execution_context import ExecutionMemoryLimitExceededError
 from haute._hashing import content_hash, content_hash_bytes
 from haute._json_safe import to_json_safe
+from haute._local_security import DEFAULT_TRUSTED_HOSTS, LocalTrustedHostMiddleware
 from haute._logging import get_logger
 from haute._output_assembler import render_output_document
 from haute._sandbox import set_project_root
@@ -78,6 +83,12 @@ MANIFEST_FILE = "deploy_manifest.json"
 APP_PAGE = "app.html"
 #: How long one pricing may take before the app answers that it timed out.
 PRICE_TIMEOUT_SECONDS = 60.0
+#: How many quotes the app prices at once, unless :data:`PRICING_WORKERS_ENV` names another
+#: number: a pricing asked for past them is refused as busy rather than queued behind them.
+PRICING_WORKERS = 4
+PRICING_WORKERS_ENV = "HAUTE_APP_PRICING_WORKERS"
+#: The seconds a pricing refused as busy is told to wait before it is asked for again.
+BUSY_RETRY_SECONDS = 5
 #: The principal Azure's built-in authentication sets on every request it lets through, and
 #: strips from what a client sends.
 EASY_AUTH_NAME = "x-ms-client-principal-name"
@@ -334,7 +345,8 @@ def build_release(
             _validate_base_image_pinning(base_image)
         except DeployError as exc:
             raise WorkbenchAppError(f"[deploy.container] base_image: {exc.message}") from exc
-    resolved = resolve_config(deploy_config)
+    # The workbench nodes take their tables from the form this release ships, read once.
+    resolved = resolve_config(deploy_config, form=document)
     # Built beside the release it replaces, which is left as it is until this one has built.
     building = release_dir.with_name(f".{release_dir.name}.building-{uuid.uuid4().hex[:8]}")
     try:
@@ -403,6 +415,7 @@ def _check_output(project_dir: Path, release_dir: Path) -> None:
         (project_dir, "the project"),
         (Path.cwd().resolve(), "the working directory"),
     ):
+        # not contained_path: the other direction, the release folder must not hold it
         if protected == where or protected.is_relative_to(where):
             raise WorkbenchAppError(
                 f"{release_dir} is {what} or holds it: name a folder of the release's own, "
@@ -564,7 +577,8 @@ def create_app(
     """The app serving the release in *release_dir*.
 
     *local_principal*, given by ``haute app serve`` on an analyst's machine, signs every
-    request in as that name, able to change quotes unless *local_reader*; otherwise the
+    request for a loopback host that was not forwarded in as that name, able to change quotes
+    unless *local_reader*, and refuses any other request; otherwise the
     release's host says who is signed in and, for a release with an ``edit_role``, whether
     they hold it. The page and
     its assets come from *static_dir*, Haute's built frontend unless given. *store_url* names
@@ -628,11 +642,18 @@ def create_app(
 
         book = open_book(store_url, haute_version=release.haute_version)
 
+    # A pricing past its timeout cannot be stopped, so it keeps its place until it ends: the
+    # places are given back by the pricings, never by the requests that stopped waiting.
+    workers = int_env(PRICING_WORKERS_ENV, PRICING_WORKERS)
+    pricing_pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="workbench-price")
+    places = threading.BoundedSemaphore(workers)
+
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         try:
             yield
         finally:
+            pricing_pool.shutdown(wait=False, cancel_futures=True)
             if book is not None:
                 book.close()
 
@@ -664,6 +685,12 @@ def create_app(
         request.state.principal = who
         request.state.can_edit = can_edit
         return await call_next(request)
+
+    if local_principal is not None:
+        # Every request is signed in as the analyst, so a page of a site whose name resolves
+        # to their machine, which the browser treats as that page's own, is refused before
+        # it is signed in. Added last, the check runs first.
+        app.add_middleware(LocalTrustedHostMiddleware, allowed_hosts=DEFAULT_TRUSTED_HOSTS)
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -729,13 +756,18 @@ def create_app(
             finally:
                 context.release_admission(preserve_primary_error=failed)
 
-        # An executor's future gives up waiting at the timeout; the pricing left running ends
-        # on its own and releases its admission then.
-        running = asyncio.get_running_loop().run_in_executor(
-            None, contextvars.copy_context().run, score
-        )
+        if not places.acquire(blocking=False):
+            raise HTTPException(
+                503,
+                "The app is busy pricing other quotes: try again in a few seconds.",
+                headers={"Retry-After": str(BUSY_RETRY_SECONDS)},
+            )
+        # The request gives up waiting at the timeout; the pricing left running ends on its
+        # own and gives back its admission and its place then.
+        running = pricing_pool.submit(contextvars.copy_context().run, score)
+        running.add_done_callback(lambda _: places.release())
         try:
-            tables = await asyncio.wait_for(running, PRICE_TIMEOUT_SECONDS)
+            tables = await asyncio.wait_for(asyncio.wrap_future(running), PRICE_TIMEOUT_SECONDS)
         except TimeoutError:
             raise HTTPException(504, "Pricing the quote took too long; try again.") from None
         except ExecutionAdmissionError as exc:

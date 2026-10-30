@@ -6,10 +6,8 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
-from fastapi import HTTPException
-
 from haute._logging import get_logger
-from haute.errors import HauteValidationError
+from haute.errors import HauteValidationError, InvalidRequestError
 from haute.modelling._evaluation import (
     EvaluationPlan,
 )
@@ -33,11 +31,11 @@ _DISPERSION_PARAM_STUBS = {"theta": 1.0, "var_power": 1.5}
 
 
 def _validate_glm_config_values(config: Mapping[str, Any]) -> None:
-    """Raise HTTPException(400) when a GLM config holds invalid values."""
+    """Raise ``InvalidRequestError`` (400) when a GLM config holds invalid values."""
     try:
         validate_glm_params(build_train_params(config))
     except HauteValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise InvalidRequestError(str(exc)) from exc
 
 
 def _evaluation_preview_payload(

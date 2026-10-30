@@ -1,7 +1,7 @@
 {
-  "inputType": "file",
+  "arguments": {},
   "format": "parquet",
+  "inputType": "file",
   "mode": "scan",
-  "path": "data/nb_batch.parquet",
-  "arguments": {}
+  "path": "data/nb_batch.parquet"
 }

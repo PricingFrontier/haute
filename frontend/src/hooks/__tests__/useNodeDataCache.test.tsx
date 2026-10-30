@@ -36,6 +36,7 @@ import {
   getNodeDataPoint,
   runNodeData,
 } from "../../api/client"
+import { makeNodeDataStatus } from "../../test-utils/factories"
 
 const mockGetPoint = vi.mocked(getNodeDataPoint)
 const mockRun = vi.mocked(runNodeData)
@@ -182,7 +183,7 @@ describe("useNodeDataCache", () => {
     act(() => {
       useNodeDataStore
         .getState()
-        .updateJobProgress("join||live", { status: "running", progress: 0.4, message: "Caching data" })
+        .updateJobProgress("join||live", makeNodeDataStatus({ status: "running", progress: 0.4, message: "Caching data" }))
     })
     await waitFor(() => expect(banding.result.current.progress).toBeCloseTo(0.4))
     expect(explore.result.current.progress).toBeCloseTo(0.4)
@@ -664,7 +665,7 @@ describe("useNodeDataCache", () => {
         data: {
           label: "workbench",
           nodeType: "workbenchInput",
-          config: { tables: [{ name: "orders" }] },
+          config: {},
         },
       },
     ] as never as Parameters<typeof useNodeDataCache>[0]["allNodes"]
@@ -700,7 +701,7 @@ describe("useNodeDataCache", () => {
       message: "Caching started",
       point: point({ state: "building", generation: null, data_version: null }),
     })
-    mockCancel.mockResolvedValue({ status: "cancelled", progress: 1, message: "Cache build cancelled" })
+    mockCancel.mockResolvedValue(makeNodeDataStatus({ status: "cancelled", progress: 1, message: "Cache build cancelled" }))
     const { result } = renderCache("explore")
     await waitFor(() => expect(result.current.availability).toBe("missing"))
     await act(async () => {
@@ -718,7 +719,7 @@ describe("useNodeDataCache", () => {
     mockGetPoint.mockResolvedValue(point({ state: "missing", generation: null, data_version: null }))
     let answer!: (value: Awaited<ReturnType<typeof runNodeData>>) => void
     mockRun.mockImplementation(() => new Promise((resolve) => { answer = resolve }))
-    mockCancel.mockResolvedValue({ status: "cancelled", progress: 0, message: "Cache build cancelled" })
+    mockCancel.mockResolvedValue(makeNodeDataStatus({ status: "cancelled", progress: 0, message: "Cache build cancelled" }))
     const { result } = renderCache("explore")
     await waitFor(() => expect(result.current.availability).toBe("missing"))
 
@@ -779,7 +780,7 @@ describe("useNodeDataCache", () => {
       message: "Caching started",
       point: point({ state: "building", generation: null, data_version: null }),
     })
-    mockCancel.mockResolvedValue({ status: "cancelled", progress: 0, message: "Cache build cancelled" })
+    mockCancel.mockResolvedValue(makeNodeDataStatus({ status: "cancelled", progress: 0, message: "Cache build cancelled" }))
     const { result } = renderCache("explore")
     await waitFor(() => expect(result.current.availability).toBe("missing"))
     await act(async () => {

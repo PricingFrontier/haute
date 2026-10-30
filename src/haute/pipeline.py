@@ -36,6 +36,7 @@ from haute._standalone_nodes import (
     function_kind,
     is_configured,
     run_configured_node,
+    seeded_workbench_input_ports,
 )
 from haute._submodel_paths import is_pipeline_dir
 from haute._types import (
@@ -883,6 +884,28 @@ class Pipeline(NodeRegistry):
         finally:
             _scenario_ctx.reset(_token)
 
+    def _check_seeded_workbench_input(self, node: Node) -> None:
+        """Hold a Workbench Input :meth:`score` seeds with frames to its form, as a run holds
+        it: its sidecar read, what it may not hold refused, the project's form read, and each
+        table a connection takes from it one the form has (specs/workbench)."""
+        tables = seeded_workbench_input_ports(
+            name=node.name, config=node.config, fn=node.fn, pipeline_dir=node.pipeline_dir
+        )
+        taken = dict.fromkeys(
+            edge.source_port
+            for edge in self._edges
+            if edge.source == node.name and edge.source_port is not None
+        )
+        gone = [port for port in taken if port not in tables]
+        if gone:
+            raise ExecutionError(
+                f"Workbench Input {node.name!r} is connected on "
+                f"{', '.join(repr(port) for port in gone)}, which the workbench's form does "
+                "not have.",
+                node=node.name,
+                tables=list(tables),
+            )
+
     def score(self, df: pl.DataFrame | dict[str, pl.DataFrame]) -> pl.DataFrame:
         """Run the pipeline on an input DataFrame, seeding the live input.
 
@@ -928,6 +951,9 @@ class Pipeline(NodeRegistry):
 
             seed_nodes = deploy_inputs or sources
             seed_names = {n.name for n in seed_nodes}
+            for n in seed_nodes:
+                if n.node_type is NodeType.WORKBENCH_INPUT:
+                    self._check_seeded_workbench_input(n)
             connected_ports = list(
                 dict.fromkeys(
                     edge.source_port

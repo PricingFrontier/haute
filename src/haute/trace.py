@@ -105,7 +105,14 @@ from haute._trace_lineage import ColumnRead, JoinInputs, ValueLineage, trace_val
 from haute._trace_waterfall import build_waterfall_from_steps
 from haute._types import REQUEST_INPUT_NODE_TYPES
 from haute._workbench_output import column_fits, frame_columns, workbench_output_tables
-from haute.errors import BoundedMemoryUnsupportedError, TraceCorrelationUnsupportedError
+from haute.errors import (
+    BoundedMemoryUnsupportedError,
+    TraceCorrelationUnsupportedError,
+    TraceRowAmbiguousError,
+    TraceRowMismatchError,
+    TraceTargetNotFoundError,
+    TraceTargetUnsupportedError,
+)
 from haute.executor import (
     PREVIEW_CACHE_MAX_BYTES,
     _build_node_fn,
@@ -318,7 +325,7 @@ def _find_target_row_index(
             reason_code="unsupported_dtype",
         )
     if match.status is _RowMatchStatus.AMBIGUOUS:
-        raise ValueError(
+        raise TraceRowAmbiguousError(
             "Trace row match is ambiguous: "
             f"{match.candidate_count} rows match the clicked values on "
             f"columns {shared}. The preview data may have changed. "
@@ -432,7 +439,7 @@ def execute_trace(
     if target_node_id is None:
         target_node_id = topo_sort_ids([n.id for n in nodes], edges)[-1]
     if not any(n.id == target_node_id for n in nodes):
-        raise ValueError(f"Target node '{target_node_id}' not found in graph")
+        raise TraceTargetNotFoundError(f"Target node '{target_node_id}' not found in graph")
     if execution_context is None:
         admitted_context = create_admitted_execution_context(
             operation="execute_trace",
@@ -569,14 +576,14 @@ def _workbench_output_trace_target(
     names = ", ".join(repr(table.name) for table in tables)
     if port_label is None:
         if len(tables) > 1:
-            raise ValueError(
+            raise TraceTargetUnsupportedError(
                 f"Target node {target_node_id!r} is a Workbench Output: name the table the "
                 f"row is from, one of {names}."
             )
         port_label = tables[0].name
     table = next((table for table in tables if table.name == port_label), None)
     if table is None:
-        raise ValueError(
+        raise TraceTargetUnsupportedError(
             f"Target node {target_node_id!r} is a Workbench Output with no {port_label!r} "
             f"table; its tables are {names}."
         )
@@ -585,12 +592,12 @@ def _workbench_output_trace_target(
         None,
     )
     if edge is None:
-        raise ValueError(
+        raise TraceTargetUnsupportedError(
             f"Target node {target_node_id!r} is a Workbench Output with nothing connected to "
             f"its {port_label!r} table: connect a frame to it."
         )
     if column is not None and column not in {c.name for c in table.columns}:
-        raise ValueError(
+        raise TraceTargetUnsupportedError(
             f"Target node {target_node_id!r} is a Workbench Output whose {port_label!r} "
             f"table has no {column!r} column."
         )
@@ -1161,7 +1168,7 @@ def _execute_trace_core(
         target_output = target_output[target_port]
         eager_outputs = {**eager_outputs, target_node_id: target_output}
     if isinstance(target_output, dict):
-        raise ValueError(
+        raise TraceTargetUnsupportedError(
             f"Target node {target_node_id!r} emits multiple frames; "
             "trace a node downstream of a specific frame instead."
         )
@@ -1171,7 +1178,7 @@ def _execute_trace_core(
         raise RuntimeError(f"Trace target {target_node_id!r} produced no frame")
     if table_fill is not None:
         if column is not None and not table_fill.fills(target_output, column):
-            raise ValueError(table_fill.refusal)
+            raise TraceTargetUnsupportedError(table_fill.refusal)
         if row_values is not None:
             row_values = {
                 name: value
@@ -1289,7 +1296,7 @@ def _execute_trace_core(
             if matched_index is not None:
                 row_index = matched_index
             else:
-                raise ValueError(
+                raise TraceRowMismatchError(
                     "Trace data does not match the preview row. "
                     "The preview data may have changed. "
                     "Please click the node to refresh, then retry."

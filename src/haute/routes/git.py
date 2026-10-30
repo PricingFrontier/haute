@@ -44,6 +44,7 @@ from haute._git import (
     list_remotes,
     milestone_saves,
     pending_ledger_saves,
+    repair_working_pair,
     restore_version,
     restore_working_pair,
     retry_interrupted,
@@ -98,6 +99,8 @@ from haute.schemas import (
     GitPushRequest,
     GitPushResponse,
     GitRemotesResponse,
+    GitRepairPairRequest,
+    GitRepairPairResponse,
     GitRestoreRequest,
     GitRestoreResponse,
     GitRestoreVersionRequest,
@@ -455,6 +458,19 @@ def git_working_branches() -> GitWorkingBranchesResponse:
 def git_restore(body: GitRestoreRequest) -> GitRestoreResponse:
     """Un-archive a working branch and its ledger together (inverse of archive)."""
     return restore_working_pair(body.branch, Path.cwd())
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/repair-pair — make whole a pair a crash split
+# ---------------------------------------------------------------------------
+
+
+@router.post("/repair-pair", response_model=GitRepairPairResponse)
+def git_repair_pair(body: GitRepairPairRequest) -> GitRepairPairResponse:
+    """Make whole a pair readiness lists in ``broken_pairs``: finish a half-done archive,
+    or give an orphan ledger its working branch back at its last milestone. Refs only —
+    no checkout, so no watcher pause."""
+    return repair_working_pair(body.ledger, Path.cwd())
 
 
 # ---------------------------------------------------------------------------

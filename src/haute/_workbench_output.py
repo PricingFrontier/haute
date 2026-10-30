@@ -1,7 +1,8 @@
 """The Workbench Output: the response's tables, filled from the frames connected to them.
 
-A Workbench Output's ``tables`` are a copy of the response's tables the project's
-workbench supplies (specs/workbench), as :mod:`haute._workbench_tables` holds them. Each
+A Workbench Output's ``tables`` are the response's tables the project's form defines,
+given to it wherever it runs (``haute._workbench_nodes``, specs/workbench), as
+:mod:`haute._workbench_tables` holds them. Each
 table with a column is a port: the frame connected to it fills it, each column from the
 frame's column of exactly its name, given its declared type. A column the frame lacks or
 holds with a type that does not fit, and a table nothing is connected to, fill with nulls,

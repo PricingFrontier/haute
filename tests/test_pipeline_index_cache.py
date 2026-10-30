@@ -320,7 +320,7 @@ pipeline.connect("source_c", "transform_c")
         async def _fake_awatch(*dirs: Any, **kw: Any) -> Any:
             yield fake_changes
 
-        async def _capture_broadcast(data: dict[str, Any]) -> None:
+        async def _capture_broadcast(data: dict[str, Any], **_kw: object) -> None:
             return None
 
         async def _run() -> None:
@@ -374,8 +374,8 @@ class TestNoManualInvalidation:
             after a git action that rewrote the files: the route paused the
             watcher, so no watcher batch rebuilds the index for it, and
           - ``haute.routes._save_pipeline`` at the end of a successful
-            save — self-writes early-return from the file-watcher on the
-            ``is_self_write()`` cooldown, so the save path must
+            save — the watcher skips the save's self-written paths, so
+            the save path must
             explicitly invalidate the index to keep the rename → new-name
             lookup consistent.  Pin this exception by filename so any
             OTHER module adding an invalidate call (a regression) still
@@ -582,8 +582,9 @@ class TestConcurrentReadsDoNotRace:
         assert invalidation_finished.is_set()
         assert invalidation_did_not_wait
         assert read_count == 2
-        assert results == [{"fresh": {pipeline_file}}]
-        assert helpers._module_deps == {"fresh": {pipeline_file}}
+        fresh = helpers._module_dep_key(pipeline_file.parent / "modules" / "fresh.py")
+        assert results == [{fresh: {pipeline_file}}]
+        assert helpers._module_deps == {fresh: {pipeline_file}}
 
     def test_reader_during_rebuild_never_sees_none(
         self,

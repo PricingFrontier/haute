@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { getExploreRelationships, parseExploreRelationshipsResponse } from "../exploreRelationships"
+import { getExploreRelationships } from "../exploreRelationships"
+import { validateExploreRelationshipsResponse } from "../../generated/api-contracts.explore.validators.mjs"
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
+import { expectGeneratedContract } from "../../types/generatedContractValidation"
+
+const parseExploreRelationshipsResponse = (value: unknown) =>
+  expectGeneratedContract("ExploreRelationshipsResponse", validateExploreRelationshipsResponse, value)
 
 const point = loadUiContractFixture<Record<string, unknown>>("node_data_point_response")
 
@@ -59,8 +64,8 @@ describe("parseExploreRelationshipsResponse", () => {
     ["an unknown status", { status: "partial" }, /status/],
     ["an unknown level kind", {
       relationships: [{ feature: "x", kind: "numeric", strength: 0, levels_truncated: false, levels: [{ label: "a", kind: "bucket", rows: 1, weight: 1, target_mean: 1 }] }],
-    }, /levels\[0\]\.kind/],
-    ["a key check without its counts", { key_check: { columns: ["id"], rows: 1 } }, /key_check\.distinct_keys/],
+    }, /levels\/0\/kind/],
+    ["a key check without its counts", { key_check: { columns: ["id"], rows: 1 } }, /key_check\/distinct_keys/],
   ])("rejects %s", (_label, overrides, message) => {
     expect(() => parseExploreRelationshipsResponse(response(overrides))).toThrow(message)
   })

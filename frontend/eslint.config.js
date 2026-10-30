@@ -39,6 +39,11 @@ const FORMAT_SELECTORS = [
     selector: 'FunctionDeclaration[id.name=/^format(Duration|Elapsed)$/], VariableDeclarator[id.name=/^format(Duration|Elapsed)$/]',
     message: 'Use formatDuration (utils/formatValue.ts).',
   },
+  {
+    // A function, declared or assigned: how long ago is said by one rule.
+    selector: 'FunctionDeclaration[id.name=/^(relativeTime|timeAgo|formatRelativeTime)$/], VariableDeclarator[id.name=/^(relativeTime|timeAgo|formatRelativeTime)$/][init.type=/^(ArrowFunctionExpression|FunctionExpression)$/]',
+    message: 'Use relativeTime (utils/relativeTime.ts).',
+  },
 ]
 const GUARD_SELECTORS = [
   {
@@ -99,7 +104,7 @@ export default defineConfig([
     rules: restrictedSyntax(POLLING_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS),
   },
   {
-    files: ['src/utils/formatBytes.ts', 'src/utils/formatValue.ts'],
+    files: ['src/utils/formatBytes.ts', 'src/utils/formatValue.ts', 'src/utils/relativeTime.ts'],
     rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, GUARD_SELECTORS),
   },
   {

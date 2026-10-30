@@ -15,6 +15,7 @@ from haute._path_resolution import (
     RuntimePathOutsideProjectError,
 )
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph, SubmodelDefinition
+from haute.errors import RequestRefusedError
 from haute.routes import modelling as modelling_routes
 from haute.routes import optimiser as optimiser_routes
 from haute.routes._runtime_path_errors import runtime_path_http_exception
@@ -306,7 +307,7 @@ def test_case_only_label_collision_rejected_before_any_config_write(
         edges=[],
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         svc._write_config_files(graph)
 
     assert exc_info.value.status_code == 400
@@ -334,7 +335,7 @@ def test_case_only_collision_between_parent_and_submodel_rejected(
         )
     }
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         svc._write_config_files(graph)
 
     assert exc_info.value.status_code == 400
@@ -418,7 +419,7 @@ def test_codegen_case_only_module_collision_rejected_before_any_write(
     svc = SavePipelineService(tmp_path)
     files = {"modules/Pricing.py": "# a", "modules/pricing.py": "# b"}
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         svc._write_generated_code_files(files, "main.py", [])
 
     assert exc_info.value.status_code == 400
@@ -462,7 +463,7 @@ def test_reserved_device_label_rejected_before_any_config_write(
     svc = SavePipelineService(tmp_path)
     graph = PipelineGraph(nodes=[_config_node("a", label)], edges=[])
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         svc._write_config_files(graph)
 
     assert exc_info.value.status_code == 400
@@ -487,7 +488,7 @@ def test_reserved_device_label_in_submodel_graph_rejected(tmp_path: Path) -> Non
         )
     }
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         svc._write_config_files(graph)
 
     assert exc_info.value.status_code == 400
@@ -513,7 +514,7 @@ def test_codegen_reserved_module_filename_rejected_before_any_write(
     svc = SavePipelineService(tmp_path)
     files = {"main.py": "# main", "modules/NUL.py": "# device, not a file"}
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         svc._write_generated_code_files(files, "main.py", [])
 
     assert exc_info.value.status_code == 400
@@ -529,7 +530,7 @@ def test_codegen_reserved_main_filename_rejected(tmp_path: Path) -> None:
     svc = SavePipelineService(tmp_path)
     files = {"CON.py": "# console, not a file"}
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         svc._write_generated_code_files(files, "CON.py", [])
 
     assert exc_info.value.status_code == 400

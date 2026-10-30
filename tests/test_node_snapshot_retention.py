@@ -480,6 +480,50 @@ def test_a_deferred_eviction_stays_indexed_and_a_later_budget_check_retires_it(
     assert not (store.inputs_root / ".node-slots" / f"{slot.digest}.json").exists()
 
 
+@pytest.mark.parametrize("recapture", ["s1", "s2"])
+@pytest.mark.parametrize("clear", ["slot", "identity"])
+def test_a_deferred_clear_stays_indexed_and_the_slots_next_capture_retires_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clear: str, recapture: str
+) -> None:
+    """Clear keeps an identity indexed while a generation of it remains, as publication does.
+
+    Unindexed, the generation would be found only by the budget pass; indexed and
+    unpointed, the slot's next publication or Clear retires it, whether that capture
+    has the cleared signature again or a new one. Clear still drops the pin, so that
+    next capture is not pinned by an explicit build the user cleared.
+    """
+    store = NodeSnapshotStore(tmp_path)
+    slot = _slot(tmp_path)
+    identity = slot.identity("s1")
+    with _publish(store, identity, pl.DataFrame({"a": [1]}), explicit=True):
+        pass
+    generation_dir = _current_dir(store, identity)
+    index_path = store.inputs_root / ".node-slots" / f"{slot.digest}.json"
+
+    # A Windows handle still open inside the generation blocks the rename.
+    with monkeypatch.context() as blocked:
+        blocked.setattr(store, "_retire_generation_locked", lambda *_args: None)
+        if clear == "slot":
+            store.clear_slot(slot)
+        else:
+            store.clear(identity)
+
+    assert store.slot_status(slot, "s1").state == "missing"
+    assert generation_dir.is_dir()
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    assert list(index["identities"]) == [identity.digest]
+    assert index["pinned_identity"] is None
+
+    replacement = slot.identity(recapture)
+    with _publish(store, replacement, pl.DataFrame({"a": [2]})) as publication:
+        assert publication.generation is not None
+        assert publication.generation.retention == "automatic"
+
+    assert not generation_dir.exists()
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    assert list(index["identities"]) == [replacement.digest]
+
+
 def _equal_captures(
     store: NodeSnapshotStore, tmp_path: Path, names: str
 ) -> tuple[list[SourceCacheIdentity], int]:
@@ -913,6 +957,30 @@ def test_an_explicit_build_replaces_a_corrupt_generation(tmp_path: Path) -> None
         assert rebuilt.generation.generation_id != corrupt_id
 
     assert store.slot_status(slot, "s1").state == "current"
+
+
+def test_a_generation_whose_directory_is_gone_is_missing_and_a_capture_replaces_it(
+    tmp_path: Path,
+) -> None:
+    """Evicted by another process or deleted by hand, a node's data is gone, not damaged."""
+    store = NodeSnapshotStore(tmp_path)
+    slot = _slot(tmp_path)
+    identity = slot.identity("s1")
+    _published_id(store, identity, pl.DataFrame({"a": [1]}))
+    shutil.rmtree(tmp_path / _current_dir(store, identity).relative_to(tmp_path))
+
+    assert store.slot_status(slot, "s1").state == "missing"
+    with pytest.raises(FileNotFoundError), store.lease(identity):
+        pass
+
+    # An automatic capture, which a corrupt generation would refuse, computes it again.
+    replacement = _published_id(store, identity, pl.DataFrame({"a": [2]}))
+
+    status = store.slot_status(slot, "s1")
+    assert status.state == "current"
+    assert status.generation is not None and status.generation.generation_id == replacement
+    with store.lease(identity) as generation:
+        assert generation.lazy_frame.collect()["a"].to_list() == [2]
 
 
 def test_only_an_explicit_build_may_refresh(tmp_path: Path) -> None:

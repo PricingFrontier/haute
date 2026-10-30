@@ -575,9 +575,10 @@ across a rewire.
   canonical submodel name, or a changed `base_revision` returns `409`; no graph
   transform or write runs.
 - Creation performs a read-only module no-clobber preflight (`validate_new_module_files`);
-  any configuration collision raises `ConfigError` mapped to `400`. Any other unexpected
-  `ValueError` during graph transformation is logged server-side and returned as a sanitised
-  `400` error, never leaking internal graph walk details or escaping as `500`.
+  any configuration collision raises `ConfigError` mapped to `400`. Parse failures,
+  including removed node-level reuse forms submitted to Create Instance, use the
+  application's shared `400` handler. Unexpected graph-transformation failures are
+  logged server-side and returned as sanitised `500` errors.
 - If the new module path already exists under any casing, creation returns
   `409` before any file is touched.
 - A submodel name that would collide with a Windows reserved device name

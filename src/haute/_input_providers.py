@@ -534,17 +534,11 @@ def resolve_data_input_from_config(
     config = load_node_config(config_path, base_dir=base)
     configured_path = config.get("path")
     if project_root is not None and isinstance(configured_path, (str, Path)) and configured_path:
-        from haute._path_resolution import resolve_runtime_file_path
+        from haute._path_resolution import resolve_node_input_path
 
         config = dict(config)
         config["path"] = str(
-            resolve_runtime_file_path(
-                configured_path,
-                pipeline_dir=base,
-                project_root=project_root,
-                prefer="project",
-                enforce_project_root=True,
-            )
+            resolve_node_input_path(configured_path, pipeline_dir=base, project_root=project_root)
         )
     return resolve_data_input(config, base_dir=base, profile=profile)
 
@@ -557,10 +551,11 @@ class _SnapshotLeasePlan:
     serialised; lease release remains intentionally tied to local plan GC.
     """
 
-    __slots__ = ("_finalizer", "__weakref__")
+    __slots__ = ("__weakref__",)
 
     def __init__(self, release: Callable[[], None]) -> None:
-        self._finalizer = weakref.finalize(self, release)
+        # The finalizer keeps itself alive until this plan is collected.
+        weakref.finalize(self, release)
 
     def __call__(self, batch: pl.DataFrame) -> pl.DataFrame:
         """Preserve the batch while keeping this lease owner in the plan."""

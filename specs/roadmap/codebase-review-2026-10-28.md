@@ -67,8 +67,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | Priority | Trigger and observed consequence | Owning package | Evidence strength |
 |---|---|---|---|
 | P1 | An IDE save after assistant plan verification is overwritten by apply; the rename and post-save verification still succeed. | [ASSIST-61](assistant.md#assist-61--keep-the-authenticated-revision-through-commit) | Real temporary pipeline and transactional save; deterministic edit before commit. |
-| P1 | A concurrent milestone captures the Python from an in-flight save before its referenced configuration exists. | [GIT-R17](git-integration.md#git-r17--pipeline-saves-share-the-git-transaction-boundary) | Real Git repository, save and milestone with a barrier between artifact writes; both operations succeed. |
-| P1 | Local underwriter app accepts a foreign Host for reads and pricing as the analyst. | [WB-39](workbench.md#wb-39--enforce-the-local-apps-request-boundary) | Both requests returned 200; the pricing response contained premium 500. Browser and quote-mutation consequences are source-supported. |
 | P2 | Two independent API Input edits before identity resolution completes retain only the second edit. | [FSH-R10](frontend-shared.md#fsh-r10--retain-edits-during-input-identity-resolution) | Actual controller: expected `[false, false]`, received `[true, false]`; `onUpdateNode` surfaces the superseded edit as an error toast. |
 | P1 | Cancellation of A finishes after B starts; A's reply retires B or publishes A's result under B's calculation identity. | [FSH-R11](frontend-shared.md#fsh-r11--cancellation-replies-belong-to-one-job) | Two pivot hook/store probes. Training has the same source pattern but was not separately executed. |
 | P1 | Inference for `first.json` returns after the user selected `second.json` and added a table; old path/tables are written back. | [FNED-R06](frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft) | Actual API Input editor with delayed inference response. |
@@ -79,9 +77,7 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 
 | Priority | Trigger and observed consequence | Owning package | Evidence and practical limit |
 |---|---|---|---|
-| P2 | Invalid connect endpoints/keywords/ports are dropped or repaired; parameter inference can hide the discarded call. | [PCFG-R20](pipeline-config.md#pcfg-r20--malformed-connect-calls-are-parse-errors) | Actual strict parse/codegen versus executing original Python; four malformed call shapes. Existing helper tests preserve some wrong behavior. |
 | P1 | A keyword-only factor default disappears on Save; a preamble name takes over and changes 120 to 90. | [PCFG-R21](pipeline-config.md#pcfg-r21--node-signatures-retain-their-configuration-bindings) | Actual original and regenerated functions, strict file parse. |
-| P2 | Archive finishes after the user changes Team to Mine and reloads the older Team query as the newest request. | [WB-35](workbench.md#wb-35--every-quote-action-says-what-it-did), extended | Actual QuotesPage/store with deferred transport. Restore has the same source pattern but was not separately executed. |
 | P1 | Parser endpoint concatenation and multi-frame paste mint duplicate edge ids; healthy recovery can be refused and deleting one duplicate deletes both. | [NAME-10](name-collisions.md#name-10--every-distinct-connection-has-a-distinct-identity) | Real parser/codegen and actual keyboard/store paste/delete. Healthy recovery rejection follows its duplicate-id validator; malformed documents were not assumed to load normally. |
 | P3 | Delete with a selected node and unrelated selected edge leaves the edge. | [FGC-R07](frontend-graph-canvas.md#fgc-r07--delete-removes-the-complete-eligible-selection) | Actual keyboard/store witness; the remaining edge stays visible and can be deleted again. Undo behavior is an acceptance requirement, not an executed assertion after the failure. |
 | P1 | Pending submodel drill-in replaces a newly loaded root with the old child and mismatched navigation context. | [FGC-R06](frontend-graph-canvas.md#fgc-r06--pending-submodel-navigation-belongs-to-its-document) | Actual navigation hook and stores, delayed layout. A subsequent destructive Save was not executed. |
@@ -93,14 +89,12 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P3 | Copied Explore node B receives cached result.node_id A for the same producer/card. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual pivot service/cache. Numbers are correct; browser stores them under B, so no numerical cross-node corruption claim. |
 | P2 | Training status discards eight recorded tuning progress fields. | [MOD-R08](modelling.md#mod-r08--training-status-carries-the-progress-the-worker-records) | Real JobStore and async status route. Cancel response has the same omission by source inspection. |
 | P2 | Shared-flight operation TimeoutError is mistaken for a polling timeout; completed work spins until cancellation. | [ROAD-WORKER-09](background-jobs-api.md#road-worker-09--completed-operation-timeouts-are-terminal-failures) | Real SharedFlights and LatestWinsQueue with controlled failure/cancellation. |
-| P1 | Project utility junction points outside: GET reads and PUT changes the outside Python file. | [API-R07](server-api.md#api-r07--utility-files-written-like-project-files), extended | Actual Windows junction and route operations in temporary directories; only project discovery injected. |
 | P2 | Push rejection names origin; after dropdown changes, its Catch up/Spin off submits backup. | [GIT-R18](git-integration.md#git-r18--recovery-acts-on-the-remote-named-by-its-dialog) | Actual component/ApiError/response parser, both actions, with the remote changed mid-push. Spin off sets local work aside on a branch; a real wrong-remote mutation was not executed. |
 | P2 | Returning from a failed directory to a cached parent leaves the error hiding the files. | [FNED-R02](frontend-node-editors.md#fned-r02--drafts-in-step-with-the-document-errors-with-their-detail), extended | Actual FileBrowser and settings cache, list transport substituted. |
 | P2 | Use detected schema applies A's completed schema into B while B loads. | [FNED-R06](frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft), extended | Actual DataInputEditor/hooks, API transport substituted. |
 | P2 | Deployment proves a literal-only select preserves request order, then fails a three-quote request with one row. | [EXEC-R09](execution-engine.md#exec-r09--column-free-selects-are-not-row-local), extended | Actual row proof and score_graph. Existing chunk row-count corruption stays P1; this added deployment failure is loud. |
 | P2 | Late GLM dispersion estimate for A overwrites manually chosen theta 7 in newer target B with 3. | [FMOU-R06](frontend-modelling-optimiser-ui.md#fmou-r06--dispersion-estimates-belong-to-the-initiating-training-draft) | Actual GLMTargetConfig, only the estimate promise substituted. |
 | P2 | JSON omits an all-null nested pricing object while NDJSON returns pricing:null for the same quote. | [DEP-R17](deploy.md#dep-r17--json-and-ndjson-preserve-the-same-output-document) | Real generated FastAPI app, request shredder, scorer, assembler and materializer; no scorer mock. Batch variant is source-supported. |
-| P2 | From project root, rating/modules edits are skipped even when rating/main.py is the configured importer. | [API-R11](server-api.md#api-r11--module-watching-follows-the-configured-pipeline-directory) | Real discovery/parser/dependency index and watcher event handling; event transport/publish capture substituted. No subsequent save-overwrite claim. |
 | P2 | A utility file load replaces a newer selection and can discard the old file's draft typed after its initial flush when autosave later fails. | [FGC-R08](frontend-graph-canvas.md#fgc-r08--utility-navigation-preserves-drafts-across-pending-reads) | Actual UtilityPanel/debounce, textarea editor and transport seams; two controlled interleavings independently reproduced. |
 | P2 | A real degraded document's blocked downstream node throws before its recovery inspector because its unavailable parent has no executable input identity. | [FGC-R09](frontend-graph-canvas.md#fgc-r09--recovery-inspection-does-not-require-executable-input-identities) | Real backend recovery DTO, browser parser/adapter, GraphProvider and NodePanel; no frontend mocks. |
 
@@ -131,29 +125,6 @@ Decisive sites: `PipelineApplicationService._prepare_apply`, `_commit` and
 in `src/haute/_workbench_app.py`; `handle_app_serve` in `src/haute/cli/_app.py`.
 The save service already has a conflict precondition, and
 `LocalTrustedHostMiddleware` already implements the local Host boundary.
-
-### Save and Git milestone
-
-The witness starts with a real temporary Git repository and working/ledger
-branch pair. Assistant Apply adds a banding node and its edge. The ordinary save
-is paused at `_write_config_files`, after Python has been written. A concurrent
-real `commit_milestone` succeeds before the save resumes. Its tree contains only
-`.gitignore` and `main.py`; that Python references `config/banding/Bands.json`.
-After resuming, Apply succeeds with two operations and the working files include
-that config and `main.haute.json`. The config was not part of the milestone.
-
-The probe controls only timing; save and Git behaviour are real. The root-level
-fixture uses the same `pipeline_folder=None` as its route. The measured result
-is an incomplete milestone, not a measured branch-switch or restore failure.
-Those operations take the same separate Git lock and must be considered when
-closing the save transaction boundary. `routes/_helpers.py::project_write`
-already holds both locks for other project mutations.
-Independent review also identified scoped node saves and repair-apply writers
-as sharing the gap through `_commit_repair_plan`, outside `SavePipelineService`.
-The main session verified those call sites and expanded `GIT-R17` to include
-their transactions and regressions. Those variants are source-supported; the
-executed interleaving above uses the full save transaction. Submodel
-create/dissolve are in-memory transforms whose persistence uses explicit Save.
 
 ### Evaluation
 
@@ -215,16 +186,16 @@ adds a finding group or changes the 42-group count.
 | `src/haute/cli/_train.py::handle_train` | **Unverified.** This is a copied three-file note also attached to `_app.py` and `_gpu_setup.py`; the import is in `_train.py`. Execute a valid training script requiring its own module registration, e.g. a dataclass with postponed annotations or introspection/pickling of a script-defined class, through `handle_train`; compare ordinary Python execution. Confirmation requires a registration-specific failure before/while the otherwise valid job runs. No new app/GPU defect is implied. |
 | `src/haute/deploy/_request_rows.py::check_lookups` and join proof | **Unverified.** First establish a strict-parser-accepted join with null-equal matching. Give its lookup two null keys and a request a null key; verify deployment's uniqueness proof accepts it while actual scoring duplicates a quote. If the parser rejects that join option, this particular trigger is unreachable; that check was not recorded as completed. |
 | `src/haute/_workbench_form.py::FormSpec._brings_quote_details_up_to_date` | **Unverified.** Feed an actual form-loading or save route a legacy quote-details column whose `id` is a list/object, reaching `set(ids)` before conversion. Confirm an uncaught TypeError/500 instead of the promised validation/document diagnostic, and identify the supported entry point. A direct helper exception alone would not establish user reachability. |
-| `src/haute/_config_builder.py::_resolve_node_config` / `_build_node_config` | **Partly duplicate / otherwise unverified.** The sidecar-backed branch dropping extra decorator keywords is exactly **PCFG-R11**. If this note intended another inline/non-sidecar form, first name that decorator/key and compare strict parse, regenerated source and live registration; confirmation requires a silently dropped/refashioned accepted argument. Do not imply PCFG-R11 covers every unstated variant. |
+| `src/haute/_config_builder.py::_resolve_node_config` / `_build_node_config` | **Unverified.** The sidecar-backed branch now refuses extra decorator keywords by name. If this note intended an inline/non-sidecar form, first name that decorator/key and compare strict parse, regenerated source and live registration; confirmation requires a silently dropped/refashioned accepted argument. |
 | `frontend/src/app/quoteValues.ts::readDraft` / `isPendingWrite` | **Unverified.** Produce a browser draft with null/array `values` or `places` through a supported previous-version/current persistence path, then open/restore the quote and observe a crash or incorrect write. Manually corrupting localStorage establishes parser permissiveness only; a realistic producing path remains missing. |
 | `frontend/src/panels/OptimiserPreview.tsx` same-job `xConstraintIdx` | **Not reachable through the current browser recompute workflow as documented.** OPT-R04 explicitly says recompute has no browser caller and browser users get only inline generation 0; a new job changes the reset dependency. This does not disprove external API recompute while a browser is open. To reopen the UI candidate, demonstrate a supported same-job generation with fewer axes reaching the mounted preview and then an out-of-range axis/error. |
 | `frontend/src/panels/optimiser/useOptimiserScenarioData.ts` / `OptimiserScenarioPanes.tsx` | **Unverified.** Supply a valid configured scenario preview with a missing/null objective or constraint cell through the real preview parser and pane; show a zero-valued curve/summary where its input contract requires missing/error. Compare `optimiserScenarioStats` handling. First distinguish allowed missing input from data the upstream contract already refuses. |
-| `src/haute/_polars_call_shapes.py::is_pl_dtype_reference` / `is_typed_literal_list` | **Unverified; no exact duplicate established.** These shape recognizers require the spelling `pl`. Compare a parser-accepted equivalent Polars alias/dtype/literal-series expression with canonical spelling through the actual chunk/row-proof consumer; confirm a material unsupported/fallback result. PCFG-R19's `match`/type-alias support-code inventory is not automatically an owner for module-alias recognition. No wrong numerical result was established. |
+| `src/haute/_polars_call_shapes.py::is_pl_dtype_reference` / `is_typed_literal_list` | **Unverified; no exact duplicate established.** These shape recognizers require the spelling `pl`. Compare a parser-accepted equivalent Polars alias/dtype/literal-series expression with canonical spelling through the actual chunk/row-proof consumer; confirm a material unsupported/fallback result. The support-code inventory's `match` and type-alias handling does not cover module-alias recognition. No wrong numerical result was established. |
 | `frontend/src/utils/graphHelpers.ts::liveHandles` / `filterIncomingEdges`, consumed by `useWebSocketSync` | **Unverified warning; edge-loss variant not established.** This is a copied 13-file note attached to `buildGraph.ts`, which does not classify handles. The inspected sync caller uses `rejectedEdges` diagnostically and adopts the original `newEdges`. A confirming UI test loads a valid Workbench Output `table__…` target handle through actual sync and observes a false warning while asserting the edge remains. Do not describe dropped wiring. |
 | `frontend/src/api/assistant.ts::streamAssistantMessage` | **Unverified.** Confirm an actual supported server/proxy emits CRLF SSE, then split the CR and LF across stream chunks and assert complete events/terminal outcomes. The client normalizes each decoded chunk before buffering; no actual server-framing failure was recorded. LF-only production output does not exercise this trigger. |
 | `frontend/src/api/client.ts::request` / retry policy | **Unverified, hypothesis underspecified.** Name a real retry-enabled PUT/DELETE endpoint with a non-idempotent effect, let its mutation commit while losing the response, and observe a duplicate effect or incorrect retry result. POST is not retried by default; project-file/workbench writes have explicit zero-retry paths. Do not label every mutation unsafe. |
 | `frontend/src/api/projectFiles.ts` XHR upload / `FilesPanel` | **Unverified.** Stall an actual upload transport indefinitely, check whether the panel remains stuck and whether its cancel/close action retires transport and UI ownership. Lack of an automatic timeout alone is not a confirmed failure if intentional long uploads remain cancellable. |
-| `frontend/src/app/useQuoteListStore.ts::more` / `load` | **Unverified.** Hold old-list `more()`, load another list, and try its pagination before/after the old request settles. Confirm new pagination remains blocked or old completion clears a newer loading state. This is distinct from accepted WB-35 archive/restore query adoption. |
+| `frontend/src/app/useQuoteListStore.ts::more` / `load` | **Unverified.** Hold old-list `more()`, load another list, and try its pagination before/after the old request settles. Confirm new pagination remains blocked or old completion clears a newer loading state. This is distinct from the archive/restore query adoption delivered on 29 October. |
 | `ExplorePivotsConfig` / `PivotFormulaSection` confirmation continuations | **Unverified; previous ownership statement lacked an exact package.** Open a destructive pivot/formula confirmation, apply an independent edit or document switch while it is open, then confirm and inspect current config. Confirmation must show old captured arrays replacing newer state or deleting a no-longer-current target. FSH-R07's identity-resolved creation fences and FNED-R02's committed drafts do not by themselves dispose of this separate continuation. |
 | `frontend/src/panels/modelling/TermTableView.tsx` state, `EBMTermsTab` / `TBoostTablesTab` keys | **Unverified.** Keep the same mounted term key, replace its result with different axis count/levels, and observe an invalid fixed index/axis or wrong slice. First establish the real parent lifecycle preserves that component across results; an isolated rerender is insufficient if production remounts it. |
 | `frontend/src/stores/useSettingsStore.ts::loadPipelineSettings` | **Unverified.** Complete newer load B before older A so `_confirmedPipelineSettings` could regress, then fail a settings save and inspect rollback. Confirmation requires the UI to restore A despite B being the latest accepted settings. The existing save-completion fence may rule out some interleavings; no completed witness is recorded. |
@@ -233,7 +204,7 @@ adds a finding group or changes the 42-group count.
 | `_analysis_results`, `_artifact_*`, `_hashing`, `_input_providers`, `_model_source`, `_stat_gated_cache` batch | **Unverified and underspecified.** The note names no cache key, omitted identity or wrong outcome. Minimum next step: identify one actual producer/consumer cache identity, change one supported input/provider/artifact attribute while keeping that identity, and observe stale data returned. Do not manufacture a precise bug or duplicate from this batch reminder. |
 | `src/haute/_builders.py` | **Unverified and underspecified.** No operation, arithmetic boundary or expected answer was recorded. A confirmation must first name a valid online/ratebook config and concrete scalar/vector inputs, then compare the actual builder/runtime result with a hand-computed expected answer. No completed reproduction or rebuttal was recorded. |
 | `src/haute/_json_shred/_inference_filter.py` native filter and inference walker | **Unverified.** Feed identical bounded nested/mixed arrays to native filtering and the Python inference path and compare complete inferred tables/types. Confirm a valid field/table lost or an invalid one invented, not merely different internal ordering. Accepted JSON-R07 concerns malformed ancestor skip accounting, not automatically this inference parity concern. |
-| `src/haute/_pipeline_revision.py` / `_sidecar.py` | **Unverified and underspecified.** Identify the exact serialized state/path case involved; edit it through a supported writer and show a stale revision accepted, or resolve two case spellings and demonstrate incorrect graph/artifact adoption. PCFG-R19 already owns capture/revision re-reads, but the note does not prove these unspecified variants duplicate it. |
+| `src/haute/_pipeline_revision.py` / `_sidecar.py` | **Unverified and underspecified.** Identify the exact serialized state/path case involved; edit it through a supported writer and show a stale revision accepted, or resolve two case spellings and demonstrate incorrect graph/artifact adoption. The load's capture now covers sidecar and config re-reads, but the note does not prove these unspecified variants duplicate it. |
 | `src/haute/_submodel_instances.py::rewrite_boundary_input_names` / Workbench Output bindings | **Source-screened for Workbench Output; otherwise unverified.** The output variant's target-table handles are not source executable input names, so a missing source-name rewrite is not shown to break that contract. A distinct Workbench Input variant requires a valid shared submodel/port rename whose real flattened runtime selects the wrong/missing frame. SUB-R04, since delivered, owned Load File's second input, not every hypothesized workbench selector. |
 | `_submodel_instances.py` merged support code / `_support_code_names.py` | **Ordinary strict-parse conflict is guarded; broader variant unverified.** A confirming case must pass strict parsing with two valid occurrence scopes and then show support-name rebinding after flatten/execution. Existing ordinary preamble rejection is not evidence that dynamic imports/all reuse scopes are safe; the note contains no such witness. |
 | `src/haute/modelling/_ebm.py` grouped categorical axis | **Unverified.** Fit/load a real EBM with multiple category labels sharing one bin; compare exported term labels/scores with native prediction for every grouped level. No completed reproduction or rebuttal was recorded. No GPU issue follows from this shared note. |
@@ -256,31 +227,24 @@ adds a finding group or changes the 42-group count.
 
 | Candidate scope | Disposition |
 |---|---|
-| quote reload/post-create flows | Duplicate **WB-35**. Do not merge the distinct pending pagination candidate into this without adding its exact transition. |
 | uncontrolled Rating/pivot drafts | Duplicate **FNED-R02**. |
 | percentages and auto-range | Duplicate **FMOU-R04**. |
 | save flush, coarse graph creation fence, scoped edited marker | Duplicate **FSH-R07**. |
-| saved-document sync | Duplicate **FSH-R05**, with **API-R08** for server saved-document echo/fingerprint. |
+| saved-document sync | Duplicate **FSH-R05**. |
 | utility error wording | Duplicate **FGC-R04**; distinct accepted read/draft race remains FGC-R08. |
 | Scenario Steps coercion / Optimiser Apply alias mode | Duplicate **FNED-R01**. |
 | rating permissive numeric parsing / grids | Duplicate **FNED-R04**; grid/helper duplication belongs **FNED-R03/FNED-R05**. |
 | assistant undo/state fencing | Duplicate **ASSIST-60**. |
-| Show When numeric comma split | Duplicate **WB-36**. |
 | typed allowed-values onto older form | Duplicate **WB-38**. |
-| closing return / Unicode line splitting | Duplicates **PCFG-R17**, **PCFG-R18**. |
-| replacement decoding | Duplicate **PCFG-R10**, which explicitly covers sidecar/source replacement decoding before save. |
-| dirty delete / broken pairs | Duplicates **GIT-R03**, **GIT-R16**. |
-| recurring Git failures/compensation | The named failure-surfacing concern is **GIT-R02**; duplicate compensation mechanisms are **GIT-R05**. These broad notes do not establish any additional specific exception path. |
+| recurring Git failures/compensation | Duplicate compensation mechanisms are **GIT-R05**. These broad notes do not establish any additional specific exception path. |
 | non-SQLite form insertion | Duplicate **WB-10** for non-SQLite form insertion (the scratch spelling WB-R10 is not another package). The note gives no additional concrete database defect. |
 | sandbox project globals | Duplicate **PCFG-R04**. |
-| match/type-alias support binding | Duplicate **PCFG-R19**. This does not settle the separate Polars module-alias shape candidate. |
-| Workbench pricing work surviving its timeout | Duplicate **WB-33**. The separate raw-error concern remains unverified above. |
 | Assistant bounds, blocking tools, factual context, tool hygiene and provider handling | Duplicates **ASSIST-55**, **ASSIST-57**, **ASSIST-58**, **ASSIST-59**, **ASSIST-54** respectively. The recipe-consolidation note names no additional behavior. |
 | CLI/init/deploy existing gaps | Duplicates **DEP-R11** for impact alignment, **DEP-R12A** for build ownership, **DEP-R09** for dependency closure, and **CLI-R01**, **CLI-R04**, **CLI-R06** for init overwrite, TOML mutation and hook behavior. The scratch shorthand DEP-R12 predates its split; generic CLI errors/eager reads name no additional concrete case. |
 | inactive source-switch branch | Duplicate **EXEC-R14**. |
 | Literal-only chunked selects | Duplicate **EXEC-R09**; the deployed request-order witness is included in its accepted extension above. |
 | Model diagnostic weights | Duplicate **MOD-R05**. |
-| Hosted sign-in headers | Duplicate **WB-25**; separate local Host-boundary finding remains WB-39. |
+| Hosted sign-in headers | Duplicate **WB-25**. |
 | Asynchronous assistant tool blocking | Duplicate **ASSIST-57**. |
 
 ### Pending notes resolved by accepted findings
@@ -292,7 +256,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | Earlier candidate note | Accepted owner |
 |---|---|
 | dispersion caller ownership / estimate queued | **FMOU-R06** for same-mounted draft identity; separate helper error-contract wording is **FSH-R06**. |
-| archive/restore obsolete query | **WB-35**. |
 | rejection remote “candidate pending” | **GIT-R18**. |
 | cancellation caller / result consumer identity | **FSH-R11**. Native polling's captured-job guard is not itself a new defect. |
 | request-input edits / explicit Auto Layout | **FSH-R10**, **FGC-R05**; mixed Delete **FGC-R07**. |
@@ -305,10 +268,7 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | tuning status fields | **MOD-R08**. |
 | edge ID collisions | **NAME-10**. |
 | failed new solve identity | **FSH-R12**. |
-| malformed connect extraction | **PCFG-R20**. |
 | keyword-only defaults | **PCFG-R21**. |
-| local app Host boundary | **WB-39**. |
-| save/repair Git transaction gap | **GIT-R17**. |
 | pyfunc classifier output shape | **MSC-11**. |
 | literal select row proof | **EXEC-R09**. |
 | predicted output signature dtype | **MOD-R09** after requested split; formerly bundled MOD-R05. |

@@ -355,9 +355,15 @@ therefore cannot be bypassed by test or shutdown reset code.
 - `release(key, job_id)` — removes the active handle only if it's still owned by this
   `job_id` (a stale release from an already-superseded owner is a no-op, not an
   accidental release of a newer owner's key — same pattern as
-  `CancellableJobRegistry.release`).
+  `CancellableJobRegistry.release`), and notifies `_released`, a condition on the
+  coordinator's lock.
+- `wait_released(key, job_id, timeout)` — waits on `_released` for at most `timeout`
+  seconds until `job_id` no longer owns `key`. Returns whether it stopped owning it.
+  The coordinator never queues an `acquire`; a caller that knows the owner is
+  finishing waits through this before its own check.
 
-In practice (`_optimiser_service.py`), callers check `SingleFlightCoordinator.active`
+In practice (`_optimiser_service.py`), a start whose graph/node owner's job has already
+ended first waits for it through `wait_released`. Callers then check `SingleFlightCoordinator.active`
 themselves *before* calling `acquire`, under their own separate `_start_lock`, and
 raise their own typed HTTP 409 directly from that check — `acquire`'s own
 `SingleFlightConflictError` mostly guards against the acquire call itself racing
@@ -539,9 +545,9 @@ is only warranted for a concrete thread callable that can honour such a signal.
 | `KeyError` | `JobStore.update_job` / `atomic_update` / `atomic_update_if_heavy_present` / terminal and publication operations (unknown job id) | Propagates; callers generally only reach these with ids they created themselves. |
 | `RuntimeError` | `register_artifact_cleaner` (duplicate distinct cleaner for a kind); `_schedule_heavy_object_cleanup_if_needed` (schedule requested without a numeric expiry); `JobStore.compare_and_publish_completion` (publisher mutated its own job record) | Treated as internal-bug-level failures; not caught anywhere in this component. |
 | `ArtifactHandleUnavailableError(LookupError)` | `JobStore.lease` (job gone, or no handle under the key) | The owning component maps it to its own "no longer available" answer (the optimiser's `410`). |
-| `HTTPException(404)` | `JobStore.require_job` | Standard FastAPI error response for missing/expired job ids. |
-| `HTTPException(400)` | `JobStore.require_completed_job` | When the job exists but isn't `completed`; message includes the actual status. |
-| `SingleFlightConflictError(RuntimeError)` | `SingleFlightCoordinator.acquire` | Not caught inside this component; optimiser route code (`_optimiser_service.py`) converts the equivalent caller-side conflict into `HTTPException(409)`. |
+| `NotFoundError` (404) | `JobStore.require_job` | A refusal the application handler answers for missing/expired job ids. |
+| `InvalidRequestError` (400) | `JobStore.require_completed_job` | When the job exists but isn't `completed`; message includes the actual status. |
+| `SingleFlightConflictError(RuntimeError)` | `SingleFlightCoordinator.acquire` | Not caught inside this component; optimiser route code (`_optimiser_service.py`) converts the equivalent caller-side conflict into a `ConflictError` (409). |
 | `BackgroundJobStoppedError(RuntimeError)` | Not raised by this component itself — it is the typed exception in-process worker code is expected to raise after observing `CancellableJobRegistry.cancellation_reason(job_id)` is non-`None`. | Caught by remaining in-process consumers such as `_optimiser_service.py`; migrated process workers use the protocol stop callback and typed failure payloads. |
 | `IsolatedWorkerError` and subtypes | Raised inside `run_isolated_worker` or `run_worker_protocol` (owned by worker isolation/transport) | Converted by `IsolatedJobSupervisor` into a typed lifecycle outcome, preferring a child-curated `user_message` payload field over the typed wrapper text for the terminal message. Unexpected parent exceptions become `error`; terminal-persistence failure is exposed through `IsolatedSupervisorThread.join_and_raise()`. |
 | `BlockingWorkTimeoutError(TimeoutError)` | `run_blocking_with_response_timeout` | Raised only by explicitly configured compatibility-thread paths. Production API Input table builds, output-write, OUTPUT dry-run, and Explore paths use killable process isolation and do not fall back to this helper after a process-start or worker failure. |

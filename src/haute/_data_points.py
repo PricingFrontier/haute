@@ -55,11 +55,10 @@ from haute._types import (
 PointKind = Literal["data_input", "api_input_table", "node_output"]
 PointState = Literal["current", "stale", "partial", "missing", "building", "corrupt"]
 BuildingProbe = Callable[[PointKind, str], bool]
-"""Report whether a build is running for a point, given its kind and build key.
+"""Report whether a build is running for a point, given its kind and identity digest.
 
-The build key is the input-snapshot identity digest for ``data_input`` and for
-``api_input_table`` (the table's own identity), and the node-output identity
-digest for ``node_output``.
+The digest is the input snapshot's for ``data_input`` and for ``api_input_table``
+(the table's own identity), and the node output's for ``node_output``.
 """
 
 
@@ -108,7 +107,6 @@ class PointResolution:
     state: PointState
     demand: NodeSnapshotColumns
     data_version: str | None
-    build_key: str | None
     node_output_identity: SourceCacheIdentity | None = None
     node_output_generation: NodeSnapshotGeneration | None = None
     input_identity: SourceCacheIdentity | None = None
@@ -392,7 +390,6 @@ class DataPointResolver:
                     "data_input",
                     {"path": str(path), "file": file_version, "lineage": lineage},
                 ),
-                build_key=None,
             )
         identity = source_cache_identity(config, base_dir=base_dir)
         status = self.store.status(
@@ -472,7 +469,6 @@ class DataPointResolver:
                     "lineage": _lineage_fingerprint(self.graph, node.id, self._memo),
                 },
             ),
-            build_key=None,
         )
 
     def _input_snapshot_resolution(
@@ -511,7 +507,6 @@ class DataPointResolver:
                 if generation_id is not None
                 else None
             ),
-            build_key=identity.digest,
             input_identity=identity,
             input_generation_id=generation_id,
         )
@@ -534,7 +529,6 @@ class DataPointResolver:
             state=state,
             demand=demand,
             data_version=generation.generation_id if generation is not None else None,
-            build_key=status.identity.digest,
             node_output_identity=status.identity,
             node_output_generation=generation,
         )

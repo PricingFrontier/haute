@@ -53,6 +53,12 @@ branch chooser opens.
 Switching, archiving and deleting a branch can also be undone from the toolbar's Undo until
 the page reloads.
 
+Earlier versions of Haute could leave a branch in two parts if the server stopped during
+an archive or a delete. Haute names such a branch when it starts, and the branch
+manager lists it with **Repair**. Repair finishes an archive that stopped part way. A
+branch that went missing comes back at its last milestone, with its saves since then
+waiting to be committed again.
+
 ## Files in use
 
 On Windows, a version can't replace a file another program holds open, such as a CSV open

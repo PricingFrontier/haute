@@ -73,7 +73,9 @@ even for a different graph/node. Estimates, auto-range jobs, and frontier recomp
 non-blocking job types and do not reserve that global slot. Separately, a graph/node
 single-flight key prevents a solve setup and a background auto-range setup from overlapping
 for the same graph/node. A repeated background auto-range start with the same node id and graph
-fingerprint returns the active job id, while a conflicting operation receives HTTP 409.
+fingerprint returns the active job id, while a conflicting operation receives HTTP 409. A job that
+has already ended but whose worker has not yet freed the graph/node is given up to five seconds
+to do so first, so a start that follows a completed job goes through.
 
 Estimate, solve setup, and auto-range pipeline materialisation all consume the execution
 facade's typed projection/strategy result for their request context. The same bounded

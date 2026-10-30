@@ -1,8 +1,8 @@
 /**
  * What the underwriter app works out of a quote's values (specs/workbench): whether two sets
  * of values are the same quote, the price a saved revision shows on the sheets, the
- * quote_details columns the Quotes page lists and how each value shows in them, how long
- * ago a moment was, and the values kept in the browser until they are saved or discarded.
+ * quote_details columns the Quotes page lists and how each value shows in them, a moment in
+ * full, and the values kept in the browser until they are saved or discarded.
  */
 import type { QuoteSave, QuoteSource } from "../api/app"
 import { apiErrorCode, apiErrorStatus } from "../api/errors"
@@ -10,9 +10,9 @@ import type { FormSpec, SchemaColumn, WorkbenchAppQuote, WorkbenchAppQuoteEvent 
 import type { SamplePrice } from "../stores/useWorkbenchPricingStore"
 import { canonicalJson } from "../utils/canonicalJson"
 import { formatValue } from "../utils/formatValue"
-import { formattedNumber, valuesBasis } from "../utils/sheetValues"
-import { sheetVisibility } from "../utils/sheetVisibility"
-import { QUOTE_DETAILS_ID, readableName, type SampleRow } from "../utils/workbenchForm"
+import { formattedNumber } from "../utils/sheetValues"
+import { basisOf, columnKey } from "../utils/sheetVisibility"
+import { QUOTE_DETAILS, QUOTE_DETAILS_ID, readableName, type QuoteDetailName, type SampleRow } from "../utils/workbenchForm"
 
 export type Values = Record<string, SampleRow[]>
 
@@ -48,8 +48,6 @@ export function onSheets(form: FormSpec, values: Values): Values {
 /** A page drawn for another release than the one serving it: 409 without a code of the store's. */
 export const releaseMoved = (error: unknown): boolean => apiErrorStatus(error) === 409 && apiErrorCode(error) === null
 
-const placeKey = (tableId: string, columnId: string): string => `${tableId}:${columnId}`
-
 /** Where each value of `values` sits on `form`'s sheets, by `tableId:columnId`, named `table.column`. */
 export function cellPlaces(form: FormSpec, values: Values): Record<string, string> {
   const places: Record<string, string> = {}
@@ -57,7 +55,7 @@ export function cellPlaces(form: FormSpec, values: Values): Record<string, strin
     for (const row of values[table.id] ?? []) {
       for (const columnId of Object.keys(row)) {
         const column = table.columns.find((candidate) => candidate.id === columnId)
-        if (column !== undefined) places[placeKey(table.id, columnId)] = `${table.name}.${column.name}`
+        if (column !== undefined) places[columnKey(table.id, columnId)] = `${table.name}.${column.name}`
       }
     }
   }
@@ -70,16 +68,12 @@ export function lostPlaces(values: Values, kept: Values, places: Readonly<Record
   for (const [tableId, rows] of Object.entries(normalisedValues(values))) {
     rows.forEach((row, index) => {
       for (const columnId of Object.keys(row)) {
-        if (kept[tableId]?.[index]?.[columnId] === undefined) lost.add(places[placeKey(tableId, columnId)] ?? `${tableId}.${columnId}`)
+        if (kept[tableId]?.[index]?.[columnId] === undefined) lost.add(places[columnKey(tableId, columnId)] ?? `${tableId}.${columnId}`)
       }
     })
   }
   return [...lost]
 }
-
-/** The basis the sheets read `values` on `form` for: a price for another is out of date. */
-export const basisOf = (form: FormSpec, values: Values): string =>
-  valuesBasis(form.schema, sheetVisibility(form, values).hidden, values)
 
 /** The price a saved revision shows on `form`: its tables, for its values as they are. */
 export function savedPrice(
@@ -103,7 +97,7 @@ export interface ListColumn {
 }
 
 /** The quote_details columns the Quotes page lists after the quote's reference and title. */
-const LISTED = ["insured", "broker", "inception_date"] as const
+const LISTED = ["insured", "broker", "inception_date"] as const satisfies readonly QuoteDetailName[]
 
 /** The listed columns, as the release's sheets label and format them. */
 export function listColumns(form: FormSpec | null): ListColumn[] {
@@ -132,21 +126,6 @@ export function listValue(column: ListColumn, value: unknown): string {
 export const STAGE_LABEL: Record<WorkbenchAppQuote["stage"], string> = { draft: "Draft", priced: "Priced", final: "Final" }
 
 // ── Time ─────────────────────────────────────────────────────────────────
-
-/** How long ago `iso` was, as a list says it: just now, minutes, hours, yesterday, then the date. */
-export function relativeTime(iso: string, now: Date = new Date()): string {
-  const then = new Date(iso)
-  const seconds = Math.round((now.getTime() - then.getTime()) / 1000)
-  if (seconds < 45) return "just now"
-  const minutes = Math.round(seconds / 60)
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.round(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.round(hours / 24)
-  if (days === 1) return "yesterday"
-  if (days < 7) return `${days}d ago`
-  return then.toLocaleDateString(undefined, { day: "numeric", month: "short", year: then.getFullYear() === now.getFullYear() ? undefined : "numeric" })
-}
 
 /** A moment in full, for a title on hover. */
 export const fullTime = (iso: string): string => new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
@@ -358,7 +337,7 @@ export function forgetCreation(key: string): void {
 /** A renewal's values: those carried from its source, with `is_renewal` ticked in its details. */
 export function asRenewal(values: Values): Values {
   const [details = {}] = values[QUOTE_DETAILS_ID] ?? []
-  return { ...values, [QUOTE_DETAILS_ID]: [{ ...details, qd_is_renewal: true }] }
+  return { ...values, [QUOTE_DETAILS_ID]: [{ ...details, [QUOTE_DETAILS.is_renewal]: true }] }
 }
 
 /**

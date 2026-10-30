@@ -202,6 +202,20 @@ def pipeline_directory(fn: Callable[..., Any], node_name: str, pipeline_dir: str
     return (Path(file).resolve().parent / pipeline_dir).resolve()
 
 
+def seeded_workbench_input_ports(
+    *, name: str, config: Mapping[str, Any], fn: Callable[..., Any], pipeline_dir: str
+) -> tuple[str, ...]:
+    """The ports of a Workbench Input ``score()`` seeds with frames: its sidecar read, what it
+    may not hold refused, and given the tables of its project's form as a run gives them, so
+    a seeded one is held to its form as a run's is (specs/workbench)."""
+    from haute._node_apply import workbench_input_ports_from_config
+
+    return workbench_input_ports_from_config(
+        _sidecar(config, NodeType.WORKBENCH_INPUT, name),
+        base_dir=pipeline_directory(fn, name, pipeline_dir),
+    )
+
+
 def _sidecar(config: Mapping[str, Any], node_type: NodeType, node_name: str) -> str:
     path = config.get("config")
     if not isinstance(path, str) or not path:

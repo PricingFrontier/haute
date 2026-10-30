@@ -8,7 +8,8 @@
  * cheap in-app operation: switch is a working-pair checkout the websocket
  * sync lands on the canvas; archive/restore/delete/undelete are pure
  * ref/state flips (delete is trash-preserving server-side, which is what
- * makes undoing it instant and safe).
+ * makes undoing it instant and safe). A switch's legs replace the canvas and the
+ * workbench's form as the switch did, so they ask about unsaved edits first.
  */
 
 import {
@@ -18,6 +19,8 @@ import {
   setWorkingBranch,
   undeleteBranch,
 } from "../api/client"
+import { leaveUnsavedEdits } from "../hooks/useDirtyNavigation"
+import { discardCanvasEdits, discardFormEdits } from "../hooks/useProjectDirty"
 import useGitStore from "../stores/useGitStore"
 import useGraphStore from "../stores/useGraphStore"
 import useToastStore from "../stores/useToastStore"
@@ -46,11 +49,39 @@ async function leg(action: () => Promise<unknown>, doneMessage: string): Promise
   await resyncGit()
 }
 
-export function recordSwitch(from: string, to: string): void {
+/** A leg the analyst cancelled at the unsaved-edits question: nothing ran or failed. */
+class SwitchCancelled extends Error {
+  constructor() {
+    super("The switch was cancelled at the unsaved-edits question.")
+  }
+}
+
+/**
+ * One leg of a switch: unsaved edits are asked about first, `onSave` the project's save
+ * for Save first. Cancel rejects before anything runs or is reported, so the store puts
+ * the entry back; otherwise the checkout runs as a leg, and the edits chosen over it are
+ * dropped once it succeeds (nothing, when Save first left the project clean).
+ */
+async function switchLeg(
+  branch: string,
+  question: string,
+  doneMessage: string,
+  onSave?: () => Promise<boolean>,
+): Promise<void> {
+  if (!(await leaveUnsavedEdits(question, onSave))) throw new SwitchCancelled()
+  await leg(async () => {
+    await setWorkingBranch(branch, false)
+    discardCanvasEdits()
+    await discardFormEdits()
+  }, doneMessage)
+}
+
+/** `onSave` is the project's save, which a leg's Save first runs. */
+export function recordSwitch(from: string, to: string, onSave?: () => Promise<boolean>): void {
   useGraphStore.getState().pushVcEntry({
     label: `switch to ${to}`,
-    undo: () => leg(() => setWorkingBranch(from, false), `Switched back to ${from}`),
-    redo: () => leg(() => setWorkingBranch(to, false), `Switched to ${to}`),
+    undo: () => switchLeg(from, `Switch back to ${from}?`, `Switched back to ${from}`, onSave),
+    redo: () => switchLeg(to, `Switch to ${to}?`, `Switched to ${to}`, onSave),
   })
 }
 

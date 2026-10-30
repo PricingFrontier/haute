@@ -41,6 +41,7 @@ import useOutputWriteStore, {
   resetOutputWriteStoreForTests,
 } from "../../../stores/useOutputWriteStore"
 import type { SimpleNode } from "../_shared"
+import { makeWriteOutput } from "../../../test-utils/factories"
 
 const groups: IoCapabilityGroup[] = [
   {
@@ -227,13 +228,13 @@ beforeEach(() => {
     format: "csv",
     suffix_mismatch: false,
   })
-  vi.mocked(writeOutput).mockReset().mockResolvedValue({
+  vi.mocked(writeOutput).mockReset().mockResolvedValue(makeWriteOutput({
     status: "ok",
     message: "Wrote output.",
     row_count: 2,
     path: "out.csv",
     format: "csv",
-  })
+  }))
 })
 
 afterEach(cleanup)
@@ -409,7 +410,7 @@ describe("DataOutputEditor", () => {
   })
 
   it("keeps a pending write disabled through remount and retries a 409 with overwrite", async () => {
-    let resolveWrite: (value: { status: string; message: string }) => void
+    let resolveWrite: (value: ReturnType<typeof makeWriteOutput>) => void
     vi.mocked(writeOutput).mockReturnValueOnce(new Promise((resolve) => {
       resolveWrite = resolve
     }) as ReturnType<typeof writeOutput>)
@@ -433,8 +434,8 @@ describe("DataOutputEditor", () => {
     })
     expect(await screen.findByRole("button", { name: "Writing..." })).toBeDisabled()
 
-    resolveWrite!({ status: "ok", message: "Wrote output." })
-    await screen.findByText("Wrote output.")
+    resolveWrite!(makeWriteOutput({ status: "ok", message: "Wrote output.", row_count: 3 }))
+    await screen.findByText("Wrote output. | 3 rows")
 
     remounted.unmount()
     renderEditor({
@@ -452,7 +453,7 @@ describe("DataOutputEditor", () => {
     await waitFor(() => expect(changedWrite).toBeEnabled())
     fireEvent.click(changedWrite)
     expect(await screen.findByRole("button", { name: "Replace existing file" })).toBeInTheDocument()
-    vi.mocked(writeOutput).mockResolvedValueOnce({ status: "ok", message: "Replaced." })
+    vi.mocked(writeOutput).mockResolvedValueOnce(makeWriteOutput({ status: "ok", message: "Replaced." }))
     fireEvent.click(screen.getByRole("button", { name: "Replace existing file" }))
     await waitFor(() => expect(writeOutput).toHaveBeenLastCalledWith(expect.objectContaining({ overwrite: true })))
   })
@@ -727,13 +728,13 @@ describe("DataOutputEditor - Databricks", () => {
       format: "databricks",
       suffix_mismatch: false,
     })
-    vi.mocked(writeOutput).mockResolvedValue({
+    vi.mocked(writeOutput).mockResolvedValue(makeWriteOutput({
       status: "ok",
       message: "Wrote 2 rows to workspace.pricing-dev.scored",
       row_count: 2,
       path: "workspace.pricing-dev.scored",
       format: "databricks",
-    })
+    }))
     renderEditor({ ...databricksConfig, write_mode: "append" })
 
     expect(

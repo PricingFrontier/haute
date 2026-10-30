@@ -8,6 +8,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import polars as pl
@@ -470,6 +471,8 @@ class TestPreviewNode:
                 json={"graph": graph, "node_id": "nb_batch"},
             )
 
+        # The flattener refuses the draft before anything runs, and the preview shows
+        # the refusal on the node, where it is read.
         assert response.status_code == 200
         payload = response.json()
         assert payload["status"] == "error"
@@ -1895,7 +1898,11 @@ class TestWebSocketResync:
             asyncio.run(ws_sync(ws))  # type: ignore[arg-type]
 
         assert ws.accepted is True
-        assert [frame["type"] for frame in ws.frames] == ["pipeline_document_update"]
+        # The socket learns its connection id first, then gets its resync's answer.
+        assert [frame["type"] for frame in ws.frames] == [
+            "sync_connection",
+            "pipeline_document_update",
+        ]
 
     def test_keep_alive_text_is_ignored(self) -> None:
         import asyncio
@@ -1987,13 +1994,13 @@ class TestServerPipelineDiscoveryHelpers:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from haute.server import _wire_source_file
+        from haute.routes._helpers import wire_source_file
 
         monkeypatch.chdir(tmp_path)
         main = tmp_path / "main.py"
         main.write_text("import haute\n\npipeline = haute.Pipeline('main')\n")
 
-        assert _wire_source_file(main) == "main.py"
+        assert wire_source_file(main) == "main.py"
 
 
 class TestBroadcast:
@@ -2077,7 +2084,8 @@ class TestEventBusBroadcastBridge:
                     "type": "pipeline_document_update",
                     "document": {"nodes": []},
                     "source_file": "x.py",
-                }
+                },
+                exclude=None,
             )
 
         asyncio.run(_run())
@@ -2105,7 +2113,8 @@ class TestEventBusBroadcastBridge:
                 await asyncio.sleep(0)
 
             fake_broadcast.assert_awaited_once_with(
-                {"type": "parse_error", "error": "gone", "source_file": "x.py"}
+                {"type": "parse_error", "error": "gone", "source_file": "x.py"},
+                exclude=None,
             )
 
         asyncio.run(_run())
@@ -2119,7 +2128,7 @@ class TestEventBusBroadcastBridge:
     def test_logs_failed_broadcast_task(self) -> None:
         from haute.server import _broadcast_event_as_ws_message
 
-        async def _boom(frame: dict[str, object]) -> None:
+        async def _boom(frame: dict[str, object], **_kw: object) -> None:
             raise RuntimeError("ws boom")
 
         async def _run() -> None:
@@ -2158,7 +2167,7 @@ class TestEventBusBroadcastBridge:
 
         async def _run() -> list[dict[str, object]]:
             ws = _FakeWebSocket()
-            ws_clients_add(ws)  # type: ignore[arg-type]
+            ws_clients_add(ws, connection_id="tab", owner=None)  # type: ignore[arg-type]
             try:
                 default_bus.publish(
                     "pipeline.document.update",
@@ -2210,7 +2219,7 @@ class TestEventBusBroadcastBridge:
 
         async def _run() -> list[dict[str, object]]:
             ws = _FakeWebSocket()
-            ws_clients_add(ws)  # type: ignore[arg-type]
+            ws_clients_add(ws, connection_id="tab", owner=None)  # type: ignore[arg-type]
             try:
                 default_bus.publish(
                     "pipeline.document.update",
@@ -2242,29 +2251,6 @@ class TestEventBusBroadcastBridge:
 # ---------------------------------------------------------------------------
 # Self-write tracking
 # ---------------------------------------------------------------------------
-
-
-class TestSelfWriteTracking:
-    def test_mark_and_check(self):
-        from haute.routes._helpers import is_self_write, mark_self_write
-
-        mark_self_write()
-        assert is_self_write() is True
-
-    def test_expires_after_cooldown(self, monkeypatch: pytest.MonkeyPatch):
-        import time as _time
-
-        import haute.routes._helpers as helpers
-
-        # Freeze time, mark, then advance past cooldown
-        fake_time = [100.0]
-        monkeypatch.setattr(_time, "monotonic", lambda: fake_time[0])
-
-        helpers.mark_self_write()
-        assert helpers.is_self_write() is True
-
-        fake_time[0] = 102.5  # 2.5s later, past the 2.0s cooldown
-        assert helpers.is_self_write() is False
 
 
 # ---------------------------------------------------------------------------
@@ -2317,7 +2303,7 @@ class TestFileWatcher:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         # awatch is imported locally inside _file_watcher via
@@ -2361,7 +2347,7 @@ class TestFileWatcher:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -2399,7 +2385,7 @@ class TestFileWatcher:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -2465,7 +2451,7 @@ class TestFileWatcher:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -2501,7 +2487,7 @@ class TestFileWatcher:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -2553,7 +2539,7 @@ class TestFileWatcher:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -2625,7 +2611,7 @@ def unique_node_y():
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -2685,7 +2671,7 @@ def node_x():
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -2731,7 +2717,7 @@ def node_x():
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         def _run_watcher(changes: list[tuple[Change, str]]) -> None:
@@ -2815,7 +2801,7 @@ def node_b():
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         async def _fake_awatch(*dirs, **kw):
@@ -2910,7 +2896,7 @@ def distinctive_node():
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -2971,7 +2957,7 @@ def distinctive_node():
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         loaded_paths: list[Path] = []
@@ -3028,7 +3014,7 @@ def distinctive_node():
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         loaded_paths: list[Path] = []
@@ -3434,46 +3420,52 @@ class TestSinkEmptyGraph:
 # ---------------------------------------------------------------------------
 
 
-class TestClearBytecache:
-    """The startup bytecode clear removes every __pycache__ under a tree.
+class TestStartupLeavesTheInstalledPackageAlone:
+    """A server start removes nothing under the installed package: on a site-packages
+    install that would edit the environment. Python's own source-timestamp check already
+    keeps an edited module from running from stale bytecode."""
 
-    These run on temporary trees: removing the real package's caches would race
-    other test workers walking the source tree.
-    """
+    def test_the_lifespan_removes_nothing_under_the_package(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shutil
 
-    def test_removes_pycache_directories(self, tmp_path: Path):
-        from haute.server import _remove_bytecode_caches
+        import haute.deploy._config as deploy_config
+        import haute.server as server
 
-        pycache = tmp_path / "haute" / "__pycache__"
-        pycache.mkdir(parents=True)
-        (tmp_path / "haute" / "__pycache__" / "foo.cpython-312.pyc").write_bytes(b"\x00")
-        nested = tmp_path / "haute" / "routes" / "__pycache__"
-        nested.mkdir(parents=True)
+        package = Path(server.__file__).resolve().parent
+        removed: list[Path] = []
+        monkeypatch.setattr(shutil, "rmtree", lambda path, *_a, **_k: removed.append(Path(path)))
+        for step in (
+            "configure_logging",
+            "configure_process_high_qos",
+            "configure_execution_telemetry",
+            "recover_json_runtime_storage",
+            "_ensure_pipeline_index",
+            "_follow_pipeline_settings_chunk_rows",
+            "open_dedicated_workers",
+            "start_interactive_worker_pool",
+            "shutdown_dedicated_workers",
+            "shutdown_interactive_worker_pool",
+            "stop_following_chunk_rows",
+        ):
+            monkeypatch.setattr(server, step, lambda *_a, **_k: None)
+        monkeypatch.setattr(deploy_config, "_load_env", lambda _path: None)
+        monkeypatch.setattr(server, "_artifact_stale_seconds", lambda: 86_400)
 
-        _remove_bytecode_caches(tmp_path / "haute")
+        async def idle(*_args: object) -> None:
+            return None
 
-        assert not pycache.exists()
-        assert not nested.exists()
+        monkeypatch.setattr(server, "_watcher_forever", idle)
+        monkeypatch.setattr(server, "_reap_stale_job_artifacts_in_background", idle)
 
-    def test_handles_missing_pycache(self, tmp_path: Path):
-        from haute.server import _remove_bytecode_caches
+        async def start_and_stop() -> None:
+            async with server._lifespan(server.app):
+                pass
 
-        (tmp_path / "haute").mkdir()
-        _remove_bytecode_caches(tmp_path / "haute")  # should not raise
+        asyncio.run(start_and_stop())
 
-    def test_startup_clears_the_package_tree(self, monkeypatch: pytest.MonkeyPatch):
-        import inspect
-
-        import haute.server as _srv
-
-        # The suite stubs the startup clear (conftest); unwrap to the real one.
-        clear_bytecache = inspect.unwrap(_srv._clear_bytecache)
-        roots: list[Path] = []
-        monkeypatch.setattr(_srv, "_remove_bytecode_caches", roots.append)
-
-        clear_bytecache()
-
-        assert roots == [Path(_srv.__file__).resolve().parent]
+        assert [path for path in removed if path.resolve().is_relative_to(package)] == []
 
 
 class TestMiddleware500:
@@ -3590,7 +3582,7 @@ class TestFileWatcherRecoverySidecars:
             )
             yield [(Change.modified, str(sidecar))]
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -3622,7 +3614,7 @@ class TestFileWatcherRecoverySidecars:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from haute.server import _pipelines_owning_recovery_artifact
+        from haute.routes._helpers import pipelines_naming_artifacts
 
         modules = tmp_path / "modules"
         modules.mkdir()
@@ -3645,12 +3637,8 @@ class TestFileWatcherRecoverySidecars:
         )
         monkeypatch.chdir(tmp_path)
 
-        owners = _pipelines_owning_recovery_artifact(
-            child.with_suffix(".haute.json"),
-            {
-                str(owner.resolve()): owner,
-                str(unrelated.resolve()): unrelated,
-            },
+        owners = pipelines_naming_artifacts(
+            [child.with_suffix(".haute.json")], [owner, unrelated], project_root=tmp_path
         )
 
         assert owners == [owner]
@@ -3685,7 +3673,7 @@ class TestFileWatcherJsonConfig:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -3733,7 +3721,7 @@ class TestFileWatcherJsonConfig:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -3788,7 +3776,7 @@ class TestFileWatcherJsonConfig:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -3861,7 +3849,7 @@ class TestFileWatcherJsonConfig:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         try:
@@ -3942,7 +3930,7 @@ class TestFileWatcherJsonConfig:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         try:
@@ -4007,7 +3995,7 @@ class TestFileWatcherModuleChange:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -4056,7 +4044,7 @@ class TestFileWatcherModuleChange:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         loaded_paths: list[Path] = []
@@ -4136,7 +4124,7 @@ class TestFileWatcherModuleChange:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         try:
@@ -4216,7 +4204,7 @@ class TestFileWatcherModuleChange:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         try:
@@ -4271,7 +4259,7 @@ class TestFileWatcherParseError:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -4330,7 +4318,7 @@ class TestFileWatcherParseError:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -4392,7 +4380,7 @@ class TestFileWatcherParseError:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -4452,7 +4440,7 @@ class TestFileWatcherFingerprintDedup:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         # Pre-clear the fingerprint cache
@@ -4575,7 +4563,11 @@ class TestFileWatcherRecovery:
             with (
                 patch("watchfiles.awatch", _single_module_change),
                 patch("haute.server.is_self_write", return_value=False),
-                patch("haute.server.pipelines_importing_module", return_value=[]),
+                # The module a pipeline imports: the edit is that pipeline's dependency.
+                patch(
+                    "haute.server.pipelines_importing_module",
+                    return_value=[pipeline_dir / "test_pipeline.py"],
+                ),
                 patch("haute.server.invalidate_pipeline_index") as invalidate,
                 patch("haute.server._DEBOUNCE_SECONDS", 0),
             ):
@@ -4789,7 +4781,7 @@ class TestFileWatcherRecovery:
 
         broadcast_calls: list[dict] = []
 
-        async def _capture_broadcast(data: dict) -> None:
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
 
         with (
@@ -5231,40 +5223,6 @@ class TestLoadSidecar:
 # ---------------------------------------------------------------------------
 
 
-class TestSelfWriteTiming:
-    def test_is_self_write_false_before_mark(self, monkeypatch: pytest.MonkeyPatch):
-        import time as _time
-
-        import haute.routes._helpers as helpers
-
-        fake_time = [1000.0]
-        monkeypatch.setattr(_time, "monotonic", lambda: fake_time[0])
-        helpers._last_self_write = 0.0
-        assert helpers.is_self_write() is False
-
-    def test_is_self_write_true_within_cooldown(self, monkeypatch: pytest.MonkeyPatch):
-        import time as _time
-
-        import haute.routes._helpers as helpers
-
-        fake_time = [100.0]
-        monkeypatch.setattr(_time, "monotonic", lambda: fake_time[0])
-        helpers.mark_self_write()
-        fake_time[0] = 101.5  # 1.5s < 2.0s cooldown
-        assert helpers.is_self_write() is True
-
-    def test_is_self_write_false_after_cooldown(self, monkeypatch: pytest.MonkeyPatch):
-        import time as _time
-
-        import haute.routes._helpers as helpers
-
-        fake_time = [100.0]
-        monkeypatch.setattr(_time, "monotonic", lambda: fake_time[0])
-        helpers.mark_self_write()
-        fake_time[0] = 103.0  # 3.0s > 2.0s cooldown
-        assert helpers.is_self_write() is False
-
-
 class TestGetSubmodelSidecarPositions:
     """GET /api/submodel/{name} merges sidecar positions."""
 
@@ -5557,3 +5515,445 @@ class TestBroadcastTreeChange:
         assert events == [
             ("parse.error", {"error": server.PIPELINE_NOT_IN_VERSION, "source_file": "gone.py"})
         ]
+
+
+# ---------------------------------------------------------------------------
+# A save never round-trips the watcher (specs/server-api, live sync)
+# ---------------------------------------------------------------------------
+
+
+def _input_node(node_id: str, label: str) -> dict:
+    return {
+        "id": node_id,
+        "type": "pipelineNode",
+        "position": {"x": 0, "y": 0},
+        "data": {
+            "label": label,
+            "nodeType": "dataInput",
+            "config": _file_input_config("data/input.parquet"),
+        },
+    }
+
+
+def _save_two_inputs(client: TestClient, **fields: Any) -> dict:
+    """Create ``two.py`` holding two Data Inputs, each with its config file."""
+    response = client.post(
+        "/api/pipeline/save",
+        json={
+            "name": "two",
+            "graph": {
+                "nodes": [_input_node("a", "rates"), _input_node("b", "claims")],
+                "edges": [],
+            },
+            "source_file": "two.py",
+            "base_revision": None,
+            **fields,
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _project_bytes(root: Path) -> dict[str, bytes]:
+    """Every project file a save can write, by path (data and dot-folders left out)."""
+    return {
+        str(path): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+        and not any(part.startswith(".") for part in path.relative_to(root).parts)
+        and path.relative_to(root).parts[0] != "data"
+    }
+
+
+def _shared_child_graph(child_code: str) -> dict:
+    """``owner.py``'s graph: one submodel, ``modules/child.py``, its child node running
+    *child_code*."""
+    child = {
+        "id": "child_node",
+        "position": {"x": 17.0, "y": 29.0},
+        "data": {"label": "child_node", "nodeType": "polars", "config": {"code": child_code}},
+    }
+    return {
+        "pipeline_name": "owner",
+        "nodes": [
+            {
+                "id": "child_instance",
+                "type": "submodel",
+                "position": {"x": 50.0, "y": 60.0},
+                "data": {
+                    "label": "child",
+                    "nodeType": "submodel",
+                    "config": {"definitionId": "child", "alias": "child"},
+                },
+            }
+        ],
+        "edges": [],
+        "submodels": {
+            "child": {
+                "definitionId": "child",
+                "file": "modules/child.py",
+                "inputPorts": [],
+                "outputPorts": [],
+                "graph": {
+                    "nodes": [child],
+                    "edges": [],
+                    "pipeline_name": "child",
+                    "source_file": "modules/child.py",
+                },
+            }
+        },
+    }
+
+
+def _save_owner(client: TestClient, child_code: str, base_revision: str | None) -> dict:
+    response = client.post(
+        "/api/pipeline/save",
+        json={
+            "name": "owner",
+            "graph": _shared_child_graph(child_code),
+            "source_file": "owner.py",
+            "base_revision": base_revision,
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _write_other_importing_the_child(pipeline_dir: Path) -> None:
+    from haute.routes._helpers import invalidate_pipeline_index
+
+    (pipeline_dir / "other.py").write_text(
+        "import haute\n\nfrom modules import child\n\n"
+        'pipeline = haute.Pipeline("other")\n'
+        'pipeline.submodel(child.submodel, "other_child")\n',
+        encoding="utf-8",
+    )
+    invalidate_pipeline_index()
+
+
+def _frames_of_a_save(
+    client: TestClient, child_code: str, base_revision: str
+) -> tuple[dict, list[dict]]:
+    """A save of ``owner.py``'s answer, and the frames a tab receives for it."""
+    with client.websocket_connect("/ws/sync", headers={"origin": "http://localhost"}) as tab:
+        assert tab.receive_json()["type"] == "sync_connection"
+        saved = _save_owner(client, child_code, base_revision)
+        # A probe sent after the save: its answer follows every frame the save sent.
+        tab.send_json({"type": "resync", "source_file": "missing.py", "document_schema_version": 1})
+        published = []
+        while (frame := tab.receive_json())["type"] != "parse_error":
+            published.append(frame)
+    return saved, published
+
+
+class TestSaveNeverRoundTripsTheWatcher:
+    def test_every_file_a_save_writes_or_retires_publishes_nothing_through_the_watcher(
+        self, client: TestClient, pipeline_dir: Path
+    ):
+        """The changes a real save makes (here one removing a node, so its config file is
+        retired) are replayed into the watcher: none is published."""
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        first = _save_two_inputs(client)
+        before = _project_bytes(pipeline_dir)
+        second = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "two",
+                "graph": {"nodes": [_input_node("a", "rates")], "edges": []},
+                "source_file": "two.py",
+                "base_revision": first["source_revision"],
+            },
+        )
+        assert second.status_code == 200, second.text
+        after = _project_bytes(pipeline_dir)
+        changes = (
+            {(Change.added, path) for path in after.keys() - before.keys()}
+            | {(Change.deleted, path) for path in before.keys() - after.keys()}
+            | {(Change.modified, path) for path in before.keys() & after.keys()}
+        )
+        changes = {(kind, path) for kind, path in changes if before.get(path) != after.get(path)}
+        retired = [path for kind, path in changes if kind == Change.deleted]
+        assert any(path.endswith("claims.json") for path in retired)
+        assert any(path.endswith("two.haute.json") for _kind, path in changes)
+
+        async def _fake_awatch(*dirs, **kw):
+            yield changes
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
+            broadcast_calls.append(data)
+
+        with (
+            patch("watchfiles.awatch", _fake_awatch),
+            patch("haute.server.broadcast", _capture_broadcast),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
+        ):
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run_file_watcher_and_drain())
+            finally:
+                loop.close()
+
+        assert broadcast_calls == []
+
+    def test_the_other_tabs_get_the_saved_document_and_the_saving_tab_gets_no_echo(
+        self, client: TestClient, pipeline_dir: Path
+    ):
+        headers = {"origin": "http://localhost"}
+        with (
+            client.websocket_connect("/ws/sync", headers=headers) as saving_tab,
+            client.websocket_connect("/ws/sync", headers=headers) as other_tab,
+        ):
+            hello = saving_tab.receive_json()
+            assert hello["type"] == "sync_connection"
+            assert other_tab.receive_json()["type"] == "sync_connection"
+
+            saved = _save_two_inputs(client, connection_id=hello["connection_id"])
+
+            update = other_tab.receive_json()
+            assert update["type"] == "pipeline_document_update"
+            assert update["source_file"] == "two.py"
+            assert update["document_fingerprint"] == saved["document_fingerprint"]
+            assert "exclude_connection" not in update
+            # The saving tab's next frame answers a probe sent after the save, so no
+            # document update reached it before.
+            saving_tab.send_json(
+                {"type": "resync", "source_file": "missing.py", "document_schema_version": 1}
+            )
+            assert saving_tab.receive_json()["type"] == "parse_error"
+
+    def test_a_save_also_publishes_the_other_documents_reading_a_submodel_it_wrote(
+        self, client: TestClient, pipeline_dir: Path
+    ):
+        """A save's writes never reach the watcher, so another open pipeline importing the
+        submodel the save rewrote is published by the save itself."""
+        first = _save_owner(client, "return df", None)
+        _write_other_importing_the_child(pipeline_dir)
+
+        _saved, published = _frames_of_a_save(client, "return df.head(1)", first["source_revision"])
+
+        assert [frame["type"] for frame in published] == ["pipeline_document_update"] * 2
+        assert [frame["source_file"] for frame in published] == ["owner.py", "other.py"]
+
+    def test_a_document_the_save_cannot_load_is_left_out_and_the_save_stands(
+        self, client: TestClient, pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import haute.routes._helpers as helpers
+
+        first = _save_owner(client, "return df", None)
+        _write_other_importing_the_child(pipeline_dir)
+        load = helpers.load_pipeline_editor_document
+
+        def locked(path: Path, *args: Any, **kwargs: Any) -> Any:
+            if Path(path).name == "other.py":
+                raise PermissionError("other.py is locked by another program")
+            return load(path, *args, **kwargs)
+
+        monkeypatch.setattr(helpers, "load_pipeline_editor_document", locked)
+
+        _saved, published = _frames_of_a_save(client, "return df.head(1)", first["source_revision"])
+
+        assert [frame["source_file"] for frame in published] == ["owner.py"]
+
+    def test_a_discovery_that_fails_after_the_save_leaves_the_save_standing(
+        self, client: TestClient, pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Finding the other documents reads every candidate pipeline file, one of which
+        may be unreadable: the save has committed by then, and answers as it did."""
+        import haute.routes._helpers as helpers
+        from haute.errors import ConfigError
+
+        first = _save_owner(client, "return df", None)
+        _write_other_importing_the_child(pipeline_dir)
+
+        def unreadable() -> list[Path]:
+            raise ConfigError("Could not read candidate pipeline file", path="locked.py")
+
+        monkeypatch.setattr(helpers, "discover_pipelines", unreadable)
+
+        saved, published = _frames_of_a_save(client, "return df.head(1)", first["source_revision"])
+
+        assert saved["status"] == "saved"
+        assert saved["source_revision"] not in {None, first["source_revision"]}
+        assert [frame["source_file"] for frame in published] == ["owner.py"]
+
+    def test_a_connection_of_another_owner_is_never_left_out(self) -> None:
+        from haute.routes import _helpers
+
+        class _Socket:
+            """A stand-in socket: the registry only keys on it."""
+
+        mine, theirs = _Socket(), _Socket()
+        with _helpers.ws_clients_lock:
+            saved_clients = set(_helpers.ws_clients)
+            _helpers.ws_clients.clear()
+        try:
+            _helpers.ws_clients_add(mine, connection_id="tab-1", owner="ana@example.com")  # type: ignore[arg-type]
+            _helpers.ws_clients_add(theirs, connection_id="tab-2", owner="ben@example.com")  # type: ignore[arg-type]
+
+            same_owner = _helpers.ws_clients_snapshot(
+                {"connection_id": "tab-1", "owner": "ana@example.com"}
+            )
+            other_owner = _helpers.ws_clients_snapshot(
+                {"connection_id": "tab-1", "owner": "ben@example.com"}
+            )
+        finally:
+            _helpers.ws_clients_discard(mine)  # type: ignore[arg-type]
+            _helpers.ws_clients_discard(theirs)  # type: ignore[arg-type]
+            with _helpers.ws_clients_lock:
+                _helpers.ws_clients.update(saved_clients)
+
+        assert same_owner == [theirs]
+        assert sorted(map(id, other_owner)) == sorted(map(id, [mine, theirs]))
+
+    def test_an_active_source_that_is_not_a_source_is_refused_before_anything_is_written(
+        self, client: TestClient, pipeline_dir: Path
+    ):
+        before = _project_bytes(pipeline_dir)
+
+        response = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "two",
+                "graph": {"nodes": [_input_node("a", "rates")], "edges": []},
+                "source_file": "two.py",
+                "sources": ["live"],
+                "active_source": "test_batch",
+                "base_revision": None,
+            },
+        )
+
+        assert response.status_code == 422
+        assert "active_source 'test_batch' is not one of the pipeline's sources" in response.text
+        assert _project_bytes(pipeline_dir) == before
+
+
+# ---------------------------------------------------------------------------
+# Module watching follows the configured pipeline directory
+# ---------------------------------------------------------------------------
+
+_RATES_MODULE = """\
+import haute
+import polars as pl
+
+submodel = haute.Submodel(
+    "rates",
+    definition_id="rates",
+    input_ports=[],
+    output_ports=[],
+    pipeline_dir="..",
+)
+
+
+@submodel.polars
+def premium() -> pl.LazyFrame:
+    return pl.LazyFrame({{"premium": [{premium}]}})
+"""
+
+_IMPORTING_PIPELINE = (
+    "import haute\n\nfrom modules import rates\n\n"
+    'pipeline = haute.Pipeline("main")\n'
+    'pipeline.submodel(rates.submodel, "rates_1")\n'
+)
+
+
+def _module_project(root: Path, folder: str) -> tuple[Path, Path]:
+    """A project whose configured pipeline sits in *folder* (``""`` for the root) and
+    imports ``modules/rates.py`` beside it; the importer and the module's paths."""
+    base = root / folder if folder else root
+    (base / "modules").mkdir(parents=True)
+    pipeline = base / "main.py"
+    pipeline.write_text(_IMPORTING_PIPELINE, encoding="utf-8")
+    module = base / "modules" / "rates.py"
+    module.write_text(_RATES_MODULE.format(premium=100), encoding="utf-8")
+    configured = f"{folder}/main.py" if folder else "main.py"
+    (root / "haute.toml").write_text(f'[project]\npipeline = "{configured}"\n', encoding="utf-8")
+    return pipeline, module
+
+
+def _watch(changes: set[tuple[Change, str]]) -> list[dict]:
+    """The frames one watcher batch of *changes* broadcasts, discovery and parsing real."""
+    from haute.routes._helpers import invalidate_pipeline_index
+    from haute.server import _last_broadcast_fp
+
+    invalidate_pipeline_index()
+    _last_broadcast_fp.clear()
+
+    async def _fake_awatch(*dirs, **kw):
+        yield changes
+
+    frames: list[dict] = []
+
+    async def _capture_broadcast(data: dict, **_kw: object) -> None:
+        frames.append(data)
+
+    with (
+        patch("watchfiles.awatch", _fake_awatch),
+        patch("haute.server.broadcast", _capture_broadcast),
+        patch("haute.server._DEBOUNCE_SECONDS", 0),
+    ):
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(_run_file_watcher_and_drain())
+        finally:
+            loop.close()
+    return frames
+
+
+class TestModuleWatchingFollowsTheConfiguredPipeline:
+    @pytest.mark.parametrize("folder", ["rating", ""], ids=["nested", "root-level"])
+    def test_an_imported_module_edit_refreshes_its_importer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, folder: str
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        pipeline, _ = _module_project(tmp_path, folder)
+        module = tmp_path / folder / "modules" / "rates.py"
+        module.write_text(_RATES_MODULE.format(premium=150), encoding="utf-8")
+
+        frames = _watch({(Change.modified, str(module))})
+
+        assert [frame["type"] for frame in frames] == ["pipeline_document_update"]
+        assert frames[0]["source_file"] == pipeline.relative_to(tmp_path).as_posix()
+        document = json.dumps(frames[0]["document"])
+        assert "[150]" in document and "[100]" not in document
+
+    @pytest.mark.parametrize("change", [Change.added, Change.deleted], ids=["added", "deleted"])
+    def test_an_added_or_deleted_imported_module_refreshes_its_importer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: Change
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        pipeline, module = _module_project(tmp_path, "rating")
+        if change == Change.deleted:
+            module.unlink()
+
+        frames = _watch({(change, str(module))})
+
+        assert [frame["source_file"] for frame in frames] == ["rating/main.py"]
+
+    def test_an_unrelated_python_file_beside_the_pipeline_is_not_broadcast(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        _module_project(tmp_path, "rating")
+        scratch = tmp_path / "rating" / "modules" / "scratch.py"
+        scratch.write_text("x = 1\n", encoding="utf-8")
+
+        assert _watch({(Change.modified, str(scratch))}) == []
+
+    def test_the_server_s_own_write_of_an_imported_module_is_not_broadcast(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute.routes._helpers import mark_self_write
+
+        monkeypatch.chdir(tmp_path)
+        _module_project(tmp_path, "rating")
+        module = tmp_path / "rating" / "modules" / "rates.py"
+        content = _RATES_MODULE.format(premium=175).encode("utf-8")
+        mark_self_write(module, content=content)
+        module.write_bytes(content)
+
+        assert _watch({(Change.modified, str(module))}) == []

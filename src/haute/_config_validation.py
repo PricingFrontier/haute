@@ -113,6 +113,13 @@ _REMOVED_FEATURE_SELECTION_KEYS: dict[NodeType, frozenset[str]] = {
 _REMOVED_COLUMN_MAPPING_KEYS: dict[NodeType, frozenset[str]] = {
     NodeType.WORKBENCH_OUTPUT: frozenset({"mapping"}),
 }
+#: The keys a workbench node is given from the project's form wherever the pipeline runs
+#: (``haute._workbench_nodes``), so a config file or a saved config never holds them: an
+#: earlier Haute kept copies there (specs/workbench).
+FORM_GIVEN_KEYS: dict[NodeType, frozenset[str]] = {
+    NodeType.WORKBENCH_INPUT: frozenset({"tables", "sample"}),
+    NodeType.WORKBENCH_OUTPUT: frozenset({"tables"}),
+}
 
 
 def removed_node_instance_error(form: str) -> ParseError:
@@ -183,6 +190,31 @@ def reject_removed_config_keys(
             "columns as the workbench does upstream and remove mapping.",
             removed_config_keys=removed_mapping,
         )
+
+
+def reject_form_given_keys(node_type: NodeType | str, config: Mapping[str, Any]) -> None:
+    """Refuse a config file's or a saved config's ``tables`` or ``sample`` on a workbench
+    node, which it is given from the form folder wherever it runs (:data:`FORM_GIVEN_KEYS`).
+
+    Only where a config is persisted or read back: the config a run builds a node from
+    holds them, given.
+    """
+    nt = NodeType(node_type) if not isinstance(node_type, NodeType) else node_type
+    given = FORM_GIVEN_KEYS.get(nt, frozenset())
+    held = [key for key in ("tables", "sample") if key in given and key in config]
+    if not held:
+        return
+    if nt is NodeType.WORKBENCH_INPUT:
+        reads = "A Workbench Input reads its tables and sample from the form folder"
+    else:
+        reads = "A Workbench Output reads its tables from the form folder"
+    fields = " and ".join(held)
+    raise ConfigError(
+        f"{nt.value} config contains the removed {fields} "
+        f"field{'s' if len(held) > 1 else ''}. {reads}: delete "
+        f"{'them' if len(held) > 1 else 'it'}.",
+        removed_config_keys=held,
+    )
 
 
 @overload

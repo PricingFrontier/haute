@@ -372,6 +372,7 @@ class FrontendBuildHook(BuildHookInterface):
             if not path.is_file():
                 raise RuntimeError(f"Frontend production input is missing or not a file: {path}")
             candidate = path.resolve()
+            # not contained_path: the build runs before haute can be imported
             if not candidate.is_relative_to(root):
                 raise RuntimeError(f"Frontend production input escapes the project root: {path}")
             resolved.add(candidate)
@@ -399,6 +400,7 @@ class FrontendBuildHook(BuildHookInterface):
             config = pending.pop().resolve()
             if config in discovered:
                 continue
+            # not contained_path: the build runs before haute can be imported
             if not config.is_relative_to(frontend_dir):
                 raise RuntimeError(f"Referenced TypeScript config escapes frontend/: {config}")
             if not config.is_file():
@@ -575,6 +577,7 @@ class FrontendBuildHook(BuildHookInterface):
             )
         root = static_dir.resolve()
         candidate = (root / normalised).resolve()
+        # not contained_path: the build runs before haute can be imported
         if not candidate.is_relative_to(root):
             raise RuntimeError(
                 cls._readiness_message(

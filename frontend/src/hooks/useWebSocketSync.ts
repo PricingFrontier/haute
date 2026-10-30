@@ -6,6 +6,7 @@ import {
   normalizeEdges,
   type RejectedIncomingEdge,
 } from "../utils/graphHelpers"
+import { releaseSyncConnectionId, setSyncConnectionId } from "../api/syncConnection"
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
@@ -74,6 +75,16 @@ function formatRejectedEdgeWarning(rejectedEdges: RejectedIncomingEdge[]): strin
   const omittedSummary = omitted > 0 ? `; ${omitted} more omitted` : ""
   const edgeLabel = rejectedEdges.length === 1 ? "edge" : "edges"
   return `Retained ${rejectedEdges.length} unresolved synced ${edgeLabel} to prevent data loss. ${details}${omittedSummary}. Saving may fail until they are repaired.`
+}
+
+/**
+ * The workbench's form folder may have changed on disk (specs/workbench): the form store,
+ * once loaded, reads it again, and its tables, the workbench nodes' ports, are fetched
+ * again while the workbench is enabled.
+ */
+function formMayHaveChanged(): void {
+  useWorkbenchStore.setState((state) => ({ formChanges: state.formChanges + 1 }))
+  useWorkbenchStore.getState().refreshTables()
 }
 
 function normalizeSourceFile(value: unknown): string | null {
@@ -227,6 +238,8 @@ export default function useWebSocketSync({
     let ws: WebSocket | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let mounted = true
+    // The connection id the server gave this effect's latest socket.
+    let ownConnectionId: string | null = null
     let graphUpdateSeq = 0
     let activeSelectionGuardIncrements = 0
     const delayedTimers = new Set<ReturnType<typeof setTimeout>>()
@@ -326,6 +339,8 @@ export default function useWebSocketSync({
     function connect() {
       if (!mounted) return
       let opened = false
+      // The id the server gives this socket; it gives up only this one when it closes.
+      let socketConnectionId: string | null = null
       try {
         ws = new WebSocket(wsUrl)
       } catch (err) {
@@ -340,8 +355,8 @@ export default function useWebSocketSync({
         opened = true
         retriesRef.current = 0
         setStatus("connected")
-        // The form's file may have changed while no frame could say so: read it again.
-        useWorkbenchStore.setState((state) => ({ formChanges: state.formChanges + 1 }))
+        // The form's folder may have changed while no frame could say so.
+        formMayHaveChanged()
         sendResync(true)
       }
 
@@ -489,9 +504,17 @@ export default function useWebSocketSync({
           return
         }
 
+        if (msg.type === "sync_connection") {
+          // This socket's id, which the canvas's saves send so the server leaves this
+          // tab out of its broadcast of the saved document.
+          socketConnectionId = typeof msg.connection_id === "string" ? msg.connection_id : null
+          ownConnectionId = socketConnectionId
+          setSyncConnectionId(socketConnectionId)
+          return
+        }
+
         if (msg.type === "workbench_form_changed") {
-          // The form store, once loaded, reads the file again.
-          useWorkbenchStore.setState((state) => ({ formChanges: state.formChanges + 1 }))
+          formMayHaveChanged()
           return
         }
 
@@ -511,6 +534,7 @@ export default function useWebSocketSync({
       }
 
       ws.onclose = (event) => {
+        if (socketConnectionId !== null) releaseSyncConnectionId(socketConnectionId)
         if (!mounted) return
         // The socket is gone whatever follows, so say so now rather than
         // after a session probe below settles — its request can be slow to fail.
@@ -545,6 +569,7 @@ export default function useWebSocketSync({
 
     return () => {
       mounted = false
+      if (ownConnectionId !== null) releaseSyncConnectionId(ownConnectionId)
       stopResyncRequests()
       if (reconnectTimer) clearTimeout(reconnectTimer)
       for (const timer of delayedTimers) {

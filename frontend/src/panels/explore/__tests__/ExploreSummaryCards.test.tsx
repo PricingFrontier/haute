@@ -8,12 +8,13 @@ import {
   DatasetSnapshotCard,
   NumericSummaryCard,
 } from "../ExploreSummaryCards"
+import { makeExploreColumnStat } from "../../../test-utils/factories"
 
 const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard")
 const originalSecureContext = Object.getOwnPropertyDescriptor(globalThis, "isSecureContext")
 
 function makeColumn(overrides: Partial<ExploreColumnStat> = {}): ExploreColumnStat {
-  return {
+  return makeExploreColumnStat({
     name: "premium",
     dtype: "Float64",
     kind: "Numeric",
@@ -27,7 +28,7 @@ function makeColumn(overrides: Partial<ExploreColumnStat> = {}): ExploreColumnSt
     text_max_length: null,
     temporal_span: null,
     ...overrides,
-  }
+  })
 }
 
 const okHistogram: NonNullable<ExploreColumnStat["histogram"]> = {
@@ -135,7 +136,7 @@ describe("Explore summary cards", () => {
     expect(card).toHaveTextContent("1,234")
     expect(card).toHaveTextContent("pricing")
     expect(card).toHaveTextContent("prep_1")
-    expect(card).toHaveTextContent("5 min ago")
+    expect(card).toHaveTextContent("5m ago")
     expect(card).not.toHaveTextContent("Columns")
   })
 

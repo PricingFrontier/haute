@@ -3,6 +3,7 @@
   "file": "pricing.py",
   "pipeline_name": "pricing",
   "source_revision": "revision-save-1",
+  "document_fingerprint": "4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f",
   "warnings": [
     "renamed duplicate node"
   ],

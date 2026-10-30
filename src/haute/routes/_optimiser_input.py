@@ -16,8 +16,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from fastapi import HTTPException
-
 from haute._config_validation import RESERVED_ANALYSIS_COLUMN_PREFIX
 from haute._execution_admission import (
     ExecutionAdmissionError,
@@ -46,7 +44,12 @@ from haute._types import (
     GraphNode,
     PipelineGraph,
 )
-from haute.errors import BoundedMemoryUnsupportedError
+from haute.errors import (
+    BoundedMemoryUnsupportedError,
+    InvalidRequestError,
+    RequestRefusedError,
+    UnprocessableError,
+)
 from haute.execution import (
     ratebook_factor_required_columns,
 )
@@ -54,10 +57,10 @@ from haute.graph_utils import NodeType
 from haute.routes import _optimiser_artifacts
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
-    contract_error_http_exception,
     contract_error_job_fields,
+    contract_error_refusal,
     contract_error_terminal_reason,
-    memory_limit_http_exception,
+    memory_limit_refusal,
 )
 from haute.routes._helpers import find_typed_node
 from haute.routes._job_store import TerminalReason
@@ -536,25 +539,18 @@ def _resolve_optimiser_input_edge(
         try:
             return incoming_edge_for_name(graph, node_id, configured_name)
         except ValueError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Configured optimiser {field} {configured_name!r} is invalid: {exc}",
+            raise InvalidRequestError(
+                f"Configured optimiser {field} {configured_name!r} is invalid: {exc}"
             ) from exc
     if configured_name not in (None, ""):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Configured optimiser {field} must be an exact input name.",
-        )
+        raise InvalidRequestError(f"Configured optimiser {field} must be an exact input name.")
     bindings = incoming_edge_bindings(graph, node_id)
     if infer_single and len(bindings) == 1:
         return bindings[0][0]
     if infer_single and len(bindings) > 1:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Optimiser {field} must name one exact connected input when the node "
-                f"has multiple inputs: {[name for _edge, name in bindings]!r}."
-            ),
+        raise InvalidRequestError(
+            f"Optimiser {field} must name one exact connected input when the node "
+            f"has multiple inputs: {[name for _edge, name in bindings]!r}."
         )
     return None
 
@@ -634,8 +630,10 @@ class OptimiserSetupError(Exception):
             else {"http_status_code": status_code, "error_detail": detail}
         )
 
-    def http_exception(self) -> HTTPException:
-        return HTTPException(status_code=self.status_code, detail=self.detail)
+    def refusal(self) -> RequestRefusedError:
+        """The refusal a synchronous caller answers with: this failure's status and detail."""
+        detail = self.detail if isinstance(self.detail, (str, Mapping)) else str(self.detail)
+        return RequestRefusedError(detail, status_code=self.status_code)
 
 
 def _execution_stage(
@@ -1069,24 +1067,24 @@ def extract_ratebook_factors(
 def grid_construction_failures(node_id: str) -> Iterator[None]:
     """Translate a failure while writing the solver input or building its grid.
 
-    Refusals already typed (``OptimiserSetupError``, ``HTTPException``) and
+    Refusals already typed (``OptimiserSetupError``, ``RequestRefusedError``) and
     execution admission, cancellation and memory errors pass through.
     """
     try:
         yield
     except (
         OptimiserSetupError,
-        HTTPException,
+        RequestRefusedError,
         ExecutionAdmissionError,
         ExecutionCancelledError,
         ExecutionMemoryLimitExceededError,
     ):
         raise
     except PUBLIC_CONTRACT_ERROR_TYPES as exc:
-        http_exc = contract_error_http_exception(exc)
+        refusal = contract_error_refusal(exc)
         raise OptimiserSetupError(
-            http_exc.status_code,
-            http_exc.detail,
+            refusal.status_code,
+            refusal.detail,
             reason=contract_error_terminal_reason(exc),
             message=str(exc),
             fields=contract_error_job_fields(exc),
@@ -1269,19 +1267,15 @@ def _estimate_quote_id_column_or_raise(source_lf: Any, config: dict[str, Any]) -
     missing_cols = sorted(required_cols - available_cols)
     if missing_cols:
         avail = sorted(available_cols)
-        raise HTTPException(
-            status_code=400,
-            detail=f"Missing columns in scored data: {missing_cols}. Available: {avail}",
+        raise InvalidRequestError(
+            f"Missing columns in scored data: {missing_cols}. Available: {avail}"
         )
 
     qid_dtype = schema[qid_col]
     if not (is_string_or_categorical(qid_dtype) or isinstance(qid_dtype, pl.Enum)):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"{qid_col} must be Utf8 (String), Categorical, or Enum, got {qid_dtype}. "
-                "Numeric, binary, and other dtypes are not supported as quote_id columns."
-            ),
+        raise InvalidRequestError(
+            f"{qid_col} must be Utf8 (String), Categorical, or Enum, got {qid_dtype}. "
+            "Numeric, binary, and other dtypes are not supported as quote_id columns."
         )
     return qid_col
 
@@ -1321,13 +1315,10 @@ def estimate_input_metrics(source_lf: Any, config: dict[str, Any]) -> dict[str, 
     if null_quote_id_rows > 0:
         # Same contract (status + message) as the solve path's standalone
         # null check in ``validate_and_project``.
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"{_NULL_QUOTE_ID_DETAIL_PREFIX} ({null_quote_id_rows} rows). "
-                "Every row must have a non-null quote_id; "
-                "check upstream filters and joins."
-            ),
+        raise InvalidRequestError(
+            f"{_NULL_QUOTE_ID_DETAIL_PREFIX} ({null_quote_id_rows} rows). "
+            "Every row must have a non-null quote_id; "
+            "check upstream filters and joins."
         )
     return {
         "quote_count": row["quote_count"],
@@ -1348,22 +1339,19 @@ ESTIMATE_MAPPED_ERRORS: tuple[type[BaseException], ...] = (
 )
 
 
-def estimate_failure_http_exception(exc: BaseException, *, node_id: str) -> HTTPException:
+def estimate_failure_http_exception(exc: BaseException, *, node_id: str) -> RequestRefusedError:
     """The typed answer to one of ``ESTIMATE_MAPPED_ERRORS``."""
     if isinstance(exc, OptimiserSetupError):
-        return exc.http_exception()
+        return exc.refusal()
     if isinstance(exc, ExecutionAdmissionError | ExecutionMemoryLimitExceededError):
-        return memory_limit_http_exception(exc, operation_noun="Optimiser estimate")
+        return memory_limit_refusal(exc, operation_noun="Optimiser estimate")
     if isinstance(exc, BoundedMemoryUnsupportedError):
         logger.warning(
             "optimiser_estimate_bounded_streaming_unsupported",
             error=str(exc),
             node_id=node_id,
         )
-        return HTTPException(
-            status_code=422,
-            detail=f"Optimiser estimate cannot run in bounded streaming mode: {exc}",
-        )
+        return UnprocessableError(f"Optimiser estimate cannot run in bounded streaming mode: {exc}")
     if isinstance(exc, PUBLIC_CONTRACT_ERROR_TYPES):
-        return contract_error_http_exception(exc)
+        return contract_error_refusal(exc)
     raise TypeError(f"{type(exc).__name__} has no typed estimate answer") from exc

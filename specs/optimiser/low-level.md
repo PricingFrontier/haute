@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/routes/optimiser.py` | FastAPI router (`/api/optimiser/*`). Owns request/response assembly, frontier-point selection, artifact-payload building/validation for save and MLflow log, and the module-level `_store`/`_solve_service` singletons. |
-| `src/haute/routes/_optimiser_service.py` | `OptimiserSolveService`: job admission, pipeline execution, setup orchestration over the steps in `_optimiser_input.py`, solver launch over `_optimiser_solver.py`, and background frontier-auto-range estimation. Each setup step is one orchestration method over a free step in `_optimiser_input.py`: `_recorded_setup_failures` records an `OptimiserSetupError` on the job as its terminal state and answers the matching `HTTPException`; chunk provenance is recorded by `_record_setup_chunking`; a ratebook factor-extraction refusal is recorded by the setup failure mapping instead. It owns no filesystem deletion. |
+| `src/haute/routes/_optimiser_service.py` | `OptimiserSolveService`: job admission, pipeline execution, setup orchestration over the steps in `_optimiser_input.py`, solver launch over `_optimiser_solver.py`, and background frontier-auto-range estimation. Each setup step is one orchestration method over a free step in `_optimiser_input.py`: `_recorded_setup_failures` records an `OptimiserSetupError` on the job as its terminal state and refuses with the matching `RequestRefusedError` (`OptimiserSetupError.refusal`); chunk provenance is recorded by `_record_setup_chunking`; a ratebook factor-extraction refusal is recorded by the setup failure mapping instead. It owns no filesystem deletion. |
 | `src/haute/routes/_optimiser_solver.py` | The solver layer: the worker-context guard (`solver_worker_context`, `require_solver_worker_context`), the heavy entry points (`_solve_online`, `_solve_ratebook`, `_compute_frontier`) with `SolveContext`, result finalisation (`_finalize_solve_result`, the inline frontier, scenario-value statistics), and ratebook factor-table canonicalisation, ordering and serialisation. |
 | `src/haute/routes/_optimiser_frontier.py` | The frontier domain: `OptimiserFrontierService` (sweep admission, `start_sweep`/`sweep_status`/`cancel_sweep`, background `_run_sweep` publication, `select_point`, `materialise_ratebook_point`, the point apply (`request_point_apply`, `select_applied_point`; online through price-contour's point apply, ratebook through its canonical evaluation) behind one per-job `LatestWinsQueue`, `solve_result_for_selected_point`, and a `parent_lock` per parent solve) and the pure frontier range, point and artifact-handle helpers. |
 | `src/haute/routes/_optimiser_input.py` | Solve-input planning with no job or result knowledge: the column demand setup plans at each node (`_optimiser_solve_required_columns_by_node`), the retained side inputs and execution target, exact data-input edge resolution (`_resolve_optimiser_input_edge`, `_resolve_optimiser_data_input_id`), the analysis-column plan (`resolve_analysis_plan`, `AnalysisPlan`), the value-contract expressions and their failure details, solver-input chunk sizing (`pipeline_chunk_decision`: the pipeline's streaming chunk size), resident-grid admission (`_admit_resident_grid`), the projected-parquet borrow check, and `_find_optimiser_node`. It also holds the setup steps themselves as free functions that never touch the job store: `resolve_data_input_frame`, `validate_and_project`, `validate_and_project_auto_range`, `validate_input_value_contracts`, `extract_ratebook_factors`, `resolve_analysis_frame`, `write_solver_input` and `build_quote_grid`, plus `grid_construction_failures`, which types a solver-input write or grid-build failure. A refusal is an `OptimiserSetupError` carrying the HTTP status and detail, the terminal reason, the message and the job fields: the HTTP status and detail, or `contract_error_job_fields` for a public contract error. The input estimate's pre-flight and single scan (`estimate_input_metrics`) and its typed answers (`ESTIMATE_MAPPED_ERRORS`, `estimate_failure_http_exception`) live here too, shared by the in-process count and the pool worker. |
@@ -48,7 +48,13 @@ in `optimiser.py`). Instance state:
   coordinator that rejects (409) overlap between solve setup and background auto-range setup.
   Worker runners hold its registration through a scoped `finally` release together with `_jobs`,
   so normal, exceptional, cancelled, and thread-start-failure paths cannot release only half of
-  the coordination state.
+  the coordination state. That release comes after the job's terminal transition, because the
+  runner still records its execution metrics and returns its admission. Before its conflict
+  check, each start therefore calls `_wait_out_finished_setup_owner`: an owner whose job has
+  already ended is given up to `_FINISHED_OWNER_EXIT_SECONDS` (5 s) to free the key through
+  `SingleFlightCoordinator.wait_released`. A caller that saw `completed` and starts the next
+  job at once is then not refused by a job that is over. A running owner is not waited for, and
+  an owner still holding the key when the wait ends gets the 409 as before.
 
 ### `SolveContext` (`src/haute/routes/_optimiser_solver.py`, frozen dataclass)
 
@@ -272,7 +278,8 @@ in `src/haute/routes/_optimiser_service.py`, which:
 2. Computes the ratebook factor-level display order up front
    (`_compute_ratebook_factor_level_order`; `{}` for online) and the required-column projection
    seed (`_optimiser_solve_required_columns_by_node`).
-3. Under `_start_lock`: rejects (409) if another blocking solve is already `running`
+3. After waiting out a finished graph/node owner (`_wait_out_finished_setup_owner`), under
+   `_start_lock`: rejects (409) if another blocking solve is already `running`
    (`_check_no_concurrent_jobs`) or if this exact graph+node already has an active setup/solve/
    auto-range job (`_active_graph_node_setup`); otherwise creates the job (`status: "running"`),
    registers a fresh `ExecutionCancellationToken` once in `_jobs` and acquires the graph/node
@@ -389,7 +396,7 @@ unset), because a capture made under the solve's demand already carries what the
 Auto-range uses that same `_execute_pipeline` boundary and request context; there is no second
 planning policy.
 
-Every failure mode in this thread (cancellation, `HTTPException`, memory-admission error,
+Every failure mode in this thread (cancellation, a `RequestRefusedError`, memory-admission error,
 bounded-streaming-unsupported error, or a bare exception) is mapped to a terminal job-store
 transition rather than propagated — nothing in the setup thread's failure path is visible to a
 caller except through the status-polling endpoint.
@@ -521,7 +528,8 @@ which validates config/mode (a 400 before any job exists), resolves `timeout`
 column demand once (`_optimiser_solve_required_columns_by_node`); the job and its worker take
 these as arguments and never recompute them.
 
-- `start_frontier_auto_range` — **background**: under `_start_lock`, idempotently
+- `start_frontier_auto_range` — **background**: after waiting out a finished graph/node owner
+  as `start()` does, under `_start_lock`, idempotently
   returns the existing job id if an auto-range job with the same graph fingerprint and node id is
   already running (unlike
   `start()`'s stricter conflict behaviour), otherwise creates a cancellable job, registers it,
@@ -668,7 +676,7 @@ a background sweep phase, mirroring the solve submission pattern:
    between the check and parent mutation. On success the frontier job itself transitions to `completed`
    with the frontier payload as its own `result` field (a full `OptimiserFrontierResponse`, so a
    status poll and the (historical) inline response shape carry the same fields). Every failure
-   path — an `HTTPException` raised inside the sweep (classified `contract_error` for 400/409/422,
+   path — a `RequestRefusedError` raised inside the sweep (classified `contract_error` for 400/409/422,
    `error` otherwise) or a bare `Exception` — transitions the frontier job to a terminal status via
    the service's own `JobLifecycle` rather
    than propagating; nothing about a post-validation frontier failure is visible to the caller
@@ -1274,8 +1282,9 @@ whose message already names every problem and the remedy.
 
 ## Error handling
 
-- **Synchronous request-thread paths** (`optimiser.py` route handlers) raise
-  `fastapi.HTTPException` directly for validation and
+- **Synchronous request-thread paths** (`optimiser.py` route handlers and the services they
+  call) refuse with a `RequestRefusedError`, which the application handler answers, for
+  validation and
   contract failures: 400 (bad config, missing/wrong-dtype columns, null quote ids, non-finite
   values, a null value in an objective/constraint/scenario column, disconnected `data_input`,
   missing ratebook banding source, malformed frontier-point data, incomplete job summaries), 404
@@ -1288,7 +1297,7 @@ whose message already names every problem and the remedy.
   worker thread failing to even start; a generic/unclassified pipeline or grid failure; an
   invalid server-owned artifact handle; a corrupt persisted artifact), 507
   (`ExecutionAdmissionError`/`ExecutionMemoryLimitExceededError`
-  mapped by the shared `memory_limit_http_exception(exc, operation_noun="Auto-range")`,
+  mapped by the shared `memory_limit_refusal(exc, operation_noun="Auto-range")`,
   whose payload `message` is the
   shared curated wording from `routes/_memory_messages.memory_limit_user_message`
   — the same shape training and the input-snapshot build use — and the
@@ -1303,10 +1312,10 @@ whose message already names every problem and the remedy.
 - **Background-thread paths** (the setup thread, the solver thread, the auto-range worker, and — since the frontier sweep offload — the frontier sweep worker) never let
   an exception propagate out of the thread; every failure branch is caught and converted into a
   `JobLifecycle.transition(...)` call recording a terminal status, a human message, and (for
-  `HTTPException`s specifically) the original status code and detail string in the job for later
+  refusals specifically) the original status code and detail string in the job for later
   inspection. `OptimiserFrontierService._run_sweep` follows the same pattern via the service's
-  own `JobLifecycle`: an `HTTPException` with status 400/409/422 transitions the frontier job to
-  `contract_error` (preserving `http_status_code`/`error_detail`), any other `HTTPException`
+  own `JobLifecycle`: a refusal with status 400/409/422 transitions the frontier job to
+  `contract_error` (preserving `http_status_code`/`error_detail`), any other refusal
   transitions it to `error`, and a bare `Exception` is logged (`frontier_failed`, `exc_info=True`)
   and also transitions it to `error` with the generic `_INTERNAL_ERROR_DETAIL` message.
   `BackgroundJobStoppedError` is the unified signal for both job-store-driven cancellation and
@@ -1327,7 +1336,7 @@ whose message already names every problem and the remedy.
   payload described above — no exception from this module is ever allowed to reach the tracing
   subsystem's caller.
 - **Artifact-load failures never leak library internals.** Every wrapped artifact-load
-  `HTTPException` in `_optimiser_service.py` uses a fixed, generic message
+  refusal in `_optimiser_service.py` uses a fixed, generic message
   ("... is missing or corrupted. Re-run the solve to regenerate it.") regardless of the specific
   underlying `OSError`/parquet exception, which is logged server-side with `exc_info=True` but
   never included in the client-facing detail string.

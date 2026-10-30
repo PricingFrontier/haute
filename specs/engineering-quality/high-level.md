@@ -146,10 +146,8 @@ Out of scope:
   `tests/_source_files.py` records the files under `src/` (bytecode caches
   excluded) when the controlling pytest session starts and fails a passing run,
   naming each file, when any new one appears by the end, including files that
-  tests on xdist workers write; on a worker it does nothing. The suite also
-  stops the server's startup bytecode clear for its duration (a session
-  fixture), so no test removes the package's `__pycache__` directories, and
-  every test that walks a repository tree that can hold Python (`src/`,
+  tests on xdist workers write; on a worker it does nothing. Every test that
+  walks a repository tree that can hold Python (`src/`,
   `tests/`, `examples/`) goes through `source_files`, which prunes bytecode and
   tool caches before entering them and raises when any other directory cannot
   be listed. A hygiene test rejects any recursive walk (`rglob`, `os.walk`,

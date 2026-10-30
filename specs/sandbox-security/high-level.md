@@ -34,11 +34,15 @@ In scope:
 - Restricted unpickling for both raw pickle files and joblib archives
   (`safe_unpickle`, `safe_joblib_load`).
 - The one path-containment check, `contained_path(root, path)`, and its policy. Its
-  callers: the file-browse, schema, read-json, recovery-preview, save, submodel,
-  utility and optimiser-save routes and the assistant's dataset tools (request
-  paths), the check before deserialising a project file (`validate_project_path`),
-  recovery artifact paths (`_artifact_paths.safe_path`), the save service's codegen
-  output paths, SQLite locators and the MLflow settings write target.
+  callers are every comparison of a path against a directory the path must stay in:
+  request paths (the routes, the assistant's dataset tools and pipeline source, a
+  repair's source identity, a model export destination, the SPA's static files),
+  the check before deserialising a project file (`validate_project_path`), runtime
+  paths and executor outputs, node config sidecars, submodel references, recovery
+  and repair paths, the save service's paths, worker artifacts, the MLflow artifact
+  cache, optimiser artifact handles, deploy's pipeline and shipped data, the
+  assistant's project knowledge and session storage, SQLite locators and the MLflow
+  settings write target. The low-level specification lists each with its refusal.
 - Canonical runtime-path normalization and symlink-aware containment for eager/lazy
   execution (`_path_resolution.py`), including the context-local execution root.
 - Local-session protection for the FastAPI/WebSocket server (`_local_security.py`):
@@ -92,6 +96,14 @@ Out of scope (owned elsewhere, linked where relevant):
   never through a link ([server-api](../server-api/high-level.md)).
 - **Environment exposure.** The process environment, including any credentials
   the deployment supplies to haute itself, is visible to project code.
+- **The locally served underwriter app.** `haute app serve` signs every request in as
+  the analyst ([workbench](../workbench/high-level.md)), so what bounds it is the request,
+  not a session: it binds loopback, and the editor's Host and forwarded-header gate, with
+  the canonical loopback hosts, refuses any other host and any forwarded header before
+  the request is signed in. That keeps out a page of a site whose name resolves to the
+  analyst's machine, whose requests the browser counts as the page's own; a page of
+  another site has its writes refused by the app's origin check and cannot read what
+  the app answers. The hosted app's identity is its host's, outside this gate.
 - **Hosted mode.** Node code runs with the app's identity in its own container;
   the platform proxy boundary adapts traffic and never contains code, and access
   to a project is governed by the workspace permissions on the app.
@@ -158,7 +170,9 @@ Out of scope (owned elsewhere, linked where relevant):
   (`validate_project_path`, which resolves the configured path and checks it with
   `contained_path`). `restricted_joblib_load` is the same allowlisted
   loader without that containment, for model files Haute's own loaders locate (training
-  outputs, the MLflow artifact cache, an MLflow pyfunc package).
+  outputs, the MLflow artifact cache, an MLflow pyfunc package). Neither has a fallback:
+  `joblib` is a required dependency, and when it cannot be imported the import error
+  propagates.
 - **Exactly two InterpretML classes are trusted:**
   `interpret.glassbox._ebm._ebm.ExplainableBoostingRegressor` and
   `...ExplainableBoostingClassifier`; no `interpret.*` prefix or other symbol is. A pinned
@@ -225,10 +239,10 @@ Out of scope (owned elsewhere, linked where relevant):
   - An absolute *path* that is not lexically inside the resolved root is refused
     before anything resolves it, so a request never makes the process touch an
     outside location (a network share, a device) just to check it. Such a path is
-    refused even if it would resolve back inside. A caller that holds a trusted,
-    configured path (`validate_project_path`, the SQLite and MLflow checks, the save
-    service's generated paths) resolves it first, so only request input meets this
-    guard.
+    refused even if it would resolve back inside. A caller that holds a trusted
+    path (configured, read from project files, or made by the server) resolves it
+    first, so only request input meets this guard and every other comparison is
+    the resolved path against the resolved root.
   - Otherwise the joined path is resolved: `..` segments collapse and symbolic links
     and Windows junctions are followed, so a link inside the root that points outside
     is refused and one that points inside is accepted. Callers that must refuse links
@@ -238,6 +252,16 @@ Out of scope (owned elsewhere, linked where relevant):
     macOS volume a differently-cased spelling of an inside path can be refused; it
     can never let an outside path through. (`normcase`/`commonpath` folding added
     nothing: both sides are resolved paths.)
+  - `is_contained(root, path)` is the same check's answer as a boolean, for a caller
+    to which a path outside is not an error but simply not one of its own.
+  - A comparison that is not a containment check says so where it is made: an
+    `is_relative_to` or `commonpath` call outside `contained_path` carries a
+    `# not contained_path: <reason>` comment on its line or the line above. Such
+    calls choose between two valid roots, classify a path whose either answer is
+    valid, test overlap in the other direction, or compare names that are not
+    filesystem paths; the build hook's checks are marked because the build runs
+    before haute can be imported. `tests/test_path_containment.py` fails on an
+    unmarked call in `src/haute` or `hatch_build.py`.
 
 - **An accident guard, not a sandbox.** Project code is trusted (decision of
   6 September 2026), and Polars' own module graph reaches the operating system, so a
@@ -297,9 +321,8 @@ Out of scope (owned elsewhere, linked where relevant):
 - Depended on by [explore-eda](../explore-eda/high-level.md): `routes/_pivot_service.py`
   imports `validate_user_code` and `safe_globals` directly to validate and `eval()`
   configured pivot formulas without going through `_exec_user_code`.
-- Depended on by the routes named in Scope, the assistant's dataset tools, recovery
-  artifacts, the save service, `_database_io` and the MLflow settings for
-  `contained_path`, and by the io-layer (`_io.py`) for `validate_project_path`,
+- Depended on for `contained_path` by every caller Scope names (listed in the
+  low-level specification), and by the io-layer (`_io.py`) for `validate_project_path`,
   `safe_unpickle`, and `safe_joblib_load` when loading external model/data
   artifacts (`load_external_object`), and by `routes/optimiser.py` and
   `routes/pipeline.py` for `_get_project_root()` when resolving user-supplied
@@ -311,6 +334,9 @@ Out of scope (owned elsewhere, linked where relevant):
   `LocalSessionMiddleware` and `LocalTrustedHostMiddleware` ahead of every mounted
   router, and the `/ws/sync` WebSocket endpoint calls `websocket_rejection_reason`
   before `accept()`-ing a connection.
+- Depended on by [workbench](../workbench/high-level.md): the underwriter app served
+  with a local principal installs `LocalTrustedHostMiddleware` with
+  `DEFAULT_TRUSTED_HOSTS` ahead of its sign-in.
 - Depended on by `haute init` (project scaffolding, via `cli/_init_cmd.py`) and by
   `_git_setup.py`'s unborn-repo commit seed for `ensure_gitignore_guards`.
 - Supplies numeric parsing helpers to callers across the codebase, including
@@ -349,7 +375,11 @@ Out of scope (owned elsewhere, linked where relevant):
   (400 "Invalid path"); the refused path stays out of the response. A caller with
   its own contract translates it: recovery artifacts → the repair 409, codegen output
   paths → 400, SQLite locators → `ValueError`, the MLflow settings write →
-  `MlflowConfigError`.
+  `MlflowConfigError`, a worker artifact → `WorkerProtocolError`, a deploy path →
+  `DeployError`; where an outside path is simply not one of the caller's (a runtime
+  candidate, a stale config to remove, a project document) it is skipped, and the
+  SPA serves its index page. Every caller and its contract is in the low-level
+  specification.
 - **Local-session/WebSocket rejections fail closed with a structured response**,
   not a silently-accepted connection: HTTP requests get a `403` JSON body from
   `LocalSessionMiddleware`, host-header mismatches get a `400` from

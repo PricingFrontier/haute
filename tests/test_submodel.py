@@ -496,5 +496,6 @@ class TestSchemas:
             file="main.py",
             pipeline_name="main",
             source_revision="revision-2",
+            document_fingerprint="fingerprint-2",
         )
         assert resp.source_revision == "revision-2"

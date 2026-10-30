@@ -220,8 +220,7 @@ typed refusals from the auto-range reducer and no bare `except ValueError`; pass
 the setup worker's memory message names optimiser setup; both summaries share their metric
 keys (a test compares the key sets).
 
-**Dependencies:** `API-R02` moves the services onto domain errors; the classifier is the step
-that survives it.
+**Dependencies:** None. The services raise domain errors, which the classifier maps.
 
 **Evidence:** `src/haute/routes/_optimiser_service.py`;
 `src/haute/routes/_optimiser_frontier.py::_frontier_point_mlflow_summary`;

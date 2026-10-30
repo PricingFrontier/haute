@@ -8,7 +8,7 @@ down the RCE-prevention boundary from the allow side:
 - an exact class allowlist accept
 - an exact scaffolding-global allowlist accept
 - the joblib-variant accept (delegating to the original ``find_class``)
-- the ``ImportError`` fallback to ``safe_unpickle`` when joblib is absent
+- no fallback when joblib cannot be imported
 
 Each test asserts allowlisted classes round-trip while disallowed ones
 still raise — the accept arm must not weaken the deny arm.
@@ -16,9 +16,9 @@ still raise — the accept arm must not weaken the deny arm.
 
 from __future__ import annotations
 
-import builtins
 import io
 import pickle
+import sys
 from pathlib import Path
 
 import pytest
@@ -26,6 +26,7 @@ import pytest
 from haute._sandbox import (
     _resolve_allowed_global,
     _RestrictedUnpickler,
+    restricted_joblib_load,
     safe_joblib_load,
     safe_unpickle,
     set_project_root,
@@ -164,70 +165,28 @@ class TestJoblibAcceptArm:
             safe_joblib_load(str(f))
 
 
-class TestJoblibMissingImportFallback:
-    """Only actual top-level joblib absence uses the pickle fallback."""
+class TestRestrictedJoblibLoadHasNoFallback:
+    """joblib is a required dependency: restricted loading has one code path."""
 
-    def test_falls_back_to_safe_unpickle_when_joblib_absent(
+    def test_a_hidden_joblib_raises_the_import_error(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        """If top-level joblib is absent, load a plain pickle safely."""
-        set_project_root(tmp_path)
-        f = tmp_path / "plain.pkl"
-        obj = {"fallback": [1, 2, 3]}
-        f.write_bytes(pickle.dumps(obj))
+        """The file sits outside the project root, which ``restricted_joblib_load``
+        does not check: the import error surfaces, not a containment refusal from
+        reading the file as a plain pickle instead."""
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.setattr("haute._sandbox._PROJECT_ROOT", project.resolve())
+        artifact = tmp_path / "model.joblib"
+        artifact.write_bytes(pickle.dumps({"must": "not fall back"}))
+        monkeypatch.setitem(sys.modules, "joblib", None)
 
-        real_import = builtins.__import__
+        with pytest.raises(ModuleNotFoundError) as exc_info:
+            restricted_joblib_load(artifact)
 
-        def without_joblib(name, *args, **kwargs):
-            if name == "joblib" or name.startswith("joblib."):
-                raise ModuleNotFoundError("No module named 'joblib'", name="joblib")
-            return real_import(name, *args, **kwargs)
-
-        monkeypatch.setattr(builtins, "__import__", without_joblib)
-
-        result = safe_joblib_load(str(f))
-        assert result == obj
-
-    def test_fallback_still_blocks_disallowed_class(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ):
-        """The safe_unpickle fallback still rejects non-allowlisted classes."""
-        set_project_root(tmp_path)
-        f = tmp_path / "evil.pkl"
-        payload = (
-            b"\x80\x04\x95%\x00\x00\x00\x00\x00\x00\x00"
-            b"\x8c\x05posix\x94\x8c\x06system\x94\x93\x94"
-            b"\x8c\necho pwned\x94\x85\x94R\x94."
-        )
-        f.write_bytes(payload)
-
-        # Import scikit-learn before joblib is made to look absent. The
-        # fallback runs under _estimator_version_mismatch_is_an_error, which
-        # asks sklearn for its version-mismatch warning class; a first-ever
-        # sklearn import pulls joblib in transitively, and the stub below
-        # refuses it. _sklearn_inconsistent_version_warning then re-raises,
-        # by design — a ModuleNotFoundError naming something other than
-        # sklearn is a broken install and is meant to surface, not be
-        # swallowed. That is a different contract from the allowlist blocking
-        # under test here, and which of the two a cold process reached
-        # depended only on whether something earlier had imported sklearn.
-        import sklearn.exceptions  # noqa: F401
-
-        real_import = builtins.__import__
-
-        def without_joblib(name, *args, **kwargs):
-            if name == "joblib" or name.startswith("joblib."):
-                raise ModuleNotFoundError("No module named 'joblib'", name="joblib")
-            return real_import(name, *args, **kwargs)
-
-        monkeypatch.setattr(builtins, "__import__", without_joblib)
-
-        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
-            safe_joblib_load(str(f))
+        assert exc_info.value.name == "joblib"
 
     @pytest.mark.parametrize(
         "private_api",

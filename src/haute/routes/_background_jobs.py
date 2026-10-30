@@ -175,6 +175,7 @@ class SingleFlightCoordinator:
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
+        self._released = threading.Condition(self._lock)
         self._active_by_key: dict[Hashable, SingleFlightHandle] = {}
 
     def active(self, key: Hashable) -> SingleFlightHandle | None:
@@ -202,6 +203,17 @@ class SingleFlightCoordinator:
             active = self._active_by_key.get(key)
             if active is not None and active.job_id == job_id:
                 del self._active_by_key[key]
+                self._released.notify_all()
+
+    def wait_released(self, key: Hashable, *, job_id: str, timeout: float) -> bool:
+        """Wait up to *timeout* seconds for *job_id* to stop owning *key*; True once it has."""
+
+        def released() -> bool:
+            active = self._active_by_key.get(key)
+            return active is None or active.job_id != job_id
+
+        with self._released:
+            return self._released.wait_for(released, timeout=timeout)
 
 
 class SupervisorInfrastructureError(RuntimeError):

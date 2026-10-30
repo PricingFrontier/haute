@@ -64,7 +64,6 @@ from haute._source_cache import (
     SourceCacheGeneration,
     SourceCacheGenerationMissingError,
     SourceCacheIdentity,
-    SourceCacheLegacyLayoutError,
     SourceCacheMetadata,
     SourceCacheStore,
     _ensure_identity_marker,
@@ -85,7 +84,6 @@ NODE_SNAPSHOT_EXECUTION_SEMANTICS_VERSION = "node-snapshot:v1"
 BOUNDED_SEMANTICS_CLASS = "bounded"
 _SLOT_INDEX_SCHEMA_VERSION = 1
 _LAST_USED_UPDATE_INTERVAL_SECONDS = 60.0
-_RETIRED_PREFIX = ".retired-"
 
 Retention = Literal["pinned", "automatic"]
 SlotState = Literal["current", "stale", "missing", "corrupt"]
@@ -788,11 +786,6 @@ class NodeSnapshotStore(SourceCacheStore):
     ) -> None:
         super().__init__(root, retire_grace_seconds=retire_grace_seconds)
         self._slots_dir = self.inputs_root / ".node-slots"
-        with self._coordination.guard:
-            already_cleaned = self._coordination.retired_cleaned
-            self._coordination.retired_cleaned = True
-        if not already_cleaned:
-            self._cleanup_retired()
 
     def clear_identity(self, identity_digest: str) -> int:
         """Clear one identity by its digest, returning the bytes it held.
@@ -1110,9 +1103,6 @@ class NodeSnapshotStore(SourceCacheStore):
                 coordination.publication_locks[identity.digest] = lock
             return lock
 
-    def _generation_dir(self, identity_digest: str, generation_id: str) -> Path:
-        return self.inputs_root / identity_digest / "generations" / generation_id
-
     def _slot_index_path(self, slot: NodeSnapshotSlot) -> Path:
         return self._slots_dir / f"{slot.digest}.json"
 
@@ -1120,11 +1110,6 @@ class NodeSnapshotStore(SourceCacheStore):
     def _require_node_output(identity: SourceCacheIdentity) -> None:
         if identity.provider != NODE_OUTPUT_PROVIDER:
             raise ValueError("identity is not a node-output snapshot identity")
-
-    def _cleanup_retired(self) -> None:
-        for retired in self.inputs_root.glob(f"*/{_RETIRED_PREFIX}*"):
-            if retired.is_dir() and not retired.is_symlink():
-                shutil.rmtree(retired, ignore_errors=True)
 
     # ------------------------------------------------------------- pointers
 
@@ -1301,8 +1286,10 @@ class NodeSnapshotStore(SourceCacheStore):
             return None
         try:
             generation = self._metadata_from_path(identity, generation_id)
-        except SourceCacheLegacyLayoutError:
-            # The retired single-file layout reads as absent, so it is rebuilt.
+        except SourceCacheGenerationMissingError:
+            # A retired layout, or a generation whose directory is gone (evicted
+            # by another process, deleted by hand), reads as absent: the node's
+            # data is missing and is computed again, never reported corrupt.
             return None
         slot, _signature = NodeSnapshotSlot.from_identity(identity)
         pinned = self._read_slot_index(slot)["pinned_identity"]
@@ -1416,15 +1403,16 @@ class NodeSnapshotStore(SourceCacheStore):
             try:
                 if self._acquire_node_lease(identity, generation_id, require_current=True):
                     break
-            except SourceCacheGenerationMissingError:
+            except SourceCacheGenerationMissingError as exc:
                 # Superseded and retired between reading the pointer and
-                # leasing: select again, unless the pointer itself is dangling.
+                # leasing: select again. A pointer that still names it is
+                # dangling, and its generation is absent.
                 if self._current_generation_id(identity.digest) == generation_id:
-                    raise
+                    raise FileNotFoundError(self._pointer_path(identity)) from exc
         try:
             try:
                 generation = self._metadata_from_path(identity, generation_id)
-            except SourceCacheLegacyLayoutError as exc:
+            except SourceCacheGenerationMissingError as exc:
                 raise FileNotFoundError(self._pointer_path(identity)) from exc
             self._touch_last_used(generation)
             yield generation
@@ -1448,34 +1436,6 @@ class NodeSnapshotStore(SourceCacheStore):
             self._release_node_lease(identity, generation_id)
 
     # --------------------------------------------------------- retirement
-
-    def _retire_generation_locked(self, identity_digest: str, generation_id: str) -> Path | None:
-        """Rename one generation out of selection. Caller holds the lease lock."""
-        generation_dir = self._generation_dir(identity_digest, generation_id)
-        retired = generation_dir.parent.parent / f"{_RETIRED_PREFIX}{uuid.uuid4().hex}"
-        try:
-            generation_dir.rename(retired)
-        except FileNotFoundError:
-            return None
-        except PermissionError as exc:
-            # A Windows handle still open inside the generation blocks the
-            # rename; the generation stays selectable-by-id and is retried later.
-            logger.warning(
-                "node_snapshot_retirement_deferred",
-                identity_digest=identity_digest,
-                generation_id=generation_id,
-                error=str(exc),
-            )
-            return None
-        self._forget_verified(identity_digest, generation_id)
-        return retired
-
-    @staticmethod
-    def _delete_retired(paths: list[Path]) -> None:
-        for path in paths:
-            shutil.rmtree(path, ignore_errors=True)
-            if path.exists():
-                logger.warning("node_snapshot_retired_delete_failed", path=str(path))
 
     def retire_unleased(self, identity: SourceCacheIdentity) -> None:
         if identity.provider != NODE_OUTPUT_PROVIDER:
@@ -1510,12 +1470,15 @@ class NodeSnapshotStore(SourceCacheStore):
         if identity.provider != NODE_OUTPUT_PROVIDER:
             super().clear(identity)
             return
+        slot, _signature = NodeSnapshotSlot.from_identity(identity)
         retired: list[Path] = []
         try:
             with self._coordination.lease_lock:
-                self._pointer_path(identity).unlink(missing_ok=True)
-                self._prune_identity_locked(identity)
-                retired.extend(self._retire_non_current_locked(identity.digest))
+                index = self._read_slot_index(slot)
+                retired.extend(self._retire_identities_locked(index, [identity.digest]))
+                if index["pinned_identity"] == identity.digest:
+                    index["pinned_identity"] = None
+                self._write_slot_index_locked(slot, index)
         finally:
             self._delete_retired(retired)
 
@@ -1548,33 +1511,51 @@ class NodeSnapshotStore(SourceCacheStore):
         costs the scan its files at the next re-cache or clear, so the `with`
         discipline at every call site matters.
 
-        A signature whose generation survived stays *indexed and unpointed*.
+        A signature whose generation survived stays *indexed and unpointed*
+        (`_retire_identities_locked`).
+        """
+        return self._retire_identities_locked(
+            index, [digest for digest in index["identities"] if digest != identity.digest]
+        )
+
+    def _retire_identities_locked(
+        self, index: dict[str, Any], digests: Sequence[str]
+    ) -> list[Path]:
+        """Unpoint each identity, retire its unheld generations, and unindex the emptied ones.
+
+        Publication, `clear_slot` and `clear` all retire this way. An identity
+        whose generation survives, because a reader still holds it or an open
+        Windows handle refused its rename, stays *indexed and unpointed*.
         Dropping it from the index would strand that generation where nothing
         can find it: `clear_slot` walks the index, the retired sweep only knows
         `.retired-*`, and the holder may die without ever releasing — leaving a
         node showing two datasets and a Clear that cannot remove one, which is
-        the very promise this policy exists to keep. Indexed and unpointed, the
-        next publish and any `clear_slot` retry it.
+        the very promise the one-dataset policy exists to keep. Indexed and
+        unpointed, the next publish, Clear or budget check retries it, and
+        `_release_node_lease` prunes it when it retires the last generation.
+        Mutates *index*, which the caller writes. Caller holds the lease lock.
         """
         retired: list[Path] = []
-        for digest in [d for d in index["identities"] if d != identity.digest]:
+        for digest in digests:
             (self.inputs_root / digest / "current.json").unlink(missing_ok=True)
             retired.extend(self._retire_non_current_locked(digest))
-            if self._generations_remaining_locked(digest):
-                continue
-            del index["identities"][digest]
+            if not self._generations_remaining_locked(digest):
+                index["identities"].pop(digest, None)
         return retired
 
     def clear_slot(self, slot: NodeSnapshotSlot) -> None:
-        """Remove every identity of *slot* and its pin; leased generations retire on release."""
+        """Remove every identity of *slot* and its pin; leased generations retire on release.
+
+        An identity whose generation survives stays indexed and unpointed until
+        a later retirement removes it (`_retire_identities_locked`).
+        """
         retired: list[Path] = []
         try:
             with self._coordination.lease_lock:
                 index = self._read_slot_index(slot)
-                for identity_digest in index["identities"]:
-                    (self.inputs_root / identity_digest / "current.json").unlink(missing_ok=True)
-                    retired.extend(self._retire_non_current_locked(identity_digest))
-                self._slot_index_path(slot).unlink(missing_ok=True)
+                retired.extend(self._retire_identities_locked(index, list(index["identities"])))
+                index["pinned_identity"] = None
+                self._write_slot_index_locked(slot, index)
         finally:
             self._delete_retired(retired)
 
@@ -1776,7 +1757,6 @@ class NodeSnapshotStore(SourceCacheStore):
             retired: list[Path] = []
             try:
                 with self._coordination.lease_lock:
-                    superseded_id = self._current_generation_id(identity.digest)
                     final_dir = self._generation_dir(identity.digest, generation_id)
                     slot, _signature = NodeSnapshotSlot.from_identity(identity)
                     index = self._read_slot_index(slot)
@@ -1830,16 +1810,9 @@ class NodeSnapshotStore(SourceCacheStore):
                     try:
                         retired.extend(self._retire_superseded_signatures_locked(index, identity))
                         self._write_slot_index_locked(slot, index)
-                        if superseded_id is not None and superseded_id != generation_id:
-                            superseded_dir = self._generation_dir(identity.digest, superseded_id)
-                            if superseded_dir.is_dir() and not self._has_live_holders_locked(
-                                superseded_dir
-                            ):
-                                path = self._retire_generation_locked(
-                                    identity.digest, superseded_id
-                                )
-                                if path is not None:
-                                    retired.append(path)
+                        # The generation this replaced, and any of this identity a
+                        # deferred retirement or Clear left unpointed, unless held.
+                        retired.extend(self._retire_non_current_locked(identity.digest))
                     except BaseException:
                         # Ownership has not reached the caller: release the
                         # publisher's lease before surfacing the failure.

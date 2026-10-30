@@ -1,9 +1,10 @@
 /**
  * The quote's identity at the head of every schema table but quote_details (specs/workbench):
  * its reference and option, which Haute adds and keeps locked, a request gives in
- * quote_details alone, and the sheets never show or test; and the quote_details columns the
- * app sets, which every request holds whatever the sheets hide. Imported by `workbenchForm`
- * and `sheetVisibility` alike, which import each other, so it imports neither.
+ * quote_details alone, and the sheets never show or test; and Haute's quote_details columns,
+ * by id and by name, with those the app sets, which every request holds whatever the sheets
+ * hide. Imported by `workbenchForm` and `sheetVisibility` alike, which import each other, so
+ * it imports neither.
  */
 import type { SchemaColumn, SchemaTable } from "../api/types"
 
@@ -14,21 +15,54 @@ import type { SchemaColumn, SchemaTable } from "../api/types"
  */
 export const QUOTE_DETAILS_ID = "quote_details"
 
+/** Its columns, in order, as id, name and type (`QUOTE_DETAILS_COLUMNS`), a quote's administration; their structure is fixed. */
+export const QUOTE_DETAILS_COLUMNS = [
+  ["qd_reference", "quote_reference", "str"],
+  ["qd_option", "quote_option", "int"],
+  ["qd_quote_name", "quote_name", "str"],
+  ["qd_insured", "insured", "str"],
+  ["qd_broker", "broker", "str"],
+  ["qd_inception_date", "inception_date", "date"],
+  ["qd_expiry_date", "expiry_date", "date"],
+  ["qd_is_renewal", "is_renewal", "bool"],
+  ["qd_stage", "stage", "str"],
+  ["qd_assignee", "assignee", "str"],
+  ["qd_archived", "archived", "bool"],
+  ["qd_created_date", "created_date", "date"],
+  ["qd_created_by", "created_by", "str"],
+  ["qd_modified_date", "modified_date", "date"],
+  ["qd_modified_by", "modified_by", "str"],
+  ["qd_haute_version", "haute_version", "str"],
+] as const satisfies ReadonlyArray<readonly [id: string, name: string, type: SchemaColumn["type"]]>
+
+type QuoteDetailColumn = (typeof QUOTE_DETAILS_COLUMNS)[number]
+
+/** A quote_details column's name, which a quote's details are keyed by. */
+export type QuoteDetailName = QuoteDetailColumn[1]
+
+/**
+ * Each quote_details column's id by its name: `QUOTE_DETAILS.is_renewal` is `qd_is_renewal`,
+ * and a name the table no longer has does not compile.
+ */
+export const QUOTE_DETAILS = Object.fromEntries(QUOTE_DETAILS_COLUMNS.map(([id, name]) => [name, id])) as {
+  readonly [Column in QuoteDetailColumn as Column[1]]: Column[0]
+}
+
 /**
  * The columns the underwriter app sets over whatever is typed, which take no rules and are in
  * every request whatever the sheets hide (`QUOTE_DETAILS_MANAGED`).
  */
 export const QUOTE_DETAILS_MANAGED: ReadonlySet<string> = new Set([
-  "qd_reference",
-  "qd_option",
-  "qd_stage",
-  "qd_assignee",
-  "qd_archived",
-  "qd_created_date",
-  "qd_created_by",
-  "qd_modified_date",
-  "qd_modified_by",
-  "qd_haute_version",
+  QUOTE_DETAILS.quote_reference,
+  QUOTE_DETAILS.quote_option,
+  QUOTE_DETAILS.stage,
+  QUOTE_DETAILS.assignee,
+  QUOTE_DETAILS.archived,
+  QUOTE_DETAILS.created_date,
+  QUOTE_DETAILS.created_by,
+  QUOTE_DETAILS.modified_date,
+  QUOTE_DETAILS.modified_by,
+  QUOTE_DETAILS.haute_version,
 ])
 
 /**

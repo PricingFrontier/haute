@@ -15,6 +15,7 @@ import json
 import mimetypes
 import os
 import re
+import secrets
 import time
 import traceback
 import uuid
@@ -35,7 +36,7 @@ from starlette.routing import Route
 from haute import __version__
 from haute._cpu_performance import configure_process_high_qos
 from haute._dedicated_workers import open_dedicated_workers, shutdown_dedicated_workers
-from haute._event_bus import default_bus
+from haute._event_bus import DocumentUpdateExclusion, default_bus
 from haute._execution_context import configure_execution_telemetry
 from haute._interactive_workers import (
     shutdown_interactive_worker_pool,
@@ -58,22 +59,25 @@ from haute._pipeline_settings import (
     follow_chunk_rows,
     stop_following_chunk_rows,
 )
-from haute._sandbox import _get_project_root
+from haute._sandbox import _get_project_root, contained_path
 from haute._workbench_config import WorkbenchConfigError, read_workbench_config
-from haute.errors import ConfigError
+from haute.errors import ConfigError, PathOutsideProjectError
 from haute.hosted import FORWARDED_USER_SCOPE_KEY
 from haute.routes._error_handlers import install_exception_handlers
 from haute.routes._helpers import (
     _INTERNAL_ERROR_DETAIL,
     _ensure_pipeline_index,
     broadcast,
+    connection_owner,
     discover_pipelines,
     invalidate_pipeline_index,
     is_self_write,
     load_pipeline_editor_document,
     pipeline_dir,
     pipelines_importing_module,
+    pipelines_naming_artifacts,
     watcher_is_paused,
+    wire_source_file,
     ws_clients,
     ws_clients_add,
     ws_clients_discard,
@@ -137,6 +141,7 @@ _WATCHER_FLUSH_MAX_RETRIES = 3
 _WATCHER_FLUSH_RETRY_BASE_SECONDS = 0.1
 WS_FRAME_PARSE_ERROR = "parse_error"
 WS_FRAME_PIPELINE_DOCUMENT_UPDATE = "pipeline_document_update"
+WS_FRAME_SYNC_CONNECTION = "sync_connection"
 WS_FRAME_WORKBENCH_FORM_CHANGED = "workbench_form_changed"
 PIPELINE_DOCUMENT_SCHEMA_VERSION = 1
 PIPELINE_DOCUMENT_LOAD_ERROR = (
@@ -176,7 +181,12 @@ def _ws_message_frame(wire_type: str, payload: dict[str, Any]) -> dict[str, Any]
 _server_loop: asyncio.AbstractEventLoop | None = None
 
 
-def _broadcast_event_as_ws_message(wire_type: str, payload: dict[str, Any]) -> None:
+def _broadcast_event_as_ws_message(
+    wire_type: str,
+    payload: dict[str, Any],
+    *,
+    exclude: DocumentUpdateExclusion | None = None,
+) -> None:
     """Schedule ``broadcast`` of a WebSocket frame derived from *payload*.
 
     ``broadcast`` is async because ``websocket.send_text`` is; but the
@@ -193,7 +203,9 @@ def _broadcast_event_as_ws_message(wire_type: str, payload: dict[str, Any]) -> N
         loop = asyncio.get_running_loop()
     except RuntimeError:
         if _server_loop is not None and not _server_loop.is_closed():
-            future = asyncio.run_coroutine_threadsafe(broadcast(frame), _server_loop)
+            future = asyncio.run_coroutine_threadsafe(
+                broadcast(frame, exclude=exclude), _server_loop
+            )
             future.add_done_callback(_log_broadcast_task_result)
             return
         logger.debug(
@@ -202,7 +214,7 @@ def _broadcast_event_as_ws_message(wire_type: str, payload: dict[str, Any]) -> N
             reason="no_running_loop",
         )
         return
-    task = loop.create_task(broadcast(frame))
+    task = loop.create_task(broadcast(frame, exclude=exclude))
     task.add_done_callback(_log_broadcast_task_result)
 
 
@@ -260,15 +272,6 @@ def _resolve_client_source_file(source_file: Any) -> Path | None:
     return path.resolve()
 
 
-def _wire_source_file(path: Path) -> str:
-    """Return the project-relative source id used in WebSocket frames."""
-    resolved = path.resolve()
-    try:
-        return resolved.relative_to(Path.cwd().resolve()).as_posix()
-    except ValueError:
-        return str(resolved)
-
-
 async def _send_ws_json(websocket: WebSocket, frame: dict[str, Any]) -> None:
     await websocket.send_text(json.dumps(frame))
 
@@ -307,9 +310,9 @@ def _prepare_ws_document_resync(
     if pipeline_path is None:
         return _WsDocumentResyncResult(
             error="Resync source is not a discovered pipeline",
-            source_file=_wire_source_file(source_path),
+            source_file=wire_source_file(source_path),
         )
-    source_file = _wire_source_file(pipeline_path)
+    source_file = wire_source_file(pipeline_path)
     try:
         document_payload = load_pipeline_editor_document(
             pipeline_path, project_root=Path.cwd()
@@ -365,7 +368,7 @@ async def _handle_ws_sync_message(websocket: WebSocket, message_text: str) -> No
         await _send_ws_parse_error(
             websocket,
             error="Unsupported pipeline document schema version",
-            source_file=_wire_source_file(source_path),
+            source_file=wire_source_file(source_path),
         )
         return
     document_result = await run_in_threadpool(
@@ -405,10 +408,16 @@ def _ws_parse_error_subscriber(payload: dict[str, Any]) -> None:
 
 
 def _ws_pipeline_document_update_subscriber(payload: dict[str, Any]) -> None:
-    """Forward ``pipeline.document.update`` events to WebSocket clients."""
+    """Forward ``pipeline.document.update`` events to WebSocket clients.
+
+    A save's update names the saving tab's socket (``exclude_connection``): that one
+    socket is left out, and the frame never carries the key.
+    """
+    frame = {key: value for key, value in payload.items() if key != "exclude_connection"}
     _broadcast_event_as_ws_message(
         WS_FRAME_PIPELINE_DOCUMENT_UPDATE,
-        {**payload, "schema_version": PIPELINE_DOCUMENT_SCHEMA_VERSION},
+        {**frame, "schema_version": PIPELINE_DOCUMENT_SCHEMA_VERSION},
+        exclude=payload.get("exclude_connection"),
     )
 
 
@@ -424,19 +433,6 @@ _unsubscribe_workbench_form_changed = default_bus.subscribe(
 _unsubscribe_pipeline_document_update = default_bus.subscribe(
     "pipeline.document.update", _ws_pipeline_document_update_subscriber
 )
-
-
-def _remove_bytecode_caches(root: Path) -> None:
-    """Remove every ``__pycache__`` directory under *root*."""
-    import shutil
-
-    for pycache in root.rglob("__pycache__"):
-        shutil.rmtree(pycache, ignore_errors=True)
-
-
-def _clear_bytecache() -> None:
-    """Remove the package's .pyc files so stale bytecode never masks code changes."""
-    _remove_bytecode_caches(Path(__file__).resolve().parent)
 
 
 async def _reap_stale_job_artifacts_in_background(stale_after_seconds: int) -> None:
@@ -472,7 +468,6 @@ def _follow_pipeline_settings_chunk_rows() -> None:
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     from haute.deploy._config import _load_env
 
-    _clear_bytecache()
     configure_logging()
     configure_process_high_qos()
     _load_env(Path.cwd())
@@ -728,7 +723,14 @@ async def ws_sync(websocket: WebSocket) -> None:
         return
 
     await websocket.accept()
-    ws_clients_add(websocket)
+    # The socket learns its connection id before it can receive any broadcast; a save
+    # naming it leaves this socket out of its own document's broadcast.
+    connection_id = secrets.token_urlsafe(16)
+    await _send_ws_json(
+        websocket,
+        _ws_message_frame(WS_FRAME_SYNC_CONNECTION, {"connection_id": connection_id}),
+    )
+    ws_clients_add(websocket, connection_id=connection_id, owner=connection_owner(websocket.scope))
     with ws_clients_lock:
         total = len(ws_clients)
     logger.info("ws_connected", total_clients=total)
@@ -753,33 +755,6 @@ async def ws_sync(websocket: WebSocket) -> None:
 _DEBOUNCE_SECONDS = 0.3
 # Track last-broadcast file fingerprints per pipeline file to skip redundant direct-file broadcasts.
 _last_broadcast_fp: dict[str, str] = {}
-
-
-def _pipelines_owning_recovery_artifact(
-    changed_path: Path, pipelines: dict[str, Path]
-) -> list[Path]:
-    """Return only documents whose raw recovery manifest contains *changed_path*."""
-    from haute._pipeline_recovery import _recovery_artifacts
-
-    changed = changed_path.resolve()
-    owners: list[Path] = []
-    for pipeline_path in pipelines.values():
-        # The parent sidecar is unconditionally part of a recovery document,
-        # even when its source currently has syntax damage that prevents the
-        # deeper manifest walk from discovering child artifacts.
-        if pipeline_path.with_suffix(".haute.json").resolve() == changed:
-            owners.append(pipeline_path)
-            continue
-        try:
-            artifacts = _recovery_artifacts(pipeline_path, Path.cwd())
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "pipeline_recovery_manifest_failed", file=pipeline_path.name, error=str(exc)
-            )
-            continue
-        if any(artifact_path.resolve() == changed for _, artifact_path in artifacts):
-            owners.append(pipeline_path)
-    return owners
 
 
 async def _watcher_forever() -> None:
@@ -838,7 +813,7 @@ def _publish_pipeline_document(path: Path, *, skip_unchanged: bool) -> None:
             {
                 "document": document_payload,
                 "document_fingerprint": document_fingerprint,
-                "source_file": _wire_source_file(path),
+                "source_file": wire_source_file(path),
             },
         )
         with ws_clients_lock:
@@ -859,7 +834,7 @@ def _publish_pipeline_document(path: Path, *, skip_unchanged: bool) -> None:
             "parse.error",
             {
                 "error": PIPELINE_DOCUMENT_LOAD_ERROR,
-                "source_file": _wire_source_file(path),
+                "source_file": wire_source_file(path),
             },
         )
 
@@ -895,7 +870,7 @@ def _broadcast_tree_change(payload: dict[str, Any]) -> None:
             _last_broadcast_fp.pop(key, None)
             default_bus.publish(
                 "parse.error",
-                {"error": PIPELINE_NOT_IN_VERSION, "source_file": _wire_source_file(pipeline_path)},
+                {"error": PIPELINE_NOT_IN_VERSION, "source_file": wire_source_file(pipeline_path)},
             )
     form_file = _workbench_form_file(Path.cwd())
     if form_file is not None:
@@ -926,9 +901,6 @@ async def _file_watcher() -> None:
     watch_dirs = [cwd]
     if pipe_dir != cwd:
         watch_dirs.append(pipe_dir)
-    modules_dir = cwd / "modules"
-    if modules_dir.is_dir():
-        watch_dirs.append(modules_dir)
     config_dir = pipe_dir / "config"
     if config_dir.is_dir():
         watch_dirs.append(config_dir)
@@ -974,7 +946,7 @@ async def _file_watcher() -> None:
             changed_files: dict[str, tuple[Path, bool]] = {}
             direct_py_changes: list[Path] = []
             direct_index_changed = False
-            module_stems: list[str] = []
+            module_importers: list[Path] = []
             config_changed = False
             recovery_artifact_changes: list[Path] = []
             self_write_keys: set[str] = set()
@@ -983,6 +955,7 @@ async def _file_watcher() -> None:
             for change_type, changed_path in to_process:
                 p = Path(changed_path)
                 key = str(p.resolve())
+                # not contained_path: routes the change by its folder
                 if form_file is not None and Path(key).is_relative_to(form_file[1]):
                     # Every change to the form's files is announced, the server's own saves
                     # included: another window learns of a save, and the view that made it
@@ -1010,6 +983,7 @@ async def _file_watcher() -> None:
                     recovery_artifact_changes.append(p)
                     continue
                 # JSON config files in config/ directory
+                # not contained_path: routes the change by its folder
                 if p.suffix == ".json" and config_dir.is_dir() and p.is_relative_to(config_dir):
                     config_changed = True
                     continue
@@ -1017,10 +991,14 @@ async def _file_watcher() -> None:
                     continue
                 # Skip utility/ directory — utility scripts don't affect graph structure
                 utility_dir = pipe_dir / "utility"
+                # not contained_path: routes the change by its folder
                 if utility_dir.is_dir() and p.is_relative_to(utility_dir):
                     continue
-                if modules_dir.is_dir() and p.is_relative_to(modules_dir):
-                    module_stems.append(p.stem)
+                # A submodel module a pipeline imports, found where that pipeline's own
+                # ``modules/`` folder is, however deep the configured pipeline sits.
+                importers = pipelines_importing_module(p)
+                if importers:
+                    module_importers.extend(importers)
                 else:
                     # Deletions must invalidate the name→path index but must not
                     # be reparsed. A rename is normally a deleted+added pair:
@@ -1057,10 +1035,9 @@ async def _file_watcher() -> None:
                 changed_files[str(pipeline_path.resolve())] = (pipeline_path, False)
 
             # For changed modules, only re-parse pipelines that import them
-            for stem in module_stems:
-                for pipeline_path in pipelines_importing_module(stem):
-                    key = str(pipeline_path.resolve())
-                    changed_files[key] = (pipeline_path, True)
+            for pipeline_path in module_importers:
+                key = str(pipeline_path.resolve())
+                changed_files[key] = (pipeline_path, True)
 
             # If config JSON changed, re-parse all discovered pipelines
             if config_changed:
@@ -1071,9 +1048,11 @@ async def _file_watcher() -> None:
             # A sidecar (including a registered child sidecar) affects only
             # documents whose recovery manifest names that exact raw artifact.
             # Do not turn this into a global config invalidation.
-            for artifact_path in recovery_artifact_changes:
-                for pipeline_path in _pipelines_owning_recovery_artifact(
-                    artifact_path, _discovered()
+            if recovery_artifact_changes:
+                for pipeline_path in pipelines_naming_artifacts(
+                    recovery_artifact_changes,
+                    _discovered().values(),
+                    project_root=Path.cwd(),
                 ):
                     key = str(pipeline_path.resolve())
                     changed_files[key] = (pipeline_path, True)
@@ -1179,6 +1158,19 @@ async def _file_watcher() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _spa_static_file(static_dir: Path, full_path: str) -> Path | None:
+    """The built SPA's file at *full_path*, or ``None`` when it names none.
+
+    A path that leaves *static_dir* (through ``..``, as an absolute path or through a
+    link) names none, so the route serves the index page for it.
+    """
+    try:
+        file_path = contained_path(static_dir, full_path)
+    except PathOutsideProjectError:
+        return None
+    return file_path if file_path.is_file() else None
+
+
 def _serve_index_html(static_dir: Path = STATIC_DIR) -> HTMLResponse:
     """Serve the SPA shell without placing session credentials in browser-readable data."""
     html = (static_dir / "index.html").read_text(encoding="utf-8")
@@ -1199,10 +1191,8 @@ if static_build_ready(STATIC_DIR):
     @app.get("/{full_path:path}", response_model=None)
     async def serve_spa(full_path: str) -> Response:
         """Serve the React SPA - all non-API routes return index.html."""
-        file_path = (STATIC_DIR / full_path).resolve()
-        if file_path.is_relative_to(STATIC_DIR) and file_path.is_file():
-            if file_path.name == "index.html":
-                return _serve_index_html(STATIC_DIR)
+        file_path = _spa_static_file(STATIC_DIR, full_path)
+        if file_path is not None and file_path.name != "index.html":
             media_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
             return FileResponse(file_path, media_type=media_type)
         return _serve_index_html(STATIC_DIR)

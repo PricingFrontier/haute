@@ -224,6 +224,36 @@ describe("QuotesPage", () => {
     await vi.waitFor(() => expect(vi.mocked(fetchAppQuotes).mock.calls.at(-1)?.[0]).toEqual(team))
   })
 
+  it.each([
+    ["Archive", "Q-000001/1"],
+    ["Restore", "Q-000002/1"],
+  ])("reloads the list showing once %s is answered, though the underwriter moved to another meanwhile", async (action, label) => {
+    vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote(), appQuote({ id: "q2", reference: "Q-000002", archived: true })]))
+    let answered: (value: Awaited<ReturnType<typeof changeAppQuote>>) => void = () => {}
+    vi.mocked(changeAppQuote).mockImplementation(() => new Promise((resolve) => (answered = resolve)))
+    const team = quotesQueryOf("?view=team")
+    const view = show(team)
+    fireEvent.click(await screen.findByRole("button", { name: `${action} ${label}` }))
+
+    // While it is waited for, the underwriter moves to My work.
+    view.rerender(
+      <>
+        <QuotesPage query={MINE} />
+        <NewQuoteWindow />
+        <ToastContainer />
+      </>,
+    )
+    await vi.waitFor(() => expect(useQuoteListStore.getState().status).toBe("ready"))
+    expect(useQuoteListStore.getState().query).toEqual(MINE)
+    vi.mocked(fetchAppQuotes).mockClear()
+    await act(async () => answered({ quote: appQuote({ latest: 2 }), revision: null }))
+
+    await vi.waitFor(() => expect(fetchAppQuotes).toHaveBeenCalled())
+    expect(vi.mocked(fetchAppQuotes).mock.calls).toEqual([[MINE]])
+    await vi.waitFor(() => expect(useQuoteListStore.getState().status).toBe("ready"))
+    expect(useQuoteListStore.getState().query).toEqual(MINE)
+  })
+
   it("says when a quote could not be archived", async () => {
     vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote()]))
     vi.mocked(changeAppQuote).mockRejectedValue(new ApiError("HTTP 409", 409, "moved", {}, { message: "Q-000001 has changed" }))
@@ -258,6 +288,22 @@ describe("QuotesPage", () => {
     fireEvent.keyDown(document.body, { key: "n" })
     expect(screen.getByRole("dialog", { name: "New quote" })).toBeInTheDocument()
     expect(window.location.pathname).toBe("/")
+  })
+
+  it("leaves / and N to a focused select, whose type-ahead picks its option", async () => {
+    vi.mocked(fetchAppQuotes).mockResolvedValue(page([]))
+    show(quotesQueryOf("?view=team"))
+    await screen.findByTestId("quotes-empty")
+    await screen.findByRole("option", { name: "jo@example.com" })
+
+    for (const label of ["Order", "Assigned to"]) {
+      const select = screen.getByLabelText(label)
+      select.focus()
+      fireEvent.keyDown(select, { key: "n" })
+      fireEvent.keyDown(select, { key: "/" })
+      expect(screen.queryByTestId("new-quote-window")).toBeNull()
+      expect(select).toHaveFocus()
+    }
   })
 
   it("offers one who may only read quotes nothing that changes them", async () => {

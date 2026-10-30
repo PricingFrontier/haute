@@ -481,6 +481,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/GitUndeleteResponse"},
         },
     },
+    "/api/git/repair-pair": {
+        "POST": {
+            "request_ref": "#/components/schemas/GitRepairPairRequest",
+            "success_schema": {"$ref": "#/components/schemas/GitRepairPairResponse"},
+        },
+    },
     "/api/git/working-branch": {
         "GET": {
             "request_ref": None,

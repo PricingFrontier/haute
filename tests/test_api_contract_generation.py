@@ -212,8 +212,11 @@ def test_response_contracts_require_every_field_the_server_sends() -> None:
         "name",
         "module",
         "import_line",
-        "error",
-        "error_line",
+        "revision",
+        "warnings",
+        "git_sha",
+        "identity_required",
+        "uncaptured",
     }
     assert set(utility_write["required"]) == set(UtilityWriteResponse.model_fields)
 

@@ -7,8 +7,9 @@ structured, human-consumable data without executing user code to determine struc
 
 1. **Pipeline structural parsing** — strictly turning a valid Haute pipeline `.py` file (written
    against the `@pipeline.<type>` decorator API) into the canonical `PipelineGraph` consumed by
-   execution, codegen, deploy, and strict APIs. Separate neutral textual extraction primitives
-   support the editor-only recovery service without producing a canonical graph.
+   execution, codegen, deploy, and strict APIs. The node and connection skeletons it reads from
+   the syntax tree also serve the editor-only recovery service, which never produces a
+   canonical graph.
 2. **Polars expression parsing** — turning the Polars `with_columns()` expression code inside a
    single pipeline node into a human-readable formula string, and optionally having Polars
    compute that formula's value on one traced row for the trace/debug UI.
@@ -22,8 +23,9 @@ while re-deriving what a single already-executed step computed and why (expressi
 In scope:
 - Valid `.py` source → `PipelineGraph` (nodes, edges, metadata, preamble, preserved blocks) via
   `ast`; whole-file syntax errors raise contextual `ParseError`.
-- Syntax-invalid source → neutral recoverable fragments for the separate editor recovery service;
-  those fragments are never accepted by canonical graph consumers.
+- A valid file the strict parser refuses → node and connection skeletons for the separate editor
+  recovery service; canonical graph consumers never accept what it recovers. Syntax-invalid
+  source has no skeletons.
 - Reading a pipeline file's submodel imports (`from modules import <name>`, each naming the
   file `modules/<name>.py`) and its `pipeline.submodel(<name>.submodel, "<occurrence>")`
   registrations, and resolving and merging the definitions they name into the parent graph,
@@ -63,8 +65,8 @@ Out of scope (owned by neighbouring components, cross-linked below):
   with no canvas.
 - Missing, unreadable, invalid, or schema-invalid config sidecars raise `ConfigError` through the
   strict parser. The editor recovery service resolves recovered node fragments independently and
-  represents an attributable failure as an unavailable recovery node plus a diagnostic; it never
-  inserts `_load_error` into a canonical graph.
+  represents an attributable failure as an unavailable recovery node plus a diagnostic; a
+  canonical graph never carries a failed node.
 - A referenced submodel file is parsed atomically. If its module AST is invalid, parsing raises
   `ParseError` naming the child file and syntax location rather than merging an empty warning
   graph that has lost every child node and edge.
@@ -104,17 +106,15 @@ Out of scope (owned by neighbouring components, cross-linked below):
   arguments) are capped at one level. Parsing raises `ParseError` naming the containing file and
   the line of every nested registration (`nested_lines`), because returning the outer graph
   while omitting the nested references would not conserve authored structure.
-- Neutral textual recovery discovers everything it can locate and unambiguously describe. The
-  editor recovery orchestrator conserves a malformed or ambiguous authored construct as a
-  recovery element or attributed diagnostic rather than silently dropping or guessing it.
+- Editor recovery discovers every construct of a valid file it can locate and unambiguously
+  describe, and conserves a malformed or ambiguous authored construct as a recovery element or
+  attributed diagnostic rather than silently dropping or guessing it.
 - Preamble boundaries recognise both module aliases (`import haute as ht`) and direct constructor
   aliases (`from haute import Pipeline as BuildPipeline`), including multiline pipeline
-  construction. Neutral syntax recovery applies the same alias boundary rules textually.
+  construction.
 - A pipeline file's imports from `modules` are generated code, never preamble: codegen writes
-  them from the registrations, so the preamble leaves out their lines wherever they sit, and
-  the textual extraction of a file that does not parse leaves out its `from modules ... import`
-  lines, a parenthesised import included. In a submodel definition file such an import is
-  ordinary preamble.
+  them from the registrations, so the preamble leaves out their lines wherever they sit. In a
+  submodel definition file such an import is ordinary preamble.
 - Before the strict parser returns, a structure-conservation gate checks the authored node ids,
   explicit edge endpoints and handles, implicit parameter edges, and submodel references against
   the constructed graph. A parent edge endpoint names a root node or a registered occurrence:
@@ -192,16 +192,17 @@ submodel constructor that declares constants are `ParseError`s naming the line.
 
 ## Design rationale
 
-- The primary structural parser uses Python's `ast` module because pipeline files are executable
-  Python and this path only needs structural reads. Codegen is a separate text-generation path:
-  it renders source from string templates, and its post-generation edits (such as contract
-  injection) go through the LibCST-based structured-syntax boundary in `haute._python_syntax`,
-  never through this parser's AST.
-- Neutral syntax recovery exists so that a single syntax error need not blank the editor while
-  strict runtime consumers still fail loudly. Recovered call/decorator *sites* are found textually
-  (the whole file is unparseable by definition), and individual fragments are re-parsed with
-  `ast` wherever possible. Only the editor recovery service resolves those fragments, under named
-  isolation boundaries, into its structurally incompatible recovery DTOs.
+- The structural parser uses Python's `ast` module because pipeline files are executable Python
+  and this path only needs structural reads. Codegen is a separate generation path: its builders
+  describe each node and one printer lays the module out, a contract with the rest of its
+  decorator, so no generated source is edited afterwards. A rewrite of authored source (Recover,
+  Reset, the node-scoped save) goes through the LibCST-based structured-syntax boundary in
+  `haute._python_syntax`; nothing unparses this parser's AST over authored source.
+- Editor recovery exists so that one node's configuration or contract failure need not blank the
+  editor while strict runtime consumers still fail loudly. It reads the node and connection
+  skeletons of a file that parses and resolves each node, under a named isolation boundary, into
+  its structurally incompatible recovery DTOs. A file that does not parse has no structure to
+  read, so it loads as source only rather than as a guessed canvas.
 - Polars computes every traced value. A hand-written interpreter once re-implemented Polars'
   semantics to avoid executing user code for a display question. Project code is trusted, and
   the same expression has already run in the same execution, so reimplementing Polars only
@@ -216,21 +217,21 @@ submodel constructor that declares constants are `ParseError`s naming the line.
   is a direct instance of this codebase's "fail loud, never guess" principle (see the project's
   `CLAUDE.md`).
 - The module-level `_cached_parse` (an `lru_cache` over `ast.parse`) exists because
-  `parse_expression`, `_compute_result`, `_evaluate_conditional_branches`, and
-  `parse_expression_chain` each reparse the *same* code string for the same node; caching is safe
+  `parse_expression`, `_locate_defining_expression`, and `parse_expression_chain` each reparse
+  the *same* code string for the same node; caching is safe
   because every consumer only reads the cached tree — substitution/reassignment-chain resolution
   build new AST nodes rather than mutating it in place.
 
 ## Interactions
 
 - Depends on [pipeline-config](../pipeline-config/high-level.md) for project-root inference and
-  config file loading (`_project.get_project_root`, `_config_io.find_config_by_func_name`,
+  config file loading (`_project.get_project_root`, `_config_io.load_node_config`,
   `_config_io.has_config_folder`).
 - Depends on [codegen](../codegen/high-level.md) for the AST/source utility and user-code
   extraction primitives shared by generation and parsing.
 - Depends on [pipeline-config](../pipeline-config/high-level.md) for strict config-dict
-  construction and canonical node/edge builders. Neutral regex recovery does not construct those
-  canonical objects.
+  construction and canonical node/edge builders. Editor recovery resolves each node through the
+  same config-dict construction but builds its own recovery models, not those canonical objects.
 - Depends on and cooperates with [submodels](../submodels/high-level.md): this component decides
   when a registered definition must be resolved and parsed, using that component's
   `modules/<name>.py` naming of a definition module, but the occurrence-node
@@ -294,12 +295,12 @@ submodel constructor that declares constants are `ParseError`s naming the line.
 whole-file `SyntaxError`, invalid decorator, configuration error, topology error, or submodel
 error raises a contextual Haute exception; neither entry point substitutes a recovered graph.
 Execution, lint, deploy, code generation, and post-save verification therefore never consume
-syntax-recovered output.
+recovered output.
 
-Syntax recovery exposes neutral source fragments only: pipeline metadata, authored decorator and
-function identity, parameters, body text, declared connections, submodel registrations, and source
-spans. The editor recovery service is the sole consumer that may resolve those fragments into the
-separate recovery DTOs defined by the server API. Those DTOs never inherit from, return, or
+The skeletons recovery reads are neutral: pipeline metadata, authored decorator and function
+identity, parameters, body text, declared connections, submodel registrations, and source spans.
+The editor recovery service is the sole consumer that may resolve them into the separate
+recovery DTOs defined by the server API. Those DTOs never inherit from, return, or
 deserialize as `PipelineGraph`. Expected node-local authored errors become attributed diagnostics
 at that editor boundary; strict parsing continues to propagate the original error unchanged.
 A strict refusal that no element's diagnostic shows is listed as a pipeline-level

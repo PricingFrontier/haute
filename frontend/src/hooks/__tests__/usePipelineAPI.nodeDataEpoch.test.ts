@@ -40,6 +40,12 @@ vi.mock("../../api/client", () => ({
   },
 }))
 
+// The workbench's tables as the editor fetches them, answered as each test says.
+vi.mock("../../api/workbench", () => ({
+  fetchWorkbenchStatus: vi.fn(),
+  fetchWorkbenchTables: vi.fn(),
+}))
+
 vi.mock("../../utils/buildGraph", () => ({
   resolveGraphFromRefs: vi.fn(
     (
@@ -72,10 +78,14 @@ vi.mock("../../utils/makePreviewData", () => ({
 }))
 
 import { loadPipeline, previewNode } from "../../api/client"
+import { fetchWorkbenchTables } from "../../api/workbench"
+import type { WorkbenchTable, WorkbenchTablesResponse } from "../../api/types"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { makeNode } from "../../test-utils/factories"
 import { makeLoadedPipeline } from "../../testSupport/pipelineDocumentFixture"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
+const mockTables = vi.mocked(fetchWorkbenchTables)
 
 type PreviewEnvelope = Awaited<ReturnType<typeof previewNode>>
 
@@ -134,14 +144,29 @@ function epoch(): number {
   return useNodeDataStore.getState().epoch
 }
 
-const WORKBENCH_TABLES = [
+const WORKBENCH_TABLES: WorkbenchTable[] = [
   { name: "pricing_output", rows: "one", columns: [{ name: "premium", type: "float" }] },
   { name: "layers", rows: "many", columns: [{ name: "layer", type: "int" }] },
 ]
 
-function workbenchOutput(tables = WORKBENCH_TABLES, data: Record<string, unknown> = {}): Node {
+/** A Workbench Output, which holds none of its tables. */
+function workbenchOutput(data: Record<string, unknown> = {}): Node {
   return makeNode("response", "workbenchOutput", {
-    data: { label: "response", nodeType: "workbenchOutput", config: { tables }, ...data },
+    data: { label: "response", nodeType: "workbenchOutput", config: {}, ...data },
+  })
+}
+
+/** The workbench's response tables as the newest fetch gave them. */
+function fetchedResponseTables(responseTables: WorkbenchTable[]) {
+  useWorkbenchStore.setState({ tables: { tables: [], sample: {}, responseTables, fetch: 1 } })
+}
+
+/** A fetch of the workbench's tables, answered with *answer*, landed. */
+async function fetchTables(answer: WorkbenchTablesResponse) {
+  mockTables.mockResolvedValue(answer)
+  await act(async () => {
+    useWorkbenchStore.getState().refreshTables()
+    await useWorkbenchStore.getState().awaitTables()
   })
 }
 
@@ -176,6 +201,8 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     })
     useNodeResultsStore.setState({ previews: {}, columnCache: {} })
     useNodeDataStore.getState().reset()
+    useWorkbenchStore.setState({ enabled: true, tables: null })
+    fetchedResponseTables(WORKBENCH_TABLES)
     mockLoad.mockReset().mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
     mockPreview.mockReset()
   })
@@ -285,7 +312,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     const other = makeNode("other")
     const { result } = await renderLoaded([workbenchOutput(), other])
     // Its flat columns are the first table's, from the preview before the choice.
-    const response = workbenchOutput(WORKBENCH_TABLES, {
+    const response = workbenchOutput({
       _columns: [{ name: "premium", dtype: "f64" }],
       _frameColumns: {
         pricing_output: [{ name: "premium", dtype: "f64" }],
@@ -326,10 +353,74 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1), { timeout: STEP_TIMEOUT_MS })
     await settle(result)
 
-    act(() => result.current.refreshPreview(workbenchOutput(WORKBENCH_TABLES.slice(0, 1))))
+    fetchedResponseTables(WORKBENCH_TABLES.slice(0, 1))
+    act(() => result.current.refreshPreview(workbenchOutput()))
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(2), { timeout: STEP_TIMEOUT_MS })
     expect(mockPreview.mock.calls[1][0]).toMatchObject({ nodeId: "response", portLabel: "pricing_output" })
     await settle(result)
+  })
+
+  it("asks for none of the columns it recorded before a fetch that changes the workbench's tables, which may have taken one away", async () => {
+    // A form saved without a column changes what a node below a Workbench Input holds,
+    // though nothing in the graph changes: the columns recorded before are no projection.
+    const policy = (...names: string[]): WorkbenchTable => ({
+      name: "policy",
+      rows: "one",
+      columns: names.map((name) => ({ name, type: "float" as const })),
+    })
+    await fetchTables({ tables: [policy("exposure", "limit")], sample: {}, response_tables: [] })
+    mockPreview.mockResolvedValue(envelope("priced", [], "exposure"))
+    const { result } = await renderLoaded([makeNode("priced")])
+    const recordedAt = useGraphStore.getState().structuralVersion
+    const priced = makeNode("priced", "polars", {
+      data: {
+        label: "priced",
+        nodeType: "polars",
+        config: {},
+        _columns: [{ name: "limit", dtype: "f64" }, { name: "exposure", dtype: "f64" }],
+        _columnsSource: "live",
+        _columnsStructuralVersion: recordedAt,
+      },
+    })
+
+    act(() => result.current.refreshPreview(priced))
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1), { timeout: STEP_TIMEOUT_MS })
+    expect(mockPreview.mock.calls[0][0].requestedPreviewColumns).toEqual(["limit", "exposure"])
+    await settle(result)
+
+    await fetchTables({ tables: [policy("exposure")], sample: {}, response_tables: [] })
+    expect(useGraphStore.getState().structuralVersion).toBe(recordedAt + 1)
+    act(() => result.current.refreshPreview(priced))
+    await waitFor(() => expect(mockPreview.mock.calls.length).toBeGreaterThanOrEqual(2), { timeout: STEP_TIMEOUT_MS })
+    expect(mockPreview.mock.calls.at(-1)?.[0].requestedPreviewColumns).toBeUndefined()
+    await settle(result)
+  })
+
+  it("fetches the displayed preview again after a fetch that changes the workbench's tables or sample, never after one that brings the same", async () => {
+    // What a Workbench Input is given changes what everything below it previews, though
+    // nothing in the graph changes with it.
+    const policy: WorkbenchTable = { name: "policy", rows: "one", columns: [{ name: "exposure", type: "float" }] }
+    await fetchTables({ tables: [policy], sample: {}, response_tables: [] })
+    mockPreview.mockResolvedValue(envelope("priced"))
+    const quote = makeNode("quote", "workbenchInput", {
+      data: { label: "quote", nodeType: "workbenchInput", config: {}, _sourceHandleInputNames: {} },
+    })
+    const priced = makeNode("priced")
+    const edges: Edge[] = [{ id: "e_policy", source: "quote", sourceHandle: "policy", target: "priced", targetHandle: null }]
+    const { result } = await renderLoaded([quote, priced], edges)
+    act(() => result.current.fetchPreview(priced, { debounceMs: 0 }))
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+    await settle(result)
+    expect(mockPreview).toHaveBeenCalledTimes(1)
+
+    await fetchTables({ tables: [policy], sample: {}, response_tables: [] })
+    await settle(result)
+    expect(mockPreview).toHaveBeenCalledTimes(1)
+
+    await fetchTables({ tables: [policy], sample: { policy: { exposure: 250000 } }, response_tables: [] })
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(2), { timeout: STEP_TIMEOUT_MS })
+    await settle(result)
+    expect(useNodeResultsStore.getState().getPreview("priced")?.nodeDataEpoch).toBe(epoch())
   })
 
   it("fetches a displayed frame preview again for its frame once a snapshot is published", async () => {

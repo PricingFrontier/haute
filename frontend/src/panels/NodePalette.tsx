@@ -1,7 +1,6 @@
 import type { DragEvent } from "react"
 import { PaletteColumn, PaletteHeader, PaletteItem, PaletteItems } from "../haute-ui"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
-import { paletteWorkbenchInputConfig, paletteWorkbenchOutputConfig } from "../utils/workbenchTables"
 import {
   NODE_TYPE_META,
   NODE_TYPES,
@@ -11,20 +10,10 @@ import {
 } from "../utils/nodeTypes"
 import type { NodeTypeValue } from "../utils/nodeTypes"
 
-/** The config a node dragged from the palette starts with. */
-function paletteConfig(type: NodeTypeValue): Record<string, unknown> {
-  const { defaultConfig } = NODE_TYPE_META[type]
-  // A Workbench Input or Output starts with the newest tables the workbench supplied.
-  const { tables } = useWorkbenchStore.getState()
-  if (type === NODE_TYPES.WORKBENCH_INPUT) return paletteWorkbenchInputConfig(defaultConfig, tables)
-  if (type === NODE_TYPES.WORKBENCH_OUTPUT) return paletteWorkbenchOutputConfig(defaultConfig, tables)
-  return defaultConfig
-}
-
 function onDragStart(event: DragEvent, type: NodeTypeValue) {
-  const config = paletteConfig(type)
+  const meta = NODE_TYPE_META[type]
   event.dataTransfer.setData("application/reactflow-type", type)
-  event.dataTransfer.setData("application/reactflow-config", JSON.stringify(config))
+  event.dataTransfer.setData("application/reactflow-config", JSON.stringify(meta.defaultConfig))
   event.dataTransfer.effectAllowed = "move"
 }
 

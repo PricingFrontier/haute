@@ -100,8 +100,9 @@ class TestSchemaValueErrorSanitisation:
         error_msg: str,
         forbidden: list[str],
     ) -> None:
-        """A ValueError bubbling up from read_source must NOT expose
-        internal paths, tracebacks, or git output to the HTTP response.
+        """A ValueError bubbling up from read_source is the server's failure, not the
+        request's: it reaches the 500 backstop, which exposes none of its internal
+        paths, tracebacks or git output.
         """
         with patch(
             "haute.graph_utils.read_source",
@@ -111,8 +112,9 @@ class TestSchemaValueErrorSanitisation:
                 "/api/schema",
                 params={"path": "data/sample.parquet"},
             )
-        assert resp.status_code == 400
+        assert resp.status_code == 500
         detail = resp.json()["detail"]
+        assert detail == _SAFE_DETAIL
         for forbidden_token in forbidden:
             assert forbidden_token not in detail, (
                 f"#11: /api/schema leaked internal detail: {forbidden_token!r} "
@@ -126,12 +128,9 @@ class TestSchemaValueErrorSanitisation:
 
 
 class TestSubmodelCreateValueErrorSanitisation:
-    """``POST /api/submodel/create`` catches ``ValueError`` from
-    ``create_submodel_graph`` and raises HTTPException with ``str(exc)``.
-
-    The underlying function can include arbitrary graph/node details in
-    its ValueError message.  Before the fix, those details leak to the
-    client.  After the fix, internal exception text must be hidden.
+    """A ``ValueError`` from ``create_submodel_graph`` that is not one of its
+    refusals (``SubmodelValidationError``) is the server's failure: it reaches the
+    500 backstop, so none of the graph or node details its message can hold leak.
     """
 
     @pytest.fixture()
@@ -199,8 +198,9 @@ class TestSubmodelCreateValueErrorSanitisation:
                     "base_revision": revision,
                 },
             )
-        assert resp.status_code == 400
+        assert resp.status_code == 500
         detail = resp.json()["detail"]
+        assert detail == _SAFE_DETAIL
         assert "/root/secret/path.py" not in detail, (
             f"#11: /api/submodel/create leaked absolute path: {detail!r}"
         )

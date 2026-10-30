@@ -15,7 +15,7 @@ from typing import Any, Required, Union, get_args, get_origin, get_type_hints, i
 import pytest
 
 from haute._config_io import config_path_for_node
-from haute._config_validation import _TYPED_DICT_BY_NODE_TYPE
+from haute._config_validation import _TYPED_DICT_BY_NODE_TYPE, FORM_GIVEN_KEYS
 from haute._graph_utils import _sanitize_func_name
 from haute._types import DATA_INPUT_CONFIG_TYPES, DATA_OUTPUT_CONFIG_TYPES, GraphEdge, NodeType
 from haute.codegen import graph_to_code_multi
@@ -49,8 +49,6 @@ def _examples():
         }
     )
     by_type[NodeType.EXTERNAL_FILE].data.config.update({"fileType": "joblib"})
-    # The workbench's copy: a sample quote read through the input's tables (specs/workbench).
-    by_type[NodeType.WORKBENCH_INPUT].data.config.update({"sample": {"keyed": {"state": "NY"}}})
     by_type[NodeType.MODELLING].data.config.update(
         {
             "mlflow_destination": "server",
@@ -448,7 +446,9 @@ def _assert_field_inventory(examples, schemas):
         declared = set().union(*(_declared_paths(schema) for schema in node_schemas))
         policy = _STRUCTURAL_POLICY.get(node_type, set())
         assert policy <= declared, f"Stale structural policy for {node_type}: {policy - declared}"
-        gaps = declared - covered.get(node_type, set()) - policy
+        # A workbench node is given these from the form where it runs; none is persisted.
+        given = FORM_GIVEN_KEYS.get(node_type, frozenset())
+        gaps = declared - covered.get(node_type, set()) - policy - given
         if gaps:
             missing[node_type.value] = sorted(gaps)
     assert not missing, f"Persisted fields without round-trip examples: {missing}"

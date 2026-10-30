@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import polars as pl
 import pytest
-from fastapi import HTTPException
 
+from haute.errors import RequestRefusedError
 from haute.routes._optimiser_artifacts import (
     _APPLY_RESULT_HANDLE_KIND,
     _ARTIFACT_HANDLE_VERSION,
@@ -49,7 +49,7 @@ def test_apply_artifact_load_rejects_paths_outside_owned_root(tmp_path: Path) ->
     outside_path = outside_dir / "result.parquet"
     pl.DataFrame({"quote_id": ["q1"]}).write_parquet(outside_path)
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         _scan_apply_result_artifact(
             _handle(path=str(outside_path), directory=str(outside_dir), row_count=1)
         )
@@ -83,7 +83,7 @@ def test_apply_artifact_cleanup_rejects_path_directory_mismatch(tmp_path: Path) 
 
 
 def test_apply_artifact_load_rejects_relative_paths() -> None:
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         _scan_apply_result_artifact(
             _handle(path="relative/result.parquet", directory="relative", row_count=1)
         )
@@ -104,7 +104,7 @@ def test_apply_artifact_read_failure_logs_underlying_cause_before_wrapping() -> 
         with (
             patch("polars.scan_parquet", side_effect=OSError("corrupt parquet")),
             patch("haute.routes._optimiser_artifacts.logger.error") as log_error,
-            pytest.raises(HTTPException) as exc_info,
+            pytest.raises(RequestRefusedError) as exc_info,
         ):
             _scan_apply_result_artifact(handle)
         assert exc_info.value.status_code == 500

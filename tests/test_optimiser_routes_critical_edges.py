@@ -11,6 +11,7 @@ import polars as pl
 import pytest
 from fastapi import HTTPException
 
+from haute.errors import RequestRefusedError
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from tests.job_store_support import discard_corrupt_job, seed_job
 from tests.optimiser_fixtures import (
@@ -103,7 +104,7 @@ def test_estimate_schema_rejects_missing_columns() -> None:
         "scenario_value": "scenario_value",
     }
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         _estimate_quote_id_column_or_raise(source, config)
 
     assert exc_info.value.status_code == 400
@@ -133,7 +134,7 @@ def test_estimate_schema_rejects_numeric_quote_ids() -> None:
         "scenario_value": "scenario_value",
     }
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         _estimate_quote_id_column_or_raise(source, config)
 
     assert exc_info.value.status_code == 400

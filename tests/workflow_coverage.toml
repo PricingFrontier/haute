@@ -553,7 +553,7 @@ tests = [
   "tests/test_submodel_ops.py::TestGroupingPreservesConsumerBindings::test_grouping_preserves_the_consumer_input_name",
   "tests/test_pipeline_recovery.py::test_editor_identity_route_requires_an_alias_for_submodel_nodes",
 ]
-invariant = "A Polars node's positional parameters are exactly its connected inputs by name (an ordinary source's node name, an API frame handle, a sanitized public submodel output port name, or a declared inputMapping): the parser infers nothing, an unbound parameter or unconsumed input is a ParseError carried into the editor as a degraded document that refuses Save, a mapped or port-named consumer parses, executes and regenerates byte-identically, and the input chips show the same names the executor binds."
+invariant = "A Polars node's positional parameters are exactly its connected inputs by name (an ordinary source's node name, an API frame handle, an owner's public submodel output port name, an instance's name (or <instance>_<port> for multiple outputs), or a declared inputMapping): the parser infers nothing, an unbound parameter or unconsumed input is a ParseError carried into the editor as a degraded document that refuses Save, a consumer using these names parses, executes and regenerates byte-identically, and the input chips show the same names the executor binds."
 
 [scenarios.evidence]
 commit = "f8af18c67"

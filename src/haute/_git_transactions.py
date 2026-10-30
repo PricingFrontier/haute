@@ -17,6 +17,7 @@ from haute._git_core import (
     GitTransactionError,
     _assert_eligible_working,
     _assert_git_repo,
+    _assert_new_branch_name,
     _assert_no_git_op_in_progress,
     _canonical_remote,
     _commit_parents,
@@ -87,13 +88,14 @@ def commit_save(
     """
     if not paths:
         return None
+    # A pathspec commit fails during a merge with git's own words; say why first.
+    _assert_no_git_op_in_progress(cwd)
 
     ledger = resolve_ledger(working, cwd=cwd)
 
     # :(literal) so a filename holding glob characters names only itself.
     pathspecs = [_literal(path) for path in paths]
-    ok, status = _run_git_ok("status", "--porcelain", "--", *pathspecs, cwd=cwd)
-    if not ok or not status.strip():
+    if not _run_git("status", "--porcelain", "--", *pathspecs, cwd=cwd):
         return None
 
     # New files must be known to git before a pathspec'd commit can include
@@ -172,6 +174,7 @@ def _refuse_unversionable(paths: list[str], pipeline_folder: str, project_root: 
     folder = PurePosixPath(pipeline_folder)
     too_large: list[str] = []
     for path in paths:
+        # not contained_path: git's repository-relative names, compared lexically
         if not PurePosixPath(path).is_relative_to(folder):
             continue
         target = project_root / path
@@ -456,6 +459,7 @@ def create_working_branch(
     from haute._git_state import read_working_branch, write_working_branch
 
     _assert_git_repo(cwd)
+    _assert_new_branch_name(name, cwd=cwd)
     _validate_ref_name(name)
     _assert_eligible_working(name)
     if move and switch:
@@ -643,6 +647,7 @@ def commit_milestone(
     working = read_working_branch(project_root)
     if working is None:
         raise GitDomainError("No working branch is set for this project.")
+    _assert_no_git_op_in_progress(cwd)
 
     if not allow_fork:
         leg = divergence_state(working, cwd=cwd)

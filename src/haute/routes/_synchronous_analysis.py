@@ -15,7 +15,7 @@ import contextlib
 from collections.abc import Awaitable, Callable
 from typing import TypeVar, cast
 
-from fastapi import HTTPException, Request
+from fastapi import Request
 
 from haute._analysis_results import SynchronousAnalysisCache
 from haute._data_points import (
@@ -33,6 +33,8 @@ from haute._execution_context import (
     ExecutionProfile,
 )
 from haute._node_snapshots import NodeSnapshotColumns
+from haute.errors import RequestRefusedError
+from haute.routes._contract_errors import memory_limit_refusal
 
 ResultT = TypeVar("ResultT")
 
@@ -86,7 +88,7 @@ def run_synchronous_analysis(
                 if resolver.resolve(point, demand).data_version != data_version:
                     raise PointDataChangedError(resolution)
     except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
-        raise HTTPException(status_code=507, detail=exc.to_payload()) from None
+        raise memory_limit_refusal(exc) from None
     finally:
         if context is not None:
             context.release_admission()
@@ -148,7 +150,7 @@ async def await_until_disconnected(
                 _abandon(task, cancel, started)
                 await _stopped(task)
                 _raise_propagated(task, propagate)
-                raise HTTPException(status_code=CLIENT_CLOSED_REQUEST_STATUS, detail=detail)
+                raise RequestRefusedError(detail, status_code=CLIENT_CLOSED_REQUEST_STATUS)
     except asyncio.CancelledError:
         _abandon(task, cancel, started)
         await _stopped(task)

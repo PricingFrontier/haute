@@ -13,16 +13,7 @@
 import { ChevronRight } from "lucide-react"
 
 import type { GitCommitContext, GitCommitRef } from "../api/types"
-
-function timeAgo(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime()
-  const mins = Math.floor(diff / 60000)
-  if (mins < 1) return "just now"
-  if (mins < 60) return `${mins}m ago`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h ago`
-  return `${Math.floor(hours / 24)}d ago`
-}
+import { relativeTime } from "../utils/relativeTime"
 
 /** The version tag for a milestone/root, matching the VC sidepane styling. */
 function VersionTag({ commit }: { commit: GitCommitRef }) {
@@ -90,7 +81,7 @@ export default function CommitBreadcrumb({ context }: { context: GitCommitContex
       </span>
       {isAnchor ? (
         <span className="font-mono shrink-0" style={{ color: "var(--text-muted)" }}>
-          ·{timeAgo(context.timestamp)}
+          ·{relativeTime(new Date(context.timestamp))}
         </span>
       ) : (
         <>
@@ -99,7 +90,7 @@ export default function CommitBreadcrumb({ context }: { context: GitCommitContex
             {context.message}
           </span>
           <span className="font-mono shrink-0" style={{ color: "var(--text-muted)" }}>
-            {context.short_sha}·{timeAgo(context.timestamp)}
+            {context.short_sha}·{relativeTime(new Date(context.timestamp))}
           </span>
         </>
       )}

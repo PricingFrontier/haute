@@ -25,7 +25,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from haute._api_input_schema import ApiInputSchemaError
-from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
+from haute._path_resolution import RuntimePathError, resolve_node_input_path
 from haute.routes._helpers import pipeline_dir
 from haute.routes._runtime_path_errors import runtime_path_http_exception
 from haute.schemas import JsonCacheInferRequest, JsonCacheInferResponse
@@ -51,13 +51,7 @@ def _api_input_schema_error_response(err: ApiInputSchemaError) -> JSONResponse:
 def _resolve_data_path(path: str) -> str:
     try:
         return str(
-            resolve_runtime_file_path(
-                path,
-                pipeline_dir=pipeline_dir(),
-                project_root=Path.cwd(),
-                prefer="project",
-                enforce_project_root=True,
-            )
+            resolve_node_input_path(path, pipeline_dir=pipeline_dir(), project_root=Path.cwd())
         )
     except RuntimePathError as exc:
         raise runtime_path_http_exception(exc) from None

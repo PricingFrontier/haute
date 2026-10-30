@@ -179,6 +179,7 @@ vi.mock("../api/client", () => ({
     working_branch: null,
     current_branch: "",
     head_sha: null,
+    broken_pairs: [],
   })),
   getOptimiserStatus: vi.fn(() => Promise.resolve({ status: "running", progress: 0 })),
   getTrainStatus: vi.fn(() => Promise.resolve({ status: "running", progress: 0 })),

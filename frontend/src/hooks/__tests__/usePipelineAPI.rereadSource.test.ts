@@ -57,7 +57,7 @@ import {
   previewInputs,
   previewNode,
 } from "../../api/client"
-import { makeNode } from "../../test-utils/factories"
+import { makeInputCacheSnapshot, makeNode } from "../../test-utils/factories"
 import { makeLoadedPipeline } from "../../testSupport/pipelineDocumentFixture"
 
 const mockLoad = vi.mocked(loadPipeline)
@@ -160,7 +160,7 @@ describe("usePipelineAPI - Refresh re-reads a structured Quote Input", () => {
     }
     // The preview reads the Quote Input, whose tables are ready and fresh.
     mockPreviewInputs.mockImplementation(async ({ nodeId }) => ({ input_node_ids: [nodeId] }))
-    mockStatus.mockResolvedValue({ schema_version: 1, identity_digest: "group", state: "ready", freshness: "fresh", generation: null })
+    mockStatus.mockResolvedValue(makeInputCacheSnapshot({ schema_version: 1, identity_digest: "group", state: "ready", freshness: "fresh", generation: null }))
     mockBuild.mockResolvedValue({
       schema_version: 1,
       job_id: "reread-1",

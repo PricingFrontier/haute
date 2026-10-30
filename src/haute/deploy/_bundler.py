@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from haute._logging import get_logger
 from haute._model_flavors import family_for_artifact
 from haute._path_resolution import PathPreference, RuntimePathError, resolve_runtime_file_path
+from haute._sandbox import is_contained
 from haute.errors import DeployError
 from haute.graph_utils import NodeType, PipelineGraph
 
@@ -481,12 +482,13 @@ def refuse_data_outside_pipeline_folder(
 
     folder = pipeline_dir.resolve()
     root = project_root.resolve()
+    # not contained_path: names the folder by its project path when it has one
     shown = folder.relative_to(root).as_posix() if folder.is_relative_to(root) else folder.name
     for node_id, validated in _shipped_file_inputs(graph, input_node_ids):
         raw_path = validated.get("path", "")
         source = _resolve_path(raw_path, pipeline_dir, project_root, node_id, "path")
         read = (source.resolve(), *named_source_files(validated, source))
-        if all(path.is_relative_to(folder) for path in read):
+        if all(is_contained(folder, path) for path in read):
             continue
         raise DeployError(
             f"Data Input node {node_id!r} reads {raw_path!r}, outside the pipeline folder "

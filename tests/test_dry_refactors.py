@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from haute.errors import HauteError
+from haute.errors import HauteError, RequestRefusedError
 
 # ── A9: Exception hierarchy ────────────────────────────────────────
 
@@ -283,24 +283,22 @@ class TestFindTypedNode:
         assert node.id == "n1"
 
     def test_raises_404_when_node_missing(self) -> None:
-        from fastapi import HTTPException
 
         from haute.graph_utils import NodeType
         from haute.routes._helpers import find_typed_node
 
         graph = self._make_graph_with_node("modelling")
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             find_typed_node(graph, "nonexistent", NodeType.MODELLING, "modelling")
         assert exc_info.value.status_code == 404
 
     def test_raises_400_when_wrong_type(self) -> None:
-        from fastapi import HTTPException
 
         from haute.graph_utils import NodeType
         from haute.routes._helpers import find_typed_node
 
         graph = self._make_graph_with_node("polars")
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             find_typed_node(graph, "n1", NodeType.MODELLING, "modelling")
         assert exc_info.value.status_code == 400
         assert "modelling" in exc_info.value.detail

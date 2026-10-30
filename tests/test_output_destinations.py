@@ -6,12 +6,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi import HTTPException
 
 from haute._executable_names import executable_name_violations
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph, SubmodelDefinition
 from haute.deploy._bundler import collect_artifacts
-from haute.errors import DeployError, ParseError
+from haute.errors import DeployError, ParseError, RequestRefusedError
 from haute.parser import parse_pipeline_file
 from haute.routes._save_pipeline import SavePipelineService
 from tests.conftest import write_node_config
@@ -117,7 +116,7 @@ def test_two_outputs_writing_one_file_are_refused_at_save(tmp_path: Path) -> Non
         edges=[],
     )
 
-    with pytest.raises(HTTPException) as excinfo:
+    with pytest.raises(RequestRefusedError) as excinfo:
         SavePipelineService(tmp_path).validate_graph(graph, source_file="main.py")
 
     assert (

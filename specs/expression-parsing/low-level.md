@@ -61,10 +61,9 @@
 contextual `ParseError` naming the source and syntax location → otherwise extract pipeline meta /
 decorated nodes / connect edges / preamble (without the file's imports from `modules`,
 which codegen writes) / preserved blocks using the AST
-primitives from `src/haute/_ast_helpers.py` → collect labels from any node whose
-config carries `_load_error` into a graph-level `warning` (nothing in `src/haute`
-produces that key; the config path raises `ConfigError` instead, so the step is reached
-only by tests that plant the marker) → extract the submodel registrations through the file's
+primitives from `src/haute/_ast_helpers.py` (a node config that fails to load raises
+`ConfigError`, so the graph's only `warning` is a global constants file that failed to load)
+→ extract the submodel registrations through the file's
 submodel imports (`_parser_submodels.extract_submodel_registrations`, which refuses a
 non-canonical import or registration and an unused import) → if any
 were found, require `_base_dir` or `_submodel_base_dir` (otherwise
@@ -177,8 +176,71 @@ no alias or migration shim; direct test callers use the same current contract.
   read such a name, directly or through another binding, and stays unknown when that name is
   bound again) makes it opaque too, and `evaluate_expression` reports `unresolved_name: <name>`
   for the first such name the expression reads instead of computing with a stale binding or a
-  preamble value of the same name. A value changed in place (`d["k"] = v`, `d.update(...)`) is
-  not followed: the table keeps the value as bound.
+  preamble value of the same name.
+- **A value changed in place makes every value that could change unknown**: a statement can
+  change a value without binding its name again, and which other names hold that value is not
+  something the table can follow (aliases, containers holding containers, copies, `match`
+  captures, function locals). So when a statement changes a value in place, every name the code
+  bound whose value could change becomes unknown from there on, the changed one with it; only a
+  number, string, `None` or other immutable literal (subscripts of literals read, so
+  `rate = d["A"]` with `d["A"]` a number) and a Polars expression that read only such values
+  keep their values. A Polars expression is one built by a `pl` expression builder (`pl.col`,
+  `pl.lit`, `pl.when` and the like, not `pl.Series` or `pl.DataFrame`) through methods other
+  than `.meta`, arithmetic or a single comparison, never `and`/`or`, which return an operand as
+  it is; Polars copies what an expression reads when it is built, but one holding a `lambda` or
+  reading a name can still change. After such a change, evaluation also treats a preamble value read
+  by a later formula as unknown when it could have been changed: anything but a number, string,
+  date or time, a tuple of those, a Polars expression, a module, a class or a function. Code
+  with no change in place is untouched by this; code with one used to be traced with stale
+  values, so a refusal there is the conservative answer.
+- **What counts as a change in place**: a store or delete through a subscript or attribute
+  (`d["k"] = v`, `d["k"] += v`, `del d["k"]`, `obj.a = v`), even through a value no name
+  reaches as written (`d.get("A")["k"] = v`); an augmented assignment (`items += [x]`,
+  `items += (x,)`); a `pop`, `popitem` or `setdefault` call anywhere; a method called on its
+  own line that changes one of Python's containers (`update`, `append`, `extend`, `insert`,
+  `remove`, `clear`, `sort`, `reverse`, `add`, `discard`, the set updates), on any value, or
+  any method called on its own line on a value the code bound, also in a comprehension run for
+  its effect; such a container method anywhere on a name that may hold a container, its result
+  used or not (`ordered = cols.sort()`; inside a function, any name from around it may); and
+  any use of a changing function. A hit on a name the code bound only ever to values that
+  cannot change is no change (`factor += 0.1` on a number, `expr.alias("z")` alone on a closed
+  Polars expression). The scan reaches every depth of a statement, a loop body and a class body
+  included.
+- **A function the code defines changes values when it is used**: a `def` or `lambda` whose body
+  changes a value in place, uses another such function or class, binds a name of the code again
+  (`global factor`, any binding form), or changes one of its own names that a binding there
+  could make a container (a parameter always can; `t += x` on `t = 0` cannot) is a changing
+  function. So are a class defining one or deriving from one (making or using an instance runs
+  it), every name bound to a value that refers to one (`run = bump`, `box = Box()`), and a
+  container one is put into (`handlers["bump"] = bump`, `handlers.append(bump)`). Its body runs
+  when it is used, so the change counts at every use that runs: a call by name, a call of a
+  class's method as an attribute (`box.bump()`; a module-level helper named like a Polars
+  method does not make every `.clip(...)` a use), handing it on (an alias, an argument, a
+  decorator, a `lambda` written where it is passed), and any call of a computed callee
+  (`handlers.get("bump")(d)`, `make()(d)`), which may be one. A use of a function that binds a name
+  of the code again binds that name again, a decorated one where it is defined (the decorator
+  may run it). A definition nobody uses changes nothing, nor does a use inside a function body
+  that never runs; decorators, defaults and base classes run where they are written. A change
+  made by a function the code does not define (`random.shuffle(cols)`, a preamble helper) is not
+  followed: that is the boundary of what reading the code can see.
+- **Reflection is not followed**: a reflective builtin (`exec`, `eval`, `compile`, `setattr`,
+  `delattr`, `globals`, `locals`, `vars`, `__import__`) used in code that runs, or by a function
+  of the code when it is used, may bind or change any name, so every name the code bound is
+  unknown from there on, and evaluation treats every preamble value a later formula reads as
+  unknown except a module, a class or a function. One inside a function nobody uses changes
+  nothing.
+- **Every way of binding a name counts**: besides assignments, a `match` capture,
+  `except ... as e`, a walrus inside a simple assignment's value and a walrus inside a
+  comprehension (which binds in the scope around it) bind their names, so a name they bind is
+  unknown afterwards. Whether a name may hold a value that can change counts every binding a
+  block may make, reads a binding's value without the names the block may bind (those may
+  hold something else by then), and treats a name bound with no value to read
+  (`except ... as e`) as able to hold anything, whatever else binds it.
+- **A formula sees the changes of its own statement**: a `with_columns`/`select` call inside
+  `if`/`for`/`while`/`try`/`with`/`match`, or in a statement that changes a value in place
+  (`with_columns(a=pl.lit(d.pop("k")), y=...)`), takes the bindings in force after that whole
+  statement, so a name it assigns or changes anywhere is unknown to the call, while names it
+  does not touch keep their values.
 - **Values are Polars' own**: integer overflow wraps as the column's dtype does, division and
   modulo by zero, Kleene `&`/`|`, rounding and NaN handling are whatever Polars computes on the
   row, because Polars computes them. A typed null propagates through every operation; a native
@@ -221,11 +283,10 @@ no alias or migration shim; direct test callers use the same current contract.
   scanned for fragments. The strict parser turns its `SyntaxError` into a contextual
   `ParseError`, and editor recovery presents it as a source-only document carrying the located
   syntax error, with no canvas.
-- **Preamble boundaries are alias-aware**: a valid module uses AST statement line spans to stop
-  before an aliased or multiline `Pipeline(...)` construction; neutral syntax recovery parses
-  recoverable import lines independently, including comma-separated names and trailing comments,
-  so both `import haute as <alias>` and `from haute import Pipeline as <alias>` preserve the same
-  user preamble without capturing the constructor.
+- **Preamble boundaries are alias-aware**: AST statement line spans stop the preamble before an
+  aliased or multiline `Pipeline(...)` construction, so both `import haute as <alias>` and
+  `from haute import Pipeline as <alias>` preserve the same user preamble without capturing the
+  constructor.
 - **A pipeline file's submodel imports are generated code**: `is_submodel_import` recognises an
   import from `modules` in any spelling, and preamble extraction leaves out the lines of every
   such statement in a pipeline file, wherever it sits, because codegen rewrites the imports
@@ -267,6 +328,17 @@ no alias or migration shim; direct test callers use the same current contract.
   a missing/non-literal/blank/non-canonical `name`, rejected keywords (`definition_id=`,
   `instance_id=`, `alias=`, `label=`), and duplicate occurrence names fail before merge. No
   file/name/node-id inference is attempted.
+- **A `connect()` call is read by the live signature's rules**
+  (`haute._ast_helpers._connect_call_edge`): `source` and `target` once each, positionally
+  or by keyword, each a non-empty string literal; `source_port` and `target_port` only by
+  keyword, each `None` or a non-empty string literal; nothing else. A third positional
+  argument, an unknown keyword (`source_prt=`), a value bound twice, `*args`/`**kwargs`, a
+  missing endpoint, a non-string endpoint (`connect(123, "result")`) or an invalid port
+  (`source_port=123`, `""`) is a `ParseError` naming the call's line and the argument,
+  never a skipped call or a port turned into `None`, so an edge the parser infers from a
+  parameter name cannot hide the refused call. Editor recovery reports the same refusal on
+  the call as an unresolved `connection_declaration_invalid` connection, and Save is
+  refused until the source is corrected.
 - **Public boundary connections are explicit**: a parent `connect` endpoint
   that names an occurrence alias must also name a declared public port id.
   Function-parameter inference remains inside its owning root or definition
@@ -293,7 +365,7 @@ no alias or migration shim; direct test callers use the same current contract.
 
 - **`ConfigError`** propagates from `src/haute/_config_builder.py` when a healthy parse cannot
   load/validate a referenced sidecar or a folder-backed node omits `config=`. These failures are
-  not converted to `_load_error` nodes or graph warnings. Missing required Data Input/Output
+  not converted to failed nodes or graph warnings. Missing required Data Input/Output
   locator values are a completeness concern, not a `ConfigError`: the builder validates those
   configs with `require_complete=False`, so an empty or absent path/locator parses cleanly and
   is reported as field-level completeness by the editor document loader instead.
@@ -318,9 +390,9 @@ no alias or migration shim; direct test callers use the same current contract.
   entries beside the graph instead, for the editor document loader. A folder-backed node with no matching `config=` kwarg raises `ConfigError` through
   `_sidecar_required_error`, consistently with other sidecar configuration failures.
 - **`SyntaxError` from `ast.parse`** at the top of `parse_pipeline_source` is converted into a
-  contextual `ParseError`; strict callers never receive syntax-recovered graph output. The editor
-  recovery service may independently parse a neutral function fragment and represent a broken
-  fragment as an unavailable recovery node with an attributed diagnostic.
+  contextual `ParseError`; strict callers never receive a recovered graph. The editor recovery
+  service presents such a file as a source-only document carrying that error, and a node of a
+  valid file that does not resolve as an unavailable recovery node with an attributed diagnostic.
 - **`parse_expression`/`_parse_expression_impl`**: the *only* deliberate bare `except Exception` in
   the expression parser, converting any internal failure into an `"opaque"` `ParsedExpression`
   carrying the original source text. Documented in the function's docstring as an intentional,
@@ -428,8 +500,6 @@ Tests live under `tests/`, split by concern:
 Strategy is unit + scenario-regression plus the generated single-row differential above.
 Known coverage gaps:
 
-- The neutral syntax-recovery scanner is exercised only against curated malformed-input scenarios, not
-  randomly-generated broken Python source.
 - The property covers documented single-row forms only; malformed calls and not-row-local forms
   are pinned by example, not generated.
 - A multi-row sub-expression inside a formula (a condition comparing with a mean, say) is

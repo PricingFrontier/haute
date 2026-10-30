@@ -11,20 +11,23 @@ import threading
 import time
 import weakref
 from collections import deque
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, NamedTuple, NoReturn, TypeVar
+from typing import TYPE_CHECKING, Any, NamedTuple, NoReturn, TypeVar
 
-from fastapi import HTTPException, WebSocket
+from fastapi import WebSocket
 from starlette.concurrency import run_in_threadpool
 
 from haute._file_ops import atomic_write_text
 from haute._git_lock import repository_mutation
 from haute._io import read_user_text
 from haute._logging import get_logger
-from haute._pipeline_recovery import load_pipeline_editor_document
+from haute._pipeline_recovery import (
+    load_pipeline_editor_document,
+    pipeline_document_fingerprint,
+)
 from haute._project_mutation_lock import ProjectMutationLock
 from haute._sidecar import (
     SidecarModel,
@@ -36,8 +39,12 @@ from haute._sidecar import (
     read_sidecar_state,
 )
 from haute._submodel_paths import resolve_submodel_reference
-from haute.errors import ConfigError, ParseError
+from haute.errors import InvalidRequestError, NotFoundError, ParseError
 from haute.graph_utils import GraphNode, NodeType, PipelineGraph, _sanitize_func_name
+from haute.hosted import FORWARDED_USER_SCOPE_KEY
+
+if TYPE_CHECKING:
+    from haute._event_bus import DocumentUpdateExclusion, PipelineDocumentUpdatePayload
 
 # The sidecar read schema lives in the core ``haute._sidecar`` module so editor
 # recovery never imports the web layer; routes keep importing it from here.
@@ -79,8 +86,9 @@ def pipeline_dir() -> Path:
     binding and the builders use (the builders apply it to the
     execution-scoped project root, this helper to cwd). A missing ``[project].pipeline`` key is a
     soft configuration omission: we warn and fall back to cwd so a fresh
-    project still works. A malformed or unreadable ``haute.toml``, or a
-    ``[project]`` that is not a table, raises ``ConfigError`` — silently
+    project still works. A malformed or unreadable ``haute.toml``, a
+    ``[project]`` that is not a table, or a pipeline it names outside the
+    project root raises ``ConfigError`` — silently
     returning cwd would route every subsequent save / load at the wrong
     directory and surface as confusing "file not found" errors far from the
     real cause.
@@ -95,16 +103,10 @@ def pipeline_dir() -> Path:
         )
         return project_root
 
+    # The reader refuses a pipeline outside the project root.
     configured = _toml_configured_pipeline(project_root)
     if configured is not None:
-        pipeline_path = configured.resolve()
-        if not pipeline_path.is_relative_to(project_root):
-            raise ConfigError(
-                "haute.toml [project].pipeline resolves outside the project root",
-                path=str(toml_path),
-                pipeline=str(configured),
-            )
-        return pipeline_path.parent
+        return configured.resolve().parent
     logger.warning(
         "haute_toml_missing_pipeline",
         path=str(toml_path),
@@ -120,35 +122,26 @@ def pipeline_dir() -> Path:
 _INTERNAL_ERROR_DETAIL = "Operation failed. Check the server logs for details."
 
 # ---------------------------------------------------------------------------
-# HTTP error helpers (DRY structured-logging + HTTPException raising)
+# Refusal helpers (structured logging + the refusal, written once)
 # ---------------------------------------------------------------------------
 
 
 def raise_node_not_found(node_id: str) -> NoReturn:
     """Raise 404 for a missing node, with structured logging."""
     logger.warning("node_not_found", node_id=node_id)
-    raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
+    raise NotFoundError(f"Node '{node_id}' not found")
 
 
 def raise_node_type_error(node_id: str, expected: str, got: str) -> NoReturn:
     """Raise 400 for a node type mismatch, with structured logging."""
     logger.warning("node_type_mismatch", node_id=node_id, expected=expected, got=got)
-    raise HTTPException(
-        status_code=400,
-        detail=f"Node '{node_id}' is not a {expected} node (got {got})",
-    )
+    raise InvalidRequestError(f"Node '{node_id}' is not a {expected} node (got {got})")
 
 
 def raise_pipeline_not_found(name: str) -> NoReturn:
     """Raise 404 for a missing pipeline, with structured logging."""
     logger.warning("pipeline_not_found", name=name)
-    raise HTTPException(status_code=404, detail=f"Pipeline '{name}' not found")
-
-
-def raise_validation_error(detail: str) -> NoReturn:
-    """Raise 400 for a validation failure, with structured logging."""
-    logger.warning("validation_error", detail=detail)
-    raise HTTPException(status_code=400, detail=detail)
+    raise NotFoundError(f"Pipeline '{name}' not found")
 
 
 def find_typed_node(
@@ -159,8 +152,8 @@ def find_typed_node(
 ) -> GraphNode:
     """Find a node by ID and verify its ``nodeType``.
 
-    Raises ``HTTPException(404)`` if the node is missing, or
-    ``HTTPException(400)`` if it has the wrong type.
+    Raises ``NotFoundError`` (404) if the node is missing, or
+    ``InvalidRequestError`` (400) if it has the wrong type.
 
     Parameters
     ----------
@@ -185,8 +178,6 @@ def find_typed_node(
 # ---------------------------------------------------------------------------
 # Self-write tracking (avoid file-watcher feedback loops)
 # ---------------------------------------------------------------------------
-_last_self_write: float = 0.0
-_SELF_WRITE_COOLDOWN = 2.0  # seconds (must exceed save duration + watcher debounce)
 _SELF_WRITE_RETENTION = 60.0
 
 
@@ -260,7 +251,7 @@ def _current_content_digest(path: Path) -> str | None:
 
 
 def mark_self_write(
-    path: str | Path | None = None,
+    path: str | Path,
     *,
     content: bytes | None = None,
     deleted: bool = False,
@@ -270,28 +261,18 @@ def mark_self_write(
     A path marker carries the identity of what the server commits: the
     SHA-256 of ``content`` or a deletion marker, so the watcher can tell
     the server's own write apart from a later external write to the same
-    path. A path needs exactly one of ``content`` and ``deleted``. The bare
-    form only refreshes the process-wide cooldown used by callers with no
-    specific path.
+    path. A path needs exactly one of ``content`` and ``deleted``.
     """
-    global _last_self_write
-    digest: str | None = None
-    if path is not None:
-        if deleted == (content is not None):
-            raise ValueError("a self-write path marker needs exactly one of content or deleted")
-        if content is not None:
-            digest = hashlib.sha256(content).hexdigest()
-    elif content is not None or deleted:
-        raise ValueError("content and deleted require a path")
+    if deleted == (content is not None):
+        raise ValueError("a self-write path marker needs exactly one of content or deleted")
+    digest = None if content is None else hashlib.sha256(content).hexdigest()
     now = time.monotonic()
     with _self_write_lock:
-        _last_self_write = now
-        if path is not None:
-            _prune_self_write_paths(now)
-            _self_write_paths[_self_write_key(path)] = _SelfWriteMark(now, digest)
+        _prune_self_write_paths(now)
+        _self_write_paths[_self_write_key(path)] = _SelfWriteMark(now, digest)
 
 
-def is_self_write(path: str | Path | None = None, *, consume: bool = False) -> bool:
+def is_self_write(path: str | Path, *, consume: bool = False) -> bool:
     """Return True when a watcher event belongs to a server-originated write.
 
     A path matches only while the file's current bytes (or its absence, for
@@ -301,9 +282,6 @@ def is_self_write(path: str | Path | None = None, *, consume: bool = False) -> b
     """
     now = time.monotonic()
     with _self_write_lock:
-        if path is None:
-            return (now - _last_self_write) < _SELF_WRITE_COOLDOWN
-
         _prune_self_write_paths(now)
         key = _self_write_key(path)
         mark = _self_write_paths.get(key)
@@ -401,6 +379,9 @@ def watcher_is_paused() -> bool:
 # explicit lock below.
 ws_clients: set[WebSocket] = set()
 ws_clients_lock = threading.Lock()
+# Each client's connection id and owner (``connection_owner``), held under the same lock:
+# a save's broadcast of its own document leaves out the saving tab's socket by them.
+_ws_identities: dict[WebSocket, tuple[str, str | None]] = {}
 _WS_SEND_TIMEOUT_SECONDS = 1.0
 _ws_send_state_lock = threading.Lock()
 _ws_send_inflight: weakref.WeakSet[WebSocket] = weakref.WeakSet()
@@ -428,27 +409,42 @@ def _clear_ws_send_state(ws: WebSocket) -> None:
         _ws_send_pending.pop(ws, None)
 
 
-def ws_clients_add(ws: WebSocket) -> None:
-    """Thread-safe ``ws_clients.add(ws)``."""
+def connection_owner(scope: Mapping[str, Any]) -> str | None:
+    """The authorised session a request or socket belongs to: the platform user a hosted
+    proxy named (``PlatformProxyBoundary``), or ``None`` for the one local session."""
+    owner = scope.get(FORWARDED_USER_SCOPE_KEY)
+    return owner if isinstance(owner, str) else None
+
+
+def ws_clients_add(ws: WebSocket, *, connection_id: str, owner: str | None) -> None:
+    """Thread-safe ``ws_clients.add(ws)``, with the socket's connection id and owner."""
     with ws_clients_lock:
         ws_clients.add(ws)
+        _ws_identities[ws] = (connection_id, owner)
 
 
 def ws_clients_discard(ws: WebSocket) -> None:
     """Thread-safe ``ws_clients.discard(ws)``."""
     with ws_clients_lock:
         ws_clients.discard(ws)
+        _ws_identities.pop(ws, None)
     _clear_ws_send_state(ws)
 
 
-def ws_clients_snapshot() -> list[WebSocket]:
-    """Return a consistent snapshot of the current clients under the lock."""
+def ws_clients_snapshot(exclude: DocumentUpdateExclusion | None = None) -> list[WebSocket]:
+    """Return a consistent snapshot of the current clients under the lock, without the
+    one socket *exclude* names when its owner is the excluding save's."""
     with ws_clients_lock:
-        return list(ws_clients)
+        if exclude is None:
+            return list(ws_clients)
+        left_out = (exclude["connection_id"], exclude["owner"])
+        return [ws for ws in ws_clients if _ws_identities.get(ws) != left_out]
 
 
-async def broadcast(data: dict[str, Any]) -> None:
-    """Push a message to all connected WebSocket clients.
+async def broadcast(
+    data: dict[str, Any], *, exclude: DocumentUpdateExclusion | None = None
+) -> None:
+    """Push a message to all connected WebSocket clients, but the one *exclude* names.
 
     Iterates a lock-protected snapshot of ``ws_clients`` so concurrent
     connects/disconnects cannot corrupt the set.  Dead clients discovered
@@ -460,7 +456,7 @@ async def broadcast(data: dict[str, Any]) -> None:
         logger.error("broadcast_serialization_failed", error=str(exc))
         return
 
-    snapshot = ws_clients_snapshot()
+    snapshot = ws_clients_snapshot(exclude)
     if not snapshot:
         return
 
@@ -649,31 +645,33 @@ def discover_pipelines() -> list[Path]:
 
 
 # ---------------------------------------------------------------------------
-# Module dependency map: module_stem → set of pipeline Paths that import it
+# Module dependency map: imported module file → set of pipeline Paths that import it
 # ---------------------------------------------------------------------------
 _module_deps: dict[str, set[Path]] | None = None
 _module_deps_lock = threading.Lock()
 
 
-def _module_dep_key(module_stem: str) -> str:
-    """Canonical module-dep map key for a module file stem.
+def _module_dep_key(module_file: Path) -> str:
+    """Canonical module-dep map key for a submodel module file.
 
-    The build side derives stems from the ``from modules import <name>`` a
-    registration names its definition by; the file-watcher derives them from
-    on-disk filenames.  On a case-insensitive filesystem (macOS/Windows) an
-    imported ``foo`` resolves against an on-disk ``modules/Foo.py`` — the two spellings name
-    ONE module, so both sides must casefold through this single helper or the
-    map key and the watcher's query silently drift and live-sync goes stale.
+    The build side resolves the ``modules/<name>.py`` each registration names
+    against its own pipeline's folder, wherever the configured pipeline sits; the
+    file-watcher passes the on-disk path.  On a case-insensitive filesystem
+    (macOS/Windows) an imported ``foo`` resolves against an on-disk
+    ``modules/Foo.py`` — the two spellings name ONE module, so both sides must
+    casefold through this single helper or the map key and the watcher's query
+    silently drift and live-sync goes stale.
     """
-    return module_stem.casefold()
+    return str(module_file.resolve()).casefold()
 
 
 def _ensure_module_deps() -> dict[str, set[Path]]:
     """Build or return the cached module → pipeline dependency map.
 
     Scans each pipeline source for its ``pipeline.submodel(<module>.submodel, ...)``
-    registrations and maps each module's file stem to the set of pipeline files
-    that register it; a pipeline whose registrations are refused is skipped.
+    registrations and maps each module file, resolved beside that pipeline, to the
+    set of pipeline files that register it; a pipeline whose registrations are
+    refused is skipped.
     A dedicated build lock coalesces concurrent scans without blocking pipeline
     index invalidation. The builder snapshots the index generation and publishes
     only if it is unchanged; otherwise it rescans before returning.
@@ -711,8 +709,8 @@ def _ensure_module_deps() -> dict[str, set[Path]]:
                     logger.warning("module_deps_parse_failed", file=f.name, error=str(exc))
                     continue
                 for registration in registrations:
-                    module_stem = Path(registration.path).stem
-                    deps.setdefault(_module_dep_key(module_stem), set()).add(f)
+                    module_file = f.parent / registration.path
+                    deps.setdefault(_module_dep_key(module_file), set()).add(f)
 
             with _pipeline_index_lock:
                 if build_generation != _pipeline_index_generation:
@@ -726,15 +724,16 @@ def _ensure_module_deps() -> dict[str, set[Path]]:
                 return deps
 
 
-def pipelines_importing_module(module_stem: str) -> list[Path]:
-    """Return the pipeline files that import a given module (by stem name).
+def pipelines_importing_module(module_file: Path) -> list[Path]:
+    """Return the pipeline files that import the submodel module *module_file*.
 
-    The stem is matched case-insensitively (see :func:`_module_dep_key`): the
-    watcher passes the on-disk filename's stem, which may differ in case from
-    the ``from modules import <name>`` the map was built from.
+    The path is matched case-insensitively (see :func:`_module_dep_key`): the
+    watcher passes the on-disk path, whose case may differ from the
+    ``from modules import <name>`` the map was built from. Empty for a file no
+    pipeline imports, a nested helper or an unrelated script among them.
     """
     deps = _ensure_module_deps()
-    return list(deps.get(_module_dep_key(module_stem), []))
+    return list(deps.get(_module_dep_key(module_file), []))
 
 
 def lookup_pipeline_by_name(name: str) -> Path | None:
@@ -861,8 +860,112 @@ def save_sidecar(
     # for the primitive-level contract. Pinning tests:
     # TestSaveSidecar.test_writes_atomically_via_atomic_write_text and
     # tests/test_file_ops.py::TestAtomicWriteWindowsReaderContention.
-    atomic_write_text(sidecar, serialised + "\n")
+    content = serialised + "\n"
+    # The server's own write: the watcher must not take it for an external edit.
+    mark_self_write(sidecar, content=content.encode("utf-8"))
+    atomic_write_text(sidecar, content)
     return warnings
+
+
+def wire_source_file(path: Path) -> str:
+    """Return the project-relative source id used in WebSocket frames."""
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(Path.cwd().resolve()).as_posix()
+    except ValueError:
+        return str(resolved)
+
+
+def pipeline_document_update_payload(
+    path: Path,
+    document: dict[str, Any],
+    fingerprint: str,
+    *,
+    exclude: DocumentUpdateExclusion | None = None,
+) -> PipelineDocumentUpdatePayload:
+    """The ``pipeline.document.update`` event for *path*'s dumped editor *document*, with
+    the socket it leaves out, if any."""
+    payload: PipelineDocumentUpdatePayload = {
+        "document": document,
+        "document_fingerprint": fingerprint,
+        "source_file": wire_source_file(path),
+    }
+    if exclude is not None:
+        payload["exclude_connection"] = exclude
+    return payload
+
+
+def pipelines_naming_artifacts(
+    changed: Iterable[Path], pipelines: Iterable[Path], *, project_root: Path
+) -> list[Path]:
+    """The *pipelines* whose recovery document reads any of the *changed* files: its
+    own sidecar, or a file its recovery manifest names (a child module, its sidecar, a
+    config). The file watcher and the save find the documents to refresh by it."""
+    from haute._pipeline_recovery import _recovery_artifacts
+
+    changed_paths = {path.resolve() for path in changed}
+    if not changed_paths:
+        return []
+    owners: list[Path] = []
+    for pipeline_path in pipelines:
+        # The parent sidecar is unconditionally part of a recovery document,
+        # even when its source currently has syntax damage that prevents the
+        # deeper manifest walk from discovering child artifacts.
+        if pipeline_path.with_suffix(".haute.json").resolve() in changed_paths:
+            owners.append(pipeline_path)
+            continue
+        try:
+            artifacts = _recovery_artifacts(pipeline_path, project_root)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "pipeline_recovery_manifest_failed", file=pipeline_path.name, error=str(exc)
+            )
+            continue
+        if any(artifact_path.resolve() in changed_paths for _, artifact_path in artifacts):
+            owners.append(pipeline_path)
+    return owners
+
+
+def shared_document_updates(
+    artifacts: Iterable[Path], *, saved: Path, project_root: Path
+) -> list[PipelineDocumentUpdatePayload]:
+    """The ``pipeline.document.update`` events of every other document a save of
+    *saved* changed by writing *artifacts*: each importing a module it wrote, or reading
+    a file it wrote. A save's writes never reach the file watcher, so the route
+    publishes these itself, as the watcher would have for another program's edit."""
+    saved_path = saved.resolve()
+    written = [
+        path
+        for path in artifacts
+        if path.resolve() not in {saved_path, saved_path.with_suffix(".haute.json")}
+    ]
+    if not written:
+        return []
+    others = [
+        path
+        for path in discover_pipelines()
+        if path.suffix == ".py" and not path.name.startswith("__") and path.resolve() != saved_path
+    ]
+    affected = {
+        path.resolve(): path
+        for path in pipelines_naming_artifacts(written, others, project_root=project_root)
+    }
+    for module in (path for path in written if path.suffix == ".py"):
+        for importer in pipelines_importing_module(module):
+            if importer.resolve() != saved_path:
+                affected.setdefault(importer.resolve(), importer)
+    updates: list[PipelineDocumentUpdatePayload] = []
+    for path in affected.values():
+        try:
+            document = load_pipeline_editor_document(path, project_root=project_root)
+        except Exception as exc:  # the save has committed: its answer stands
+            logger.warning("save_shared_document_unpublished", file=path.name, error=str(exc))
+            continue
+        dumped = document.model_dump(mode="json", by_alias=True)
+        updates.append(
+            pipeline_document_update_payload(path, dumped, pipeline_document_fingerprint(dumped))
+        )
+    return updates
 
 
 def _project_relative_source_file(path: Path, project_root: Path) -> str:
@@ -884,6 +987,7 @@ def parse_pipeline_to_graph(
     resolved_path = py_path.resolve()
     if project_root is None:
         cwd = Path.cwd().resolve()
+        # not contained_path: chooses the root; a file outside the working directory is its own
         root = cwd if resolved_path.is_relative_to(cwd) else resolved_path.parent
     else:
         root = project_root.resolve()

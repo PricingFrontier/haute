@@ -5410,9 +5410,9 @@ class TestTurnContext:
         calls: list[str] = []
         real = _tools._brief_nodes
 
-        def counted(graph):
+        def counted(graph, flat):
             calls.append("resolved")
-            return real(graph)
+            return real(graph, flat)
 
         monkeypatch.setattr(_tools, "_brief_nodes", counted)
         first = _tools.build_turn_context("main.py", _turn_policy())
@@ -5636,7 +5636,7 @@ class TestBriefBoundaries:
         )
         graph = PipelineGraph(nodes=[_node("quote_inputs", "apiInput")], edges=[])
 
-        nodes = _tools._brief_nodes(graph)
+        nodes = _tools._brief_nodes(graph, graph)
 
         assert nodes == (
             BriefNode(
@@ -5664,11 +5664,64 @@ class TestBriefBoundaries:
     def test_the_brief_cache_keeps_only_the_latest_revisions(self, monkeypatch: pytest.MonkeyPatch):
         from haute.assistant import _tools
 
-        monkeypatch.setattr(_tools, "_brief_nodes", lambda _graph: ())
+        monkeypatch.setattr(_tools, "_brief_nodes", lambda _graph, _flat: ())
         graph = PipelineGraph(nodes=[], edges=[])
         for index in range(_tools._BRIEF_CACHE_SIZE + 1):
             _tools._cached_brief_nodes(graph, f"revision-{index}")
 
+        revisions = {key.partition(":")[0] for key in _tools._BRIEF_CACHE}
         assert len(_tools._BRIEF_CACHE) == _tools._BRIEF_CACHE_SIZE
-        assert "revision-0" not in _tools._BRIEF_CACHE
-        assert f"revision-{_tools._BRIEF_CACHE_SIZE}" in _tools._BRIEF_CACHE
+        assert "revision-0" not in revisions
+        assert f"revision-{_tools._BRIEF_CACHE_SIZE}" in revisions
+
+    def test_the_brief_follows_the_form_its_workbench_nodes_take_their_tables_from(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The project revision does not cover the form folder, so the brief is resolved
+        again when the tables a Workbench Input is given change, the revision unchanged."""
+        from haute.assistant import _tools
+        from tests._workbench_helpers import form_table, workbench_project
+
+        monkeypatch.chdir(tmp_path)
+        workbench_project(tmp_path, [form_table("t_policy", "policy", "input", ("state", "str"))])
+        briefed: list[list[str]] = []
+
+        def ports(_graph, flat):
+            [request] = [node for node in flat.nodes if node.id == "request"]
+            briefed.append([table["name"] for table in request.data.config["tables"]])
+            return ()
+
+        monkeypatch.setattr(_tools, "_brief_nodes", ports)
+        graph = PipelineGraph(nodes=[_node("request", "workbenchInput")], edges=[])
+
+        _tools._cached_brief_nodes(graph, "revision")
+        _tools._cached_brief_nodes(graph, "revision")
+        workbench_project(
+            tmp_path,
+            [
+                form_table("t_policy", "policy", "input", ("state", "str")),
+                form_table("t_items", "items", "input", ("value", "float"), many=True),
+            ],
+        )
+        _tools._cached_brief_nodes(graph, "revision")
+
+        assert briefed == [["quote_details", "policy"], ["quote_details", "policy", "items"]]
+
+
+def test_a_service_refusal_reaches_the_analyst_as_its_message() -> None:
+    """The assistant reads a service's refusal as the domain error it is, a plain
+    message or a structured detail's own message, never an HTTP exception's detail."""
+    from haute.assistant._tools import _error_message
+    from haute.errors import ConflictError, InsufficientMemoryError
+
+    conflict = ConflictError("The pipeline changed on disk. Reload it, then save again.")
+    memory = InsufficientMemoryError(
+        {"error_code": "memory_limit", "message": "There is not enough free memory to train now."}
+    )
+
+    assert _error_message(conflict, operation="save") == (
+        "The pipeline changed on disk. Reload it, then save again."
+    )
+    assert _error_message(memory, operation="train") == (
+        "There is not enough free memory to train now."
+    )

@@ -13,6 +13,8 @@ pass as the parser is built out.
 from __future__ import annotations
 
 import math
+from datetime import date
+from types import SimpleNamespace
 
 import polars as pl
 import pytest
@@ -22,6 +24,7 @@ import pytest
 # ---------------------------------------------------------------------------
 from haute._expression_parser import (
     AssignmentPhases,
+    _may_change,
     assignment_phases,
     evaluate_expression,
     parse_expression,
@@ -1777,3 +1780,489 @@ class TestTheLocatedExpressionAlone:
             "when 2 > 1 then when 3 > 2 then 10 otherwise 0 otherwise 20"
         )
         assert result.result_value == 10
+
+
+_TIMES_A = 'df = df.with_columns(y=pl.col("x") * {}["A"])'
+_LOOKUP = 'df = df.with_columns(y=pl.col("code").replace_strict(mapping, default=0.0))'
+
+
+class TestValuesChangedInPlace:
+    """A value changed without binding its name again is unknown from there on."""
+
+    @pytest.mark.parametrize(
+        ("code", "unknown"),
+        [
+            ('factors = {"A": 1.0}\nfactors["A"] = 2.0\n' + _TIMES_A.format("factors"), "factors"),
+            ('factors = {"A": 1.0}\nfactors["A"] += 1.0\n' + _TIMES_A.format("factors"), "factors"),
+            ('mapping = {"a": 2.0}\ndel mapping["a"]\n' + _LOOKUP, "mapping"),
+            (
+                'factors = {"A": 1.0}\nfactors.update({"A": 2.0})\n' + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            ('mapping = {"a": 2.0, "b": 3.0}\nlast = mapping.pop("b")\n' + _LOOKUP, "mapping"),
+            (
+                'mapping = {"a": 1.0}\nfor key in ["a"]:\n    mapping[key] = 2.0\n' + _LOOKUP,
+                "mapping",
+            ),
+            ('box.rate = 2.0\ndf = df.with_columns(y=pl.col("x") * box.rate)', "box"),
+            ('RATES["A"] = 2.0\n' + _TIMES_A.format("RATES"), "RATES"),
+            (
+                'factors = {"A": 1.0}\nalias = factors\nalias["A"] = 2.0\n'
+                + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\nalias = factors\nfactors["A"] = 2.0\n'
+                + _TIMES_A.format("alias"),
+                "alias",
+            ),
+            (
+                'inner = {"A": 1.0}\nouter = {"k": inner}\ninner["A"] = 2.0\n'
+                'df = df.with_columns(y=pl.col("x") * outer["k"]["A"])',
+                "outer",
+            ),
+            (
+                'a = {"A": 1.0}\nb = a\nc = b\nb = {}\na["A"] = 2.0\n' + _TIMES_A.format("c"),
+                "c",
+            ),
+            (
+                "base = [1.0]\nalias = base\nbase += [2.0]\n"
+                'df = df.with_columns(y=pl.col("x") * alias[1])',
+                "alias",
+            ),
+            (
+                "factor = 1.0\nif True:\n    factor = 2.0\n"
+                '    df = df.with_columns(y=pl.col("x") * factor)',
+                "factor",
+            ),
+            (
+                'factors = {"A": 1.0}\nif True:\n    factors["A"] = 2.0\n'
+                '    df = df.with_columns(y=pl.col("x") * factors["A"])',
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\nalias = factors\nif False:\n    alias = {}\n'
+                'alias["A"] = 2.0\n' + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\nif True:\n    alias = factors\nalias["A"] = 2.0\n'
+                + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                "factors = [1.0, 2.0]\ndf = df.with_columns(\n"
+                "    popped=pl.lit(factors.pop(0)),\n"
+                '    y=pl.col("x") * factors[0],\n)',
+                "factors",
+            ),
+            (
+                'factors = {"A": {"rate": 1.0}}\nrate = factors["A"]\n'
+                'factors["A"]["rate"] = 2.0\n'
+                'df = df.with_columns(y=pl.col("x") * rate["rate"])',
+                "rate",
+            ),
+            (
+                'factors = {"A": {"rate": 1.0}}\nmine = dict(factors)\n'
+                'mine["A"]["rate"] = 2.0\n'
+                'df = df.with_columns(y=pl.col("x") * factors["A"]["rate"])',
+                "factors",
+            ),
+            (
+                'inner = {"A": 1.0}\ndefaults = {"k": inner}\nouter = {**defaults}\n'
+                'inner["A"] = 2.0\ndf = df.with_columns(y=pl.col("x") * outer["k"]["A"])',
+                "outer",
+            ),
+            (
+                'factors = {"A": 1.0}\ndef bump():\n    factors["A"] = 2.0\nbump()\n'
+                + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factor = 1.0\nRATES.update({"A": 2.0})\n' + _TIMES_A.format("RATES"),
+                "RATES",
+            ),
+            (
+                "factors = [1.0, 2.0]\ndef helper(factors=factors.pop(0)):\n    pass\n"
+                'df = df.with_columns(y=pl.col("x") * factors[0])',
+                "factors",
+            ),
+            (
+                'factors = {"A": {"rate": 1.0}}\nif True:\n    alias = factors\n'
+                '    rate = alias["A"]\n    rate["rate"] = 2.0\n'
+                'df = df.with_columns(y=pl.col("x") * factors["A"]["rate"])',
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\nouter = (alias := factors)\nalias["A"] = 2.0\n'
+                + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\nouter = {}\nouter["k"] = factors\nouter["k"]["A"] = 2.0\n'
+                + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\nmatch factors:\n    case alias:\n        alias["A"] = 2.0\n'
+                + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\ndef bump():\n    local = factors\n    local["A"] = 2.0\n'
+                "bump()\n" + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\ndef helper(d):\n    d.update({"A": 2.0})\n'
+                "helper(factors)\n" + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\n'
+                'expr = pl.col("x").map_elements(lambda v: v * factors["A"])\n'
+                'factors["A"] = 2.0\ndf = df.with_columns(y=expr)',
+                "expr",
+            ),
+            (
+                "factor = 1.0\nmatch 2.0:\n    case factor:\n        pass\n"
+                'df = df.with_columns(y=pl.col("x") * factor)',
+                "factor",
+            ),
+            (
+                "factors = [1.0]\nalias = factors\nfactors += (2.0,)\n"
+                'df = df.with_columns(y=pl.col("x") * alias[-1])',
+                "alias",
+            ),
+            (
+                "factors = [1.0]\nitems = ()\nif True:\n    items = factors\n"
+                "    items.append(2.0)\n"
+                'df = df.with_columns(y=pl.col("x") * factors[-1])',
+                "factors",
+            ),
+            (
+                'factors = [1.0] or pl.col("x")\nfactors[0] = 2.0\n'
+                'df = df.with_columns(y=pl.col("x") * factors[0])',
+                "factors",
+            ),
+            (
+                'factors = {"A": {"rate": 1.0}}\nfactors.get("A")["rate"] = 2.0\n'
+                'df = df.with_columns(y=pl.col("x") * factors["A"]["rate"])',
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\ndef bump(items):\n    items[0]["A"] = 2.0\n'
+                "bump([factors])\n" + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\ndef bump(d):\n    alias = d\n    alias["A"] = 2.0\n'
+                "bump(factors)\n" + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                "factors = [1.0]\nitems = ()\nif True:\n    items = factors\n    alias = items\n"
+                "    alias.append(2.0)\n"
+                'df = df.with_columns(y=pl.col("x") * factors[-1])',
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\nerror = None\ntry:\n    raise ValueError(factors)\n'
+                'except ValueError as error:\n    error.args[0]["A"] = 2.0\n'
+                + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\ndef bump(d):\n    box = {}\n    box["d"] = d\n'
+                '    box["d"]["A"] = 2.0\nbump(factors)\n' + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\ndef bump():\n    factors["A"] = 2.0\n'
+                'factors = {"A": 1.0}\nbump()\n' + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\ndef bump(d):\n    d["A"] = 2.0\nrun = bump\nrun(factors)\n'
+                + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\nclass Box:\n    def __init__(self, d):\n'
+                '        d["A"] = 2.0\nBox(factors)\n' + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                "factor = 1.0\ndef reset():\n    global factor\n    factor = 2.0\nreset()\n"
+                'df = df.with_columns(y=pl.col("x") * factor)',
+                "factor",
+            ),
+            (
+                "factor = 1.0\nvalues = [(factor := 2.0) for _ in range(1)]\n"
+                'df = df.with_columns(y=pl.col("x") * factor)',
+                "factor",
+            ),
+            (
+                "factors = [2.0, 1.0]\nordered = factors.sort()\n"
+                'df = df.with_columns(y=pl.col("x") * factors[0])',
+                "factors",
+            ),
+            (
+                'factors = {"A": 1.0}\ntry:\n    error = None\n    raise ValueError(factors)\n'
+                'except ValueError as error:\n    error.args[0]["A"] = 2.0\n'
+                + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'handlers = {}\ndef bump(d):\n    d["A"] = 2.0\nhandlers["bump"] = bump\n'
+                'factors = {"A": 1.0}\nhandlers["bump"](factors)\n' + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                'rate = 2.0\nclass Parent:\n    def __init__(self, d):\n        d["A"] = rate\n'
+                'class Child(Parent):\n    pass\nfactors = {"A": 1.0}\nChild(factors)\n'
+                + _TIMES_A.format("factors"),
+                "factors",
+            ),
+            (
+                "factor = 1.0\ndef run(fn):\n    fn()\n    return fn\n@run\ndef reset():\n"
+                "    global factor\n    factor = 2.0\n"
+                'df = df.with_columns(y=pl.col("x") * factor)',
+                "factor",
+            ),
+            (
+                "factor = 1.0\ndef reset():\n    global factor\n    match 2.0:\n"
+                "        case factor:\n            pass\nreset()\n"
+                'df = df.with_columns(y=pl.col("x") * factor)',
+                "factor",
+            ),
+            (
+                'factor = 1.0\nexec("factor = 2.0")\ndf = df.with_columns(y=pl.col("x") * factor)',
+                "factor",
+            ),
+            (
+                'factors = {"A": 1.0}\ndef update_factors():\n'
+                '    return factors.update({"A": 2.0})\nupdate_factors()\n'
+                + _TIMES_A.format("factors"),
+                "factors",
+            ),
+        ],
+        ids=[
+            "subscript",
+            "augmented-subscript",
+            "delete",
+            "method-on-its-own-line",
+            "pop-in-a-binding",
+            "inside-a-loop",
+            "attribute",
+            "preamble-value",
+            "through-an-alias",
+            "read-through-an-alias",
+            "nested",
+            "alias-through-a-rebound-name",
+            "augmented-list",
+            "rebound-in-the-formula-block",
+            "changed-in-the-formula-block",
+            "rebound-in-a-block-that-may-not-run",
+            "an-alias-made-in-a-block",
+            "changed-by-the-formula-statement",
+            "a-container-read-out",
+            "a-shallow-copy",
+            "unpacked-into-a-dict",
+            "changed-in-a-function",
+            "a-preamble-container-method",
+            "a-default-argument",
+            "an-element-of-an-alias-made-in-a-block",
+            "a-walrus-in-a-binding",
+            "stored-into-a-container",
+            "a-match-capture",
+            "a-function-local-alias",
+            "passed-to-a-function-that-changes-it",
+            "a-lambda-in-a-polars-expression",
+            "rebound-by-a-match-capture",
+            "a-list-extended-by-a-tuple",
+            "rebound-in-a-block-before-the-change",
+            "an-or-returning-a-list",
+            "a-store-through-a-call",
+            "passed-inside-a-list-to-a-function-that-changes-it",
+            "a-parameter-changed-through-a-local-alias",
+            "an-alias-of-a-name-rebound-in-the-block",
+            "an-exception-capture",
+            "a-parameter-held-in-a-local-container",
+            "a-function-run-after-the-value-is-bound-again",
+            "a-function-called-through-an-alias",
+            "a-class-whose-constructor-changes-its-argument",
+            "a-global-bound-again-by-a-function",
+            "a-walrus-in-a-comprehension",
+            "a-container-method-whose-result-is-used",
+            "an-exception-capture-beside-a-binding",
+            "a-function-registered-in-a-container",
+            "a-subclass-of-a-changing-class",
+            "a-decorator-running-a-global-rebinding",
+            "a-global-bound-again-by-a-match-capture",
+            "exec",
+            "a-helper-returning-a-container-method-on-a-name-around-it",
+        ],
+    )
+    def test_the_value_is_reported_not_guessed(self, code: str, unknown: str) -> None:
+        preamble = {"RATES": {"A": 1.0}, "box": SimpleNamespace(rate=1.0)}
+
+        result = evaluate_expression(code, "y", {"x": 10.0, "code": "a"}, preamble_ns=preamble)
+
+        assert result.result_value is None
+        assert result.not_computable_reason == f"unresolved_name: {unknown}"
+        parsed = parse_expression(code, "y")
+        assert parsed is not None
+        assert parsed.expression_type == "opaque"
+
+    @pytest.mark.parametrize(
+        ("code", "value"),
+        [
+            (
+                'factors = {"A": 1.0}\nrate = factors["A"]\nfactors["A"] = 2.0\n'
+                'df = df.with_columns(y=pl.col("x") * rate)',
+                10.0,
+            ),
+            ('factors = {"A": 2.0}\nprint(factors)\n' + _TIMES_A.format("factors"), 20.0),
+            (
+                "factor = 2.0\npl.Config.set_tbl_rows(5)\n"
+                'df = df.with_columns(y=pl.col("x") * factor)',
+                20.0,
+            ),
+            (
+                "factor = 2.0\nif True:\n    other = 1\n"
+                '    df = df.with_columns(y=pl.col("x") * factor)',
+                20.0,
+            ),
+            (
+                'factors = {"A": 1.0}\ndef helper(factors):\n'
+                '    factors.update({"A": 2.0})\n' + _TIMES_A.format("factors"),
+                10.0,
+            ),
+            (
+                'factors = {"A": 1.0}\nexpr = pl.col("x") * factors["A"]\n'
+                'factors["A"] = 2.0\ndf = df.with_columns(y=expr)',
+                10.0,
+            ),
+            (
+                'factors = {"A": 2.0}\nfactor = 1.0\nfactor += 0.5\n' + _TIMES_A.format("factors"),
+                20.0,
+            ),
+            (
+                'expr = pl.col("x") * 2.0\nexpr.alias("z")\ndf = df.with_columns(y=expr)',
+                20.0,
+            ),
+            (
+                'default = None\nfactors = {}\nfactors["A"] = 2.0\n'
+                'df = df.with_columns(y=pl.coalesce(pl.lit(default), pl.col("x")))',
+                10.0,
+            ),
+            (
+                'factors = {"A": 2.0}\ndef total(xs):\n    t = 0\n    for x in xs:\n'
+                "        t += x\n    return t\nn = total([1, 2])\n" + _TIMES_A.format("factors"),
+                20.0,
+            ),
+            (
+                "factor = 1.0\ndef reset():\n    global factor\n    factor = 2.0\n"
+                "def unused():\n    reset()\n"
+                'df = df.with_columns(y=pl.col("x") * factor)',
+                10.0,
+            ),
+            (
+                'factors = {"A": 2.0}\ndef clip(d):\n    d["A"] = 5.0\n'
+                'df = df.with_columns(y=pl.col("x").clip(0, 100) * factors["A"])',
+                20.0,
+            ),
+            (
+                "factor = 2.0\ndef debug():\n    return locals()\n"
+                'df = df.with_columns(y=pl.col("x") * factor)',
+                20.0,
+            ),
+        ],
+        ids=[
+            "read-before-the-change",
+            "a-function-call",
+            "a-method-on-a-name-the-code-never-bound",
+            "a-block-that-leaves-the-name-alone",
+            "a-function-changing-its-own-parameter",
+            "a-polars-expression-built-before-the-change",
+            "arithmetic-on-a-number",
+            "a-method-alone-on-a-polars-expression",
+            "a-null-default",
+            "a-helper-summing-numbers",
+            "a-global-rebinding-only-an-unused-function-runs",
+            "a-helper-named-like-a-polars-method",
+            "reflection-in-an-unused-helper",
+        ],
+    )
+    def test_a_value_the_code_did_not_change_keeps_it(self, code: str, value: float) -> None:
+        result = evaluate_expression(code, "y", {"x": 10.0, "code": "a"})
+
+        assert result.not_computable_reason is None
+        assert result.result_value == value
+
+    def test_a_preamble_value_after_a_change_is_reported_not_guessed(self) -> None:
+        # ``alias`` holds the preamble's dict; the change through it reaches
+        # ``RATES`` though the code never names it in a change.
+        code = 'alias = RATES\nalias["A"] = 2.0\n' + _TIMES_A.format("RATES")
+
+        result = evaluate_expression(code, "y", {"x": 10.0}, preamble_ns={"RATES": {"A": 1.0}})
+
+        assert result.result_value is None
+        assert result.not_computable_reason == "unresolved_name: RATES"
+
+    def test_a_preamble_number_bound_again_by_reflection_is_reported_not_guessed(self) -> None:
+        code = 'factor = 1.0\nglobals()["RATE"] = 3.0\ndf = df.with_columns(y=pl.col("x") * RATE)'
+
+        result = evaluate_expression(code, "y", {"x": 10.0}, preamble_ns={"RATE": 2.0})
+
+        assert result.result_value is None
+        assert result.not_computable_reason == "unresolved_name: RATE"
+
+    def test_a_preamble_number_after_a_change_still_computes(self) -> None:
+        code = (
+            'factors = {"A": 1.0}\nfactors["A"] = 2.0\ndf = df.with_columns(y=pl.col("x") * RATE)'
+        )
+
+        result = evaluate_expression(code, "y", {"x": 10.0}, preamble_ns={"RATE": 2.0})
+
+        assert result.not_computable_reason is None
+        assert result.result_value == 20.0
+
+    @pytest.mark.parametrize(
+        ("value", "may_change"),
+        [
+            (math, False),
+            (math.floor, False),
+            (SimpleNamespace, False),
+            (pl.col("x"), False),
+            (2.5, False),
+            ("text", False),
+            (date(2026, 1, 1), False),
+            ((1, "a"), False),
+            (None, False),
+            ({"A": 1.0}, True),
+            ([1.0], True),
+            ({1.0}, True),
+            (SimpleNamespace(rate=1.0), True),
+            ((1, [2]), True),
+        ],
+        ids=[
+            "module",
+            "function",
+            "class",
+            "polars-expression",
+            "number",
+            "string",
+            "date",
+            "tuple-of-scalars",
+            "none",
+            "dict",
+            "list",
+            "set",
+            "object",
+            "tuple-holding-a-list",
+        ],
+    )
+    def test_what_a_change_can_reach(self, value: object, may_change: bool) -> None:
+        assert _may_change(value) is may_change

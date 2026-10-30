@@ -125,8 +125,8 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the twenty-nine packages delivered or settled since (thirteen by 28
-October 2026, sixteen more on 29 October) have been removed from the sections below; the coverage table keeps the
+The findings of the thirty-eight packages delivered or settled since (thirteen by 28
+October 2026, twenty-five more on 29 October) have been removed from the sections below; the coverage table keeps the
 original counts.
 
 ## Validation — 25 October 2026
@@ -140,12 +140,10 @@ target dependency resolution. The component roadmaps now carry the resulting pla
 |---|---|
 | `EXEC-R17` | Keep same-size/same-mtime utility freshness and support deferred imports while scoping `sys.path`; bytecode invalidation is a correctness defence. |
 | `EXEC-R13` | Measure actual RSS at a readiness handshake; native VMS, private-commit and cgroup baselines are different accounting. Preserve startup supervision. |
-| `PCFG-R18` | Normalise syntactic whitespace using token boundaries; preserve indentation and multiline literal contents. |
-| `FSH-R07`, `API-R08`, `FSH-R05` | Recover a save only from complete canonical saved-content equality, retain newer dirty edits, and distinguish intended other-tab broadcasts from watcher duplicates and self-echoes. |
+| `FSH-R07`, `FSH-R05` | Recover a save only from complete canonical saved-content equality, retain newer dirty edits, and distinguish intended other-tab broadcasts from watcher duplicates and self-echoes. |
 | `DEP-R11` | Check every response batch before positional pairing; require explicit first-deploy intent or authoritative absence, never infer absence from an outage. |
 | `DEP-R09` | Resolve and verify dependency locks for each target Python/platform and extras. |
 | `WB-10` | Shipped SQLite already has atomic insert-if-absent. Require a real selected-engine concurrency test and correct transaction recovery. |
-| `GIT-R02` | Preserve configured SSH commands and Git precedence; use process-level noninteractive execution, deadlines and transport cleanup. Appended OpenSSH options do not reliably override earlier ones. |
 
 The build-directory work is split into `DEP-R12A` (P2, isolated owned bundles
 and cleanup) and `DEP-R12B` (P3, project-scoped schema caching). Unnamed stale artifacts
@@ -198,9 +196,6 @@ these are the Majors still open.
 - **The RAM estimate reads widths from the nearest source and matches dtype
   tokens** (two Majors, `EXEC-R10`): a widened graph estimates 48,000 bytes
   against 4,016,000 actual.
-- **A vanished generation is reported corrupt; a generation is removed with a
-  bare `rmtree` under the lock; the registry and the engine anchor relative
-  paths differently** (three Majors, `IO-R04`, `IO-R05`).
 - **The one-shot and protocol watchdogs measure a bare interpreter** (Major,
   `EXEC-R13`): 51 MiB tighter than the native cap under a 256 MiB budget.
 - **A graceful server exit joins every in-flight worker** (Major,
@@ -208,25 +203,8 @@ these are the Majors still open.
   7.6 s; no job registry is cancelled at shutdown.
 - **A remote user error replaces the warm worker; one failed replacement
   disables the slot for the life of the server** (two Majors, `EXEC-R12`).
-- **Every save round-trips through the file watcher** (Major, `API-R08`): the
-  sidecar write and the stale-config unlink carry no self-write marker, so the
-  saved document is reloaded and broadcast as an external edit.
-- **A graph the flattener refuses, and a trace that fails in the user's node
-  code, are answered with the sanitized 500** (two Majors, `API-R06`); two tests
-  pin the 500.
-- **Utility files are written non-atomically, unlocked and without a revision**
-  (Major, `API-R07`): a second editor's PUT silently wins and a concurrent
-  preview can import a truncated file.
-- **A non-UTF-8 sidecar or pipeline file is loaded with replacement characters
-  that the next save writes over the author's bytes** (Major, `PCFG-R10`;
-  reproduced). The package is P1 because the corruption is silent.
-- **Inline decorator keywords on a sidecar-backed node are dropped by the parse
-  and merged over the sidecar by Recover** (Major, `PCFG-R11`).
 - **Every save drops authored comments outside the kept regions** (Major,
   `PCFG-R12`; five kinds reproduced) with no diagnostic.
-- **A closing `return df` on the same line as a statement drops the statement**
-  (Major, `PCFG-R17`; reproduced): the node loads empty and the next save writes
-  a placeholder over the authored body. The package is P1.
 - **The optimiser's MLflow log writes the complete result artifact without the
   finiteness gate the save applies** (Major, `OPT-R01`): a missing defence layer
   on a pricing artifact, since the status poll corrects the UI path.
@@ -298,30 +276,13 @@ production:
 | Execution engine | STA-4, STA-5, STA-8 | `EXEC-R15` |
 | Execution engine | EXE-3 | `EXEC-R16` (Decision) |
 | Execution engine | EXE-4, EXE-5, EXE-6, EXE-7, EXE-8, EXE-9, EXE-15, STA-6, STA-7, the preamble `sys.path` edit | `EXEC-R17` |
-| IO layer | CIO-2, CIO-3 | `IO-R04` |
-| IO layer | CIO-4 | `IO-R05` |
 | IO layer | CIO-5, CIO-11 | `IO-R06` |
-| IO layer | CIO-8, CIO-9, CIO-10 | `IO-R07` |
-| IO layer | CIO-6, CIO-7 | `IO-R08` |
 | Background jobs | WRK-2 | `ROAD-WORKER-06` |
 | Background jobs | WRK-5, WRK-6, WRK-11, WRK-14 | `ROAD-WORKER-07` |
 | Background jobs | WRK-8, WRK-9, WRK-10 | `ROAD-WORKER-08` |
-| Server API | PM-43 | `API-R05` |
-| Server API | SRV-2, SRV-3, SRV-9, SRV-11 | `API-R06` |
-| Server API | SRV-4 | `API-R07` |
-| Server API | SRV-1, SRV-5 | `API-R08` |
-| Server API | SRV-6, SRV-7, SRV-8, SRV-13, SRV-15 | `API-R09` |
-| Server API | SRV-10, SRV-12, SRV-14, SRV-16, SRV-17 | `API-R10` |
-| Pipeline config | PCF-1 | `PCFG-R10` |
-| Pipeline config | PCF-2, PCF-5 | `PCFG-R11` |
 | Pipeline config | PCF-3 | `PCFG-R12` |
-| Pipeline config | PCF-6, PCF-7 | `PCFG-R13` |
-| Pipeline config | PCF-8, PCF-11, PCF-14, PCF-15 | `PCFG-R14` |
-| Pipeline config | PCF-4, PCF-9, PCF-10, PCF-12 | `PCFG-R15` |
 | Pipeline config | PCF-13 | `PCFG-R16` (Decision) |
-| Pipeline config | PCR-1 | `PCFG-R17` |
-| Pipeline config | PCR-2, PCR-3, PCR-4 | `PCFG-R18` |
-| Pipeline config | PCR-5, PCR-6, PCR-7, PCR-8 | `PCFG-R19` |
+| Pipeline config | PCR-8 | `PCFG-R19` |
 | Optimiser | OPR-1, OPR-8, OPR-12 | `OPT-R01` |
 | Optimiser | OPR-3 | `OPT-R02` |
 | Optimiser | OPR-4, OPR-5, OPR-6, OPR-7 | `OPT-R03` |
@@ -332,9 +293,6 @@ production:
 | Modelling | MDL-2, MDL-18, MDL-22 | `MOD-R06` |
 | Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
 | Tracing | TRC-8, TRC-9, TRC-10, TRC-14 | `TRACE-R03` |
-| Git integration | GIT-3, GIT-4, GIT-5, GIT-8, GIT-9 | `GIT-R02` |
-| Git integration | GIT-6, GIT-7 | `GIT-R03` |
-| Git integration | GIT-2 | `GIT-R04` |
 | Git integration | GIT-12, GIT-13 | `GIT-R05` |
 | Git integration | GIT-14 | `GIT-R06` (Decision) |
 | Assistant | ASA-1, ASA-2, ASA-7, ASA-13 | `ASSIST-54` |
@@ -347,7 +305,6 @@ production:
 | Explore / EDA | SUB-8, SUB-9, SUB-12 | `EDA-R02` |
 | Frontend shared | FSA-1, FSA-2, FSA-8, FSA-10 | `FSH-R05` |
 | Frontend shared | FSA-3, FSA-4, FSA-5, FSA-6, FSA-7, FSA-9, FSA-12 | `FSH-R06` |
-| Server API | FSA-11 | `API-R08` (extended) |
 | Frontend node editors | FNE-1, FNE-2, FNE-4, FNE-7, FNE-8, FNE-17 | `FNED-R01` |
 | Frontend node editors | FNE-3, FNE-5, FNE-6, FNE-9, FNE-11 | `FNED-R02` |
 | Frontend node editors | FNE-10, FNE-12, FNE-13, FNE-14, FNE-15, FNE-16 | `FNED-R03` |
@@ -360,17 +317,10 @@ production:
 | Frontend optimiser | FOX-1, FOX-2, FOX-3 | `FMOU-R04` |
 | Frontend optimiser | FOX-4, FOX-5, FOX-6, FOX-8, FOX-10 (optimiser part) | `FMOU-R05` |
 | Frontend Explore | FOX-7, FOX-9, FOX-10 (Explore part), FOX-11, FOX-12 | `EDA-R03` |
-| Git UI | FTG-2, FTG-3, FTG-7, FTG-8, FTG-14, FTG-17, FTG-19, FTG-22 | `GIT-R07` |
-| Git UI | FTG-9, FTG-12 | `GIT-R08` |
 | Assistant UI | FTG-5, FTG-18, FTG-20 | `ASSIST-60` |
-| Sandbox security | PM-42 | `SBX-R04` |
-| Workbench | PM-44 | `WB-33` |
 | Workbench | PM-45 | `WB-10` (selected server engine's atomic form insertion) |
 | Engineering quality | PM-50 | `ENGQ-R01` (evidence added) |
 | Engineering quality | the campaign-named test modules recounted | `ENGQ-R05` (evidence added) |
-| Workbench UI | FWB-1, FWB-6, FWB-8, FWB-9 | `WB-35` |
-| Workbench UI | FWB-2, FWB-3 | `WB-36` |
-| Workbench UI | FWB-4, FWB-5; app shell FAP-14 | `WB-37` |
 | Workbench UI | FWB-7 | `WB-38` (Decision) |
 | App shell and canvas | FAP-2, FAP-3, FAP-5 | `FGC-R01` |
 | App shell and canvas | FAP-1, FAP-11 | `FGC-R02` |
@@ -381,10 +331,9 @@ production:
 
 Already tracked before this review and not repeated: the `cwd`-captured sandbox
 root used by the deploy modules, the underwriter app and the server
-(`PCFG-R04`); the SPA path containment and the build hook's asset containment
-(`SBX-R01`); the
+(`PCFG-R04`); the
 three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`);
-`HTTPException` raised from service modules (`API-R02`) and the hand-maintained
+the hand-maintained
 browser contract (`API-R03`); the cwd-dependent resolvers in the routes and the
 parser (`PCFG-R04`), editor state inside the config (`PCFG-R08`), the per-type
 validators and branches (`PCFG-R07`, `PCFG-R09`); name-violation reporting
@@ -394,16 +343,12 @@ points without convergence traces (`OPT-PC04`); the optimiser's job registries
 not cancelled at shutdown (`ROAD-WORKER-06`); the test-only
 `_compute_schema_hash` and the training facade (`ENGQ-R01`); fits that exceed
 their budget
-(`MOD-M01`, `MOD-M02`); the trace route's status by message prefix and its
-sanitized 500 for a node failure (`API-R06`); the git routes' and the
-assistant's current-directory project root (`PCFG-R04`); the Databricks client
-factory's and the save service's `HTTPException`s (`API-R02`); the assistant's
-own containment comparisons (`SBX-R01`); the assistant catalog's hand tables and
+(`MOD-M01`, `MOD-M02`); the git routes' and the
+assistant's current-directory project root (`PCFG-R04`); the assistant
+catalog's hand tables and
 key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
-(`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the API
-Input's supervised build (`IO-R08`), the Edge Join as a boundary (`EXEC-R15`)
-and Recover's `how="asof"` (`PCFG-R13`); the Explore routes' `ParseError` and the submodel route's
-400 (`API-R06`), the pivot registry at shutdown (`ROAD-WORKER-06`); the
+(`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the Edge
+Join as a boundary (`EXEC-R15`); the pivot registry at shutdown (`ROAD-WORKER-06`); the
 browser's hand-written contract mirrors (`API-R03`), `hashConfig`'s exclusion
 list (`PCFG-R08`), the results store's optimiser logic (`FSH-R03`) and the dead
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
@@ -411,23 +356,19 @@ list (`PCFG-R08`), the results store's optimiser logic (`FSH-R03`) and the dead
 (`ENGQ-R01`), Banding's `_prevRules` stash (`PCFG-R08`) and the API Input label
 rule (`NAME-09`); the dead
 `submodelGraphFromMetadata` and two dead duplicate exports in the hooks and
-utilities (`ENGQ-R01`), and the sheet-visibility fault on an output condition
-(`WB-29`); Banding's `_id` and the step error string inside the config
+utilities (`ENGQ-R01`); Banding's `_id` and the step error string inside the config
 (`PCFG-R08`), the editors' barrels (`ENGQ-R01`), the pivot editor writing the
 fields the backend defaults (`EDA-R02`); the panel half of the GPU loss-history
 numbering and the GLM `best_iteration` (`MOD-R05`) and a second fabricated
 train-failure sentinel (`FSH-R06`); the browser's frontier
 generation fences that only ever see generation 0 (`OPT-R04`), the optimiser
 panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`) and
-`applyFrontierPointSummary`'s null handling (`FSH-R03`); typed branch names
-unvalidated in the UI (`GIT-R02`), the delete dialog's confirm flag (`GIT-R03`)
-and the trace route's 409 keyed on its code (`API-R06`); in the workbench UI and the app shell, the
+`applyFrontierPointSummary`'s null handling (`FSH-R03`); in the workbench UI and
+the app shell, the
 chart theme observer written twice (`EDA-R03`), the params-folder listing in the
-Allowed field (`FNED-R05`), knip's export-only symbols (`ENGQ-R01`), the fault on
-an output-table condition (`WB-29`), the browser's 90 s pricing timeout past the
-server's 60 s (`WB-33`), browser-locale dates (`FSH-R08`), the bootstrap without
+Allowed field (`FNED-R05`), knip's export-only symbols (`ENGQ-R01`), browser-locale dates (`FSH-R08`), the bootstrap without
 a deadline (`FSH-R05`), Ctrl+S inside a code box (`FSH-R07`), editor state inside
-node data (`PCFG-R08`), the recovery banner's re-minted id (`PCFG-R19`) and the
+node data (`PCFG-R08`) and the
 modelling pane badges (`FMOU-R03`); in the tests, scripts and CI, the floating
 action tags in the generated workflows (`CLI-R06`), the campaign-named test modules
 (`ENGQ-R05`), the test-only reset hooks in production code (`ENGQ-R01`), and the
@@ -466,14 +407,9 @@ All probes live outside the repository and wrote nothing into it.
 | worker `TimeoutError` | A worker raising `TimeoutError` under a 5 s response timeout surfaces as `BlockingWorkTimeoutError` with `outcome=response_timeout`. |
 | sidecar self-write | After `save_sidecar(...)` the self-write registry is empty and `is_self_write(sidecar)` is false; `ParseError` is not a `ValueError`. |
 | save request order | `save_sidecar` with an `active_source` not in `sources` raises pydantic's `ValidationError` after the other files were staged; two nodes labelled `Rates` and `rates` make `flatten_executable_graph` raise `ParseError`. |
-| lenient decode | A cp1252 sidecar `{"name": "Prämie"}` loads as `Pr�mie` and is rewritten as `EF BF BD`; the constants reader refuses the same bytes. |
 | dropped comments | Five comment kinds (a section, decorator-to-`def`, trailing, between functions, on `connect`) are absent after parse → `graph_to_code`; `unkept_module_statements` reports none. |
-| inline keywords | `@pipeline.constant(config=..., values=[...], colour="red")` parses to the sidecar's values with no warning; the regenerated decorator keeps only `config=`. |
 | corrupt parquet scan | `pl.scan_parquet` on a corrupt file returns a lazy frame; `collect_schema()` raises `ComputeError` (Polars 2.0.0). |
 | evaluation plan size | 2,000,000 rows, five folds: a 71 MB plan; the parent's reload takes 13.3 s with a 0.65 GB peak. |
-| same-line return | `extract_user_code("df = quotes.head(1); return df")` returns `''` for the Polars and hook kinds; `"a = 1\ndf = quotes.head(a); return df"` returns `'a = 1'`. |
-| reformat discards steps | A free-code step whose comment carries trailing spaces survives two saves; `ruff format` of the file then logs `polars_steps_discarded`. |
-| `match` bindings | `support_code_inventory` on a preamble `match` lists only `os`; the equivalent `if`/`else` lists `helper` twice. |
 | trace input sources | A left join of A `(policy, x=10)` with B `(policy, x=1000)` and `y = x * 2`: `calc.x` is 10.0 while `input_sources["x"]` names B with 1000.0; declaring B first names A with 10.0; `derivations[].reads` names A both ways. |
 | parser display | `with_columns(rank=pl.col('x').rank().over('g'), y=pl.col('a') * 2)` evaluated for `y`: `expression_type: window`, `substituted_text: rank of x over g`, `result_value: 42.0`; a `replace({'A': 'premium'})` beside a `rename` labels the step a rename of `A`. |
 | typed branch names | Seven names git refuses (`my branch`, `feat..x`, `feat.lock`, `.hidden`, `a//b`, `trail/`, `x@{1}`) pass `_validate_ref_name` and fail in `set_working_branch` with a plain `GitError`. |
@@ -491,8 +427,8 @@ All probes live outside the repository and wrote nothing into it.
 | Tool | Result |
 |---|---|
 | radon | 285 functions with cyclomatic complexity ≥ 20; 27 ≥ 50 (the largest in the optimiser service, the save service, the assistant tools and the RAM estimate). |
-| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `EXEC-R17`, `IO-R08`, `ROAD-WORKER-08`, `DEP-R13`, `CLI-R05`, `API-R10`, `PCFG-R15` and `ENGQ-R01`. |
-| jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13`, `EXEC-R17`, `IO-R08`, `ROAD-WORKER-08`, `API-R09` and `PCFG-R15`. |
-| jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `FNED-R03`, `FNED-R05`, `FMOU-R05`, `EDA-R03`, `GIT-R08`, `WB-37` and `FGC-R04`. |
+| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `EXEC-R17`, `ROAD-WORKER-08`, `DEP-R13`, `CLI-R05` and `ENGQ-R01`. |
+| jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13`, `EXEC-R17` and `ROAD-WORKER-08`. |
+| jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `FNED-R03`, `FNED-R05`, `FMOU-R05`, `EDA-R03` and `FGC-R04`. |
 | knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted; every frontend reviewer found the hits used inside their own module, so they are over-exports under `ENGQ-R01`'s gate, not dead code. |
 | sweeps | 35 campaign-named test modules (`ENGQ-R05`). |

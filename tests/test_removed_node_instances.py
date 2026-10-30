@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
 
 import haute
 from haute._config_validation import reject_unrecognized_config_keys, validate_node_config
@@ -14,7 +13,7 @@ from haute._pipeline_repair import (
     build_recover_unavailable_node_plan,
 )
 from haute._types import NODE_TYPE_TO_DECORATOR, NodeType
-from haute.errors import ParseError
+from haute.errors import InvalidRequestError, ParseError
 from haute.parser import parse_pipeline_source
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import (
@@ -142,7 +141,7 @@ def test_save_refuses_ordinary_instanceof_before_writing(tmp_path: Path) -> None
         for p in tmp_path.rglob("*")
         if p.is_file() and ".git" not in p.parts
     }
-    with pytest.raises(HTTPException) as refused:
+    with pytest.raises(InvalidRequestError) as refused:
         SavePipelineService(project_root=tmp_path).save(
             SavePipelineRequest(graph=graph, name="demo", source_file="main.py", base_revision=None)
         )

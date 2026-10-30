@@ -16,16 +16,13 @@ import {
   frontierAutoRangeStatusFromContract,
   frontierStatusFromContract,
   optimiserStatusFromContract,
-  parseInputCacheSnapshotResponse,
   parseJsonCacheSchemaInferenceResponse,
-  parseOutputAssembleDryRunResponse,
   parsePreviewNodeResponse,
   parseSavePipelineResponse,
   parseTraceResponse,
   parseSubmodelCreateResponse,
   parseSubmodelGraphResponse,
   parseExecutionStrategyDiagnostic,
-  parseNodeDataProfile,
 } from "../guards"
 import {
   validateExplorePivotMembersResponse,
@@ -81,6 +78,14 @@ import {
 } from "../../generated/api-contracts.git.validators.mjs"
 import { makeGitWorkingBranch } from "../../test-utils/factories"
 import { expectGeneratedContract } from "../generatedContractValidation"
+import { validateInputCacheSnapshotStatusResponse } from "../../generated/api-contracts.input-cache.validators.mjs"
+import { validateOutputAssembleDryRunResponse } from "../../generated/api-contracts.output.validators.mjs"
+
+// The input-cache and output responses are checked by their generated validators (API-R03).
+const parseInputCacheSnapshotResponse = (value: unknown) =>
+  expectGeneratedContract("InputCacheSnapshotStatusResponse", validateInputCacheSnapshotStatusResponse, value)
+const parseOutputAssembleDryRunResponse = (value: unknown) =>
+  expectGeneratedContract("OutputAssembleDryRunResponse", validateOutputAssembleDryRunResponse, value)
 import {
   parseTrainEstimateResponse,
   parseTrainFeatureSelection,
@@ -2552,395 +2557,6 @@ describe("API response guards", () => {
     ).toThrow("NodeDataProfileResponse: invalid contract at /result/row_count: type")
   })
 
-  describe("parseExploreColumnStat (via parseNodeDataProfile.columns)", () => {
-    // The node-data status still reads its profile with this hand parser until
-    // the node-data responses are generated (API-R03).
-    function parseProfileOf(response: Record<string, unknown>) {
-      return { result: parseNodeDataProfile(response.result) }
-    }
-
-    function withColumns(columns: unknown): Record<string, unknown> {
-      const fixture = loadUiContractFixture<Record<string, unknown>>(
-        "node_data_profile_response",
-      )
-      const result = fixture.result as Record<string, unknown>
-      return { ...fixture, result: { ...result, columns } }
-    }
-
-    function withoutResultField(key: string): Record<string, unknown> {
-      const fixture = loadUiContractFixture<Record<string, unknown>>(
-        "node_data_profile_response",
-      )
-      const result = fixture.result as Record<string, unknown>
-      const { [key]: _removed, ...nextResult } = result
-      void _removed
-      return { ...fixture, result: nextResult }
-    }
-
-    const numericColumn = {
-      name: "premium",
-      dtype: "Float64",
-      kind: "Numeric",
-      null_count: 0,
-      distinct_count: 3,
-      unique_ratio: 1,
-      is_high_cardinality: false,
-      is_identifier_candidate: false,
-      text_min_length: null,
-      text_mean_length: null,
-      text_max_length: null,
-      temporal_span: null,
-    }
-
-    it("parses a server-binned histogram and reads a missing or null one as null", () => {
-      const histogram = {
-        status: "ok",
-        bins: [
-          { start: 0, end: 5, count: 2 },
-          { start: 5, end: 10, count: 1 },
-        ],
-        finite_count: 3,
-        non_finite_count: 1,
-        skipped_reason: null,
-      }
-      const parsed = parseProfileOf(
-        withColumns([
-          { ...numericColumn, histogram },
-          { ...numericColumn, name: "no_histogram" },
-          { ...numericColumn, name: "null_histogram", histogram: null },
-        ]),
-      )
-      const [binned, missing, empty] = parsed.result!.columns
-      expect(binned.histogram).toEqual(histogram)
-      expect(missing.histogram).toBeNull()
-      expect(empty.histogram).toBeNull()
-    })
-
-    it("accepts an integer column skipped for browser precision", () => {
-      const histogram = {
-        status: "skipped",
-        bins: [],
-        finite_count: 3,
-        non_finite_count: 0,
-        skipped_reason: "integer_precision",
-      }
-      const parsed = parseProfileOf(withColumns([{ ...numericColumn, histogram }]))
-      expect(parsed.result!.columns[0].histogram).toEqual(histogram)
-    })
-
-    it.each([
-      ["an unknown status", { status: "partial", bins: [], finite_count: 0, non_finite_count: 0, skipped_reason: null }, /status/],
-      ["a bin without a count", { status: "ok", bins: [{ start: 0, end: 1 }], finite_count: 1, non_finite_count: 0, skipped_reason: null }, /bins\[0\]\.count/],
-      ["an unknown skip reason", { status: "skipped", bins: [], finite_count: null, non_finite_count: null, skipped_reason: "budget" }, /skipped_reason/],
-    ])("rejects a histogram with %s", (_label, histogram, message) => {
-      expect(() =>
-        parseProfileOf(withColumns([{ ...numericColumn, histogram }])),
-      ).toThrow(message)
-    })
-
-    it("parses a fully populated column stat", () => {
-      const parsed = parseProfileOf(
-        withColumns([
-          {
-            name: "premium",
-            dtype: "Float64",
-            kind: "Numeric",
-            null_count: 3,
-            nan_count: 4,
-            distinct_count: 42,
-            min_value: "10",
-            p25_value: "25",
-            median_value: "50",
-            mean_value: "52.5",
-            p75_value: "75",
-            max_value: "100",
-            std_value: "12.5",
-            zero_count: 1,
-            negative_count: 2,
-            unique_ratio: 0.42,
-            is_high_cardinality: false,
-            is_identifier_candidate: false,
-            text_min_length: null,
-            text_mean_length: null,
-            text_max_length: null,
-            temporal_span: null,
-          },
-        ]),
-      )
-      expect(parsed.result?.columns).toHaveLength(1)
-      const col = parsed.result!.columns[0]
-      expect(col.name).toBe("premium")
-      expect(col.dtype).toBe("Float64")
-      expect(col.kind).toBe("Numeric")
-      expect(col.null_count).toBe(3)
-      expect(col.nan_count).toBe(4)
-      expect(col.distinct_count).toBe(42)
-      expect(col.p25_value).toBe("25")
-      expect(col.median_value).toBe("50")
-      expect(col.mean_value).toBe("52.5")
-      expect(col.p75_value).toBe("75")
-      expect(col.std_value).toBe("12.5")
-      expect(col.zero_count).toBe(1)
-      expect(col.negative_count).toBe(2)
-    })
-
-    it("accepts null distinct_count", () => {
-      const parsed = parseProfileOf(
-        withColumns([
-          {
-            name: "sparse",
-            dtype: "String",
-            kind: "Text",
-            null_count: 10,
-            distinct_count: null,
-            unique_ratio: null,
-            is_high_cardinality: false,
-            is_identifier_candidate: false,
-            text_min_length: null,
-            text_mean_length: null,
-            text_max_length: null,
-            temporal_span: null,
-          },
-        ]),
-      )
-      const col = parsed.result!.columns[0]
-      expect(col.distinct_count).toBeNull()
-    })
-
-    it("accepts a profile without columns as an empty column list", () => {
-      const parsed = parseProfileOf(withoutResultField("columns"))
-
-      expect(parsed.result?.columns).toEqual([])
-    })
-
-    it.each(["row_count", "column_count", "generated_at", "data_version"])(
-      "throws when %s is missing from a profile",
-      (field) => {
-        expect(() => parseProfileOf(withoutResultField(field))).toThrow(
-          /parseNodeDataProfile/i,
-        )
-      },
-    )
-
-    it("throws when overview_summary is missing from a cache report", () => {
-      expect(() => parseProfileOf(withoutResultField("overview_summary"))).toThrow(
-        /parseExploreOverviewSummary/i,
-      )
-    })
-
-    it("throws when distinct_count is missing", () => {
-      expect(() =>
-        parseProfileOf(
-          withColumns([
-            { name: "minimal", dtype: "Int64", kind: "Numeric", null_count: 0 },
-          ]),
-        ),
-      ).toThrow(/parseExploreColumnStat/i)
-    })
-
-    it("throws when overview summary issue severity is invalid", () => {
-      const fixture = loadUiContractFixture<Record<string, unknown>>(
-        "node_data_profile_response",
-      )
-      const result = fixture.result as Record<string, unknown>
-      const overview = result.overview_summary as Record<string, unknown>
-
-      expect(() =>
-        parseProfileOf({
-          ...fixture,
-          result: {
-            ...result,
-            overview_summary: {
-              ...overview,
-              data_quality: {
-                issue_count: 1,
-                issues: [{ severity: "info", label: "x", detail: "y" }],
-              },
-            },
-          },
-        }),
-      ).toThrow(/parseExploreOverviewSummary/i)
-    })
-
-    it("parses categorical summary profiles", () => {
-      const fixture = loadUiContractFixture<Record<string, unknown>>(
-        "node_data_profile_response",
-      )
-      const result = fixture.result as Record<string, unknown>
-      const overview = result.overview_summary as Record<string, unknown>
-
-      const parsed = parseProfileOf({
-        ...fixture,
-        result: {
-          ...result,
-          overview_summary: {
-            ...overview,
-            categorical_summary: [
-              {
-                field: "region",
-                distinct_count: 2,
-                expandable: true,
-                values_truncated: false,
-                values: [
-                  { value: "north", count: 3 },
-                  { value: null, count: 1 },
-                ],
-              },
-            ],
-          },
-        },
-      })
-
-      expect(parsed.result?.overview_summary.categorical_summary[0]).toEqual({
-        field: "region",
-        distinct_count: 2,
-        expandable: true,
-        values_truncated: false,
-        values: [
-          { value: "north", count: 3 },
-          { value: null, count: 1 },
-        ],
-      })
-    })
-
-    it("throws when categorical summary value counts are malformed", () => {
-      const fixture = loadUiContractFixture<Record<string, unknown>>(
-        "node_data_profile_response",
-      )
-      const result = fixture.result as Record<string, unknown>
-      const overview = result.overview_summary as Record<string, unknown>
-
-      expect(() =>
-        parseProfileOf({
-          ...fixture,
-          result: {
-            ...result,
-            overview_summary: {
-              ...overview,
-              categorical_summary: [
-                {
-                  field: "region",
-                  distinct_count: 2,
-                  expandable: true,
-                  values_truncated: false,
-                  values: [{ value: "north", count: "3" }],
-                },
-              ],
-            },
-          },
-        }),
-      ).toThrow(/parseExploreOverviewSummary/i)
-    })
-
-    it("throws when name is missing", () => {
-      expect(() =>
-        parseProfileOf(
-          withColumns([
-            {
-              dtype: "Float64",
-              kind: "Numeric",
-              null_count: 0,
-              distinct_count: 1,
-            },
-          ]),
-        ),
-      ).toThrow(/parseExploreColumnStat/i)
-    })
-
-    it("throws when dtype is missing", () => {
-      expect(() =>
-        parseProfileOf(
-          withColumns([
-            {
-              name: "x",
-              kind: "Numeric",
-              null_count: 0,
-              distinct_count: 1,
-            },
-          ]),
-        ),
-      ).toThrow(/parseExploreColumnStat/i)
-    })
-
-    it("throws when kind is missing", () => {
-      expect(() =>
-        parseProfileOf(
-          withColumns([
-            {
-              name: "x",
-              dtype: "Float64",
-              null_count: 0,
-              distinct_count: 1,
-            },
-          ]),
-        ),
-      ).toThrow(/parseExploreColumnStat/i)
-    })
-
-    it("throws when kind is invalid", () => {
-      expect(() =>
-        parseProfileOf(
-          withColumns([
-            {
-              name: "x",
-              dtype: "Float64",
-              kind: "Money",
-              null_count: 0,
-              distinct_count: 1,
-            },
-          ]),
-        ),
-      ).toThrow(/parseExploreColumnStat/i)
-    })
-
-    it("throws when null_count is missing", () => {
-      expect(() =>
-        parseProfileOf(
-          withColumns([
-            {
-              name: "x",
-              dtype: "Float64",
-              kind: "Numeric",
-              distinct_count: 1,
-            },
-          ]),
-        ),
-      ).toThrow(/parseExploreColumnStat/i)
-    })
-
-    it("throws when null_count is a string", () => {
-      expect(() =>
-        parseProfileOf(
-          withColumns([
-            {
-              name: "x",
-              dtype: "Float64",
-              kind: "Numeric",
-              null_count: "3",
-              distinct_count: 1,
-            },
-          ]),
-        ),
-      ).toThrow(/parseExploreColumnStat/i)
-    })
-
-    it("throws when numeric profile counts are malformed", () => {
-      expect(() =>
-        parseProfileOf(
-          withColumns([
-            {
-              name: "premium",
-              dtype: "Float64",
-              kind: "Numeric",
-              null_count: 0,
-              distinct_count: 1,
-              zero_count: "1",
-            },
-          ]),
-        ),
-      ).toThrow(/parseExploreColumnStat/i)
-    })
-  })
 
   it("preserves typed execution metrics on train status responses", () => {
     const parsed = parseTrainStatusResponse(loadUiContractFixture("train_status_metrics_response"))
@@ -3625,15 +3241,14 @@ describe("API response guards", () => {
 
     expect(parsed.tables).toBeNull()
 
-    const parsedAbsent = parseInputCacheSnapshotResponse({
+    // The server sends every field, a Data Input's null tables included.
+    expect(() => parseInputCacheSnapshotResponse({
       schema_version: 1,
       identity_digest: "digest-1",
       state: "missing",
       freshness: "unknown",
       generation: null,
-    })
-
-    expect(parsedAbsent.tables).toBeNull()
+    })).toThrow("InputCacheSnapshotStatusResponse: invalid contract at /tables: required")
   })
 
   it("parses an API Input input-cache snapshot with two tables", () => {
@@ -4156,7 +3771,7 @@ describe("API response guards", () => {
 
   it.each([
     ["session boolean", () => sessionStatus({ ok: "yes" })],
-    ["output document", () => parseOutputAssembleDryRunResponse({ status: "ok", document: {}, row_count: 1 })],
+    ["output document", () => parseOutputAssembleDryRunResponse({ status: "ok", document: {}, row_count: 1, error: null })],
     ["inferred nested table", () => parseJsonCacheSchemaInferenceResponse({ tables: ["bad"] })],
     ["file item type", () => browseFiles({ dir: "/", items: [{ name: "x", path: "/x", type: "link", size: null }] })],
     ["git graph nested parents", () => gitGraph({ working_branch: null, order: [], branches: [{ name: "main", is_archived: false, is_current: true, tip_sha: "a", fork_point_sha: null, fork_of: null, fork_source_sha: null, fork_credit_sha: null, truncated: false, entries: [{ sha: "a", short_sha: "a", message: "init", timestamp: "today", version_label: null, is_root: true, parents: [1] }] }] })],

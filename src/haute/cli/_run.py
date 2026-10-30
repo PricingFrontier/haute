@@ -31,6 +31,8 @@ def handle_run(config: RunConfig) -> None:
     and prints a per-node status line plus the last node's preview.
     Exits with ``SystemExit(1)`` on any parse or execution error.
     """
+    from haute._project import get_project_root
+    from haute._workbench_nodes import form_owner, with_form_tables
     from haute.executor import execute_graph
     from haute.parser import parse_pipeline_file
 
@@ -42,6 +44,15 @@ def handle_run(config: RunConfig) -> None:
     except Exception as e:
         click.echo(f"Error parsing pipeline: {e}", err=True)
         raise SystemExit(1)
+
+    # A workbench node's tables are the form folder's, of the project the file is in.
+    if form_owner(graph) is not None:
+        try:
+            project_root = get_project_root(filepath.resolve().parent)
+            graph = with_form_tables(graph, project_root=project_root)
+        except Exception as e:
+            click.echo(f"Error reading the workbench's form: {e}", err=True)
+            raise SystemExit(1)
 
     nodes = graph.nodes
     if not nodes:

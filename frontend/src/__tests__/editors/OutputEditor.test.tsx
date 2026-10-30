@@ -36,6 +36,7 @@ vi.mock("../../api/client", async () => {
 
 // Imported AFTER the mock so these are the mocked references.
 import { outputAssembleDryRun, previewNode } from "../../api/client"
+import { makeOutputDryRun } from "../../test-utils/factories"
 
 const mockOutputAssembleDryRun = vi.mocked(outputAssembleDryRun)
 const mockPreviewNode = vi.mocked(previewNode)
@@ -1252,7 +1253,7 @@ describe("OutputEditor - assembled-output preview", () => {
   }
 
   it("renders the Output preview element with Copy + Export visible while collapsed", () => {
-    mockOutputAssembleDryRun.mockResolvedValue({ status: "ok", document: [], row_count: 0 })
+    mockOutputAssembleDryRun.mockResolvedValue(makeOutputDryRun({ status: "ok", document: [], row_count: 0 }))
     render(<OutputEditor {...DEFAULT_PROPS} config={SINGLE_PORT_CONFIG} />, {
       allNodes: SINGLE_PORT_NODES,
       edges: SINGLE_PORT_EDGES,
@@ -1268,7 +1269,7 @@ describe("OutputEditor - assembled-output preview", () => {
 
   it("expanding runs the dry-run and renders the assembled document (pretty-printed)", async () => {
     const doc = [{ premium: 100 }, { premium: 250 }]
-    mockOutputAssembleDryRun.mockResolvedValue({ status: "ok", document: doc, row_count: 2 })
+    mockOutputAssembleDryRun.mockResolvedValue(makeOutputDryRun({ status: "ok", document: doc, row_count: 2 }))
     render(<OutputEditor {...DEFAULT_PROPS} config={SINGLE_PORT_CONFIG} />, {
       allNodes: SINGLE_PORT_NODES,
       edges: SINGLE_PORT_EDGES,
@@ -1281,7 +1282,7 @@ describe("OutputEditor - assembled-output preview", () => {
   })
 
   it("sends the CURRENT (unsaved) mapping + node id to the dry-run route", async () => {
-    mockOutputAssembleDryRun.mockResolvedValue({ status: "ok", document: [], row_count: 0 })
+    mockOutputAssembleDryRun.mockResolvedValue(makeOutputDryRun({ status: "ok", document: [], row_count: 0 }))
     render(<OutputEditor {...DEFAULT_PROPS} config={SINGLE_PORT_CONFIG} />, {
       allNodes: SINGLE_PORT_NODES,
       edges: SINGLE_PORT_EDGES,
@@ -1296,7 +1297,7 @@ describe("OutputEditor - assembled-output preview", () => {
   it("shows a 'showing N of M' note when the document exceeds the row cap", async () => {
     // 60 rows returned but row_count says 200 — both exceed the 50-row cap.
     const doc = Array.from({ length: 60 }, (_, i) => ({ i }))
-    mockOutputAssembleDryRun.mockResolvedValue({ status: "ok", document: doc, row_count: 200 })
+    mockOutputAssembleDryRun.mockResolvedValue(makeOutputDryRun({ status: "ok", document: doc, row_count: 200 }))
     render(<OutputEditor {...DEFAULT_PROPS} config={SINGLE_PORT_CONFIG} />, {
       allNodes: SINGLE_PORT_NODES,
       edges: SINGLE_PORT_EDGES,
@@ -1344,7 +1345,7 @@ describe("OutputEditor - assembled-output preview", () => {
   })
 
   it("the refresh button re-runs the dry-run", async () => {
-    mockOutputAssembleDryRun.mockResolvedValue({ status: "ok", document: [], row_count: 0 })
+    mockOutputAssembleDryRun.mockResolvedValue(makeOutputDryRun({ status: "ok", document: [], row_count: 0 }))
     render(<OutputEditor {...DEFAULT_PROPS} config={SINGLE_PORT_CONFIG} />, {
       allNodes: SINGLE_PORT_NODES,
       edges: SINGLE_PORT_EDGES,

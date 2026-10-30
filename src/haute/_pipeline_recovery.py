@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import ast
+import errno
 import hashlib
 import keyword
+import os
 import re
 from collections import Counter, deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -16,7 +18,6 @@ from uuid import uuid4
 from haute._ast_helpers import (
     _chained_receiver_calls,
     _connect_call_edge,
-    _extract_function_bodies,
     _extract_global_constants_declaration,
     _extract_pipeline_meta,
     _extract_preamble,
@@ -29,6 +30,7 @@ from haute._ast_helpers import (
     unkept_module_statements,
 )
 from haute._cache import canonical_json
+from haute._config_io import node_configs_read_through
 from haute._editor_identities import (
     recoverable_request_input_source_handles,
     resolve_editor_identity,
@@ -43,7 +45,7 @@ from haute._graph_builders import (
 from haute._graph_shape import definition_boundary_topology
 from haute._graph_utils import REQUEST_INPUT_KINDS, edge_input_name, executable_input_name
 from haute._hashing import content_hash_bytes
-from haute._io import read_user_bytes_and_text, read_user_text
+from haute._io import decode_user_source, read_user_source
 from haute._logging import get_logger
 from haute._parser_submodels import (
     SubmodelRegistration,
@@ -53,11 +55,13 @@ from haute._parser_submodels import (
     submodel_imports,
 )
 from haute._pipeline_revision import pipeline_recovery_revision
+from haute._sandbox import is_contained
 from haute._sidecar import (
     SidecarReadResult,
     _normalise_sidecar_sources,
     read_sidecar_state,
 )
+from haute._source_layout import python_lines
 from haute._submodel_paths import resolve_submodel_reference, submodel_source_key
 from haute._submodel_recovery import submodel_registration_evidence
 from haute._types import (
@@ -99,32 +103,46 @@ _MAX_DIAGNOSTICS = 200
 
 
 class _SourceCaptures:
-    """First-read byte/text capture for every source artifact in one load.
+    """First-read byte capture for every source artifact in one load.
 
     The recovery revision must authenticate the exact bytes this document was
-    built from, so each parent/child source is read once and every later
-    consumer — including the revision manifest — reuses that capture instead
-    of re-reading a file a concurrent edit may have changed.
+    built from, so each source, editor sidecar, node config and constants file
+    is read once and every later consumer — including the revision manifest —
+    reuses that capture instead of re-reading a file a concurrent edit may have
+    changed; a file missing when first read stays missing. A source's text is
+    decoded from its captured bytes by ``decode_user_source``, so a file that is
+    not UTF-8 raises its located ``ParseError`` wherever its text is read.
     """
 
-    def __init__(self) -> None:
-        self._by_key: dict[str, tuple[Path, bytes, str]] = {}
+    def __init__(self, project_root: Path) -> None:
+        self._root = project_root
+        # ``None`` records a file that was missing when first read.
+        self._by_key: dict[str, tuple[Path, bytes | None]] = {}
 
     @staticmethod
     def _key(path: Path) -> str:
-        return str(path.resolve()).casefold()
+        # The exact resolved path: case-folding it would let two files that differ
+        # only in case on a case-sensitive filesystem share one file's bytes.
+        return str(path.resolve())
 
-    def read(self, path: Path) -> tuple[bytes, str]:
+    def read_bytes(self, path: Path) -> bytes:
         key = self._key(path)
-        captured = self._by_key.get(key)
+        if key not in self._by_key:
+            try:
+                raw: bytes | None = path.read_bytes()
+            except FileNotFoundError:
+                raw = None
+            self._by_key[key] = (path, raw)
+        captured = self._by_key[key][1]
         if captured is None:
-            raw, text = read_user_bytes_and_text(path)
-            captured = (path, raw, text)
-            self._by_key[key] = captured
-        return captured[1], captured[2]
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(path))
+        return captured
 
-    def known_bytes(self) -> dict[Path, bytes]:
-        return {path: raw for path, raw, _text in self._by_key.values()}
+    def read_source(self, path: Path) -> str:
+        return decode_user_source(self.read_bytes(path), source_file=_wire_path(path, self._root))
+
+    def known_bytes(self) -> dict[Path, bytes | None]:
+        return dict(self._by_key.values())
 
 
 @dataclass(slots=True)
@@ -391,13 +409,21 @@ def _candidate_from_ast(
     )
 
 
-def _candidate_ids(
-    identities: list[tuple[str, int]],
-) -> list[str]:
-    counts = Counter(identity for identity, _line in identities)
-    return [
-        f"{identity}@L{line}" if counts[identity] > 1 else identity for identity, line in identities
-    ]
+def _recovery_ids(identities: Iterable[tuple[str, int]]) -> Callable[[str, int], str]:
+    """The recovery id of each element of one graph, minted over all of them at once.
+
+    *identities* are every candidate's ``(authored name, line)``: decorated nodes
+    and submodel occurrences, valid or not. A name the graph holds once is its
+    own id; a name held more than once takes its line. Minting once, before any
+    candidate is resolved, means a diagnostic created with an element's id still
+    names that element in the finished document.
+    """
+    counts = Counter(name for name, _line in identities)
+
+    def recovery_id(name: str, line: int) -> str:
+        return f"{name}@L{line}" if counts[name] > 1 else name
+
+    return recovery_id
 
 
 def _edge_recovery_id(
@@ -561,22 +587,7 @@ def _recover_ast_connections(
                     )
                 )
             else:
-                if edge is None:
-                    unresolved.append(
-                        _unresolved_connection(
-                            placeholder,
-                            ordinal=ordinal,
-                            code="connection_declaration_invalid",
-                            message=(
-                                f"The authored {receiver}.connect() declaration does not "
-                                "contain string source and target identities."
-                            ),
-                            source_file=source_file,
-                            diagnostics=diagnostics,
-                        )
-                    )
-                else:
-                    connections.append(_RecoveredConnection(*edge, span=span))
+                connections.append(_RecoveredConnection(*edge, span=span))
             ordinal += 1
     return connections, unresolved
 
@@ -597,11 +608,13 @@ def _recover_ast_submodel_registrations(
     diagnostics: list[PipelineRecoveryDiagnostic],
     unavailable_candidates: list[_RecoveredCandidate] | None = None,
     include_invalid_references: bool = False,
+    recovery_id: Callable[[str, int], str] | None = None,
 ) -> list[SubmodelRegistration]:
     """Recover independent valid registrations when one sibling is malformed.
 
     The submodel imports are read one statement at a time too, so a malformed import
-    is its own diagnostic and the well-formed ones still name their files.
+    is its own diagnostic and the well-formed ones still name their files. An
+    unavailable occurrence takes the id *recovery_id* mints for it, its name otherwise.
     """
     imports: dict[str, str] = {}
     for statement in tree.body:
@@ -650,13 +663,20 @@ def _recover_ast_submodel_registrations(
                 statement.end_col_offset or statement.col_offset,
             )
             evidence = submodel_registration_evidence(statement, imports=imports)
+            element_id = (
+                None
+                if evidence is None
+                else recovery_id(evidence.name, statement.lineno)
+                if recovery_id is not None
+                else evidence.name
+            )
             diagnostic = _diagnostic(
                 code="submodel_registration_invalid",
                 scope="submodel",
                 message=_exception_message(exc),
                 source_file=source_file,
                 source_span=span,
-                element_id=evidence.name if evidence is not None else None,
+                element_id=element_id,
                 remediation=exc.context.get(
                     "remediation", "Correct the submodel registration identity and file path."
                 ),
@@ -672,10 +692,11 @@ def _recover_ast_submodel_registrations(
                         )
                     )
                 if unavailable_candidates is not None:
+                    assert element_id is not None
                     unavailable_candidates.append(
                         _RecoveredCandidate(
                             authored_id=evidence.name,
-                            recovery_id=evidence.name,
+                            recovery_id=element_id,
                             decorator_name="submodel",
                             node_type=NodeType.SUBMODEL,
                             description=evidence.name,
@@ -710,16 +731,8 @@ def _build_recovery_graph(
     list[RecoveryPipelineEdge],
     list[RecoveryUnresolvedConnection],
 ]:
-    # Skeletons and registrations are discovered independently. Assign ids across
-    # their combined set so collisions still produce a valid recovery document.
-    for candidate, recovery_id in zip(
-        candidates,
-        _candidate_ids(
-            [(candidate.authored_id, candidate.span.start_line) for candidate in candidates]
-        ),
-        strict=True,
-    ):
-        candidate.recovery_id = recovery_id
+    # Every candidate carries the id minted over the graph's combined set
+    # (``_recovery_ids``), so the diagnostics already made with it stay valid.
     _mark_duplicate_candidates(
         candidates,
         source_file=source_file,
@@ -1152,19 +1165,36 @@ def _sidecar_values(
     return result.data.positions, sources, active, True
 
 
+def _editor_sidecar_positions(
+    source_path: Path,
+    *,
+    source_file: str,
+    captures: _SourceCaptures,
+    diagnostics: list[PipelineRecoveryDiagnostic],
+) -> dict[str, dict[str, float]]:
+    """The canvas positions in one file's editor sidecar, read through *captures*.
+
+    A corrupt or unreadable sidecar is diagnosed and gives no positions.
+    """
+    sidecar = read_sidecar_state(source_path, read_bytes=captures.read_bytes)
+    issue = _sidecar_diagnostic(sidecar, source_file=source_file)
+    if issue is not None:
+        diagnostics.append(issue)
+    return _sidecar_values(sidecar)[0]
+
+
 def _canonical_snapshot(
     graph: PipelineGraph,
     *,
     source_path: Path,
     project_root: Path,
     diagnostics: list[PipelineRecoveryDiagnostic],
+    captures: _SourceCaptures,
 ) -> RecoveryGraphSnapshot:
     source_file = _wire_path(source_path, project_root)
-    sidecar = read_sidecar_state(source_path)
-    positions, _sources, _active, _trusted = _sidecar_values(sidecar)
-    sidecar_issue = _sidecar_diagnostic(sidecar, source_file=source_file)
-    if sidecar_issue is not None:
-        diagnostics.append(sidecar_issue)
+    positions = _editor_sidecar_positions(
+        source_path, source_file=source_file, captures=captures, diagnostics=diagnostics
+    )
 
     connected_handles_by_source: dict[str, list[str]] = {}
     for edge in graph.edges:
@@ -1261,6 +1291,7 @@ def _canonical_snapshot(
                 source_path=child_path,
                 project_root=project_root,
                 diagnostics=diagnostics,
+                captures=captures,
             ),
             input_ports=[
                 port.model_dump(mode="json", by_alias=True) for port in definition.input_ports
@@ -1408,38 +1439,28 @@ def _recover_submodel_snapshot(
     """
     child_source_file = _wire_path(child_path, project_root)
     try:
-        _raw, source = captures.read(child_path)
+        source = captures.read_source(child_path)
         tree = ast.parse(source)
-    except (OSError, SyntaxError):
+    except (OSError, ParseError, SyntaxError):
         return RecoveryGraphSnapshot(), [], []
 
-    sidecar = read_sidecar_state(child_path)
-    positions, _sources, _active, _trusted = _sidecar_values(sidecar)
-    sidecar_issue = _sidecar_diagnostic(sidecar, source_file=child_source_file)
-    if sidecar_issue is not None:
-        diagnostics.append(sidecar_issue)
-
-    bodies = _extract_function_bodies(source, tree=tree)
-    skeletons = _extract_decorated_node_skeletons(
-        tree,
-        _is_submodel_authored_decorator,
-        bodies,
-        source=source,
+    positions = _editor_sidecar_positions(
+        child_path, source_file=child_source_file, captures=captures, diagnostics=diagnostics
     )
-    identities = [(item.authored_id, item.start_line) for item in skeletons]
+
+    skeletons = _extract_decorated_node_skeletons(
+        tree, _is_submodel_authored_decorator, source=source
+    )
+    recovery_id = _recovery_ids((item.authored_id, item.start_line) for item in skeletons)
     candidates = [
         _candidate_from_ast(
             skeleton,
-            recovery_id=recovery_id,
+            recovery_id=recovery_id(skeleton.authored_id, skeleton.start_line),
             source_file=child_source_file,
             base_dir=config_base,
             diagnostics=diagnostics,
         )
-        for skeleton, recovery_id in zip(
-            skeletons,
-            _candidate_ids(identities),
-            strict=True,
-        )
+        for skeleton in skeletons
     ]
     connections, initially_unresolved = _recover_ast_connections(
         tree,
@@ -1563,16 +1584,20 @@ def _recover_registered_submodels(
     source_file: str,
     diagnostics: list[PipelineRecoveryDiagnostic],
     captures: _SourceCaptures,
+    recovery_id: Callable[[str, int], str],
 ) -> tuple[dict[str, RecoverySubmodelDefinition] | None, list[_RecoveredCandidate]]:
-    """Resolve each definition once and retain every occurrence independently."""
+    """Resolve each definition once and retain every occurrence independently.
+
+    Each occurrence takes the id *recovery_id* mints for it over the whole graph.
+    """
     if not registrations:
         return None, []
 
     definitions: dict[str, RecoverySubmodelDefinition] = {}
     names = Counter(registration.name for registration in registrations)
-    occurrence_ids = _candidate_ids(
-        [(registration.name, registration.line or 1) for registration in registrations]
-    )
+    occurrence_ids = [
+        recovery_id(registration.name, registration.line or 1) for registration in registrations
+    ]
 
     path_to_def_id: dict[str, str] = {}
     definition_sources: dict[str, str] = {}
@@ -1641,13 +1666,13 @@ def _recover_registered_submodels(
             continue
 
         try:
-            _child_raw, child_source = captures.read(child_path)
+            child_source = captures.read_source(child_path)
             child_graph = parse_submodel_source(
                 child_source,
                 source_file=str(child_path),
                 _base_dir=config_base,
             )
-        except (HauteError, OSError, UnicodeError) as exc:
+        except (HauteError, OSError) as exc:
             def_id = registration.path
             path_to_def_id[registration.path] = def_id
             source_definitions[source_key] = def_id
@@ -1744,13 +1769,14 @@ def _recover_registered_submodels(
                 source_path=child_path,
                 project_root=project_root,
                 diagnostics=diagnostics,
+                captures=captures,
             ),
             input_ports=input_ports,
             output_ports=output_ports,
         )
 
     occurrences: list[_RecoveredCandidate] = []
-    for registration, recovery_id in zip(registrations, occurrence_ids, strict=True):
+    for registration, occurrence_id in zip(registrations, occurrence_ids, strict=True):
         def_id = path_to_def_id.get(registration.path, registration.path)
         definition = definitions.get(def_id)
         if definition is None:
@@ -1770,7 +1796,7 @@ def _recover_registered_submodels(
                 scope="submodel",
                 message=f"Submodel name {registration.name!r} is duplicated.",
                 source_file=source_file,
-                element_id=recovery_id,
+                element_id=occurrence_id,
                 source_span=span,
                 remediation="Give every submodel occurrence a unique name.",
             )
@@ -1780,7 +1806,7 @@ def _recover_registered_submodels(
         occurrences.append(
             _RecoveredCandidate(
                 authored_id=registration.name,
-                recovery_id=recovery_id,
+                recovery_id=occurrence_id,
                 decorator_name="submodel",
                 node_type=NodeType.SUBMODEL,
                 description=registration.name,
@@ -1821,16 +1847,10 @@ def _source_references(
         # config or submodel artifact the revision could depend on.
         return config_refs, registrations
 
-    bodies = _extract_function_bodies(source, tree=tree)
     decorator_checker = (
         _is_submodel_authored_decorator if child else _is_pipeline_authored_decorator
     )
-    for skeleton in _extract_decorated_node_skeletons(
-        tree,
-        decorator_checker,
-        bodies,
-        source=source,
-    ):
+    for skeleton in _extract_decorated_node_skeletons(tree, decorator_checker, source=source):
         try:
             kwargs = _get_decorator_kwargs(skeleton.decorator)
         except HauteError:
@@ -1894,15 +1914,15 @@ def _recovery_artifacts(
         if source is None:
             try:
                 if captures is not None:
-                    _raw, source = captures.read(source_path)
+                    source = captures.read_source(source_path)
                 else:
-                    source = read_user_text(source_path)
-            except OSError:
+                    _raw, source = read_user_source(source_path)
+            except (OSError, ParseError):
                 return
         config_refs, registrations = _source_references(source, child=child)
         for reference in config_refs:
             config_path = (config_base / reference.replace("\\", "/")).resolve()
-            if config_path.is_relative_to(root):
+            if is_contained(root, config_path):
                 artifacts.append(("node_config", config_path))
         for registration in registrations:
             try:
@@ -1960,7 +1980,7 @@ def _unkept_statement_diagnostics(
     statement until it moves into the preamble or a preserved block.
     """
     constructor = "Pipeline" if receiver == "pipeline" else "Submodel"
-    lines = source.splitlines()
+    lines = python_lines(source)
     diagnostics = []
     for start_line, end_line in unkept_module_statements(
         source, receiver=receiver, constructor_name=constructor
@@ -2120,7 +2140,7 @@ def _recover_global_constants(
         return [], None
     return load_declared_global_constants(
         path.parent,
-        read_bytes=lambda constants_path: captures.read(constants_path)[0],
+        read_bytes=captures.read_bytes,
     )
 
 
@@ -2132,7 +2152,7 @@ def _load_readable_pipeline_editor_document(
 ) -> PipelineEditorDocument:
     """Recover a source string whose path and readability are already trusted."""
     source_file = _wire_path(path, root)
-    sidecar = read_sidecar_state(path)
+    sidecar = read_sidecar_state(path, read_bytes=captures.read_bytes)
     positions, sources, active_source, source_selection_trusted = _sidecar_values(sidecar)
     diagnostics: list[PipelineRecoveryDiagnostic] = []
     sidecar_issue = _sidecar_diagnostic(sidecar, source_file=source_file)
@@ -2159,7 +2179,7 @@ def _load_readable_pipeline_editor_document(
     submodel_sources: dict[str, str] = {}
 
     def read_submodel_source(child_path: Path) -> str:
-        child_source = captures.read(child_path)[1]
+        child_source = captures.read_source(child_path)
         submodel_sources[_wire_path(child_path, root)] = child_source
         return child_source
 
@@ -2173,9 +2193,9 @@ def _load_readable_pipeline_editor_document(
             _base_dir=path.parent,
             _submodel_base_dir=_infer_parse_base_dir(path),
             _read_submodel_source=read_submodel_source,
-            _read_global_constants_bytes=lambda constants_path: captures.read(constants_path)[0],
+            _read_global_constants_bytes=captures.read_bytes,
         )
-    except (HauteError, OSError, UnicodeError) as exc:
+    except (HauteError, OSError) as exc:
         strict_failure = exc
     else:
         assert strict_graph is not None
@@ -2184,6 +2204,7 @@ def _load_readable_pipeline_editor_document(
             source_path=path,
             project_root=root,
             diagnostics=diagnostics,
+            captures=captures,
         )
         pipeline_name = strict_graph.pipeline_name
         pipeline_description = strict_graph.pipeline_description
@@ -2265,34 +2286,42 @@ def _load_readable_pipeline_editor_document(
                 diagnostics=diagnostics,
             )
             connections = recovered_connections
+            skeletons = _extract_decorated_node_skeletons(
+                tree, _is_pipeline_authored_decorator, source=source
+            )
+            # Nodes and occurrences, valid or not, share one id space: mint every
+            # id over all of them before anything records one in a diagnostic.
+            recovery_id = _recovery_ids(
+                [
+                    *((skeleton.authored_id, skeleton.start_line) for skeleton in skeletons),
+                    *(
+                        (registration.name, registration.line or 1)
+                        for registration in _recover_ast_submodel_registrations(
+                            tree,
+                            source_file=source_file,
+                            diagnostics=[],
+                            include_invalid_references=True,
+                        )
+                    ),
+                ]
+            )
             unavailable_registrations: list[_RecoveredCandidate] = []
             registrations = _recover_ast_submodel_registrations(
                 tree,
                 source_file=source_file,
                 diagnostics=diagnostics,
                 unavailable_candidates=unavailable_registrations,
+                recovery_id=recovery_id,
             )
-            bodies = _extract_function_bodies(source, tree=tree)
-            skeletons = _extract_decorated_node_skeletons(
-                tree,
-                _is_pipeline_authored_decorator,
-                bodies,
-                source=source,
-            )
-            identities = [(skeleton.authored_id, skeleton.start_line) for skeleton in skeletons]
             candidates = [
                 _candidate_from_ast(
                     skeleton,
-                    recovery_id=recovery_id,
+                    recovery_id=recovery_id(skeleton.authored_id, skeleton.start_line),
                     source_file=source_file,
                     base_dir=path.parent,
                     diagnostics=diagnostics,
                 )
-                for skeleton, recovery_id in zip(
-                    skeletons,
-                    _candidate_ids(identities),
-                    strict=True,
-                )
+                for skeleton in skeletons
             ]
             submodels, submodel_occurrences = _recover_registered_submodels(
                 registrations,
@@ -2301,6 +2330,7 @@ def _load_readable_pipeline_editor_document(
                 source_file=source_file,
                 diagnostics=diagnostics,
                 captures=captures,
+                recovery_id=recovery_id,
             )
             candidates.extend(submodel_occurrences)
             for unavailable in unavailable_registrations:
@@ -2348,7 +2378,7 @@ def _load_readable_pipeline_editor_document(
                 failure = strict_failure or ParseError("Pipeline parsing failed.")
                 context = failure.context if isinstance(failure, HauteError) else {}
                 line = context.get("line")
-                lines = source.splitlines()
+                lines = python_lines(source)
                 diagnostics.append(
                     _diagnostic(
                         code="pipeline_parse_invalid",
@@ -2434,6 +2464,53 @@ def pipeline_document_fingerprint(document_payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical_json(document_payload).encode("utf-8")).hexdigest()
 
 
+def _undecodable_pipeline_editor_document(
+    path: Path,
+    root: Path,
+    raw_source: bytes,
+    failure: ParseError,
+) -> PipelineEditorDocument:
+    """The source-only document of a pipeline file that is not UTF-8.
+
+    Python refuses to compile such a file, so like a syntax error it has no
+    canvas. The text shown replaces the bytes it cannot decode and is only read:
+    a source-only document can be neither saved nor repaired.
+    """
+    source_file = _wire_path(path, root)
+    line, column = failure.context["line"], failure.context["column"]
+    text = raw_source.removeprefix(b"\xef\xbb\xbf").decode("utf-8", errors="replace")
+    return PipelineEditorDocument(
+        load_status="source_only",
+        pipeline_name=path.stem,
+        pipeline_description="",
+        source_file=source_file,
+        source_revision=pipeline_recovery_revision(
+            project_root=root,
+            artifacts=[
+                ("parent_source", path),
+                ("parent_sidecar", path.with_suffix(".haute.json")),
+            ],
+            known_bytes={path: raw_source},
+        ),
+        source_text=text.replace("\r\n", "\n").replace("\r", "\n"),
+        sources=[],
+        active_source=None,
+        source_selection_trusted=False,
+        has_authored_content=bool(text.strip()),
+        diagnostics=[
+            _diagnostic(
+                code="source_encoding_invalid",
+                scope="pipeline",
+                message=failure.message,
+                source_file=source_file,
+                source_span=_span(line, column - 1, line, column),
+                remediation="Save the file as UTF-8 in your editor, then reload it.",
+            )
+        ],
+        capabilities=_capabilities("source_only", source_selection_trusted=False),
+    )
+
+
 def load_pipeline_editor_document(
     pipeline_path: str | Path,
     *,
@@ -2448,12 +2525,17 @@ def load_pipeline_editor_document(
     """
     path = Path(pipeline_path).resolve()
     root = (project_root or path.parent).resolve()
-    if not path.is_relative_to(root):
+    if not is_contained(root, path):
         raise ValueError("Pipeline recovery path escapes the project root.")
-    captures = _SourceCaptures()
-    raw_source, source = captures.read(path)
+    captures = _SourceCaptures(root)
+    raw_source = captures.read_bytes(path)
     try:
-        return _load_readable_pipeline_editor_document(path, root, source, captures)
+        source = captures.read_source(path)
+    except ParseError as exc:
+        return _undecodable_pipeline_editor_document(path, root, raw_source, exc)
+    try:
+        with node_configs_read_through(captures.read_bytes):
+            return _load_readable_pipeline_editor_document(path, root, source, captures)
     except Exception:  # noqa: BLE001 - named editor recovery isolation boundary
         incident_id = uuid4().hex
         source_file = _wire_path(path, root)

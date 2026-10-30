@@ -74,6 +74,7 @@ async function saveOnce(identityRequired: boolean) {
     warnings: identityRequired ? [IDENTITY_WARNING] : [],
     git_sha: null,
     source_revision: "revision-test",
+    document_fingerprint: "fingerprint-saved",
     identity_required: identityRequired,
     uncaptured: identityRequired ? ["test.py"] : [],
   })

@@ -22,8 +22,10 @@ def test_pipeline_document_update_payload_declares_complete_wire_contract() -> N
         "document_fingerprint",
         "source_file",
     }
-    # Only an assistant apply or undo tags its update with where it came from.
-    assert PipelineDocumentUpdatePayload.__optional_keys__ == {"origin"}
+    # Only an assistant apply or undo tags its update with where it came from, and only
+    # a save names the tab that saved it, which the WebSocket forwarder strips before
+    # sending (test_server's save broadcast test checks it never reaches a client).
+    assert PipelineDocumentUpdatePayload.__optional_keys__ == {"origin", "exclude_connection"}
 
 
 def test_unsubscribe_is_idempotent() -> None:

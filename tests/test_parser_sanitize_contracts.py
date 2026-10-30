@@ -1,7 +1,6 @@
 """Parser and codegen hardening contracts for safe generated identifiers.
 
-Three tightly-scoped fixes to ``src/haute/_graph_utils.py`` and
-``src/haute/_ast_helpers.py``:
+Two tightly-scoped fixes, to ``src/haute/_graph_utils.py`` and to codegen:
 
 * **#123 ``_sanitize_func_name`` non-ASCII preservation.**
   Today the sanitiser strips every non-ASCII character, which means
@@ -17,15 +16,6 @@ Three tightly-scoped fixes to ``src/haute/_graph_utils.py`` and
   that names both colliding labels.  Phase B (raise on duplicate)
   is a future migration step pinned by a comment here.
 
-* **#125 ``_extract_function_bodies`` tree-optional → required.**
-  The ``tree`` parameter defaults to ``None`` today; if callers forget
-  to pass a pre-parsed tree the function calls ``ast.parse`` a second
-  time, which is both slower and a foot-gun (source and tree can
-  disagree).  Post-fix the parameter becomes required.  Every
-  production caller in ``src/haute/*.py`` already passes ``tree``; this
-  suite asserts that fact so a future caller that forgets cannot slip
-  through.
-
 Constraints:
 
 * No ``unittest.TestCase`` — plain pytest functions / classes.
@@ -37,15 +27,9 @@ Constraints:
 
 from __future__ import annotations
 
-import ast
-import inspect
-from pathlib import Path
-
 import pytest
 
-from haute._ast_helpers import _extract_function_bodies
 from haute._graph_utils import _sanitize_func_name
-from tests._source_files import source_files
 
 # ---------------------------------------------------------------------------
 # #123 — _sanitize_func_name non-ASCII preservation
@@ -282,133 +266,3 @@ class TestDuplicateSanitizedNamesRaise:
         message = str(excinfo.value)
         assert label_a in message, f"ParseError does not name {label_a!r}: {message}"
         assert label_b in message, f"ParseError does not name {label_b!r}: {message}"
-
-
-# ---------------------------------------------------------------------------
-# #125 — _extract_function_bodies tree-optional → required
-# ---------------------------------------------------------------------------
-
-
-class TestExtractFunctionBodiesTreeRequired:
-    """The ``tree`` parameter of ``_extract_function_bodies`` is today
-    defaulted to ``None``; post-fix it becomes required (no default).
-
-    Callers that forget to pass ``tree`` will then raise ``TypeError``
-    at call time instead of silently re-parsing the source.  We also
-    scan production source to assert every existing call site already
-    passes ``tree`` (so the fix does not break any caller).
-    """
-
-    def test_tree_parameter_exists(self) -> None:
-        """Regardless of default, ``tree`` must remain a parameter.
-
-        Sanity pin: if the parameter is renamed or removed outright
-        this test catches it immediately.  Must pass both before and
-        after the #125 fix.
-        """
-        sig = inspect.signature(_extract_function_bodies)
-        assert "tree" in sig.parameters, "tree parameter must exist on _extract_function_bodies"
-
-    def test_tree_has_no_default_after_fix(self) -> None:
-        sig = inspect.signature(_extract_function_bodies)
-        assert sig.parameters["tree"].default is inspect.Parameter.empty, (
-            "tree parameter still has a default value; fix not applied"
-        )
-
-    def test_call_without_tree_raises_after_fix(self) -> None:
-        """Post-fix behaviour: calling without ``tree`` raises TypeError."""
-        source = "def f():\n    return 42"
-        with pytest.raises(TypeError, match="tree"):
-            _extract_function_bodies(source)  # type: ignore[call-arg]
-
-    def test_call_with_tree_still_works(self) -> None:
-        """Post-fix behaviour: calling WITH ``tree`` continues to work.
-
-        This pin must pass both before and after the fix — the fix
-        changes only the default, not the happy path.
-        """
-        source = "def f():\n    return 42"
-        tree = ast.parse(source)
-        bodies = _extract_function_bodies(source, tree=tree)
-        assert "f" in bodies
-        assert "return 42" in bodies["f"]
-
-    def test_call_with_tree_multi_function(self) -> None:
-        """Multi-function happy path: tree=tree extracts every top-level fn."""
-        source = (
-            "def alpha():\n    return 1\n\n"
-            "def beta():\n    return 2\n\n"
-            "def gamma():\n    return 3\n"
-        )
-        tree = ast.parse(source)
-        bodies = _extract_function_bodies(source, tree=tree)
-        assert set(bodies) == {"alpha", "beta", "gamma"}
-
-
-class TestEveryProductionCallerPassesTree:
-    """Regression defender: every caller in ``src/haute/*.py`` must
-    already pass ``tree=`` to ``_extract_function_bodies`` so the fix
-    never breaks an existing site.
-
-    This test parses the source of every production module, finds
-    every call to ``_extract_function_bodies`` via the AST (not a
-    regex), and asserts the call site uses a ``tree=`` keyword argument
-    (or a positional second argument, equivalent).
-    """
-
-    def _iter_source_files(self) -> list[Path]:
-        src_dir = Path(__file__).resolve().parent.parent / "src" / "haute"
-        return source_files(src_dir)
-
-    def _find_calls(self, filepath: Path) -> list[ast.Call]:
-        source = filepath.read_text(encoding="utf-8")
-        try:
-            tree = ast.parse(source)
-        except SyntaxError:
-            # Skip files we can't parse.  That would be a different bug
-            # surfaced elsewhere; do not mask it here.
-            return []
-        calls: list[ast.Call] = []
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            fn = node.func
-            name: str | None = None
-            if isinstance(fn, ast.Name):
-                name = fn.id
-            elif isinstance(fn, ast.Attribute):
-                name = fn.attr
-            if name == "_extract_function_bodies":
-                # Skip the function's own definition line and the __all__ /
-                # import re-export lines — they are not *calls*.
-                calls.append(node)
-        return calls
-
-    @pytest.mark.meta
-    def test_all_callers_pass_tree(self) -> None:
-        """Every production call site must either pass ``tree=<expr>`` as
-        a kwarg OR supply a second positional argument.  Either form
-        survives the #125 fix (``tree`` becomes required).
-        """
-        missing: list[str] = []
-        total_calls = 0
-
-        for filepath in self._iter_source_files():
-            # Skip the _ast_helpers.py definition itself — the only
-            # "call" in there is the module-level ``ast.parse`` we
-            # extracted.  We only care about *caller* sites.
-            if filepath.name == "_ast_helpers.py":
-                continue
-            for call in self._find_calls(filepath):
-                total_calls += 1
-                has_tree_kw = any(kw.arg == "tree" for kw in call.keywords)
-                has_positional_tree = len(call.args) >= 2
-                if not (has_tree_kw or has_positional_tree):
-                    missing.append(
-                        f"{filepath}:{call.lineno} — _extract_function_bodies(...) missing tree="
-                    )
-
-        # There should be at least one caller in production source —
-        # if not, something is wrong with our walk (e.g. path drift).
-        assert total_calls >= 1, "found no production call sites; test is mis-configured"
-        assert not missing, "production call sites missing tree=:\n" + "\n".join(missing)

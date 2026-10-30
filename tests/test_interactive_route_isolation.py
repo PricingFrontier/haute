@@ -337,6 +337,7 @@ def test_known_remote_memory_error_keeps_its_public_payload() -> None:
 
 def test_remote_error_translation_covers_each_closed_public_identity() -> None:
     import haute.routes.pipeline as pipeline_mod
+    from haute.errors import TraceRowMismatchError
 
     public_identity, public_code = next(iter(pipeline_mod._PUBLIC_REMOTE_ERROR_CODES.items()))
     cases = [
@@ -368,46 +369,27 @@ def test_remote_error_translation_covers_each_closed_public_identity() -> None:
             None,
             422,
         ),
-        (
-            "pipeline_trace",
-            pipeline_mod._VALUE_ERROR_REMOTE_IDENTITY,
-            "Trace data does not match the selected row",
-            None,
-            409,
+        *(
+            (
+                "pipeline_trace",
+                (refusal.__module__, refusal.__name__),
+                "worded any way at all",
+                {"error_code": refusal.error_code, "message": "worded any way at all"},
+                status,
+            )
+            for refusal, status in pipeline_mod._TRACE_REFUSAL_STATUS.items()
         ),
         (
             "pipeline_trace",
-            pipeline_mod._VALUE_ERROR_REMOTE_IDENTITY,
-            "row_index 9 is out of range",
-            None,
-            400,
+            (TraceRowMismatchError.__module__, TraceRowMismatchError.__name__),
+            "a refusal whose payload names another code",
+            {"error_code": "trace_row_out_of_range", "message": "x"},
+            500,
         ),
         (
             "pipeline_trace",
-            pipeline_mod._VALUE_ERROR_REMOTE_IDENTITY,
-            "Target node produces multiple frames",
-            None,
-            400,
-        ),
-        (
-            "pipeline_trace",
-            pipeline_mod._VALUE_ERROR_REMOTE_IDENTITY,
-            "Target node 'response' is a Workbench Output whose 'pricing' table fills "
-            "'referral' with nothing, so it has no value to trace.",
-            None,
-            400,
-        ),
-        (
-            "pipeline_trace",
-            pipeline_mod._VALUE_ERROR_REMOTE_IDENTITY,
-            "Target node 'missing' not found in graph",
-            None,
-            404,
-        ),
-        (
-            "pipeline_trace",
-            pipeline_mod._VALUE_ERROR_REMOTE_IDENTITY,
-            "row_index is malformed",
+            ("builtins", "ValueError"),
+            "Trace data does not match the preview row.",
             None,
             500,
         ),
@@ -426,7 +408,10 @@ def test_remote_error_translation_covers_each_closed_public_identity() -> None:
 
         assert exc_info.value.status_code == expected_status
         if expected_status != 500:
-            assert exc_info.value.detail == (payload if payload is not None else message)
+            expected_detail = (
+                message if payload is None or operation == "pipeline_trace" else payload
+            )
+            assert exc_info.value.detail == expected_detail
 
 
 def test_a_trace_worker_s_missing_contract_columns_are_a_422() -> None:

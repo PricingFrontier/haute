@@ -1,7 +1,7 @@
 {
-  "inputType": "file",
+  "arguments": {},
   "format": "parquet",
+  "inputType": "file",
   "mode": "scan",
-  "path": "data/quotes.parquet",
-  "arguments": {}
+  "path": "data/quotes.parquet"
 }

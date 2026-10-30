@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -45,6 +46,7 @@ from haute._git import (
     milestone_saves,
     pending_ledger_saves,
     push_working_pair,
+    repair_working_pair,
     resolve_ledger,
     restore_version,
     restore_working_pair,
@@ -74,6 +76,25 @@ LEDGER = "pricing-dev-save"
 def _git(repo: Path, *args: str) -> str:
     result = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True)
     return result.stdout.strip()
+
+
+def _answer_remote(
+    monkeypatch: pytest.MonkeyPatch, returncode: int, stdout: bytes, stderr: bytes = b""
+) -> None:
+    """Answer every remote git command with this output, as the process launcher would."""
+    monkeypatch.setattr(
+        git_core,
+        "_run_process_group",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, returncode, stdout, stderr),
+    )
+
+
+def _without_configured_ssh(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """No ssh transport of the analyst's own: nothing in the environment or global config."""
+    for name in ("GIT_SSH_COMMAND", "GIT_SSH"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "empty-global-gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 
 def _parents(repo: Path, ref: str) -> list[str]:
@@ -269,6 +290,28 @@ class TestCommitSave:
         assert _git(repo, "log", "-1", "--format=%s", sha) == (
             "Updated workbench/schema/perils, workbench/sheets/br_coverages layout"
         )
+
+    def test_a_save_during_a_merge_is_refused_with_the_reason(self, repo: Path) -> None:
+        """A merge left in progress outside Haute made every canvas save fail with git's
+        "cannot do a partial commit during a merge"; the save now says what is wrong."""
+        resolve_ledger(WORKING, cwd=repo)
+        before = _git(repo, "rev-parse", LEDGER)
+        (repo / ".git" / "MERGE_HEAD").write_text(before + "\n")
+        (repo / "rating.py").write_text("# v2\n")
+        with pytest.raises(GitDomainError, match="A git operation is in progress"):
+            commit_save(["rating.py"], WORKING, cwd=repo)
+        assert _git(repo, "rev-parse", LEDGER) == before
+
+    def test_a_failed_status_check_is_an_error_not_an_empty_save(self, repo: Path) -> None:
+        """A status check git could not answer read as "nothing changed", so the save
+        went unrecorded without a word."""
+        resolve_ledger(WORKING, cwd=repo)
+        before = _git(repo, "rev-parse", LEDGER)
+        (repo / "rating.py").write_text("# v2\n")
+        (repo / ".git" / "index").write_bytes(b"not an index")
+        with pytest.raises(GitError):
+            commit_save(["rating.py"], WORKING, cwd=repo)
+        assert _git(repo, "rev-parse", LEDGER) == before
 
 
 class TestMilestoneMerge:
@@ -1152,6 +1195,78 @@ class TestSeedGitignoreGuards:
         # The asserted guards are themselves captured, so clones inherit them.
         assert ".gitignore" in committed
 
+    @pytest.mark.parametrize(
+        ("environment", "marker"),
+        [
+            ("venv", "pyvenv.cfg"),
+            ("env", "pyvenv.cfg"),
+            ("tools/py311", "pyvenv.cfg"),
+            ("conda", "conda-meta/history"),
+        ],
+    )
+    def test_the_first_commit_never_seeds_a_python_environment(
+        self, unborn_repo: Path, environment: str, marker: str
+    ) -> None:
+        """Only .venv/ was ignored, so a venv/ or env/ beside the pipeline passed the seed's
+        *.py permit and its packages entered the permanent root commit."""
+        (unborn_repo / "main.py").write_text("x = 1\n")
+        root = unborn_repo / environment
+        (root / marker).parent.mkdir(parents=True)
+        (root / marker).write_text("home = /usr/bin\n")
+        package = root / "lib" / "python3.11" / "site-packages" / "polars"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("# an installed package\n")
+        (root / "bin").mkdir()
+        (root / "bin" / "activate_this.py").write_text("# an activation script\n")
+
+        set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        committed = _git(unborn_repo, "show", "--name-only", "--format=", "main").splitlines()
+        assert "main.py" in committed
+        assert not any(f.startswith(f"{environment}/") for f in committed), committed
+
+    def test_an_environment_whose_marker_is_ignored_is_still_left_out(
+        self, unborn_repo: Path
+    ) -> None:
+        """An ignore rule hiding pyvenv.cfg, but not the environment's Python files, must
+        not hide the environment from the seed."""
+        (unborn_repo / ".gitignore").write_text("pyvenv.cfg\n")
+        (unborn_repo / "main.py").write_text("x = 1\n")
+        (unborn_repo / "venv").mkdir()
+        (unborn_repo / "venv" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+        package = unborn_repo / "venv" / "lib" / "python3.11" / "site-packages" / "polars"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("# an installed package\n")
+
+        set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        committed = _git(unborn_repo, "show", "--name-only", "--format=", "main").splitlines()
+        assert "main.py" in committed
+        assert not any(f.startswith("venv/") for f in committed), committed
+
+    def test_an_implausibly_large_first_commit_is_refused_naming_its_folder(
+        self, unborn_repo: Path
+    ) -> None:
+        """A tree of Python files that is not the project (a copied package, an environment
+        without a marker) is named and refused, never silently made permanent."""
+        (unborn_repo / "main.py").write_text("x = 1\n")
+        vendored = unborn_repo / "vendor" / "lib"
+        vendored.mkdir(parents=True)
+        for index in range(git_setup._SEED_FILE_LIMIT):
+            (vendored / f"module_{index}.py").write_text("x = 1\n")
+
+        with pytest.raises(GitDomainError) as refused:
+            set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        limit = git_setup._SEED_FILE_LIMIT
+        assert str(refused.value) == (
+            f"The first version of this project would hold {limit + 2:,} files, {limit:,} of "
+            "them in 'vendor/'. That is more than a project holds: move that folder out of "
+            "the project or add it to .gitignore, then try again."
+        )
+        assert _git(unborn_repo, "rev-list", "--all") == ""
+        assert not (unborn_repo / ".haute" / "state.json").exists()
+
     def test_seed_appends_guards_to_partial_gitignore(self, unborn_repo: Path) -> None:
         """An existing .gitignore missing the guard entries gets them appended;
         the user's own entries keep working."""
@@ -1933,6 +2048,15 @@ class TestCommitMilestone:
         with pytest.raises(GitDomainError, match="No new saves"):
             commit_milestone("nothing to commit", repo, cwd=repo)
 
+    def test_commit_during_a_rebase_is_refused_with_the_reason(self, repo: Path) -> None:
+        self._setup(repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        working = _git(repo, "rev-parse", WORKING)
+        (repo / ".git" / "rebase-merge").mkdir()
+        with pytest.raises(GitDomainError, match="A git operation is in progress"):
+            commit_milestone("During a rebase", repo, cwd=repo)
+        assert _git(repo, "rev-parse", WORKING) == working
+
     def test_blank_message_refused(self, repo: Path) -> None:
         self._setup(repo)
         _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
@@ -2610,6 +2734,24 @@ class TestBranchManager:
         with pytest.raises(GitGuardrailError):
             delete_working_pair("main", repo, cwd=repo)
 
+    def test_unconfirmed_delete_of_the_current_branch_keeps_a_dirty_tree(self, repo: Path) -> None:
+        """Only a confirmed delete may discard edits: confirm guarded the unmerged saves
+        alone, so a delete without it threw away what was on disk with the branch."""
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        commit_milestone("m", repo, cwd=repo)  # nothing unmerged: confirm guards nothing else
+        (repo / "rating.py").write_text("# uncommitted edit\n")
+
+        with pytest.raises(GitDomainError) as refused:
+            delete_working_pair(WORKING, repo, confirm=False, cwd=repo)
+
+        assert str(refused.value) == (
+            "You have unsaved changes on this branch. Save or discard them before deleting it."
+        )
+        assert (repo / "rating.py").read_text() == "# uncommitted edit\n"
+        assert self._branch_exists(repo, WORKING) and self._branch_exists(repo, LEDGER)
+        assert self._current_head(repo) == LEDGER
+
     def test_delete_current_force_discards_dirty_tree(self, repo: Path) -> None:
         # A confirmed delete of the current branch is destructive by intent — a
         # dirty working tree is discarded with it (S38), not a refusal.
@@ -2737,13 +2879,14 @@ class TestFetchThrottleAndHardening:
         assert git_core._fetch_refs("origin", "main", cwd=repo) is False
 
     def test_fetch_refs_times_out_to_false_with_prompt_proof_env(
-        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # F1: a hung fetch is killed by the timeout and degrades to False — never
         # raises, never blocks the UI — and the invocation is prompt-proof:
-        # GIT_TERMINAL_PROMPT=0 + SSH BatchMode, so it can't sit on a credential or
-        # host-key prompt to begin with.
-
+        # GIT_TERMINAL_PROMPT=0, no OpenSSH askpass, and with no transport of the
+        # analyst's own, SSH BatchMode, so it can't sit on a credential or host-key
+        # prompt to begin with.
+        _without_configured_ssh(monkeypatch, tmp_path)
         captured: dict[str, object] = {}
 
         def fake_run(cmd: list[str], **kwargs: object) -> object:
@@ -2751,11 +2894,12 @@ class TestFetchThrottleAndHardening:
             captured["env"] = kwargs.get("env")
             raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))  # type: ignore[arg-type]
 
-        monkeypatch.setattr(git_core.subprocess, "run", fake_run)
+        monkeypatch.setattr(git_core, "_run_process_group", fake_run)
         assert git_core._fetch_refs("origin", "main", cwd=repo) is False
         env = captured["env"]
         assert isinstance(env, dict)
         assert env["GIT_TERMINAL_PROMPT"] == "0"
+        assert env["SSH_ASKPASS_REQUIRE"] == "never"
         assert "BatchMode=yes" in env["GIT_SSH_COMMAND"]
         cmd = captured["cmd"]
         assert isinstance(cmd, list) and cmd[:2] == ["git", "fetch"]
@@ -2765,11 +2909,7 @@ class TestFetchThrottleAndHardening:
     ) -> None:
         import haute._git as git_mod
 
-        monkeypatch.setattr(
-            git_core.subprocess,
-            "run",
-            lambda *args, **kwargs: (_ for _ in ()).throw(UnicodeError("bad output")),
-        )
+        _answer_remote(monkeypatch, 0, b"\xff\xfe not utf-8\n")
 
         assert git_core._fetch_refs("origin", "main", cwd=repo) is False
         assert git_mod._ls_remote_version_tags("origin", cwd=repo) == {}
@@ -3037,15 +3177,49 @@ class TestCreateWorkingBranch:
         with pytest.raises(GitDomainError, match="already exists"):
             create_working_branch("dup", repo, cwd=repo)
 
-    @pytest.mark.parametrize("name", ["motor pricing", "a..b", "x.lock", "ends/", "@"])
-    def test_a_name_git_cannot_use_is_refused_in_words(self, repo: Path, name: str) -> None:
+    @pytest.mark.parametrize(
+        ("name", "rule"),
+        [
+            ("motor pricing", "it contains a space"),
+            ("a..b", "it contains '..'"),
+            ("x.lock", "it ends with '.lock'"),
+            ("pricing/x.lock/y", "a part of it ends with '.lock'"),
+            (".hidden", "it starts with '.'"),
+            ("pricing/.hidden", "a part of it starts with '.'"),
+            ("a//b", "it contains '//'"),
+            ("ends/", "it ends with '/'"),
+            ("ends.", "it ends with '.'"),
+            ("a@{b", "it contains '@{'"),
+            ("a:b", "it contains ':'"),
+            ("@", "git keeps '@' for the version open now"),
+        ],
+    )
+    def test_a_name_git_cannot_use_is_refused_naming_the_rule(
+        self, repo: Path, name: str, rule: str
+    ) -> None:
         """A space typed into the name box reached git as a raw failure the server
-        could only report as "Operation failed"; it is refused before git, saying
-        why, and nothing is created."""
+        could only report as "Operation failed"; it is refused before git, naming the
+        rule it breaks, and nothing is created."""
         _fork_setup(repo)
         before = _git(repo, "for-each-ref", "refs/heads/")
-        with pytest.raises(GitDomainError, match="can't be used as a branch name"):
+        with pytest.raises(GitDomainError) as refused:
             create_working_branch(name, repo, cwd=repo)
+        assert str(refused.value) == (
+            f"'{name}' can't be used as a branch name: {rule}. "
+            "Use letters, numbers, dashes and slashes."
+        )
+        assert _git(repo, "for-each-ref", "refs/heads/") == before
+
+    def test_git_decides_a_typed_name_the_named_rules_let_through(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``git check-ref-format --branch`` is the authority for a typed name: one the
+        named rules missed is still refused in words, before any ref is made."""
+        _fork_setup(repo)
+        monkeypatch.setattr(git_core, "_branch_name_problem", lambda _name: None)
+        before = _git(repo, "for-each-ref", "refs/heads/")
+        with pytest.raises(GitDomainError, match="git does not accept it as a branch name"):
+            create_working_branch("a..b", repo, cwd=repo)
         assert _git(repo, "for-each-ref", "refs/heads/") == before
 
     def test_rejects_flag_shaped_at(self, repo: Path) -> None:
@@ -3075,6 +3249,133 @@ class TestCreateWorkingBranch:
         res = create_working_branch("first-line", repo, cwd=repo)
         assert res.switched is True
         assert _git(repo, "symbolic-ref", "--short", "HEAD") == "first-line-save"
+
+
+class TestBrokenPairs:
+    """GIT-R16: a pair a crash split, before delete and archive moved both refs in one
+    transaction, is reported at startup and Repair makes it whole."""
+
+    def _broken(self, repo: Path) -> list[tuple[str, str, str]]:
+        status = working_branch_status(repo, cwd=repo)
+        return [(pair.kind, pair.ledger, pair.working) for pair in status.broken_pairs]
+
+    def test_a_ledger_without_its_branch_is_given_it_back_at_its_last_milestone(
+        self, repo: Path
+    ) -> None:
+        """The working branch was started on the default branch's plain commit; it comes
+        back there, and every save on the ledger is pending again."""
+        set_working_branch(WORKING, repo, cwd=repo)
+        start = _git(repo, "rev-parse", WORKING)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"}, message="first")
+        commit_milestone("First milestone", repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v3\n"}, message="second")
+        _git(repo, "update-ref", "-d", f"refs/heads/{WORKING}")  # the old delete's crash
+
+        assert self._broken(repo) == [("orphan-ledger", LEDGER, WORKING)]
+
+        repaired = repair_working_pair(LEDGER, repo, cwd=repo)
+
+        assert (repaired.working, repaired.ledger) == (WORKING, LEDGER)
+        assert _git(repo, "rev-parse", WORKING) == start
+        assert check_invariants(WORKING, cwd=repo) == []
+        pending = pending_ledger_saves(repo, cwd=repo, branch=WORKING).saves
+        assert [save.message for save in pending] == ["second", "first"]
+        assert self._broken(repo) == []
+        assert working_branch_status(repo, cwd=repo).state == "ready"
+
+    def test_a_half_archived_pair_is_archived_whole(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        ledger_tip = _git(repo, "rev-parse", LEDGER)
+        _git(repo, "checkout", "-q", "main")
+        _git(repo, "branch", "-m", WORKING, f"archive/{WORKING}")  # the old archive's crash
+
+        assert self._broken(repo) == [("half-archived", LEDGER, f"archive/{WORKING}")]
+
+        repaired = repair_working_pair(LEDGER, repo, cwd=repo)
+
+        assert (repaired.working, repaired.ledger) == (f"archive/{WORKING}", f"archive/{LEDGER}")
+        assert _git(repo, "rev-parse", f"archive/{LEDGER}") == ledger_tip
+        assert _git(repo, "branch", "--list", LEDGER) == ""
+        assert self._broken(repo) == []
+        archived = {b.name: b for b in working_branches(repo, cwd=repo).branches}
+        assert archived[f"archive/{WORKING}"].is_archived
+
+    def test_an_archive_to_a_dated_name_is_finished_under_that_name(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        _git(repo, "checkout", "-q", "main")
+        _git(repo, "branch", "-m", WORKING, f"archive/{WORKING}-20261020")
+
+        repaired = repair_working_pair(LEDGER, repo, cwd=repo)
+
+        assert repaired.ledger == f"archive/{WORKING}-20261020-save"
+        assert self._broken(repo) == []
+
+    def test_a_restore_save_is_never_taken_for_a_milestone(self, repo: Path) -> None:
+        """A restore records one save with one parent: the walk passes it, and the saves
+        the lost branch's milestone held are pending again rather than lost."""
+        set_working_branch(WORKING, repo, cwd=repo)
+        start = _git(repo, "rev-parse", WORKING)
+        first = _write_and_save(repo, WORKING, {"rating.py": "# v2\n"}, message="first")
+        commit_milestone("First milestone", repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v3\n"}, message="second")
+        assert first is not None
+        restore_version(first, repo, cwd=repo)
+        _git(repo, "update-ref", "-d", f"refs/heads/{WORKING}")
+
+        repair_working_pair(LEDGER, repo, cwd=repo)
+
+        assert _git(repo, "rev-parse", WORKING) == start
+        pending = [s.message for s in pending_ledger_saves(repo, cwd=repo, branch=WORKING).saves]
+        assert pending[0].startswith(f"Restored {first[:8]}")
+        assert pending[1:] == ["second", "first"]
+
+    def test_a_branch_started_at_a_save_comes_back_at_its_anchoring_milestone(
+        self, repo: Path
+    ) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        save = _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        assert save is not None
+        create_working_branch("idea", repo, at=save, switch=True, cwd=repo)
+        anchor = _git(repo, "rev-parse", "idea")
+        assert len(_parents(repo, anchor)) == 2
+        _write_and_save(repo, "idea", {"rating.py": "# idea\n"}, message="on the idea")
+        _git(repo, "update-ref", "-d", "refs/heads/idea")
+
+        repair_working_pair("idea-save", repo, cwd=repo)
+
+        assert _git(repo, "rev-parse", "idea") == anchor
+        pending = pending_ledger_saves(repo, cwd=repo, branch="idea").saves
+        assert [s.message for s in pending] == ["on the idea"]
+
+    def test_saves_another_ledger_shares_are_not_taken_for_milestones(self, repo: Path) -> None:
+        """After Spin off a copy, the set-aside ledger shares the saves before the fork: they
+        lie on its first-parent chain, but they are saves all the same."""
+        set_working_branch(WORKING, repo, cwd=repo)
+        start = _git(repo, "rev-parse", WORKING)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"}, message="first")
+        _write_and_save(repo, WORKING, {"rating.py": "# v3\n"}, message="second")
+        _git(repo, "branch", "aside", WORKING)
+        _git(repo, "branch", "aside-save", LEDGER)
+        _git(repo, "update-ref", "-d", f"refs/heads/{WORKING}")
+
+        repair_working_pair(LEDGER, repo, cwd=repo)
+
+        assert _git(repo, "rev-parse", WORKING) == start
+        pending = pending_ledger_saves(repo, cwd=repo, branch=WORKING).saves
+        assert [save.message for save in pending] == ["second", "first"]
+
+    def test_repair_refuses_a_ledger_that_is_not_broken(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        before = _git(repo, "for-each-ref", "refs/heads/")
+
+        with pytest.raises(GitDomainError, match="is not part of a broken branch"):
+            repair_working_pair(LEDGER, repo, cwd=repo)
+
+        assert _git(repo, "for-each-ref", "refs/heads/") == before
+        assert self._broken(repo) == []
 
 
 class TestArchiveCommit:
@@ -3162,11 +3463,9 @@ class TestRemotesAndPush:
         assert f"refs/heads/{LEDGER}" in remote_refs
 
     @pytest.mark.parametrize(
-        ("failure", "message"),
-        [
-            (subprocess.TimeoutExpired(["git", "push"], 1), "git push timed out"),
-            (OSError("injected launch failure"), "git push failed"),
-        ],
+        "failure",
+        [subprocess.TimeoutExpired(["git", "push"], 1), OSError("injected launch failure")],
+        ids=["timeout", "launch-failure"],
     )
     def test_push_transport_is_bounded_and_errors_release_the_repository(
         self,
@@ -3174,25 +3473,30 @@ class TestRemotesAndPush:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
         failure: Exception,
-        message: str,
     ) -> None:
+        from haute._git import GitRemoteUnavailableError
         from haute._git_lock import repository_mutation
 
         self._setup_pair(repo)
-        self._add_bare_remote(repo, tmp_path)
-        real_run = git_core.subprocess.run
+        bare = self._add_bare_remote(repo, tmp_path)
+        _git(repo, "push", "origin", "main")  # established: the pair push is the only one
+        real_run = git_core._run_process_group
         captured_timeout: list[object] = []
 
-        def fail_push(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        def fail_push(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
             if cmd[:2] == ["git", "push"]:
                 captured_timeout.append(kwargs.get("timeout"))
                 raise failure
-            return real_run(cmd, **kwargs)  # type: ignore[return-value]
+            return real_run(cmd, **kwargs)
 
-        monkeypatch.setattr(git_core.subprocess, "run", fail_push)
+        monkeypatch.setattr(git_core, "_run_process_group", fail_push)
 
-        with pytest.raises(GitError, match=message):
+        with pytest.raises(GitRemoteUnavailableError) as refused:
             push_working_pair("origin", repo, cwd=repo)
+        assert str(refused.value) == (
+            "Could not push to 'origin'. Check your connection or credentials and try again."
+        )
+        assert self._remote_refs(repo, bare) == ["refs/heads/main"]
 
         assert captured_timeout == [git_core._PUSH_TIMEOUT_SECONDS]
         # The decorator's finally path must release the repository lock for
@@ -3465,13 +3769,11 @@ class TestRemotesAndPush:
         _git(repo, "update-ref", f"refs/heads/{LEDGER}", ledger_tip)
 
         real_run = subprocess.run
+        real_launch = git_core._run_process_group
         push_command: list[str] = []
 
-        def move_refs_at_push(
-            args: list[str], **kwargs: object
-        ) -> subprocess.CompletedProcess[str]:
+        def move_refs_at_push(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
             if args[:2] == ["git", "push"]:
-                assert kwargs.get("errors") == "replace"
                 push_command.extend(args)
                 real_run(
                     ["git", "update-ref", f"refs/heads/{WORKING}", moved_working],
@@ -3483,9 +3785,9 @@ class TestRemotesAndPush:
                     cwd=repo,
                     check=True,
                 )
-            return real_run(args, **kwargs)
+            return real_launch(args, **kwargs)
 
-        monkeypatch.setattr(git_core.subprocess, "run", move_refs_at_push)
+        monkeypatch.setattr(git_core, "_run_process_group", move_refs_at_push)
 
         result = push_working_pair("origin", repo, cwd=repo)
 
@@ -3512,11 +3814,12 @@ class TestRemotesAndPush:
         moved_default = _git(repo, "commit-tree", tree, "-p", default_tip, "-m", "raced default")
 
         real_run = subprocess.run
+        real_launch = git_core._run_process_group
         push_command: list[str] = []
 
         def move_default_at_push(
-            args: list[str], **kwargs: object
-        ) -> subprocess.CompletedProcess[str]:
+            args: list[str], **kwargs: Any
+        ) -> subprocess.CompletedProcess[bytes]:
             if args[:2] == ["git", "push"]:
                 push_command.extend(args)
                 real_run(
@@ -3524,9 +3827,9 @@ class TestRemotesAndPush:
                     cwd=repo,
                     check=True,
                 )
-            return real_run(args, **kwargs)
+            return real_launch(args, **kwargs)
 
-        monkeypatch.setattr(git_core.subprocess, "run", move_default_at_push)
+        monkeypatch.setattr(git_core, "_run_process_group", move_default_at_push)
 
         result = push_working_pair("origin", repo, cwd=repo)
 
@@ -3587,7 +3890,7 @@ class TestRemotesAndPush:
                 None,
             ),
             (0, "ref: refs/heads/main\tHEAD\nnot-a-sha\trefs/heads/main\n", "", "malformed"),
-            (2, "", "network unavailable", "network unavailable"),
+            (2, "", "network unavailable", "Could not refresh 'origin'"),
         ],
     )
     def test_inspect_remote_strictly_parses_advertisement(
@@ -3601,13 +3904,7 @@ class TestRemotesAndPush:
     ) -> None:
         import haute._git as git_mod
 
-        monkeypatch.setattr(
-            git_core.subprocess,
-            "run",
-            lambda *args, **kwargs: subprocess.CompletedProcess(
-                args[0], returncode, stdout, stderr
-            ),
-        )
+        _answer_remote(monkeypatch, returncode, stdout.encode(), stderr.encode())
 
         if expected is None:
             assert git_mod._inspect_remote("origin", cwd=repo) == ({"main"}, "main", True)
@@ -3617,34 +3914,46 @@ class TestRemotesAndPush:
 
     @pytest.mark.parametrize(
         "failure",
-        [subprocess.TimeoutExpired(["git"], 1), OSError("no git"), UnicodeError("bad output")],
+        [subprocess.TimeoutExpired(["git"], 1), OSError("no git")],
+        ids=["timeout", "launch-failure"],
     )
     def test_inspect_remote_translates_process_failures(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch, failure: BaseException
     ) -> None:
         import haute._git as git_mod
 
-        def failing_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        def failing_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
             raise failure
 
-        monkeypatch.setattr(git_core.subprocess, "run", failing_run)
-        with pytest.raises(git_mod.GitError):
+        monkeypatch.setattr(git_core, "_run_process_group", failing_run)
+        with pytest.raises(git_mod.GitRemoteUnavailableError, match="Could not refresh 'origin'"):
             git_mod._inspect_remote("origin", cwd=repo)
+
+    def test_inspect_remote_refuses_an_unreadable_advertisement(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import haute._git as git_mod
+
+        _answer_remote(monkeypatch, 0, b"\xff\trefs/heads/main\n")
+        with pytest.raises(git_mod.GitError, match="unreadable") as refused:
+            git_mod._inspect_remote("origin", cwd=repo)
+        assert not isinstance(refused.value, git_mod.GitDomainError)
 
     @pytest.mark.parametrize(
         "failure",
-        [subprocess.TimeoutExpired(["git"], 1), OSError("no git"), UnicodeError("bad output")],
+        [subprocess.TimeoutExpired(["git"], 1), OSError("no git")],
+        ids=["timeout", "launch-failure"],
     )
     def test_fetch_expected_default_translates_process_failures(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch, failure: BaseException
     ) -> None:
         import haute._git as git_mod
 
-        def failing_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        def failing_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
             raise failure
 
-        monkeypatch.setattr(git_core.subprocess, "run", failing_run)
-        with pytest.raises(git_mod.GitError):
+        monkeypatch.setattr(git_core, "_run_process_group", failing_run)
+        with pytest.raises(git_mod.GitRemoteUnavailableError, match="Could not refresh 'origin'"):
             git_mod._fetch_expected_default("origin", "main", cwd=repo)
 
     @pytest.mark.parametrize(
@@ -3665,13 +3974,7 @@ class TestRemotesAndPush:
     ) -> None:
         import haute._git as git_mod
 
-        monkeypatch.setattr(
-            git_core.subprocess,
-            "run",
-            lambda *args, **kwargs: subprocess.CompletedProcess(
-                args[0], 0, f"{'a' * 40}\t{advertised_ref}\n", ""
-            ),
-        )
+        _answer_remote(monkeypatch, 0, f"{'a' * 40}\t{advertised_ref}\n".encode())
 
         with pytest.raises(git_mod.GitError, match="malformed"):
             git_mod._inspect_remote("origin", cwd=repo)
@@ -3691,11 +3994,7 @@ class TestRemotesAndPush:
             f"{sha}\trefs/tags/version/1.0\n"
             f"{peeled}\trefs/tags/version/1.0^{{}}\n"
         )
-        monkeypatch.setattr(
-            git_core.subprocess,
-            "run",
-            lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout, ""),
-        )
+        _answer_remote(monkeypatch, 0, stdout.encode())
 
         assert git_mod._inspect_remote("origin", cwd=repo) == (
             {"main", "feature]x"},
@@ -3708,13 +4007,7 @@ class TestRemotesAndPush:
     ) -> None:
         import haute._git as git_mod
 
-        monkeypatch.setattr(
-            git_core.subprocess,
-            "run",
-            lambda *args, **kwargs: subprocess.CompletedProcess(
-                args[0], 0, "ref: refs/heads/main\tHEAD\n", ""
-            ),
-        )
+        _answer_remote(monkeypatch, 0, b"ref: refs/heads/main\tHEAD\n")
 
         assert git_mod._inspect_remote("origin", cwd=repo) == (set(), "main", False)
 
@@ -3724,13 +4017,7 @@ class TestRemotesAndPush:
     ) -> None:
         import haute._git as git_mod
 
-        monkeypatch.setattr(
-            git_core.subprocess,
-            "run",
-            lambda *args, **kwargs: subprocess.CompletedProcess(
-                args[0], 0, f"{zero_oid}\trefs/heads/main\n", ""
-            ),
-        )
+        _answer_remote(monkeypatch, 0, f"{zero_oid}\trefs/heads/main\n".encode())
 
         with pytest.raises(git_mod.GitError, match="malformed"):
             git_mod._inspect_remote("origin", cwd=repo)
@@ -3741,11 +4028,7 @@ class TestRemotesAndPush:
         import haute._git as git_mod
 
         stdout = f"{'a' * 40}\trefs/heads/main\n{'b' * 64}\trefs/tags/version/1.0\n"
-        monkeypatch.setattr(
-            git_core.subprocess,
-            "run",
-            lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout, ""),
-        )
+        _answer_remote(monkeypatch, 0, stdout.encode())
 
         with pytest.raises(git_mod.GitError, match="malformed"):
             git_mod._inspect_remote("origin", cwd=repo)
@@ -3756,11 +4039,7 @@ class TestRemotesAndPush:
         import haute._git as git_mod
 
         stdout = f"{'a' * 40}\trefs/heads/main\n{'b' * 40}\trefs/heads/main\n"
-        monkeypatch.setattr(
-            git_core.subprocess,
-            "run",
-            lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout, ""),
-        )
+        _answer_remote(monkeypatch, 0, stdout.encode())
 
         with pytest.raises(git_mod.GitError, match="malformed"):
             git_mod._inspect_remote("origin", cwd=repo)
@@ -3771,11 +4050,7 @@ class TestRemotesAndPush:
         import haute._git as git_mod
 
         stdout = f"ref: refs/heads/main\tHEAD\n{'a' * 40}\tHEAD\n{'b' * 40}\trefs/heads/main\n"
-        monkeypatch.setattr(
-            git_core.subprocess,
-            "run",
-            lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout, ""),
-        )
+        _answer_remote(monkeypatch, 0, stdout.encode())
 
         with pytest.raises(git_mod.GitError, match="malformed"):
             git_mod._inspect_remote("origin", cwd=repo)
@@ -3806,10 +4081,36 @@ class TestRemotesAndPush:
         assert not isinstance(exc.value, GitPushRejectedError)
         # Nothing of this call landed, so it must not claim the default was published.
         assert not isinstance(exc.value, GitBootstrapIncompleteError)
+        # It passes: the next Push finds an established remote, so publishing retries it.
+        assert isinstance(exc.value, git_mod.GitRemoteUnavailableError)
+        assert str(exc.value) == (
+            "'origin' changed while Haute was publishing to it, so nothing was published. "
+            "Push again."
+        )
         advertised = _git(repo, "ls-remote", str(bare))
         assert _git(repo, "ls-remote", str(bare), "refs/heads/main").split()[0] == remote_tip
         assert f"refs/heads/{WORKING}" not in advertised
         assert f"refs/heads/{LEDGER}" not in advertised
+
+    def test_a_push_the_remote_refuses_says_so_in_words(self, repo: Path, tmp_path: Path) -> None:
+        """A branch rule or a hook declining the push is a refusal, not a connection
+        problem: it answers in words, never "Operation failed", and nothing lands."""
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        _git(repo, "push", "origin", "main")
+        hook = bare / "hooks" / "pre-receive"
+        hook.write_text("#!/bin/sh\necho 'branch rule: no pushes' >&2\nexit 1\n", newline="\n")
+        hook.chmod(0o755)
+
+        with pytest.raises(GitDomainError) as refused:
+            push_working_pair("origin", repo, cwd=repo)
+
+        assert str(refused.value) == (
+            "'origin' refused the push, so nothing was published and your work is unchanged. "
+            "The Haute server log has its reason, for example a branch rule or missing write "
+            "access."
+        )
+        assert self._remote_refs(repo, bare) == ["refs/heads/main"]
 
     def test_bootstrap_race_with_same_default_tip_publishes_pair(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -3954,7 +4255,7 @@ class TestRemotesAndPush:
             OSError("injected launch failure"),
             # A non-zero exit is not a refusal: the remote may have applied the refs.
             subprocess.CompletedProcess(
-                ["git", "push"], 128, "", "fatal: the remote end hung up unexpectedly\n"
+                ["git", "push"], 128, b"", b"fatal: the remote end hung up unexpectedly\n"
             ),
         ],
         ids=["timeout", "launch-failure", "lost-connection"],
@@ -3964,18 +4265,16 @@ class TestRemotesAndPush:
         repo: Path,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
-        failure: Exception | subprocess.CompletedProcess[str],
+        failure: Exception | subprocess.CompletedProcess[bytes],
     ) -> None:
         from haute._git import GitBootstrapIncompleteError
 
         self._setup_pair(repo)
         bare = self._add_bare_remote(repo, tmp_path)
-        real_run = git_core.subprocess.run
+        real_run = git_core._run_process_group
         pushes = 0
 
-        def fail_the_pair_push(
-            cmd: list[str], **kwargs: object
-        ) -> subprocess.CompletedProcess[str]:
+        def fail_the_pair_push(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
             nonlocal pushes
             if cmd[:2] == ["git", "push"]:
                 pushes += 1
@@ -3983,9 +4282,9 @@ class TestRemotesAndPush:
                     if isinstance(failure, Exception):
                         raise failure
                     return failure
-            return real_run(cmd, **kwargs)  # type: ignore[return-value]
+            return real_run(cmd, **kwargs)
 
-        monkeypatch.setattr(git_core.subprocess, "run", fail_the_pair_push)
+        monkeypatch.setattr(git_core, "_run_process_group", fail_the_pair_push)
 
         with pytest.raises(GitBootstrapIncompleteError, match="could not confirm"):
             push_working_pair("origin", repo, cwd=repo)
@@ -4000,12 +4299,13 @@ class TestRemotesAndPush:
         bare = self._add_bare_remote(repo, tmp_path)
         default_tip = _git(repo, "rev-parse", "main")
         teammate = tmp_path / "teammate"
-        real_run = git_core.subprocess.run
+        real_run = subprocess.run
+        real_launch = git_core._run_process_group
         pushes = 0
 
         def teammate_pushes_in_the_gap(
-            cmd: list[str], **kwargs: object
-        ) -> subprocess.CompletedProcess[str]:
+            cmd: list[str], **kwargs: Any
+        ) -> subprocess.CompletedProcess[bytes]:
             nonlocal pushes
             if cmd[:2] == ["git", "push"]:
                 pushes += 1
@@ -4017,9 +4317,9 @@ class TestRemotesAndPush:
                         ["-C", str(teammate), "push", "origin", f"HEAD:refs/heads/{WORKING}"],
                     ):
                         real_run(["git", *args], check=True, capture_output=True)
-            return real_run(cmd, **kwargs)  # type: ignore[return-value]
+            return real_launch(cmd, **kwargs)
 
-        monkeypatch.setattr(git_core.subprocess, "run", teammate_pushes_in_the_gap)
+        monkeypatch.setattr(git_core, "_run_process_group", teammate_pushes_in_the_gap)
 
         with pytest.raises(GitPushRejectedError) as exc:
             push_working_pair("origin", repo, cwd=repo)

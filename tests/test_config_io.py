@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,6 @@ from haute._config_io import (
     NODE_TYPE_TO_FOLDER,
     _prepare_config_for_sidecar,
     collect_node_configs,
-    config_load_errors,
     config_path_for_node,
     find_config_by_func_name,
     has_config_folder,
@@ -234,47 +234,69 @@ class TestSaveAndLoad:
         rel = _write_node_config_sidecar(NodeType.API_INPUT, "quotes", config, tmp_path)
         assert load_node_config(rel, base_dir=tmp_path) == config
 
-    def test_workbench_input_tables_survive_its_config_file(self, tmp_path):
-        from haute._workbench_input import workbench_table_labels
+    @pytest.mark.parametrize(
+        ("node_type", "config", "says"),
+        [
+            (
+                NodeType.WORKBENCH_INPUT,
+                {"tables": [], "sample": {}},
+                "workbenchInput config contains the removed tables and sample fields. A "
+                "Workbench Input reads its tables and sample from the form folder: delete them.",
+            ),
+            (
+                NodeType.WORKBENCH_INPUT,
+                {"sample": {}},
+                "workbenchInput config contains the removed sample field. A Workbench Input "
+                "reads its tables and sample from the form folder: delete it.",
+            ),
+            (
+                NodeType.WORKBENCH_OUTPUT,
+                {"tables": []},
+                "workbenchOutput config contains the removed tables field. A Workbench Output "
+                "reads its tables from the form folder: delete it.",
+            ),
+        ],
+        ids=["input", "input-sample", "output"],
+    )
+    def test_a_workbench_nodes_tables_never_reach_its_config_file(
+        self, tmp_path, node_type, config, says
+    ):
+        """A workbench node is given its tables, and a Workbench Input its sample, from the
+        form where it runs: a write holding them is refused, nothing written, and a file an
+        earlier Haute wrote with its copies is refused naming the keys (specs/workbench)."""
+        from haute.errors import ConfigError
 
-        config = {
-            "sample": {"policy_details": {"state": "NY"}},
-            "tables": [
-                {
-                    "name": "policy_details",
-                    "rows": "one",
-                    "columns": [{"name": "state", "type": "str"}],
-                }
-            ],
-        }
-        rel = _write_node_config_sidecar(NodeType.WORKBENCH_INPUT, "quote", config, tmp_path)
-        assert rel.as_posix() == "config/workbench_input/quote.json"
-        loaded = load_node_config(rel, base_dir=tmp_path)
-        assert loaded == config
-        assert workbench_table_labels(loaded) == ("policy_details",)
+        with pytest.raises(ConfigError, match=re.escape(says)):
+            _write_node_config_sidecar(node_type, "node", config, tmp_path)
+        rel = config_path_for_node(node_type, "node")
+        assert not (tmp_path / rel).exists()
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(json.dumps(config), encoding="utf-8")
+        with pytest.raises(ConfigError, match=re.escape(says)) as refused:
+            load_node_config(rel, base_dir=tmp_path)
+        assert refused.value.context["removed_config_keys"] == [
+            key for key in ("tables", "sample") if key in config
+        ]
+
+    def test_a_workbench_nodes_config_file_holds_nothing_of_the_form(self, tmp_path):
+        """A Workbench Input's or Output's config file holds no tables: it reads back as
+        written, `{}`."""
+        for node_type, name in (
+            (NodeType.WORKBENCH_INPUT, "quote"),
+            (NodeType.WORKBENCH_OUTPUT, "response"),
+        ):
+            rel = _write_node_config_sidecar(node_type, name, {}, tmp_path)
+            assert json.loads((tmp_path / rel).read_text(encoding="utf-8")) == {}
+            assert load_node_config(rel, base_dir=tmp_path) == {}
 
     def test_a_workbench_input_config_with_a_path_is_refused(self, tmp_path):
         """A Workbench Input reads no file, so its config declares no ``path``."""
         from haute.errors import ConfigError
 
-        config = {"path": "tests/quotes/example.json", "tables": []}
+        config = {"path": "tests/quotes/example.json"}
         with pytest.raises(ConfigError, match="'path'"):
             _write_node_config_sidecar(NodeType.WORKBENCH_INPUT, "quote", config, tmp_path)
         assert not (tmp_path / "config" / "workbench_input" / "quote.json").exists()
-
-    def test_workbench_output_tables_survive_its_config_file(self, tmp_path):
-        from haute._workbench_output import workbench_output_tables
-
-        config = {
-            "tables": [
-                {"name": "layers", "rows": "many", "columns": [{"name": "layer", "type": "int"}]}
-            ],
-        }
-        rel = _write_node_config_sidecar(NodeType.WORKBENCH_OUTPUT, "response", config, tmp_path)
-        assert rel.as_posix() == "config/workbench_output/response.json"
-        loaded = load_node_config(rel, base_dir=tmp_path)
-        assert loaded == config
-        assert [table.name for table in workbench_output_tables(loaded)] == ["layers"]
 
     def test_code_key_excluded_from_json(self, tmp_path):
         config = {"path": "model.pkl", "fileType": "pickle", "code": "df = obj.predict(df)"}
@@ -644,187 +666,17 @@ class TestCollectNodeConfigs:
 
 
 # ---------------------------------------------------------------------------
-# _load_error protection — prevents config loss on save
+# Editor state stays out of the sidecar
 # ---------------------------------------------------------------------------
 
 
-class TestLoadErrorProtection:
-    """Verify that nodes with _load_error are excluded from save output,
-    preserving the original config file on disk."""
-
-    def test_load_error_node_skipped_in_collect(self):
-        """A node with _load_error should not appear in collect_node_configs."""
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "ok",
-                        "data": {
-                            "label": "ok",
-                            "nodeType": "dataInput",
-                            "config": {"path": "d.parquet"},
-                        },
-                    },
-                    {
-                        "id": "bad",
-                        "data": {
-                            "label": "bad",
-                            "nodeType": "dataInput",
-                            "config": {"_load_error": "file not found"},
-                        },
-                    },
-                ],
-                "edges": [],
-            }
-        )
-        configs = collect_node_configs(graph)
-        assert "config/data_input/ok.json" in configs
-        assert "config/data_input/bad.json" not in configs
-
-    def test_load_error_node_appears_in_config_load_errors(self):
-        """config_load_errors should return paths for nodes with _load_error."""
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "ok",
-                        "data": {
-                            "label": "ok",
-                            "nodeType": "dataInput",
-                            "config": {"path": "d.parquet"},
-                        },
-                    },
-                    {
-                        "id": "bad",
-                        "data": {
-                            "label": "bad",
-                            "nodeType": "dataInput",
-                            "config": {"_load_error": "missing"},
-                        },
-                    },
-                ],
-                "edges": [],
-            }
-        )
-        errors = config_load_errors(graph)
-        assert "config/data_input/bad.json" in errors
-        assert "config/data_input/ok.json" not in errors
-
-    def test_load_error_not_written_to_json(self, tmp_path):
-        """_load_error is filtered before config data is written to a sidecar."""
-
-        config = {"path": "d.parquet", "_load_error": "test error"}
-        rel_path = _write_node_config_sidecar(NodeType.DATA_INPUT, "test", config, tmp_path)
-        content = json.loads((tmp_path / rel_path).read_text())
-        assert "_load_error" not in content
-        assert content["path"] == "d.parquet"
-
-    def test_healthy_node_has_no_load_error(self):
-        """A successfully loaded config should not have _load_error."""
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "ok",
-                        "data": {
-                            "label": "ok",
-                            "nodeType": "dataInput",
-                            "config": {"path": "d.parquet"},
-                        },
-                    },
-                ],
-                "edges": [],
-            }
-        )
-        errors = config_load_errors(graph)
-        assert len(errors) == 0
-
-    def test_user_edit_clears_load_error(self):
-        """When user edits a config (frontend sends clean dict), _load_error is gone
-        and the node is no longer skipped by collect_node_configs."""
-        # Simulate: node initially had _load_error
-        graph_before = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "n",
-                        "data": {
-                            "label": "src",
-                            "nodeType": "dataInput",
-                            "config": {"_load_error": "missing"},
-                        },
-                    },
-                ],
-                "edges": [],
-            }
-        )
-        assert "config/data_input/src.json" not in collect_node_configs(graph_before)
-
-        # Simulate: user edits the node (frontend sends clean config without _load_error)
-        graph_after = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "n",
-                        "data": {
-                            "label": "src",
-                            "nodeType": "dataInput",
-                            "config": {"path": "new.parquet"},
-                        },
-                    },
-                ],
-                "edges": [],
-            }
-        )
-        configs = collect_node_configs(graph_after)
-        assert "config/data_input/src.json" in configs
-        content = json.loads(configs["config/data_input/src.json"])
-        assert content["path"] == "new.parquet"
-
-    def test_save_preserves_original_file(self, tmp_path):
-        """End-to-end: saving a graph with _load_error should not overwrite
-        the original config file on disk."""
-
-        # Write the original config to disk
-        _write_node_config_sidecar(
-            NodeType.DATA_INPUT,
-            "src",
-            {
-                "inputType": "file",
-                "format": "parquet",
-                "mode": "scan",
-                "path": "data/real.parquet",
-                "arguments": {},
-            },
-            tmp_path,
-        )
-        original_path = tmp_path / "config" / "data_input" / "src.json"
-        assert original_path.exists()
-        original_content = original_path.read_text()
-
-        # Build a graph where that node has _load_error
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "s",
-                        "data": {
-                            "label": "src",
-                            "nodeType": "dataInput",
-                            "config": {"_load_error": "test"},
-                        },
-                    },
-                ],
-                "edges": [],
-            }
-        )
-
-        # collect_node_configs skips the error node
-        configs = collect_node_configs(graph)
-        assert "config/data_input/src.json" not in configs
-
-        # The original file is still on disk, untouched
-        assert original_path.read_text() == original_content
+def test_an_editor_key_is_not_written_to_the_sidecar(tmp_path):
+    """The config record's own underscore keys are editor state, filtered before writing."""
+    config = {"path": "d.parquet", "_steps_error": "Step 1: Pick a column."}
+    rel_path = _write_node_config_sidecar(NodeType.DATA_INPUT, "test", config, tmp_path)
+    content = json.loads((tmp_path / rel_path).read_text())
+    assert "_steps_error" not in content
+    assert content["path"] == "d.parquet"
 
 
 # ---------------------------------------------------------------------------
@@ -1188,90 +1040,6 @@ class TestCollectNodeConfigsEdgeCases:
         configs = collect_node_configs(graph)
         for path in configs:
             assert "\\" not in path
-
-
-# ---------------------------------------------------------------------------
-# config_load_errors edge cases
-# ---------------------------------------------------------------------------
-
-
-class TestConfigLoadErrorsEdgeCases:
-    def test_error_node_returned(self):
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "bad",
-                        "data": {
-                            "label": "broken",
-                            "nodeType": "dataInput",
-                            "config": {"_load_error": "file corrupt"},
-                        },
-                    },
-                ],
-                "edges": [],
-            }
-        )
-        errors = config_load_errors(graph)
-        assert "config/data_input/broken.json" in errors
-        assert errors["config/data_input/broken.json"] == "file corrupt"
-
-    def test_healthy_node_excluded(self):
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "ok",
-                        "data": {
-                            "label": "good",
-                            "nodeType": "dataInput",
-                            "config": {"path": "d.parquet"},
-                        },
-                    },
-                ],
-                "edges": [],
-            }
-        )
-        assert config_load_errors(graph) == {}
-
-    def test_multiple_error_nodes(self):
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "b1",
-                        "data": {
-                            "label": "bad1",
-                            "nodeType": "dataInput",
-                            "config": {"_load_error": "err1"},
-                        },
-                    },
-                    {
-                        "id": "b2",
-                        "data": {
-                            "label": "bad2",
-                            "nodeType": "banding",
-                            "config": {"_load_error": "err2"},
-                        },
-                    },
-                    {
-                        "id": "ok",
-                        "data": {
-                            "label": "healthy",
-                            "nodeType": "output",
-                            "config": make_output_config([]),
-                        },
-                    },
-                ],
-                "edges": [],
-            }
-        )
-        errors = config_load_errors(graph)
-        assert len(errors) == 2
-        assert "config/data_input/bad1.json" in errors
-        assert "config/banding/bad2.json" in errors
-        assert errors["config/data_input/bad1.json"] == "err1"
-        assert errors["config/banding/bad2.json"] == "err2"
 
 
 # ---------------------------------------------------------------------------
@@ -1707,16 +1475,6 @@ class TestGlobalConstantsFile:
         assert constants[0].value == 1.0
         assert isinstance(constants[0].value, float)
         assert '"value": 1.0' in global_constants_json(constants)
-
-    def test_load_reads_the_file_and_lets_a_missing_file_raise(self, tmp_path: Path) -> None:
-        from haute._config_io import load_global_constants
-
-        path = tmp_path / "global_constants.json"
-        with pytest.raises(FileNotFoundError):
-            load_global_constants(path)
-        path.write_text(self.CANONICAL, encoding="utf-8")
-
-        assert len(load_global_constants(path)) == 5
 
     @pytest.mark.parametrize(
         ("payload", "message"),

@@ -15,8 +15,8 @@ from unittest.mock import patch
 
 import polars as pl
 import pytest
-from fastapi import HTTPException
 
+from haute.errors import RequestRefusedError
 from tests.conftest import make_edge, make_graph
 
 if TYPE_CHECKING:
@@ -147,7 +147,7 @@ def _ask(graph: dict[str, Any], **extra: Any):
 
 
 def _refused(graph: dict[str, Any], **extra: Any) -> str:
-    with pytest.raises(HTTPException) as caught:
+    with pytest.raises(RequestRefusedError) as caught:
         _ask(graph, **extra)
     assert caught.value.status_code == 422
     return str(caught.value.detail)
@@ -420,7 +420,7 @@ def test_unhashable_features_and_key_columns_are_refused() -> None:
     context = cast(Any, None)
 
     def refused(question: _Question) -> str:
-        with pytest.raises(HTTPException) as caught:
+        with pytest.raises(RequestRefusedError) as caught:
             _service()._compute(question, leased, context)
         assert caught.value.status_code == 422
         return str(caught.value.detail)

@@ -69,9 +69,8 @@ survives copy/delete/paste with distinct ids. Selecting/deleting one connection 
 other, and one undo restores exactly the deleted connection. Repeat across parse/save/reload
 and recovery. Do not prove uniqueness using endpoint-only examples.
 
-**Dependencies:** [PCFG-R19](pipeline-config.md#pcfg-r19--recovery-ids-captures-match-bindings-and-clones)
-also changes recovery-id minting in `_pipeline_recovery.py`; coordinate the shared identity
-contract and minting path.
+**Dependencies:** None. Recovery ids are minted once per graph by
+`_pipeline_recovery._recovery_ids`; an edge identity contract follows the same path.
 
 **Evidence:** `src/haute/_graph_utils.py::_edge_id`; `src/haute/_pipeline_recovery.py::_canonical_snapshot`;
 `frontend/src/types/pipelineDocument.ts::parseRecoveryGraph`; `frontend/src/hooks/useKeyboardShortcuts.ts::useKeyboardShortcuts.handler` (paste branch).

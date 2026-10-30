@@ -3,7 +3,7 @@ import { Fragment, useMemo, useState, type ReactNode } from "react"
 import type { ExploreColumnStat } from "../../api/types"
 import { NODE_GROUP_COLORS } from "../../theme/colors"
 import { formatNullPct } from "../../utils/formatValue"
-import { formatRelativeTime } from "../../utils/formatTime"
+import { relativeTime } from "../../utils/relativeTime"
 import DistinctInfoButton from "./DistinctInfoButton"
 import DistributionSparkline from "./DistributionSparkline"
 import { distributionText } from "./distribution"
@@ -90,7 +90,7 @@ export function DatasetSnapshotCard({ report }: SummaryCardProps) {
         />
         <Metric
           label="Cached"
-          value={formatRelativeTime(report.generated_at, new Date())}
+          value={relativeTime(generatedDate)}
           title={generatedIso}
         />
       </div>

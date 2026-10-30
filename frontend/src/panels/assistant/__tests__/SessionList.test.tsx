@@ -10,7 +10,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 
 import SessionList from "../SessionList"
-import { relativeTime } from "../relativeTime"
 import useAssistantStore from "../../../stores/useAssistantStore"
 
 function seed(partial: Partial<ReturnType<typeof useAssistantStore.getState>>) {
@@ -83,26 +82,5 @@ describe("SessionList", () => {
     fireEvent.click(screen.getAllByTestId("assistant-session-item")[0])
 
     expect(openSession).not.toHaveBeenCalled()
-  })
-})
-
-describe("relativeTime", () => {
-  const now = Date.parse("2026-08-05T12:00:00Z")
-
-  it.each([
-    [now / 1000, "just now"],
-    [now / 1000 - 120, "2m ago"],
-    [now / 1000 - 7200, "2h ago"],
-    [now / 1000 - 172_800, "2d ago"],
-  ])("renders %s as %s", (seconds, expected) => {
-    expect(relativeTime(seconds, now)).toBe(expected)
-  })
-
-  it("falls back to a date beyond a week", () => {
-    expect(relativeTime(now / 1000 - 30 * 86_400, now)).not.toMatch(/ago|just now/)
-  })
-
-  it("renders nothing for a missing timestamp", () => {
-    expect(relativeTime(0, now)).toBe("")
   })
 })

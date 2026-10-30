@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
 import getpass
 import inspect
 import os
 import re
 import shutil
+import signal
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -165,8 +168,18 @@ class GitTransactionError(GitDomainError):
     """A Git mutation failed and its compensating rollback also failed."""
 
 
+class GitRemoteUnavailableError(GitDomainError):
+    """A deliberate read of or push to a remote did not go through, for a reason that passes.
+
+    A timeout, an authentication or network failure, a transport that would not
+    start or a non-zero exit, or the remote changing under a push's create-only
+    lease, with git's stderr kept in the log. The message is hand-written, so the
+    HTTP layer keeps it verbatim; hosted publishing retries it like any other
+    transport failure rather than stopping for the analyst."""
+
+
 class GitHistoryReadError(GitDomainError):
-    """A historical pipeline could not be materialised or parsed safely."""
+    """History could not be read, or a historical pipeline materialised or parsed safely."""
 
 
 # How many files a refusal over files in use names.
@@ -286,32 +299,147 @@ def _run_git_process(
     timeout: float | None = None,
     errors: str | None = None,
 ) -> _GitProcessResult[str] | _GitProcessResult[bytes]:
-    """Run Git with captured output, translating only an expired timeout."""
+    """Run Git with captured output, translating only an expired timeout.
+
+    Text output is decoded as UTF-8 with *errors* (strict by default) and universal
+    newlines, as a text-mode ``subprocess.run`` would."""
     try:
-        if binary:
-            binary_result = subprocess.run(
-                ["git", *args],
-                capture_output=True,
-                cwd=cwd or Path.cwd(),
-                env=env,
-                timeout=timeout,
-            )
-            return _GitProcessResult(
-                binary_result.returncode, binary_result.stdout, binary_result.stderr
-            )
-        text_result = subprocess.run(
-            ["git", *args],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors=errors,
-            cwd=cwd or Path.cwd(),
-            env=env,
-            timeout=timeout,
+        completed = _run_process_group(
+            ["git", *args], cwd=cwd or Path.cwd(), env=env, timeout=timeout
         )
     except subprocess.TimeoutExpired as exc:
         raise _GitProcessTimeoutError() from exc
-    return _GitProcessResult(text_result.returncode, text_result.stdout, text_result.stderr)
+    if binary:
+        return _GitProcessResult(completed.returncode, completed.stdout, completed.stderr)
+    return _GitProcessResult(
+        completed.returncode,
+        _decoded(completed.stdout, errors),
+        _decoded(completed.stderr, errors),
+    )
+
+
+def _decoded(output: bytes, errors: str | None) -> str:
+    text = output.decode("utf-8", errors or "strict")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+# How long a killed command's output pipes are drained before they are abandoned to a
+# process that left the group and still holds them.
+_KILLED_DRAIN_SECONDS = 5.0
+
+
+def _run_process_group(
+    cmd: list[str], *, cwd: Path, env: dict[str, str] | None, timeout: float | None
+) -> subprocess.CompletedProcess[bytes]:
+    """Run *cmd* with no stdin, with every process it starts, killed together at *timeout*.
+
+    A remote command's transport (ssh, a credential helper) is a child of git: ending git
+    alone would leave it running and holding the output pipes open, and the pipes cannot
+    be closed under Windows' reader threads. On POSIX the processes share a new session,
+    which also leaves them no terminal to ask for a password on, and its process group is
+    killed. On Windows git starts suspended and joins a job object before it runs, so every
+    process it starts belongs to the job whatever becomes of its parent, and the job is
+    terminated.
+    """
+    if sys.platform == "win32":
+        import psutil
+
+        process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=cwd,
+            env=env,
+            creationflags=_CREATE_SUSPENDED,
+        )
+        job = None
+        try:
+            job = _job_holding(process.pid)
+            psutil.Process(process.pid).resume()
+        except BaseException:
+            process.kill()
+            process.communicate()
+            if job is not None:
+                _kernel32.CloseHandle(job)
+            raise
+        try:
+            return _communicate_until(
+                process, timeout, kill=lambda: _kernel32.TerminateJobObject(job, 1)
+            )
+        finally:
+            _kernel32.CloseHandle(job)
+    process = subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=cwd,
+        env=env,
+        start_new_session=True,
+    )
+    return _communicate_until(process, timeout, kill=lambda: _kill_session(process))
+
+
+def _communicate_until(
+    process: subprocess.Popen[bytes], timeout: float | None, kill: Callable[[], object]
+) -> subprocess.CompletedProcess[bytes]:
+    """*process*'s output and exit, or at *timeout* its processes killed and the pipes drained."""
+    with process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            kill()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.communicate(timeout=_KILLED_DRAIN_SECONDS)
+            raise
+    return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
+
+
+def _kill_session(process: subprocess.Popen[bytes]) -> None:
+    """Kill a timed-out POSIX command's process group, every process it started."""
+    if sys.platform != "win32":
+        # A member that cannot be signalled must not hide the timeout itself.
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(process.pid, signal.SIGKILL)
+
+
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
+
+    _CREATE_SUSPENDED = 0x00000004
+    _PROCESS_SET_QUOTA = 0x0100
+    _PROCESS_TERMINATE = 0x0001
+
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
+    _kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    _kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    _kernel32.OpenProcess.restype = wintypes.HANDLE
+    _kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+    _kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    _kernel32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    _kernel32.TerminateJobObject.restype = wintypes.BOOL
+    _kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    _kernel32.CloseHandle.restype = wintypes.BOOL
+
+    def _job_holding(pid: int) -> int:
+        """A new job object holding process *pid*, still suspended, and so everything it
+        will start. It is not killed when the handle closes: a credential cache git starts
+        may outlive the command."""
+        job = _kernel32.CreateJobObjectW(None, None)
+        if not job:
+            raise ctypes.WinError(ctypes.get_last_error())
+        handle = _kernel32.OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, pid)
+        assigned = bool(handle) and bool(_kernel32.AssignProcessToJobObject(job, handle))
+        error = ctypes.get_last_error()
+        if handle:
+            _kernel32.CloseHandle(handle)
+        if not assigned:
+            _kernel32.CloseHandle(job)
+            raise ctypes.WinError(error)
+        return int(job)
 
 
 def _run_git(
@@ -400,14 +528,31 @@ def _run_git_rc(*args: str, cwd: Path | None = None) -> tuple[int, str]:
     return result.returncode, result.stdout.strip()
 
 
-def _remote_env() -> dict[str, str]:
-    """Environment for remote Git commands that must never prompt interactively."""
-    return _git_env(
-        {
-            "GIT_TERMINAL_PROMPT": "0",
-            "GIT_SSH_COMMAND": "ssh -oBatchMode=yes -oConnectTimeout=10",
-        }
-    )
+# Haute's transport when the analyst has not chosen one: OpenSSH that never prompts.
+_DEFAULT_SSH_COMMAND = "ssh -oBatchMode=yes -oConnectTimeout=10"
+
+
+def _ssh_command_configured(cwd: Path | None = None) -> bool:
+    """Whether Git has an ssh transport of the analyst's own to run: ``GIT_SSH_COMMAND``,
+    ``core.sshCommand`` or ``GIT_SSH``, the three Git consults before plain ``ssh``."""
+    if "GIT_SSH_COMMAND" in os.environ or "GIT_SSH" in os.environ:
+        return True
+    configured, _ = _run_git_ok("config", "--get", "core.sshCommand", cwd=cwd)
+    return configured
+
+
+def _remote_env(cwd: Path | None = None) -> dict[str, str]:
+    """Environment for remote Git commands that must never prompt interactively.
+
+    A transport the analyst configured reaches Git unchanged, in Git's own order of
+    precedence: OpenSSH takes the first value of an option, and a wrapper or Plink may
+    not take OpenSSH options at all, so nothing is appended to it. It must not prompt,
+    which no terminal, no stdin and the caller's deadline enforce whatever it is.
+    Haute's batch-mode OpenSSH command applies only when none is configured."""
+    overrides = {"GIT_TERMINAL_PROMPT": "0", "SSH_ASKPASS_REQUIRE": "never"}
+    if not _ssh_command_configured(cwd):
+        overrides["GIT_SSH_COMMAND"] = _DEFAULT_SSH_COMMAND
+    return _git_env(overrides)
 
 
 def _should_fetch(remote: str, cwd: Path | None = None, kind: str = "deploy") -> bool:
@@ -454,7 +599,7 @@ def _fetch_refs(remote: str, *refs: str, cwd: Path | None = None) -> bool:
         result = _run_git_process(
             *cmd[1:],
             cwd=cwd,
-            env=_remote_env(),
+            env=_remote_env(cwd),
             timeout=_FETCH_TIMEOUT_SECONDS,
         )
     except (_GitProcessTimeoutError, OSError, UnicodeError) as exc:
@@ -800,14 +945,66 @@ def is_eligible_working_branch(branch: str) -> bool:
     return branch_category(branch) == "working"
 
 
+def _branch_name_problem(name: str) -> str | None:
+    """The first of git's branch-name rules *name* breaks, in words; None when it keeps them."""
+    if not name:
+        return "it is empty"
+    if name in {"HEAD", "@"}:
+        return f"git keeps '{name}' for the version open now"
+    if name.startswith("-"):
+        return "it starts with '-'"
+    if " " in name:
+        return "it contains a space"
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in name):
+        return "it contains a control character"
+    for char in "~^:?*[\\":
+        if char in name:
+            return f"it contains '{char}'"
+    for sequence in ("..", "@{", "//"):
+        if sequence in name:
+            return f"it contains '{sequence}'"
+    if name.startswith("/"):
+        return "it starts with '/'"
+    for ending in ("/", ".lock", "."):
+        if name.endswith(ending):
+            return f"it ends with '{ending}'"
+    if name.startswith("."):
+        return "it starts with '.'"
+    parts = name.split("/")
+    if any(part.startswith(".") for part in parts):
+        return "a part of it starts with '.'"
+    if any(part.endswith(".lock") for part in parts):
+        return "a part of it ends with '.lock'"
+    return None
+
+
+def _branch_name_refused(name: str, problem: str) -> GitDomainError:
+    # A name git cannot use (a space typed into the name box) would otherwise fail as
+    # raw git stderr, which the routes can only report as "Operation failed".
+    return GitDomainError(
+        f"'{name}' can't be used as a branch name: {problem}. "
+        "Use letters, numbers, dashes and slashes."
+    )
+
+
+def _assert_new_branch_name(name: str, cwd: Path | None = None) -> None:
+    """Refuse a typed branch name git cannot use, naming the rule it breaks.
+
+    ``git check-ref-format --branch`` is the authority: a name the in-process rules let
+    through is still refused, in words, if git would not take it."""
+    problem = _branch_name_problem(name)
+    if problem is None:
+        accepted, checked = _run_git_ok("check-ref-format", "--branch", name, cwd=cwd)
+        if not accepted or checked != name:
+            problem = "git does not accept it as a branch name"
+    if problem is not None:
+        raise _branch_name_refused(name, problem)
+
+
 def _assert_eligible_working(branch: str) -> None:
-    # A name git cannot use (a space typed into the name box) would otherwise fail
-    # as raw git stderr, which the routes can only report as "Operation failed".
-    if branch in {"HEAD", "@"} or not _is_valid_full_ref_name(f"refs/heads/{branch}"):
-        raise GitDomainError(
-            f"'{branch}' can't be used as a branch name. "
-            "Use letters, numbers, dashes and slashes, with no spaces."
-        )
+    problem = _branch_name_problem(branch)
+    if problem is not None:
+        raise _branch_name_refused(branch, problem)
     category = branch_category(branch)
     if category == "protected":
         raise GitGuardrailError(
@@ -1024,9 +1221,7 @@ def _graph_log_rows(
     if limit is not None:
         args.append(f"--max-count={limit}")
     args.extend(["--format=%H%x00%h%x00%P%x00%aI%x00%s%x00", tip, "--"])
-    ok, raw = _run_git_ok(*args, cwd=cwd)
-    if not ok:
-        raise GitError(f"git log failed for {tip}")
+    raw = _run_git(*args, cwd=cwd)
     rows: list[_GraphLogRow] = []
     fields = raw.split("\0")
     for index in range(0, len(fields) - 1, 5):

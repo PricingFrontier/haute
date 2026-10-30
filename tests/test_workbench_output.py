@@ -22,7 +22,6 @@ from typing import Any
 
 import polars as pl
 import pytest
-from fastapi import HTTPException
 
 from haute._builders import _build_node_fn
 from haute._execution_admission import create_admitted_execution_context
@@ -39,6 +38,7 @@ from haute._types import (
     NodeType,
     PipelineGraph,
 )
+from haute._workbench_nodes import with_tables
 from haute._workbench_output import (
     WorkbenchOutputError,
     WorkbenchOutputTables,
@@ -50,12 +50,18 @@ from haute.codegen import graph_to_code_multi
 from haute.deploy._config import DeployConfig, resolve_config
 from haute.deploy._pruner import find_deploy_input_nodes, find_output_node
 from haute.deploy._scorer import score_graph
-from haute.errors import ConfigError, ExecutionError
+from haute.errors import ConfigError, ExecutionError, RequestRefusedError
 from haute.execution import ExecutionProfile, execute_lazy_graph
 from haute.executor import execute_graph
 from haute.parser import parse_pipeline_file
 from haute.routes._save_pipeline import SavePipelineService
 from haute.trace import execute_trace
+from tests._workbench_helpers import (
+    form_table,
+    held_tables,
+    without_form_tables,
+    workbench_project,
+)
 from tests.conftest import make_output_config
 
 ONE_RESPONSE_NODE = (
@@ -96,6 +102,35 @@ _RESPONSE = [
         "item_prices": [{"item_id": "A", "premium": 20.0}, {"item_id": "B", "premium": 60.0}],
     }
 ]
+#: `_priced`'s tables as its project's form defines them, and its sample as typed there: what
+#: the pipeline file runs on, on its own, and what deploy reads.
+FORM_TABLES = [
+    form_table("t_policy", "policy", "input", ("state", "str"), ("limit", "int")),
+    form_table("t_items", "items", "input", ("item_id", "str"), ("value", "float"), many=True),
+    form_table(
+        "t_pricing",
+        "pricing",
+        "output",
+        ("premium", "float"),
+        ("limit", "float"),
+        ("referral", "str"),
+    ),
+    form_table(
+        "t_item_prices",
+        "item_prices",
+        "output",
+        ("item_id", "str"),
+        ("premium", "float"),
+        many=True,
+    ),
+]
+FORM_SAMPLE = {
+    "t_policy": [{"c_state": "NY", "c_limit": "1,000"}],
+    "t_items": [{"c_item_id": "A", "c_value": "10"}, {"c_item_id": "B", "c_value": "30"}],
+}
+#: The quote's identity as the sample is priced under it, which every row of a table the
+#: form makes takes in the response.
+_STAND_IN = {"quote_reference": "PREVIEW", "quote_option": 1}
 _PRICED = "df = policy.with_columns(premium=pl.col('limit') / 10, referral=pl.lit('none'))"
 _ITEM_PREMIUMS = "df = items.with_columns(premium=pl.col('value') * 2)"
 
@@ -152,17 +187,25 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
 
 
 def _write(graph: PipelineGraph, project: Path, name: str = "") -> Path:
-    """Write *graph*'s generated files and config files as save does; return the pipeline."""
+    """Write *graph*'s generated files and config files as save does, its workbench nodes
+    without the tables they are given from the form; return the pipeline."""
     name = name or f"pipeline_{uuid.uuid4().hex}"
+    saved = without_form_tables(graph)
     files = {
-        **graph_to_code_multi(graph, pipeline_name=name),
-        **SavePipelineService._collect_node_configs_recursive(graph),
+        **graph_to_code_multi(saved, pipeline_name=name),
+        **SavePipelineService._collect_node_configs_recursive(saved),
     }
     for relative, content in files.items():
         target = project / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
     return project / f"{name}.py"
+
+
+def _saved(graph: PipelineGraph, project: Path, name: str = "main") -> PipelineGraph:
+    """*graph* written as save writes it and read back as a run reads it, its workbench nodes
+    given the tables *graph*'s held, as a run gives them from a form defining them."""
+    return with_tables(parse_pipeline_file(_write(graph, project, name)), held_tables(graph))
 
 
 def _import(pipeline_file: Path) -> Any:
@@ -317,6 +360,7 @@ def test_a_workbench_output_with_nothing_connected_runs(project: Path) -> None:
     graph = _priced()
     graph.edges = [edge for edge in graph.edges if edge.target != "response"]
     pipeline_file = _write(graph, project, "main")
+    workbench_project(project, FORM_TABLES, FORM_SAMPLE)
 
     tables = _tables(graph)
 
@@ -326,7 +370,7 @@ def test_a_workbench_output_with_nothing_connected_runs(project: Path) -> None:
     # As Preview prices it, every table from one run of a saved pipeline with shared
     # snapshots, and as the pipeline file runs.
     previewed = execute_graph(
-        parse_pipeline_file(pipeline_file),
+        with_tables(parse_pipeline_file(pipeline_file), held_tables(graph)),
         target_node_id="response",
         port_labels=["pricing", "item_prices"],
         shared_snapshots=True,
@@ -337,14 +381,17 @@ def test_a_workbench_output_with_nothing_connected_runs(project: Path) -> None:
         "pricing": [{"premium": None, "limit": None, "referral": None}],
         "item_prices": [],
     }
+    # On its own, the form's tables lead with the quote's identity, which the response gives.
     pipeline = _import(pipeline_file).pipeline
-    assert render_output_document(_collected(pipeline.run(source="live"))) == [{}]
+    assert render_output_document(_collected(pipeline.run(source="live"))) == [
+        {"pricing": _STAND_IN}
+    ]
 
 
 def test_the_editor_previews_a_table_at_a_time(project: Path) -> None:
     # As the preview route runs it, on a saved pipeline with shared snapshots, where a node
     # with two inputs is a capture point unless its result is a bundle of frames.
-    saved = parse_pipeline_file(_write(_priced(), project, "main"))
+    saved = _saved(_priced(), project)
     assert saved.source_file
     results = execute_graph(
         saved,
@@ -378,7 +425,7 @@ def test_the_editor_previews_every_table_in_one_run(
     Workbench Output fills: each table's answer is what a preview of it alone gives."""
     import haute.executor as executor
 
-    saved = parse_pipeline_file(_write(_three_tables(), project, "main"))
+    saved = _saved(_three_tables(), project)
     runs: list[str | None] = []
     eager_execute = executor._eager_execute
 
@@ -426,7 +473,7 @@ def test_the_editor_previews_every_table_in_one_run(
 
 
 def test_a_preview_of_a_table_the_workbench_output_does_not_fill_says_so(project: Path) -> None:
-    saved = parse_pipeline_file(_write(_priced(), project, "main"))
+    saved = _saved(_priced(), project)
 
     previewed = execute_graph(
         saved,
@@ -447,7 +494,11 @@ def test_the_preview_route_answers_every_table_asked_for_from_one_request(
 
     from haute.server import app
 
+    # The graph as the editor holds it, which the route gives the tables the project's form
+    # defines: each table leads with the quote's identity, null in the node's own tables.
     saved = parse_pipeline_file(_write(_three_tables(), project, "main"))
+    summary = form_table("t_summary", "summary", "output", ("state", "str"), ("premium", "float"))
+    workbench_project(project, [*FORM_TABLES, summary], FORM_SAMPLE)
     client = TestClient(app)
     body = {"graph": saved.model_dump(), "node_id": "response", "row_limit": 100}
 
@@ -458,7 +509,9 @@ def test_the_preview_route_answers_every_table_asked_for_from_one_request(
     assert answer.status_code == 200, answer.text
     previews = answer.json()["port_previews"]
     assert list(previews) == ["pricing", "summary"]
-    assert previews["summary"]["preview"] == [{"state": "NY", "premium": 100.0}]
+    assert previews["summary"]["preview"] == [
+        {"quote_reference": None, "quote_option": None, "state": "NY", "premium": 100.0}
+    ]
     assert previews["summary"]["row_count"] == 1
     assert previews["summary"]["preview_truncated"] is False
     # One frame, or several: never both.
@@ -557,20 +610,33 @@ def test_a_workbench_output_table_with_nothing_connected_has_nothing_to_trace(
 
 
 def test_generated_code_runs_a_workbench_output(project: Path) -> None:
-    pipeline_file = _write(_priced(), project)
+    pipeline_file = _write(_priced(), project, "main")
+    workbench_project(project, FORM_TABLES, FORM_SAMPLE)
 
     code = pipeline_file.read_text(encoding="utf-8")
     assert '@pipeline.workbench_output(config="config/workbench_output/response.json")' in code
     assert 'pipeline.connect("priced", "response", target_port="pricing")' in code
     parsed = parse_pipeline_file(pipeline_file)
     assert parsed.node_map["response"].data.nodeType is NodeType.WORKBENCH_OUTPUT
-    assert parsed.node_map["response"].data.config["tables"] == _RESPONSE_TABLES
+    # Its config file holds none of its tables: the form's are given where it runs.
+    assert "tables" not in parsed.node_map["response"].data.config
     assert sorted(
         (edge.source, edge.targetHandle) for edge in parsed.edges if edge.target == "response"
     ) == [("item_premiums", "item_prices"), ("priced", "pricing")]
 
+    # Run on its own, it reads the form's tables and sample; each row of a table the form
+    # makes takes the quote's identity, the stand-in the sample is priced under.
     pipeline = _import(pipeline_file).pipeline
-    assert render_output_document(_collected(pipeline.run(source="live"))) == _RESPONSE
+    assert render_output_document(_collected(pipeline.run(source="live"))) == [
+        {
+            "pricing": {**_STAND_IN, "premium": 100.0, "limit": 1000.0, "referral": "none"},
+            "item_prices": [
+                {**_STAND_IN, "item_id": "A", "premium": 20.0},
+                {**_STAND_IN, "item_id": "B", "premium": 60.0},
+            ],
+        }
+    ]
+    # Scored with frames and no quote_details, the identity is blank and left out.
     scored = pipeline.score(
         {
             "policy": pl.DataFrame({"state": ["TX"], "limit": [500]}),
@@ -619,9 +685,15 @@ def test_deploy_answers_with_a_workbench_output(project: Path) -> None:
     )
     assert render_output_document(scored) == [{"pricing": {"premium": 50.0, "state": "TX"}}]
 
-    resolved = resolve_config(
-        DeployConfig(pipeline_file=_write(graph, project, "main"), model_name="m")
+    main = _write(graph, project, "main")
+    workbench_project(
+        project,
+        [
+            form_table("t_quote", "quote", "input", ("state", "str"), ("limit", "int")),
+            form_table("t_pricing", "pricing", "output", ("premium", "float"), ("state", "str")),
+        ],
     )
+    resolved = resolve_config(DeployConfig(pipeline_file=main, model_name="m"))
     assert resolved.output_node_id == "response"
     assert list(resolved.output_schema) == ["pricing"]
 
@@ -748,7 +820,19 @@ def test_the_response_gives_every_row_the_quotes_reference_and_option(project: P
 
 
 def test_generated_code_answers_under_the_quote_details_frame_it_has(project: Path) -> None:
-    pipeline = _import(_write(_identified(), project)).pipeline
+    main = _write(_identified(), project, "main")
+    workbench_project(
+        project,
+        [
+            form_table(
+                "t_items", "items", "input", ("item_id", "str"), ("value", "float"), many=True
+            ),
+            form_table("t_pricing", "pricing", "output", ("premium", "float")),
+            form_table("t_item_prices", "item_prices", "output", ("item_id", "str"), many=True),
+        ],
+        {"t_items": [{"c_item_id": "A", "c_value": "10"}, {"c_item_id": "B", "c_value": "30"}]},
+    )
+    pipeline = _import(main).pipeline
 
     # Run, the sample is priced under the stand-in; scored without quote_details, which
     # nothing reads here, the identity is blank and left out of the answer.
@@ -911,7 +995,8 @@ def test_which_frame_columns_fill_a_declared_column(
 def test_a_workbench_output_config_with_a_mapping_is_refused(project: Path) -> None:
     # Columns are filled by name alone: a mapping left in a sidecar is refused wherever the
     # sidecar is read, rather than ignored, which would fill the columns differently.
-    pipeline_file = _write(_priced(), project)
+    pipeline_file = _write(_priced(), project, "main")
+    workbench_project(project, FORM_TABLES, FORM_SAMPLE)
     sidecar = project / "config" / "workbench_output" / "response.json"
     config = json.loads(sidecar.read_text(encoding="utf-8"))
     sidecar.write_text(
@@ -927,7 +1012,9 @@ def test_a_workbench_output_config_with_a_mapping_is_refused(project: Path) -> N
 
 
 def test_a_request_of_several_quotes_fails_a_workbench_output(project: Path) -> None:
-    pipeline = _import(_write(_priced(), project)).pipeline
+    main = _write(_priced(), project, "main")
+    workbench_project(project, FORM_TABLES, FORM_SAMPLE)
+    pipeline = _import(main).pipeline
 
     with pytest.raises(WorkbenchOutputError, match="but the frame connected to it has 2 rows"):
         _collected(
@@ -1053,12 +1140,13 @@ def test_a_pipeline_has_one_response_node(project: Path) -> None:
     )
     graph.edges.append(_edge("priced", "quote_response"))
 
-    with pytest.raises(HTTPException) as refused:
+    with pytest.raises(RequestRefusedError) as refused:
         SavePipelineService(project).validate_graph(graph, source_file="main.py")
     assert refused.value.status_code == 400
     assert refused.value.detail == ONE_RESPONSE_NODE
 
     main = _write(graph, project, "main")
+    workbench_project(project, FORM_TABLES, FORM_SAMPLE)
     with pytest.raises(ValueError, match=re.escape(ONE_RESPONSE_NODE)):
         resolve_config(DeployConfig(pipeline_file=main, model_name="m"))
     with pytest.raises(ExecutionError, match="multiple response nodes"):

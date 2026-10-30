@@ -20,11 +20,11 @@ import pytest
 from fastapi import HTTPException
 from price_contour import PerFactorRecord
 
-from haute._config_builder import _build_node_config
 from haute._execution_context import ExecutionProfile
 from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
 from haute._sandbox import set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
+from haute.errors import ForbiddenError, InvalidRequestError, NotFoundError, RequestRefusedError
 from haute.graph_utils import NodeType
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._optimiser_input import _optimiser_solve_required_columns_by_node
@@ -501,22 +501,6 @@ class TestNodeTypeRegistration:
 # ---------------------------------------------------------------------------
 
 
-class TestParserInference:
-    def test_build_optimiser_config(self):
-        kwargs = {
-            "optimiser": True,
-            "mode": "online",
-            "objective": "expected_income",
-            "constraints": {"volume": {"min": 0.90}},
-            "max_iter": 50,
-        }
-        config = _build_node_config("optimiser", kwargs, "", ["df"])
-        assert config["mode"] == "online"
-        assert config["objective"] == "expected_income"
-        assert config["constraints"] == {"volume": {"min": 0.90}}
-        assert config["max_iter"] == 50
-
-
 # ---------------------------------------------------------------------------
 # Step 1d: Codegen
 # ---------------------------------------------------------------------------
@@ -858,7 +842,7 @@ class TestSolveRoute:
             patch.object(
                 service,
                 "_execute_pipeline",
-                side_effect=HTTPException(status_code=400, detail="bad setup"),
+                side_effect=InvalidRequestError("bad setup"),
             ),
             patch.object(service, "_launch_background") as launch_background,
         ):
@@ -908,7 +892,7 @@ class TestSolveRoute:
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=failure,
             ),
-            pytest.raises(HTTPException) as exc_info,
+            pytest.raises(RequestRefusedError) as exc_info,
         ):
             service._execute_pipeline(body, job_id, resources)
 
@@ -954,7 +938,7 @@ class TestSolveRoute:
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=failure,
             ),
-            pytest.raises(HTTPException) as exc_info,
+            pytest.raises(RequestRefusedError) as exc_info,
         ):
             service._execute_pipeline(body, job_id, resources)
 
@@ -1328,7 +1312,7 @@ class TestStatusRoute:
 
         def require_once_then_evicted(requested_job_id: str):
             if requested_job_id == job_id and require_once_then_evicted.calls:
-                raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+                raise NotFoundError(f"Job '{job_id}' not found")
             require_once_then_evicted.calls += 1
             return original_require_job(requested_job_id)
 
@@ -1847,7 +1831,7 @@ class TestEstimateRoute:
                     "haute.routes._optimiser_input.validate_input_value_contracts",
                     side_effect=AssertionError("auto-range must not run a whole-frame query"),
                 ),
-                pytest.raises(HTTPException) as exc_info,
+                pytest.raises(RequestRefusedError) as exc_info,
             ):
                 service._run_frontier_auto_range_job(body, job_id, **prepared)
         finally:
@@ -1902,7 +1886,7 @@ class TestEstimateRoute:
 
         with (
             patch.object(service, "_execute_pipeline", return_value={"source": source_lf}),
-            pytest.raises(HTTPException) as exc_info,
+            pytest.raises(RequestRefusedError) as exc_info,
         ):
             service._run_frontier_auto_range_job(body, job_id, **prepared)
 
@@ -1965,7 +1949,7 @@ class TestEstimateRoute:
 
         with (
             patch.object(service, "_execute_pipeline", return_value={"source": source_lf}),
-            pytest.raises(HTTPException) as exc_info,
+            pytest.raises(RequestRefusedError) as exc_info,
         ):
             service._run_frontier_auto_range_job(body, job_id, **prepared)
 
@@ -2017,7 +2001,7 @@ class TestEstimateRoute:
 
         with (
             patch.object(service, "_execute_pipeline", return_value={"source": source_lf}),
-            pytest.raises(HTTPException) as exc_info,
+            pytest.raises(RequestRefusedError) as exc_info,
         ):
             service._run_frontier_auto_range_job(body, job_id, **prepared)
 
@@ -2319,7 +2303,6 @@ class TestEstimateRoute:
         scored_data,
     ):
         """Terminal-but-still-unwinding auto-range jobs must not be reused as fresh starts."""
-        from fastapi import HTTPException
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -2337,7 +2320,7 @@ class TestEstimateRoute:
 
         service.cancel_frontier_auto_range(first.job_id)
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             service.start_frontier_auto_range(body)
 
         assert exc_info.value.status_code == 409
@@ -2349,7 +2332,6 @@ class TestEstimateRoute:
         scored_data,
     ):
         """A failed auto-range worker launch must not return a misleading started response."""
-        from fastapi import HTTPException
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -2367,7 +2349,7 @@ class TestEstimateRoute:
                 "haute.routes._optimiser_service.threading.Thread.start",
                 side_effect=RuntimeError("thread boom"),
             ),
-            pytest.raises(HTTPException) as exc_info,
+            pytest.raises(RequestRefusedError) as exc_info,
         ):
             service.start_frontier_auto_range(body)
 
@@ -2379,7 +2361,6 @@ class TestEstimateRoute:
 
     def test_solve_conflicts_with_running_auto_range_for_same_graph_node(self, scored_data):
         """Solve setup cannot overlap a running auto-range for the same graph/node."""
-        from fastapi import HTTPException
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -2394,7 +2375,7 @@ class TestEstimateRoute:
         with patch.object(service, "_launch_frontier_auto_range_background", return_value=None):
             auto_started = service.start_frontier_auto_range(auto_body)
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             service.start(solve_body)
 
         auto_job = store.require_job(auto_started.job_id)
@@ -2404,7 +2385,6 @@ class TestEstimateRoute:
 
     def test_auto_range_conflicts_with_running_solve_for_same_graph_node(self, scored_data):
         """Auto-range cannot overlap a running solve for the same graph/node."""
-        from fastapi import HTTPException
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -2434,13 +2414,101 @@ class TestEstimateRoute:
         ):
             solve_started = service.start(solve_body)
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             service.start_frontier_auto_range(auto_body)
 
         solve_job = store.require_job(solve_started.job_id)
         assert exc_info.value.status_code == 409
         assert solve_job["status"] == "running"
         assert len(store.list_jobs()) == 1
+
+    @staticmethod
+    def _auto_range_that_finishes(service):
+        """A launcher whose worker publishes ``completed``, then frees the graph/node on cue.
+
+        Like the real worker, it still holds the graph/node after the terminal
+        transition (the real one records its metrics and returns its admission
+        first). It exits once the returned ``exit_now`` is set.
+        """
+        finished = threading.Event()
+        exit_now = threading.Event()
+
+        def launch(body, job_id, *, setup_singleflight_key, **_kwargs):
+            def worker() -> None:
+                with service._job_ownership_scope(
+                    job_id, setup_singleflight_key=setup_singleflight_key
+                ):
+                    service._lifecycle.transition(job_id, to="completed", message="Completed")
+                    finished.set()
+                    exit_now.wait()
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        return launch, finished, exit_now
+
+    def test_solve_started_as_auto_range_completes_waits_for_its_worker_to_exit(
+        self, scored_data, monkeypatch
+    ):
+        """A caller that saw ``completed`` starts the next setup as soon as the worker exits."""
+        from haute.routes import _optimiser_service
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest, OptimiserSolveRequest
+
+        # Long enough that a start that missed the worker's exit would sit it out visibly.
+        monkeypatch.setattr(_optimiser_service, "_FINISHED_OWNER_EXIT_SECONDS", 30.0)
+        graph = _make_optimiser_graph(scored_data)
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        launch, finished, exit_now = self._auto_range_that_finishes(service)
+
+        try:
+            with patch.object(service, "_launch_frontier_auto_range_background", launch):
+                auto_started = service.start_frontier_auto_range(
+                    OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+                )
+            assert finished.wait(5)
+            assert store.require_job(auto_started.job_id)["status"] == "completed"
+
+            threading.Timer(0.2, exit_now.set).start()
+            began = time.monotonic()
+            with patch.object(service, "_launch_setup_background", return_value=None):
+                solve_started = service.start(OptimiserSolveRequest(graph=graph, node_id="opt"))
+            waited = time.monotonic() - began
+        finally:
+            exit_now.set()
+
+        assert store.require_job(solve_started.job_id)["status"] == "running"
+        # The worker exited 0.2 s into the wait; the start followed it, not its 30 s bound.
+        assert waited < 10
+
+    def test_a_finished_owner_that_never_exits_still_conflicts(self, scored_data, monkeypatch):
+        """The wait for a finished owner is bounded; a worker that never exits keeps its 409."""
+        from haute.routes import _optimiser_service
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest, OptimiserSolveRequest
+
+        monkeypatch.setattr(_optimiser_service, "_FINISHED_OWNER_EXIT_SECONDS", 0.05)
+        graph = _make_optimiser_graph(scored_data)
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        launch, finished, exit_now = self._auto_range_that_finishes(service)
+
+        try:
+            with patch.object(service, "_launch_frontier_auto_range_background", launch):
+                service.start_frontier_auto_range(
+                    OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+                )
+            assert finished.wait(5)
+
+            with pytest.raises(RequestRefusedError) as exc_info:
+                service.start(OptimiserSolveRequest(graph=graph, node_id="opt"))
+        finally:
+            exit_now.set()
+
+        assert exc_info.value.status_code == 409
+        assert "already running for this graph/node" in exc_info.value.detail
 
     def test_frontier_auto_range_cancel_marks_job_terminal(
         self,
@@ -2628,7 +2696,7 @@ class TestEstimateRoute:
                 "haute.routes._optimiser_service._estimate_scenario_frontier_ranges",
                 side_effect=error,
             ),
-            pytest.raises(HTTPException) as exc_info,
+            pytest.raises(RequestRefusedError) as exc_info,
         ):
             service._run_frontier_auto_range_job(body, job_id, **prepared)
 
@@ -2666,7 +2734,7 @@ class TestEstimateRoute:
                 "haute.routes._optimiser_service._estimate_scenario_frontier_ranges",
                 side_effect=ValueError("bad lazy range"),
             ),
-            pytest.raises(HTTPException) as exc_info,
+            pytest.raises(RequestRefusedError) as exc_info,
         ):
             service._run_frontier_auto_range_job(body, job_id, **prepared)
 
@@ -2713,7 +2781,7 @@ class TestEstimateRoute:
                 "haute.routes._optimiser_service._estimate_scenario_frontier_ranges",
                 side_effect=error,
             ),
-            pytest.raises(HTTPException) as exc_info,
+            pytest.raises(RequestRefusedError) as exc_info,
         ):
             service._run_frontier_auto_range_job(body, job_id, **prepared)
 
@@ -2754,7 +2822,7 @@ class TestEstimateRoute:
                 "_execute_pipeline",
                 return_value={"source": missing_constraint_lf},
             ),
-            pytest.raises(HTTPException),
+            pytest.raises(RequestRefusedError),
         ):
             service._run_frontier_auto_range_job(body, job_id, **prepared)
 
@@ -2793,7 +2861,7 @@ class TestEstimateRoute:
                 "_execute_pipeline",
                 return_value={"source": numeric_quote_id_lf},
             ),
-            pytest.raises(HTTPException),
+            pytest.raises(RequestRefusedError),
         ):
             service._run_frontier_auto_range_job(body, job_id, **prepared)
 
@@ -4516,7 +4584,7 @@ class TestFrontierRoute:
         frontier_threading.Thread.return_value = failed_thread
         with (
             patch.object(_optimiser_frontier, "threading", frontier_threading),
-            pytest.raises(HTTPException) as exc_info,
+            pytest.raises(RequestRefusedError) as exc_info,
         ):
             optimiser_routes.run_frontier(body)
 
@@ -6199,7 +6267,6 @@ class TestExecutePipelineArgs:
         scored_data,
     ):
         """Solve/estimate reject a data_input that is not an optimiser parent."""
-        from fastapi import HTTPException
 
         graph_dict = _make_optimiser_graph(
             scored_data,
@@ -6209,7 +6276,7 @@ class TestExecutePipelineArgs:
         )
         graph = make_graph(graph_dict)
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             _optimiser_solve_required_columns_by_node(
                 graph,
                 "opt",
@@ -6820,7 +6887,6 @@ class TestExecutePipelineArgs:
             assert "opt" in outputs
 
     def test_execute_pipeline_contract_mismatch_returns_400(self, scored_data):
-        from fastapi import HTTPException
 
         from haute.errors import ContractMismatchError
         from haute.routes._job_store import JobStore
@@ -6852,7 +6918,7 @@ class TestExecutePipelineArgs:
             patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
-            with pytest.raises(HTTPException) as exc_info:
+            with pytest.raises(RequestRefusedError) as exc_info:
                 service._execute_pipeline(
                     body,
                     job_id,
@@ -7135,9 +7201,7 @@ class TestExecutePipelineCleanup:
             patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
-            from fastapi import HTTPException
-
-            with pytest.raises(HTTPException):
+            with pytest.raises(RequestRefusedError):
                 service._execute_pipeline(body, job_id, resources)
             assert not plans[0]._closed
 
@@ -7145,7 +7209,6 @@ class TestExecutePipelineCleanup:
 
     def test_execute_pipeline_error_raises_http_exception(self, scored_data):
         """Pipeline execution errors are wrapped in HTTPException(500)."""
-        from fastapi import HTTPException
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -7176,7 +7239,7 @@ class TestExecutePipelineCleanup:
             patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
-            with pytest.raises(HTTPException) as exc_info:
+            with pytest.raises(RequestRefusedError) as exc_info:
                 service._execute_pipeline(body, job_id, resources)
             assert exc_info.value.status_code == 500
 
@@ -7888,40 +7951,36 @@ class TestValidateConfig:
     """Direct unit tests for OptimiserSolveService._validate_config."""
 
     def test_no_objective_raises_400(self):
-        from fastapi import HTTPException
 
         from haute.routes._optimiser_service import OptimiserSolveService
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             OptimiserSolveService._validate_config({"objective": ""})
         assert exc_info.value.status_code == 400
         assert "objective" in exc_info.value.detail.lower()
 
     def test_no_objective_key_raises_400(self):
-        from fastapi import HTTPException
 
         from haute.routes._optimiser_service import OptimiserSolveService
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             OptimiserSolveService._validate_config({"constraints": {}})
         assert exc_info.value.status_code == 400
 
     def test_invalid_mode_raises_400(self):
-        from fastapi import HTTPException
 
         from haute.routes._optimiser_service import OptimiserSolveService
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             OptimiserSolveService._validate_config({"objective": "income", "mode": "quantum"})
         assert exc_info.value.status_code == 400
         assert "quantum" in exc_info.value.detail
 
     def test_ratebook_without_factor_columns_raises_400(self):
-        from fastapi import HTTPException
 
         from haute.routes._optimiser_service import OptimiserSolveService
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             OptimiserSolveService._validate_config(
                 {"objective": "income", "mode": "ratebook", "factor_columns": []}
             )
@@ -7972,11 +8031,10 @@ class TestValidateConfig:
 
     def test_validate_config_empty_objective_string(self):
         """objective='' is treated as missing and should raise 400."""
-        from fastapi import HTTPException
 
         from haute.routes._optimiser_service import OptimiserSolveService
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             OptimiserSolveService._validate_config({"objective": ""})
         assert exc_info.value.status_code == 400
         assert "objective" in exc_info.value.detail.lower()
@@ -12335,7 +12393,7 @@ class TestSolveRatebookUnit:
         """_extract_factors fails loudly when banding source not found."""
         from haute.routes._optimiser_service import OptimiserSolveService
 
-        with pytest.raises(HTTPException, match="missing_node"):
+        with pytest.raises(RequestRefusedError, match="missing_node"):
             OptimiserSolveService._extract_factors(
                 {"other_node": MagicMock()},
                 _optimiser_helper_graph("missing_node"),
@@ -12514,7 +12572,6 @@ class TestExecutePipelineExtended:
 
     def test_execute_pipeline_exception_updates_job_store(self, scored_data):
         """Pipeline failure updates job store with error status."""
-        from fastapi import HTTPException
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -12542,7 +12599,7 @@ class TestExecutePipelineExtended:
             patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
-            with pytest.raises(HTTPException) as exc_info:
+            with pytest.raises(RequestRefusedError) as exc_info:
                 service._execute_pipeline(body, job_id, resources)
             assert exc_info.value.status_code == 500
 
@@ -12817,7 +12874,6 @@ class TestValidateAndProject:
 
     def test_missing_columns_error(self):
         """Missing required columns raises HTTPException with column names."""
-        from fastapi import HTTPException
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -12850,7 +12906,7 @@ class TestValidateAndProject:
             "scenario_value": "scenario_value",
         }
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             service._validate_and_project(source_lf, config, job_id)
         assert exc_info.value.status_code == 400
         assert "volume" in exc_info.value.detail
@@ -12889,7 +12945,7 @@ class TestValidateAndProject:
             "scenario_value": "scenario_value",
         }
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             service._validate_and_project(source_lf, config, job_id)
 
         assert exc_info.value.status_code == 400
@@ -12903,7 +12959,6 @@ class TestValidateAndProject:
 
     def test_numeric_quote_id_rejected(self):
         """Numeric quote IDs fail loudly instead of being coerced to strings."""
-        from fastapi import HTTPException
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -12935,7 +12990,7 @@ class TestValidateAndProject:
             "scenario_value": "scenario_value",
         }
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             service._validate_and_project(source_lf, config, job_id)
 
         assert exc_info.value.status_code == 400
@@ -13198,7 +13253,6 @@ class TestBuildGrid:
 
     def test_build_grid_failure_updates_job_store(self, tmp_path):
         """Grid construction failure updates job store with error."""
-        from fastapi import HTTPException
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -13238,7 +13292,7 @@ class TestBuildGrid:
         ):
             mock_sink.side_effect = lambda lf, path, **kw: lf.collect().write_parquet(path)
 
-            with pytest.raises(HTTPException) as exc_info:
+            with pytest.raises(RequestRefusedError) as exc_info:
                 service._build_grid(scored_lf, [], config, "opt", job_id)
             assert exc_info.value.status_code == 500
             assert (
@@ -13253,7 +13307,6 @@ class TestBuildGrid:
 
     def test_build_grid_bounded_sink_failure_is_http_422(self) -> None:
         """Bounded streaming incompatibility must not be reported as a generic 500."""
-        from fastapi import HTTPException
 
         from haute.errors import BoundedMemoryUnsupportedError
         from haute.routes._job_store import JobStore
@@ -13281,7 +13334,7 @@ class TestBuildGrid:
             "haute.routes._optimiser_input.bounded_sink",
             side_effect=BoundedMemoryUnsupportedError("Bounded streaming sink failed"),
         ):
-            with pytest.raises(HTTPException) as exc_info:
+            with pytest.raises(RequestRefusedError) as exc_info:
                 service._build_grid(
                     scored_lf,
                     [],
@@ -13326,7 +13379,6 @@ class TestResolveDataInputFrame:
 
     def test_node_output_without_incoming_edge_raises_400(self):
         """An optimiser without an incoming edge cannot use its own output as data."""
-        from fastapi import HTTPException
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -13345,7 +13397,7 @@ class TestResolveDataInputFrame:
         lazy_outputs = {"opt": mock_lf}
         config = {}
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             service._resolve_data_input_frame(
                 lazy_outputs, _optimiser_helper_graph(), config, "opt", job_id
             )
@@ -13358,7 +13410,6 @@ class TestResolveDataInputFrame:
 
     def test_configured_data_input_missing_raises_400(self):
         """A configured data_input must be present instead of falling back."""
-        from fastapi import HTTPException
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -13376,7 +13427,7 @@ class TestResolveDataInputFrame:
         lazy_outputs = {"opt": MagicMock()}
         config = {"data_input": "missing_data"}
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             service._resolve_data_input_frame(
                 lazy_outputs, _optimiser_helper_graph("missing_data"), config, "opt", job_id
             )
@@ -13389,7 +13440,6 @@ class TestResolveDataInputFrame:
 
     def test_no_data_raises_400(self):
         """When no data arrives at the node, raises HTTPException."""
-        from fastapi import HTTPException
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -13407,7 +13457,7 @@ class TestResolveDataInputFrame:
         lazy_outputs = {}
         config = {}
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             service._resolve_data_input_frame(
                 lazy_outputs, _optimiser_helper_graph(), config, "opt", job_id
             )
@@ -13527,7 +13577,7 @@ class TestLaunchBackground:
                 "haute.routes._optimiser_service.threading.Thread.start",
                 side_effect=RuntimeError("thread boom"),
             ),
-            pytest.raises(HTTPException) as exc_info,
+            pytest.raises(RequestRefusedError) as exc_info,
         ):
             service._launch_background(
                 SolveContext(job_id=job_id, node_id="opt", mode="online"),
@@ -14234,12 +14284,11 @@ class TestMlflowLogExceptionPath:
 
 
 @pytest.mark.usefixtures("_widen_sandbox_root")
-class TestExecutePipelineHTTPExceptionPassthrough:
-    """Test that HTTPException raised inside _execute_pipeline is re-raised directly."""
+class TestExecutePipelineRefusalPassthrough:
+    """Test that a refusal raised inside _execute_pipeline is re-raised directly."""
 
     def test_http_exception_passthrough(self, scored_data):
-        """HTTPException from the lazy execution is re-raised, not wrapped."""
-        from fastapi import HTTPException
+        """A refusal from the lazy execution is re-raised, not wrapped."""
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -14258,7 +14307,7 @@ class TestExecutePipelineHTTPExceptionPassthrough:
             }
         )
 
-        original_exc = HTTPException(status_code=403, detail="forbidden")
+        original_exc = ForbiddenError("forbidden")
 
         with (
             contextlib.ExitStack() as resources,
@@ -14269,18 +14318,17 @@ class TestExecutePipelineHTTPExceptionPassthrough:
             patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
-            with pytest.raises(HTTPException) as exc_info:
+            with pytest.raises(RequestRefusedError) as exc_info:
                 service._execute_pipeline(body, job_id, resources)
             assert exc_info.value.status_code == 403
             assert exc_info.value.detail == "forbidden"
 
 
-class TestBuildGridHTTPExceptionPassthrough:
-    """Test that HTTPException in _build_grid is re-raised."""
+class TestBuildGridRefusalPassthrough:
+    """Test that a refusal in _build_grid is re-raised."""
 
     def test_http_exception_passthrough(self, tmp_path):
-        """HTTPException from build_grid_from_parquet_chunked is re-raised."""
-        from fastapi import HTTPException
+        """A refusal from build_grid_from_parquet_chunked is re-raised."""
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -14311,7 +14359,7 @@ class TestBuildGridHTTPExceptionPassthrough:
             "scenario_value": "scenario_value",
         }
 
-        original_exc = HTTPException(status_code=403, detail="not allowed")
+        original_exc = ForbiddenError("not allowed")
 
         with (
             patch("haute.routes._optimiser_input.bounded_sink") as mock_sink,
@@ -14319,7 +14367,7 @@ class TestBuildGridHTTPExceptionPassthrough:
         ):
             mock_sink.side_effect = lambda lf, path, **kw: lf.collect().write_parquet(path)
 
-            with pytest.raises(HTTPException) as exc_info:
+            with pytest.raises(RequestRefusedError) as exc_info:
                 service._build_grid(scored_lf, [], config, "opt", job_id)
             assert exc_info.value.status_code == 403
             assert exc_info.value.detail == "not allowed"
@@ -14465,7 +14513,7 @@ class TestOptimiserHelperValidators:
     def test_frontier_points_or_raise_missing_data(self) -> None:
         from haute.routes._optimiser_frontier import _frontier_points_or_raise
 
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(RequestRefusedError) as exc:
             _frontier_points_or_raise({"frontier_data": None})
         assert exc.value.status_code == 400
 
@@ -14475,14 +14523,14 @@ class TestOptimiserHelperValidators:
         # ``"not a list"`` is truthy, so it bypasses the 400 (no points) branch
         # and trips the 500 (invalid shape) branch — both are desired loud
         # failures, just at different layers.
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(RequestRefusedError) as exc:
             _frontier_points_or_raise({"frontier_data": {"points": "not a list"}})
         assert exc.value.status_code == 500
 
     def test_frontier_points_or_raise_non_dict_point(self) -> None:
         from haute.routes._optimiser_frontier import _frontier_points_or_raise
 
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(RequestRefusedError) as exc:
             _frontier_points_or_raise({"frontier_data": {"points": [{"ok": 1}, 42]}})
         assert exc.value.status_code == 500
 
@@ -14490,7 +14538,7 @@ class TestOptimiserHelperValidators:
         from haute.routes._optimiser_frontier import _frontier_point_or_raise
 
         job = {"frontier_data": {"points": [{"a": 1}], "n_points": 5}}
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(RequestRefusedError) as exc:
             _frontier_point_or_raise(job, 10)
         assert exc.value.status_code == 400
         assert "out of range" in exc.value.detail
@@ -14507,7 +14555,7 @@ class TestOptimiserHelperValidators:
                 "points_limit": 1,
             }
         }
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(RequestRefusedError) as exc:
             _frontier_point_or_raise(job, 5)
         assert "capped frontier payload" in exc.value.detail
 
@@ -14525,14 +14573,14 @@ class TestOptimiserHelperValidators:
     def test_base_result_for_frontier_missing_raises(self) -> None:
         from haute.routes._optimiser_frontier import _base_result_for_frontier
 
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(RequestRefusedError) as exc:
             _base_result_for_frontier({})
         assert exc.value.status_code == 500
 
     def test_base_result_for_recompute_without_a_result_fails_loudly(self) -> None:
         from haute.routes._optimiser_frontier import _base_result_for_frontier_recompute
 
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(RequestRefusedError) as exc:
             _base_result_for_frontier_recompute({})
         assert exc.value.status_code == 500
         assert exc.value.detail == "Job summary is missing"
@@ -14542,7 +14590,7 @@ class TestOptimiserHelperValidators:
         from haute.routes._optimiser_frontier import _base_result_for_frontier_recompute
 
         job = {"selected_frontier_point": 1}  # selection set, no base_result
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(RequestRefusedError) as exc:
             _base_result_for_frontier_recompute(job)
         assert "Re-run the solve" in exc.value.detail
 
@@ -14569,7 +14617,7 @@ class TestOptimiserHelperValidators:
             },
             "base_result": {},
         }
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(RequestRefusedError) as exc:
             _frontier_point_result_dict(job, 0)
         assert exc.value.status_code == 500
 
@@ -14588,7 +14636,7 @@ class TestOptimiserHelperValidators:
             },
             "base_result": {},
         }
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(RequestRefusedError) as exc:
             _frontier_point_result_dict(job, 0)
         assert exc.value.status_code == 500
 
@@ -14603,7 +14651,7 @@ class TestOptimiserHelperValidators:
             },
             "config": {"constraints": "not a dict"},
         }
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(RequestRefusedError) as exc:
             _frontier_point_constraints_override(job, 0)
         assert exc.value.status_code == 500
 
@@ -14618,7 +14666,7 @@ class TestOptimiserHelperValidators:
             },
             "config": {"constraints": {42: {"min": 0}}},
         }
-        with pytest.raises(HTTPException):
+        with pytest.raises(RequestRefusedError):
             _frontier_point_constraints_override(job, 0)
 
     def test_frontier_point_constraints_override_missing_threshold(self) -> None:
@@ -14633,7 +14681,7 @@ class TestOptimiserHelperValidators:
             },
             "config": {"constraints": {"a": {}}},
         }
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(RequestRefusedError) as exc:
             _frontier_point_constraints_override(job, 0)
         assert "threshold is invalid" in exc.value.detail
 
@@ -14647,7 +14695,7 @@ class TestOptimiserHelperValidators:
     def test_artifact_handles_or_raise_invalid_type(self) -> None:
         from haute.routes._optimiser_frontier import _artifact_handles_or_raise
 
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(RequestRefusedError) as exc:
             _artifact_handles_or_raise({"artifact_handles": "not a dict"})
         assert exc.value.status_code == 500
 
@@ -14855,7 +14903,7 @@ class TestOptimiserHelperValidators:
             },
             "config": {"constraints": {"a": {"min": 0.5}}},
         }
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(RequestRefusedError) as exc:
             _frontier_point_constraints_override(job, 0)
         assert "constraint names" in exc.value.detail.lower()
 
@@ -14871,7 +14919,7 @@ class TestOptimiserHelperValidators:
             },
             "config": {"constraints": {"a": {"min": 0.5}}},
         }
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(RequestRefusedError) as exc:
             _frontier_point_constraints_override(job, 0)
         assert "constraint names" in exc.value.detail.lower()
 
@@ -14894,7 +14942,7 @@ class TestOptimiserHelperValidators:
             },
             "config": {"constraints": {"a": {"min": 0.5}}},  # 'unknown' missing
         }
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(RequestRefusedError) as exc:
             _frontier_point_constraints_override(job, 0)
         assert "constraint is missing" in exc.value.detail
 

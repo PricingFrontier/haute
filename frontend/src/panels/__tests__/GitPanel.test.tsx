@@ -624,11 +624,26 @@ describe("GitPanel", () => {
     await waitFor(() => expect(screen.queryByTestId("git-panel-fork-menu")).not.toBeInTheDocument())
   })
 
-  it("survives a milestones load failure without crashing", async () => {
-    mockGetMilestones.mockRejectedValue(new Error("boom"))
+  it("a failed history read says so with Retry, never as an empty branch, and Retry reads it again", async () => {
+    mockGetMilestones.mockRejectedValue(new Error("Request timed out"))
     render(<GitPanel {...defaultProps} />)
-    await waitFor(() => expect(mockGetMilestones).toHaveBeenCalled())
-    expect(screen.getByTestId("git-panel")).toBeInTheDocument()
+
+    const failure = await screen.findByTestId("git-panel-load-error")
+    expect(failure).toHaveTextContent("Failed to load version history: Request timed out")
+    expect(screen.queryByTestId("git-panel-empty")).not.toBeInTheDocument()
+    expect(useToastStore.getState().toasts.map((t) => [t.type, t.text])).toContainEqual(
+      ["error", "Failed to load version history: Request timed out"],
+    )
+    // Once the toast has faded the panel still says it.
+    useToastStore.setState({ toasts: [] })
+    expect(screen.getByTestId("git-panel-load-error")).toBeInTheDocument()
+
+    mockGetMilestones.mockClear()
+    mockGetMilestones.mockResolvedValue(milestones)
+    fireEvent.click(within(failure).getByTestId("git-panel-load-retry"))
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone")).toHaveLength(2))
+    expect(mockGetMilestones).toHaveBeenCalledWith(50, "pricing-dev")
+    expect(screen.queryByTestId("git-panel-load-error")).not.toBeInTheDocument()
   })
 
   // ── Graph rail ─────────────────────────────────────────────────────────

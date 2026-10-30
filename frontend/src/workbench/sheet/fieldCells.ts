@@ -3,7 +3,7 @@ import { type CSSProperties, type PointerEvent as ReactPointerEvent } from "reac
 import type { FormSchema } from "../../api/types"
 import { formatValue } from "../../utils/formatValue"
 import { formattedNumber } from "../../utils/sheetValues"
-import { fieldKey, fieldShowWhen } from "../../utils/sheetVisibility"
+import { columnKey, fieldKey, fieldShowWhen } from "../../utils/sheetVisibility"
 import {
   PLAIN_COLUMN_LOOK,
   readableName,
@@ -53,7 +53,7 @@ export function headerText(options: Pick<SharedLook, "header" | "header_font_siz
 
 /** Each field's own look, by its field's key (`ShownField`'s), or the plain one. */
 export function looksByKey(options: Pick<SharedLook, "column_looks">): (key: string) => ColumnLookOptions {
-  const looks = new Map(options.column_looks.map((look) => [`${look.table}:${look.column}`, look]))
+  const looks = new Map(options.column_looks.map((look) => [columnKey(look.table, look.column), look]))
   return (key) => looks.get(key) ?? PLAIN_COLUMN_LOOK
 }
 

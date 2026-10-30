@@ -39,9 +39,6 @@ They have different semantics, and several depend on process cwd:
 - Identical copies: `executor._pipeline_dir` (`:145`) and `_cache._pipeline_dir` (`:1436`).
 - **Fix.** Resolve one `ProjectContext` (root, pipeline file, config) once at CLI or server start and pass it explicitly. Delete the cwd fallbacks.
 
-### 1.8 Smaller concrete defects — LOW-MED
-- Path containment is implemented five times (§3.1). `routes/_helpers.validate_safe_path` (`:59`) uses `Path.is_relative_to` after `resolve`, and `_sandbox.validate_project_path` uses `normcase` plus `commonpath` after `resolve`. Their containment comparison is the same: both compare resolved paths, so `..` and symlinks are collapsed first, and `normcase` folds case only on Windows, where `Path` comparison is already case-insensitive. The case-variant bypass that `validate_project_path`'s docstring cites cannot happen for resolved paths. They differ in one guard: `validate_safe_path` refuses an absolute input that is lexically outside the project before resolving it (`:71`). No escape is known; the cost is duplication, and `validate_safe_path` raises `HTTPException` from a helper.
-
 ---
 
 ## 2. Dead and redundant code to delete
@@ -76,7 +73,6 @@ They have different semantics, and several depend on process cwd:
   - `_worker_protocol.run_worker_protocol`: versioned job transport with its own errors.
   - Plus `routes/_isolated_worker_async.py`, `IsolatedJobSupervisor` and `routes/_timeouts.py`.
   - Use one worker primitive (a pool with `max_uses=1` for one-shot work) and one error family.
-- **Path containment.** There are five implementations: `validate_safe_path`, `validate_project_path`, `_artifact_paths.safe_path`, the `_json_shred/_publication` lstat/junction checks, and `_save_pipeline._validate_output_rel_path`.
 
 ### 3.2 Frontend
 - **`useNodeResultsStore.ts` (1,568 lines)** mixes the store with 4 recency LRUs, module-level derived caches, validation and optimiser domain derivation.
@@ -134,9 +130,7 @@ owns no work; the packages carry the plan, acceptance and evidence.
 | Finding | Package |
 |---|---|
 | §1.4 Project-root resolvers | `PCFG-R04` ([pipeline config](pipeline-config.md)) |
-| §1.8 and §3.1 Path containment ×5 | `SBX-R01` ([sandbox security](sandbox-security.md)) |
 | §2.3 Unreferenced and test-only code | `ENGQ-R01` ([engineering quality](engineering-quality.md)) |
-| §3.1 Error translation; HTTP types in services | `API-R02` ([server API](server-api.md)) |
 | §3.1 Three worker mechanisms | `ROAD-WORKER-05` ([background jobs](background-jobs-api.md)) |
 | §3.2 Results store | `FSH-R03` ([frontend shared](frontend-shared.md)) |
 | §3.3 Editor state inside node config | `PCFG-R08` ([pipeline config](pipeline-config.md)) |

@@ -25,7 +25,6 @@ import stat
 import sys
 import tempfile
 import threading
-import time
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -464,34 +463,6 @@ class TestWebSocketDisconnectMidBroadcast:
 
 class TestFileWatcherRaceCondition:
     """Verify self-write detection prevents feedback loops."""
-
-    def test_self_write_flag_prevents_broadcast(self) -> None:
-        """mark_self_write() prevents the watcher from re-broadcasting our own save.
-
-        Catches: infinite loop where save triggers file watcher, which
-        broadcasts, which triggers the GUI to re-save.
-        """
-        from haute.routes._helpers import is_self_write, mark_self_write
-
-        mark_self_write()
-        assert is_self_write(), "Self-write flag not set immediately after mark"
-
-    def test_self_write_flag_expires(self) -> None:
-        """Self-write flag expires after cooldown so real edits are detected.
-
-        Catches: permanent suppression of file watcher after a single save,
-        making live code editing appear broken.
-        """
-
-        import haute.routes._helpers as helpers
-
-        original = helpers._last_self_write
-        # Set last write to far in the past
-        helpers._last_self_write = time.monotonic() - 10.0
-        try:
-            assert not helpers.is_self_write(), "Self-write flag should have expired"
-        finally:
-            helpers._last_self_write = original
 
     def test_invalidate_pipeline_index_clears_cache(self) -> None:
         """invalidate_pipeline_index resets the module dep cache too.

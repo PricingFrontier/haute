@@ -7,7 +7,7 @@
 | `src/haute/_submodel_instances.py` | Canonical reusable-instance resolver and validator, qualified-id expansion, schema-led reference rewriting, public-port binding, create-instance alias allocation, and targeted occurrence flattening, carrying runtime-only shared input bindings for schema warnings. |
 | `src/haute/_submodel_paths.py` | Validate route-level names, resolve recorded submodel references relative to the active pipeline directory, enforce project containment, and return typed malformed/outside-project errors plus the directory used as config base; `submodel_source_key` is the resolved-file identity by which the parser and recovery group registrations; `definition_pipeline_dir` turns a definition file's path into its `pipeline_dir` and `is_pipeline_dir` validates one. `SUBMODEL_PACKAGE` (`"modules"`) is the package beside a pipeline that holds its definition modules: `submodel_module_file` is the file `from modules import <name>` imports, `modules/<name>.py`, and `submodel_module_name` the name a definition file imports as, raising `MalformedSubmodelPathError` for a file that is not directly in `modules/` or whose name is not a canonical identifier as a node's is (ASCII letters, digits and underscores, not starting with a digit), is a keyword, starts with two underscores or is a Python built-in. |
 | `src/haute/_pipeline_revision.py` | Build deterministic canonical-graph revisions and the separate raw-artifact editor-document revision used by recovery-aware compare-and-swap. |
-| `src/haute/_flatten.py` | Public flatten/dissolve entry point: validates and expands canonical occurrences through `_submodel_instances.py`. `flatten_executable_graph` is the entry every route running a browser graph uses: it refuses a graph with an executable-name violation (codegen naming rule) before flattening, while internal flattening (a staged dissolve, save) uses `flatten_graph`, since a partly dissolved graph repeats a shared definition's child names. |
+| `src/haute/_flatten.py` | Public flatten/dissolve entry point: validates and expands canonical occurrences through `_submodel_instances.py`. `flatten_executable_graph` is the entry every route running a browser graph uses: it refuses a graph with an executable-name violation (codegen naming rule) before flattening, then gives the flattened graph's workbench nodes their tables from the form folder of the working directory's project, or from the form a preview request carries (`haute._workbench_nodes.with_form_tables`, [workbench](../workbench/low-level.md)); `flatten_with_form_tables` does the same for a graph read from disk or planned in process, which the assistant resolves and runs. Internal flattening (a staged dissolve, save) uses `flatten_graph`, since a partly dissolved graph repeats a shared definition's child names, and gives nothing. |
 | `src/haute/routes/_submodel_ops.py` | Pure (no I/O) graph transforms: extract selected nodes out of a `PipelineGraph` into a new submodel, and, for a plain node's Create Instance, wrap one node in place in a one-node definition and place an unbound instance beside it; each produces the updated parent graph and submodel metadata. |
 | `src/haute/routes/submodel.py` | FastAPI router (`/api/submodel/*`): transform-only `POST /create`, `POST /instance` and `POST /dissolve`, plus read-only persisted `GET /{definition_id}`. It validates the current parent revision and maps failures without writing files. |
 | `frontend/src/utils/canonicalSubmodelBoundaryEditing.ts` | Owned by [frontend-graph-canvas](../frontend-graph-canvas/low-level.md). `chooseInstanceInput` applies the instance binding rule; `retargetSubmodelInput` moves or removes an occurrence binding without changing its definition. Boundary transforms preserve the shared public interface. |
@@ -480,8 +480,9 @@ Acquires `save_lock`, runs the body in a threadpool:
    <specific message>)` before touching `create_submodel_graph` at all.
 3. Copy `body.preamble` and `body.preserved_blocks` onto the submitted graph,
    then call `create_submodel_graph`. `SubmodelValidationError` maps its
-   stable safe detail to `400` or `409`; unexpected `ValueError` remains
-   sanitised and logged.
+   stable safe detail to `400` or `409`. Parse failures use the application's
+   shared `ParseError` handler (`400`); unexpected failures are logged and
+   answered as sanitised `500` responses by the server.
 4. Run a read-only source/sidecar no-clobber preflight for `result.sm_file`.
 5. Return `CreateSubmodelResponse(status="ok", submodel_file=result.sm_file,
    parent_file=body.source_file, source_revision=current_graph.source_revision,
@@ -496,7 +497,9 @@ Acquires `save_lock` and runs the body in a threadpool, as create does:
    mismatch). The parent is not parsed.
 2. Refuse with `400` and the reason a `node_id` absent from the submitted
    graph, a submodel occurrence (its instance is the browser's own transform),
-   a document-wide singleton, a Source Switch or a Data Output.
+   a document-wide singleton, a Source Switch or a Data Output. A removed
+   node-level `instanceOf` form is refused by the shared `ParseError` handler,
+   with the one-node submodel replacement and no file changes.
 3. Name the definition after the node's executable name, suffixed `_2`, `_3`
    until no definition in the graph and no module in the pipeline's `modules/`
    folder has that name under any casing.
