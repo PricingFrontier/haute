@@ -2849,6 +2849,10 @@ for a release that declares `sqlserver`.
   holding a step only a restore reverses refused without `--restore-point` and applied with one,
   which `haute_store` records, while dev retypes and drops a populated column with none; a
   rename migrated back restores the previous release's names.
+- The browser (WB-42, a new journey under frontend/e2e/ starting `haute app serve` on the
+  journeys' project): a quote saved in the app is read from dev's SQLite file with SQL,
+  marked final, amended and saved again, and a form change reaches dev's tables as the app
+  starts again.
 - Starting and environments (WB-42, `tests/test_workbench_config.py` and
   `tests/test_workbench_app.py`): a missing column refuses naming it and the command; an extra
   NOT NULL column refuses and a nullable one passes; another project's or environment's

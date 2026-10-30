@@ -434,7 +434,9 @@ database, marking those that depend on the data; a built release started apart f
 project signs in as it declares; a host whose `HAUTE_ENVIRONMENT` is
 `test` pointed at prod's database refuses to start naming both; an app whose database lacks a
 column its release uses refuses to start naming it and `haute app migrate`; no credential,
-server or database name appears in `haute.toml`, the form, an API response or a log.
+server or database name appears in `haute.toml`, the form, an API response or a log; and a
+browser journey saves a quote in `haute app serve`, reads its rows from the SQLite file with
+SQL, marks it final, amends it and saves it again.
 
 **Dependencies:** None. WB-08 runs the migrate step in the generated workflows.
 
