@@ -34,7 +34,6 @@ Allowed field.
 | WB-13 | Planned | P3 | An underwriter records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
-| WB-43 | Planned | P2 | The store runs on the database a project's IT team provides: SQL Server, Azure SQL Database and Azure SQL Managed Instance, or PostgreSQL, each a provider that passes the same store tests in CI. |
 
 ## Planned improvements
 
@@ -377,48 +376,3 @@ specification and the field stop calling the shape older.
 
 **Evidence:** `frontend/src/workbench/schema/AllowedField.tsx::TYPED_IN`,
 `src/haute/_workbench_form.py::FormSpec`, `frontend/src/utils/workbenchForm.ts`.
-
-### WB-43 — The store on SQL Server and PostgreSQL
-**Why:** Projects bring their own databases: SQL Server, Azure SQL Database and Azure SQL
-Managed Instance, or PostgreSQL in its hosted forms. The store's tables, transactions and
-planner are written once against SQLAlchemy Core, but the engines differ where
-the store relies on them: exact text comparison (SQL Server's default collation ignores
-case), identifier limits (PostgreSQL truncates a name past 63 bytes), rename DDL, non-finite
-floats, string lengths counted in UTF-16 units, and sign-in through Microsoft Entra ID.
-SQLAlchemy 2.0.46 reaches SQL Server only through pyodbc, pymssql or aioodbc, no server driver
-is installed, and the app's image installs pip packages alone
-(`src/haute/deploy/_container.py::prepare_build_directory`).
-
-**Plan:** A provider per engine family behind one interface, each owning the connection it
-builds from the environment's location and sign-in, its type map, the binary collation for
-the identity and every other text compared exactly, bounded lengths for Haute's indexed
-columns, its rename DDL, its identifier limits, whether its DDL is transactional, and the
-privileges the startup check expects. A provider must enforce primary, unique and foreign
-keys, run a transaction across tables and run DDL inside one, so a failed migrate rolls back:
-`sqlserver` (SQL Server 2019 and later, Azure SQL Database and Azure SQL Managed Instance,
-through pyodbc and Microsoft ODBC Driver 18) and `postgresql` (PostgreSQL, Azure Database for
-PostgreSQL, Amazon RDS and Aurora, Cloud SQL and Databricks Lakebase, through psycopg) meet
-it; MySQL, MariaDB and Oracle, whose DDL commits implicitly, and Databricks SQL and Snowflake,
-whose keys are not enforced, are not store engines, though any of them can read the store.
-Each driver sits behind an optional extra; the app's image installs Microsoft's ODBC driver
-when a declared environment's provider is `sqlserver`; Entra ID sign-in works with a managed
-identity or a service principal. CI runs the store tests on SQLite, a SQL Server container
-(its case-insensitive default collation kept, read-committed snapshot on) and a PostgreSQL
-container. SQL Server comes first. To check on a Managed Instance: its endpoint (the
-VNet-local one needs the app in or peered with that network; the public one listens on port
-3342), read-committed snapshot, which Azure SQL Database has on by default, and sign-in with
-the app's managed identity.
-
-**Acceptance:** The store tests pass on SQLite, SQL Server and PostgreSQL; on SQL Server
-`ABC-1` and `abc-1` are two quotes and a save never touches another quote's rows; a name too
-long for PostgreSQL is refused in the plan; a non-finite float never reaches a SQL Server
-column; the image built for a `sqlserver` environment signs in to an Azure SQL database with
-its managed identity; an environment naming a provider outside the two families is refused
-naming the providers Haute has.
-
-**Dependencies:** The databases and identities the project's IT team provides.
-
-**Evidence:** `src/haute/deploy/_container.py::prepare_build_directory` (the image's build
-context, pip installs only); `src/haute/_workbench_app.py::STORE_DEPENDENCIES` (SQLAlchemy and
-Alembic, no driver); `src/haute/_quote_store/_schema.py::REFERENCE_LENGTH` (Haute's
-bounded key lengths); `pyproject.toml` (the optional extras).

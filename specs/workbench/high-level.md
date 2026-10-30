@@ -73,8 +73,6 @@ Out of scope:
   ([WB-07](../roadmap/workbench.md#wb-07--the-underwriter-app-on-other-hosts)).
 - The underwriter app's host-side delivery: rolling a host to a release and checking it
   there ([WB-08](../roadmap/workbench.md#wb-08--the-workbench-projects-cicd)).
-- The server databases the quote store will run on
-  ([WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql)).
 - Running an Import or an Export: reading a file or a database into a table
   ([WB-09](../roadmap/workbench.md#wb-09--actions-that-fill-the-sheets)) and writing the
   quote's tables out ([WB-11](../roadmap/workbench.md#wb-11--exports-from-the-app)).
@@ -1176,7 +1174,9 @@ Out of scope:
   release is also the image's build context, the container's Dockerfile copying it,
   and `haute app build --image TAG` builds the image with Docker; the image installs
   what a scoring container installs and the quote store's packages, SQLAlchemy and
-  Alembic, pinned as the scoring runtime is, nothing more. The app
+  Alembic, with the driver of each provider the release's environments declare (pyodbc and
+  Microsoft ODBC Driver 18 for `sqlserver`, psycopg for `postgresql`, and azure-identity
+  for a Microsoft Entra ID sign-in), pinned as the scoring runtime is, nothing more. The app
   serves the sheets on a page of their own, drawn as Preview draws them, with the same
   components filled from the app's routes rather than the builder's and nothing of the
   builder mounted: the sheets' tabs, the sheet showing, the release and who is signed in,
@@ -1863,14 +1863,29 @@ Out of scope:
 
   A project's quotes live in dev, on the analyst's laptop, and in the hosted environments its
   `haute.toml` declares, each a `[workbench.store.<name>]` table naming its database's
-  provider: `sqlite`, a file on the host, which takes no sign-in. Dev is the SQLite file
+  provider: `sqlserver` (SQL Server 2019 and later, Azure SQL Database and Azure SQL Managed
+  Instance, through pyodbc and Microsoft ODBC Driver 18), `postgresql` (PostgreSQL and its
+  hosted forms, Azure Database for PostgreSQL, Amazon RDS and Aurora, Cloud SQL and
+  Databricks Lakebase, through psycopg) or `sqlite`, a file on the host, which takes no
+  sign-in. A server's environment says how the app signs in, `auth`, naming the variable
+  that holds each thing it reads, never its value: `managed-identity` (with `client_id_env`
+  for a user-assigned identity), `service-principal` (`tenant_id_env`, `client_id_env` and
+  `client_secret_env`) or `password` (`username_env` and `password_env`); on `postgresql` an
+  Entra ID sign-in names with `username_env` the role it takes. A managed identity or a
+  service principal signs in through Microsoft Entra ID, a token asked for as each connection
+  is made, and a variable that holds nothing is refused naming it. Dev is the SQLite file
   `.haute/app/store.sqlite` that `haute app serve` keeps; no project declares dev, and nothing
   points a laptop at a hosted environment. A host or a CI job picks an environment with
-  `HAUTE_ENVIRONMENT`, and the host's own environment says where its database is:
-  `HAUTE_STORE_DATABASE`, the file's path, or `HAUTE_STORE_URL`, a whole connection URL, never
-  both. No credential, server or database name is in a file the project versions: a table
-  naming where a database is, or holding a secret's value, is refused naming the variable it
-  belongs in, so a pull request cannot point an environment elsewhere. A release carries the
+  `HAUTE_ENVIRONMENT`, and the host's own environment says where its database is: on a
+  server, `HAUTE_STORE_SERVER` as the engine's own clients take it and
+  `HAUTE_STORE_DATABASE`, or `HAUTE_STORE_URL`, a whole connection URL holding no sign-in,
+  never both, and optionally `HAUTE_STORE_SCHEMA`, the SQL schema every name of the store is
+  qualified with, the connection's default when none is named, so a project lays its
+  environments out as it likes, a database each, a schema each or both; for a SQLite file,
+  `HAUTE_STORE_DATABASE`, the file's path, or `HAUTE_STORE_URL`, never both. No credential,
+  server or database name is in a file the project versions: a table naming where a
+  database is, or holding a secret's value, is refused naming the variable it belongs in, so
+  a pull request cannot point an environment elsewhere. A release carries the
   declarations with it, so a hosted app and a migrate read them from the release they run,
   never from a project checkout, and an environment the release does not declare is refused
   naming those it does. `haute_store` records the project and the environment, so an app
@@ -1883,7 +1898,10 @@ Out of scope:
   table the form gains, gives a table a nullable column the form gains, renames a table or
   column the form renamed, in two steps through temporary names so a change of case or a swap
   of two names works, and changes the type, rows or role of a column or table that holds no
-  value, replacing the empty column or making the empty table afresh, which loses nothing.
+  value, which loses nothing: an empty table made afresh, and an empty column changed in
+  place where the engine can, PostgreSQL always and SQL Server where it converts the pair,
+  and otherwise replaced. A plan refuses a table or column name longer than its engine keeps
+  whole, PostgreSQL's 63 bytes.
   Hosted, it drops nothing the form removed and nothing that holds a value: a column or table
   the form dropped is kept, unused, and every plan lists it with how many quotes hold values
   in it and the DROP statement for the DBA; a migrate first compares its record with the
@@ -1914,8 +1932,12 @@ Out of scope:
   release's form's tables, as `haute_store` records them and as the database's own
   catalogue holds them: every table and column the release uses there, of its kind, taking
   a null as the store's does, keyed and referring to its quote as the store keys it, and
-  every other column of those tables taking a null. It refuses to start naming each
-  difference and what resolves it. Every table and column name is quoted in the SQL Haute writes, so
+  every other column of those tables taking a null, and, on SQL Server, each text the store
+  compares exactly under its binary collation. It refuses to start naming each difference
+  and what resolves it, and on a server it refuses, too, when the identity it signs in as
+  lacks a privilege the store needs (reading, inserting, changing and emptying the form's
+  tables as each needs, reading and inserting in `haute_activity` and reading
+  `haute_store`), naming each. Every table and column name is quoted in the SQL Haute writes, so
   a reserved word (`order`, `group`) is a name like any other; refused wherever the form is
   saved, naming each, are two columns of one table whose names differ only in case, a name
   longer than 63 characters, a name starting `haute_` (Haute's own `haute_version` aside), a
@@ -1923,6 +1945,18 @@ Out of scope:
   SQLite store keeps foreign keys on and its rollback journal, never write-ahead logging, so
   the file stands alone between writes; its DDL runs in the transaction it is part of, and
   it needs SQLite 3.35 or later.
+
+  Every store engine enforces primary, unique and foreign keys, runs a transaction across
+  tables and runs DDL inside one, so a migrate that fails part way changes nothing. On SQL
+  Server the quote's reference and Haute's other exactly compared texts are kept under the
+  binary collation `Latin1_General_100_BIN2`, so `ABC-1` and `abc-1` are two quotes whatever
+  the database's default, and are sized in UTF-16 units so every character fits; text of any
+  length is `NVARCHAR(max)`, a Decimal `FLOAT(53)`, a moment `DATETIME2(6)` and True/false
+  `BIT`. On PostgreSQL text is `TEXT`, a Decimal `DOUBLE PRECISION` and a moment `TIMESTAMP`.
+  A non-finite number is kept empty on every engine. Each connection to a server is checked
+  before it is used, since a hosted database closes idle ones. MySQL, MariaDB and Oracle,
+  whose DDL commits as it runs, and Databricks SQL and Snowflake, whose keys are not
+  enforced, are not store engines, though any of them can read the store's tables.
 
 ## Design rationale
 
@@ -2560,70 +2594,3 @@ Out of scope:
 - Two response nodes of either type, at the top level or in a submodel, fail save and deploy
   with "Only one Quote Response or Workbench Output node is allowed per pipeline (found 2).",
   and `Pipeline.run` and `Pipeline.score` refuse the pipeline, naming both.
-
-## Approved change contract — the quote store as the form's own tables
-
-This section specifies the quote store's server databases before they are built. Every
-record in it is unresolved until its roadmap package lands, which folds it into the
-present-tense sections of this specification, of [cli](../cli/high-level.md) and of the
-container build's row in [deploy](../deploy/low-level.md)'s module map, and removes this
-section. The [low-level contract](low-level.md#approved-change-contract--the-quote-store-as-the-forms-own-tables)
-names the seams, shapes and tests.
-
-- **Current limitation.** The store is the form's own tables, in dev and in the hosted
-  environments a project declares, changed by one planner (the quote store, in Behaviour), on
-  SQLite alone; a started app checks its database's catalogue but not what the store may do
-  there.
-- **Unresolved target.** The store runs on SQL Server and PostgreSQL besides SQLite, each
-  signing the app in as its environment declares, and a started app checks the privileges the
-  store needs ([WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql)).
-- **Non-goals.** In test and prod a type, rows or role change on a column or table that holds
-  values is refused, never converted; Haute drops no column or table there, adopts no table it
-  did not record, and touches none of the database's other tables. No laptop reaches a hosted
-  environment. MySQL, MariaDB, Oracle, Databricks SQL and Snowflake are not store engines.
-  The SQL Export, outcomes and policies are unchanged
-  ([WB-11](../roadmap/workbench.md#wb-11--exports-from-the-app),
-  [WB-13](../roadmap/workbench.md#wb-13--managing-quotes-in-the-underwriter-app)).
-- **Failure and compatibility semantics.** A started app lacking a privilege the store
-  needs refuses to start, naming it. Nothing falls back: a value the store cannot hold as its
-  column's type is refused, never kept as something else.
-- **Acceptance evidence.** Each package's acceptance tests, in the testing scenarios of the
-  low-level contract.
-- **Roadmap package.**
-  [WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql).
-
-**Environments on a server.** An environment on a server database names how the app signs
-in, `managed-identity`, `service-principal` or `password`, with the names of the variables
-holding any secret, never a value:
-
-```toml
-[workbench.store.test]
-provider = "sqlserver"
-auth = "managed-identity"
-
-[workbench.store.prod]
-provider = "sqlserver"
-auth = "managed-identity"
-```
-
-The host's own environment says where it is: `HAUTE_STORE_SERVER`, `HAUTE_STORE_DATABASE`
-and, optionally, `HAUTE_STORE_SCHEMA`, or `HAUTE_STORE_URL` holding a whole connection URL. A
-project lays its environments out as it likes, a database each, a schema each or both: Haute
-qualifies every name with the schema, the connection's default when none is named.
-
-**Starting the app.** A hosted app, before it serves, checks besides its catalogue that it
-holds the privileges the store needs, and refuses to start naming each it lacks.
-
-**Database providers.** A provider is a family of engines the store runs on, one interface
-each: how it connects and signs in, its types, the binary collation that keeps the identity
-and every other exactly-compared text exact, the bounded lengths of Haute's indexed columns,
-its rename DDL, its identifier limits and whether its DDL is transactional. A provider
-enforces primary, unique and foreign keys, runs a transaction across tables, and runs DDL
-inside one so a failed migrate rolls back. `sqlserver` covers SQL Server 2019 and later, Azure
-SQL Database and Azure SQL Managed Instance, through pyodbc and Microsoft ODBC Driver 18, which
-the app's image installs when an environment names it; `postgresql` covers PostgreSQL and its
-hosted forms (Azure Database for PostgreSQL, Amazon RDS and Aurora, Cloud SQL, Databricks
-Lakebase), through psycopg; `sqlite` is dev's. Sign-in by managed identity or service
-principal goes through Microsoft Entra ID where the engine is Azure's. MySQL, MariaDB and
-Oracle, whose DDL commits as it runs, and Databricks SQL and Snowflake, whose keys are not
-enforced, are not store engines, though any of them can read the store's tables.

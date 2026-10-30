@@ -29,6 +29,7 @@ from sqlalchemy import (
     Dialect,
     Double,
     ForeignKeyConstraint,
+    Identity,
     Index,
     Integer,
     MetaData,
@@ -38,6 +39,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects import mssql
 from sqlalchemy.types import TypeDecorator, TypeEngine
 
 from haute._workbench_form import (
@@ -66,13 +68,22 @@ ACTION_LENGTH = 20
 OPERATION_LENGTH = 64
 #: A quote's name is at most this long, wherever it is saved.
 NAME_LENGTH = 200
+#: The collation SQL Server compares the identity and Haute's other exact texts under: by
+#: code point, so ``ABC-1`` and ``abc-1`` are two quotes whatever the database's default.
+EXACT_COLLATION = "Latin1_General_100_BIN2"
 
 
 class UtcDateTime(TypeDecorator[datetime]):
-    """A moment in UTC, held without its zone and read back with it, on every engine."""
+    """A moment in UTC, held without its zone and read back with it, on every engine: to the
+    microsecond on SQL Server, as ``DATETIME2(6)``."""
 
     impl = DateTime
     cache_ok = True
+
+    def load_dialect_impl(self, dialect: Dialect) -> TypeEngine[Any]:
+        if dialect.name == "mssql":
+            return dialect.type_descriptor(mssql.DATETIME2(precision=6))
+        return dialect.type_descriptor(DateTime())
 
     def process_bind_param(self, value: datetime | None, dialect: Dialect) -> datetime | None:
         if value is None:
@@ -85,21 +96,53 @@ class UtcDateTime(TypeDecorator[datetime]):
         return None if value is None else value.replace(tzinfo=UTC)
 
 
-#: Each column type's SQL type in the store.
+def _text() -> TypeEngine[Any]:
+    """Text of any length: ``NVARCHAR(max)`` on SQL Server, whose ``TEXT`` is gone."""
+    return Text().with_variant(mssql.NVARCHAR(None), "mssql")
+
+
+def _exact(length: int) -> TypeEngine[Any]:
+    """Text of at most *length* characters that the store compares exactly: on SQL Server
+    ``NVARCHAR`` of twice as many UTF-16 units, so any *length* characters fit, under
+    :data:`EXACT_COLLATION`."""
+    return String(length).with_variant(
+        mssql.NVARCHAR(2 * length, collation=EXACT_COLLATION), "mssql"
+    )
+
+
+def _double() -> TypeEngine[Any]:
+    return Double().with_variant(mssql.FLOAT(53), "mssql")
+
+
+def _date() -> TypeEngine[Any]:
+    """A day: ``DATE`` on SQL Server too, which a dialect not yet connected renders as
+    ``DATETIME``."""
+    return Date().with_variant(mssql.DATE(), "mssql")
+
+
+#: Each column type's SQL type in the store, pinned on each engine so the SQL a plan prints
+#: is the SQL the connected engine runs.
 _TYPES: dict[ColumnType, Callable[[], TypeEngine[Any]]] = {
     "int": BigInteger,
-    "float": Double,
-    "str": Text,
+    "float": _double,
+    "str": _text,
     "bool": Boolean,
-    "date": Date,
+    "date": _date,
 }
+
+
+def column_type(kind: ColumnType | str) -> TypeEngine[Any]:
+    """The store's SQL type for a column of the form's type *kind*."""
+    return _TYPES[kind]()  # type: ignore[index]
+
+
 #: quote_details' columns the app sets that the store keys or indexes, bounded so every
 #: engine can: the stage, who it is with and who made and changed it.
 _BOUNDED_DETAILS: dict[str, Callable[[], TypeEngine[Any]]] = {
-    "stage": lambda: String(STAGE_LENGTH),
-    "assignee": lambda: String(PRINCIPAL_LENGTH),
-    "created_by": lambda: String(PRINCIPAL_LENGTH),
-    "modified_by": lambda: String(PRINCIPAL_LENGTH),
+    "stage": lambda: _exact(STAGE_LENGTH),
+    "assignee": lambda: _exact(PRINCIPAL_LENGTH),
+    "created_by": lambda: _exact(PRINCIPAL_LENGTH),
+    "modified_by": lambda: _exact(PRINCIPAL_LENGTH),
 }
 
 
@@ -109,8 +152,8 @@ _SET_DETAILS = frozenset(
 )
 
 
-def _reference() -> String:
-    return String(REFERENCE_LENGTH)
+def _reference() -> TypeEngine[Any]:
+    return _exact(REFERENCE_LENGTH)
 
 
 #: The store's own columns of quote_details, in order: each one's name, type and whether it
@@ -118,13 +161,13 @@ def _reference() -> String:
 STORE_COLUMNS: tuple[tuple[str, Callable[[], TypeEngine[Any]], bool], ...] = (
     ("quote_version", BigInteger, False),
     ("saved_at", UtcDateTime, False),
-    ("saved_by", lambda: String(PRINCIPAL_LENGTH), False),
-    ("priced_release", lambda: String(RELEASE_LENGTH), True),
+    ("saved_by", lambda: _exact(PRINCIPAL_LENGTH), False),
+    ("priced_release", lambda: _exact(RELEASE_LENGTH), True),
     ("source_reference", _reference, True),
     ("source_option", BigInteger, True),
-    ("source_relation", lambda: String(RELATION_LENGTH), True),
-    ("handover_note", Text, True),
-    ("note_by", lambda: String(PRINCIPAL_LENGTH), True),
+    ("source_relation", lambda: _exact(RELATION_LENGTH), True),
+    ("handover_note", _text, True),
+    ("note_by", lambda: _exact(PRINCIPAL_LENGTH), True),
     ("note_at", UtcDateTime, True),
 )
 STORE_COLUMN_NAMES: frozenset[str] = frozenset(name for name, _, _ in STORE_COLUMNS)
@@ -242,9 +285,10 @@ def store_columns(form: FormSpec) -> dict[str, list[tuple[str, StoreColumnKind]]
     return kept
 
 
-def store_schema(form: FormSpec) -> StoreSchema:
-    """The store's tables for *form*: its tables, then ``haute_store`` and ``haute_activity``."""
-    metadata = MetaData()
+def store_schema(form: FormSpec, *, sql_schema: str | None = None) -> StoreSchema:
+    """The store's tables for *form*: its tables, then ``haute_store`` and ``haute_activity``,
+    each in the SQL schema *sql_schema*, or the connection's default when it names none."""
+    metadata = MetaData(schema=sql_schema)
     tables = tuple(_stored(metadata, table) for table in form.data_schema.tables)
     return StoreSchema(
         metadata=metadata,
@@ -300,14 +344,14 @@ def _store_table(metadata: MetaData) -> Table:
         STORE_TABLE,
         metadata,
         Column("id", Integer, primary_key=True, autoincrement=False),
-        Column("project", Text, nullable=False),
-        Column("environment", Text, nullable=False),
-        Column("release", Text, nullable=True),
-        Column("haute_version", Text, nullable=True),
+        Column("project", _text(), nullable=False),
+        Column("environment", _text(), nullable=False),
+        Column("release", _text(), nullable=True),
+        Column("haute_version", _text(), nullable=True),
         Column("migrated_at", UtcDateTime, nullable=False),
-        Column("schema", Text, nullable=False),
+        Column("schema", _text(), nullable=False),
         #: The backup or point in time the last migrate's plan could be rolled back to.
-        Column("restore_point", Text, nullable=True),
+        Column("restore_point", _text(), nullable=True),
     )
 
 
@@ -316,19 +360,20 @@ def _activity_table(metadata: MetaData) -> Table:
     return Table(
         ACTIVITY_TABLE,
         metadata,
-        Column("activity_id", Integer, primary_key=True, autoincrement=True),
-        Column("operation_key", String(OPERATION_LENGTH), nullable=False),
+        # An identity column, which takes a value with no grant on a sequence of its own.
+        Column("activity_id", Integer, Identity(), primary_key=True),
+        Column("operation_key", _exact(OPERATION_LENGTH), nullable=False),
         Column("quote_reference", _reference(), nullable=False),
         Column("quote_option", BigInteger, nullable=False),
         # The quote's version the write left; a note moves none.
         Column("quote_version", BigInteger, nullable=True),
         Column("occurred_at", UtcDateTime, nullable=False),
-        Column("actor", String(PRINCIPAL_LENGTH), nullable=False),
-        Column("action", String(ACTION_LENGTH), nullable=False),
-        Column("assignee", String(PRINCIPAL_LENGTH), nullable=True),
-        Column("note", Text, nullable=True),
-        Column("reason", Text, nullable=True),
-        Column("priced_release", String(RELEASE_LENGTH), nullable=True),
+        Column("actor", _exact(PRINCIPAL_LENGTH), nullable=False),
+        Column("action", _exact(ACTION_LENGTH), nullable=False),
+        Column("assignee", _exact(PRINCIPAL_LENGTH), nullable=True),
+        Column("note", _text(), nullable=True),
+        Column("reason", _text(), nullable=True),
+        Column("priced_release", _exact(RELEASE_LENGTH), nullable=True),
         UniqueConstraint("operation_key", name="haute_uq_activity_operation"),
         ForeignKeyConstraint(
             list(_IDENTITY),

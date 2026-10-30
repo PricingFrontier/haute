@@ -32,10 +32,12 @@ from sqlalchemy import (
     Row,
     and_,
     delete,
+    false,
     func,
     insert,
     or_,
     select,
+    true,
     union,
     update,
 )
@@ -592,9 +594,10 @@ class QuoteBook:
 
     def _view_filter(self, view: View, actor: str) -> ColumnElement[bool]:
         details = self._details
+        # archived takes no null, and SQL Server takes no IS beside a bit: = on every engine.
         if view == "archived":
-            return details.c.archived.is_(True)
-        live = details.c.archived.is_(False)
+            return details.c.archived == true()
+        live = details.c.archived == false()
         return and_(live, details.c.assignee == actor) if view == "mine" else live
 
     def _search_filter(self, term: str) -> ColumnElement[bool]:
@@ -669,6 +672,9 @@ class QuoteBook:
 
     def _order(self, sort: Sort) -> list[Any]:
         details = self._details
+        if sort == "reference":
+            # The key is the reference itself, which SQL Server takes once in an ORDER BY.
+            return [details.c.quote_reference.asc(), details.c.quote_option.asc()]
         column = self._sort_key(sort)
         if sort == "saved":
             return [column.desc(), details.c.quote_reference.desc(), details.c.quote_option.desc()]
@@ -946,7 +952,7 @@ class QuoteBook:
                         *self._is(reference, option),
                         self._details.c.quote_version == version,
                         self._details.c.stage == "draft",
-                        self._details.c.archived.is_(False),
+                        self._details.c.archived == false(),
                     )
                     .values(
                         **{
@@ -1236,7 +1242,7 @@ class QuoteBook:
         with writing(self._engine) as connection:
             held = connection.execute(
                 update(self._details)
-                .where(*self._is(reference, option), self._details.c.archived.is_(False))
+                .where(*self._is(reference, option), self._details.c.archived == false())
                 .values(
                     handover_note=note or None,
                     note_by=actor if note else None,
@@ -1274,7 +1280,7 @@ class QuoteBook:
             conditions = [
                 *self._is(reference, option),
                 details.c.quote_version == version,
-                details.c.archived.is_(archived),
+                details.c.archived == archived,
             ]
             if stage is not None:
                 conditions.append(details.c.stage == stage)

@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-from haute import _workbench_config as workbench_config
 from haute._workbench_config import (
     WorkbenchConfigError,
     read_workbench_config,
@@ -95,14 +94,12 @@ def test_the_store_tables_declare_the_hosted_environments_by_provider(tmp_path: 
     assert store[0].declared() == {"provider": "sqlite"}
 
 
-def test_a_provider_that_signs_in_names_the_variables_its_sign_in_reads(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_provider_that_signs_in_names_the_variables_its_sign_in_reads() -> None:
     # A database on a server signs the app in, by the variables the environment names.
-    monkeypatch.setattr(workbench_config, "STORE_PROVIDERS", frozenset({"sqlite", "server"}))
     principal = {
-        "provider": "server",
+        "provider": "sqlserver",
         "auth": "service-principal",
+        "tenant_id_env": "STORE_TENANT",
         "client_id_env": "STORE_CLIENT",
         "client_secret_env": "STORE_SECRET",
     }
@@ -111,17 +108,35 @@ def test_a_provider_that_signs_in_names_the_variables_its_sign_in_reads(
 
     assert (environment.auth, dict(environment.variables)) == (
         "service-principal",
-        {"client_id_env": "STORE_CLIENT", "client_secret_env": "STORE_SECRET"},
+        {
+            "tenant_id_env": "STORE_TENANT",
+            "client_id_env": "STORE_CLIENT",
+            "client_secret_env": "STORE_SECRET",
+        },
     )
     assert environment.declared() == principal
-    [identity] = store_environments(
-        {"prod": {"provider": "server", "auth": "managed-identity"}}, "[workbench.store]"
-    )
-    assert identity.variables == {}
+
+    def declared(**settings: str) -> dict[str, str]:
+        [one] = store_environments({"prod": settings}, "[workbench.store]")
+        return dict(one.variables)
+
+    # A system-assigned managed identity names nothing; a user-assigned one its client id.
+    assert declared(provider="sqlserver", auth="managed-identity") == {}
+    assert declared(provider="sqlserver", auth="managed-identity", client_id_env="APP_ID") == {
+        "client_id_env": "APP_ID"
+    }
+    # On PostgreSQL an Entra ID sign-in names the role it takes.
+    assert declared(provider="postgresql", auth="managed-identity", username_env="ROLE") == {
+        "username_env": "ROLE"
+    }
     for settings, says in (
-        ({"provider": "server"}, "auth must be one of managed-identity"),
+        ({"provider": "sqlserver"}, "auth must be one of managed-identity"),
         ({**principal, "client_secret_env": "not a name"}, "must name the environment variable"),
         ({**principal, "username_env": "STORE_USER"}, "unknown key(s): username_env"),
+        (
+            {"provider": "postgresql", "auth": "managed-identity"},
+            "username_env must name the environment variable",
+        ),
     ):
         with pytest.raises(ValueError, match=re.escape(says)):
             store_environments({"prod": settings}, "[workbench.store]")
@@ -192,7 +207,8 @@ def test_the_app_table_names_the_role_that_may_change_quotes(tmp_path: Path) -> 
         ),
         (
             "[workbench]\nenabled = true\n[workbench.store.test]\nprovider = 'oracle'\n",
-            "[workbench.store.test].provider must be one of sqlite; got 'oracle'",
+            "[workbench.store.test].provider must be one of postgresql, sqlite, sqlserver; got "
+            "'oracle'",
         ),
         (
             "[workbench]\nenabled = true\n[workbench.store.test]\nprovider = 'sqlite'\n"

@@ -38,6 +38,7 @@ from haute._quote_store._migrate import (
     render_sql,
     render_text,
 )
+from haute._quote_store._providers import SignIn
 from haute._quote_store._rows import input_rows
 from haute._quote_store._store import (
     DEV,
@@ -66,11 +67,20 @@ def open_book(
     environment: str = DEV,
     haute_version: str | None,
     clock: Callable[[], datetime] | None = None,
+    sql_schema: str | None = None,
+    sign_in: SignIn | None = None,
 ) -> QuoteBook:
-    """The book of quotes on the database at *url*, which must hold *form*'s tables for
-    *project* in *environment* (:func:`open_engine`), written by an app running Haute
-    *haute_version*."""
-    engine, schema = open_engine(url, form, project=project, environment=environment)
+    """The book of quotes on the database at *url*, signed in as *sign_in* says, which must
+    hold *form*'s tables for *project* in *environment* in the SQL schema *sql_schema*
+    (:func:`open_engine`), written by an app running Haute *haute_version*."""
+    engine, schema = open_engine(
+        url,
+        form,
+        project=project,
+        environment=environment,
+        sql_schema=sql_schema,
+        sign_in=sign_in,
+    )
     return QuoteBook(engine, schema, form, haute_version=haute_version, clock=clock)
 
 
@@ -95,6 +105,7 @@ __all__ = [
     "QuoteValuesError",
     "ReferenceTakenError",
     "RelatedQuote",
+    "SignIn",
     "Source",
     "Step",
     "StoreLocation",

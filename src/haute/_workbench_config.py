@@ -45,16 +45,22 @@ WORKBENCH_TOML_KEYS: frozenset[str] = frozenset({"enabled", "app", "store"})
 #: Where the underwriter app can run: the host whose sign-in fronts it.
 APP_HOSTS: frozenset[str] = frozenset({"azure-container-apps"})
 #: The databases a hosted environment's quote store can be on.
-STORE_PROVIDERS: frozenset[str] = frozenset({"sqlite"})
+STORE_PROVIDERS: frozenset[str] = frozenset({"sqlite", "sqlserver", "postgresql"})
 #: The providers whose database is a file, which takes no sign-in.
 FILE_PROVIDERS: frozenset[str] = frozenset({"sqlite"})
 #: How a hosted app signs in to its environment's database, each with the keys naming the
 #: variables that hold what it needs.
 STORE_SIGN_INS: Mapping[str, tuple[str, ...]] = {
     "managed-identity": (),
-    "service-principal": ("client_id_env", "client_secret_env"),
+    "service-principal": ("tenant_id_env", "client_id_env", "client_secret_env"),
     "password": ("username_env", "password_env"),
 }
+#: The keys a sign-in may name besides: a user-assigned managed identity's client id, which
+#: the system-assigned identity needs none of.
+_OPTIONAL_SIGN_IN_KEYS: Mapping[str, tuple[str, ...]] = {"managed-identity": ("client_id_env",)}
+#: The providers on which a Microsoft Entra ID sign-in also names the role it takes, with
+#: ``username_env``: PostgreSQL's, whose role an Entra identity is mapped to by name.
+_ROLE_NAMED: frozenset[str] = frozenset({"postgresql"})
 #: The environment ``haute app serve`` keeps its quotes in, on the analyst's laptop, which no
 #: project declares.
 DEV_ENVIRONMENT = "dev"
@@ -273,6 +279,7 @@ def _environment(name: str, settings: dict[str, object], at: str) -> StoreEnviro
             f"{at}.provider must be one of {', '.join(sorted(STORE_PROVIDERS))}; got {provider!r}"
         )
     auth = settings.get("auth")
+    optional: tuple[str, ...] = ()
     if provider in FILE_PROVIDERS:
         if auth is not None:
             raise ValueError(f"{at}.auth: a {provider} database is a file, which takes no sign-in")
@@ -281,7 +288,11 @@ def _environment(name: str, settings: dict[str, object], at: str) -> StoreEnviro
         if not isinstance(auth, str) or auth not in STORE_SIGN_INS:
             raise ValueError(f"{at}.auth must be one of {', '.join(STORE_SIGN_INS)}; got {auth!r}")
         keys = STORE_SIGN_INS[auth]
-    known = {"provider", "auth", *keys}
+        if provider in _ROLE_NAMED and "username_env" not in keys:
+            # The role a PostgreSQL server maps the Entra identity to, by name.
+            keys = (*keys, "username_env")
+        optional = _OPTIONAL_SIGN_IN_KEYS.get(auth, ())
+    known = {"provider", "auth", *keys, *optional}
     unknown = sorted(set(settings) - known)
     if unknown:
         raise ValueError(
@@ -289,8 +300,10 @@ def _environment(name: str, settings: dict[str, object], at: str) -> StoreEnviro
             + ", ".join(sorted(known))
         )
     variables: dict[str, str] = {}
-    for key in keys:
+    for key in (*keys, *optional):
         variable = settings.get(key)
+        if variable is None and key in optional:
+            continue
         if not isinstance(variable, str) or not _VARIABLE_NAME.fullmatch(variable):
             raise ValueError(
                 f"{at}.{key} must name the environment variable that holds it; got {variable!r}"

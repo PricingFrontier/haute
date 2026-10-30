@@ -119,6 +119,19 @@ databricks = [
     "databricks-sdk>=0.88.0,<0.89",
     "databricks-sql-connector>=4.2.5,<5",
 ]
+# The underwriter app's quote store on SQL Server, Azure SQL Database and Azure SQL
+# Managed Instance: pyodbc, through Microsoft ODBC Driver 18, which is installed apart
+# (a release's image installs it), and azure-identity for a Microsoft Entra ID sign-in.
+sqlserver = [
+    "pyodbc>=5.2.0,<6",
+    "azure-identity>=1.19.0,<2",
+]
+# The quote store on PostgreSQL and its hosted forms: psycopg with its own libpq, and
+# azure-identity for an Entra ID sign-in to Azure Database for PostgreSQL.
+postgresql = [
+    "psycopg[binary]>=3.2.0,<4",
+    "azure-identity>=1.19.0,<2",
+]
 [dependency-groups]
 # What the shared test setup (tests/conftest.py) and the pytest configuration
 # need to collect and run a module, and nothing more: the core-only CI lane
@@ -143,6 +156,7 @@ dev = [
     "mkdocs==1.6.1",
     "mkdocs-material==9.7.7",
     "haute[databricks]",
+    "haute[sqlserver,postgresql]",
     "types-psutil==7.2.2.20260906",
 ]
 
@@ -277,6 +291,7 @@ markers = [
     "sandbox_strict: opts a test into the strict write-sandbox (see tests/_write_sandbox.py)",
     "meta: repo-health checks that read files rather than exercise behaviour, so their result cannot vary by interpreter; deselected from the compatibility lanes (see .github/workflows/ci.yml)",
     "in_process: patches an in-process seam a worker process would not see, so previews, traces and estimates stay in threads even in the process-mode lane (see tests/conftest.py)",
+    "store_servers: runs a quote store test on a SQL Server or PostgreSQL server the environment names, as the CI job's containers do (see tests/_store_servers.py)",
 ]
 filterwarnings = [
     "error::RuntimeWarning",

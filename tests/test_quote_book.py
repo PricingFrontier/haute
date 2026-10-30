@@ -1,11 +1,11 @@
 """The underwriter app's quote book (specs/workbench): each quote's current state in the form's
 own tables, written whole by a save and read with plain SQL; the two stages; who did what in
 ``haute_activity``; operation keys that make a repeated write write once; and the Quotes
-page's lists."""
+page's lists. Each test runs on SQLite and on each SQL Server or PostgreSQL server the
+environment names (tests/_store_servers.py)."""
 
 from __future__ import annotations
 
-import sqlite3
 import threading
 import unicodedata
 from collections.abc import Iterator
@@ -30,10 +30,10 @@ from haute._quote_store import (
     WriteSupersededError,
     open_book,
     prepare_store,
-    store_url,
 )
 from haute._workbench_form import FormSpec, with_quote_details
 from haute._workbench_tables import finite_document, priced_tables
+from tests._store_servers import Target, backends, database
 
 PROJECT = "motor"
 ANA = "ana@example.com"
@@ -117,16 +117,24 @@ class Clock:
         return self.now
 
 
-@pytest.fixture
-def path(tmp_path: Path) -> Path:
-    return tmp_path / "store.sqlite"
+@pytest.fixture(params=backends())
+def store(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Target]:
+    """A database of the test's own, on each backend the run has."""
+    with database(request.param, tmp_path) as target:
+        yield target
 
 
 @pytest.fixture
-def book(path: Path) -> Iterator[QuoteBook]:
-    url = store_url(path)
-    prepare_store(url, FORM, project=PROJECT)
-    with open_book(url, FORM, project=PROJECT, haute_version=HAUTE, clock=Clock()) as opened:
+def book(store: Target) -> Iterator[QuoteBook]:
+    prepare_store(store.url, FORM, project=PROJECT, sign_in=store.sign_in)
+    with open_book(
+        store.url,
+        FORM,
+        project=PROJECT,
+        haute_version=HAUTE,
+        clock=Clock(),
+        sign_in=store.sign_in,
+    ) as opened:
         yield opened
 
 
@@ -183,58 +191,57 @@ def save(book: QuoteBook, quote: Any, *, priced: bool = True, by: str = ANA, **k
     ).quote
 
 
-def sql(path: Path, query: str) -> list[tuple[Any, ...]]:
-    with sqlite3.connect(path) as raw:
-        return raw.execute(query).fetchall()
+def sql(store: Target, query: str) -> list[tuple[Any, ...]]:
+    return store.read(query)
 
 
 # ── Saving ──────────────────────────────────────────────────────────────────
 
 
 def test_a_saved_quote_is_rows_of_the_forms_own_tables_read_with_plain_sql(
-    book: QuoteBook, path: Path
+    book: QuoteBook, store: Target
 ) -> None:
     saved = save(book, make(book))
 
     assert saved.version == 2 and saved.priced_release == RELEASE
     assert sql(
-        path, "SELECT quote_reference, quote_option, region, drivers, start FROM policy"
+        store, "SELECT quote_reference, quote_option, region, drivers, start FROM policy"
     ) == [("A-1", 1, "north", 2, "2026-11-01")]
     # Each vehicle under its row on the sheet, the blank row between them counted; an
     # unticked box in a filled row is false, as the request priced it.
     assert sql(
-        path, "SELECT quote_row, reg, value, garaged, mileage FROM vehicles ORDER BY quote_row"
+        store, "SELECT quote_row, reg, value, garaged, mileage FROM vehicles ORDER BY quote_row"
     ) == [(1, "AB12 CDE", 12500.0, 1, None), (3, "XY34 ZZZ", 8000.0, 0, 9007199254740993)]
     # The priced outputs sit beside the inputs, joined on the quote's identity.
     assert sql(
-        path,
+        store,
         "SELECT d.insured, p.total_premium FROM quote_details d JOIN premium p "
         "ON p.quote_reference = d.quote_reference AND p.quote_option = d.quote_option",
     ) == [("Acme Haulage", 512.4)]
-    assert sql(path, "SELECT quote_row, reg FROM vehicle_premium ORDER BY quote_row") == [
+    assert sql(store, "SELECT quote_row, reg FROM vehicle_premium ORDER BY quote_row") == [
         (1, "AB12 CDE"),
         (2, "XY34 ZZZ"),
     ]
 
 
 def test_saving_again_replaces_the_quotes_rows_and_an_unpriced_save_keeps_no_prices(
-    book: QuoteBook, path: Path
+    book: QuoteBook, store: Target
 ) -> None:
     quote = save(book, make(book))
     one_vehicle = values(t_vehicles=[{"c_reg": "AB12 CDE", "c_value": "12500"}])
 
     saved = save(book, quote, priced=False, values=one_vehicle)
 
-    assert sql(path, "SELECT reg FROM vehicles") == [("AB12 CDE",)]
+    assert sql(store, "SELECT reg FROM vehicles") == [("AB12 CDE",)]
     assert (
-        sql(path, "SELECT * FROM premium") == []
-        and sql(path, "SELECT * FROM vehicle_premium") == []
+        sql(store, "SELECT * FROM premium") == []
+        and sql(store, "SELECT * FROM vehicle_premium") == []
     )
     assert saved.priced_release is None and not saved.priced
 
 
 def test_a_value_not_of_its_columns_type_refuses_the_whole_save_naming_each_cell(
-    book: QuoteBook, path: Path
+    book: QuoteBook, store: Target
 ) -> None:
     quote = make(book)
     misfits = values(
@@ -250,10 +257,12 @@ def test_a_value_not_of_its_columns_type_refuses_the_whole_save_naming_each_cell
         "vehicles row 3, Mileage",
     ]
     assert book.get("A-1", 1).version == quote.version
-    assert sql(path, "SELECT drivers FROM policy") == [(2,)]
+    assert sql(store, "SELECT drivers FROM policy") == [(2,)]
 
 
-def test_nothing_else_a_quotes_cells_or_outputs_hold_refuses_a_save(book: QuoteBook) -> None:
+def test_nothing_else_a_quotes_cells_or_outputs_hold_refuses_a_save(
+    book: QuoteBook, store: Target
+) -> None:
     # An empty required input, a value below its column's minimum and a non-finite output.
     quote = make(book, values=values(t_policy=[{"c_drivers": "0"}]))
 
@@ -269,13 +278,15 @@ def test_nothing_else_a_quotes_cells_or_outputs_hold_refuses_a_save(book: QuoteB
     assert opened.outputs["premium"] == [
         {"quote_reference": "A-1", "quote_option": 1, "referred": False}
     ]
+    # The non-finite price is kept empty: no engine is handed one, SQL Server holding none.
+    assert sql(store, "SELECT total_premium, referred FROM premium") == [(None, 0)]
 
 
 # ── Repeated writes ─────────────────────────────────────────────────────────
 
 
 def test_a_save_repeated_under_its_key_answers_the_quote_and_writes_once(
-    book: QuoteBook, path: Path
+    book: QuoteBook, store: Target
 ) -> None:
     quote = make(book)
     key = op()
@@ -284,7 +295,7 @@ def test_a_save_repeated_under_its_key_answers_the_quote_and_writes_once(
     again = save(book, quote, operation=key)
 
     assert again.version == first.version == 2
-    assert sql(path, "SELECT COUNT(*) FROM haute_activity WHERE action = 'saved'") == [(1,)]
+    assert sql(store, "SELECT COUNT(*) FROM haute_activity WHERE action = 'saved'") == [(1,)]
 
 
 def test_a_save_repeated_after_a_colleagues_is_superseded_naming_both(book: QuoteBook) -> None:
@@ -329,7 +340,7 @@ def test_one_save_sent_twice_at_once_is_one_write_and_two_saves_land_once(book: 
     assert book.get("A-1", 1).version == current.version + 1
 
 
-def test_a_creation_repeated_under_its_key_makes_one_quote(book: QuoteBook, path: Path) -> None:
+def test_a_creation_repeated_under_its_key_makes_one_quote(book: QuoteBook, store: Target) -> None:
     key = op()
     made = book.create(operation=key, actor=ANA, values=values(), at=book.now(), reference="A-1")
     source = Source("A-1", 1, "alternative")
@@ -347,7 +358,7 @@ def test_a_creation_repeated_under_its_key_makes_one_quote(book: QuoteBook, path
     assert (alt_again.quote.option, first.quote.option) == (2, 2)
     # A repeat answers what the quote holds, as the first write did.
     assert again.values == made.values
-    assert sql(path, "SELECT COUNT(*) FROM quote_details") == [(2,)]
+    assert sql(store, "SELECT COUNT(*) FROM quote_details") == [(2,)]
 
 
 def test_a_key_reused_for_another_quote_or_person_is_refused(book: QuoteBook) -> None:
@@ -436,7 +447,7 @@ def test_text_of_spaces_alone_is_no_value(book: QuoteBook) -> None:
 
 
 def test_a_final_quote_takes_no_save_until_it_is_amended_with_a_reason(
-    book: QuoteBook, path: Path
+    book: QuoteBook, store: Target
 ) -> None:
     ready = save(book, make(book))
     final = book.finalise("A-1", 1, version=ready.version, actor=ANA, release=RELEASE)
@@ -452,7 +463,7 @@ def test_a_final_quote_takes_no_save_until_it_is_amended_with_a_reason(
 
     assert amended.stage == "draft"
     assert sql(
-        path, "SELECT action, actor, reason FROM haute_activity WHERE action = 'amended'"
+        store, "SELECT action, actor, reason FROM haute_activity WHERE action = 'amended'"
     ) == [("amended", JO, "Broker asked for a lower excess")]
     assert save(book, amended).version == amended.version + 1
 
@@ -490,9 +501,11 @@ def test_a_change_over_a_version_moved_on_is_refused_naming_who_moved_it(book: Q
 # ── References and options ──────────────────────────────────────────────────
 
 
-def test_references_are_one_only_when_they_are_the_same_case_included(book: QuoteBook) -> None:
-    make(book, "ABC-1")
-    make(book, "abc-1")
+def test_references_are_one_only_when_they_are_the_same_case_included(
+    book: QuoteBook, store: Target
+) -> None:
+    upper = make(book, "ABC-1")
+    lower = make(book, "abc-1")
     make(book, unicodedata.normalize("NFD", "café"))
 
     with pytest.raises(ReferenceTakenError) as taken:
@@ -501,6 +514,14 @@ def test_references_are_one_only_when_they_are_the_same_case_included(book: Quot
     for bad in (".", "..", "a/b", ""):
         with pytest.raises(QuoteStoreError):
             make(book, bad)
+    # Saving one leaves the other's rows as they were, whatever the engine's collation.
+    save(book, upper, values=values(t_policy=[{"c_region": "north", "c_drivers": "2"}]))
+    save(book, lower, values=values(t_policy=[{"c_region": "south", "c_drivers": "3"}]))
+    assert sql(
+        store,
+        "SELECT quote_reference, region, drivers FROM policy WHERE quote_reference "
+        "IN ('ABC-1', 'abc-1') ORDER BY region",
+    ) == [("ABC-1", "north", 2), ("abc-1", "south", 3)]
 
 
 def test_two_alternatives_made_at_once_take_two_options(book: QuoteBook) -> None:
@@ -604,7 +625,9 @@ def test_a_load_that_raced_a_change_reads_the_quote_again(
         book.read("A-1", 1)
 
 
-def test_a_preset_row_whose_value_is_no_longer_allowed_is_named_as_dropped(path: Path) -> None:
+def test_a_preset_row_whose_value_is_no_longer_allowed_is_named_as_dropped(
+    store: Target,
+) -> None:
     def perils_form(options: list[str]) -> FormSpec:
         return with_quote_details(
             FormSpec.model_validate(
@@ -628,16 +651,20 @@ def test_a_preset_row_whose_value_is_no_longer_allowed_is_named_as_dropped(path:
             )
         )
 
-    url = store_url(path)
-    prepare_store(url, perils_form(["AOP", "EQ"]), project=PROJECT)
-    with open_book(url, perils_form(["AOP", "EQ"]), project=PROJECT, haute_version=HAUTE) as wide:
+    url, sign_in = store.url, store.sign_in
+    prepare_store(url, perils_form(["AOP", "EQ"]), project=PROJECT, sign_in=sign_in)
+    with open_book(
+        url, perils_form(["AOP", "EQ"]), project=PROJECT, haute_version=HAUTE, sign_in=sign_in
+    ) as wide:
         typed = {
             "t_perils": [{"c_peril": "AOP", "c_limit": "100"}, {"c_peril": "EQ", "c_limit": "50"}]
         }
         wide.create(operation=op(), actor=ANA, values=typed, at=wide.now(), reference="P-1")
 
     # The allowed values are the form's rules, not its structure: the tables stay as they are.
-    with open_book(url, perils_form(["AOP"]), project=PROJECT, haute_version=HAUTE) as narrow:
+    with open_book(
+        url, perils_form(["AOP"]), project=PROJECT, haute_version=HAUTE, sign_in=sign_in
+    ) as narrow:
         opened = narrow.read("P-1", 1)
 
     assert opened.values["t_perils"] == [{"c_peril": "AOP", "c_limit": "100"}]

@@ -106,8 +106,12 @@ Out of scope, owned elsewhere:
   ignores): the pipeline resolved,
   validated and bundled as `haute deploy` does it, test quotes included, with the
   sheets, what the release is and its entry point, and, with `[deploy.container]
-  base_image` set, the Dockerfile that makes it the image's build context; `--image`
-  builds that image with Docker. A directory that is or holds the project or the working
+  base_image` set, the Dockerfile that makes it the image's build context, installing the
+  driver of each provider the release's environments declare, pinned as installed where it
+  builds (pyodbc and Microsoft's ODBC Driver 18 for `sqlserver`, psycopg for `postgresql`,
+  azure-identity for a Microsoft Entra ID sign-in), a driver not installed there refused
+  naming it; `--image` builds that image with Docker. A directory that is or holds the
+  project or the working
   directory, a file, and a directory holding anything but an earlier release are refused,
   as are a project without a workbench and sheets never saved; an earlier release is
   replaced only once the new one has built beside it, so a build that fails leaves it as
@@ -256,24 +260,3 @@ backend with `except Exception`: an unexpected implementation exception retains 
 original type and traceback, while target adapters are responsible for raising
 `DeployError` for expected operational failures such as missing credentials, unavailable
 Docker, or rejected build/push operations.
-
-## Approved change contract — `haute app` and the quote store
-
-This section specifies how `haute app build` changes as the underwriter app's quote store
-gains server databases; the [workbench
-contract](../workbench/high-level.md#approved-change-contract--the-quote-store-as-the-forms-own-tables)
-owns that behaviour. Every record is unresolved until its roadmap package lands and folds it
-into Behaviour above, and that package removes this section.
-
-- **Current limitation.** A release's image installs no database driver: a hosted
-  environment's database is a SQLite file.
-- **Unresolved target.** `haute app build` installs the drivers the providers of the
-  release's declared environments need, Microsoft's ODBC Driver 18 for `sqlserver`
-  ([WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql)).
-- **Non-goals.** `haute app serve` and `haute app migrate` take their flags as they do.
-- **Failure and compatibility semantics.** A build for a provider whose driver the image
-  cannot take is refused naming it.
-- **Acceptance evidence.** The providers' scenarios of the [workbench low-level
-  contract](../workbench/low-level.md#approved-change-contract--the-quote-store-as-the-forms-own-tables).
-- **Roadmap package.**
-  [WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql).

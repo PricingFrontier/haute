@@ -24,7 +24,7 @@ import json
 import os
 import threading
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -102,8 +102,8 @@ EASY_AUTH_ID = "x-ms-client-principal-id"
 EASY_AUTH_PRINCIPAL = "x-ms-client-principal"
 #: The claim types an app role is under when the principal names none.
 _ROLE_CLAIMS = frozenset({"roles", "http://schemas.microsoft.com/ws/2008/06/identity/claims/role"})
-#: What the app's quote store needs in the image past the scoring runtime; a server
-#: engine's driver joins them with that engine's backend.
+#: What the app's quote store needs in the image past the scoring runtime, whatever its
+#: environments; each declared environment's driver joins them (:func:`store_dependencies`).
 STORE_DEPENDENCIES = ("sqlalchemy", "alembic")
 #: The app's pages past its home, each the same page, which routes in the browser.
 APP_PAGES = ("/quotes/new", "/quotes/{reference}/{option}")
@@ -404,7 +404,8 @@ def build_release(
                     building,
                     haute_requirement=haute_requirement,
                     extra_files=(FORM_FILE, RELEASE_FILE),
-                    extra_dependencies=STORE_DEPENDENCIES,
+                    extra_dependencies=store_dependencies(config.store),
+                    sqlserver_odbc=any(each.provider == "sqlserver" for each in config.store),
                 )
             else:
                 write_bundle(resolved, building)
@@ -555,6 +556,20 @@ _MANIFEST_KEYS = (
 )
 
 
+def store_dependencies(environments: Iterable[StoreEnvironment]) -> tuple[str, ...]:
+    """What the app's quote store needs in a release's image past the scoring runtime, pinned
+    as installed here: SQLAlchemy and Alembic, the driver of each provider *environments*
+    declare, and azure-identity where one signs in through Microsoft Entra ID."""
+    from haute._quote_store._providers import ENTRA_PACKAGE, ENTRA_SIGN_INS, PROVIDERS
+
+    needed = list(STORE_DEPENDENCIES)
+    for environment in environments:
+        needed.extend(PROVIDERS[environment.provider].packages)
+        if environment.auth in ENTRA_SIGN_INS:
+            needed.append(ENTRA_PACKAGE)
+    return tuple(dict.fromkeys(needed))
+
+
 def hosted_store(release_dir: Path) -> StoreLocation | None:
     """The quote store the host points the release in *release_dir* at: the environment
     :data:`ENVIRONMENT_ENV` names, which the release must declare, at the database the host's
@@ -682,6 +697,8 @@ def create_app(
             project=release.pipeline_name,
             environment=store.environment,
             haute_version=release.haute_version,
+            sql_schema=store.sql_schema,
+            sign_in=store.sign_in,
         )
 
     # A pricing past its timeout cannot be stopped, so it keeps its place until it ends: the

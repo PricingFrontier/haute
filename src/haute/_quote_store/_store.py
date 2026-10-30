@@ -39,9 +39,11 @@ from sqlalchemy import (
     inspect,
     select,
 )
+from sqlalchemy.engine import make_url
 from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.types import TypeDecorator, TypeEngine
 
+from haute._quote_store._providers import SignIn, make_server_engine, missing_privileges
 from haute._quote_store._schema import STORE_TABLE, StoreSchema, live, store_schema, structure
 from haute._workbench_config import DEV_ENVIRONMENT, WorkbenchError
 from haute._workbench_form import QUOTE_DETAILS_ID, FormSpec
@@ -169,11 +171,12 @@ def store_url(path: Path) -> str:
     return f"sqlite:///{path.resolve().as_posix()}"
 
 
-def make_engine(url: str) -> Engine:
-    """An engine for the store at *url*, on SQLite with the store's transactions."""
+def make_engine(url: str, *, sign_in: SignIn | None = None) -> Engine:
+    """An engine for the store at *url*: on SQLite with the store's transactions, on a server
+    database signed in as *sign_in* says (:func:`._providers.make_server_engine`)."""
+    if make_url(url).get_backend_name() != "sqlite":
+        return make_server_engine(url, sign_in)
     engine = create_engine(url)
-    if engine.dialect.name != "sqlite":
-        return engine
     if sqlite3.sqlite_version_info < SQLITE_MINIMUM:
         engine.dispose()
         raise QuoteStoreError(
@@ -303,9 +306,11 @@ def _catalogue_differences(catalogue: Inspector, schema: StoreSchema) -> list[st
     """Each way the database's own catalogue differs from the tables *schema* derives, which
     every write and read of the store takes as they are: a table or a column missing, of
     another kind, taking a null where the store needs a value or none where it writes one,
-    keyed otherwise or not referring to its quote; and a column of those tables the store does
-    not write that takes no null, so no row could be inserted."""
-    present = set(catalogue.get_table_names())
+    keyed otherwise or not referring to its quote; a text the store compares exactly under
+    another collation, on SQL Server; and a column of those tables the store does not write
+    that takes no null, so no row could be inserted."""
+    owner = schema.metadata.schema
+    present = set(catalogue.get_table_names(schema=owner))
     details = schema.details.table.name
     differences: list[str] = []
     tables = [(stored.table, stored.form.id != QUOTE_DETAILS_ID) for stored in schema.tables]
@@ -314,7 +319,9 @@ def _catalogue_differences(catalogue: Inspector, schema: StoreSchema) -> list[st
         if table.name not in present:
             differences.append(f"the table {table.name} is missing")
             continue
-        reflected = {column["name"]: column for column in catalogue.get_columns(table.name)}
+        reflected = {
+            column["name"]: column for column in catalogue.get_columns(table.name, schema=owner)
+        }
         for column in table.columns:
             found = reflected.pop(column.name, None)
             if found is None:
@@ -325,6 +332,13 @@ def _catalogue_differences(catalogue: Inspector, schema: StoreSchema) -> list[st
                     f"{table.name}.{column.name} holds {_kind(found['type'])}, not "
                     f"{_kind(column.type)}"
                 )
+            collation = getattr(column.type.dialect_impl(catalogue.dialect), "collation", None)
+            if collation and getattr(found["type"], "collation", None) != collation:
+                differences.append(
+                    f"{table.name}.{column.name} compares under "
+                    f"{getattr(found['type'], 'collation', None) or 'another collation'}, not "
+                    f"{collation}, so two quotes could be taken for one"
+                )
             if bool(found["nullable"]) != bool(column.nullable):
                 takes = "takes a null" if found["nullable"] else "takes no null"
                 differences.append(f"{table.name}.{column.name} {takes}, unlike the store's")
@@ -334,7 +348,8 @@ def _catalogue_differences(catalogue: Inspector, schema: StoreSchema) -> list[st
                     f"{table.name}.{name} is no column of the release's and takes no null, so "
                     "no row of it could be saved"
                 )
-        keyed = list(catalogue.get_pk_constraint(table.name).get("constrained_columns") or [])
+        primary = catalogue.get_pk_constraint(table.name, schema=owner)
+        keyed = list(primary.get("constrained_columns") or [])
         wanted = [column.name for column in table.primary_key.columns]
         if keyed != wanted:
             differences.append(
@@ -344,25 +359,32 @@ def _catalogue_differences(catalogue: Inspector, schema: StoreSchema) -> list[st
             foreign.get("referred_table") == details
             and list(foreign.get("constrained_columns") or [])
             == ["quote_reference", "quote_option"]
-            for foreign in catalogue.get_foreign_keys(table.name)
+            for foreign in catalogue.get_foreign_keys(table.name, schema=owner)
         ):
             differences.append(f"{table.name} does not refer to its quote's {details} row")
     return differences
 
 
 def open_engine(
-    url: str, form: FormSpec, *, project: str, environment: str = DEV
+    url: str,
+    form: FormSpec,
+    *,
+    project: str,
+    environment: str = DEV,
+    sql_schema: str | None = None,
+    sign_in: SignIn | None = None,
 ) -> tuple[Engine, StoreSchema]:
-    """An engine on the database at *url* with *form*'s store schema, once the database holds
-    exactly the form's tables for *project* in *environment*, as ``haute_store`` records them
-    and as its own catalogue holds them; refused otherwise, naming each difference and what
-    resolves it."""
-    schema = store_schema(form)
-    engine = make_engine(url)
+    """An engine on the database at *url*, signed in as *sign_in* says, with *form*'s store
+    schema in the SQL schema *sql_schema*, once the database holds exactly the form's tables
+    for *project* in *environment*, as ``haute_store`` records them and as its own catalogue
+    holds them, and the sign-in holds every privilege the app needs on them; refused
+    otherwise, naming each difference and what resolves it."""
+    schema = store_schema(form, sql_schema=sql_schema)
+    engine = make_engine(url, sign_in=sign_in)
     try:
         with engine.connect() as connection:
             catalogue = inspect(connection)
-            names = set(catalogue.get_table_names())
+            names = set(catalogue.get_table_names(schema=sql_schema))
             _refuse_old_store(names)
             recorded = _recorded(connection, schema) if STORE_TABLE in names else None
             if recorded is None:
@@ -387,6 +409,14 @@ def open_engine(
                     + "; ".join(differences)
                     + f". {_resolve(environment)}",
                     differences=differences,
+                )
+            lacking = missing_privileges(connection, schema)
+            if lacking:
+                raise QuoteStoreMismatchError(
+                    "The identity the app signs in as lacks what the quote store needs: "
+                    + "; ".join(lacking)
+                    + ". Grant them to it, and start the app again.",
+                    differences=lacking,
                 )
     except Exception:
         engine.dispose()

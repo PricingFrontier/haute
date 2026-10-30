@@ -440,19 +440,29 @@ def test_a_plan_is_printed_as_the_sql_a_dba_runs_noting_its_restore_point(url: s
     retyped = form(table("policy", column("region"), column("value", "int")))
 
     made = plan_store(url, retyped, project=PROJECT, environment=TEST)
-    script = render_sql(
-        made,
-        retyped,
-        "postgresql",
-        project=PROJECT,
-        environment=TEST,
-        release="r1",
-        haute_version="1",
-        restore_point=None,
-    )
 
-    assert script.startswith("-- Steps only a restore reverses")
-    assert "ALTER TABLE policy ADD COLUMN" in script and "BIGINT" in script
-    assert "UPDATE haute_store SET" in script
+    def script(dialect: str, **where: str) -> str:
+        return render_sql(
+            made,
+            retyped,
+            dialect,
+            project=PROJECT,
+            environment=TEST,
+            release="r1",
+            haute_version="1",
+            restore_point=None,
+            **where,
+        )
+
+    # PostgreSQL changes the empty column in place; SQLite replaces it.
+    postgresql = script("postgresql", sql_schema="pricing")
+    assert postgresql.startswith("-- Steps only a restore reverses")
+    assert (
+        "ALTER TABLE pricing.policy ALTER COLUMN value TYPE BIGINT USING NULL::BIGINT" in postgresql
+    )
+    assert "UPDATE pricing.haute_store SET" in postgresql
+    sqlite = script("sqlite")
+    assert "ALTER TABLE policy ADD COLUMN haute_tmp_" in sqlite
+    assert "ALTER TABLE policy DROP COLUMN value" in sqlite
     # Nothing was applied.
     assert "haute_tmp" not in " ".join(columns(url, "policy"))

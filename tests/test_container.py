@@ -985,6 +985,21 @@ class TestGenerateDockerfile:
         df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
         assert df.startswith("FROM python:3.11-slim")
 
+    def test_installs_microsofts_odbc_driver_only_for_a_sqlserver_quote_store(self) -> None:
+        # A release whose quote store is on SQL Server connects through ODBC Driver 18, from
+        # Microsoft's repository for the base image's own distribution.
+        df = _generate_dockerfile("python:3.11-slim", 8080, _make_resolved(), sqlserver_odbc=True)
+
+        assert (
+            "https://packages.microsoft.com/config/${ID}/${VERSION_ID}/packages-microsoft-prod.deb"
+            in df
+        )
+        assert "ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 unixodbc" in df
+        # Each step continues the one RUN, and the driver is in before the Python runtime.
+        assert "RUN apt-get update \\\n && apt-get install" in df
+        assert df.index("msodbcsql18") < df.index("RUN pip install")
+        assert "msodbcsql18" not in _generate_dockerfile("python:3.11-slim", 8080, _make_resolved())
+
     def test_custom_port(self) -> None:
         resolved = _make_resolved()
         df = _generate_dockerfile("python:3.11-slim", 9090, resolved)

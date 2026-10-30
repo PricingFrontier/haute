@@ -87,6 +87,7 @@ def _write_release(
     spec: dict[str, Any] = FORM,
     edit_role: str | None = None,
     haute_version: str = "9.9.9",
+    environments: tuple[StoreEnvironment, ...] = (StoreEnvironment(TEST, "sqlite"),),
 ) -> Path:
     directory.mkdir(exist_ok=True)
     manifest = {
@@ -107,7 +108,7 @@ def _write_release(
         "azure-container-apps",
         edit_role,
         runtime=[],
-        environments=(StoreEnvironment(TEST, "sqlite"),),
+        environments=environments,
     )
     return directory
 

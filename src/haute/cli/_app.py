@@ -215,10 +215,12 @@ def handle_app_migrate(config: AppMigrateConfig) -> None:
         resolve_store,
     )
     from haute._quote_store._migrate import PROVIDER_DIALECTS
+    from haute._quote_store._providers import PROVIDERS
 
     release, form = _release_of(config.release_dir)
     if config.base_dir is not None and not (config.plan or config.sql):
         raise click.ClickException("--base plans with no database: give --plan or --sql with it.")
+    sql_schema: str | None = None
     with _said():
         declared = {each.name: each for each in release.store_environments()}
         if config.base_dir is not None:
@@ -226,12 +228,20 @@ def handle_app_migrate(config: AppMigrateConfig) -> None:
                 # Offline, no location is resolved: the environment is named and its provider read.
                 resolve_store(tuple(declared.values()), config.environment, {})
             _, base = _release_of(config.base_dir)
-            made = offline_plan(base, form)
+            made = offline_plan(
+                base, form, provider=PROVIDERS[declared[config.environment].provider]
+            )
         else:
             store = resolve_store(tuple(declared.values()), config.environment, os.environ)
+            sql_schema = store.sql_schema
             if config.plan or config.sql:
                 made = plan_store(
-                    store.url, form, project=release.pipeline_name, environment=store.environment
+                    store.url,
+                    form,
+                    project=release.pipeline_name,
+                    environment=store.environment,
+                    sql_schema=store.sql_schema,
+                    sign_in=store.sign_in,
                 )
             else:
                 made = prepare_store(
@@ -242,6 +252,8 @@ def handle_app_migrate(config: AppMigrateConfig) -> None:
                     haute_version=release.haute_version,
                     release=release.id,
                     restore_point=config.restore_point,
+                    sql_schema=store.sql_schema,
+                    sign_in=store.sign_in,
                 )
                 click.echo(render_text(made))
                 click.echo(
@@ -263,6 +275,7 @@ def handle_app_migrate(config: AppMigrateConfig) -> None:
                     release=release.id,
                     haute_version=release.haute_version,
                     restore_point=config.restore_point,
+                    sql_schema=sql_schema,
                 )
             )
 

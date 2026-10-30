@@ -673,7 +673,8 @@ builder on screen. With a quote store it is where they manage their quotes too.
 
 - To build the app's image, pin its base image as the container target does. The release is
   then the image's build context, and `haute app build --image <tag>` builds it with Docker;
-  the image installs the scoring runtime and the quote store's packages:
+  the image installs the scoring runtime and the quote store's packages, with the driver of
+  each database your environments name (below):
 
   ```toml
   [deploy.container]
@@ -682,15 +683,42 @@ builder on screen. With a quote store it is where they manage their quotes too.
 
 - The hosted app keeps quotes in the database of an environment you declare in
   `haute.toml`, as your schema's tables. Declare each environment by name with its database's
-  provider, `sqlite` so far; where the database is never goes in the file:
+  provider: `sqlserver` (SQL Server 2019 and later, Azure SQL Database and Azure SQL Managed
+  Instance), `postgresql` (PostgreSQL, Azure Database for PostgreSQL, Amazon RDS and Aurora,
+  Cloud SQL and Databricks Lakebase) or `sqlite` (a file). A server database also says how
+  the app signs in, `auth`, naming the environment variable that holds each thing it needs,
+  never the value; where the database is never goes in the file:
 
   ```toml
   [workbench.store.test]
-  provider = "sqlite"
+  provider = "sqlserver"
+  auth = "managed-identity"
+
+  [workbench.store.prod]
+  provider = "sqlserver"
+  auth = "service-principal"
+  tenant_id_env = "QUOTES_TENANT_ID"
+  client_id_env = "QUOTES_CLIENT_ID"
+  client_secret_env = "QUOTES_CLIENT_SECRET"
   ```
 
-  The host names the environment in `HAUTE_ENVIRONMENT` and says where its database is in
-  `HAUTE_STORE_DATABASE` (the file's path) or `HAUTE_STORE_URL` (a whole connection URL).
+  | `auth` | Signs in with | Names |
+  |---|---|---|
+  | `managed-identity` | The app's managed identity, through Microsoft Entra ID | `client_id_env` for a user-assigned identity; none for the system-assigned one |
+  | `service-principal` | A service principal, through Microsoft Entra ID | `tenant_id_env`, `client_id_env` and `client_secret_env` |
+  | `password` | A database login | `username_env` and `password_env` |
+
+  On `postgresql`, `managed-identity` and `service-principal` also name `username_env`, the
+  role your IT team mapped the identity to.
+
+  The host names the environment in `HAUTE_ENVIRONMENT` and says where its database is: on a
+  server, `HAUTE_STORE_SERVER` (as SQL Server's or PostgreSQL's own clients take it, such as
+  `tcp:quotes.database.windows.net,1433` or `quotes.postgres.database.azure.com:5432`) and
+  `HAUTE_STORE_DATABASE`, or `HAUTE_STORE_URL` (a whole connection URL with no sign-in in
+  it), and, optionally, `HAUTE_STORE_SCHEMA`, the SQL schema the tables are in, so test and
+  prod can share a database; for `sqlite`, `HAUTE_STORE_DATABASE` (the file's path) or
+  `HAUTE_STORE_URL`. Install `haute[sqlserver]` or `haute[postgresql]` wherever you build
+  the release or run `haute app migrate`, as the image installs the versions installed there.
   Without an environment named the app keeps nothing, says so, and prices its one quote as
   `PREVIEW`, option 1. The app does not start on a database that does not hold its release's
   tables: `haute app migrate --environment test` brings the database to the release built in
@@ -699,7 +727,10 @@ builder on screen. With a quote store it is where they manage their quotes too.
   the DROP statement for your IT team, and refuses, before it changes anything, a change to a
   column or table that holds values. `--plan` prints what it would do, `--sql` the SQL your IT
   team can run instead, and a change only a restore can undo needs `--restore-point`, naming
-  the backup.
+  the backup. The migrate's identity needs to create and alter tables in the schema. The
+  app's needs to read, insert, update and delete in the form's tables, to read and insert in
+  haute_activity and to read haute_store; the app does not start without them, naming each
+  permission it lacks.
 - The app prices four quotes at once; set `HAUTE_APP_PRICING_WORKERS` to change that. A
   pricing that runs past 60 seconds is answered as timed out but keeps its place until it
   ends, and while every place is taken a quote is refused as busy, to be priced again in a

@@ -186,7 +186,7 @@ orphaned halves).
   every mutation at the tool boundary, so readiness reports `mutations_enabled: false`
   with a fixed reason naming `[assistant.egress].max_sensitivity` and stating that it
   denies project reads and edits; the Git state is not consulted for that reason.
-- **`ProviderEvent`** (internal union, `_providers.py`): `TextDelta(text)`,
+- **`ProviderEvent`** (internal union, `src/haute/assistant/_providers.py`): `TextDelta(text)`,
   `ToolCallRequest(id, name, arguments)` — emitted only once a call's streamed argument
   fragments have been fully accumulated and JSON-parsed; several calls in one provider turn
   are emitted in stream order — `TurnStop(reason: "end" | "tool_use", usage)`,
@@ -225,7 +225,7 @@ orphaned halves).
   `AssistantSession.build_plan` like the evidence ledger but persisted. Every change
   replaces `current` with a new snapshot, and an operation that changes nothing keeps the
   same object.
-- **`AssistantProviderError(HauteError)`** (`_providers.py`): hand-authored message carrying
+- **`AssistantProviderError(HauteError)`** (`src/haute/assistant/_providers.py`): hand-authored message carrying
   provider name and a classified failure such as `authentication`, `rate_limit`,
   `connection`, `status`, `stream`, `dependency`, `malformed_stream`, `truncated`, or
   `filtered` — never the raw provider response body.
