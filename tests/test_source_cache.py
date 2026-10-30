@@ -1102,21 +1102,60 @@ def test_a_part_a_reader_holds_open_defers_retirement_to_the_next_sweep(
     assert store.status(identity).state == ("ready" if retirement == "refresh" else "missing")
 
 
-def test_a_retired_directory_left_behind_is_swept_when_a_process_opens_the_store(
-    tmp_path: Path,
+def test_a_retired_directory_whose_delete_failed_is_swept_when_a_process_opens_the_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The rename took the generation out of selection; its files go at the next start."""
     store = SourceCacheStore(tmp_path)
     identity = _identity(path="swept.parquet")
     store.build(identity, _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()), context=_context())
-    leftover = tmp_path / store.identity_path(identity).relative_to(tmp_path) / ".retired-0123abcd"
-    leftover.mkdir()
-    (leftover / "part-00000.parquet").write_bytes(b"its delete failed")
+    identity_dir = tmp_path / store.identity_path(identity).relative_to(tmp_path)
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        source_cache_module.logger, "warning", lambda event, **_fields: warnings.append(event)
+    )
+    with monkeypatch.context() as undeletable:
+        undeletable.setattr(
+            "haute._source_cache.shutil.rmtree", lambda path, ignore_errors=False: None
+        )
+        store.clear(identity)
+    [leftover] = identity_dir.glob(".retired-*")
+    assert warnings == ["source_cache_retired_delete_failed"]
+    assert store.status(identity).state == "missing"
+    # Named like one, but not a retired directory: not the sweep's to remove.
+    stray = identity_dir / ".retired-notes.txt"
+    stray.write_text("kept", encoding="utf-8")
     SourceCacheStore._coordination_by_root.clear()  # a new process
 
     SourceCacheStore(tmp_path)
 
     assert not leftover.exists()
-    assert store.status(identity).state == "ready"
+    assert stray.read_text(encoding="utf-8") == "kept"
+
+
+def test_a_generation_removed_while_it_is_retired_counts_as_retired(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another actor deleting a generation between its listing and its rename is no error."""
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="raced.parquet")
+    generation = store.build(
+        identity, _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()), context=_context()
+    )
+    holders = store._has_live_holders_locked
+
+    def removed_meanwhile(generation_dir: Path) -> bool:
+        held = holders(generation_dir)
+        shutil.rmtree(generation_dir)
+        return held
+
+    monkeypatch.setattr(store, "_has_live_holders_locked", removed_meanwhile)
+
+    store.clear(identity)
+
+    assert not generation.directory.exists()
+    assert not list(store.identity_path(identity).glob(".retired-*"))
+    assert store.status(identity).state == "missing"
 
 
 def test_reconcile_keeps_a_generation_this_process_leases(tmp_path: Path) -> None:

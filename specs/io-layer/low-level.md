@@ -1007,8 +1007,10 @@ failure sections above are the maintained answers.
   reads as missing, a current lease raises `FileNotFoundError` and holds nothing, and a build
   replaces it. A refresh or clear while a reader holds a part open (Windows' refusals of the
   rename and the delete, simulated) leaves the superseded generation whole and raises nothing,
-  and the next retirement removes it; a retired directory left behind is swept when a process
-  opens the store.
+  and the next retirement removes it. A retirement whose delete fails logs
+  `source_cache_retired_delete_failed` and leaves its renamed directory, which the next
+  process's sweep removes while leaving a stray file named like one; a generation another
+  actor removes while it is being retired counts as retired.
 - `tests/test_input_providers.py` covers direct-Parquet and offline snapshot reads,
   provider identities, execution-lifetime leases, SQLite empty/mixed storage classes,
   typed conversion failures, missing database rejection, and the inferred schema tier:

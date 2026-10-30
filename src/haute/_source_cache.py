@@ -1250,9 +1250,8 @@ class SourceCacheStore:
                     return
                 del self._leases[key]
             generation_dir = self.identity_path(identity) / "generations" / generation_id
-            token = self._coordination.token
-            if token is not None:
-                (generation_dir / f"{_LEASE_PREFIX}{token}").unlink(missing_ok=True)
+            # The acquisition that took this lease made the process's token.
+            (generation_dir / f"{_LEASE_PREFIX}{self._own_token()}").unlink(missing_ok=True)
             retired.extend(self._retire_unleased_locked(identity))
 
     def retire_unleased(self, identity: SourceCacheIdentity) -> None:
