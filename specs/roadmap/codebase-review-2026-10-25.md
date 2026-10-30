@@ -388,23 +388,21 @@ three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`);
 browser contract (`API-R03`); the cwd-dependent resolvers in the routes and the
 parser (`PCFG-R04`), editor state inside the config (`PCFG-R08`), the per-type
 validators and branches (`PCFG-R07`, `PCFG-R09`); name-violation reporting
-(`NAME-09`); the instance mechanism (`SUB-R01`); the test-only config helpers and
+(`NAME-09`); the test-only config helpers and
 event-bus hooks (`ENGQ-R01`); the optimiser's unshown solve-memory forecast (`OPT-W02`) and its frontier
 points without convergence traces (`OPT-PC04`); the optimiser's job registries
 not cancelled at shutdown (`ROAD-WORKER-06`); the test-only
 `_compute_schema_hash` and the training facade (`ENGQ-R01`); fits that exceed
 their budget
 (`MOD-M01`, `MOD-M02`); the trace route's status by message prefix and its
-sanitized 500 for a node failure (`API-R06`); two trace inconsistencies that
-vanish with node-level instances (`SUB-R01`); the git routes' and the
+sanitized 500 for a node failure (`API-R06`); the git routes' and the
 assistant's current-directory project root (`PCFG-R04`); the Databricks client
 factory's and the save service's `HTTPException`s (`API-R02`); the assistant's
 own containment comparisons (`SBX-R01`); the assistant catalog's hand tables and
 key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
 (`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the API
 Input's supervised build (`IO-R08`), the Edge Join as a boundary (`EXEC-R15`)
-and Recover's `how="asof"` (`PCFG-R13`); node-level instances and their
-rewriters (`SUB-R01`), the Explore routes' `ParseError` and the submodel route's
+and Recover's `how="asof"` (`PCFG-R13`); the Explore routes' `ParseError` and the submodel route's
 400 (`API-R06`), the pivot registry at shutdown (`ROAD-WORKER-06`); the
 browser's hand-written contract mirrors (`API-R03`), `hashConfig`'s exclusion
 list (`PCFG-R08`), the results store's optimiser logic (`FSH-R03`) and the dead

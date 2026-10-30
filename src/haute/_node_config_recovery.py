@@ -66,7 +66,6 @@ class ConfigRecoveryResult:
 
 
 _UNIVERSAL = {
-    "instanceOf": str,
     "inputMapping": dict[str, str],
     "selected_columns": list[str],
     "column_renames": dict[str, str],

@@ -23,7 +23,6 @@ import polars as pl
 import pytest
 
 from haute._native_memory_limit import native_memory_backend_scope
-from haute._trace_enrichment import _effective_node_code
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.trace import (
     TraceResult,
@@ -68,34 +67,6 @@ def _step_by_id(result: TraceResult, node_id: str) -> TraceStep:
 def _step_ids(result: TraceResult) -> list[str]:
     """Return ordered list of node_ids in the trace."""
     return [s.node_id for s in result.steps]
-
-
-@pytest.mark.parametrize(
-    ("config", "expected"),
-    [
-        (
-            {"code": ".filter(pl.col('x') > 0)", "instanceOf": "original"},
-            "df = df.with_columns(pl.col('x') + 1)",
-        ),
-        (
-            {"code": "df = df.with_columns(pl.col('x') * 2)", "instanceOf": "original"},
-            "df = df.with_columns(pl.col('x') * 2)",
-        ),
-        ({"code": ".filter(pl.col('x') > 0)", "instanceOf": "missing"}, ".filter(pl.col('x') > 0)"),
-        ({"code": "df = local", "instanceOf": "empty_original"}, ""),
-        ({"code": "df = ordinary"}, "df = ordinary"),
-    ],
-)
-def test_effective_node_code_is_the_single_instance_resolution_rule(
-    config: dict[str, object],
-    expected: str,
-) -> None:
-    node_map = {
-        "original": _transform_node("original", "df = df.with_columns(pl.col('x') + 1)"),
-        "empty_original": _transform_node("empty_original", ""),
-    }
-
-    assert _effective_node_code(config, node_map) == expected
 
 
 def test_an_input_a_node_computed_without_its_code_keeps_the_value_it_produced() -> None:

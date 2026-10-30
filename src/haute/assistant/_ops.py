@@ -265,16 +265,6 @@ def _free_code_form(node_type: NodeType) -> str:
     return json.dumps(new_logic_steps(node_type, "..."))
 
 
-def _refuse_instance_logic(node_id: str, original: str, field: str) -> NoReturn:
-    _invalid(
-        f"Node {node_id!r} is an instance of {original!r}: it runs {original!r}'s "
-        f"steps and code, so its own {field} would never be read. Edit {original!r} "
-        "instead; every instance of it follows.",
-        where={"node": node_id, "field": field},
-        fix=f"Make the change on the original node {original!r}.",
-    )
-
-
 def _check_stepped_write(
     node_type: NodeType,
     node_id: str,
@@ -288,15 +278,9 @@ def _check_stepped_write(
     holding steps renders its ``code`` from them, so a ``code`` write would be
     overwritten and removing ``steps`` would switch it to code mode, an analyst
     action in the editor. A code-mode node with code would lose that code to a
-    step list, and converting code into steps is out of scope. An instance runs
-    its original's configuration, so its own logic would never be read.
+    step list, and converting code into steps is out of scope.
     """
 
-    original = written.get("instanceOf", (before or {}).get("instanceOf"))
-    if original:
-        for field in ("steps", "code"):
-            if field in written:
-                _refuse_instance_logic(node_id, str(original), field)
     if node_type not in STEPPED_NODE_TYPES:
         return
     label = STEPPED_SURFACE_LABELS[node_type]
@@ -433,14 +417,11 @@ def _unrendered_steps(
 def _palette_config_for(node_type: NodeType, config: Mapping[str, Any]) -> dict[str, Any]:
     """The palette config a new node starts from beneath the model's *config*.
 
-    An instance takes its configuration from its original, so it gets none. A
-    config selecting another branch than the palette's (the discriminants
+    A config selecting another branch than the palette's (the discriminants
     config recovery uses) keeps only the palette's ``steps``: the palette
     belongs to one branch and must not fill another's fields.
     """
 
-    if "instanceOf" in config:
-        return {}
     defaults = palette_default_config(node_type)
     branch = _DISCRIMINANTS.get(node_type)
     if branch is not None and branch[0] in config and config[branch[0]] != defaults.get(branch[0]):
@@ -821,8 +802,6 @@ def _apply_edit_steps(
         )
     label = STEPPED_SURFACE_LABELS[node_type]
     config = node.data.config
-    if original := config.get("instanceOf"):
-        _refuse_instance_logic(node_id, str(original), "steps")
     steps = config.get("steps")
     if not isinstance(steps, list):
         if str(config.get("code") or "").strip():
@@ -935,16 +914,13 @@ def _rewrite_consumer(
     *config* is *node*'s working copy and is changed in place. Returns the
     rewritten field identities and the fields a rename cannot follow: code is
     never rewritten, so a free-code step or code-mode ``code`` reading *old*
-    is returned for refusal. An instance's steps and code are its original's,
-    so only its own ``inputMapping`` is considered.
+    is returned for refusal.
     """
 
     changes: list[str] = []
     refused: list[str] = []
     steps = config.get("steps")
-    names_inputs = stepped_surface_allows_input_references(node.data.nodeType) and not config.get(
-        "instanceOf"
-    )
+    names_inputs = stepped_surface_allows_input_references(node.data.nodeType)
     if isinstance(steps, list) and names_inputs:
         try:
             validated = validate_polars_steps(steps)
@@ -1020,9 +996,7 @@ def _reconcile_rename(
 
     Consumers name an ordinary source's frame by its sanitised label, so each
     target of an outgoing edge has its structured references to the old input
-    rewritten (see :func:`_rewrite_consumer`), as do the ``inputMapping`` keys
-    of the target's instances. Code that reads the old name, and instances
-    naming the node itself through ``instanceOf``, raise
+    rewritten (see :func:`_rewrite_consumer`). Code that reads the old name raises
     :class:`RenameConsumersError`; a rewrite that would give a consumer two
     inputs of one name is an op error. Changes are ``<node>:<field>``
     identities. Nothing in *graph* is changed.
@@ -1061,23 +1035,6 @@ def _reconcile_rename(
             )
             changes.update(dict.fromkeys(f"{target_id}:{field}" for field in rewritten))
             refused.update(dict.fromkeys((target_id, field) for field in code_fields))
-            for instance in graph.nodes:
-                if instance.data.config.get("instanceOf") != target_id:
-                    continue
-                config = configs.setdefault(instance.id, dict(instance.data.config))
-                mapping = config.get("inputMapping")
-                if not isinstance(mapping, Mapping) or old_name not in mapping:
-                    continue
-                if new_name in mapping:
-                    _rename_collision(instance.id, new_name)
-                config["inputMapping"] = {
-                    new_name if logical == old_name else logical: current
-                    for logical, current in mapping.items()
-                }
-                changes[f"{instance.id}:inputMapping.{new_name}"] = None
-    for instance in graph.nodes:
-        if instance.data.config.get("instanceOf") == node.id:
-            refused[(instance.id, "instanceOf")] = None
     if refused:
         raise RenameConsumersError(node.id, new_id, tuple(refused))
     touched = {change.partition(":")[0] for change in changes}
@@ -1636,8 +1593,8 @@ class RenameConsumersError(AssistantOperationError):
         super().__init__(
             "rename_has_consumers",
             f"Cannot rename node {old_id!r} to {new_id!r}: a rename rewrites edges and "
-            "structured references but never code, and these consumers read it in code "
-            f"or name it through instanceOf: {listed}. {fix}",
+            "structured references but never code, and these consumers read it "
+            f"in code: {listed}. {fix}",
             where={"node": old_id},
             fix=fix,
         )
@@ -2087,12 +2044,11 @@ def _authored_config_projection(
     derived from them); any other node of a code-carrying type by its code as
     reparse extracts it. The projection is narrow on purpose: the save path
     legitimately normalises other fields, and editor-state keys
-    (``_steps_error``, ``_steps_discarded``) are derived. Other types and
-    instances, whose configuration is their original's, have none.
+    (``_steps_error``, ``_steps_discarded``) are derived. Other types have none.
     """
 
     kind = _EXTRACTION_KIND_BY_CODE_TYPE.get(node_type)
-    if kind is None or config.get("instanceOf"):
+    if kind is None:
         return None
     if is_stepped_config(node_type, config):
         return {"steps": config["steps"]}
@@ -3241,11 +3197,7 @@ def _validate_assistant_authored_graph(
     }
     for node_id in sorted(set(authored_added) | steps_changed):
         node = nodes_by_id.get(node_id)
-        if (
-            node is not None
-            and is_stepped_config(node.data.nodeType, node.data.config)
-            and not node.data.config.get("instanceOf")
-        ):
+        if node is not None and is_stepped_config(node.data.nodeType, node.data.config):
             _validate_assistant_authored_steps(result, node, nodes_by_id)
     for node_id in set(authored_added) | code_changed:
         node = nodes_by_id.get(node_id)

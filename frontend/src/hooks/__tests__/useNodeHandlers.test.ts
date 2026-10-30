@@ -114,14 +114,16 @@ describe("useNodeHandlers", () => {
   )
 
   it.each(["dataOutput"])(
-    "retains node-level instancing for the unproven type %s", async (nodeType) => {
+    "refuses Create Instance for Data Output without changing the graph", async (nodeType) => {
       const params = makeParams()
       params.graphRef.current = { nodes: [makeNode("original", nodeType)], edges: [] }
       const createWrappedNodeInstance = vi.fn()
       const { result } = renderHook(() => useNodeHandlers({ ...params, createWrappedNodeInstance }))
       await act(async () => { await result.current.handleCreateInstance("original") })
       expect(createWrappedNodeInstance).not.toHaveBeenCalled()
-      expect(params.setSelectedNode.mock.calls[0][0].data.config).toEqual({ instanceOf: "original" })
+      expect(params.setSelectedNode).not.toHaveBeenCalled()
+      expect(params.setNodes).not.toHaveBeenCalled()
+      expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/Data Output.*cannot be reused/)
     },
   )
 
@@ -451,28 +453,6 @@ describe("useNodeHandlers", () => {
     expect(params.setNodes).not.toHaveBeenCalled()
   })
 
-  it("handleCreateInstance creates an instance node with toast", async () => {
-    const params = makeParams()
-    params.resolveNodeIdentities = vi.fn(async ([candidate]) => [{
-      ...candidate!,
-      data: { ...candidate!.data, _functionName: "authoritative_instance" },
-    }])
-    const n1 = makeNode("n1", "dataOutput")
-    params.graphRef.current = { nodes: [n1], edges: [] }
-    const { result } = renderHook(() => useNodeHandlers(params))
-    await act(async () => {
-      await result.current.handleCreateInstance("n1")
-    })
-    expect(params.setNodes).toHaveBeenCalledOnce()
-    expect(params.setSelectedNode).toHaveBeenCalledOnce()
-    const newNode = params.setSelectedNode.mock.calls[0][0] as Node
-    expect(newNode.data.config).toEqual({ instanceOf: "n1" })
-    expect(newNode.data.label).toContain("instance")
-    expect(newNode.data._functionName).toBe("authoritative_instance")
-    const toasts = useToastStore.getState().toasts
-    expect(toasts[toasts.length - 1]).toMatchObject({ type: "info" })
-  })
-
   // An instance is a second node like any other, so the singleton rule that
   // handleDuplicateNode and the paste path enforce has to hold here too — the
   // toolbar's Instance button reaches every node type, not just submodels.
@@ -504,69 +484,6 @@ describe("useNodeHandlers", () => {
     })
     expect(params.setNodes).not.toHaveBeenCalled()
     expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/add another Source Switch instead/)
-  })
-
-  // Instancing an instance must produce a SIBLING, not a chain: resolveInstanceOriginal
-  // does no chain-walking, so a chained instanceOf would resolve the "original" to
-  // another pointer with no content of its own.
-  it("handleCreateInstance points a new instance at the original, not at the instance", async () => {
-    const params = makeParams()
-    const original = makeNode("polars_1", "dataOutput")
-    const existing = makeNode("polars_2", "dataOutput")
-    existing.data = { ...existing.data, config: { instanceOf: "polars_1" } }
-    params.graphRef.current = { nodes: [original, existing], edges: [] }
-    const { result } = renderHook(() => useNodeHandlers(params))
-    await act(async () => {
-      await result.current.handleCreateInstance("polars_2")
-    })
-    const newNode = params.setSelectedNode.mock.calls[0][0] as Node
-    expect(newNode.data.config).toEqual({ instanceOf: "polars_1" })
-  })
-
-  it.each([
-    "dangling",
-    "self-pointing",
-    "type-mismatched",
-    "chained",
-    "malformed",
-  ])("handleCreateInstance refuses %s ordinary-instance identity", (identity) => {
-    const params = makeParams()
-    const selected = makeNode("polars_2", "dataOutput", {
-      data: {
-        label: "Selected instance",
-        nodeType: "dataOutput",
-        config: {
-          instanceOf: identity === "self-pointing"
-            ? "polars_2"
-            : identity === "malformed" ? 42 : "polars_1",
-        },
-      },
-    })
-    const owner = makeNode(
-      "polars_1",
-      identity === "type-mismatched" ? "dataInput" : "dataOutput",
-      identity === "chained"
-        ? { data: { label: "Chained owner", nodeType: "dataOutput", config: { instanceOf: "polars_0" } } }
-        : {},
-    )
-    params.graphRef.current = {
-      nodes: ["dangling", "self-pointing", "malformed"].includes(identity)
-        ? [selected]
-        : [owner, selected],
-      edges: [],
-    }
-    const { result } = renderHook(() => useNodeHandlers(params))
-
-    act(() => {
-      result.current.handleCreateInstance("polars_2")
-    })
-
-    expect(params.setNodes).not.toHaveBeenCalled()
-    expect(params.setSelectedNode).not.toHaveBeenCalled()
-    expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
-      type: "error",
-      text: expect.stringMatching(/cannot create.*original/i),
-    })
   })
 
   it("creates a SUBMODEL occurrence without copying its shared definition", async () => {
@@ -841,7 +758,6 @@ describe("useNodeHandlers", () => {
       instanceOf: base.id,
     })
   })
-
 
   it("handleAutoLayout applies layout and toasts", async () => {
     vi.useFakeTimers()

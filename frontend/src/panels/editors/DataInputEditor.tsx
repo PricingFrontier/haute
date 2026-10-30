@@ -10,7 +10,6 @@ import type { OnReplaceConfig, OnUpdateConfig } from "./_shared"
 import { useSchemaFetch } from "../../hooks/useSchemaFetch"
 
 const INPUT_COMMON_KEYS = [
-  "instanceOf",
   "inputMapping",
   "selected_columns",
   "column_renames",

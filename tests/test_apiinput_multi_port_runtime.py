@@ -1321,7 +1321,7 @@ def test_a_multi_port_target_counts_its_bundle_collection_as_a_step(isolated_roo
 # ─── node instance after a multi-frame source (SUB-R06) ───────────
 
 
-def _instance_after_two_frames(config: dict[str, Any], *, wrapped: bool = True) -> PipelineGraph:
+def _instance_after_two_frames(config: dict[str, Any]) -> PipelineGraph:
     """The original reads the ``policies`` frame; its instance runs the same code on ``drivers``."""
     from haute.routes._submodel_ops import create_node_instance_graph
 
@@ -1341,19 +1341,6 @@ def _instance_after_two_frames(config: dict[str, Any], *, wrapped: bool = True) 
             GraphEdge(id="e_o", source="api", target="original", sourceHandle="policies"),
         ],
     )
-    if not wrapped:
-        plain.nodes.append(
-            GraphNode(
-                id="copy",
-                data=NodeData(
-                    label="copy",
-                    nodeType=NodeType.POLARS,
-                    config={"instanceOf": "original"},
-                ),
-            )
-        )
-        plain.edges.append(GraphEdge(id="e_c", source="api", target="copy", sourceHandle="drivers"))
-        return plain
     graph = create_node_instance_graph(
         plain, "original", "original", read_utility=lambda _: None
     ).graph
@@ -1430,44 +1417,6 @@ def test_node_instance_after_a_multi_frame_source_previews(
         assert original.row_count == 2
         assert [column.name for column in original.columns] == ["policy_id"]
         assert original.schema_warnings == []
-
-
-@pytest.mark.parametrize("make_config", [_single_port_config, _multi_port_config])
-@pytest.mark.parametrize(
-    ("source_handle", "binding_error"),
-    [(None, "sourceHandle"), ("nonexistent", "nonexistent")],
-)
-def test_node_instance_unbound_from_a_request_input_reports_its_binding(
-    isolated_root, make_config, source_handle: str | None, binding_error: str
-) -> None:
-    """An instance edge naming no frame fails as any consumer's does; no frame stands in.
-
-    Even a one-frame source lends its frame to no edge that names no table of
-    it, so the instance's inputs carry none of the original's columns.
-    """
-    data_path = isolated_root / "data.json"
-    data_path.write_text(json.dumps(_rating_records()))
-    config = make_config(data_path)
-    _build_cache_for(isolated_root, data_path, config)
-    graph = _instance_after_two_frames(config, wrapped=False)
-    graph = graph.model_copy(
-        update={
-            "edges": [
-                graph.edges[0],
-                GraphEdge(id="e_c", source="api", target="copy", sourceHandle=source_handle),
-            ]
-        }
-    )
-
-    results = execute_graph(graph)
-
-    assert results["original"].status == "ok", results["original"].error
-    copy = results["copy"]
-    assert copy.status == "error"
-    assert binding_error in (copy.error or "")
-    assert [(warning.column, warning.status) for warning in results["copy"].schema_warnings] == [
-        ("policy_id", "missing")
-    ]
 
 
 def test_haute_run_executes_a_node_instance_after_a_multi_frame_source(

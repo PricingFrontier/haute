@@ -118,12 +118,11 @@ def _step_summary(step: object) -> StepSummary:
 def node_authoring(node_type: NodeType, config: Mapping[str, Any]) -> Authoring | None:
     """The authoring facts of a stepped-type node; None for any other type.
 
-    An instance has none: its configuration is its original's. A step list is
-    judged as the saved config materialises it (`render_node_steps`), so
+    A step list is judged as the saved config materialises it (`render_node_steps`), so
     `incomplete` here is exactly a `_steps_error`.
     """
 
-    if node_type not in STEPPED_NODE_TYPES or config.get("instanceOf"):
+    if node_type not in STEPPED_NODE_TYPES:
         return None
     steps = config.get("steps")
     if isinstance(steps, list):

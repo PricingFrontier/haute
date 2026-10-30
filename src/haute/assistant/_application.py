@@ -782,7 +782,7 @@ def _prove_written_configs_parse(
 
     for node in graph.nodes:
         parse = _CONFIG_PARSERS.get(node.data.nodeType)
-        if parse is None or node.id not in node_ids or node.data.config.get("instanceOf"):
+        if parse is None or node.id not in node_ids:
             continue
         try:
             parse(dict(node.data.config))
@@ -808,11 +808,7 @@ def _prove_categorical_factors_band_text(
     saved = {node.id: node.data.config.get("factors") or [] for node in baseline.nodes}
     prepared: _PreparedGraph | None = None
     for node in graph.nodes:
-        if (
-            node.data.nodeType != NodeType.BANDING
-            or node.id not in node_ids
-            or node.data.config.get("instanceOf")
-        ):
+        if node.data.nodeType != NodeType.BANDING or node.id not in node_ids:
             continue
         written = [
             factor
@@ -873,7 +869,6 @@ def _prove_steps_survive_save(
         for node_id in node_ids
         if (node := nodes.get(node_id)) is not None
         and is_stepped_config(node.data.nodeType, node.data.config)
-        and not node.data.config.get("instanceOf")
     )
     if not stepped:
         return
@@ -987,9 +982,7 @@ def _prove_nodes_ready(
     written = sorted(
         node_id
         for node_id in node_ids
-        if (node := nodes.get(node_id)) is not None
-        and node.data.nodeType in ready_types
-        and not node.data.config.get("instanceOf")
+        if (node := nodes.get(node_id)) is not None and node.data.nodeType in ready_types
     )
     prepared: _PreparedGraph | None = None
     for node_id in written:

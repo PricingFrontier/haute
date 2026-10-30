@@ -960,26 +960,6 @@ describe("PipelineNode", () => {
 
   // ── Instance badge ─────────────────────────────────────────────────
 
-  it("shows Instance badge when config.instanceOf is set", () => {
-    renderNode({
-      label: "Instance Node",
-      nodeType: NODE_TYPES.POLARS,
-      config: { instanceOf: "base_transform" },
-    })
-    expect(screen.getByText("Instance")).toBeInTheDocument()
-  })
-
-  it("uses dashed border for instance nodes", () => {
-    const { container } = renderNode({
-      label: "Instance",
-      nodeType: NODE_TYPES.POLARS,
-      config: { instanceOf: "base" },
-    })
-    const nodeEl = container.querySelector(".rounded-xl") as HTMLElement
-    const rawStyle = nodeEl.getAttribute("style") || ""
-    expect(rawStyle).toContain("dashed")
-  })
-
   // ── Source switch mode badge ────────────────────────────────────────
 
   it("shows LIVE badge when active source is live", () => {
@@ -1202,13 +1182,4 @@ describe("PipelineNode", () => {
     expect(nodeEl.getAttribute("aria-label")).toContain("trace active")
   })
 
-  it("includes instance in aria-label when instanceOf set", () => {
-    renderNode({
-      label: "Instance Node",
-      nodeType: NODE_TYPES.POLARS,
-      config: { instanceOf: "base" },
-    })
-    const nodeEl = screen.getByRole("button")
-    expect(nodeEl.getAttribute("aria-label")).toContain("instance")
-  })
 })

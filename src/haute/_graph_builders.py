@@ -17,6 +17,7 @@ from haute._ast_helpers import (
     _function_body_source,
     _get_decorator_kwargs,
     _get_decorator_node_type,
+    reject_removed_node_decorator,
 )
 from haute._config_builder import _resolve_node_config
 from haute._graph_utils import _edge_id, resolve_input_mapping_names
@@ -129,6 +130,7 @@ def _resolve_node_skeleton(
     base_dir: Path | None,
 ) -> dict[str, Any]:
     """Resolve one skeleton into the strict builder's raw-node representation."""
+    reject_removed_node_decorator(skeleton.decorator)
     if skeleton.explicit_node_type is None:
         target = (
             skeleton.decorator.func
@@ -262,7 +264,6 @@ def _edge_param_names_for_node(node_info: dict[str, Any]) -> list[str]:
         node_type is None
         or not stepped_surface_allows_input_references(node_type)
         or not isinstance(config, dict)
-        or "instanceOf" in config
         or input_mapping is None
     ):
         return logical_params

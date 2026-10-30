@@ -19,24 +19,12 @@ from haute._config_io import (
     _normalise_loaded_config,
     reject_duplicate_keys_hook,
 )
-from haute._pipeline_repair import PipelineRepairError
 from haute._polars_steps import STEPPED_NODE_TYPES
 from haute._recovery_schemas import RecoveryFieldChange
 from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import NodeType
 from haute.errors import ConfigError
 from haute.schemas import PipelineEditorDocument, RecoveryPipelineNode
-
-
-class SharedInstanceError(PipelineRepairError):
-    """A shared node instance must be recovered through its owner."""
-
-    def __init__(self, owner: str) -> None:
-        super().__init__(
-            "recovery_conflict",
-            f"This is a shared node instance. Recover its owner {owner!r}.",
-        )
-        self.owner = owner
 
 
 def read_raw_node_settings(
@@ -64,8 +52,6 @@ def read_raw_node_settings(
     function = functions[0]
     decorator = function.decorator_list[0]
     kwargs = _get_decorator_kwargs(decorator)
-    if "of" in kwargs or (target.config or {}).get("instanceOf"):
-        raise SharedInstanceError(str(kwargs.get("of", (target.config or {}).get("instanceOf"))))
     if isinstance(decorator, ast.Call) and len({kw.arg for kw in decorator.keywords}) != len(
         decorator.keywords
     ):

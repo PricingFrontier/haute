@@ -51,7 +51,7 @@ from haute._execution_context import (
     FullTermTally,
     current_execution_context,
 )
-from haute._graph_utils import _sanitize_func_name, build_instance_mapping, edge_input_name
+from haute._graph_utils import _sanitize_func_name, edge_input_name
 from haute._io import _select_columns
 from haute._logging import get_logger
 from haute._node_apply import (
@@ -107,7 +107,6 @@ from haute._types import (
     GraphEdge,
     GraphNode,
     NodeType,
-    PipelineGraph,
     _Frame,
 )
 from haute._user_exec import _exec_user_code
@@ -201,46 +200,6 @@ def apply_source_scan(
 
 def _allow_empty_source_path(profile: str | None) -> bool:
     return profile in {None, ExecutionProfile.PREVIEW_EAGER.value}
-
-
-# ---------------------------------------------------------------------------
-# Resolve instance nodes
-# ---------------------------------------------------------------------------
-
-
-def resolve_instance_node(node: GraphNode, node_map: dict[str, GraphNode]) -> GraphNode:
-    """If *node* is an instance, return a merged node with the original's config.
-
-    The returned node keeps the instance's own id, label, and position but
-    uses the original node's ``nodeType`` and ``config`` (minus the
-    ``instanceOf`` key itself).  If the original cannot be found the
-    instance is returned unchanged.
-    """
-    config = node.data.config
-    ref = config.get("instanceOf")
-    if not ref or ref not in node_map:
-        return node
-    original = node_map[ref]
-    orig_config = {k: v for k, v in original.data.config.items() if k != "instanceOf"}
-    # Preserve instance-specific keys (inputMapping) that the UI sets
-    instance_keys = {k: v for k, v in config.items() if k in ("inputMapping",)}
-    merged_config = {**orig_config, "instanceOf": ref, **instance_keys}
-    merged_data = node.data.model_copy(
-        update={
-            "nodeType": original.data.nodeType,
-            "config": merged_config,
-        }
-    )
-    return node.model_copy(update={"data": merged_data})
-
-
-def resolve_instance_nodes(graph: PipelineGraph) -> PipelineGraph:
-    """Return *graph* with every instance node carrying its original's effective config."""
-    node_map = graph.node_map
-    resolved = [resolve_instance_node(node, node_map) for node in graph.nodes]
-    if all(new is old for new, old in zip(resolved, graph.nodes, strict=True)):
-        return graph
-    return graph.model_copy(update={"nodes": resolved})
 
 
 # ---------------------------------------------------------------------------
@@ -723,12 +682,10 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     _preamble_ext = dict(ctx.preamble_ns) if ctx.preamble_ns else {}
     if isinstance(config.get("steps"), list):
         # Steps address the other inputs by their edge names (the first is
-        # already df); an original never carries inputMapping beside them.
-        if _in_map is not None and not config.get("instanceOf"):
+        # already df); a stepped node never carries inputMapping beside them.
+        if _in_map is not None:
             raise ConfigError(STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE, node_id=ctx.node.id)
         names = set(_src_names)
-        if _orig_src:
-            names.update(build_instance_mapping(_orig_src, _src_names, _in_map))
         problem = stepped_code_problem(
             config, NodeType.EXTERNAL_FILE, step_input_names(NodeType.EXTERNAL_FILE, sorted(names))
         )
@@ -759,7 +716,6 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
                 dfs,
                 extra_ns=ens,
                 orig_source_names=_orig_src,
-                input_mapping=_in_map,
                 alias_first_input_as_df=True,
             )
 
@@ -1373,11 +1329,9 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         # ``code`` is already the rendering of ``steps`` (materialised by
         # ``NodeData``); validate the input references against the names the
         # code will execute with so an unknown input names its step.
-        if _in_map is not None and not config.get("instanceOf"):
+        if _in_map is not None:
             raise ConfigError(STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE, node_id=ctx.node.id)
         names = set(_src_names)
-        if _orig_src:
-            names.update(build_instance_mapping(_orig_src, _src_names, _in_map))
         problem = stepped_code_problem(
             config, NodeType.POLARS, step_input_names(NodeType.POLARS, sorted(names))
         )
@@ -1397,7 +1351,6 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
                 dfs,
                 extra_ns=_preamble,
                 orig_source_names=_orig_src,
-                input_mapping=_in_map,
             )
 
         def transform_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
@@ -1554,7 +1507,7 @@ def _build_edge_join(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         return cast(_Frame, execute_edge_join(dfs[base_index], dfs[join_index], ctx.config))
 
     # What a caller writing this join in chunks needs to rebuild it exactly:
-    # the roles and the instance-resolved config this builder joins with.
+    # the roles and config this builder joins with.
     edge_join_fn.edge_join_roles = (base_index, join_index)  # type: ignore[attr-defined]
     edge_join_fn.edge_join_config = dict(ctx.config)  # type: ignore[attr-defined]
     return ctx.func_name, edge_join_fn, False
@@ -1618,7 +1571,7 @@ def _build_node_fn(
     row_limit: the interactive row limit. Only Model Score consumes it, to
         score row-locally; no source applies it, so every other node's frame is
         the full data a consumer pulls.
-    node_map: full graph node_map — used to resolve ``instanceOf`` references.
+    node_map: full graph node_map used by graph-aware builders.
     source: the active execution source (``"live"`` for eager scoring,
         anything else for batched parquet scoring).
     reuse_loaded_model: opts modelScore nodes into scorer-instance model
@@ -1627,10 +1580,6 @@ def _build_node_fn(
         builder context so a builder that would otherwise materialise at
         build time (OUTPUT) returns a declared-schema empty frame instead.
     """
-    # Resolve instance → use original's config/nodeType
-    if node_map:
-        node = resolve_instance_node(node, node_map)
-
     reject_removed_config_keys(node.data.nodeType, node.data.config)
 
     if source_names is None:

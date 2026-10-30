@@ -84,9 +84,9 @@ class TestValidKeysRegistry:
         )
 
     def test_universal_keys_included(self):
-        """instanceOf and inputMapping should be valid for every type."""
+        """Input mappings are universal; reuse identity belongs to occurrences only."""
         for nt, keys in VALID_KEYS.items():
-            assert "instanceOf" in keys, f"instanceOf missing from {nt}"
+            assert ("instanceOf" in keys) == (nt == NodeType.SUBMODEL)
             assert "inputMapping" in keys, f"inputMapping missing from {nt}"
 
     @pytest.mark.parametrize(
@@ -145,7 +145,7 @@ class TestUnrecognizedConfigKeys:
         assert (
             unrecognized_config_keys(
                 NodeType.POLARS,
-                {"code": "x", "inputMapping": {"a": "b"}, "instanceOf": "other"},
+                {"code": "x", "inputMapping": {"a": "b"}},
             )
             == []
         )

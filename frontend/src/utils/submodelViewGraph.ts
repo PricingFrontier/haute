@@ -44,8 +44,7 @@ export function captureParentOutputState(
       if (occurrences.has(node.id)) {
         return [{ id: node.id, data: { _sourceHandleInputNames: node.data._sourceHandleInputNames } }]
       }
-      const config = node.data.config as Record<string, unknown> | undefined
-      if (consumers.has(node.id) || (typeof config?.instanceOf === "string" && consumers.has(config.instanceOf))) {
+      if (consumers.has(node.id)) {
         return [{ id: node.id, data: { config: node.data.config } }]
       }
       return []

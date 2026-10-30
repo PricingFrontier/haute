@@ -37,9 +37,6 @@ _PLAYWRIGHT_CI_RETRY_BUDGET = 2
 # path, enclosing scope, debt kind, reason text, and normalized AST source. A new
 # skip/xfail/importorskip, or a changed reason, must be accepted deliberately.
 _EXPECTED_DEBT_IDS = {
-    # SUB-R01 phase 4: these types retain node-level instances until the full
-    # one-node proof passes. Strict xfails require removing the debt when fixed.
-    "e1ad12ebfe773e79",  # Data Output: shared destination is refused.
     # Native Windows HighQoS requires the real Windows process API. The
     # strong-revision cache witness requires a filesystem exposing that proof;
     # unsupported filesystems are covered separately by cache-bypass tests.

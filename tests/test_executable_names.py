@@ -142,13 +142,6 @@ _RULE_CASES = [
         id="input-mapping-alias",
     ),
     pytest.param(
-        _consumes(
-            _node("claims"), _node("copy", instanceOf="rated", inputMapping={"pl": "claims"})
-        ),
-        [("reserved_input", "pl")],
-        id="instance-input-mapping",
-    ),
-    pytest.param(
         _with_submodel(
             _node("child"), input_ports=[{"name": "pl", "targets": [{"nodeId": "child"}]}]
         ),
@@ -324,9 +317,7 @@ def test_execution_refuses_an_input_mapping_alias_that_is_reserved() -> None:
     frame = pl.LazyFrame({"x": [1]})
 
     with pytest.raises(ExecutionError, match="An input is named `pl`"):
-        _exec_user_code(
-            "df = claims", ["claims"], (frame,), orig_source_names=["pl"], input_mapping=None
-        )
+        _exec_user_code("df = claims", ["claims"], (frame,), orig_source_names=["pl"])
 
 
 @pytest.mark.parametrize(
@@ -362,3 +353,15 @@ def test_one_message_lists_every_violation() -> None:
     message = format_name_violations(executable_name_violations(_labels("pl", "max")))
 
     assert message.count("\n  - ") == 2
+
+
+def test_execution_preserves_swapped_logical_input_bindings() -> None:
+    first = pl.LazyFrame({"value": [10]})
+    second = pl.LazyFrame({"value": [20]})
+    result = _exec_user_code(
+        "df = pl.concat([right, left])",
+        ["left", "right"],
+        (first, second),
+        orig_source_names=["right", "left"],
+    )
+    assert result.collect().to_dicts() == [{"value": 10}, {"value": 20}]

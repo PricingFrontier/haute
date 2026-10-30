@@ -43,7 +43,6 @@ import {
   type DrilledOccurrenceIdentity,
 } from "../utils/submodelRuntimeTarget"
 import { executionWarningNodeIds } from "../utils/executionDiagnostics"
-import { instanceOriginal } from "../utils/instanceOriginal"
 import { refreshRereadInput } from "../utils/inputSnapshotSource"
 import { newPreviewRequestId, pollPreviewProgress } from "./previewProgressPoller"
 import { apiErrorMessage, isStaleRevision } from "../api/errors"
@@ -266,7 +265,6 @@ function canPreviewNode(node: Node): boolean {
     nodeData(node)._loadAvailability !== "blocked" &&
     !NON_EXECUTABLE_PREVIEW_TYPES.has(effectiveNodeType(node))
 }
-
 
 /** One preview whose inputs are prepared before it runs. */
 interface PreviewInputTarget {
@@ -562,15 +560,7 @@ export default function usePipelineAPI({
         ),
       )
       const wanted = new Set(answers.flatMap((answer) => answer.input_node_ids))
-      const byId = new Map(graph.nodes.map((graphNode) => [graphNode.id, graphNode]))
-      // An instance reads its original's input, so it prepares that config.
-      const effective = new Map<string, (typeof graph.nodes)[number]>()
-      for (const graphNode of graph.nodes) {
-        if (!wanted.has(graphNode.id)) continue
-        const original = instanceOriginal(graphNode, byId)
-        effective.set(original.id, original)
-      }
-      return ensureSnapshotsForNodes([...effective.values()], signal)
+      return ensureSnapshotsForNodes(graph.nodes.filter((node) => wanted.has(node.id)), signal)
     },
     [ensureSnapshotsForNodes],
   )
@@ -1170,7 +1160,7 @@ export default function usePipelineAPI({
       // No upstream gaps — just preview the selected node directly. An input
       // has no upstream, so this is where the frame's Refresh re-reads a
       // structured Quote Input's source first.
-      const rereadInput = options.rereadSource ? refreshRereadInput(node, nodeMap) : null
+      const rereadInput = options.rereadSource ? refreshRereadInput(node) : null
       fetchPreviewImmediate(node, requestId, { bypassCache: true, rereadInput: rereadInput ?? undefined })
       return
     }
@@ -1463,7 +1453,7 @@ export default function usePipelineAPI({
     }
     const { nodes: n, edges: e } = graphRef.current
     // Warn about broken config references before saving
-    const refWarnings = validateConfigRefs(n, submodelsRef.current)
+    const refWarnings = validateConfigRefs(n)
     if (refWarnings.length > 0) {
       addToast("warning", formatConfigRefWarnings(refWarnings))
     }

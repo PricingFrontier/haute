@@ -253,11 +253,7 @@ def _edge_bindings(scoped: PipelineGraph) -> dict[str, list[tuple[str, str]]]:
 
 
 def _mapping_bindings(node: GraphNode) -> Iterator[tuple[str, str]]:
-    """Every logical name ``inputMapping`` binds in place of an edge-derived one.
-
-    An instance's mapping binds its original's names, which the original's
-    own edges already give.
-    """
+    """Every logical name ``inputMapping`` binds in place of an edge-derived one."""
     mapping = node.data.config.get("inputMapping")
     if isinstance(mapping, dict):
         for logical, current in mapping.items():

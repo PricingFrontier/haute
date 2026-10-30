@@ -177,7 +177,9 @@ occurrences of one definition each run its nodes under their own names.
 replaced it, and for anything else that is not a `haute.Submodel`, such as the imported
 module itself, naming `<module>.submodel`; a module that defines no `submodel` fails with
 Python's own `AttributeError` when the pipeline file is imported.
-There are no node-level instances: `Pipeline` has no `instance` decorator, and the parser
+There are no node-level instances: `Pipeline` and `Submodel` have no `instance` decorator.
+Their live node decorators also refuse the removed `of` and `instanceOf` keywords with
+the same remediation. The parser
 refuses `@pipeline.instance(...)` and an `of=` keyword on any node decorator with a message
 naming the replacement. A node is reused through a one-node submodel, the node in its own
 `modules/<name>.py`, registered once for the original and once per

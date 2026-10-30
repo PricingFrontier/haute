@@ -642,7 +642,7 @@ across a rewire.
   of the import when no other registration uses it. No recovery action rewrites any of them.
 - Save refuses with `400` a graph whose definition file is not a `modules/<name>.py` module,
   before writing anything.
-- Create Instance on a document-wide singleton, a Source Switch, a node in a
+- Create Instance on a document-wide singleton, a Source Switch, a Data Output, a node in a
   drilled definition or a node that does not exist is refused before any
   transform: `400` from `POST /api/submodel/instance` with the reason, or the
   editor's visible refusal before a request. The route shares create's

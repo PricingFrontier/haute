@@ -172,7 +172,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "polars-node-clarity",
     "sandbox-security",
     "server-api",
-    "submodels",
     "t-boost",
     "tracing",
     "workbench",

@@ -319,6 +319,7 @@ def test_node_instance_wraps_in_place_without_writing(client: TestClient, tmp_pa
         "output",
         "workbenchOutput",
         "liveSwitch",
+        "dataOutput",
         "drilled",
     ],
 )

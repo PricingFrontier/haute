@@ -3548,89 +3548,6 @@ def test_incomplete_steps_fail_at_run_time_naming_the_step(tmp_path: Path) -> No
     assert "Step 1: Unknown input 'policies'; connected inputs: quotes." in str(results["u"].error)
 
 
-def test_instance_of_stepped_transform_executes_with_implicit_mapping(tmp_path: Path) -> None:
-    quotes, rates = _frames(tmp_path)
-    alt_q = tmp_path / "alt_quotes.parquet"
-    alt_r = tmp_path / "alt_rates.parquet"
-    pl.DataFrame({"premium": [10000.0], "region": ["south"], "north": ["z"]}).write_parquet(alt_q)
-    pl.DataFrame({"region": ["south"], "rate": [9.0]}).write_parquet(alt_r)
-    original = _stepped("joiner", GOLDEN_STEPS)
-    instance = GraphNode(
-        id="joiner_inst",
-        data=NodeData(label="joiner_inst", nodeType="polars", config={"instanceOf": "joiner"}),
-    )
-    graph = PipelineGraph(
-        nodes=[
-            quotes,
-            rates,
-            original,
-            _ready_source("alt_quotes", alt_q),
-            _ready_source("alt_rates", alt_r),
-            instance,
-        ],
-        edges=[
-            make_edge("quotes", "joiner"),
-            make_edge("rates", "joiner"),
-            make_edge("alt_quotes", "joiner_inst"),
-            make_edge("alt_rates", "joiner_inst"),
-        ],
-    )
-    results = execute_graph(
-        graph, target_node_id="joiner_inst", execution_context=_capped_context()
-    )
-    assert results["joiner_inst"].status == "ok", results["joiner_inst"].error
-    assert results["joiner_inst"].preview[0]["band"] == "high"
-
-
-def test_explicit_instance_mapping_round_trips_and_executes(tmp_path: Path) -> None:
-    quotes, rates = _frames(tmp_path)
-    alt_q = tmp_path / "other_q.parquet"
-    alt_r = tmp_path / "other_r.parquet"
-    pl.DataFrame({"premium": [10000.0], "region": ["south"], "north": ["z"]}).write_parquet(alt_q)
-    pl.DataFrame({"region": ["south"], "rate": [9.0]}).write_parquet(alt_r)
-    original = _stepped("joiner", GOLDEN_STEPS)
-    instance = GraphNode(
-        id="joiner_inst",
-        data=NodeData(
-            label="joiner_inst",
-            nodeType="polars",
-            config={
-                "instanceOf": "joiner",
-                "inputMapping": {"quotes": "other_q", "rates": "other_r"},
-            },
-        ),
-    )
-    graph = PipelineGraph(
-        nodes=[
-            quotes,
-            rates,
-            original,
-            _ready_source("other_q", alt_q),
-            _ready_source("other_r", alt_r),
-            instance,
-        ],
-        edges=[
-            make_edge("quotes", "joiner"),
-            make_edge("rates", "joiner"),
-            make_edge("other_q", "joiner_inst"),
-            make_edge("other_r", "joiner_inst"),
-        ],
-    )
-    code = graph_to_code(graph, pipeline_name="main")
-    _write_sidecars(tmp_path, graph)
-    parsed = parse_pipeline_source(code, _base_dir=tmp_path)
-    inst = next(n for n in parsed.nodes if n.id == "joiner_inst")
-    assert inst.data.config["instanceOf"] == "joiner"
-    assert inst.data.config["inputMapping"] == {"quotes": "other_q", "rates": "other_r"}
-    orig = next(n for n in parsed.nodes if n.id == "joiner")
-    assert orig.data.config["steps"] == GOLDEN_STEPS
-    results = execute_graph(
-        parsed, target_node_id="joiner_inst", execution_context=_capped_context()
-    )
-    assert results["joiner_inst"].status == "ok", results["joiner_inst"].error
-    assert results["joiner_inst"].preview[0]["band"] == "high"
-
-
 def test_stepped_original_rejects_input_mapping(tmp_path: Path) -> None:
     quotes, rates = _frames(tmp_path)
     node = _stepped("t", [source()], inputMapping={"quotes": "quotes"})
@@ -4154,6 +4071,12 @@ def test_collect_node_configs_writes_polars_sidecar_only_with_steps() -> None:
 
 @pytest.fixture()
 def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from haute._git import set_working_branch
+    from tests._git_helpers import init_repo
+
+    init_repo(tmp_path)
+    (tmp_path / "haute.toml").write_text("", encoding="utf-8", newline="\n")
+    set_working_branch("pricing/test-user/steps", tmp_path, create=True, cwd=tmp_path)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
@@ -5402,56 +5325,6 @@ def test_external_file_unknown_input_and_input_mapping_fail_loudly(tmp_path: Pat
     graph = PipelineGraph(nodes=[quotes, mapped], edges=[make_edge("quotes", "ext")])
     with pytest.raises(ConfigError, match="cannot carry inputMapping"):
         execute_graph(graph, target_node_id="ext", execution_context=_capped_context())
-
-
-def test_instance_of_stepped_external_file_executes_with_mapping(tmp_path: Path) -> None:
-    quotes, rates = _frames(tmp_path)
-    alt_q = tmp_path / "alt_quotes.parquet"
-    alt_r = tmp_path / "alt_rates.parquet"
-    pl.DataFrame({"premium": [100.0], "region": ["north"]}).write_parquet(alt_q)
-    pl.DataFrame({"region": ["north"], "rate": [5.0]}).write_parquet(alt_r)
-    join = step(
-        "j",
-        "join",
-        input="rates",
-        how="inner",
-        maintainOrder="left_right",
-        leftOn=["region"],
-        rightOn=["region"],
-        suffix="_r",
-    )
-    original = _external_file(tmp_path, [join, step("l", "limit", n=1)])
-    instance = GraphNode(
-        id="ext_inst",
-        data=NodeData(
-            label="ext_inst",
-            nodeType="externalFile",
-            config={
-                "instanceOf": "ext",
-                "inputMapping": {"quotes": "alt_quotes", "rates": "alt_rates"},
-            },
-        ),
-    )
-    graph = PipelineGraph(
-        nodes=[
-            quotes,
-            rates,
-            original,
-            _ready_source("alt_quotes", alt_q),
-            _ready_source("alt_rates", alt_r),
-            instance,
-        ],
-        edges=[
-            make_edge("quotes", "ext"),
-            make_edge("rates", "ext"),
-            make_edge("alt_quotes", "ext_inst"),
-            make_edge("alt_rates", "ext_inst"),
-        ],
-    )
-    results = execute_graph(graph, target_node_id="ext_inst", execution_context=_capped_context())
-    assert results["ext_inst"].status == "ok", results["ext_inst"].error
-    assert len(results["ext_inst"].preview) == 1
-    assert results["ext_inst"].preview[0]["rate"] == 5.0
 
 
 def test_flatten_rewrites_a_stepped_external_file_input() -> None:

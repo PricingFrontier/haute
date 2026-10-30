@@ -349,8 +349,7 @@ Before this follow-up, the documentation delta received **APPROVED** from a seco
 read-only Codex session of the **same model family** (`gpt-6-astra`, `xhigh`; thread
 `01a18333-1e39-7b51-ac2c-9fcf2f76843b`). It requested separate classifier label and
 probability assertions and a concrete P2 preview fix independent of reuse migration.
-The latter, since delivered, was split from SUB-R01, which retains its original P3 scope
-and must pass that regression. This was same-family review, not cross-family validation.
+The latter has since been delivered. This was same-family review, not cross-family validation.
 
 The subsequent **cross-family review by Claude** checked the decisive code for all
 42 finding groups and reported no false positives; it did not check MOD-R05's integer

@@ -309,37 +309,6 @@ describe("insertEdgeJoinNode", () => {
     })
   })
 
-  it("rewrites an existing instance mapping value without inventing keys", () => {
-    const target = {
-      ...node("instance"),
-      data: {
-        ...node("instance").data,
-        config: {
-          instanceOf: "original",
-          inputMapping: { original_input: "a", other_input: "other" },
-        },
-      },
-    }
-    const result = insertEdgeJoinNode({
-      nodes: [node("a"), target, node("lookup")],
-      edges: [edge("e-a-instance", "a", "instance")],
-      targetEdgeId: "e-a-instance",
-      connection: { source: "lookup" },
-      position: { x: 0, y: 0 },
-      idFactory: () => "edgeJoin_1",
-    })
-
-    expect(result.ok).toBe(true)
-    if (!result.ok) return
-    const finalized = finalizeInsertion(result, "Edge_Join_1")
-    expect(finalized.nodes.find((n) => n.id === "instance")?.data.config).toMatchObject({
-      inputMapping: {
-        original_input: "Edge_Join_1",
-        other_input: "other",
-      },
-    })
-  })
-
   it("adds inputMapping to a downstream Load File, whose code names its inputs", () => {
     const target: Node = {
       ...node("loader"),

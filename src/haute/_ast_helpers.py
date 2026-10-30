@@ -125,6 +125,17 @@ def _eval_contract_constructor(node: ast.expr) -> dict[str, Any] | tuple[Any, An
 # ---------------------------------------------------------------------------
 
 
+def reject_removed_node_decorator(decorator: ast.expr) -> None:
+    """Reject removed reuse syntax before resolving any decorator argument."""
+    from haute._config_validation import removed_node_instance_error
+
+    target = decorator.func if isinstance(decorator, ast.Call) else decorator
+    if isinstance(target, ast.Attribute) and target.attr == "instance":
+        raise removed_node_instance_error(f"@{ast.unparse(target)}")
+    if isinstance(decorator, ast.Call) and any(kw.arg == "of" for kw in decorator.keywords):
+        raise removed_node_instance_error("of=")
+
+
 def _get_decorator_kwargs(decorator: ast.expr) -> dict[str, Any]:
     """Extract keyword arguments from a decorator.
 

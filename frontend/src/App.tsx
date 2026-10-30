@@ -87,7 +87,6 @@ import { HAUTE_SESSION_EXPIRED_EVENT } from "./api/client"
 
 import {
   NODE_TYPES,
-  isSingletonType,
   singletonTypesInDocument,
   singletonTypesInSubmodelDefinition,
 } from "./utils/nodeTypes"
@@ -370,7 +369,7 @@ function ActiveNodePreviewBody({
       }
       inputAction={
         documentCanExecute && canRefresh && activeNode ? (
-          <InputImportButton node={activeNode} allNodes={panelNodes} onImported={onImported} />
+          <InputImportButton node={activeNode} onImported={onImported} />
         ) : undefined
       }
       errorAction={askAssistant ? <AskAssistantButton onClick={askAssistant} /> : undefined}
@@ -1094,7 +1093,6 @@ function FlowEditor() {
     [nodesWithStatus],
   )
 
-
   const {
     viewStack,
     handleDrillIntoSubmodel, handleBreadcrumbNavigate,
@@ -1508,9 +1506,8 @@ function FlowEditor() {
 
   // Toolbar selection actions. These mirror the rules the Ctrl+G shortcut and
   // the node context menu already enforce, so the buttons are a second entry
-  // point rather than a second policy: grouping needs 2+ nodes and a context
-  // that can hold a submodel (they cannot nest), instancing needs exactly one
-  // non-singleton node — the generic `instanceOf` path, not just submodels.
+  // point for the same policy: group 2+ nodes in the parent context, or
+  // reuse an occurrence or wrap one of the supported plain node types.
   // A lone submodel occurrence turns Submodel into Dissolve: the context
   // menu's "Dissolve Submodel" on the same handler.
   const selectedNodes = useMemo(
@@ -1536,8 +1533,8 @@ function FlowEditor() {
   )
   const canCreateInstance = !editingReadOnly
     && selectedNodes.length === 1
-    && !isSingletonType(nodeData(selectedNodes[0]).nodeType)
-    && nodeData(selectedNodes[0]).nodeType !== NODE_TYPES.LIVE_SWITCH
+    && (nodeData(selectedNodes[0]).nodeType === NODE_TYPES.SUBMODEL
+      || WRAPPED_INSTANCE_TYPES.has(nodeData(selectedNodes[0]).nodeType))
     && !selectedSubmodelHasSingleton
     && (viewStack.length <= 1 || !WRAPPED_INSTANCE_TYPES.has(nodeData(selectedNodes[0]).nodeType))
   // The `can*` flags above drive presentation only. The request paths below

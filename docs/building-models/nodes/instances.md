@@ -1,4 +1,4 @@
-# Instances
+# Reusing a node
 
 You have a node that does exactly what you need  - but you want to apply the same logic to a different input. Instead of duplicating the node (and maintaining two copies), you create an **instance** that reuses the original's configuration with different inputs.
 
@@ -19,19 +19,19 @@ Connect the instance to the data you want to process. Each public input keeps th
 
 For an existing submodel, **Instance** adds another occurrence of its definition. You can also right-click a submodel and choose **Create Instance**. Plain nodes use the toolbar.
 
-Data Output retains node-level instances, but two writers to the same destination are refused. Previously created node-level instances continue to work with the panel described below.
+A Data Output cannot be reused: two writers to the same destination are refused. Add a separate Data Output with its own destination instead.
 
 ## The panel
 
-Submodel instances use the occurrence panel described in [Submodel](submodel.md): **INPUTS** lists every public input and lets you re-target an incoming connection. After preview, **MISSING COLUMNS** reports, by input, the columns the instance lacks compared with the owner's inputs, or a schema error when that comparison is unavailable. Their output frames are named after the instance, with `_<port>` appended when the definition has several outputs. The node-instance panel below applies to ordinary nodes.
+An instance uses the [Submodel](submodel.md) panel. Its **INPUTS** selectors are its input mapping: each public input can receive any incoming frame, whatever that frame is named. Choosing a connection moves it to that input, replacing its previous connection, in one Undo step. The instance shares its code and configuration with the owner; double-click the owner to edit them.
 
-An instance's panel has no tabs, because its settings belong to the original:
+Dropping a connection on the instance binds the public input with the same name as the incoming frame. If that input is already connected, the drop is refused. With no matching name, Haute binds the sole unconnected input or lets you choose among the unconnected inputs. An instance never creates a new public input.
 
-- **INSTANCE OF** names the original node. The panel reminds you: **This node uses the same logic as the original. To edit the code or config, select the original node. Changes will automatically apply to all instances.**
-- **INPUT MAPPING** (**Map each original input to a connected upstream node.**) lists each of the original's inputs with a selector of this instance's connected inputs (**- unmapped -** when none is chosen).
-- **MISSING COLUMNS (N)** lists columns the original receives that are not available at this instance's position.
+With one declared output, the instance's frame takes the instance's name. With several, each frame is named `<instance>_<port>`. Unconnected outputs count too. Renaming an instance updates the input names its consumers read.
 
-Haute matches the original's inputs to the instance's inputs by exact name first, then by an unambiguous partial name match, then by position. You only need to choose in **INPUT MAPPING** when that matching is ambiguous (several upstream inputs fit one original input): the panel then warns **Name matching is ambiguous for …**, and saving and running are blocked until you choose each input. You can also use the selectors to override the automatic match.
+After preview, **MISSING COLUMNS** lists, by public input, the columns the instance lacks compared with the owner's input. Only inputs connected on both occurrences are compared. If a schema cannot be resolved, its error appears instead. The section is absent when there are no warnings.
+
+Click the instance to preview its first output using its own inputs. Choose another output from the preview's frame selector. **Refresh** runs the selected output again, and clicking a cell traces that output and frame. A definition with no public output has no preview.
 
 ## Example
 
@@ -59,20 +59,6 @@ Quote Input, Workbench Input, Quote Response and Workbench Output cannot have in
     pipeline.submodel(clean_policies.submodel, "clean_policies_2", instance_of="clean_policies")
     pipeline.connect("claims_data", "clean_policies_2", target_port="policies")
     ```
-
-    Existing node-level instances have no JSON sidecar. Their decorator names the original, and their function takes their own inputs:
-
-    ```python
-    @pipeline.instance(of="load_rates", inputMapping={"policies": "claims_data"})
-    def load_claim_rates(claims_data): ...
-    ```
-
-    | Setting in the editor | Stored as |
-    |---|---|
-    | **INSTANCE OF** | `of` in the decorator (`instanceOf` in the node's config): the name of the original node |
-    | **INPUT MAPPING** | `inputMapping`: a map of the original's input names to this instance's input names. Absent until you choose an input in **INPUT MAPPING**; the automatic match is used meanwhile. |
-
-    A submodel instance is stored differently; see [Submodel](submodel.md).
 
 **See also:**
 

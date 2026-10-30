@@ -958,7 +958,6 @@ def _score_graph_lazy(
                 file_type = config.get("fileType", "pickle")
                 _src_names = list(source_names)
                 _orig_src_names = build_kwargs.get("orig_source_names")
-                _input_mapping = dict(config.get("inputMapping", {})) or None
 
                 _remapped: str = remapped_path  # narrowed by the `is not None` guard above
                 if code:
@@ -970,7 +969,6 @@ def _score_graph_lazy(
                         _code: str = code,
                         _sn: list[str] = _src_names,
                         _orig: list[str] | None = _orig_src_names,
-                        _mapping: dict[str, str] | None = _input_mapping,
                         _ns: dict[str, Any] = _preamble_names,
                     ) -> _Frame:
                         from haute._user_exec import _exec_user_code
@@ -982,7 +980,6 @@ def _score_graph_lazy(
                             dfs,
                             extra_ns={**_ns, "obj": obj},
                             orig_source_names=_orig,
-                            input_mapping=_mapping,
                             alias_first_input_as_df=True,
                         )
 

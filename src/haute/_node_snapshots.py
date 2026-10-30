@@ -547,7 +547,6 @@ def node_snapshot_signature(
     node's lineage as the executor runs it for *source*, so a live-switch
     branch *source* does not read is neither signed nor hashed.
     """
-    from haute._builders import resolve_instance_nodes
     from haute.execution import (
         canonical_dataframe_execution_graph,
         dataframe_graph_input_fingerprint,
@@ -556,8 +555,7 @@ def node_snapshot_signature(
 
     if type(enforce_contracts) is not bool:
         raise TypeError("enforce_contracts must be a bool")
-    # An instance node executes its original's config, so its signature does too.
-    canonical = canonical_dataframe_execution_graph(resolve_instance_nodes(graph))
+    canonical = canonical_dataframe_execution_graph(graph)
     if node_id not in canonical.node_map:
         raise ValueError(f"Cannot sign the output of unknown node {node_id!r}")
     lineage = source_lineage_graph(canonical, node_id, source=source)

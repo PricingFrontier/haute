@@ -413,33 +413,6 @@ describe("prepareNodeUpdate rename stable bindings", () => {
     })
   })
 
-  it("9. instance keys still migrate exactly as before", () => {
-    const src = makeNode("src", "Other Source", NODE_TYPES.POLARS)
-    const original = makeNode("original", "Original", NODE_TYPES.POLARS)
-    const instanceNode = makeNode("instance", "Instance", NODE_TYPES.POLARS, {
-      instanceOf: "original",
-      inputMapping: { original_input: "Other_Source" },
-    })
-    const edge = makeEdge("e1", "src", "instance", null, "Other_Source")
-
-    const result = prepareNodeUpdate({
-      nodeId: "src",
-      data: renamedData(src, "Renamed Source"),
-      refreshSourceIdentity: true,
-      readOnly: false,
-      graph: { nodes: [src, original, instanceNode], edges: [edge] },
-      submodels: {},
-      reservedApiInputFrameLabels: RESERVED,
-    })
-
-    expect(result.ok).toBe(true)
-    const prepared = result as PreparedNodeUpdate
-    const targetNode = prepared.nodes.find((n) => n.id === "instance")
-    expect((targetNode?.data.config as Record<string, unknown>).inputMapping).toEqual({
-      original_input: "Renamed_Source",
-    })
-  })
-
   it("10. sanitised label uses identity identifier in binding", () => {
     const src = makeNode("src", "src", NODE_TYPES.POLARS)
     const consumer = makeNode("consumer", "Consumer", NODE_TYPES.POLARS, {

@@ -140,7 +140,7 @@ nav:
         - Explore: building-models/nodes/explore.md
       - Organisation:
         - Submodel: building-models/nodes/submodel.md
-        - Instances: building-models/nodes/instances.md
+        - Reusing a node: building-models/nodes/instances.md
     - Filesystem Portability: building-models/filesystem-portability.md
   - Deployment:
     - Overview: deployment/index.md

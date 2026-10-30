@@ -1911,51 +1911,6 @@ def test_captured_chunk_local_node_empty_input_publishes_and_metrics_validate(
     assert store.latest_generation(_identity(store, graph, "A")) is not None
 
 
-def test_captured_instance_node_referencing_original_source_names_is_input_sliced(
-    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from haute._polars_utils import set_streaming_chunk_size
-
-    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
-    graph = _graph(
-        project,
-        [
-            ("src1", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
-            ("src2", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
-            ("orig", NodeType.POLARS, _code("df = src1.filter(pl.col('a') >= 0)")),
-            (
-                "inst",
-                NodeType.POLARS,
-                {"instanceOf": "orig", "code": "df = src1.filter(pl.col('a') >= 0)"},
-            ),
-            (
-                "J",
-                NodeType.EDGE_JOIN,
-                {
-                    "how": "left",
-                    "maintainOrder": "left_right",
-                    "on": "id",
-                    "selected_columns": ["id", "a", "b"],
-                },
-            ),
-            ("T", NodeType.MODELLING, {}),
-        ],
-        [
-            GraphEdge(id="e_orig", source="src1", target="orig"),
-            GraphEdge(id="e_inst", source="src2", target="inst"),
-            GraphEdge(id="e_base", source="inst", target="J", targetHandle="base"),
-            GraphEdge(id="e_join", source="src1", target="J", targetHandle="join"),
-            GraphEdge(id="e_t", source="J", target="T"),
-        ],
-    )
-    set_streaming_chunk_size(80)
-    run = _run(graph, store, required={"T": ["id", "a", "b"], "inst": ["a", "id"]})
-    capture = run.captures["inst"]
-    assert capture["write_strategy"] == "input_sliced"
-    assert capture["write_native_reason"] is None
-    assert capture["write_blocking_operator"] is None
-
-
 def test_composed_passthrough_recipe_over_filtered_parent_is_input_sliced_and_equals_native(
     project: Path, tmp_path: Path, store: NodeSnapshotStore
 ) -> None:

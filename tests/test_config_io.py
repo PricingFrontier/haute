@@ -529,34 +529,6 @@ class TestCollectNodeConfigs:
         assert "code" not in content
         assert content["path"] == "m.pkl"
 
-    def test_instance_nodes_skipped(self):
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "orig",
-                        "data": {
-                            "label": "orig",
-                            "nodeType": "dataInput",
-                            "config": {"path": "d.parquet"},
-                        },
-                    },
-                    {
-                        "id": "inst",
-                        "data": {
-                            "label": "inst",
-                            "nodeType": "dataInput",
-                            "config": {"path": "d.parquet", "instanceOf": "orig"},
-                        },
-                    },
-                ],
-                "edges": [],
-            }
-        )
-        configs = collect_node_configs(graph)
-        assert "config/data_input/orig.json" in configs
-        assert "config/data_input/inst.json" not in configs
-
     def test_all_node_types_produce_config(self):
         """Every non-transform, non-submodel node type should generate a config file."""
         nodes = [

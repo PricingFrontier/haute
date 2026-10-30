@@ -136,6 +136,7 @@ vi.mock("../api/client", async () => {
     executeSink: vi.fn(() => Promise.resolve({ status: "ok" })),
     // Submodel
     createSubmodel: vi.fn(() => Promise.resolve({})),
+    createNodeInstance: vi.fn(),
     loadSubmodel: vi.fn(() => Promise.resolve({})),
     dissolveSubmodel: vi.fn(() => Promise.resolve({})),
     // Schema
@@ -1823,27 +1824,27 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
     }
     const original = makeNode("original_1", "Original Transform", "polars")
     const otherOriginal = makeNode("original_2", "Other Original", "polars")
-    const downstreamInstance = makeNode("instance_value", "Downstream Instance", "polars")
-    downstreamInstance.data.config = {
-      instanceOf: "original_2",
+    const mappedConsumer = makeNode("instance_value", "Mapped Consumer", "polars")
+    mappedConsumer.data.config = {
+
       inputMapping: { original_input: "drivers", stable_value: "Other_Source" },
       untouched: "downstream-instance-config",
     }
-    const firstOriginalInstance = makeNode("instance_key_1", "First Original Instance", "polars")
-    firstOriginalInstance.data.config = {
-      instanceOf: "original_1",
+    const firstUnrelatedConsumer = makeNode("instance_key_1", "First Unrelated Consumer", "polars")
+    firstUnrelatedConsumer.data.config = {
+
       inputMapping: { drivers: "Mapped_First", stable_key: "Stable_First" },
       untouched: "first-instance-config",
     }
-    const secondOriginalInstance = makeNode("instance_key_2", "Second Original Instance", "polars")
-    secondOriginalInstance.data.config = {
-      instanceOf: "original_1",
+    const secondUnrelatedConsumer = makeNode("instance_key_2", "Second Unrelated Consumer", "polars")
+    secondUnrelatedConsumer.data.config = {
+
       inputMapping: { drivers: "Mapped_Second", stable_key: "Stable_Second" },
       untouched: "second-instance-config",
     }
-    const liveSwitchInstance = makeNode("live_instance", "Scenario Router Instance", "polars")
-    liveSwitchInstance.data.config = {
-      instanceOf: "live_1",
+    const unrelatedConsumer = makeNode("live_instance", "Unrelated Consumer", "polars")
+    unrelatedConsumer.data.config = {
+
       inputMapping: { Other_Source: "Mapped_Ordinary", stable_key: "Stable_Value" },
       untouched: "live-instance-config",
     }
@@ -1865,10 +1866,10 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
         liveSwitch,
         original,
         otherOriginal,
-        downstreamInstance,
-        firstOriginalInstance,
-        secondOriginalInstance,
-        liveSwitchInstance,
+        mappedConsumer,
+        firstUnrelatedConsumer,
+        secondUnrelatedConsumer,
+        unrelatedConsumer,
         codedConsumer,
       ],
       edges: [
@@ -1932,15 +1933,15 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
       input_scenario_map: { router_input: "batch", stable_input: "live" },
       untouched: "child-router-config",
     }
-    const childValueInstance = makeNode("child_value_instance", "Child Value Instance", "polars")
-    childValueInstance.data.config = {
-      instanceOf: "unrelated_original",
+    const mappedChild = makeNode("child_value_instance", "Mapped Child", "polars")
+    mappedChild.data.config = {
+
       inputMapping: { original_input: "value_input", stable_value: "stable_input" },
       untouched: "child-value-config",
     }
-    const childKeyInstance = makeNode("child_key_instance", "Child Key Instance", "polars")
-    childKeyInstance.data.config = {
-      instanceOf: "child_router",
+    const unrelatedChild = makeNode("child_key_instance", "Unrelated Child", "polars")
+    unrelatedChild.data.config = {
+
       inputMapping: { router_input: "Mapped_Driver", stable_key: "Stable_Value" },
       untouched: "child-key-config",
     }
@@ -1991,8 +1992,8 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
           graph: {
             nodes: [
               childRouter,
-              childValueInstance,
-              childKeyInstance,
+              mappedChild,
+              unrelatedChild,
               ...(options.internalCollision ? [internalCollisionSource] : []),
             ],
             edges: options.internalCollision
@@ -2014,7 +2015,7 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
             },
             {
               name: "value_input",
-              targets: [{ nodeId: childValueInstance.id, handleId: null }],
+              targets: [{ nodeId: mappedChild.id, handleId: null }],
             },
             ...(options.collision
               ? [{
@@ -2153,18 +2154,18 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
       untouched: "live-switch-config",
     })
     expect(configFor("instance_value")).toEqual({
-      instanceOf: "original_2",
+
       inputMapping: { original_input: "driver_risk", stable_value: "Other_Source" },
       untouched: "downstream-instance-config",
     })
     expect(configFor("instance_key_1")).toEqual({
-      instanceOf: "original_1",
-      inputMapping: { driver_risk: "Mapped_First", stable_key: "Stable_First" },
+
+      inputMapping: { drivers: "Mapped_First", stable_key: "Stable_First" },
       untouched: "first-instance-config",
     })
     expect(configFor("instance_key_2")).toEqual({
-      instanceOf: "original_1",
-      inputMapping: { driver_risk: "Mapped_Second", stable_key: "Stable_Second" },
+
+      inputMapping: { drivers: "Mapped_Second", stable_key: "Stable_Second" },
       untouched: "second-instance-config",
     })
     expect(useGraphStore.getState().undoStack.length).toBe(undoDepthBefore + 1)
@@ -2198,13 +2199,13 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
       untouched: "live-switch-config",
     })
     expect(configFor("instance_value")).toEqual({
-      instanceOf: "original_2",
+
       inputMapping: { original_input: "drivers", stable_value: "Renamed_Source" },
       untouched: "downstream-instance-config",
     })
     expect(configFor("live_instance")).toEqual({
-      instanceOf: "live_1",
-      inputMapping: { Renamed_Source: "Mapped_Ordinary", stable_key: "Stable_Value" },
+
+      inputMapping: { Other_Source: "Mapped_Ordinary", stable_key: "Stable_Value" },
       untouched: "live-instance-config",
     })
     expect(configFor("coded_consumer")).toEqual({
@@ -2387,12 +2388,12 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
         untouched: "child-router-config",
       })
       expect(nestedConfig("child_value_instance")).toEqual({
-        instanceOf: "unrelated_original",
+
         inputMapping: { original_input: "value_input", stable_value: "stable_input" },
         untouched: "child-value-config",
       })
       expect(nestedConfig("child_key_instance")).toEqual({
-        instanceOf: "child_router",
+
         inputMapping: { router_input: "Mapped_Driver", stable_key: "Stable_Value" },
         untouched: "child-key-config",
       })
@@ -2543,11 +2544,11 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
     }
     const childInstance = makeNode(
       "child_value_instance",
-      "Child Value Instance",
+      "Mapped Child",
       "polars",
     )
     childInstance.data.config = {
-      instanceOf: "unrelated_original",
+
       inputMapping: { original_input: "drivers", stable_value: "stable_input" },
       untouched: "child-value-config",
     }
@@ -2614,7 +2615,7 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
       untouched: "child-router-config",
     })
     expect(nestedConfig("child_value_instance")).toEqual({
-      instanceOf: "unrelated_original",
+
       inputMapping: { original_input: "drivers", stable_value: "stable_input" },
       untouched: "child-value-config",
     })
@@ -2933,28 +2934,45 @@ describe("App integration - panel open/close", () => {
   })
 
   it("Instance creates a linked copy of a plain node, not just submodels", async () => {
+    const occurrence = (id: string, instanceOf?: string) => ({ ...makeNode(id, id, "submodel"), data: {
+      label: id, nodeType: "submodel", config: { definitionId: "First", alias: id, ...(instanceOf ? { instanceOf } : {}) },
+    } })
+    const graph = { nodes: [occurrence("First"), occurrence("First_2", "First")], edges: [], submodels: {
+      First: { definitionId: "First", file: "modules/First.py", inputPorts: [],
+        outputPorts: [{ name: "First", source: { nodeId: "First_node", handleId: null } }],
+        graph: { nodes: [makeNode("First_node", "First_node")], edges: [] },
+      },
+    } }
+    vi.mocked(api.createNodeInstance).mockResolvedValueOnce({ status: "ok", graph,
+      owner_name: "First", instance_name: "First_2", definition_id: "First", source_revision: "revision-instance" })
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
-      nodes: [makeNode("polars_1", "First")],
-      edges: [],
-      preamble: "",
-      preserved_blocks: [],
-      source_file: "main.py",
-      source_revision: "revision-instance",
-      submodels: {},
+      nodes: [makeNode("polars_1", "First")], edges: [], preamble: "", preserved_blocks: [],
+      source_file: "main.py", source_revision: "revision-instance", submodels: {},
     }))
     render(<App />)
     await waitForAppReady()
-
     await selectNodes(["polars_1"])
     await waitFor(() => expect(screen.getByTestId("toolbar-instance")).toHaveAttribute("aria-disabled", "false"))
     fireEvent.click(screen.getByTestId("toolbar-instance"))
+    await waitFor(() => expect(useGraphStore.getState().nodes.map(n => n.id)).toEqual(["First", "First_2"]))
+    expect(useGraphStore.getState().nodes.every(n => n.data.nodeType === "submodel")).toBe(true)
+    expect(useGraphStore.getState().submodels).toMatchObject(graph.submodels)
+    expect(useGraphStore.getState().undoStack).toHaveLength(1)
+    await act(async () => { await useGraphStore.getState().undo() })
+    expect(useGraphStore.getState().nodes.map(n => n.id)).toEqual(["polars_1"])
+  })
 
-    await waitFor(() => {
-      const instance = useGraphStore
-        .getState()
-        .nodes.find((n) => (n.data as { config?: { instanceOf?: string } }).config?.instanceOf === "polars_1")
-      expect(instance).toBeDefined()
-    })
+  it("Data Output has no Create Instance action", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [makeNode("writer", "Writer", "dataOutput")], edges: [], submodels: {},
+    }))
+    render(<App />)
+    await waitForAppReady()
+    await selectNodes(["writer"])
+    expect(screen.getByTestId("toolbar-instance")).toHaveAttribute("aria-disabled", "true")
+    fireEvent.click(screen.getByTestId("toolbar-instance"))
+    expect(useGraphStore.getState().nodes.map(n => n.id)).toEqual(["writer"])
+    expect(useGraphStore.getState().undoStack).toHaveLength(0)
   })
 
   // A main canvas holding one submodel occurrence beside a plain node.

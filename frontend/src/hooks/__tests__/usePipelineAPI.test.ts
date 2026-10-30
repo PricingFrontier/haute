@@ -1849,47 +1849,6 @@ describe("usePipelineAPI", () => {
       .toBeLessThan(mockPreview.mock.invocationCallOrder[0])
   })
 
-  it("prepares the original's input for an input instance the preview reads", async () => {
-    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockGetInputCacheStatus.mockResolvedValue(inputCacheSnapshot("missing"))
-    mockBuildInputCache.mockResolvedValue({
-      schema_version: 1,
-      job_id: "snapshot-job",
-      identity_digest: "snapshot-identity",
-      status: "running",
-      joined: false, forced: false, build_class: "bounded",
-    })
-    mockGetInputCacheJob.mockResolvedValue(inputCacheJob("completed"))
-    mockPreview.mockResolvedValue({
-      node_id: "target", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0,
-    })
-    const original = makeSnapshotInput("original-input")
-    const instance = {
-      ...makeNode("input-copy", NODE_TYPES.DATA_INPUT),
-      data: { nodeType: NODE_TYPES.DATA_INPUT, label: "input copy", config: { instanceOf: original.id } },
-    }
-    const target = makeNode("target")
-    const params = makeParams()
-    params.graphRef.current = {
-      nodes: [original, instance, target],
-      edges: [makeEdge(instance.id, target.id)],
-    }
-    vi.mocked(previewInputs).mockResolvedValue({ input_node_ids: [instance.id] })
-    const { result } = renderHook(() => usePipelineAPI(params))
-    await waitFor(() => expect(result.current.loading).toBe(false))
-
-    act(() => {
-      result.current.fetchPreview(target, { debounceMs: 0 })
-    })
-
-    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
-    expect(mockGetInputCacheStatus).toHaveBeenCalledOnce()
-    expect(mockGetInputCacheStatus.mock.calls[0][0]).toMatchObject({
-      config: expect.objectContaining({ path: "original-input.csv" }),
-    })
-    expect(mockBuildInputCache).toHaveBeenCalledOnce()
-  })
-
   it("previews without building an unavailable input the preview never reads", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
     mockGetInputCacheStatus.mockResolvedValue(inputCacheSnapshot("missing"))

@@ -88,15 +88,6 @@ They have different semantics, and several depend on process cwd:
 
 ## 4. Over-engineered areas: strategic simplifications (these need a decision)
 
-### 4.7 Four overlapping reuse mechanisms — MED
-The four are:
-- node-level instances (`@pipeline.instance`, `instanceOf` plus `inputMapping`)
-- submodel definitions with instance occurrences (read-only copies, port minting with `_2`/`_3` suffixes)
-- `inputMapping` on non-instance Polars transforms, to preserve logical names across rewires
-- project `utility/` modules
-
-Together they account for 258 `instanceOf`/`instance_of` references across source and frontend. Submodel-named files hold 6.3K source lines and 11.7K test lines, and 25 of the 48 submodel commits since May are fixes or hardening. A node instance is a one-node submodel instance, and folding the two together removes a whole identity and aliasing dimension.
-
 ### 4.10 Other heavy-but-reasoned designs to keep an eye on — LOW
 - **Node registry.** `NODE_REGISTRY` covers only exec, codegen, contract and a few flags. `NodeType.RATING_STEP` is special-cased in 17 backend modules. A fuller `NodeSpec` (config model, builder, template, contract, projection transfer, trace enricher) would localise changes.
 - **Cache identity framework** (`_cache.py`, 1,639 lines). It has 9 consumer contracts and per-node-type field classification. Once editor state is out of `config` (§3.3), hashing the whole canonical config becomes enough.
@@ -149,7 +140,6 @@ owns no work; the packages carry the plan, acceptance and evidence.
 | §3.1 Three worker mechanisms | `ROAD-WORKER-05` ([background jobs](background-jobs-api.md)) |
 | §3.2 Results store | `FSH-R03` ([frontend shared](frontend-shared.md)) |
 | §3.3 Editor state inside node config | `PCFG-R08` ([pipeline config](pipeline-config.md)) |
-| §4.7 Four reuse mechanisms | `SUB-R01` ([submodels](submodels.md)) |
 | §4.10 Node registry | `PCFG-R09` ([pipeline config](pipeline-config.md)) |
 | §4.10 Cache identity framework | `CACHE-S25` ([caching](caching.md)) |
 | §5.1 Generated browser contract | `API-R03` ([server API](server-api.md)) |

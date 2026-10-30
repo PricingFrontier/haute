@@ -74,7 +74,7 @@ def _definition(
             _node("local_input"),
             _node(
                 "local_output",
-                config={"instanceOf": "local_input"},
+                config={"code": "df = local_input"},
             ),
         ],
         edges=[GraphEdge(id="local_edge", source="local_input", target="local_output")],
@@ -1052,7 +1052,7 @@ def test_staged_dissolve_merges_definition_preamble_once() -> None:
     child_graph = PipelineGraph(
         nodes=[
             _node("local_input"),
-            _node("local_output", config={"instanceOf": "local_input"}),
+            _node("local_output", config={"code": "df = local_input"}),
         ],
         edges=[GraphEdge(id="local_edge", source="local_input", target="local_output")],
         preamble="import child_helpers",
@@ -1078,7 +1078,7 @@ def test_preamble_merge_treats_indented_lines_as_distinct_from_top_level() -> No
     child_graph = PipelineGraph(
         nodes=[
             _node("local_input"),
-            _node("local_output", config={"instanceOf": "local_input"}),
+            _node("local_output", config={"code": "df = local_input"}),
         ],
         edges=[GraphEdge(id="local_edge", source="local_input", target="local_output")],
         preamble="import child_helpers",
@@ -1100,7 +1100,7 @@ def test_preamble_merge_never_skips_on_partial_line_overlap() -> None:
     child_graph = PipelineGraph(
         nodes=[
             _node("local_input"),
-            _node("local_output", config={"instanceOf": "local_input"}),
+            _node("local_output", config={"code": "df = local_input"}),
         ],
         edges=[GraphEdge(id="local_edge", source="local_input", target="local_output")],
         preamble="import child",
@@ -1186,8 +1186,8 @@ def test_flatten_expands_two_instances_with_independent_bindings_and_references(
 
     a_output_node = result.node_map[a_output]
     b_output_node = result.node_map[b_output]
-    assert a_output_node.data.config["instanceOf"] == a_input
-    assert b_output_node.data.config["instanceOf"] == b_input
+    assert a_output_node.data.config["code"] == "df = local_input"
+    assert b_output_node.data.config["code"] == "df = local_input"
     assert "_submodelOrigin" not in a_output_node.data.config
     assert "_submodelOrigin" not in b_output_node.data.config
     assert result.submodels is None
@@ -1274,30 +1274,6 @@ def test_public_input_port_can_fan_out_to_ordered_targets() -> None:
         (qualified_runtime_node_id("instance_a", "left"), "left_frame"),
         (qualified_runtime_node_id("instance_a", "right"), "right_frame"),
     ]
-
-
-def test_schema_declared_instance_reference_is_qualified() -> None:
-    child = PipelineGraph(
-        nodes=[
-            _node("referenced"),
-            _node("consumer", config={"instanceOf": "referenced"}),
-        ],
-        edges=[],
-    )
-    definition = _definition(graph=child, input_ports=[], output_ports=[])
-    graph = PipelineGraph(
-        nodes=[_instance("instance_a", "scoring")],
-        edges=[],
-        submodels={"definition_scoring": definition},
-    )
-
-    result = flatten_graph(graph)
-
-    consumer = result.node_map[qualified_runtime_node_id("instance_a", "consumer")]
-    assert consumer.data.config["instanceOf"] == qualified_runtime_node_id(
-        "instance_a",
-        "referenced",
-    )
 
 
 @pytest.mark.parametrize(
@@ -1593,24 +1569,16 @@ def test_flatten_keeps_the_input_names_a_load_file_childs_code_reads(tmp_path: P
             GraphEdge(id="r", source="rates", target="loader"),
         ],
     )
-    # A node instance of the loader reads the original's names through it; its
-    # mapping is keyed by those names.
-    copy = _node(
-        "copy",
-        NodeType.EXTERNAL_FILE,
-        label="Copy",
-        config={"instanceOf": "loader", "inputMapping": {"policies": "policies", "rates": "rates"}},
-    )
     definition = _definition(
-        graph=PipelineGraph(nodes=[loader, copy], edges=[]),
+        graph=PipelineGraph(nodes=[loader], edges=[]),
         input_ports=[
             SubmodelInputPort(
                 name="policies",
-                targets=[SubmodelEndpoint(node_id="loader"), SubmodelEndpoint(node_id="copy")],
+                targets=[SubmodelEndpoint(node_id="loader")],
             ),
             SubmodelInputPort(
                 name="rates",
-                targets=[SubmodelEndpoint(node_id="loader"), SubmodelEndpoint(node_id="copy")],
+                targets=[SubmodelEndpoint(node_id="loader")],
             ),
         ],
         output_ports=[
@@ -1623,10 +1591,17 @@ def test_flatten_keeps_the_input_names_a_load_file_childs_code_reads(tmp_path: P
             source("policy_table", "Policy table", policies),
             source("rate_table", "Rate table", rates),
             _instance("pricing"),
+            _instance("pricing_copy", instance_of="pricing"),
         ],
         edges=[
             GraphEdge(id="p", source="policy_table", target="pricing", targetHandle="in__policies"),
             GraphEdge(id="r", source="rate_table", target="pricing", targetHandle="in__rates"),
+            GraphEdge(
+                id="cp", source="policy_table", target="pricing_copy", targetHandle="in__policies"
+            ),
+            GraphEdge(
+                id="cr", source="rate_table", target="pricing_copy", targetHandle="in__rates"
+            ),
         ],
         submodels={"definition_scoring": definition},
     )
@@ -1641,8 +1616,8 @@ def test_flatten_keeps_the_input_names_a_load_file_childs_code_reads(tmp_path: P
     before = execute_graph(before_grouping)["loader"]
     results = execute_graph(flattened)
     assert before.status == "ok", before.error
-    for child_id in ("loader", "copy"):
-        after = results[qualified_runtime_node_id("pricing", child_id)]
+    for occurrence in ("pricing", "pricing_copy"):
+        after = results[qualified_runtime_node_id(occurrence, "loader")]
         assert after.status == "ok", after.error
         assert (
             after.preview
@@ -1652,19 +1627,18 @@ def test_flatten_keeps_the_input_names_a_load_file_childs_code_reads(tmp_path: P
                 {"k": 2, "x": 20, "rate": 2.0, "premium": 120.0},
             ]
         )
-    # Dissolved and saved, the loader's function takes the names its code reads,
-    # and its instance maps those names to its own inputs.
+    # Dissolved and saved, each loader takes the names its code reads.
     generated = graph_to_code_multi(flattened, pipeline_name="main")["main.py"]
     assert (
         "def Loader(policies: pl.LazyFrame, rates: pl.LazyFrame, *, obj) -> pl.LazyFrame:\n"
         "    df = policies\n"
     ) in generated
-    assert (
-        "@pipeline.instance(\n"
-        '    of="Loader", inputMapping={"policies": "Policy_table", "rates": "Rate_table"}\n'
-        ")\n"
-        "def Copy(Policy_table, Rate_table): ...\n"
-    ) in generated
+    functions = {
+        node.name: node for node in ast.parse(generated).body if isinstance(node, ast.FunctionDef)
+    }
+    for name in ("Loader", "pricing_copy__Loader"):
+        assert [arg.arg for arg in functions[name].args.args] == ["policies", "rates"]
+        assert [arg.arg for arg in functions[name].args.kwonlyargs] == ["obj"]
 
 
 def test_flatten_preserves_public_output_label_for_ordinary_polars_code() -> None:
@@ -1706,89 +1680,6 @@ def test_flatten_preserves_public_output_label_for_ordinary_polars_code() -> Non
     generated = graph_to_code_multi(result, pipeline_name="main")["main.py"]
     assert "def Consumer(results: pl.LazyFrame)" in generated
     assert "df = results" in generated
-
-
-def test_flatten_preserves_public_input_label_for_polars_instances() -> None:
-    child = PipelineGraph(
-        nodes=[
-            _node(
-                "original",
-                NodeType.POLARS,
-                label="Original",
-                config={"code": "df = published"},
-            ),
-            _node(
-                "copy",
-                NodeType.POLARS,
-                label="Copy",
-                config={
-                    "instanceOf": "original",
-                    "inputMapping": {"published": "published"},
-                },
-            ),
-        ],
-        edges=[],
-    )
-    definition = _definition(
-        graph=child,
-        input_ports=[
-            SubmodelInputPort(
-                name="published",
-                targets=[
-                    SubmodelEndpoint(node_id="original"),
-                    SubmodelEndpoint(node_id="copy"),
-                ],
-            )
-        ],
-        output_ports=[],
-    )
-    graph = PipelineGraph(
-        nodes=[
-            _node("source", label="External source"),
-            _instance("instance_a", "scoring"),
-        ],
-        edges=[
-            GraphEdge(
-                id="input",
-                source="source",
-                target="instance_a",
-                targetHandle="in__published",
-            )
-        ],
-        submodels={"definition_scoring": definition},
-    )
-
-    flattened = flatten_graph(graph)
-    original = flattened.node_map[qualified_runtime_node_id("instance_a", "original")]
-    copy = flattened.node_map[qualified_runtime_node_id("instance_a", "copy")]
-
-    assert original.data.config["inputMapping"] == {"published": "External_source"}
-    assert copy.data.config["inputMapping"] == {"published": "External_source"}
-    generated = graph_to_code_multi(flattened, pipeline_name="main")["main.py"]
-    assert "def Original(published: pl.LazyFrame)" in generated
-    assert (
-        '@pipeline.instance(of="Original", inputMapping={"published": "External_source"})\n'
-        "def Copy(External_source): ...\n"
-    ) in generated
-
-
-def test_stale_schema_declared_node_reference_fails_loudly() -> None:
-    child = PipelineGraph(
-        nodes=[_node("consumer", config={"instanceOf": "missing"})],
-        edges=[],
-    )
-    definition = _definition(graph=child, input_ports=[], output_ports=[])
-    graph = PipelineGraph(
-        nodes=[_instance("scoring", "scoring")],
-        edges=[],
-        submodels={"definition_scoring": definition},
-    )
-
-    with pytest.raises(ParseError, match="instanceOf") as exc_info:
-        flatten_graph(graph)
-
-    assert exc_info.value.context["instance_id"] == "scoring"
-    assert exc_info.value.context["local_node_id"] == "consumer"
 
 
 def test_unbound_occurrence_validates_definition_topology_from_public_interface() -> None:
@@ -2158,7 +2049,7 @@ def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_binding
                                 "column_renames": {"_id": "identifier"},
                             },
                         ),
-                        _node("local_output", config={"instanceOf": "local_input"}),
+                        _node("local_output", config={"code": "df = local_input"}),
                     ],
                     edges=[GraphEdge(id="local_edge", source="local_input", target="local_output")],
                 ),
@@ -2472,7 +2363,7 @@ def test_grouping_preserves_child_input_configs_and_uses_public_labels() -> None
             _node(
                 "child_instance",
                 config={
-                    "instanceOf": "child_router",
+                    "code": "df = drivers",
                     "inputMapping": {
                         "drivers": "drivers",
                         "stable_input": "stable_input",

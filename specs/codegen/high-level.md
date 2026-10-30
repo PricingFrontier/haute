@@ -113,7 +113,7 @@ Out of scope (owned by neighbouring components):
   - none is a public name of Python's `builtins` (`max`, `filter`, `id`, `ValueError`,
     `Ellipsis`); the comparison is exact, so `Max premium` and `Filter` stay valid;
   - no input a node body receives, as the executor binds it (a sanitized source label, an API
-    frame label, a submodel port name, an `inputMapping` alias, including an instance's), is
+    frame label, a submodel port name, an `inputMapping` alias), is
     reserved. (`df` keeps its own rule: an input of that name is refused where node code reads
     it and is an ordinary input on a node type without code.)
 
@@ -290,7 +290,7 @@ Out of scope (owned by neighbouring components):
   the body first declares `df: pl.LazyFrame` as an unbound local, so a
   same-named preamble global cannot satisfy the missing output assignment.
   Normally the logical name is the edge-derived
-  name; a non-instance Polars `inputMapping` may preserve an earlier logical
+  name; a Polars `inputMapping` may preserve an earlier logical
   name across a structural rewrite. Mapping values must match distinct current
   edge names and the resulting logical names must remain distinct valid Haute
   identifiers, otherwise generation and execution fail loudly. The user starts
@@ -372,7 +372,7 @@ the body with the shared step renderer against the generated parameter names ins
 `config["code"]`, references the node's `config/polars/<name>.json` sidecar through the
 decorator `config=` keyword, and on a render failure emits the same incomplete placeholder
 body that a code-less transform emits; the save warning for incomplete transforms then
-names the failing step. A stepped original that also carries `inputMapping` is rejected
+names the failing step. A stepped node that also carries `inputMapping` is rejected
 with a `ConfigError`. Generating, parsing, and extracting a stepped transform reproduces
 the rendered code exactly, which is what lets the parser tell a hand-edited body from a
 rendered one; the parser compares the two as programs (the same syntax tree and
@@ -571,4 +571,3 @@ suffix-agnostic: its decorator scores through `score_from_config`, which selects
 artifact, and the loader dispatches `.cbm`, `.rsglm`,
 `.ubj`, `.lgbm`, `.ebm` and `.tboost` to their flavors, so an XGBoost, LightGBM, EBM or t-boost model scores
 through the same adapter as the GUI.
-

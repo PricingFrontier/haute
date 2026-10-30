@@ -1877,7 +1877,9 @@ present a structural or schema result as execution evidence.
   from the node's incoming edges, validates the mapping as a one-to-one
   `{logical_name: current_edge_name}` relation, and returns logical names in current
   edge order. `_exec_user_code` therefore exposes both the current binding and the
-  stable logical alias during canvas execution. Stale, malformed, or colliding
+  stable logical alias during canvas execution. Aliases are bound from the original
+  input frames together, so swapping two logical names cannot overwrite either
+  frame before the other alias is bound. Stale, malformed, or colliding
   mappings raise `ConfigError`; they never fall back positionally. No node carries
   `instanceOf`: an instance is a submodel occurrence, expanded before execution, and
   flattening records the `inputMapping` its nodes need when a bound frame's name differs
@@ -2752,6 +2754,10 @@ present a structural or schema result as execution evidence.
   typed-error surface external callers are expected to catch by type.
 
 ## Testing
+
+- `tests/test_executable_names.py::test_execution_preserves_swapped_logical_input_bindings`
+  checks the rows read through two swapped logical input names after ordinary
+  input mappings have been resolved into edge order.
 
 - **`tests/test_row_order_parity.py`** — a pipeline with an ordered Edge Join, a Join step
   and a Sort rows with ties over Parquet scans gives the same rows in the same order from a

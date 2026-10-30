@@ -17,7 +17,9 @@ Select one Transform, Load File, Data Input, Constant, Banding, Rating Step, Mod
 
 The owner keeps the node's name, position, connections and output name. The inner node is renamed `<name>_node`, suffixed if needed, and its config file follows that name. Public inputs keep the original incoming frame names; a name that conflicts with the output takes a suffix while the code continues reading its old name. The definition and module take the original name, suffixed when occupied, and the new instance normally becomes `<name>_2`.
 
-Connect a different frame to the instance's public input to preview it through the shared definition. Edit through the owner to change every occurrence. After deleting or dissolving the instances, dissolving the owner returns a plain node under its inner name. See [Instances](instances.md) for the supported types and a complete example.
+Connect a different frame to the instance's public input to preview it through the shared definition. Edit through the owner to change every occurrence. After deleting or dissolving the instances, dissolving the owner returns a plain node under its inner name. See [Reusing a node](instances.md) for the supported types and a complete example.
+
+A Data Output cannot be reused: two writers to the same destination are refused.
 
 ## The panel
 
@@ -29,7 +31,7 @@ A submodel's panel has no tabs. It shows:
 - **OUTPUTS**: the definition's public output ports.
 - **MISSING COLUMNS**, on an instance after preview: the columns its inputs lack compared with the owner's, listed by public input. Only inputs connected on both occurrences are compared. If an input's schema cannot be resolved, its error appears instead. The section is absent when there are no warnings.
 
-Double-click the node on the canvas to step inside. The input selectors remain editable on an instance; its internal definition is read-only.
+Double-click the node on the canvas to step inside. The input selectors remain editable on an instance; its internal definition is read-only. These selectors are the instance's input mapping: each public input can receive any incoming frame, even when their names differ. The bindings belong to the occurrence and do not change the shared definition.
 
 ## Previewing outputs
 
@@ -59,7 +61,7 @@ Dissolving an instance names its children `<instance>__<child>` and preserves th
 
 ## Reuse across pipelines
 
-Each submodel's definition lives in its own `modules/<name>.py` file. To use the same logic again, create another instance of the submodel on the canvas (right-click it and choose **Create Instance**, or select it and click **Instance** in the toolbar): every instance shares the one definition, so editing the submodel updates them all. See [Instances](instances.md).
+Each submodel's definition lives in its own `modules/<name>.py` file. To use the same logic again, create another instance of the submodel on the canvas (right-click it and choose **Create Instance**, or select it and click **Instance** in the toolbar): every instance shares the one definition, so editing the submodel updates them all. See [Reusing a node](instances.md).
 
 !!! warning "Shared definitions"
     Because reused submodels share a single definition file, changes made in one pipeline will affect every pipeline that references it.
@@ -96,4 +98,4 @@ Grouping the scoring steps:
 **See also:**
 
 - [Pipeline structure](../../building-models/index.md)  - how nodes connect in a pipeline
-- [Instances](instances.md)  - reuse a node's logic with different inputs
+- [Reusing a node](instances.md)  - reuse a node's logic with different inputs

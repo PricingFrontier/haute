@@ -32,9 +32,6 @@ from tests.conftest import (
 from tests.conftest import (
     make_source_node as _source_node,
 )
-from tests.conftest import (
-    make_transform_node as _transform_node,
-)
 
 
 def test_evict_utility_import_state_removes_file_and_package_bytecode(
@@ -184,39 +181,6 @@ def test_column_reference_extraction_handles_editor_config_shapes() -> None:
 
 def test_empty_graph_short_circuit_respects_explicit_contract_flag() -> None:
     assert execute_graph(_g({"nodes": [], "edges": []}), enforce_contracts=False) == {}
-
-
-@pytest.mark.usefixtures("_widen_sandbox_root")
-def test_instance_schema_warning_reports_missing_original_inputs(tmp_path: Path) -> None:
-    original_path = tmp_path / "original.parquet"
-    instance_path = tmp_path / "instance.parquet"
-    pl.DataFrame({"x": [1]}).write_parquet(original_path)
-    pl.DataFrame({"y": [2]}).write_parquet(instance_path)
-
-    original = _transform_node("original", "df = src_original")
-    instance = _transform_node("instance", "df = src_instance")
-    instance.data.config["instanceOf"] = "original"
-    graph = _g(
-        {
-            "nodes": [
-                _source_node("src_original", str(original_path)),
-                original,
-                _source_node("src_instance", str(instance_path)),
-                instance,
-            ],
-            "edges": [
-                _edge("src_original", "original"),
-                _edge("src_instance", "instance"),
-            ],
-        }
-    )
-
-    results = execute_graph(graph)
-
-    assert results["instance"].status == "ok"
-    assert [
-        (warning.column, warning.status) for warning in results["instance"].schema_warnings
-    ] == [("x", "missing")]
 
 
 @pytest.mark.usefixtures("_widen_sandbox_root")

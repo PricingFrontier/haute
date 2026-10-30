@@ -390,7 +390,7 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
   "Preparing inputs…" (or the preparation message) with no bar.
 - **Import** (`components/InputImportButton.tsx`) sits beside Refresh in the
   data preview frame of a Data Input that reads a snapshot (`inputSnapshotSource`
-  of the node, or of its original for an instance): one other than a direct
+  of the node): one other than a direct
   Parquet scan. A Quote Input has no Import; its Refresh re-reads its source
   (below). Import re-reads the source with `ensureInputSnapshots([input], { force: true })`,
   showing "Importing · N rows" while a bounded build streams rows and

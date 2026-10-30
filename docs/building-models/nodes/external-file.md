@@ -12,7 +12,7 @@ A Load File node takes the data to score as its first input and outputs that dat
 Inside a submodel, code keeps the input names it was written against when another
 frame is bound to a public input. This applies to the owner and every instance,
 in previews and in the deployed bundle. **Instance** on a Load File node creates
-a shared one-node submodel; see [Instances](instances.md).
+a shared one-node submodel; see [Reusing a node](instances.md).
 
 ## The CONFIG tab
 

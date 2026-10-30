@@ -2,7 +2,6 @@ import type { Node } from "@xyflow/react"
 
 import { apiInputHasEmittingTable } from "./apiInputPorts"
 import { dataInputIsDirect } from "./dataInputMode"
-import { instanceOriginal } from "./instanceOriginal"
 import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 
 /** The input-cache request body that names one node's snapshot. */
@@ -46,17 +45,15 @@ export function inputSnapshotSource(node: Pick<Node, "data">): SnapshotSource | 
 
 /**
  * The input whose source the preview frame's Refresh re-reads before it
- * previews *node*: a structured Quote Input with an emitting table, or the
- * original of an instance of one. Null for every other node; a Data Input's
+ * previews *node*: a structured Quote Input with an emitting table.
+ * Null for every other node; a Data Input's
  * forced re-read is its Import.
  */
 export function refreshRereadInput<T extends Pick<Node, "id" | "data">>(
   node: T,
-  byId: Map<string, T>,
 ): T | null {
-  const effective = instanceOriginal(node, byId)
-  const source = inputSnapshotSource(effective)
+  const source = inputSnapshotSource(node)
   return source?.node_type === "apiInput" && apiInputHasEmittingTable(source.config)
-    ? effective
+    ? node
     : null
 }

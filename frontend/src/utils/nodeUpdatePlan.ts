@@ -277,7 +277,6 @@ function targetInputCollision(affected: AffectedRenameTarget): string | null {
 function isSteppedOrdinaryTransform(node: Node): boolean {
   if (!steppedSurfaceAllowsInputReferences(String(node.data.nodeType))) return false
   const config = (node.data.config ?? {}) as Record<string, unknown>
-  if ("instanceOf" in config) return false
   return Array.isArray(config.steps)
 }
 
@@ -285,7 +284,6 @@ function isSteppedOrdinaryTransform(node: Node): boolean {
 function isCodedOrdinaryTransform(node: Node): boolean {
   if (!steppedSurfaceAllowsInputReferences(String(node.data.nodeType))) return false
   const config = (node.data.config ?? {}) as Record<string, unknown>
-  if ("instanceOf" in config) return false
   // A stepped transform's `code` is the rendering of its steps; renames
   // rewrite the step references instead of recording an inputMapping.
   if (Array.isArray(config.steps)) return false
@@ -396,7 +394,6 @@ function preserveCodedTransformBindings(
 }
 
 function collectMappingChanges(
-  rootScope: RenameGraphScope,
   affectedByScope: AffectedTargets,
 ): MappingChanges | NodeUpdatePlanFailure {
   const changes: MappingChanges = new Map()
@@ -459,26 +456,6 @@ function collectMappingChanges(
     }
   }
 
-  const instanceScopes = new Set<RenameGraphScope>([rootScope, ...affectedByScope.keys()])
-  for (const targets of affectedByScope.values()) {
-    for (const affected of targets.values()) {
-      for (const scope of instanceScopes) {
-        for (const node of scope.nodes) {
-          const config = (node.data.config ?? {}) as Record<string, unknown>
-          if (config.instanceOf !== affected.target.id) continue
-          const failure = applyConfigMapping(
-            changes,
-            scope,
-            node,
-            "inputMapping",
-            affected.pairs,
-            true,
-          )
-          if (failure) return failure
-        }
-      }
-    }
-  }
   return changes
 }
 
@@ -544,7 +521,7 @@ function reconcileConsumerBindings(
   rebound: readonly { edge: Edge; from: string; to: string }[],
 ): NodeUpdatePlanFailure | null {
   const affected = collectAffectedTargets(scope, rebound)
-  const changes = collectMappingChanges(scope, affected)
+  const changes = collectMappingChanges(affected)
   if ("ok" in changes) return changes
   applyMappingChanges(changes)
   return findInputCollision(affected)

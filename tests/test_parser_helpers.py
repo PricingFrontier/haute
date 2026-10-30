@@ -1037,15 +1037,6 @@ class TestBuildNodeConfigExtended:
         assert config["target"] == "loss"
         assert config["algorithm"] == "catboost"
 
-    def test_instance_reference_added_to_config(self):
-        config = _build_node_config(
-            NodeType.POLARS,
-            {"of": "original_node"},
-            "",
-            [],
-        )
-        assert config["instanceOf"] == "original_node"
-
     def test_data_input_config_is_not_synthesised_without_its_sidecar(self):
         config = _build_node_config(
             NodeType.DATA_INPUT,

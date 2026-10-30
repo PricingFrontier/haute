@@ -21,6 +21,7 @@ from typing import (
     Any,
     ClassVar,
     Literal,
+    NotRequired,
     Protocol,
     Required,
     Self,
@@ -99,12 +100,9 @@ DECORATOR_TO_NODE_TYPE: dict[str, NodeType] = {
     "scenario_expander": NodeType.SCENARIO_EXPANDER,
     "optimiser_apply": NodeType.OPTIMISER_APPLY,
     "constant": NodeType.CONSTANT,
-    "instance": NodeType.POLARS,  # instances default to polars; real type resolved at runtime
 }
 
-NODE_TYPE_TO_DECORATOR: dict[NodeType, str] = {
-    v: k for k, v in DECORATOR_TO_NODE_TYPE.items() if k != "instance"
-}
+NODE_TYPE_TO_DECORATOR: dict[NodeType, str] = {v: k for k, v in DECORATOR_TO_NODE_TYPE.items()}
 
 #: Node types with no output: nothing may be wired downstream of them. The
 #: editor's ``SINK_ONLY_TYPES`` (``frontend/src/utils/nodeTypes.ts``) is held
@@ -310,7 +308,6 @@ class TransformConfig(TypedDict, total=False):
 
     code: str
     steps: list[dict[str, Any]]
-    instanceOf: str
     inputMapping: dict[str, str]
     selected_columns: list[str]
     column_renames: dict[str, str]
@@ -365,7 +362,6 @@ class ModelScoreConfig(TypedDict, total=False):
     feature_contract_path: str  # the feature contract the model scores under
     code: str  # optional post-processing code
     steps: list[dict[str, Any]]  # low-code post-scoring steps; ``code`` is their rendering
-    instanceOf: str
     inputMapping: dict[str, str]
     mlflow_destination: str  # "databricks" | "server"; absent = the local folder
 
@@ -995,6 +991,7 @@ class SubmodelConfig(TypedDict):
 
     definitionId: str
     alias: str
+    instanceOf: NotRequired[str]
 
 
 class NodeData(BaseModel):

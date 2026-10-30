@@ -628,7 +628,6 @@ class SavePipelineService:
         self._validate_support_code_names(graph)
         flattened = flatten_graph(graph)
         self._validate_singletons(flattened)
-        self._validate_no_source_switch_instances(flattened)
         self._validate_nothing_leaves_a_sink(flattened)
         self._validate_edge_join_configs(flattened)
         self._validate_optimiser_input_selectors(flattened)
@@ -856,25 +855,6 @@ class SavePipelineService:
             raise HTTPException(status_code=400, detail=str(exc)) from None
 
     @staticmethod
-    def _validate_no_source_switch_instances(graph: PipelineGraph) -> None:
-        """Refuse an instance of a Source Switch.
-
-        A switch routes by its own input names, which an instance's inputs do
-        not share, so the instance would have no input for any source.
-        """
-        nodes = graph.node_map
-        for node in graph.nodes:
-            original = nodes.get(node.data.config.get("instanceOf") or "")
-            if original is not None and original.data.nodeType == NodeType.LIVE_SWITCH:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"{node.data.label!r} cannot be an instance of the Source Switch "
-                        f"{original.data.label!r}; add another Source Switch instead."
-                    ),
-                )
-
-    @staticmethod
     def _validate_nothing_leaves_a_sink(flattened: PipelineGraph) -> None:
         """Refuse an edge out of a node type that has no output."""
         # An edge naming an unknown node is refused by codegen's strict topology.
@@ -1058,9 +1038,6 @@ class SavePipelineService:
             for node in scoped_graph.nodes:
                 if node.data.nodeType not in strict_types:
                     continue
-                if node.data.config.get("instanceOf"):
-                    # An instance carries its original's config, checked where it is authored.
-                    continue
                 try:
                     validate_node_config(
                         node.data.nodeType, node.data.config, require_complete=False
@@ -1086,7 +1063,7 @@ class SavePipelineService:
                     reject_unrecognized_config_keys(
                         node.data.nodeType, node.data.config, node_label=node.data.label
                     )
-                except ConfigError as exc:
+                except (ConfigError, ParseError) as exc:
                     raise HTTPException(
                         status_code=400, detail=f"{exc.message} Nothing was saved."
                     ) from None
@@ -1663,7 +1640,7 @@ class SavePipelineService:
         raises if the pipeline is actually run, and this warning points at the
         node so the user is not surprised by that later.
         """
-        from haute._builders import resolve_instance_node, stepped_code_problem
+        from haute._builders import stepped_code_problem
         from haute._graph_utils import edge_input_name
         from haute._polars_steps import (
             STEPPED_SURFACE_LABELS,
@@ -1681,10 +1658,9 @@ class SavePipelineService:
                 incoming.setdefault(edge.target, []).append(edge)
 
             for node in scoped_graph.nodes:
-                resolved_node = resolve_instance_node(node, node_map)
-                node_type = resolved_node.data.nodeType
-                config = resolved_node.data.config
-                if is_stepped_config(node_type, config) and not config.get("instanceOf"):
+                node_type = node.data.nodeType
+                config = node.data.config
+                if is_stepped_config(node_type, config):
                     edge_names = [
                         edge_input_name(edge, node_map[edge.source], submodels=graph.submodels)
                         for edge in incoming.get(node.id, [])
@@ -1847,8 +1823,6 @@ class SavePipelineService:
         for node in graph.nodes:
             nt = node.data.nodeType
             if not node_emits_sidecar(node):
-                continue
-            if node.data.config.get("instanceOf"):
                 continue
             func_name = _sanitize_func_name(node.data.label)
             rel_path = config_path_for_node(nt, func_name).as_posix()

@@ -229,19 +229,6 @@ class TestValidateSingletons:
         )
         SavePipelineService._validate_singletons(graph)
 
-    def test_source_switch_instance_raises_400(self, tmp_path: Path) -> None:
-        """An instance cannot route: its inputs are not the switch's input names."""
-        graph = _make_graph(
-            _make_node("ls1", "Switch 1", "liveSwitch", {"input_scenario_map": {"a": "live"}}),
-            _make_node("ls2", "Switch 2", "liveSwitch", {"instanceOf": "ls1"}),
-        )
-        with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService(tmp_path).validate_graph(graph, source_file="main.py")
-        assert exc_info.value.status_code == 400
-        assert "'Switch 2' cannot be an instance of the Source Switch 'Switch 1'" in (
-            exc_info.value.detail
-        )
-
     def test_no_singletons_passes(self) -> None:
         """A graph with only transform nodes passes validation."""
         graph = _make_graph(
@@ -486,16 +473,6 @@ class TestValidateScenarioExpanderGridSize:
         assert message in exc_info.value.detail
         after = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
         assert after == before
-
-    def test_an_instance_is_checked_through_its_original(self, tmp_path: Path) -> None:
-        """An instance carries only a reference; the original's grid size is what runs."""
-        instance = _make_node(
-            "grid_copy", "price_grid_copy", "scenarioExpander", {"instanceOf": "grid"}
-        )
-
-        SavePipelineService(tmp_path).validate_graph(
-            self._grid(self._VALID, instance), source_file="pipeline.py"
-        )
 
     def test_a_fresh_palette_node_is_still_saveable(self, tmp_path: Path) -> None:
         """An unfinished Scenario Expander (only its palette defaults) saves."""

@@ -721,7 +721,7 @@ normalised `code` on a code-mode node.
 refuses a malformed modelling value for every author (see
 [modelling](../modelling/high-level.md)), so the dry-run refuses it too. The editor lets an
 analyst save an unfinished node; the assistant may not leave one. For each Modelling or
-Load File node a plan adds or updates (instances excepted), the dry-run also checks what
+Load File node a plan adds or updates, the dry-run also checks what
 save leaves to training or execution, after the plan's schemas resolve. A Modelling node
 needs a target, a complete training objective (`training_objective_issue`: a loss, or a
 GLM family and terms) and a valid evaluation object (`parse_evaluation_config`, which

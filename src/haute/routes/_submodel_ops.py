@@ -451,6 +451,7 @@ def instance_source_node(graph: PipelineGraph, node_id: str) -> GraphNode:
         NodeType.SUBMODEL,
         NodeType.SUBMODEL_PORT,
         NodeType.LIVE_SWITCH,
+        NodeType.DATA_OUTPUT,
     }:
         raise SubmodelValidationError(
             code="unsupported_instance",
@@ -460,14 +461,9 @@ def instance_source_node(graph: PipelineGraph, node_id: str) -> GraphNode:
                 f"{node.data.nodeType.value} does not support a node instance."
             ),
         )
-    if node.data.config.get("instanceOf"):
-        raise SubmodelValidationError(
-            code="node_instance",
-            status_code=400,
-            detail=(
-                f"Cannot wrap node-level instance {node.data.label!r}. Select its original node."
-            ),
-        )
+    from haute._config_validation import reject_removed_config_keys
+
+    reject_removed_config_keys(node.data.nodeType, node.data.config)
     return node
 
 

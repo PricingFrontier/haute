@@ -290,19 +290,30 @@ def test_slot_identity_carries_the_signature_and_round_trips(project: Path) -> N
 
 
 def test_an_instance_nodes_signature_follows_its_original(project: Path) -> None:
-    graph = _graph(project)
-    instance = _node("join_copy", NodeType.POLARS, {"instanceOf": "join"})
-    graph = graph.model_copy(
-        update={
-            "nodes": [*graph.nodes, instance],
-            "edges": [*graph.edges, GraphEdge(id="e6", source="transform", target="join_copy")],
-        }
+    from haute._flatten import flatten_graph
+    from haute._submodel_instances import qualified_runtime_node_id
+    from haute.routes._submodel_ops import create_node_instance_graph
+
+    wrapped = create_node_instance_graph(
+        _graph(project), "join", "joined", read_utility=lambda _: pytest.fail("No utility expected")
     )
-    baseline = _signature(graph, node_id="join_copy")
-
-    edited = _with_config(graph, "join", code="df = transform.head(1)")
-
-    assert _signature(edited, node_id="join_copy") != baseline
+    graph = wrapped.graph
+    graph.edges.append(
+        GraphEdge(
+            id="copy_input",
+            source="transform",
+            target=wrapped.instance_name,
+            targetHandle="in__transform",
+        )
+    )
+    target = qualified_runtime_node_id(wrapped.instance_name, "join_node")
+    baseline = _signature(flatten_graph(graph), node_id=target)
+    edited = graph.model_copy(deep=True)
+    definition = edited.submodels[wrapped.definition_id]
+    definition.graph.nodes[0] = definition.graph.nodes[0].with_config(
+        {"code": "df = transform.head(1)"}
+    )
+    assert _signature(flatten_graph(edited), node_id=target) != baseline
 
 
 # ------------------------------------------------------------ source switches

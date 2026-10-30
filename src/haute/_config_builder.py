@@ -230,9 +230,6 @@ def _build_node_config(
             extract_user_code(body, kind="polars", param_names=param_names) if body else ""
         )
     _copy_config_keys(config, decorator_kwargs, COLUMN_CONFIG_KEYS)
-    # Instance reference (works for any node type)
-    if "of" in decorator_kwargs:
-        config["instanceOf"] = decorator_kwargs["of"]
     # ``inputMapping`` is also used by ordinary Polars transforms to retain a
     # stable logical input name across topology rewrites.  Keep the decorator
     # metadata on parse so graph -> source -> graph remains a fixpoint.
@@ -533,11 +530,7 @@ def validate_step_container(
             func_name=func_name,
             config_path=config_ref,
         )
-    if (
-        stepped_surface_for(node_type).inputs == "edges"
-        and config.get("inputMapping") is not None
-        and not config.get("instanceOf")
-    ):
+    if stepped_surface_for(node_type).inputs == "edges" and config.get("inputMapping") is not None:
         raise ConfigError(
             STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
             func_name=func_name,
@@ -636,6 +629,9 @@ def _resolve_node_config(
 
     Returns ``(node_type, config_dict)``.
     """
+    from haute._config_validation import reject_removed_node_reuse_kwargs
+
+    reject_removed_node_reuse_kwargs(decorator_kwargs)
     # Work on a copy to avoid mutating the caller's dict.
     decorator_kwargs = dict(decorator_kwargs)
     node_type = explicit_node_type or NodeType.POLARS

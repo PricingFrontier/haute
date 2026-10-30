@@ -31,7 +31,6 @@ from haute._types import (
 from haute.cli import cli
 from haute.codegen import graph_to_code_multi
 from haute.deploy import DeployConfig, resolve_config
-from haute.errors import ParseError
 from haute.executor import execute_graph
 from haute.parser import parse_pipeline_file
 from haute.routes._helpers import invalidate_pipeline_index, parse_pipeline_to_graph, pipeline_dir
@@ -46,14 +45,6 @@ PROOF_TYPES = [
     NodeType.POLARS,
     NodeType.EXTERNAL_FILE,
     NodeType.DATA_INPUT,
-    pytest.param(
-        NodeType.DATA_OUTPUT,
-        marks=pytest.mark.xfail(
-            strict=True,
-            raises=ParseError,
-            reason="SUB-R01: Data Output occurrences share a forbidden write destination",
-        ),
-    ),
     NodeType.CONSTANT,
     NodeType.BANDING,
     NodeType.RATING_STEP,
@@ -237,9 +228,6 @@ def _case(kind: NodeType, root: Path) -> tuple[dict, list[dict], str]:
             {**rows[0], "premium": 1.05, "region_optimised_factor": 1.05, "version": "rb_v1"},
             {**rows[1], "premium": 0.98, "region_optimised_factor": 0.98, "version": "rb_v1"},
         ]
-    elif kind == NodeType.DATA_OUTPUT:
-        config = {"outputType": "file", "format": "parquet", "path": "result.parquet"}
-        expected, column = rows, "fixture_value"
     elif kind == NodeType.EXPLORE:
         config = {}
         expected, column = rows, "fixture_value"

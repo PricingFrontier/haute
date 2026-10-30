@@ -14,7 +14,6 @@ from __future__ import annotations
 import polars as pl
 
 import haute.projection as projection_planner
-from haute._builders import resolve_instance_node
 from haute._execute_lazy import (
     _build_funcs,
     _prune_live_switch_edges,
@@ -338,93 +337,6 @@ class TestStaleIsmKeys:
 # ===========================================================================
 # Instance node dangling references
 # ===========================================================================
-
-
-class TestInstanceNodeDanglingReferences:
-    """When the original node referenced by instanceOf is deleted or renamed."""
-
-    def test_dangling_instance_of_returns_node_unchanged(self):
-        """If instanceOf points to a non-existent node, the instance is
-        returned unchanged (no error, no warning)."""
-        instance = GraphNode(
-            id="inst1",
-            data=NodeData(
-                label="my_instance",
-                nodeType=NodeType.POLARS,
-                config={"instanceOf": "deleted_node"},
-            ),
-        )
-        node_map = {"inst1": instance}  # original not in map
-        result = resolve_instance_node(instance, node_map)
-        # Should return unchanged — no merge with original
-        assert result.data.nodeType == NodeType.POLARS
-        assert result.data.config.get("instanceOf") == "deleted_node"
-
-    def test_valid_instance_of_merges_config(self):
-        """When instanceOf references a valid node, config is merged."""
-        original = GraphNode(
-            id="orig",
-            data=NodeData(
-                label="original",
-                nodeType=NodeType.MODEL_SCORE,
-                config={"output_column": "prediction", "task": "regression"},
-            ),
-        )
-        instance = GraphNode(
-            id="inst1",
-            data=NodeData(
-                label="my_instance",
-                nodeType=NodeType.POLARS,
-                config={"instanceOf": "orig"},
-            ),
-        )
-        node_map = {"orig": original, "inst1": instance}
-        result = resolve_instance_node(instance, node_map)
-        # Should merge original's type and config
-        assert result.data.nodeType == NodeType.MODEL_SCORE
-        assert result.data.config["output_column"] == "prediction"
-        assert result.data.config["instanceOf"] == "orig"
-
-    def test_instance_preserves_own_id_and_label(self):
-        """Merged instance keeps its own id and label."""
-        original = GraphNode(
-            id="orig",
-            data=NodeData(label="original", nodeType=NodeType.MODEL_SCORE, config={}),
-        )
-        instance = GraphNode(
-            id="inst1",
-            data=NodeData(
-                label="my_instance",
-                nodeType=NodeType.POLARS,
-                config={"instanceOf": "orig"},
-            ),
-        )
-        node_map = {"orig": original, "inst1": instance}
-        result = resolve_instance_node(instance, node_map)
-        assert result.id == "inst1"
-        assert result.data.label == "my_instance"
-
-    def test_empty_instance_of_returns_unchanged(self):
-        """Empty string instanceOf is treated as no reference."""
-        node = GraphNode(
-            id="n1",
-            data=NodeData(
-                label="node",
-                nodeType=NodeType.POLARS,
-                config={"instanceOf": ""},
-            ),
-        )
-        result = resolve_instance_node(node, {"n1": node})
-        assert result is node
-
-    def test_no_instance_of_key_returns_unchanged(self):
-        """Node without instanceOf in config is returned as-is."""
-        node = GraphNode(
-            id="n1",
-            data=NodeData(label="node", nodeType=NodeType.POLARS, config={}),
-        )
-        result = resolve_instance_node(node, {"n1": node})
-        assert result is node
 
 
 # ===========================================================================

@@ -358,7 +358,6 @@ def collect_node_configs(graph: PipelineGraph) -> dict[str, str]:
     ``"config/banding/optimiser_banding.json"``) to JSON content string.
 
     Nodes without a config folder (transforms, submodels) are skipped.
-    Instance nodes are skipped (they reference an original).
     Nodes whose config failed to load (``_load_error`` marker) are skipped
     so the original file on disk is preserved.
     """
@@ -366,8 +365,6 @@ def collect_node_configs(graph: PipelineGraph) -> dict[str, str]:
     for node in graph.nodes:
         nt = node.data.nodeType
         if not node_emits_sidecar(node):
-            continue
-        if node.data.config.get("instanceOf"):
             continue
         if node.data.config.get("_load_error"):
             continue

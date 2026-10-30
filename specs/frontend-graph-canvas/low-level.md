@@ -66,7 +66,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/utils/makePreviewData.ts` | `makePreviewData` — `PreviewData` constructor with defaults. |
 | `frontend/src/utils/columnFingerprint.ts` | `columnFingerprint`/`columnsEqualByFingerprint` — collision-safe column-schema fingerprinting. |
 | `frontend/src/utils/activePreview.ts` | `previewForActiveNode` — filters preview data to the currently active node. |
-| `frontend/src/utils/validateConfigRefs.ts` | `validateConfigRefs`/`formatConfigRefWarnings` — flags `instanceOf` fields pointing at non-existent node ids; edge-name selectors are validated against their target's exact incoming-edge identities instead. |
+| `frontend/src/utils/validateConfigRefs.ts` | `validateConfigRefs`/`formatConfigRefWarnings` — flags submodel occurrence `instanceOf` fields pointing at non-existent owner occurrences; edge-name selectors are validated against their target's exact incoming-edge identities instead. |
 | `frontend/src/utils/layout.ts` | `getLayoutedElements` plus `nodeIdsNeedingLayout`/`mergeLayoutedNodePositions` for partial imported-graph layout; finite positions including the origin are authoritative. Also owns `clusterSnap`/`alignPositions` coordinate snapping. |
 | `frontend/src/utils/connectionValidation.ts` | `isPipelineConnectionValid` — the graph-level `isValidConnection` React Flow validator, including ordinary executable input-name uniqueness, generic-submodel-input name lookup/allocation policy, strict public-port validation and one-binding-per-input enforcement, and null-API-handle rejection in every gesture direction. |
 | `frontend/src/utils/flowElements.ts` | `appNode`/`appEdge`/`nodeLabel`/`edgeId`/`deselectNodes`/`selectOnlyNode` — node/edge factories and id/selection helpers. |
@@ -1783,7 +1783,7 @@ again through the editor and save paths.
     previously-selected-node data hidden; null when there's no active node
     or preview.
   - `frontend/src/utils/__tests__/validateConfigRefs.test.ts` — clean graphs; valid `data_input`
-    reference; stale `data_input`/`banding_source`/`instanceOf` detection;
+    reference; stale submodel owner detection;
     multi-node broken-ref aggregation; empty-string and non-string refs
     ignored; submodel-exported target resolution from canonical nested
     `{graph:{nodes}}` metadata; a target absent from

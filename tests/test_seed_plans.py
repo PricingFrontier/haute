@@ -1566,7 +1566,10 @@ def test_listed_plan_drops_a_seed_built_from_a_recomputed_point(
 def test_preview_planner_reads_instance_nodes_through_their_originals(
     project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from haute._flatten import flatten_graph
     from haute._seed_plans import preview_input_node_ids
+    from haute._submodel_instances import qualified_runtime_node_id
+    from haute.routes._submodel_ops import create_node_instance_graph
 
     graph = _csv_joined(project)
     graph = graph.model_copy(
@@ -1574,29 +1577,51 @@ def test_preview_planner_reads_instance_nodes_through_their_originals(
             "nodes": [
                 *graph.nodes,
                 _node("G", NodeType.POLARS, _code("df = J.group_by('a').agg(pl.col('d').sum())")),
-                _node("GI", NodeType.POLARS, {"instanceOf": "G"}),
-                _node("pi", NodeType.DATA_INPUT, {"instanceOf": "p"}),
-                _node("K", NodeType.POLARS, _code("df = pi.join(GI, on='a', how='left')")),
             ],
-            "edges": [
-                *graph.edges,
-                GraphEdge(id="g1", source="J", target="G"),
-                GraphEdge(id="g2", source="J", target="GI"),
-                GraphEdge(id="g3", source="pi", target="K"),
-                GraphEdge(id="g4", source="GI", target="K"),
-            ],
+            "edges": [*graph.edges, GraphEdge(id="g1", source="J", target="G")],
         }
     )
+    grouped = create_node_instance_graph(
+        graph, "G", "grouped", read_utility=lambda _: pytest.fail("No utility expected")
+    )
+    graph = grouped.graph
+    graph.edges.append(
+        GraphEdge(id="copy_input", source="J", target=grouped.instance_name, targetHandle="in__J")
+    )
+    inputs = create_node_instance_graph(
+        graph, "p", "inputs", read_utility=lambda _: pytest.fail("No utility expected")
+    )
+    graph = inputs.graph
+    graph.nodes.append(
+        _node(
+            "K",
+            NodeType.POLARS,
+            _code(f"df = {inputs.instance_name}.join({grouped.instance_name}, on='a', how='left')"),
+        )
+    )
+    graph.edges.extend(
+        [
+            GraphEdge(id="g3", source=inputs.instance_name, target="K", sourceHandle="out__p"),
+            GraphEdge(id="g4", source=grouped.instance_name, target="K", sourceHandle="out__G"),
+        ]
+    )
+    graph = flatten_graph(graph)
     prepared = _record_preparation(monkeypatch, project)
-
-    # The instance runs its original's group-by, so it is a capture point.
     decision = resolve_seed_plan(_preview(graph, "K"), store=store)
-    assert decision.captures["GI"].kind is CaptureKind.MATERIALISING
-    # And the Data Input instance reads its original's CSV snapshot.
-    listed = preview_input_node_ids(graph, "K", source="live", store=store)
-    assert sorted(listed) == ["c", "p", "pi"]
+    assert (
+        decision.captures[qualified_runtime_node_id(grouped.instance_name, "G_node")].kind
+        is CaptureKind.MATERIALISING
+    )
+    expected = sorted(
+        [
+            "c",
+            qualified_runtime_node_id(inputs.owner_name, "p_node"),
+            qualified_runtime_node_id(inputs.instance_name, "p_node"),
+        ]
+    )
+    assert sorted(preview_input_node_ids(graph, "K", source="live", store=store)) == expected
     open_seed_plan(_preview(graph, "K"), store=store).close()
-    assert [sorted(order) for order in prepared] == [["c", "p", "pi"]]
+    assert [sorted(order) for order in prepared] == [expected]
 
 
 # ---------------------------------------------------------------------------

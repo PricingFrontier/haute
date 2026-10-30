@@ -14,7 +14,6 @@ import polars as pl
 
 from haute._executable_names import RESERVED_NAMES, reserved_input_problem
 from haute._global_constants import bind_code_view
-from haute._graph_utils import build_instance_mapping
 from haute._sandbox import (
     UnsafeCodeError,
     compile_project_code,
@@ -42,7 +41,6 @@ def _exec_user_code(
     dfs: tuple[_Frame, ...],
     extra_ns: dict[str, Any] | None = None,
     orig_source_names: list[str] | None = None,
-    input_mapping: dict[str, str] | None = None,
     *,
     alias_first_input_as_df: bool = False,
 ) -> _Frame:
@@ -58,11 +56,14 @@ def _exec_user_code(
     for i, d in enumerate(dfs):
         if i < len(src_names):
             local_ns[src_names[i]] = d
-    if orig_source_names:
-        mapping = build_instance_mapping(orig_source_names, src_names, input_mapping)
-        for orig, inst in mapping.items():
-            if orig not in local_ns and inst in local_ns:
-                local_ns[orig] = local_ns[inst]
+    if orig_source_names is not None:
+        # Bind together: one logical name may be another input's current name.
+        local_ns.update(
+            {
+                logical: local_ns[current]
+                for logical, current in zip(orig_source_names, src_names, strict=True)
+            }
+        )
     # ``df`` has its own rule below; the other reserved names would replace
     # what node code reads under them (polars, the constants view).
     reserved_inputs = [name for name in local_ns if name in RESERVED_NAMES]

@@ -2,8 +2,10 @@ import { describe, it, expect } from "vitest"
 import { validateConfigRefs, formatConfigRefWarnings } from "../validateConfigRefs"
 import type { Node } from "@xyflow/react"
 
-function makeNode(id: string, label: string, config: Record<string, unknown> = {}): Node {
-  return { id, position: { x: 0, y: 0 }, data: { label, nodeType: "polars", config } }
+function makeNode(id: string, label: string, config: Record<string, unknown> = {}, nodeType = "polars"): Node {
+  return { id, position: { x: 0, y: 0 }, data: { label, nodeType, config:
+    nodeType === "submodel" ? { definitionId: "definition", alias: id, ...config } : config,
+  } }
 }
 
 describe("validateConfigRefs", () => {
@@ -39,7 +41,7 @@ describe("validateConfigRefs", () => {
 
   it("detects stale instanceOf reference", () => {
     const nodes = [
-      makeNode("inst1", "Instance", { instanceOf: "original_gone" }),
+      makeNode("inst1", "Instance", { instanceOf: "original_gone" }, "submodel"),
     ]
     const warnings = validateConfigRefs(nodes)
     expect(warnings).toHaveLength(1)
@@ -49,7 +51,7 @@ describe("validateConfigRefs", () => {
   it("detects multiple broken refs across nodes", () => {
     const nodes = [
       makeNode("n1", "Node1", { data_input: "missing1" }),
-      makeNode("n2", "Node2", { instanceOf: "missing2" }),
+      makeNode("n2", "Node2", { instanceOf: "missing2" }, "submodel"),
     ]
     const warnings = validateConfigRefs(nodes)
     expect(warnings).toHaveLength(1)
@@ -70,83 +72,15 @@ describe("validateConfigRefs", () => {
     expect(validateConfigRefs(nodes)).toEqual([])
   })
 
-  // ── submodel-aware resolution ──────────────────────────────────────
-  // A top-level node can legitimately reference a node that is defined
-  // *inside* a submodel's graph (e.g. `instanceOf` an original that lives in
-  // a submodel). validateConfigRefs must treat submodel-exported node ids as
-  // valid targets, mirroring NodePanel.tsx#resolveInstanceOriginal — otherwise
-  // it false-positives on valid pipelines (the `competitor_features` bug).
-
-  it("does not warn when instanceOf references a submodel-exported node (nested shape)", () => {
-    // Reproduces the reported bug: `competitor_features` is a submodel child,
-    // referenced top-level via instanceOf.
-    const nodes = [
-      makeNode("premium", "premium"),
-      makeNode("competitor_features_scenarios", "competitor_features_scenarios", {
-        instanceOf: "competitor_features",
-      }),
-    ]
-    const submodels = {
-      model_stuff: {
-        file: "modules/model_stuff.py",
-        graph: {
-          nodes: [
-            { id: "sale_flag", data: { label: "sale_flag" } },
-            { id: "competitor_features", data: { label: "competitor_features" } },
-          ],
-          edges: [{ id: "e1", source: "sale_flag", target: "competitor_features" }],
-        },
-      },
-    }
-    expect(validateConfigRefs(nodes, submodels)).toEqual([])
+  it("does not accept an ordinary node as an occurrence owner", () => {
+    expect(validateConfigRefs([makeNode("owner", "owner"), makeNode("copy", "copy", { instanceOf: "owner" }, "submodel")]))
+      .toEqual([{ nodeId: "copy", nodeLabel: "copy", field: "instanceOf", referencedId: "owner" }])
   })
 
-  it("still warns when instanceOf target is absent from both graph and submodels", () => {
-    const nodes = [
-      makeNode("inst", "Instance", { instanceOf: "not_anywhere" }),
-    ]
-    const submodels = {
-      model_stuff: { graph: { nodes: [{ id: "competitor_features", data: { label: "x" } }], edges: [] } },
-    }
-    const warnings = validateConfigRefs(nodes, submodels)
-    expect(warnings).toHaveLength(1)
-    expect(warnings[0]).toEqual({
-      nodeId: "inst",
-      nodeLabel: "Instance",
-      field: "instanceOf",
-      referencedId: "not_anywhere",
-    })
+  it("accepts an occurrence whose owner is in its parent graph", () => {
+    expect(validateConfigRefs([makeNode("owner", "owner", {}, "submodel"), makeNode("copy", "copy", { instanceOf: "owner" }, "submodel")])).toEqual([])
   })
 
-  it("does not validate executable input names against submodel node ids", () => {
-    // Submodels exist but none export the referenced id → not over-suppressed.
-    const nodes = [makeNode("opt", "Optimiser", { data_input: "deleted_node" })]
-    const submodels = {
-      m: { graph: { nodes: [{ id: "something_else", data: { label: "y" } }], edges: [] } },
-    }
-    const warnings = validateConfigRefs(nodes, submodels)
-    expect(warnings).toEqual([])
-  })
-
-  it("handles an omitted submodel collection", () => {
-    const nodes = [makeNode("inst", "Instance", { instanceOf: "missing" })]
-    expect(validateConfigRefs(nodes)).toHaveLength(1)
-    expect(validateConfigRefs(nodes, undefined)).toHaveLength(1)
-    expect(validateConfigRefs(nodes, null)).toHaveLength(1)
-    expect(validateConfigRefs(nodes, {})).toHaveLength(1)
-  })
-
-  it("tolerates malformed submodel metadata without crashing", () => {
-    const nodes = [makeNode("inst", "Instance", { instanceOf: "real_target" })]
-    const submodels = {
-      bad_string: "not an object",
-      bad_nodes: { graph: { nodes: "not an array" } },
-      no_nodes: { graph: {} },
-      good: { graph: { nodes: [{ id: "real_target", data: { label: "ok" } }] } },
-    } as unknown as Record<string, unknown>
-    // The valid submodel still resolves `real_target`, the junk is ignored.
-    expect(validateConfigRefs(nodes, submodels)).toEqual([])
-  })
 })
 
 describe("formatConfigRefWarnings", () => {

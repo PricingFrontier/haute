@@ -557,21 +557,6 @@ def test_calling_a_source_with_a_frame_fails_loudly(tmp_path: Path) -> None:
         namespace["rates"](pl.LazyFrame({"base": [1]}))
 
 
-def test_calling_an_instance_fails_as_a_run_does() -> None:
-    pipeline = haute.Pipeline("instances")
-
-    @pipeline.polars
-    def original(x: pl.LazyFrame) -> pl.LazyFrame:
-        df = x
-        return df
-
-    @pipeline.instance(of="original", inputMapping={"x": "y"})
-    def copy(y): ...
-
-    with pytest.raises(ExecutionError, match="instanceOf"):
-        copy(pl.LazyFrame({"a": [1]}))
-
-
 # ---------------------------------------------------------------------------
 # Submodel definitions: sidecars belong to the owning pipeline
 # ---------------------------------------------------------------------------

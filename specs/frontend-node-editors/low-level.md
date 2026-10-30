@@ -296,7 +296,7 @@ target file need not exist yet. A format whose input capability reports
 folder** action to the browser's header once it has opened a folder below the
 project root; it selects that folder as the path.
 
-**Shared Transform tab.** Known non-instance Data Input, External File, Scenario
+**Shared Transform tab.** Known Data Input, External File, Scenario
 Expander, Rating Step, and Model Score nodes expose `Config`, `Transform`, then
 (when applicable) `Columns` tabs. Their supplementary code is rendered only in
 the shared `PolarsCodePanel`; Config retains only the node-specific settings,
@@ -895,7 +895,7 @@ contract is owned by
 The behaviour is defined by
 [the modelling/optimiser UI contract](../frontend-modelling-optimiser-ui/high-level.md#optimiser-config-panes).
 
-`frontend/src/panels/NodePanel.tsx` renders an optimiser strip for every non-instance optimiser
+`frontend/src/panels/NodePanel.tsx` renders an optimiser strip for every optimiser
 node from `OPTIMISER_PANES`: Data, Factors, Constraints, Solve and Export, in both modes.
 It uses the same shared tab control, remembers the pane per node in the UI store, and opens Data
 when none is remembered, for both the tab and the editor body. Its descriptors add

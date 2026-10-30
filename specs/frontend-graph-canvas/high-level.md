@@ -338,7 +338,7 @@ candidate, with the error toast.
   share another). Generic Duplicate is unavailable for a submodel occurrence,
   and the handler directs callers to Create Instance. The palette, duplicate,
   paste, instance, and context-menu paths consume the same singleton metadata,
-  matching the backend save invariant. Create Instance also refuses a Source
+  matching the backend save invariant. Create Instance also refuses a Data Output (two writers to one destination) and a Source
   Switch, which routes by its own input names; the instance guard lives in the shared
   handler rather than in each caller's enabled-state check, so a new entry
   point cannot reach an unguarded path. Creating an

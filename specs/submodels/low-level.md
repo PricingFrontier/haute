@@ -496,7 +496,7 @@ Acquires `save_lock` and runs the body in a threadpool, as create does:
    mismatch). The parent is not parsed.
 2. Refuse with `400` and the reason a `node_id` absent from the submitted
    graph, a submodel occurrence (its instance is the browser's own transform),
-   a document-wide singleton or a Source Switch.
+   a document-wide singleton, a Source Switch or a Data Output.
 3. Name the definition after the node's executable name, suffixed `_2`, `_3`
    until no definition in the graph and no module in the pipeline's `modules/`
    folder has that name under any casing.
@@ -674,7 +674,14 @@ scalar input selectors follow renamed edges. A collision refuses the entire edit
 
 ## Testing
 
-- `tests/test_node_instance_proof.py` gates phase-4 type moves with the one-node,
+- `tests/test_removed_node_instances.py` checks parser refusals of `@pipeline.instance`
+  and `of=` on every node decorator, config refusals on every non-occurrence type,
+  the exact one-node-submodel remediation, unavailable recovery with no reset or
+  recover, Save refusing without writes, the absence of the live DSL decorator,
+  and live registration refusing the removed reuse keywords.
+  `frontend/src/panels/__tests__/NodePanel.test.tsx` checks the diagnostic and removal-only UI.
+
+- `tests/test_node_instance_proof.py` proves each supported type with the one-node,
   differently named input proof: output preview and cell trace, `haute run`, a
   standalone saved `pipeline.run()`, canonical code/config/port round trip, deploy
   scoring parity, and a real job for Model Training and Optimiser. Each test owns
@@ -683,14 +690,14 @@ scalar input selectors follow renamed edges. A collision refuses the entire edit
   have no input to remap; sink types have no output to preview or trace. Transform, Load File,
   Data Input, Constant, Banding, Rating Step, Model Score, Edge Join, Scenario
   Expander, Model Training, Explore, Optimiser and Apply Optimisation pass.
-  Data Output alone remains on node-level instances: its strict xfail records the
-  deliberate refusal of two writers to one destination, registered in
-  `tests/test_test_debt.py`. Phase 5 withdraws its Create Instance action.
+  Data Output has no Create Instance action: two writers to one destination are
+  refused. Its route and editor refusals are covered in `tests/test_submodel_routes.py`
+  and `frontend/src/hooks/__tests__/useNodeHandlers.test.ts`.
   The training regression also trains an owner and two instances, reads all three
   artifact sets, and compares exported Model Score preview and deployed predictions.
 - `frontend/src/utils/nodeTypes.ts` owns `WRAPPED_INSTANCE_TYPES`, the browser's
-  phase-4 gate. `frontend/src/hooks/__tests__/useNodeHandlers.test.ts` checks every
-  moved and retained type, and one resolved wrapped-graph commit/Undo/Redo.
+  supported type set. `frontend/src/hooks/__tests__/useNodeHandlers.test.ts` checks every
+  supported type and the Data Output refusal, and one resolved wrapped-graph commit/Undo/Redo.
 - `frontend/src/hooks/__tests__/useSubmodelNavigation.test.ts` checks atomic
   refusal on request/identity failure, a missing returned instance, stale state,
   and a drilled view.

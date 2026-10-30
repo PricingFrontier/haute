@@ -175,7 +175,7 @@ def _instance_mapping_to_pl() -> PipelineGraph:
         nodes=[
             _node("claims"),
             _node("rated"),
-            _node("rated_again", instanceOf="rated", inputMapping={"pl": "claims"}),
+            _node("rated_again", inputMapping={"pl": "claims"}),
         ],
         edges=[
             GraphEdge(id="e1", source="claims", target="rated"),

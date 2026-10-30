@@ -180,22 +180,6 @@ class TestAddNode:
         assert not absent & set(saved)
         assert {key: saved[key] for key in config} == config
 
-    def test_an_instance_takes_no_palette_config(self):
-        base = _graph([_node("original", steps=[{"id": "start", "kind": "source", "input": "a"}])])
-        out = _apply(
-            base,
-            [
-                {
-                    "op": "add_node",
-                    "node_type": "polars",
-                    "name": "copy",
-                    "config": {"instanceOf": "original"},
-                }
-            ],
-        )
-
-        assert _get(out, "copy").data.config == {"instanceOf": "original"}
-
     def test_submodel_types_rejected(self):
         for bad in ("submodel", "submodelPort"):
             with pytest.raises(OpValidationError):
@@ -952,67 +936,6 @@ class TestEditSteps:
 
         assert excinfo.value.fix is not None and _FRAME_FORM in excinfo.value.fix
 
-    @pytest.mark.parametrize(
-        ("ops", "field"),
-        [
-            (_edit_steps("copy", {"remove": "logic"}), "steps"),
-            (
-                [
-                    {
-                        "op": "update_node",
-                        "node": "copy",
-                        "config": {"steps": [{"id": "start", "kind": "source", "input": "src"}]},
-                    }
-                ],
-                "steps",
-            ),
-            ([{"op": "update_node", "node": "copy", "config": {"code": "df = src"}}], "code"),
-            (
-                [
-                    {
-                        "op": "add_node",
-                        "node_type": "polars",
-                        "name": "twin",
-                        "config": {"instanceOf": "stepped", "code": "df = src"},
-                    }
-                ],
-                "code",
-            ),
-        ],
-    )
-    def test_an_instance_is_refused_pointing_at_its_original(self, ops: list[dict], field: str):
-        """An instance runs its original's configuration; its own would never be read."""
-
-        base = _stepped_graph()
-        graph = _graph([*base.nodes, _node("copy", instanceOf="stepped")], list(base.edges))
-
-        with pytest.raises(OpValidationError) as excinfo:
-            _apply(graph, ops)
-
-        assert "instance of 'stepped'" in str(excinfo.value)
-        assert excinfo.value.where["field"] == field
-        assert excinfo.value.fix is not None
-        assert "'stepped'" in excinfo.value.fix and "update_node {steps" not in excinfo.value.fix
-
-    def test_detaching_an_instance_writes_its_own_steps(self):
-        base = _stepped_graph()
-        graph = _graph([*base.nodes, _node("copy", instanceOf="stepped")], list(base.edges))
-        steps = [{"id": "start", "kind": "source", "input": "src"}]
-
-        out = _apply(
-            graph,
-            [
-                {
-                    "op": "update_node",
-                    "node": "copy",
-                    "config": {"instanceOf": None, "steps": steps},
-                }
-            ],
-        )
-
-        config = _get(out, "copy").data.config
-        assert "instanceOf" not in config and config["steps"] == steps
-
     def test_a_node_type_without_steps_is_refused(self):
         graph = _graph([_node("out", "output", fields=["x"])])
 
@@ -1212,21 +1135,6 @@ class TestRenameNode:
         assert _get(out, "sink").data.config[key] == expected
         assert consumer.data.config[key] != expected
 
-    def test_rename_rewrites_the_input_keys_of_the_targets_instances(self):
-        graph = _graph(
-            [
-                _node("src", "dataInput"),
-                _node("sink", steps=[{"id": "s", "kind": "source", "input": "src"}]),
-                _node("copy", instanceOf="sink", inputMapping={"src": "other"}),
-                _node("other", "dataInput"),
-            ],
-            [_edge("src", "sink"), _edge("other", "copy")],
-        )
-
-        out = _apply(graph, [{"op": "rename_node", "node": "src", "new_name": "renamed"}])
-
-        assert _get(out, "copy").data.config["inputMapping"] == {"renamed": "other"}
-
     def test_rename_with_stepped_mapped_and_free_code_consumers_lists_only_the_code(self):
         from haute.assistant._ops import RenameConsumersError
 
@@ -1340,24 +1248,6 @@ class TestRenameNode:
         assert excinfo.value.code == "rename_has_consumers"
         assert excinfo.value.consumers == (("sink", field),)
         assert "'sink'" in str(excinfo.value) and field in str(excinfo.value)
-
-    def test_rename_refuses_code_and_instances_that_name_the_node(self):
-        from haute.assistant._ops import RenameConsumersError
-
-        graph = _graph(
-            [
-                _node("src", "dataInput"),
-                _node("sink", code="df = src"),
-                _node("copy", instanceOf="sink", inputMapping={"src": "src"}),
-                _node("twin", instanceOf="src"),
-            ],
-            [_edge("src", "sink"), _edge("src", "copy")],
-        )
-
-        with pytest.raises(RenameConsumersError) as excinfo:
-            _apply(graph, [{"op": "rename_node", "node": "src", "new_name": "renamed"}])
-
-        assert set(excinfo.value.consumers) == {("sink", "code"), ("twin", "instanceOf")}
 
     def test_rename_with_only_edge_consumers_applies(self):
         graph = _graph(

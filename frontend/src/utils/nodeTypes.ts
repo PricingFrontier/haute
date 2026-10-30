@@ -10,8 +10,8 @@ import {
 } from "../types/node"
 
 export const NODE_TYPES = PIPELINE_NODE_TYPES
-// Each moved type passes tests/test_node_instance_proof.py. Data Output retains
-// node-level instances: two writers to one destination are refused by design.
+// Reusable plain nodes are wrapped in a one-node definition.
+// Data Output cannot be reused: two writers to one destination are refused.
 export const WRAPPED_INSTANCE_TYPES: ReadonlySet<string> = new Set([
   NODE_TYPES.POLARS, NODE_TYPES.DATA_INPUT, NODE_TYPES.CONSTANT, NODE_TYPES.BANDING,
   NODE_TYPES.RATING_STEP, NODE_TYPES.MODEL_SCORE, NODE_TYPES.EDGE_JOIN,

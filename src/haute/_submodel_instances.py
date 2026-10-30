@@ -30,7 +30,6 @@ from haute._types import (
 )
 from haute.errors import ParseError
 
-_GLOBAL_NODE_REFERENCE_FIELDS: frozenset[str] = frozenset({"instanceOf"})
 _INPUT_SELECTOR_FIELDS: dict[NodeType, frozenset[str]] = {
     NodeType.OPTIMISER: frozenset({"data_input", "banding_source", "analysis_input"}),
     NodeType.OPTIMISER_APPLY: frozenset({"ratebook_input"}),
@@ -468,9 +467,7 @@ def rewrite_boundary_input_names(
 
         steps = config.get("steps")
         # Transform and Load File code address their inputs by edge name.
-        names_inputs = stepped_surface_allows_input_references(
-            node.data.nodeType
-        ) and not config.get("instanceOf")
+        names_inputs = stepped_surface_allows_input_references(node.data.nodeType)
         if names_inputs and isinstance(steps, list):
             # Steps hold the edge names themselves, so the boundary rename
             # rewrites the references inside the steps rather than recording
@@ -523,47 +520,8 @@ def rewrite_boundary_input_names(
     return rewritten
 
 
-def _rewrite_config_references(
-    node: GraphNode,
-    *,
-    instance: ResolvedSubmodelInstance,
-    reference_map: dict[str, str],
-) -> dict[str, Any]:
-    config = dict(node.data.config)
-    for field in _GLOBAL_NODE_REFERENCE_FIELDS:
-        if field not in config:
-            continue
-        raw_reference = config[field]
-        if raw_reference is None or raw_reference == "":
-            continue
-        if not isinstance(raw_reference, str):
-            raise ParseError(
-                "Submodel node-id config reference must be a string.",
-                instance_id=instance.node.id,
-                definition_id=instance.config.definition_id,
-                local_node_id=node.id,
-                field=field,
-                value=raw_reference,
-            )
-        qualified = reference_map.get(raw_reference)
-        if qualified is None:
-            raise ParseError(
-                "Submodel config contains a stale declared node-id reference.",
-                instance_id=instance.node.id,
-                definition_id=instance.config.definition_id,
-                local_node_id=node.id,
-                field=field,
-                reference=raw_reference,
-                known_reference_ids=sorted(reference_map),
-            )
-        config[field] = qualified
-
-    return config
-
-
 def _clone_definition(
     instance: ResolvedSubmodelInstance,
-    reference_map: dict[str, str],
 ) -> tuple[list[GraphNode], list[GraphEdge], dict[str, str]]:
     definition_graph = instance.definition.graph
     local_ids = [node.id for node in definition_graph.nodes]
@@ -595,11 +553,7 @@ def _clone_definition(
                     ),
                     description=node.data.description,
                     nodeType=node.data.nodeType,
-                    config=_rewrite_config_references(
-                        node,
-                        instance=instance,
-                        reference_map=reference_map,
-                    ),
+                    config=dict(node.data.config),
                 ),
             },
         )
@@ -760,19 +714,12 @@ def expand_submodel_instances(
         )
 
     selected = [instances[node.id] for node in graph.nodes if node.id in selected_ids]
-    id_maps = {
-        instance.node.id: {
-            node.id: qualified_runtime_node_id(instance.node.id, node.id)
-            for node in instance.definition.graph.nodes
-        }
-        for instance in selected
-    }
-    reference_maps = {instance_id: dict(id_map) for instance_id, id_map in id_maps.items()}
-
+    id_maps: dict[str, dict[str, str]] = {}
     cloned_nodes: list[GraphNode] = []
     cloned_edges: list[GraphEdge] = []
     for instance in selected:
-        nodes, edges, _ = _clone_definition(instance, reference_maps[instance.node.id])
+        nodes, edges, id_map = _clone_definition(instance)
+        id_maps[instance.node.id] = id_map
         cloned_nodes.extend(nodes)
         cloned_edges.extend(edges)
 
