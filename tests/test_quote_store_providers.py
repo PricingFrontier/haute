@@ -21,6 +21,7 @@ from click.testing import CliRunner
 from fastapi.testclient import TestClient
 from sqlalchemy.dialects import mssql, postgresql
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.schema import CreateTable
 
 from haute._credential_security import validate_credential_free_uri
@@ -45,6 +46,7 @@ from haute._quote_store._providers import (
     retypes_in_place,
 )
 from haute._quote_store._schema import store_schema, structure
+from haute._quote_store._store import reaching
 from haute._sandbox import _get_project_root, set_project_root
 from haute._workbench_app import create_app, hosted_store, store_dependencies
 from haute._workbench_config import StoreEnvironment
@@ -226,6 +228,33 @@ def test_a_sign_in_whose_variable_holds_nothing_is_refused_naming_the_variable()
         resolve_store(declared, "prod", environ)
     with pytest.raises(QuoteStoreEnvironmentError, match="STORE_PASSWORD"):
         resolve_store(declared, "prod", {**environ, "STORE_PASSWORD": "  "})
+
+
+def test_a_url_that_does_not_parse_is_refused_without_repeating_it() -> None:
+    declared = (StoreEnvironment("prod", "sqlserver", "managed-identity"),)
+
+    with pytest.raises(QuoteStoreEnvironmentError, match="is not a connection URL") as refused:
+        resolve_store(declared, "prod", {"HAUTE_STORE_URL": "hidden-server hidden-database"})
+    assert "hidden" not in str(refused.value)
+
+
+def test_a_connection_the_server_refuses_is_said_without_the_drivers_words() -> None:
+    # psycopg's and pyodbc's own text names the server, its port and who signs in.
+    said = 'connection to server at "hidden-host", port 5432 failed: for user "hidden-user"'
+    url = "postgresql+psycopg://hidden-host/quotes"
+
+    with pytest.raises(QuoteStoreEnvironmentError) as refused, reaching(url, "prod"):
+        raise OperationalError(None, None, Exception(said))
+
+    assert "The prod quote store's database could not be reached" in str(refused.value)
+    assert "hidden" not in str(refused.value)
+    assert refused.value.__suppress_context__ and refused.value.__cause__ is None
+    # A statement's failure, and anything on dev's SQLite file, is the store's own to say.
+    statement = OperationalError("SELECT 1", {}, Exception("deadlock"))
+    with pytest.raises(OperationalError), reaching(url, "prod"):
+        raise statement
+    with pytest.raises(OperationalError), reaching("sqlite:///store.sqlite", "dev"):
+        raise OperationalError(None, None, Exception("unable to open database file"))
 
 
 # ── Each connection signed in as it is made ──────────────────────────────
@@ -537,6 +566,28 @@ def test_a_server_plan_is_shown_as_the_sql_that_engine_runs(server: Target) -> N
             reference="A-1",
         )
         assert made.values["t_policy"][0][f"c_{moved}"] == "7"
+
+
+def test_a_sign_in_the_server_refuses_is_said_naming_no_server_or_user(server: Target) -> None:
+    wrong = SignIn("password", username="haute_nobody", secret="Wrong-p4ss-only!")
+    host = str(make_url(server.url).host)
+
+    with pytest.raises(QuoteStoreEnvironmentError) as migrating:
+        prepare_store(server.url, form(POLICY), project=PROJECT, environment=TEST, sign_in=wrong)
+    with pytest.raises(QuoteStoreEnvironmentError) as starting:
+        open_book(
+            server.url,
+            form(POLICY),
+            project=PROJECT,
+            environment=TEST,
+            haute_version="1",
+            sign_in=wrong,
+        )
+
+    for refused in (migrating, starting):
+        said = str(refused.value)
+        assert "could not be reached, or it refused the app's sign-in" in said
+        assert host not in said and "haute_nobody" not in said
 
 
 def test_a_started_app_refuses_a_sign_in_lacking_a_privilege_naming_it(server: Target) -> None:

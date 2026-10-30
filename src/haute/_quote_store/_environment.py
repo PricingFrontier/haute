@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 
 from haute._credential_security import (
     CredentialMaterialError,
@@ -95,12 +96,14 @@ def _server_location_url(environment: StoreEnvironment, url: str) -> str:
     try:
         validate_credential_free_uri(url)
         provider = provider_of(url)
-    except (CredentialMaterialError, ValueError) as exc:
-        reason = (
-            "it holds a sign-in, which the environment's auth and its variables give"
-            if isinstance(exc, CredentialMaterialError)
-            else str(exc)
-        )
+    except (CredentialMaterialError, ArgumentError, ValueError) as exc:
+        if isinstance(exc, CredentialMaterialError):
+            reason = "it holds a sign-in, which the environment's auth and its variables give"
+        elif isinstance(exc, ArgumentError):
+            # SQLAlchemy's own message would repeat the URL.
+            reason = "it is not a connection URL"
+        else:
+            reason = str(exc)
         raise QuoteStoreEnvironmentError(
             f"{STORE_URL_ENV} for the {name} store: {reason}"
         ) from None

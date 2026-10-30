@@ -73,6 +73,7 @@ from haute._quote_store._store import (
     _refuse_old_store,
     _refuse_other,
     make_engine,
+    reaching,
     writing,
 )
 from haute._workbench_form import QUOTE_DETAILS_ID, FormSpec
@@ -745,8 +746,9 @@ def plan_store(
     schema = store_schema(form, sql_schema=sql_schema)
     engine = make_engine(url, sign_in=sign_in)
     try:
-        with engine.connect() as connection:
-            return _planned(connection, schema, form, project, environment)
+        with reaching(url, environment):
+            with engine.connect() as connection:
+                return _planned(connection, schema, form, project, environment)
     finally:
         engine.dispose()
 
@@ -815,25 +817,26 @@ def prepare_store(
     mode: Mode = "dev" if environment == DEV else "hosted"
     engine = make_engine(url, sign_in=sign_in)
     try:
-        with writing(engine) as connection:
-            made = _planned(connection, schema, form, project, environment)
-            _refuse(made, restore_point, mode)
-            operations = Operations(MigrationContext.configure(connection))
-            _emit(operations, made, schema)
-            rebuilt = any(step.kind == "rebuild store" for step in made.steps)
-            _record(
-                operations,
-                schema,
-                made,
-                fresh=made.before is None or rebuilt,
-                project=project,
-                environment=environment,
-                release=release,
-                haute_version=haute_version,
-                restore_point=restore_point if mode == "hosted" else None,
-                at=now,
-            )
-            return made
+        with reaching(url, environment):
+            with writing(engine) as connection:
+                made = _planned(connection, schema, form, project, environment)
+                _refuse(made, restore_point, mode)
+                operations = Operations(MigrationContext.configure(connection))
+                _emit(operations, made, schema)
+                rebuilt = any(step.kind == "rebuild store" for step in made.steps)
+                _record(
+                    operations,
+                    schema,
+                    made,
+                    fresh=made.before is None or rebuilt,
+                    project=project,
+                    environment=environment,
+                    release=release,
+                    haute_version=haute_version,
+                    restore_point=restore_point if mode == "hosted" else None,
+                    at=now,
+                )
+                return made
     finally:
         engine.dispose()
 

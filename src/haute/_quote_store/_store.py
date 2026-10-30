@@ -41,11 +41,18 @@ from sqlalchemy import (
 )
 from sqlalchemy.engine import make_url
 from sqlalchemy.engine.reflection import Inspector
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.types import TypeDecorator, TypeEngine
 
 from haute._quote_store._providers import SignIn, make_server_engine, missing_privileges
 from haute._quote_store._schema import STORE_TABLE, StoreSchema, live, store_schema, structure
-from haute._workbench_config import DEV_ENVIRONMENT, WorkbenchError
+from haute._workbench_config import (
+    DEV_ENVIRONMENT,
+    STORE_DATABASE_ENV,
+    STORE_SERVER_ENV,
+    STORE_URL_ENV,
+    WorkbenchError,
+)
 from haute._workbench_form import QUOTE_DETAILS_ID, FormSpec
 
 #: The table an earlier Haute's quote store kept its migrations' version in, which a database
@@ -219,6 +226,30 @@ def writing(engine: Engine) -> Iterator[Connection]:
         yield connection
 
 
+def unreached(exc: BaseException) -> bool:
+    """Whether *exc* is a server database's refusal of a connection, or one that never came:
+    an error the driver raised before any statement, whose text names where the database is
+    and who signs in to it."""
+    return isinstance(exc, DBAPIError) and exc.statement is None
+
+
+@contextmanager
+def reaching(url: str, environment: str) -> Iterator[None]:
+    """A block that connects to the server database at *url*: a connection refused or never
+    made said as a :class:`QuoteStoreEnvironmentError` naming the variables that place the
+    database and sign in to it, never what the driver said of where it is or who signs in."""
+    try:
+        yield
+    except DBAPIError as exc:
+        if not unreached(exc) or make_url(url).get_backend_name() == "sqlite":
+            raise
+        raise QuoteStoreEnvironmentError(
+            f"The {environment} quote store's database could not be reached, or it refused the "
+            f"app's sign-in: check where {STORE_SERVER_ENV} and {STORE_DATABASE_ENV}, or "
+            f"{STORE_URL_ENV}, say it is and the variables its sign-in reads."
+        ) from None
+
+
 @dataclass(frozen=True, slots=True)
 class Recorded:
     """What a database's ``haute_store`` row says it holds."""
@@ -382,42 +413,43 @@ def open_engine(
     schema = store_schema(form, sql_schema=sql_schema)
     engine = make_engine(url, sign_in=sign_in)
     try:
-        with engine.connect() as connection:
-            catalogue = inspect(connection)
-            names = set(catalogue.get_table_names(schema=sql_schema))
-            _refuse_old_store(names)
-            recorded = _recorded(connection, schema) if STORE_TABLE in names else None
-            if recorded is None:
-                raise QuoteStoreMismatchError(
-                    f"This database holds no quote store yet. {_resolve(environment)}"
-                )
-            _refuse_other(recorded, project, environment)
-            wanted = structure(form)
-            held = json.loads(recorded.structure)
-            if held.get("format") != wanted["format"] or live(held) != wanted:
-                differences = _differences(held, wanted)
-                raise QuoteStoreMismatchError(
-                    "This database holds another form's tables: "
-                    + "; ".join(differences)
-                    + f". {_resolve(environment)}",
-                    differences=differences,
-                )
-            differences = _catalogue_differences(catalogue, schema)
-            if differences:
-                raise QuoteStoreMismatchError(
-                    "This database's tables are not as the store made them: "
-                    + "; ".join(differences)
-                    + f". {_resolve(environment)}",
-                    differences=differences,
-                )
-            lacking = missing_privileges(connection, schema)
-            if lacking:
-                raise QuoteStoreMismatchError(
-                    "The identity the app signs in as lacks what the quote store needs: "
-                    + "; ".join(lacking)
-                    + ". Grant them to it, and start the app again.",
-                    differences=lacking,
-                )
+        with reaching(url, environment):
+            with engine.connect() as connection:
+                catalogue = inspect(connection)
+                names = set(catalogue.get_table_names(schema=sql_schema))
+                _refuse_old_store(names)
+                recorded = _recorded(connection, schema) if STORE_TABLE in names else None
+                if recorded is None:
+                    raise QuoteStoreMismatchError(
+                        f"This database holds no quote store yet. {_resolve(environment)}"
+                    )
+                _refuse_other(recorded, project, environment)
+                wanted = structure(form)
+                held = json.loads(recorded.structure)
+                if held.get("format") != wanted["format"] or live(held) != wanted:
+                    differences = _differences(held, wanted)
+                    raise QuoteStoreMismatchError(
+                        "This database holds another form's tables: "
+                        + "; ".join(differences)
+                        + f". {_resolve(environment)}",
+                        differences=differences,
+                    )
+                differences = _catalogue_differences(catalogue, schema)
+                if differences:
+                    raise QuoteStoreMismatchError(
+                        "This database's tables are not as the store made them: "
+                        + "; ".join(differences)
+                        + f". {_resolve(environment)}",
+                        differences=differences,
+                    )
+                lacking = missing_privileges(connection, schema)
+                if lacking:
+                    raise QuoteStoreMismatchError(
+                        "The identity the app signs in as lacks what the quote store needs: "
+                        + "; ".join(lacking)
+                        + ". Grant them to it, and start the app again.",
+                        differences=lacking,
+                    )
     except Exception:
         engine.dispose()
         raise

@@ -14,7 +14,8 @@ showed. Every other change names the version of the quote it was made on. The st
 refusals answer as the app's: a quote it does not keep 404; a quote moved on 409 with the
 quote as it is now; a quote that does not take the change, one not ready to be marked final,
 a repeated save superseded and a reference held 409; values not of their columns' types, and
-anything else it refuses, 422.
+anything else it refuses, 422. A store the app cannot reach, or that refuses its sign-in, 503,
+said and logged without what the driver said of where it is.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from pydantic import BaseModel, ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from haute._json_safe import to_json_safe
+from haute._logging import get_logger
 from haute._quote_store import (
     AppQuote,
     OpenQuote,
@@ -49,6 +51,7 @@ from haute._quote_store import (
     input_rows,
 )
 from haute._quote_store._book import MAX_PAGE_SIZE, PAGE_SIZE
+from haute._quote_store._store import unreached
 from haute._workbench_app import Pricing
 from haute._workbench_form import QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, FormSpec
 from haute._workbench_tables import (
@@ -146,6 +149,9 @@ def quote_model(quote: AppQuote) -> WorkbenchAppQuote:
     )
 
 
+logger = get_logger(component="workbench.app.quotes")
+
+
 def _refusal(status: int, exc: QuoteStoreError, **extra: Any) -> HTTPException:
     return HTTPException(
         status, detail={"message": exc.message or str(exc), "error_code": exc.error_code, **extra}
@@ -185,6 +191,18 @@ async def _call(app: QuoteApp, work: Callable[[], T], identity: tuple[str, int] 
         raise _refusal(422, exc, cells=cells) from None
     except QuoteStoreError as exc:
         raise _refusal(422, exc) from None
+    except Exception as exc:
+        if not unreached(exc):
+            raise
+        # The driver's own text names the server, its port and who signs in: none of it said.
+        logger.warning("quote_store_unreachable", error_type=type(exc).__name__)
+        raise HTTPException(
+            503,
+            detail={
+                "message": "The app cannot reach its quote store just now: try again shortly.",
+                "error_code": "quote_store_unreachable",
+            },
+        ) from None
 
 
 def _editor(http: Request) -> str:

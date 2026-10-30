@@ -17,6 +17,7 @@ from urllib.parse import quote as escaped
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
 
 from haute import _workbench_app_quotes
 from haute._quote_store import (
@@ -826,6 +827,23 @@ def test_mark_final_needs_a_price_of_the_release_running(
 
 
 # ── The app's guards and pages ────────────────────────────────────────────
+
+
+def test_a_store_the_app_cannot_reach_is_answered_503_naming_none_of_it(
+    page: Page, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The driver's own words name the server, its port and who signs in.
+    said = 'connection to server at "hidden-host", port 5432 failed: for user "hidden-user"'
+
+    def unreachable(*_args: Any, **_kwargs: Any) -> Any:
+        raise OperationalError(None, None, Exception(said))
+
+    monkeypatch.setattr(QuoteBook, "page", unreachable)
+    answered = page.client.get("/api/app/quotes?view=team", headers=ANA)
+
+    assert answered.status_code == 503
+    assert answered.json()["detail"]["error_code"] == "quote_store_unreachable"
+    assert "hidden" not in answered.text
 
 
 def test_a_write_from_a_page_of_another_site_is_refused(page: Page) -> None:

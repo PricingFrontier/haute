@@ -1228,6 +1228,10 @@ Out of scope:
   in it, its tables built from the release's form as it starts, so a rebuild keeps them.
   Started with no environment named, the app keeps nothing, says so on `GET
   /api/app/release` (`quotes`), and answers its quote routes 503, naming `HAUTE_ENVIRONMENT`.
+  A server database the app, `haute app migrate` or `haute app serve` cannot reach, or that
+  refuses the sign-in, is refused naming the variables that place it and sign in to it, never
+  what the driver said, which names the server, its port and the user; a quote route meeting
+  one answers 503 (`quote_store_unreachable`), logged without it.
   A quote is named by its reference and option, the reference URL-encoded. The quote routes
   list a page of quotes (`GET /api/app/quotes`: the list, stage, search, assignee, order,
   cursor and size), create one (`POST /api/app/quotes`, made from another quote when it names
