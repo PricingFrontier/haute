@@ -28,6 +28,16 @@ from haute._quote_store._book import (
     without_app_details,
 )
 from haute._quote_store._environment import StoreLocation, resolve_store
+from haute._quote_store._migrate import (
+    MigrationRefusedError,
+    Plan,
+    Step,
+    offline_plan,
+    plan_store,
+    prepare_store,
+    render_sql,
+    render_text,
+)
 from haute._quote_store._rows import input_rows
 from haute._quote_store._store import (
     DEV,
@@ -43,7 +53,6 @@ from haute._quote_store._store import (
     StaleQuoteError,
     WriteSupersededError,
     open_engine,
-    prepare_store,
     store_url,
 )
 from haute._workbench_form import FormSpec
@@ -69,8 +78,10 @@ __all__ = [
     "DEV",
     "ActivityEntry",
     "AppQuote",
+    "MigrationRefusedError",
     "MisfitCell",
     "OpenQuote",
+    "Plan",
     "PricedOutputs",
     "QuoteActivity",
     "QuoteBook",
@@ -85,6 +96,7 @@ __all__ = [
     "ReferenceTakenError",
     "RelatedQuote",
     "Source",
+    "Step",
     "StoreLocation",
     "StaleQuoteError",
     "WriteSupersededError",
@@ -94,8 +106,12 @@ __all__ = [
     "identity_label",
     "input_rows",
     "open_book",
+    "offline_plan",
     "open_engine",
+    "plan_store",
     "prepare_store",
+    "render_sql",
+    "render_text",
     "resolve_store",
     "store_url",
     "with_details",

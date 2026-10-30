@@ -1878,11 +1878,39 @@ Out of scope:
   naming those it does. `haute_store` records the project and the environment, so an app
   pointed at another's database refuses to start naming both.
 
-  The store holds the tables of one form, as `haute_store` records them. In dev a database
-  holding none takes them as the app starts, and each table the form has changed since is
-  built again, its rows dropped and the table named; elsewhere a database holding another
-  form's tables is refused, naming each difference, and `haute app migrate` makes an empty
-  database's tables. A database of an earlier Haute's store, of another project or
+  The store holds the tables of one form, as `haute_store` records them by stable id, and
+  one planner brings a database to a release's form, in one transaction, refusing before any
+  DDL a step it cannot take: `haute app serve` runs it on dev's store as it starts, in dev's
+  mode, and `haute app migrate` on a hosted environment's before a release starts. It makes a
+  table the form gains, gives a table a nullable column the form gains, renames a table or
+  column the form renamed, in two steps through temporary names so a change of case or a swap
+  of two names works, and changes the type, rows or role of a column or table that holds no
+  value, replacing the empty column or making the empty table afresh, which loses nothing.
+  Hosted, it drops nothing the form removed and nothing that holds a value: a column or table
+  the form dropped is kept, unused, and every plan lists it with how many quotes hold values
+  in it and the DROP statement for the DBA; a migrate first compares its record with the
+  database, so a kept one the SQL side has dropped is forgotten and its name is free, while a
+  table or column the form still has that the database lacks is refused, naming it. A save
+  writes only the form's tables: a kept column of one of them is left empty for each quote
+  saved since, and a kept table, which no save touches, keeps every quote's rows as they
+  stood, and they come back with it if its id returns. Hosted, it refuses a type, rows or role
+  change on a column or table holding values, naming it, how many quotes hold values and the
+  way forward (a new column or table, or emptying it first), and a new column or table taking
+  a kept one's name. In dev it drops what the form removed and builds again what changed
+  while holding values, naming each table whose quotes' rows went and each column whose
+  values went, and builds the whole store afresh when an earlier Haute made it with other
+  columns of its own, which a hosted migrate refuses. `required` never becomes NOT NULL. Every plan says, for
+  each step, whether a migrate back to the previous release reverses it or only a restore does
+  (a change to an empty column or table that the release may then fill); a hosted plan
+  holding one is applied only given `--restore-point NAME`, the backup or point in time IT can
+  return the database to, which `haute_store` records, and dev asks for none. `haute app
+  migrate --plan` prints the plan for the environment's database without changing it;
+  `--plan --base DIR` prints it offline, from the form of the release built in `DIR`, for a
+  pull request, headed as provisional, each step that depends on the data shown as
+  conditional and a removed one shown kept with its DROP; and `--sql` prints the plan as the
+  SQL a DBA runs instead, `haute_store`'s row last.
+
+  A database of an earlier Haute's store, of another project or
   environment, or holding a table of the form's name the store did not make, is refused,
   nothing adopted, and the app does not start on a database that does not hold exactly its
   release's form's tables, as `haute_store` records them and as the database's own
@@ -2546,20 +2574,15 @@ section. The [low-level contract](low-level.md#approved-change-contract--the-quo
 names the seams, shapes and tests.
 
 - **Current limitation.** The store is the form's own tables, in dev and in the hosted
-  environments a project declares (the quote store, in Behaviour), on SQLite alone. `haute app
-  migrate` makes an empty database's tables and changes none, so a form change reaches a
-  hosted store only as a new database, and dev builds again each table the form changed, its
-  rows dropped; a started app checks its database's catalogue but not what the store may
-  do there.
-- **Unresolved target.** One planner keeps the tables in step with the form, by stable id,
-  in dev and in each hosted environment; a started app checks the privileges the store
-  needs;
-  and the store runs on SQL Server and PostgreSQL besides SQLite, each signing the app in as
-  its environment declares.
-  [WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments) builds
-  the planner, and
-  [WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql) the server
-  databases.
+  environments a project declares, changed by one planner (the quote store, in Behaviour), on
+  SQLite alone; a started app checks its database's catalogue but not what the store may do
+  there.
+- **Unresolved target.** The store runs on SQL Server and PostgreSQL besides SQLite, each
+  signing the app in as its environment declares, and a started app checks the privileges the
+  store needs ([WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql));
+  a browser journey saves a quote in `haute app serve`, reads it with SQL, marks it final,
+  amends it and saves it again
+  ([WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments)).
 - **Non-goals.** In test and prod a type, rows or role change on a column or table that holds
   values is refused, never converted; Haute drops no column or table there, adopts no table it
   did not record, and touches none of the database's other tables. No laptop reaches a hosted
@@ -2567,12 +2590,9 @@ names the seams, shapes and tests.
   The SQL Export, outcomes and policies are unchanged
   ([WB-11](../roadmap/workbench.md#wb-11--exports-from-the-app),
   [WB-13](../roadmap/workbench.md#wb-13--managing-quotes-in-the-underwriter-app)).
-- **Failure and compatibility semantics.** A started app refuses a database whose
-  catalogue does not hold its release's form, naming each difference and the command that
-  resolves it. A migrate refuses before any DDL, naming each step it cannot take, a table or
-  column the form still has that the database lacks, and a plan needing a restore point it
-  was not given. Nothing falls back: a value the store cannot hold as its column's type is
-  refused, never kept as something else.
+- **Failure and compatibility semantics.** A started app lacking a privilege the store
+  needs refuses to start, naming it. Nothing falls back: a value the store cannot hold as its
+  column's type is refused, never kept as something else.
 - **Acceptance evidence.** Each package's acceptance tests, in the testing scenarios of the
   low-level contract.
 - **Roadmap package.**
@@ -2598,39 +2618,6 @@ The host's own environment says where it is: `HAUTE_STORE_SERVER`, `HAUTE_STORE_
 and, optionally, `HAUTE_STORE_SCHEMA`, or `HAUTE_STORE_URL` holding a whole connection URL. A
 project lays its environments out as it likes, a database each, a schema each or both: Haute
 qualifies every name with the schema, the connection's default when none is named.
-
-**Schema changes.** `haute app migrate` brings an environment's tables to the release's form,
-comparing them by stable id through `haute_store`, in one transaction, and refuses, before any
-DDL, a step it cannot take. It creates a table the form gains, gives a table a nullable column
-the form gains, renames a table or column the form renamed, in two steps through temporary
-names so a change of case or a swap of two names works, and changes the type, rows or role of
-a column or table that holds no value, in place where the engine converts the pair and
-otherwise by replacing the empty column, which loses nothing. In test and prod it drops nothing
-the form removed and nothing that holds a value: a column or table the form has dropped is
-kept, unused, and every plan lists it with how many quotes hold values
-in it and the DROP statement for the DBA; a migrate first compares its record with the
-database, so one the SQL side has dropped is forgotten and its name is free, while a table or
-column the form still has that the database lacks is refused, naming it. A save writes only the
-form's tables: a kept column of one of them is left empty for each quote saved since, so its
-kept values are those of quotes not saved since, while a kept table, which no save touches,
-keeps every quote's rows as they stood, and they come back with it if its id returns.
-In test and prod it refuses a type, rows or role change on a column or table holding values,
-naming it and how many quotes hold values (the way forward is a new column, or the values
-fixed first), and a new column or table taking a kept one's name until that one is dropped.
-In dev it applies every change, drops included, and names what it dropped. `required` never
-becomes NOT NULL. Every plan says, for each step, whether a migrate back to the previous
-release reverses it, and rolling back is that migrate, then starting the previous release. In
-test and prod, a step only a restore reverses (a change to an empty column or table that the
-release may then fill) is applied only given `--restore-point NAME`, the backup or point in
-time IT can return the database to, which `haute_store` records, the plan prints and a failed
-rollout names; a plan holding one is refused without it. Dev asks for no restore point. `haute app migrate` reads the form and environments
-from the built release it is given, so CI migrates with the release it deploys. `--plan`
-prints the plan for the environment's database; `--plan --base FORM` prints it offline, from
-the change between two forms, for a pull request, headed as provisional, each step that
-depends on the data shown as conditional (a type, rows or role change made if the column or
-table is empty, else refused) and a removed one shown kept, its DROP for the DBA, as in every
-test and prod plan; and `--sql` prints it as the SQL a DBA runs. `haute app serve` migrates dev as it
-starts.
 
 **Starting the app.** A hosted app, before it serves, checks besides its catalogue that it
 holds the privileges the store needs, and refuses to start naming each it lacks.

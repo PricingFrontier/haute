@@ -1,14 +1,11 @@
-"""The quote store's database (specs/workbench): its engine, and its tables made ready for a
-form and checked against it.
+"""The quote store's database (specs/workbench): its engine, its errors, and its tables
+checked against a form.
 
-A database is the form's own tables and Haute's two (:mod:`._schema`). :func:`prepare_store`
-makes it hold a form's tables: on a database holding none it builds them; in dev, the
-analyst's laptop, where schema changes are tried, it builds again every table the form has
-changed, naming each one whose rows it dropped; elsewhere it refuses a database holding
-another form's tables, which :func:`haute app migrate`'s planner changes. :func:`open_engine`
-opens a database that holds exactly the form's tables, as ``haute_store`` records them, for
-this project and environment, and refuses any other, naming why. Nothing it does adopts a
-table it did not make or touches a table not its own.
+A database is the form's own tables and Haute's two (:mod:`._schema`), made and changed by the
+planner (:mod:`._migrate`). :func:`open_engine` opens a database that holds exactly the form's
+tables, as ``haute_store`` records them, what it keeps aside, and as its own catalogue holds
+them, for this project and environment, and refuses any other, naming why. Nothing it does
+adopts a table it did not make or touches a table not its own.
 
 On SQLite the store takes SQLAlchemy's recipe for the pysqlite driver: the driver leaves
 transactions to SQLAlchemy, which begins each with ``BEGIN``, and a write with ``BEGIN
@@ -21,10 +18,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,22 +33,16 @@ from sqlalchemy import (
     Engine,
     Float,
     Integer,
-    MetaData,
     String,
-    Table,
     create_engine,
     event,
-    insert,
     inspect,
-    literal,
     select,
-    update,
 )
 from sqlalchemy.engine.reflection import Inspector
-from sqlalchemy.schema import DropTable
 from sqlalchemy.types import TypeDecorator, TypeEngine
 
-from haute._quote_store._schema import STORE_TABLE, StoreSchema, store_schema, structure_text
+from haute._quote_store._schema import STORE_TABLE, StoreSchema, live, store_schema, structure
 from haute._workbench_config import DEV_ENVIRONMENT, WorkbenchError
 from haute._workbench_form import QUOTE_DETAILS_ID, FormSpec
 
@@ -261,15 +252,16 @@ def _refuse_other(recorded: Recorded, project: str, environment: str) -> None:
         )
 
 
-def _differences(recorded: str, wanted: str) -> list[str]:
-    """Each table whose structure differs between the *recorded* and the *wanted* schema,
-    by name, or the store's own columns when Haute's changed."""
-    old = json.loads(recorded)
-    new = json.loads(wanted)
+def _differences(recorded: dict[str, Any], wanted: dict[str, Any]) -> list[str]:
+    """Each table whose structure differs between the *recorded* schema, what it keeps aside,
+    and the *wanted* one, by name, or the store's own columns when Haute's changed."""
+    old = recorded
+    new = wanted
     if old.get("format") != new.get("format") or old.get("store_columns") != new.get(
         "store_columns"
     ):
         return ["the quote store's own columns"]
+    old = live(old)
     before = {table["id"]: table for table in old["tables"]}
     after = {table["id"]: table for table in new["tables"]}
     differences = [
@@ -283,108 +275,6 @@ def _differences(recorded: str, wanted: str) -> list[str]:
         if before.get(key) != table
     )
     return differences
-
-
-def prepare_store(
-    url: str,
-    form: FormSpec,
-    *,
-    project: str,
-    environment: str = DEV,
-    haute_version: str | None = None,
-    release: str | None = None,
-    clock: Callable[[], datetime] | None = None,
-) -> list[str]:
-    """Make the database at *url* hold *form*'s tables for *project* in *environment*;
-    answer the names of the tables whose rows it dropped, in dev alone.
-
-    A database holding none of the store's tables takes them all. In dev the tables the form
-    has changed, or no longer has, are built again, and when ``quote_details`` or the
-    store's own columns changed, every table is. In any other environment a database holding
-    another form's tables is refused, naming them: changing them is the planner's. A
-    database of an earlier Haute's store, another project's or environment's, and one holding
-    a table of the form's name the store did not make, are refused.
-    """
-    schema = store_schema(form)
-    wanted = structure_text(form)
-    now = (clock or (lambda: datetime.now(UTC)))()
-    engine = make_engine(url)
-    try:
-        with writing(engine) as connection:
-            names = set(inspect(connection).get_table_names())
-            _refuse_old_store(names)
-            recorded = _recorded(connection, schema) if STORE_TABLE in names else None
-            if recorded is None:
-                taken = sorted(names & {stored.table.name for stored in schema.tables})
-                if taken:
-                    raise QuoteStoreMismatchError(
-                        "This database holds tables of the form's names that the quote store "
-                        f"did not make ({', '.join(taken)}): the store adopts none; point it "
-                        "at another database or schema.",
-                        differences=taken,
-                    )
-                schema.metadata.create_all(connection)
-                connection.execute(
-                    insert(schema.store).values(
-                        id=1,
-                        project=project,
-                        environment=environment,
-                        release=release,
-                        haute_version=haute_version,
-                        migrated_at=now,
-                        schema=wanted,
-                    )
-                )
-                return []
-            _refuse_other(recorded, project, environment)
-            if recorded.structure == wanted:
-                return []
-            differences = _differences(recorded.structure, wanted)
-            if environment != DEV:
-                raise QuoteStoreMismatchError(
-                    "This database holds another form's tables, which the quote store does "
-                    "not change outside dev: " + "; ".join(differences) + ".",
-                    differences=differences,
-                )
-            dropped = _rebuild(connection, schema, recorded.structure, wanted)
-            connection.execute(
-                update(schema.store)
-                .where(schema.store.c.id == 1)
-                .values(
-                    release=release, haute_version=haute_version, migrated_at=now, schema=wanted
-                )
-            )
-            return dropped
-    finally:
-        engine.dispose()
-
-
-def _rebuild(connection: Connection, schema: StoreSchema, recorded: str, wanted: str) -> list[str]:
-    """Dev's rebuild: drop the tables the form changed or no longer has, every table when
-    ``quote_details`` or the store's own columns changed, and make the form's afresh; the
-    names of those whose rows went."""
-    old = {table["id"]: table for table in json.loads(recorded)["tables"]}
-    new = {table["id"]: table for table in json.loads(wanted)["tables"]}
-    everything = json.loads(recorded).get("store_columns") != json.loads(wanted).get(
-        "store_columns"
-    ) or old.get("quote_details") != new.get("quote_details")
-    names = set(inspect(connection).get_table_names())
-    gone = [table["name"] for key, table in old.items() if everything or new.get(key) != table]
-    dropped: list[str] = []
-    # Children first: every table but quote_details refers to it, and so does the activity.
-    order = [name for name in gone if name != "quote_details"]
-    if everything:
-        order.append(schema.activity.name)
-        order.append("quote_details")
-    for name in order:
-        if name not in names:
-            continue
-        held = Table(name, MetaData())
-        if connection.execute(select(literal(1)).select_from(held).limit(1)).first() is not None:
-            dropped.append(name)
-        connection.execute(DropTable(held))
-    schema.metadata.create_all(connection)
-    return [name for name in dropped if name != schema.activity.name]
 
 
 #: The kinds a column's SQL type is told apart by, the first one it is wins: what the store
@@ -480,9 +370,10 @@ def open_engine(
                     f"This database holds no quote store yet. {_resolve(environment)}"
                 )
             _refuse_other(recorded, project, environment)
-            wanted = structure_text(form)
-            if recorded.structure != wanted:
-                differences = _differences(recorded.structure, wanted)
+            wanted = structure(form)
+            held = json.loads(recorded.structure)
+            if held.get("format") != wanted["format"] or live(held) != wanted:
+                differences = _differences(held, wanted)
                 raise QuoteStoreMismatchError(
                     "This database holds another form's tables: "
                     + "; ".join(differences)

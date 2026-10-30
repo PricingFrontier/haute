@@ -117,18 +117,22 @@ Out of scope, owned elsewhere:
   8001 by default), every request signed in as the analyst's git identity, able to
   change quotes unless `--reader` signs it in as one who reads them; without an identity
   it refuses to start. It keeps the quotes saved in it in dev's quote store,
-  `.haute/app/store.sqlite`, which a rebuild leaves as it is: the form's own tables, built
-  from the release's form as it starts, each table the form has changed since built again,
-  its rows dropped and its name said.
-- `haute app migrate --environment NAME [--release DIR]` makes the quote store of the
-  hosted environment `NAME`, one the release built in `DIR` (`.haute/app/release` by default)
-  declares, at the database the host's own variables say it is at, hold the tables of that
-  release's form, before the release starts: a database holding none takes them, one holding
-  them already is left as it is, and one holding another form's tables is refused, naming
-  each that differs. An environment the release does not declare is refused naming those it
-  does, a database whose location is not given, or given twice, naming the variables, and
-  without a release built in `DIR` it names `haute app build`; each exits non-zero, and
-  nothing it prints names where the database is.
+  `.haute/app/store.sqlite`, which a rebuild leaves as it is: the form's own tables, brought
+  to the release's form as it starts by the store's planner in dev's mode, which drops what
+  the form removed and builds again what changed while holding values, naming each table
+  whose quotes' rows went and each column whose values went.
+- `haute app migrate --environment NAME [--release DIR] [--plan [--base DIR]] [--sql]
+  [--restore-point NAME]` brings the quote store of the hosted environment `NAME`, one the
+  release built in `DIR` (`.haute/app/release` by default) declares, at the database the
+  host's own variables say it is at, to that release's form before the release starts,
+  through the store's planner in a hosted environment's mode, printing each step. `--plan`
+  prints the plan and changes nothing, made offline with `--base DIR` from the form of the
+  release built there, with no database; `--sql` prints it as the SQL a DBA runs; and a plan
+  holding a step only a restore reverses is applied only given `--restore-point NAME`. A step
+  it cannot take, an environment the release does not declare, a location not given or given
+  twice, `--base` without `--plan` or `--sql`, and no release built in `DIR` are each refused
+  naming what, exiting non-zero before any DDL; nothing it prints names where the database
+  is.
 - `haute status [model_name] [--version-only]` looks up a model's latest version/stage in the MLflow
   Model Registry.
 - `haute impact [--sample] [--batch-size] [--endpoint-suffix]` scores a configured safety dataset,
@@ -255,30 +259,21 @@ Docker, or rejected build/push operations.
 
 ## Approved change contract — `haute app` and the quote store
 
-This section specifies how `haute app migrate` changes as the underwriter app's quote store
-gains declared environments and a planner; the [workbench
+This section specifies how `haute app build` changes as the underwriter app's quote store
+gains server databases; the [workbench
 contract](../workbench/high-level.md#approved-change-contract--the-quote-store-as-the-forms-own-tables)
 owns that behaviour. Every record is unresolved until its roadmap package lands and folds it
-into Behaviour above, and the last package removes this section.
+into Behaviour above, and that package removes this section.
 
-- **Current limitation.** `haute app migrate --environment NAME [--release DIR]` makes an
-  empty database's tables and changes none, and `haute app serve` builds again each table of
-  dev's store that the form changed, its rows dropped.
-- **Unresolved target.** `haute app migrate --environment NAME [--release DIR] [--plan
-  [--base FORM]] [--sql] [--restore-point NAME]` brings the named hosted environment's tables
-  to the form of the built release at `DIR`, or prints the plan, offline against `FORM` with
-  `--base`, or prints it as SQL; a hosted plan holding a step only a restore reverses is
-  applied only given a restore point, which dev never asks for, and `haute app serve` plans
-  dev's changes the same way
-  ([WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments)).
-- **Non-goals.** `haute app build` is unchanged but for the drivers its image installs
+- **Current limitation.** A release's image installs no database driver: a hosted
+  environment's database is a SQLite file.
+- **Unresolved target.** `haute app build` installs the drivers the providers of the
+  release's declared environments need, Microsoft's ODBC Driver 18 for `sqlserver`
   ([WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql)).
-- **Failure and compatibility semantics.** `haute app migrate` exits non-zero, before any DDL,
-  naming each step it refuses, a table or column the form has that the database lacks, and a
-  plan needing a restore point it was not given. Nothing it prints holds a connection URL, a
-  server or database name, or a secret.
-- **Acceptance evidence.** The planner and environment scenarios of the [workbench low-level
+- **Non-goals.** `haute app serve` and `haute app migrate` take their flags as they do.
+- **Failure and compatibility semantics.** A build for a provider whose driver the image
+  cannot take is refused naming it.
+- **Acceptance evidence.** The providers' scenarios of the [workbench low-level
   contract](../workbench/low-level.md#approved-change-contract--the-quote-store-as-the-forms-own-tables).
 - **Roadmap package.**
-  [WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments) and
   [WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql).

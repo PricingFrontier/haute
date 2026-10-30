@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import inspect, text
 
 from haute._quote_store import (
+    MigrationRefusedError,
     QuoteStoreEnvironmentError,
     QuoteStoreMismatchError,
     open_book,
@@ -104,7 +105,7 @@ def add_quote(url: str, *, vehicles: int = 0) -> None:
 
 
 def test_an_empty_database_takes_the_forms_tables_and_haute_s_two(url: str) -> None:
-    assert prepare_store(url, form(POLICY, VEHICLES), project=PROJECT) == []
+    assert prepare_store(url, form(POLICY, VEHICLES), project=PROJECT).dropped == []
 
     assert tables(url) == {"quote_details", "policy", "vehicles", "haute_store", "haute_activity"}
     [record] = rows(url, "haute_store")
@@ -117,23 +118,20 @@ def test_preparing_again_for_the_same_form_changes_nothing(url: str) -> None:
     prepare_store(url, form(POLICY, VEHICLES), project=PROJECT)
     add_quote(url, vehicles=2)
 
-    assert prepare_store(url, form(POLICY, VEHICLES), project=PROJECT) == []
+    assert prepare_store(url, form(POLICY, VEHICLES), project=PROJECT).steps == ()
     assert len(rows(url, "vehicles")) == 2
 
 
-def test_dev_builds_again_each_table_the_form_changed_naming_those_whose_rows_it_dropped(
-    url: str,
-) -> None:
+def test_dev_takes_a_column_the_form_added_keeping_every_row(url: str) -> None:
     prepare_store(url, form(POLICY, VEHICLES), project=PROJECT)
     add_quote(url, vehicles=2)
     seats = {**VEHICLES, "columns": [*VEHICLES["columns"], column("seats", "int")]}
 
-    dropped = prepare_store(url, form(POLICY, seats), project=PROJECT)
+    made = prepare_store(url, form(POLICY, seats), project=PROJECT)
 
-    assert dropped == ["vehicles"]
-    assert rows(url, "vehicles") == []
-    # The quote itself stays: only the table that changed was built again.
-    assert len(rows(url, "quote_details")) == 1
+    assert [(step.kind, step.column) for step in made.steps] == [("add column", "seats")]
+    assert made.dropped == []
+    assert len(rows(url, "vehicles")) == 2
     columns = make_engine(url)
     try:
         with columns.connect() as connection:
@@ -147,22 +145,20 @@ def test_dev_drops_a_table_the_form_no_longer_has(url: str) -> None:
     prepare_store(url, form(POLICY, VEHICLES), project=PROJECT)
     add_quote(url, vehicles=1)
 
-    assert prepare_store(url, form(POLICY), project=PROJECT) == ["vehicles"]
+    assert prepare_store(url, form(POLICY), project=PROJECT).dropped == ["vehicles"]
     assert "vehicles" not in tables(url)
 
 
-def test_outside_dev_a_database_of_another_forms_tables_is_refused_naming_them(
-    url: str,
-) -> None:
+def test_outside_dev_a_change_to_a_table_holding_rows_is_refused_naming_it(url: str) -> None:
     prepare_store(url, form(POLICY, VEHICLES), project=PROJECT, environment="test")
     add_quote(url, vehicles=1)
 
-    with pytest.raises(QuoteStoreMismatchError, match="vehicles has changed") as refused:
+    with pytest.raises(MigrationRefusedError, match="vehicles holds rows of 1 quote") as refused:
         prepare_store(
             url, form(POLICY, {**VEHICLES, "rows": "one"}), project=PROJECT, environment="test"
         )
 
-    assert refused.value.differences == ["vehicles has changed"]
+    assert refused.value.error_code == "migration_refused"
     # Nothing was dropped or built again.
     assert len(rows(url, "vehicles")) == 1
 

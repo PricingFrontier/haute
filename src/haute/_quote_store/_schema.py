@@ -15,7 +15,6 @@ own columns besides the form's (:data:`STORE_COLUMNS`), which no request holds.
 from __future__ import annotations
 
 import hashlib
-import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -54,7 +53,7 @@ from haute._workbench_tables import QUOTE_ROW
 STORE_TABLE = "haute_store"
 ACTIVITY_TABLE = "haute_activity"
 #: The structural schema's format, which ``haute_store`` records with it.
-SCHEMA_FORMAT = 1
+SCHEMA_FORMAT = 2
 
 #: The longest reference a quote keys, its option's place, a principal, a release, a stage,
 #: a relation and an operation key.
@@ -182,7 +181,7 @@ class StoreSchema:
 def structure(form: FormSpec) -> dict[str, Any]:
     """What of *form* decides the store's tables, by stable id: each table's name, role and
     rows, and each column's name, type and whether it is the index, as ``haute_store``
-    records it. Labels, rules and the sheets decide nothing there."""
+    records it, none of them kept. Labels, rules and the sheets decide nothing there."""
     return {
         "format": SCHEMA_FORMAT,
         # The store's own columns are Haute's: an upgrade that changes them changes this.
@@ -193,17 +192,33 @@ def structure(form: FormSpec) -> dict[str, Any]:
                 "name": table.name,
                 "role": table.role,
                 "rows": table.rows,
+                "kept": False,
                 "columns": [
                     {
                         "id": column.id,
                         "name": column.name,
                         "type": "int" if column.index else column.type,
                         "index": column.index,
+                        "kept": False,
                     }
                     for column in table.columns
                 ],
             }
             for table in form.data_schema.tables
+        ],
+    }
+
+
+def live(recorded: dict[str, Any]) -> dict[str, Any]:
+    """*recorded*, a structure ``haute_store`` holds, without what it keeps: the tables and
+    columns a hosted migrate kept after the form removed them, which the database still holds
+    and no release uses."""
+    return {
+        **recorded,
+        "tables": [
+            {**table, "columns": [column for column in table["columns"] if not column["kept"]]}
+            for table in recorded["tables"]
+            if not table["kept"]
         ],
     }
 
@@ -225,11 +240,6 @@ def store_columns(form: FormSpec) -> dict[str, list[tuple[str, StoreColumnKind]]
         elif table.rows == "many":
             kept[table.id] = [(QUOTE_ROW, "int")]
     return kept
-
-
-def structure_text(form: FormSpec) -> str:
-    """:func:`structure` as the one text ``haute_store`` keeps."""
-    return json.dumps(structure(form), sort_keys=True, ensure_ascii=False)
 
 
 def store_schema(form: FormSpec) -> StoreSchema:
@@ -296,6 +306,8 @@ def _store_table(metadata: MetaData) -> Table:
         Column("haute_version", Text, nullable=True),
         Column("migrated_at", UtcDateTime, nullable=False),
         Column("schema", Text, nullable=False),
+        #: The backup or point in time the last migrate's plan could be rolled back to.
+        Column("restore_point", Text, nullable=True),
     )
 
 

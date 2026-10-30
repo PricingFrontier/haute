@@ -14,11 +14,13 @@ validation and test quotes, with the sheets, what the release is and its entry p
 ``serve`` builds the release there and serves it on the analyst's machine, on loopback
 alone, signed in as the analyst's git identity, so the sheets underwriters will see are
 checked before a merge; the quotes saved there are kept in dev's quote store, a SQLite file
-beside the release, not in it, so a rebuild keeps them. Its tables are the form's, built as
-it starts: a table the form changed is built afresh, its rows dropped and named. ``migrate``
-makes a hosted environment's quote store hold the tables of a built release's form, before
-that release starts: the environment one the release declares, its database where the host's
-own environment says it is.
+beside the release, not in it, so a rebuild keeps them. Its tables are the form's, brought to
+it as it starts by the store's planner in dev's mode, which drops what the form removed and
+builds again what changed while holding values, naming each. ``migrate`` brings a hosted
+environment's quote store to the tables of a built release's form before that release starts,
+the environment one the release declares, its database where the host's own environment says
+it is, or prints the plan, offline from another release's form with ``--base``, or prints it
+as the SQL a DBA runs.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -141,9 +144,9 @@ def handle_app_serve(config: AppServeConfig) -> None:
 
 
 def _local_store(project_dir: Path, release_dir: Path) -> str:
-    """The URL of ``serve``'s own quote store, dev's, holding the tables of the form of the
-    release in *release_dir* as it starts: each table the form changed built afresh, and each
-    whose rows went named."""
+    """The URL of ``serve``'s own quote store, dev's, brought to the tables of the form of the
+    release in *release_dir* as it starts: each table whose quotes' rows dev's plan drops, and
+    each column whose values it drops, named."""
     from haute._quote_store import DEV, prepare_store, store_url
     from haute._workbench_app import read_release
 
@@ -152,7 +155,7 @@ def _local_store(project_dir: Path, release_dir: Path) -> str:
     url = store_url(path)
     with _said():
         release, form, _ = read_release(release_dir)
-        dropped = prepare_store(
+        made = prepare_store(
             url,
             form,
             project=release.pipeline_name,
@@ -160,19 +163,30 @@ def _local_store(project_dir: Path, release_dir: Path) -> str:
             haute_version=release.haute_version,
             release=release.id,
         )
-    for name in dropped:
-        click.echo(f"  ! {name} was built afresh for the changed form: its quotes' rows went")
+    for name in made.dropped:
+        click.echo(f"  ! The form's change took {name}'s quotes' rows")
+    for name in made.cleared:
+        click.echo(f"  ! The form's change took the quotes' values in {name}")
     return url
 
 
-def handle_app_migrate(environment: str, release_dir: Path) -> None:
-    """Make the quote store of *environment*, one the release built in *release_dir*
-    declares, at the database the host's own environment says it is at, hold the tables of
-    that release's form: made on a database holding none, and a database holding another
-    form's refused, naming each table that differs."""
-    import os
+@dataclass
+class AppMigrateConfig:
+    """Parsed inputs for the ``haute app migrate`` command."""
 
-    from haute._quote_store import prepare_store, resolve_store
+    environment: str
+    release_dir: Path
+    #: Print the plan and change nothing.
+    plan: bool = False
+    #: Print the plan as the SQL a DBA runs and change nothing.
+    sql: bool = False
+    #: A built release whose form the plan starts from, with no database.
+    base_dir: Path | None = None
+    #: The backup or point in time the database can be returned to.
+    restore_point: str | None = None
+
+
+def _release_of(release_dir: Path) -> tuple[Any, Any]:
     from haute._workbench_app import RELEASE_FILE, read_release
 
     if not (release_dir / RELEASE_FILE).is_file():
@@ -181,18 +195,76 @@ def handle_app_migrate(environment: str, release_dir: Path) -> None:
         )
     with _said():
         release, form, _ = read_release(release_dir.resolve())
-        store = resolve_store(release.store_environments(), environment, os.environ)
-        prepare_store(
-            store.url,
-            form,
-            project=release.pipeline_name,
-            environment=store.environment,
-            haute_version=release.haute_version,
-            release=release.id,
-        )
-    click.echo(
-        f"  ✓ The {store.environment} quote store holds the tables of release {release.id}'s form"
+    return release, form
+
+
+def handle_app_migrate(config: AppMigrateConfig) -> None:
+    """Bring the quote store of ``config.environment``, one the release built in
+    ``config.release_dir`` declares, at the database the host's own environment says it is at,
+    to that release's form through the planner in a hosted environment's mode; or print the
+    plan or its SQL, changing nothing, offline from ``config.base_dir``'s form when given.
+    Nothing it prints names where the database is."""
+    import os
+
+    from haute._quote_store import (
+        offline_plan,
+        plan_store,
+        prepare_store,
+        render_sql,
+        render_text,
+        resolve_store,
     )
+    from haute._quote_store._migrate import PROVIDER_DIALECTS
+
+    release, form = _release_of(config.release_dir)
+    if config.base_dir is not None and not (config.plan or config.sql):
+        raise click.ClickException("--base plans with no database: give --plan or --sql with it.")
+    with _said():
+        declared = {each.name: each for each in release.store_environments()}
+        if config.base_dir is not None:
+            if config.environment not in declared:
+                # Offline, no location is resolved: the environment is named and its provider read.
+                resolve_store(tuple(declared.values()), config.environment, {})
+            _, base = _release_of(config.base_dir)
+            made = offline_plan(base, form)
+        else:
+            store = resolve_store(tuple(declared.values()), config.environment, os.environ)
+            if config.plan or config.sql:
+                made = plan_store(
+                    store.url, form, project=release.pipeline_name, environment=store.environment
+                )
+            else:
+                made = prepare_store(
+                    store.url,
+                    form,
+                    project=release.pipeline_name,
+                    environment=store.environment,
+                    haute_version=release.haute_version,
+                    release=release.id,
+                    restore_point=config.restore_point,
+                )
+                click.echo(render_text(made))
+                click.echo(
+                    f"  ✓ The {store.environment} quote store holds the tables of release "
+                    f"{release.id}'s form"
+                )
+                return
+        if config.plan:
+            click.echo(render_text(made))
+        if config.sql:
+            dialect = PROVIDER_DIALECTS[declared[config.environment].provider]
+            click.echo(
+                render_sql(
+                    made,
+                    form,
+                    dialect,
+                    project=release.pipeline_name,
+                    environment=config.environment,
+                    release=release.id,
+                    haute_version=release.haute_version,
+                    restore_point=config.restore_point,
+                )
+            )
 
 
 @click.group(name="app")
@@ -247,7 +319,43 @@ def serve(port: int, static_dir: Path | None, reader: bool) -> None:
     show_default=True,
     help="The built release whose form's tables the store holds.",
 )
-def migrate(environment: str, release_dir: Path) -> None:
-    """Make a hosted environment's quote store hold the tables of a built release's form,
-    before that release starts."""
-    handle_app_migrate(environment, release_dir)
+@click.option("--plan", "show_plan", is_flag=True, help="Print the plan and change nothing.")
+@click.option(
+    "--sql",
+    "show_sql",
+    is_flag=True,
+    help="Print the plan as the SQL a DBA runs, changing nothing.",
+)
+@click.option(
+    "--base",
+    "base_dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="A built release to plan from with no database: the change from its form to this one's.",
+)
+@click.option(
+    "--restore-point",
+    default=None,
+    help="The backup or point in time the database can be returned to, which a plan only a "
+    "restore reverses needs.",
+)
+def migrate(
+    environment: str,
+    release_dir: Path,
+    show_plan: bool,
+    show_sql: bool,
+    base_dir: Path | None,
+    restore_point: str | None,
+) -> None:
+    """Bring a hosted environment's quote store to the tables of a built release's form, before
+    that release starts, or print the plan."""
+    handle_app_migrate(
+        AppMigrateConfig(
+            environment=environment,
+            release_dir=release_dir,
+            plan=show_plan,
+            sql=show_sql,
+            base_dir=base_dir,
+            restore_point=restore_point,
+        )
+    )

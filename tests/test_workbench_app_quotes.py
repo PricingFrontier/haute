@@ -1123,14 +1123,49 @@ def test_haute_app_migrate_makes_the_tables_of_a_built_releases_form(
     # Run again for the same form, it changes nothing.
     assert CliRunner().invoke(cli, ["app", "migrate", *built]).exit_code == 0
 
-    # A release of another form is refused, naming the table that differs.
+    # A release whose form gained a column: planned and printed, then applied.
     other = json.loads(json.dumps(FORM))
     other["schema"]["tables"][1]["columns"].append(
         {"id": "c_seats", "name": "seats", "type": "int"}
     )
     changed = _write_release(tmp_path / "changed", other)
-    refused = CliRunner().invoke(
-        cli, ["app", "migrate", "--environment", TEST, "--release", str(changed)]
+    on_changed = ["--environment", TEST, "--release", str(changed)]
+    planned = CliRunner().invoke(cli, ["app", "migrate", *on_changed, "--plan"])
+    assert planned.exit_code == 0, planned.output
+    assert "add column policy_details.seats" in planned.output
+    script = CliRunner().invoke(cli, ["app", "migrate", *on_changed, "--sql"])
+    assert script.exit_code == 0, script.output
+    assert "ALTER TABLE policy_details ADD COLUMN seats BIGINT" in script.output
+    # Neither changed anything; the migrate does.
+    with sqlite3.connect(hosted) as raw:
+        assert "seats" not in [row[1] for row in raw.execute("PRAGMA table_info(policy_details)")]
+    applied = CliRunner().invoke(cli, ["app", "migrate", *on_changed])
+    assert applied.exit_code == 0, applied.output
+    with sqlite3.connect(hosted) as raw:
+        assert "seats" in [row[1] for row in raw.execute("PRAGMA table_info(policy_details)")]
+
+    # Offline, from the release before, with no database: provisional.
+    offline = CliRunner().invoke(
+        cli, ["app", "migrate", *on_changed, "--plan", "--base", str(release_dir)]
     )
+    assert offline.exit_code == 0, offline.output
+    assert "Provisional plan" in offline.output
+    assert "add column policy_details.seats" in offline.output
+    alone = CliRunner().invoke(cli, ["app", "migrate", *on_changed, "--base", str(release_dir)])
+    assert alone.exit_code != 0 and "give --plan or --sql" in alone.output
+
+    # A change only a restore reverses needs a restore point.
+    retyped = json.loads(json.dumps(other))
+    for each in retyped["schema"]["tables"][1]["columns"]:
+        if each["name"] == "seats":
+            each["type"] = "str"
+    restoring = _write_release(tmp_path / "retyped", retyped)
+    on_retyped = ["--environment", TEST, "--release", str(restoring)]
+    refused = CliRunner().invoke(cli, ["app", "migrate", *on_retyped])
     assert refused.exit_code == 1
-    assert "policy_details has changed" in refused.output
+    assert "--restore-point NAME" in refused.output
+    restored = CliRunner().invoke(
+        cli, ["app", "migrate", *on_retyped, "--restore-point", "backup-2026-10-30"]
+    )
+    assert restored.exit_code == 0, restored.output
+    assert "retype column policy_details.seats" in restored.output

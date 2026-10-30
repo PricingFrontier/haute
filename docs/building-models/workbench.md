@@ -649,9 +649,10 @@ builder on screen. With a quote store it is where they manage their quotes too.
   `127.0.0.1` or `localhost`: the app refuses any other name for your machine. The
   quotes you save there are kept in `.haute/app/store.sqlite`, which a rebuild leaves as it
   is: its tables are your schema's (see [Reading quotes with SQL](#reading-quotes-with-sql)),
-  so when you change a table, the app builds it again as it starts, drops the quotes' rows
-  in it and names it. `haute app serve --reader` signs you in as an underwriter who may
-  only read quotes.
+  brought to it as the app starts: a table or column you add or rename keeps every quote's
+  values, and one you remove, or change while it holds values, is dropped or built again, the
+  app naming each table or column whose values went. `haute app serve --reader` signs you in
+  as an underwriter who may only read quotes.
 - `haute app build` writes a **release** to `.haute/app/release` (or the folder you name):
   the pipeline, checked and bundled
   as `haute deploy` does it (the test quotes included), with the sheets and an `app.py` that
@@ -692,10 +693,13 @@ builder on screen. With a quote store it is where they manage their quotes too.
   `HAUTE_STORE_DATABASE` (the file's path) or `HAUTE_STORE_URL` (a whole connection URL).
   Without an environment named the app keeps nothing, says so, and prices its one quote as
   `PREVIEW`, option 1. The app does not start on a database that does not hold its release's
-  tables: `haute app migrate --environment test` makes them in an empty database from the
-  release built in `.haute/app/release` (or the folder `--release` names) before that
-  release starts. It refuses a database holding another form's tables, naming each table
-  that differs, so a release whose schema changed a table needs a database of its own.
+  tables: `haute app migrate --environment test` brings the database to the release built in
+  `.haute/app/release` (or the folder `--release` names) before that release starts. It adds
+  and renames without losing a value, keeps a table or column you removed, listing it with
+  the DROP statement for your IT team, and refuses, before it changes anything, a change to a
+  column or table that holds values. `--plan` prints what it would do, `--sql` the SQL your IT
+  team can run instead, and a change only a restore can undo needs `--restore-point`, naming
+  the backup.
 - The app prices four quotes at once; set `HAUTE_APP_PRICING_WORKERS` to change that. A
   pricing that runs past 60 seconds is answered as timed out but keeps its place until it
   ends, and while every place is taken a quote is refused as busy, to be priced again in a

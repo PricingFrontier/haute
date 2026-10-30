@@ -385,9 +385,10 @@ the database's tables, and a project's app runs against several databases: dev o
 analyst's laptop, where schema changes are tried, and the hosted test and prod environments,
 each in a database or a schema the project's IT team provides. Projects declare their hosted
 environments and hosts pick one by name (`src/haute/_quote_store/_environment.py::resolve_store`),
-but `haute app migrate` makes an empty database's tables and changes none
-(`src/haute/_quote_store/_store.py::prepare_store`), dev builds again each table the form
-changed, its rows dropped: nothing changes a table from the form.
+and one planner brings each database to a release's form by stable id
+(`src/haute/_quote_store/_migrate.py::prepare_store`), but no browser journey drives `haute
+app serve`: nothing shows an underwriter's save reaching the SQLite file's rows, read there
+with SQL, through Mark final and Amend.
 
 **Plan:** Decided with the owner on 30 October 2026. Dev is the laptop's SQLite file, which
 `haute app serve` keeps, and nothing points a laptop at a hosted environment. `haute.toml`
@@ -439,8 +440,8 @@ SQL, marks it final, amends it and saves it again.
 
 **Dependencies:** None. WB-08 runs the migrate step in the generated workflows.
 
-**Evidence:** `src/haute/_quote_store/_store.py::prepare_store` and `::open_engine` (an
-empty database made, dev's tables built again, another form's refused);
+**Evidence:** `src/haute/_quote_store/_migrate.py::prepare_store` (the planner) and
+`src/haute/_quote_store/_store.py::open_engine` (a started app's check of its database);
 `src/haute/cli/_app.py::handle_app_migrate` and `::_local_store` (the migrate command and the
 local file); `src/haute/_workbench_config.py::read_workbench_config` (the
 `[workbench]` table); `src/haute/_database_io.py::resolve_connection_uri` (a credential named
