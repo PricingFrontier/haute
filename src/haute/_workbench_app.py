@@ -460,29 +460,27 @@ def _check_output(project_dir: Path, release_dir: Path) -> None:
 
 def _swap_in(built: Path, release_dir: Path) -> None:
     """Put the release in *built* at *release_dir*: an earlier release there is moved aside
-    first, put back if the new one cannot take its place, and removed once it has."""
-    import shutil
+    first, put back if the new one cannot take its place, and removed once it has. Each move
+    waits out a Windows scanner holding a file just written (``rename_directory``)."""
+    from haute._file_ops import remove_tree, rename_directory
 
     earlier: Path | None = None
     if release_dir.is_dir() and any(release_dir.iterdir()):
         earlier = release_dir.with_name(f".{release_dir.name}.earlier-{uuid.uuid4().hex[:8]}")
-        release_dir.rename(earlier)
+        rename_directory(release_dir, earlier)
     elif release_dir.is_dir():
         release_dir.rmdir()
     try:
-        built.rename(release_dir)
+        rename_directory(built, release_dir)
     except OSError:
         if earlier is not None:
-            earlier.rename(release_dir)
+            rename_directory(earlier, release_dir)
         raise
-    if earlier is not None:
-        try:
-            shutil.rmtree(earlier)
-        except OSError as exc:
-            raise WorkbenchAppError(
-                f"The release was built into {release_dir}, but the earlier one, moved to "
-                f"{earlier}, could not be removed: {exc}"
-            ) from exc
+    if earlier is not None and not remove_tree(earlier):
+        raise WorkbenchAppError(
+            f"The release was built into {release_dir}, but the earlier one, moved to "
+            f"{earlier}, could not be removed."
+        )
 
 
 def build_image(release_dir: Path, tag: str) -> None:

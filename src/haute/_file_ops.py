@@ -50,6 +50,7 @@ from pathlib import Path
 from types import TracebackType
 
 _WINDOWS_REPLACE_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1)
+_WINDOWS_DIRECTORY_RENAME_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0)
 _IS_WINDOWS = os.name == "nt"
 _DISK_HEADROOM_BYTES = 64 * 1024
 
@@ -184,6 +185,25 @@ def _replace_with_windows_contention_retry(source: Path, target: Path) -> None:
     for delay in (*_WINDOWS_REPLACE_RETRY_DELAYS_SECONDS, None):
         try:
             source.replace(target)
+            return
+        except OSError as exc:
+            if not _IS_WINDOWS or getattr(exc, "winerror", None) not in {5, 32} or delay is None:
+                raise
+            time.sleep(delay)
+
+
+def rename_directory(source: Path, target: Path) -> None:
+    """Rename the directory *source* to *target*, which must not exist.
+
+    Windows refuses to rename a directory while any process holds a file inside it, as an
+    antivirus scanner or indexer does for a while after the file is written, with
+    ERROR_ACCESS_DENIED or ERROR_SHARING_VIOLATION. A freshly written tree holds many such
+    files, so those two codes are retried for longer than one file's replace is, about
+    four seconds in all; any other failure, or one off Windows, is raised at once.
+    """
+    for delay in (*_WINDOWS_DIRECTORY_RENAME_RETRY_DELAYS_SECONDS, None):
+        try:
+            source.rename(target)
             return
         except OSError as exc:
             if not _IS_WINDOWS or getattr(exc, "winerror", None) not in {5, 32} or delay is None:

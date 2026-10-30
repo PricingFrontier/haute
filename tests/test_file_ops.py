@@ -863,6 +863,88 @@ class TestRemoveTree:
         assert target.exists()
 
 
+class TestRenameDirectory:
+    """A directory's rename that waits out a Windows scanner holding a file inside it."""
+
+    def test_an_access_denied_rename_is_retried_until_the_directory_moves(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import _file_ops
+
+        source = tmp_path / ".release.building"
+        source.mkdir()
+        (source / "release.json").write_text("{}")
+        target = tmp_path / "release"
+        real_rename = Path.rename
+        attempts: list[int] = []
+
+        def rename_held_twice(path: Path, destination: Path) -> Path:
+            attempts.append(1)
+            if len(attempts) < 3:
+                error = PermissionError("Access is denied")
+                error.winerror = 5
+                raise error
+            return real_rename(path, destination)
+
+        monkeypatch.setattr(_file_ops, "_IS_WINDOWS", True)
+        with (
+            patch.object(Path, "rename", rename_held_twice),
+            patch("haute._file_ops.time.sleep") as sleep,
+        ):
+            _file_ops.rename_directory(source, target)
+
+        assert len(attempts) == 3
+        assert [item.args[0] for item in sleep.call_args_list] == [0.01, 0.025]
+        assert (target / "release.json").read_text() == "{}"
+        assert not source.exists()
+
+    def test_a_rename_held_throughout_raises_after_about_four_seconds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import _file_ops
+
+        source = tmp_path / ".release.building"
+        source.mkdir()
+        error = PermissionError("Access is denied")
+        error.winerror = 5
+
+        monkeypatch.setattr(_file_ops, "_IS_WINDOWS", True)
+        with (
+            patch.object(Path, "rename", side_effect=error) as rename,
+            patch("haute._file_ops.time.sleep") as sleep,
+        ):
+            with pytest.raises(PermissionError, match="Access is denied"):
+                _file_ops.rename_directory(source, tmp_path / "release")
+
+        assert rename.call_count == 9
+        assert sum(item.args[0] for item in sleep.call_args_list) == pytest.approx(3.935)
+        assert source.is_dir()
+
+    def test_another_failure_or_one_off_windows_is_raised_at_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import _file_ops
+
+        source = tmp_path / ".release.building"
+        source.mkdir()
+        error = PermissionError("Access is denied")
+        error.winerror = 5
+
+        monkeypatch.setattr(_file_ops, "_IS_WINDOWS", False)
+        with (
+            patch.object(Path, "rename", side_effect=error) as rename,
+            patch("haute._file_ops.time.sleep") as sleep,
+        ):
+            with pytest.raises(PermissionError):
+                _file_ops.rename_directory(source, tmp_path / "release")
+        assert rename.call_count == 1
+        sleep.assert_not_called()
+
+        monkeypatch.setattr(_file_ops, "_IS_WINDOWS", True)
+        with pytest.raises(FileNotFoundError):
+            _file_ops.rename_directory(tmp_path / "never-built", tmp_path / "release")
+
+
 class TestWindowsPathTooLong:
     """A path Windows refuses for its length is named, not reported as a missing file.
 
