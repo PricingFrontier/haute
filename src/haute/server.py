@@ -75,6 +75,7 @@ from haute.routes._helpers import (
     load_pipeline_editor_document,
     pipeline_dir,
     pipelines_importing_module,
+    pipelines_naming_artifacts,
     watcher_is_paused,
     wire_source_file,
     ws_clients,
@@ -756,33 +757,6 @@ _DEBOUNCE_SECONDS = 0.3
 _last_broadcast_fp: dict[str, str] = {}
 
 
-def _pipelines_owning_recovery_artifact(
-    changed_path: Path, pipelines: dict[str, Path]
-) -> list[Path]:
-    """Return only documents whose raw recovery manifest contains *changed_path*."""
-    from haute._pipeline_recovery import _recovery_artifacts
-
-    changed = changed_path.resolve()
-    owners: list[Path] = []
-    for pipeline_path in pipelines.values():
-        # The parent sidecar is unconditionally part of a recovery document,
-        # even when its source currently has syntax damage that prevents the
-        # deeper manifest walk from discovering child artifacts.
-        if pipeline_path.with_suffix(".haute.json").resolve() == changed:
-            owners.append(pipeline_path)
-            continue
-        try:
-            artifacts = _recovery_artifacts(pipeline_path, Path.cwd())
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "pipeline_recovery_manifest_failed", file=pipeline_path.name, error=str(exc)
-            )
-            continue
-        if any(artifact_path.resolve() == changed for _, artifact_path in artifacts):
-            owners.append(pipeline_path)
-    return owners
-
-
 async def _watcher_forever() -> None:
     """Keep the live-sync watcher alive across unexpected watcher crashes."""
     while True:
@@ -1074,9 +1048,11 @@ async def _file_watcher() -> None:
             # A sidecar (including a registered child sidecar) affects only
             # documents whose recovery manifest names that exact raw artifact.
             # Do not turn this into a global config invalidation.
-            for artifact_path in recovery_artifact_changes:
-                for pipeline_path in _pipelines_owning_recovery_artifact(
-                    artifact_path, _discovered()
+            if recovery_artifact_changes:
+                for pipeline_path in pipelines_naming_artifacts(
+                    recovery_artifact_changes,
+                    _discovered().values(),
+                    project_root=Path.cwd(),
                 ):
                     key = str(pipeline_path.resolve())
                     changed_files[key] = (pipeline_path, True)

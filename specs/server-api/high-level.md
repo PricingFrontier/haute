@@ -652,7 +652,8 @@ detail, and the assistant shows the same message.
 - **Requests are bounded.** Every free string a request body carries (a name, an id, a
   path, code), and every list and mapping in it, has a size limit, as does a utility
   module named in a path, so an over-long value is refused with HTTP 422 before anything
-  acts on it, never failing later as a server error. Every project-relative path a
+  acts on it, never failing later as a server error. The pipeline graph and the
+  workbench form a request carries are checked as the files that hold them are. Every project-relative path a
   response names, a save's `file` and each pipeline summary's included, uses forward
   slashes on every platform.
 - **Path-safety violations** (`contained_path`, the save-time output-path allowlist,

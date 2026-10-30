@@ -17941,6 +17941,7 @@
               "additionalProperties": {
                 "anyOf": [
                   {
+                    "maxLength": 16777216,
                     "type": "string"
                   },
                   {
@@ -17948,11 +17949,19 @@
                   }
                 ]
               },
+              "maxProperties": 10000,
+              "propertyNames": {
+                "maxLength": 512
+              },
               "type": "object"
             },
+            "maxItems": 10000,
             "type": "array"
           },
           "maxProperties": 10000,
+          "propertyNames": {
+            "maxLength": 512
+          },
           "title": "Values",
           "type": "object"
         }
@@ -18400,11 +18409,19 @@
               "additionalProperties": {
                 "items": {
                   "additionalProperties": true,
+                  "maxProperties": 10000,
+                  "propertyNames": {
+                    "maxLength": 512
+                  },
                   "type": "object"
                 },
+                "maxItems": 10000,
                 "type": "array"
               },
               "maxProperties": 10000,
+              "propertyNames": {
+                "maxLength": 512
+              },
               "type": "object"
             },
             {
@@ -18431,6 +18448,7 @@
               "additionalProperties": {
                 "anyOf": [
                   {
+                    "maxLength": 16777216,
                     "type": "string"
                   },
                   {
@@ -18438,11 +18456,19 @@
                   }
                 ]
               },
+              "maxProperties": 10000,
+              "propertyNames": {
+                "maxLength": 512
+              },
               "type": "object"
             },
+            "maxItems": 10000,
             "type": "array"
           },
           "maxProperties": 10000,
+          "propertyNames": {
+            "maxLength": 512
+          },
           "title": "Values",
           "type": "object"
         }
@@ -18678,11 +18704,19 @@
               "additionalProperties": {
                 "items": {
                   "additionalProperties": true,
+                  "maxProperties": 10000,
+                  "propertyNames": {
+                    "maxLength": 512
+                  },
                   "type": "object"
                 },
+                "maxItems": 10000,
                 "type": "array"
               },
               "maxProperties": 10000,
+              "propertyNames": {
+                "maxLength": 512
+              },
               "type": "object"
             },
             {
@@ -18698,6 +18732,7 @@
               "additionalProperties": {
                 "anyOf": [
                   {
+                    "maxLength": 16777216,
                     "type": "string"
                   },
                   {
@@ -18705,11 +18740,19 @@
                   }
                 ]
               },
+              "maxProperties": 10000,
+              "propertyNames": {
+                "maxLength": 512
+              },
               "type": "object"
             },
+            "maxItems": 10000,
             "type": "array"
           },
           "maxProperties": 10000,
+          "propertyNames": {
+            "maxLength": 512
+          },
           "title": "Values",
           "type": "object"
         },
@@ -18879,6 +18922,7 @@
       "description": "The quote and revision a new quote is made from, and how.",
       "properties": {
         "quote_id": {
+          "maxLength": 512,
           "title": "Quote Id",
           "type": "string"
         },

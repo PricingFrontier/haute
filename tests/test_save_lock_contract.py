@@ -122,7 +122,7 @@ async def test_save_lock_holds_during_svc_save(monkeypatch: pytest.MonkeyPatch) 
         # and surface as a 500 — masking whether the post-save half of the
         # route ever runs.  See haute.schemas.SavePipelineResponse.
         # What a real save records for the route to publish.
-        self.committed = CommittedDocument(_Path("test.py"), {}, "fingerprint-test")
+        self.committed = CommittedDocument(_Path("test.py"), {}, "fingerprint-test", ())
         return SavePipelineResponse(
             status="saved",
             file="test.py",

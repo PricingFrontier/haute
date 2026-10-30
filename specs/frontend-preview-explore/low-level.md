@@ -317,8 +317,11 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
 3. Edits debounce for 500ms. Unmount flushes any pending write fire-and-forget; post-await
    state updates verify both mounted state and the module still selected, dropping stale replies.
 4. The panel keeps each file's revision as its read, create or last save returned it, and an
-   update or delete sends it; a write the server refuses because the file changed outside the
-   panel (412) keeps the draft and shows the server's message, like any refused save. Every
+   update or delete sends it. A save the server refuses because the file changed outside the
+   panel (412) keeps the draft and shows the server's message with **Reload** and
+   **Overwrite** (`utility-conflict`); until one is chosen, edits save nothing and a switch
+   stops as for any refused save. Reload reads the file as it is now and shows it, dropping
+   the draft; Overwrite reads the file's current revision and saves the draft over it. Every
    create, save and delete reports its ledger capture through `reportSaveCapture`, as the
    pipeline's save does.
 5. Delete explicitly cancels a pending save for the deleted file. Create refreshes the list,

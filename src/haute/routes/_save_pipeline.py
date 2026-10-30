@@ -115,11 +115,13 @@ def _diagnostics_summary(diagnostics: Sequence[PipelineRecoveryDiagnostic], limi
 
 
 class CommittedDocument(NamedTuple):
-    """The editor document a save committed, dumped as live sync sends it."""
+    """The editor document a save committed, dumped as live sync sends it, and every
+    file the save wrote or removed, by which other documents that read them are found."""
 
     path: Path
     payload: dict[str, Any]
     fingerprint: str
+    artifacts: tuple[Path, ...]
 
 
 class StaleDocumentRevisionError(Exception):
@@ -413,8 +415,8 @@ class SavePipelineService:
     require_ready:
         Refuse (409, with its diagnostics) to replace a pipeline whose
         editor document is not ready on disk: the editor's own Save. A
-        degraded document still has a revision, which the assistant and
-        the submodel routes may save over.
+        degraded document still has a revision, which the assistant may
+        save over.
     """
 
     def __init__(
@@ -435,7 +437,9 @@ class SavePipelineService:
         self.committed: CommittedDocument | None = None
 
     def _read_on_disk(self, py_path: Path, base_revision: str | None) -> _OnDisk:
-        """Read the pipeline file once, for every step of the save after this.
+        """Load the pipeline file's editor document and strict graph, once each, for
+        every step of the save after this; only the verification after the write
+        loads them again.
 
         The editor document it loads must be at the client's base revision
         (:meth:`_require_base_revision`) and, under *require_ready*, ready. Its
@@ -687,7 +691,10 @@ class SavePipelineService:
         captured = self._capture_save_in_ledger(touched, removed, warnings, commit_message)
 
         self.committed = CommittedDocument(
-            py_path, committed_payload, pipeline_document_fingerprint(committed_payload)
+            py_path,
+            committed_payload,
+            pipeline_document_fingerprint(committed_payload),
+            (*(touched_file.target for touched_file in touched), *removed),
         )
         return SavePipelineResponse(
             file=py_path.relative_to(self._root).as_posix(),

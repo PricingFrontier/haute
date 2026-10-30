@@ -194,6 +194,7 @@ from haute.routes._helpers import (
     pipeline_document_update_payload,
     raise_pipeline_not_found,
     save_lock,
+    shared_document_updates,
 )
 from haute.routes._isolated_worker_async import (
     WorkerCancellationGate,
@@ -1268,6 +1269,17 @@ async def save_pipeline(body: SavePipelineRequest, request: Request) -> SavePipe
                     committed.path, committed.payload, committed.fingerprint, exclude=exclude
                 ),
             )
+            # Another open document reading what the save wrote (a shared submodel's
+            # module or sidecar) is published too: the watcher no longer sees the write.
+            for update in await run_in_threadpool(
+                partial(
+                    shared_document_updates,
+                    committed.artifacts,
+                    saved=committed.path,
+                    project_root=project_root,
+                )
+            ):
+                default_bus.publish("pipeline.document.update", update)
             return response
     except StaleDocumentRevisionError as exc:
         # The client's document is behind the disk; nothing was written.

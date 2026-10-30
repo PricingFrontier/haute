@@ -3614,7 +3614,7 @@ class TestFileWatcherRecoverySidecars:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from haute.server import _pipelines_owning_recovery_artifact
+        from haute.routes._helpers import pipelines_naming_artifacts
 
         modules = tmp_path / "modules"
         modules.mkdir()
@@ -3637,12 +3637,8 @@ class TestFileWatcherRecoverySidecars:
         )
         monkeypatch.chdir(tmp_path)
 
-        owners = _pipelines_owning_recovery_artifact(
-            child.with_suffix(".haute.json"),
-            {
-                str(owner.resolve()): owner,
-                str(unrelated.resolve()): unrelated,
-            },
+        owners = pipelines_naming_artifacts(
+            [child.with_suffix(".haute.json")], [owner, unrelated], project_root=tmp_path
         )
 
         assert owners == [owner]
@@ -5569,6 +5565,85 @@ def _project_bytes(root: Path) -> dict[str, bytes]:
     }
 
 
+def _shared_child_graph(child_code: str) -> dict:
+    """``owner.py``'s graph: one submodel, ``modules/child.py``, its child node running
+    *child_code*."""
+    child = {
+        "id": "child_node",
+        "position": {"x": 17.0, "y": 29.0},
+        "data": {"label": "child_node", "nodeType": "polars", "config": {"code": child_code}},
+    }
+    return {
+        "pipeline_name": "owner",
+        "nodes": [
+            {
+                "id": "child_instance",
+                "type": "submodel",
+                "position": {"x": 50.0, "y": 60.0},
+                "data": {
+                    "label": "child",
+                    "nodeType": "submodel",
+                    "config": {"definitionId": "child", "alias": "child"},
+                },
+            }
+        ],
+        "edges": [],
+        "submodels": {
+            "child": {
+                "definitionId": "child",
+                "file": "modules/child.py",
+                "inputPorts": [],
+                "outputPorts": [],
+                "graph": {
+                    "nodes": [child],
+                    "edges": [],
+                    "pipeline_name": "child",
+                    "source_file": "modules/child.py",
+                },
+            }
+        },
+    }
+
+
+def _save_owner(client: TestClient, child_code: str, base_revision: str | None) -> dict:
+    response = client.post(
+        "/api/pipeline/save",
+        json={
+            "name": "owner",
+            "graph": _shared_child_graph(child_code),
+            "source_file": "owner.py",
+            "base_revision": base_revision,
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _write_other_importing_the_child(pipeline_dir: Path) -> None:
+    from haute.routes._helpers import invalidate_pipeline_index
+
+    (pipeline_dir / "other.py").write_text(
+        "import haute\n\nfrom modules import child\n\n"
+        'pipeline = haute.Pipeline("other")\n'
+        'pipeline.submodel(child.submodel, "other_child")\n',
+        encoding="utf-8",
+    )
+    invalidate_pipeline_index()
+
+
+def _frames_of_a_save(client: TestClient, child_code: str, base_revision: str) -> list[dict]:
+    """The frames a tab receives for a save of ``owner.py``."""
+    with client.websocket_connect("/ws/sync", headers={"origin": "http://localhost"}) as tab:
+        assert tab.receive_json()["type"] == "sync_connection"
+        _save_owner(client, child_code, base_revision)
+        # A probe sent after the save: its answer follows every frame the save sent.
+        tab.send_json({"type": "resync", "source_file": "missing.py", "document_schema_version": 1})
+        published = []
+        while (frame := tab.receive_json())["type"] != "parse_error":
+            published.append(frame)
+    return published
+
+
 class TestSaveNeverRoundTripsTheWatcher:
     def test_every_file_a_save_writes_or_retires_publishes_nothing_through_the_watcher(
         self, client: TestClient, pipeline_dir: Path
@@ -5648,6 +5723,39 @@ class TestSaveNeverRoundTripsTheWatcher:
                 {"type": "resync", "source_file": "missing.py", "document_schema_version": 1}
             )
             assert saving_tab.receive_json()["type"] == "parse_error"
+
+    def test_a_save_also_publishes_the_other_documents_reading_a_submodel_it_wrote(
+        self, client: TestClient, pipeline_dir: Path
+    ):
+        """A save's writes never reach the watcher, so another open pipeline importing the
+        submodel the save rewrote is published by the save itself."""
+        first = _save_owner(client, "return df", None)
+        _write_other_importing_the_child(pipeline_dir)
+
+        published = _frames_of_a_save(client, "return df.head(1)", first["source_revision"])
+
+        assert [frame["type"] for frame in published] == ["pipeline_document_update"] * 2
+        assert [frame["source_file"] for frame in published] == ["owner.py", "other.py"]
+
+    def test_a_document_the_save_cannot_load_is_left_out_and_the_save_stands(
+        self, client: TestClient, pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import haute.routes._helpers as helpers
+
+        first = _save_owner(client, "return df", None)
+        _write_other_importing_the_child(pipeline_dir)
+        load = helpers.load_pipeline_editor_document
+
+        def locked(path: Path, *args: Any, **kwargs: Any) -> Any:
+            if Path(path).name == "other.py":
+                raise PermissionError("other.py is locked by another program")
+            return load(path, *args, **kwargs)
+
+        monkeypatch.setattr(helpers, "load_pipeline_editor_document", locked)
+
+        published = _frames_of_a_save(client, "return df.head(1)", first["source_revision"])
+
+        assert [frame["source_file"] for frame in published] == ["owner.py"]
 
     def test_a_connection_of_another_owner_is_never_left_out(self) -> None:
         from haute.routes import _helpers

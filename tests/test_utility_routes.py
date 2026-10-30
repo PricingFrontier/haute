@@ -451,6 +451,34 @@ class TestWritesAgainstARevision:
         )
         assert target.read_text(encoding="utf-8") == "VALUE = 2\n"
 
+    def test_a_change_made_while_a_write_is_captured_is_not_answered_as_its_own(
+        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Another editor saving while the write is captured in the ledger: the
+        revision answered is the written bytes', so the next write is refused."""
+        import haute.routes.utility as utility_routes
+
+        target = tmp_path / "utility" / "helpers.py"
+        target.parent.mkdir()
+        target.write_text("VALUE = 1\n", encoding="utf-8")
+        capture = utility_routes.capture_save_in_ledger
+
+        def capture_while_another_editor_saves(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            _change_outside_haute(target, "VALUE = 9\n")
+            return capture(*args, **kwargs)
+
+        monkeypatch.setattr(
+            utility_routes, "capture_save_in_ledger", capture_while_another_editor_saves
+        )
+        written = _put(client, "helpers", "VALUE = 2\n")
+        monkeypatch.setattr(utility_routes, "capture_save_in_ledger", capture)
+
+        assert written.status_code == 200, written.text
+        res = _put(client, "helpers", "VALUE = 3\n", revision=written.json()["revision"])
+
+        assert res.status_code == 412
+        assert target.read_text(encoding="utf-8") == "VALUE = 9\n"
+
     def test_a_delete_against_a_changed_file_is_refused_and_keeps_it(
         self, client: TestClient, tmp_path: Path
     ) -> None:

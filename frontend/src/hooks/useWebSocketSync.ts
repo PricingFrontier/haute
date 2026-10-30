@@ -6,7 +6,7 @@ import {
   normalizeEdges,
   type RejectedIncomingEdge,
 } from "../utils/graphHelpers"
-import { setSyncConnectionId } from "../api/syncConnection"
+import { releaseSyncConnectionId, setSyncConnectionId } from "../api/syncConnection"
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
@@ -238,6 +238,8 @@ export default function useWebSocketSync({
     let ws: WebSocket | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let mounted = true
+    // The connection id the server gave this effect's latest socket.
+    let ownConnectionId: string | null = null
     let graphUpdateSeq = 0
     let activeSelectionGuardIncrements = 0
     const delayedTimers = new Set<ReturnType<typeof setTimeout>>()
@@ -337,6 +339,8 @@ export default function useWebSocketSync({
     function connect() {
       if (!mounted) return
       let opened = false
+      // The id the server gives this socket; it gives up only this one when it closes.
+      let socketConnectionId: string | null = null
       try {
         ws = new WebSocket(wsUrl)
       } catch (err) {
@@ -503,7 +507,9 @@ export default function useWebSocketSync({
         if (msg.type === "sync_connection") {
           // This socket's id, which the canvas's saves send so the server leaves this
           // tab out of its broadcast of the saved document.
-          setSyncConnectionId(typeof msg.connection_id === "string" ? msg.connection_id : null)
+          socketConnectionId = typeof msg.connection_id === "string" ? msg.connection_id : null
+          ownConnectionId = socketConnectionId
+          setSyncConnectionId(socketConnectionId)
           return
         }
 
@@ -528,7 +534,7 @@ export default function useWebSocketSync({
       }
 
       ws.onclose = (event) => {
-        setSyncConnectionId(null)
+        if (socketConnectionId !== null) releaseSyncConnectionId(socketConnectionId)
         if (!mounted) return
         // The socket is gone whatever follows, so say so now rather than
         // after a session probe below settles — its request can be slow to fail.
@@ -563,7 +569,7 @@ export default function useWebSocketSync({
 
     return () => {
       mounted = false
-      setSyncConnectionId(null)
+      if (ownConnectionId !== null) releaseSyncConnectionId(ownConnectionId)
       stopResyncRequests()
       if (reconnectTimer) clearTimeout(reconnectTimer)
       for (const timer of delayedTimers) {

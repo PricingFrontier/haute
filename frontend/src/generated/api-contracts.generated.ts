@@ -3451,6 +3451,9 @@ export interface WorkbenchAppPriceRequest {
   form_revision: string;
   release: string;
   values: {
+    /**
+     * @maxItems 10000
+     */
     [k: string]: {
       [k: string]: string | boolean;
     }[];
@@ -3467,12 +3470,18 @@ export interface WorkbenchAppQuoteCreateRequest {
   reference?: string | null;
   release: string;
   shown?: {
+    /**
+     * @maxItems 10000
+     */
     [k: string]: {
       [k: string]: unknown;
     }[];
   } | null;
   source?: WorkbenchAppQuoteSource | null;
   values: {
+    /**
+     * @maxItems 10000
+     */
     [k: string]: {
       [k: string]: string | boolean;
     }[];
@@ -3494,11 +3503,17 @@ export interface WorkbenchAppQuoteReviseRequest {
   operation: string;
   release: string;
   shown?: {
+    /**
+     * @maxItems 10000
+     */
     [k: string]: {
       [k: string]: unknown;
     }[];
   } | null;
   values: {
+    /**
+     * @maxItems 10000
+     */
     [k: string]: {
       [k: string]: string | boolean;
     }[];

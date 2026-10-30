@@ -19,10 +19,10 @@ from pydantic import (
     ConfigDict,
     Field,
     RootModel,
+    Strict,
     StrictBool,
     StrictFloat,
     StrictInt,
-    StrictStr,
     field_validator,
     model_validator,
 )
@@ -111,6 +111,9 @@ BoundedPath = Annotated[str, Field(max_length=4096)]
 BoundedText = Annotated[str, Field(max_length=16 * 1024 * 1024)]
 #: How many items a list or a mapping in a request may hold.
 MAX_REQUEST_ITEMS = 10_000
+#: One entry of a node's config a request carries, a step or an output mapping's row: its
+#: fields are bounded, and their values, of no fixed shape, are checked where they are read.
+RequestEntry = Annotated[dict[BoundedName, Any], Field(max_length=MAX_REQUEST_ITEMS)]
 #: A utility module's name: its file, ``<name>.py``, and the write's staging sibling must
 #: both fit a file name.
 UTILITY_MODULE_NAME_MAX = 200
@@ -162,6 +165,13 @@ def _normalise_frontier_range_pair(value: Any, *, field: str) -> tuple[float, fl
 class ColumnInfo(BaseModel):
     name: str
     dtype: str
+
+
+class RequestColumnInfo(BaseModel):
+    """A column as a request names it: a name and a dtype, each bounded."""
+
+    name: BoundedName
+    dtype: BoundedName
 
 
 class SessionStatusResponse(BaseModel):
@@ -263,6 +273,22 @@ class WorkbenchParamFileResponse(BaseModel):
 WorkbenchValues = dict[str, list[dict[str, Cell]]]
 #: Priced output tables: each table's rows by its name, as Preview's pricing gives them.
 WorkbenchPricedTables = dict[str, list[dict[str, Any]]]
+#: The two as a request carries them: every table, row, cell and text bounded.
+_RequestCell = Annotated[BoundedText, Strict()] | StrictBool
+RequestWorkbenchValues = dict[
+    BoundedName,
+    Annotated[
+        list[Annotated[dict[BoundedName, _RequestCell], Field(max_length=MAX_REQUEST_ITEMS)]],
+        Field(max_length=MAX_REQUEST_ITEMS),
+    ],
+]
+RequestWorkbenchPricedTables = dict[
+    BoundedName,
+    Annotated[
+        list[Annotated[dict[BoundedName, Any], Field(max_length=MAX_REQUEST_ITEMS)]],
+        Field(max_length=MAX_REQUEST_ITEMS),
+    ],
+]
 
 
 class WorkbenchAppReleaseResponse(BaseModel):
@@ -296,7 +322,7 @@ class WorkbenchAppPriceRequest(BaseModel):
 
     form_revision: BoundedName
     release: BoundedName
-    values: WorkbenchValues = Field(max_length=MAX_REQUEST_ITEMS)
+    values: RequestWorkbenchValues = Field(max_length=MAX_REQUEST_ITEMS)
 
 
 class WorkbenchAppPriceResponse(BaseModel):
@@ -391,7 +417,7 @@ class WorkbenchAppQuoteResponse(BaseModel):
 class WorkbenchAppQuoteSource(BaseModel):
     """The quote and revision a new quote is made from, and how."""
 
-    quote_id: str
+    quote_id: BoundedName
     revision: int = Field(ge=1)
     relation: WorkbenchAppQuoteRelation
 
@@ -404,8 +430,8 @@ class WorkbenchAppQuoteSaveRequest(BaseModel):
     operation: str = Field(min_length=8, max_length=64)
     form_revision: BoundedName
     release: BoundedName
-    values: WorkbenchValues = Field(max_length=MAX_REQUEST_ITEMS)
-    shown: WorkbenchPricedTables | None = Field(default=None, max_length=MAX_REQUEST_ITEMS)
+    values: RequestWorkbenchValues = Field(max_length=MAX_REQUEST_ITEMS)
+    shown: RequestWorkbenchPricedTables | None = Field(default=None, max_length=MAX_REQUEST_ITEMS)
 
 
 class WorkbenchAppQuoteCreateRequest(WorkbenchAppQuoteSaveRequest):
@@ -857,9 +883,9 @@ class AssistantMessageContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # Top-level node ids of the saved pipeline, in selection order.
-    selected_node_ids: list[str] = Field(max_length=20)
+    selected_node_ids: list[BoundedName] = Field(max_length=20)
     # The node whose schema-resolution error the turn context reports.
-    preview_error_node_id: str | None = None
+    preview_error_node_id: BoundedName | None = None
 
     @model_validator(mode="after")
     def _unique_selection(self) -> AssistantMessageContext:
@@ -1415,7 +1441,7 @@ class PipelineNodeSaveRequest(BaseModel):
     source_revision: RevisionToken
     target_source_file: BoundedPath = Field(min_length=1)
     target_recovery_id: BoundedName = Field(min_length=1)
-    config: dict[str, Any] = Field(max_length=MAX_REQUEST_ITEMS)
+    config: dict[BoundedName, Any] = Field(max_length=MAX_REQUEST_ITEMS)
 
 
 class PipelineRepairChange(BaseModel):
@@ -1591,7 +1617,7 @@ class PolarsStepsRenderRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    steps: list[dict[str, Any]] = Field(max_length=MAX_REQUEST_ITEMS)
+    steps: list[RequestEntry] = Field(max_length=MAX_REQUEST_ITEMS)
     input_names: list[BoundedName] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
     #: Where ``df`` comes from: ``input`` for a Transform (the first step
     #: chooses an input), ``frame`` for a surface whose ``df`` is already bound.
@@ -1625,13 +1651,15 @@ class PolarsFreeCodeColumnsRequest(BaseModel):
     #: The node the steps belong to: one resolution runs per node, a newer
     #: request stopping an older one.
     node_id: BoundedName = Field(min_length=1)
-    steps: list[dict[str, Any]] = Field(max_length=MAX_REQUEST_ITEMS)
+    steps: list[RequestEntry] = Field(max_length=MAX_REQUEST_ITEMS)
     input_names: list[BoundedName] = Field(max_length=MAX_REQUEST_ITEMS)
     start: Literal["input", "frame"]
     #: The columns the editor knows for each input, as a preview reported them.
-    input_columns: dict[str, list[ColumnInfo]] = Field(max_length=MAX_REQUEST_ITEMS)
+    input_columns: dict[
+        BoundedName, Annotated[list[RequestColumnInfo], Field(max_length=MAX_REQUEST_ITEMS)]
+    ] = Field(max_length=MAX_REQUEST_ITEMS)
     #: The columns the editor knows for a frame-mode surface's ``df``.
-    frame_columns: list[ColumnInfo] = Field(max_length=MAX_REQUEST_ITEMS)
+    frame_columns: list[RequestColumnInfo] = Field(max_length=MAX_REQUEST_ITEMS)
     #: The pipeline's global constants and the source the code reads them for.
     global_constants: list[GlobalConstant] = Field(
         default_factory=list, max_length=MAX_REQUEST_ITEMS
@@ -1824,10 +1852,10 @@ class PreviewInputsResponse(BaseModel):
 class TraceSeedPlanEntry(BaseModel):
     """One generation the preview a trace explains was computed from."""
 
-    node_id: str
+    node_id: BoundedName
     port_label: None = None
-    identity_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    generation_id: str = Field(min_length=1)
+    identity_digest: str = Field(max_length=64, pattern=r"^[0-9a-f]{64}$")
+    generation_id: BoundedName = Field(min_length=1)
 
 
 class TraceRequest(BaseModel):
@@ -1837,7 +1865,7 @@ class TraceRequest(BaseModel):
     column: BoundedName | None = None
     row_limit: int = Field(default=100, ge=1, le=10000)
     source: BoundedName = "live"
-    row_values: dict[str, Any] | None = Field(default=None, max_length=MAX_REQUEST_ITEMS)
+    row_values: dict[BoundedName, Any] | None = Field(default=None, max_length=MAX_REQUEST_ITEMS)
     # The table of a Workbench Output target the row is from: the cell is traced
     # from the node connected to it. Ignored for any other target.
     port_label: BoundedName | None = None
@@ -2082,7 +2110,7 @@ class OutputAssembleDryRunRequest(BaseModel):
     graph: Graph
     node_id: BoundedName
     #: The in-progress (volatile, unsaved) outputMapping to preview.
-    output_mapping: list[dict[str, Any]] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
+    output_mapping: list[RequestEntry] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
     output_format: BoundedName = "json"
     #: Cap upstream source rows so the preview stays cheap.
     row_limit: int = Field(default=100, ge=1, le=10000)
@@ -2118,7 +2146,7 @@ class InputCacheSourceRequest(_StrictInputCacheModel):
 
     schema_version: Literal[1] = 1
     node_type: Literal["dataInput", "apiInput"] = "dataInput"
-    config: dict[str, Any] = Field(max_length=MAX_REQUEST_ITEMS)
+    config: dict[BoundedName, Any] = Field(max_length=MAX_REQUEST_ITEMS)
 
 
 class InputCacheBuildRequest(InputCacheSourceRequest):
@@ -2632,7 +2660,7 @@ class ExplorePivotResult(BaseModel):
 class ExplorePivotRunRequest(BaseModel):
     graph: Graph
     node_id: BoundedName
-    pivot: dict[str, Any] = Field(max_length=MAX_REQUEST_ITEMS)
+    pivot: dict[BoundedName, Any] = Field(max_length=MAX_REQUEST_ITEMS)
     source: BoundedName = "live"
 
 
@@ -2670,7 +2698,7 @@ class BandingStatsRequest(BaseModel):
 
     graph: Graph
     node_id: BoundedName
-    factor: dict[str, Any] = Field(max_length=MAX_REQUEST_ITEMS)
+    factor: dict[BoundedName, Any] = Field(max_length=MAX_REQUEST_ITEMS)
     source: BoundedName = "live"
     histogram_bins: int = Field(default=40, ge=1, le=200)
     value_limit: int = Field(default=500, ge=1, le=10_000)
@@ -2730,7 +2758,7 @@ class RatingLevelsRequest(BaseModel):
     node_id: BoundedName
     # Each column is one pass over the data, so the request is bounded; the
     # editor asks for the factors in use, which is far fewer than this.
-    columns: list[str] = Field(min_length=1, max_length=100)
+    columns: list[BoundedName] = Field(min_length=1, max_length=100)
     source: BoundedName = "live"
     value_limit: int = Field(default=1000, ge=1, le=10_000)
 
@@ -2774,8 +2802,12 @@ class ExploreRelationshipsRequest(NodeDataRequest):
 
     target: BoundedName | None = None
     weight: BoundedName | None = None
-    features: list[str] = Field(default_factory=list, max_length=EXPLORE_RELATIONSHIP_FEATURE_LIMIT)
-    key_columns: list[str] = Field(default_factory=list, max_length=EXPLORE_KEY_COLUMN_LIMIT)
+    features: list[BoundedName] = Field(
+        default_factory=list, max_length=EXPLORE_RELATIONSHIP_FEATURE_LIMIT
+    )
+    key_columns: list[BoundedName] = Field(
+        default_factory=list, max_length=EXPLORE_KEY_COLUMN_LIMIT
+    )
     level_limit: int = Field(default=12, ge=2, le=50)
 
 
@@ -4261,9 +4293,9 @@ class OptimiserFrontierAutoRangeStatusResponse(BaseModel):
 
 class OptimiserFrontierRequest(BaseModel):
     job_id: BoundedName
-    threshold_ranges: dict[str, list[float]] = Field(
-        default_factory=dict, max_length=MAX_REQUEST_ITEMS
-    )
+    threshold_ranges: dict[
+        BoundedName, Annotated[list[float], Field(max_length=MAX_REQUEST_ITEMS)]
+    ] = Field(default_factory=dict, max_length=MAX_REQUEST_ITEMS)
     n_points_per_dim: int = Field(default=5, ge=1, le=100)
 
     @field_validator("threshold_ranges", mode="after")
@@ -4980,7 +5012,9 @@ class OptimiserStatusResponse(BaseModel):
 APPLY_PREVIEW_ROW_LIMIT = 100
 """The most rows one Quotes page (``POST /apply``) returns."""
 
-OptimiserQuoteEqualityValue = StrictStr | StrictInt | StrictFloat | StrictBool | None
+OptimiserQuoteEqualityValue = (
+    Annotated[BoundedName, Strict()] | StrictInt | StrictFloat | StrictBool | None
+)
 
 
 class OptimiserQuoteFilters(BaseModel):
@@ -4994,7 +5028,9 @@ class OptimiserQuoteFilters(BaseModel):
     # Quotes at the first or last step of the recorded scenario grid.
     at_range_edge: bool = False
     # ``{analysis column: value}``; ``None`` matches a missing value.
-    analysis_equals: dict[str, OptimiserQuoteEqualityValue] = Field(default_factory=dict)
+    analysis_equals: dict[BoundedName, OptimiserQuoteEqualityValue] = Field(
+        default_factory=dict, max_length=MAX_REQUEST_ITEMS
+    )
     # Ratebook only: the deployed factor differs from the evaluated step.
     deployed_factor_differs: bool = False
 

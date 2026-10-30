@@ -250,6 +250,10 @@ def _ensure_init(utility_dir: Path) -> list[Path]:
 def _write_response(
     project_root: Path, module: str, target: Path, written: list[Path]
 ) -> UtilityWriteResponse:
+    # The revision of the bytes this write published, read before the ledger capture:
+    # a change another editor makes meanwhile then refuses the next write (412)
+    # instead of being answered as this write's own.
+    revision = file_revision(target.stat())
     warnings: list[str] = []
     captured = capture_save_in_ledger(
         project_root, [_display(project_root, path) for path in written], warnings
@@ -259,7 +263,7 @@ def _write_response(
         name=f"{module}.py",
         module=module,
         import_line=f"from utility.{module} import *",
-        revision=file_revision(target.stat()),
+        revision=revision,
         warnings=warnings,
         **captured._asdict(),
     )

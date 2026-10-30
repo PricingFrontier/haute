@@ -546,26 +546,55 @@ describe("UtilityPanel auto-save", () => {
     await waitFor(() => expect(mockUpdateFile).toHaveBeenLastCalledWith("features", "x = 3\n", "2-2"))
   })
 
-  it("keeps the draft and says so when the file changed outside the panel", async () => {
-    mockUpdateFile.mockRejectedValue(
-      new MockApiError(
-        "utility/features.py changed since you opened it. Open it again, then retry.",
-        412,
-        "utility/features.py changed since you opened it. Open it again, then retry.",
-      ),
-    )
+  const changedOutside = "utility/features.py changed since you opened it. Open it again, then retry."
 
+  const refuseAsChangedOutside = async () => {
+    mockUpdateFile.mockRejectedValueOnce(new MockApiError(changedOutside, 412, changedOutside))
     render(<UtilityPanel {...defaultProps} />)
     await waitFor(() => expect(screen.getByTestId("code-editor")).toBeInTheDocument())
-
     fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "x = 7\n" } })
     await act(async () => { vi.advanceTimersByTime(600) })
+    await waitFor(() => expect(screen.getByTestId("utility-conflict")).toHaveTextContent(changedOutside))
+  }
 
-    await waitFor(() => expect(useToastStore.getState().toasts.map((toast) => toast.text)).toContain(
-      'Failed to save utility file "features": utility/features.py changed since you opened it. Open it again, then retry.',
-    ))
+  it("keeps the draft and saves nothing more when the file changed outside the panel", async () => {
+    await refuseAsChangedOutside()
+
+    fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "x = 8\n" } })
+    await act(async () => { vi.advanceTimersByTime(600) })
+
+    expect(screen.getByTestId("code-editor")).toHaveValue("x = 8\n")
+    expect(mockUpdateFile).toHaveBeenCalledTimes(1)
+  })
+
+  it("reloads the file as it is now, dropping the draft", async () => {
+    await refuseAsChangedOutside()
+    mockReadFile.mockResolvedValueOnce({
+      name: "features.py", module: "features", content: "x = 9\n", revision: "5-5",
+    })
+    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", revision: "6-6" })
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }))
+    await waitFor(() => expect(screen.getByTestId("code-editor")).toHaveValue("x = 9\n"))
+    expect(screen.queryByTestId("utility-conflict")).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "x = 10\n" } })
+    await act(async () => { vi.advanceTimersByTime(600) })
+    await waitFor(() => expect(mockUpdateFile).toHaveBeenLastCalledWith("features", "x = 10\n", "5-5"))
+  })
+
+  it("overwrites the file with the draft against the revision it has now", async () => {
+    await refuseAsChangedOutside()
+    mockReadFile.mockResolvedValueOnce({
+      name: "features.py", module: "features", content: "x = 9\n", revision: "5-5",
+    })
+    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", revision: "6-6" })
+
+    fireEvent.click(screen.getByRole("button", { name: "Overwrite" }))
+
+    await waitFor(() => expect(mockUpdateFile).toHaveBeenLastCalledWith("features", "x = 7\n", "5-5"))
     expect(screen.getByTestId("code-editor")).toHaveValue("x = 7\n")
-    expect(screen.getByText("Failed to save")).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByTestId("utility-conflict")).not.toBeInTheDocument())
   })
 
   it("reports a save's ledger capture as every project write does", async () => {

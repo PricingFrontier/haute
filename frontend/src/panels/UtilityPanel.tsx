@@ -15,6 +15,7 @@ import {
   updateUtilityFile,
   deleteUtilityFile,
 } from "../api/client"
+import { apiErrorStatus } from "../api/errors"
 import type { UtilityFile } from "../api/types"
 
 /**
@@ -79,6 +80,14 @@ export default function UtilityPanel({
   // Each file's revision as its read, create or last save returned it: a save or delete
   // sends it, so the server refuses one made against a file changed outside the panel.
   const revisionsRef = useRef(new Map<string, string>())
+  // A file whose save was refused because it changed outside the panel (412), with the
+  // server's message. Its draft stays, unsaved, until Reload or Overwrite.
+  const [conflict, setConflict] = useState<{ module: string; message: string } | null>(null)
+  const conflictModuleRef = useRef<string | null>(null)
+  // Bumped when the open file is read again, so the editor shows what was read.
+  const [readGeneration, setReadGeneration] = useState(0)
+  const contentRef = useRef(content)
+  useEffect(() => { contentRef.current = content }, [content])
   const activeModuleRef = useRef(activeModule)
   const mountedRef = useRef(true)
   useEffect(() => { activeModuleRef.current = activeModule }, [activeModule])
@@ -91,6 +100,7 @@ export default function UtilityPanel({
   // are guarded so a stale (switched-away or unmounted) response can't clobber
   // the current file's error UI.
   const persistSave = useCallback(async (module: string, value: string): Promise<boolean> => {
+    if (conflictModuleRef.current === module) return false
     try {
       const revision = revisionsRef.current.get(module)
       if (revision === undefined) throw new Error(`no revision of ${module} was read`)
@@ -112,6 +122,9 @@ export default function UtilityPanel({
         if (syntaxErr) {
           setErrorLine(syntaxErr.error_line)
           setErrorMsg(syntaxErr.error)
+        } else if (apiErrorStatus(err) === 412) {
+          conflictModuleRef.current = module
+          setConflict({ module, message: err instanceof Error ? err.message : String(err) })
         } else {
           const detail = err instanceof Error ? err.message : "unknown error"
           addToast("error", `Failed to save utility file "${module}": ${detail}`)
@@ -187,6 +200,43 @@ export default function UtilityPanel({
       setErrorMsg(`Failed to load ${module}`)
     }
   }, [addToast, flushSave])
+
+  // Reload drops the draft for the file as it is now; Overwrite saves the draft over it.
+  const readConflicted = useCallback(async (module: string): Promise<string | null> => {
+    try {
+      const res = await readUtilityFile(module)
+      revisionsRef.current.set(module, res.revision)
+      return res.content
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : "unknown error"
+      addToast("error", `Failed to load utility file "${module}": ${detail}`)
+      return null
+    }
+  }, [addToast])
+
+  const reloadConflicted = useCallback(async () => {
+    const module = conflictModuleRef.current
+    if (module === null) return
+    const read = await readConflicted(module)
+    if (read === null) return
+    conflictModuleRef.current = null
+    failedSaveModuleRef.current = null
+    if (!mountedRef.current) return
+    setConflict(null)
+    setContent(read)
+    setReadGeneration((generation) => generation + 1)
+    setErrorLine(null)
+    setErrorMsg(null)
+  }, [readConflicted])
+
+  const overwriteConflicted = useCallback(async () => {
+    const module = conflictModuleRef.current
+    if (module === null) return
+    if (await readConflicted(module) === null) return
+    conflictModuleRef.current = null
+    if (mountedRef.current) setConflict(null)
+    await queueSave(module, contentRef.current)
+  }, [readConflicted, queueSave])
 
   const selectImports = useCallback(async () => {
     if (!await flushSave()) return
@@ -379,14 +429,45 @@ export default function UtilityPanel({
           <div className="h-full flex flex-col">
             <div className="flex-1 min-h-0">
               <CodeEditor
-                key={activeModule}
+                key={`${activeModule}:${readGeneration}`}
                 defaultValue={content}
-                onChange={(val) => { setContent(val); setErrorLine(null); setErrorMsg(null); if (activeModule) autoSave(activeModule, val) }}
+                onChange={(val) => {
+                  setContent(val)
+                  // A file that changed outside the panel saves nothing until Reload or Overwrite.
+                  if (conflictModuleRef.current === activeModule) return
+                  setErrorLine(null)
+                  setErrorMsg(null)
+                  autoSave(activeModule, val)
+                }}
                 errorLine={errorLine}
                 placeholder="# Write reusable helper functions here\n\nimport polars as pl\n\ndef my_helper(df):\n    return df"
               />
             </div>
-            {errorMsg && (
+            {conflict?.module === activeModule ? (
+              <div
+                data-testid="utility-conflict"
+                className="px-3 py-2 text-[11px] shrink-0 flex items-center gap-2"
+                style={{ color: 'var(--danger)', borderTop: '1px solid var(--border)' }}
+              >
+                <span className="flex-1 min-w-0">{conflict.message}</span>
+                <button
+                  type="button"
+                  onClick={() => void reloadConflicted()}
+                  className="px-2 py-0.5 text-[11px] font-medium rounded-md transition-colors hover:bg-[var(--accent-soft-hover)]"
+                  style={{ color: 'var(--accent)', background: 'var(--accent-soft)' }}
+                >
+                  Reload
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void overwriteConflicted()}
+                  className="px-2 py-0.5 text-[11px] font-medium rounded-md transition-colors hover:bg-[var(--danger-soft)]"
+                  style={{ color: 'var(--danger)' }}
+                >
+                  Overwrite
+                </button>
+              </div>
+            ) : errorMsg && (
               <div className="px-3 py-2 text-[11px] shrink-0" style={{ color: 'var(--danger)', borderTop: '1px solid var(--border)' }}>
                 {errorMsg}
               </div>

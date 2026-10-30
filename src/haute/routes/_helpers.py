@@ -11,7 +11,7 @@ import threading
 import time
 import weakref
 from collections import deque
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
@@ -24,7 +24,10 @@ from haute._file_ops import atomic_write_text
 from haute._git_lock import repository_mutation
 from haute._io import read_user_text
 from haute._logging import get_logger
-from haute._pipeline_recovery import load_pipeline_editor_document
+from haute._pipeline_recovery import (
+    load_pipeline_editor_document,
+    pipeline_document_fingerprint,
+)
 from haute._project_mutation_lock import ProjectMutationLock
 from haute._sidecar import (
     SidecarModel,
@@ -890,6 +893,79 @@ def pipeline_document_update_payload(
     if exclude is not None:
         payload["exclude_connection"] = exclude
     return payload
+
+
+def pipelines_naming_artifacts(
+    changed: Iterable[Path], pipelines: Iterable[Path], *, project_root: Path
+) -> list[Path]:
+    """The *pipelines* whose recovery document reads any of the *changed* files: its
+    own sidecar, or a file its recovery manifest names (a child module, its sidecar, a
+    config). The file watcher and the save find the documents to refresh by it."""
+    from haute._pipeline_recovery import _recovery_artifacts
+
+    changed_paths = {path.resolve() for path in changed}
+    if not changed_paths:
+        return []
+    owners: list[Path] = []
+    for pipeline_path in pipelines:
+        # The parent sidecar is unconditionally part of a recovery document,
+        # even when its source currently has syntax damage that prevents the
+        # deeper manifest walk from discovering child artifacts.
+        if pipeline_path.with_suffix(".haute.json").resolve() in changed_paths:
+            owners.append(pipeline_path)
+            continue
+        try:
+            artifacts = _recovery_artifacts(pipeline_path, project_root)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "pipeline_recovery_manifest_failed", file=pipeline_path.name, error=str(exc)
+            )
+            continue
+        if any(artifact_path.resolve() in changed_paths for _, artifact_path in artifacts):
+            owners.append(pipeline_path)
+    return owners
+
+
+def shared_document_updates(
+    artifacts: Iterable[Path], *, saved: Path, project_root: Path
+) -> list[PipelineDocumentUpdatePayload]:
+    """The ``pipeline.document.update`` events of every other document a save of
+    *saved* changed by writing *artifacts*: each importing a module it wrote, or reading
+    a file it wrote. A save's writes never reach the file watcher, so the route
+    publishes these itself, as the watcher would have for another program's edit."""
+    saved_path = saved.resolve()
+    written = [
+        path
+        for path in artifacts
+        if path.resolve() not in {saved_path, saved_path.with_suffix(".haute.json")}
+    ]
+    if not written:
+        return []
+    others = [
+        path
+        for path in discover_pipelines()
+        if path.suffix == ".py" and not path.name.startswith("__") and path.resolve() != saved_path
+    ]
+    affected = {
+        path.resolve(): path
+        for path in pipelines_naming_artifacts(written, others, project_root=project_root)
+    }
+    for module in (path for path in written if path.suffix == ".py"):
+        for importer in pipelines_importing_module(module):
+            if importer.resolve() != saved_path:
+                affected.setdefault(importer.resolve(), importer)
+    updates: list[PipelineDocumentUpdatePayload] = []
+    for path in affected.values():
+        try:
+            document = load_pipeline_editor_document(path, project_root=project_root)
+        except Exception as exc:  # the save has committed: its answer stands
+            logger.warning("save_shared_document_unpublished", file=path.name, error=str(exc))
+            continue
+        dumped = document.model_dump(mode="json", by_alias=True)
+        updates.append(
+            pipeline_document_update_payload(path, dumped, pipeline_document_fingerprint(dumped))
+        )
+    return updates
 
 
 def _project_relative_source_file(path: Path, project_root: Path) -> str:
