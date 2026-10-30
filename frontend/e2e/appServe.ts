@@ -110,9 +110,8 @@ export async function startAppServe(staticDir: string): Promise<AppServe> {
   // environment of its own from its pyproject.toml.
   const child = spawn("uv", ["run", "--project", repoRoot, "haute", "app", "serve", "--port", String(port), "--static-dir", staticDir], {
     cwd: e2eProjectRoot,
-    // Its output is read as UTF-8, as it comes: a piped stdout on Windows is otherwise
-    // written in the ANSI code page, which cannot encode the marks the command prints.
-    env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUNBUFFERED: "1" },
+    // Its output read as it comes; a piped command writes UTF-8 whatever the locale.
+    env: { ...process.env, PYTHONUNBUFFERED: "1" },
     stdio: ["ignore", "pipe", "pipe"],
     // A group of its own on POSIX, so stopping it stops the Python process uv starts too.
     detached: process.platform !== "win32",

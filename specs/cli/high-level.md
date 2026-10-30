@@ -154,6 +154,10 @@ Invariants that hold across every command:
 - `run`, `lint`, and `deploy` delegate CLI/default pipeline discovery to
   `haute._project.resolve_pipeline_file`; a TOML-configured deploy pipeline is passed through
   that same resolver before `DeployConfig` and `resolve_config` consume it.
+- A command piped or redirected to a file writes every mark it prints (`✓`, `✗`), whatever
+  the locale: a stream that is not UTF-8 is written in UTF-8, or, when `PYTHONIOENCODING`
+  chose its encoding or it is a terminal of another encoding, keeps that encoding and shows
+  a mark it cannot hold as `?`. None of it raises.
 - Command handlers use exit code 1 for their handled operational failures; Click uses exit
   code 2 for argument/choice/range parsing errors. Two informational outcomes intentionally
   succeed: ordinary `status` reports a missing registered model and exits 0, and `impact`

@@ -5,9 +5,9 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/__main__.py` | Package-module entry point; imports and invokes the canonical `haute.cli:cli` group for `python -m haute`. |
-| `src/haute/cli/__init__.py` | Builds the Click command group (`cli`), registers all thirteen commands and command groups, exposes `--version`. Its first import is the Polars startup module below, before anything imports Polars. |
+| `src/haute/cli/__init__.py` | Builds the Click command group (`cli`), registers all thirteen commands and command groups, exposes `--version`; the group's callback sets the process's output streams through `utf8_output` before any command prints. Its first import is the Polars startup module below, before anything imports Polars. |
 | `src/haute/cli/_polars_startup.py` | Applies Haute's Polars settings (spilling off, its folder in the working directory's `.haute_cache/polars-spill`, unknown extension columns as storage; [execution engine](../execution-engine/low-level.md)) and reaps ended processes' spill folders; `SPILL_ROOT` and `POLARS_SETTINGS`, which `haute serve` logs. |
-| `src/haute/cli/_helpers.py` | Cross-command utilities: `resolve_model_name`, `_open_browser`, `_node_env`, `_npm`, `_find_frontend_dir`, the `TransportInfo`/`resolve_transport` transport-dispatch helper, and the shared `ENDPOINT_SUFFIX_HELP` string. |
+| `src/haute/cli/_helpers.py` | Cross-command utilities: `utf8_output` (the process's own stdout and stderr, when not UTF-8, written in UTF-8, or, when PYTHONIOENCODING chose the encoding or the stream is a terminal, kept with a mark it cannot hold replaced; a stream a caller put in the process's place left alone), `resolve_model_name`, `_open_browser`, `_node_env`, `_npm`, `_find_frontend_dir`, the `TransportInfo`/`resolve_transport` transport-dispatch helper, and the shared `ENDPOINT_SUFFIX_HELP` string. |
 | `src/haute/cli/_init_cmd.py` | `haute init` — project scaffolding: `InitConfig`, `handle_init`, TOML-aware `pyproject.toml` dependency injection, CI-provider file generation (`haute._scaffold.ci_files`, written by `write_generated_files`, which `haute ci update` shares) and pruning, the `--workbench` table and form ([workbench](../workbench/low-level.md)), and next steps that name the CI secrets the first deploy needs (`ci_secret_names`), with `haute ci secrets` on GitHub. |
 | `src/haute/cli/_run.py` | `haute run` — `RunConfig`, `handle_run`, parses + executes a pipeline and prints per-node results; a pipeline with a Workbench node is given its tables from the form folder of the project the file is in (`haute._workbench_nodes.with_form_tables`), a form that cannot be read reported as "Error reading the workbench's form: ...". |
 | `src/haute/cli/_lint.py` | `haute lint` — `LintConfig`, `handle_lint`, structural validation without execution. |
@@ -405,8 +405,11 @@ pytest's `tmp_path`, and tests that need a specific cwd use `monkeypatch.chdir`.
 
 Key files and what they cover:
 - `test_cli.py` — end-to-end `CliRunner` coverage per command (`--version`, `init`, `run`, `lint`,
-  `smoke`, `serve`), plus real-subprocess parity coverage for `python -m haute`; uses a shared
-  `project_dir` fixture that builds a real minimal pipeline.
+  `smoke`, `serve`), plus real-subprocess parity coverage for `python -m haute`, and a command
+  piped under a locale that is not UTF-8 writing its marks in UTF-8, an encoding
+  `PYTHONIOENCODING` chose kept with a mark it lacks shown as `?`, and a stream a caller put
+  in the process's place left alone; uses a shared `project_dir` fixture that builds a real
+  minimal pipeline.
 - `test_cli_architecture.py` — structural/contract tests: `resolve_model_name` precedence,
   `model_name` optionality across `deploy`/`status`, single shared `resolve_pipeline_file`, that no
   CLI module reimplements ad-hoc pipeline resolution (AST/source scan), that every command has a

@@ -13,6 +13,7 @@ from haute.cli._app import app
 from haute.cli._ci import ci
 from haute.cli._deploy import deploy
 from haute.cli._gpu_setup import gpu_setup
+from haute.cli._helpers import utf8_output
 from haute.cli._impact import impact
 from haute.cli._init_cmd import init
 from haute.cli._lint import lint
@@ -27,6 +28,7 @@ from haute.cli._train import train
 @click.version_option(package_name="haute")
 def cli() -> None:
     """Haute - Open-source pricing engine for insurance teams"""
+    utf8_output()
     configure_process_high_qos()
 
 

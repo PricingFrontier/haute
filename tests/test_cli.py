@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib
+import io
+import os
 import subprocess
 import sys
 import tomllib
@@ -14,6 +16,7 @@ import polars as pl
 import pytest
 
 from haute.cli import cli
+from haute.cli._helpers import utf8_output
 from tests.conftest import write_data_input_config
 
 if TYPE_CHECKING:
@@ -118,6 +121,75 @@ class TestModuleEntrypoint:
         module_output = module_result.stdout + module_result.stderr
         assert module_result.returncode == console_result.exit_code
         assert expected_fragment.lower() in module_output.lower()
+
+
+class TestOutputEncoding:
+    """A command piped or redirected writes every mark it prints, whatever the locale."""
+
+    def test_a_piped_command_writes_its_marks_whatever_the_locale(self) -> None:
+        # The locale's encoding is not UTF-8: Windows' ANSI code page for a pipe, or ASCII
+        # under the C locale with Python's own UTF-8 fallbacks off. The script is ASCII, so
+        # its argument survives that locale too.
+        env = {**os.environ, "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0", "LC_ALL": "C"}
+        env.pop("PYTHONIOENCODING", None)
+        script = (
+            "import click\n"
+            "from haute.cli import cli\n"
+            "@cli.command('tick')\n"
+            "def tick():\n"
+            "    click.echo('\\u2713 done')\n"
+            "    click.echo('\\u2717 refused', err=True)\n"
+            "cli(['tick'])\n"
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, env=env, check=False
+        )
+
+        assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+        assert "✓ done" in result.stdout.decode("utf-8")
+        assert "✗ refused" in result.stderr.decode("utf-8")
+
+    def test_a_redirected_stream_is_written_in_utf8(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        raw = io.BytesIO()
+        stream = io.TextIOWrapper(raw, encoding="cp1252")
+        monkeypatch.setattr(sys, "stdout", stream)
+        monkeypatch.setattr(sys, "__stdout__", stream)
+        monkeypatch.delenv("PYTHONIOENCODING", raising=False)
+
+        utf8_output()
+        stream.write("✓ done")
+        stream.flush()
+
+        assert raw.getvalue() == "✓ done".encode()
+
+    def test_an_encoding_the_user_chose_is_kept_a_mark_it_lacks_shown_as_a_question_mark(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        raw = io.BytesIO()
+        stream = io.TextIOWrapper(raw, encoding="cp1252")
+        monkeypatch.setattr(sys, "stdout", stream)
+        monkeypatch.setattr(sys, "__stdout__", stream)
+        monkeypatch.setenv("PYTHONIOENCODING", "cp1252")
+
+        utf8_output()
+        stream.write("✓ £100")
+        stream.flush()
+
+        assert raw.getvalue() == "? £100".encode("cp1252")
+
+    def test_a_stream_a_caller_put_in_the_process_s_place_is_left_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        swapped = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        monkeypatch.setattr(sys, "stdout", swapped)
+
+        utf8_output()
+
+        assert swapped.encoding == "cp1252"
+        with pytest.raises(UnicodeEncodeError):
+            swapped.write("✓")
+            swapped.flush()
 
 
 # ---------------------------------------------------------------------------
