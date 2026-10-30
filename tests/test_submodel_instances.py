@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ast
 import json
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import polars as pl
@@ -170,6 +172,418 @@ def _reuse_graph() -> PipelineGraph:
         _node("consumer", config={"code": "df = pl.concat([premium, rating_ie, rating_fr])"})
     )
     return PipelineGraph(nodes=nodes, edges=edges, submodels={"definition_scoring": definition})
+
+
+def _missing_columns_graph() -> PipelineGraph:
+    definition = _definition(
+        graph=PipelineGraph(nodes=[_node("score", config={"code": "df = policy.select('x')"})]),
+        input_ports=[
+            SubmodelInputPort(name=name, targets=[SubmodelEndpoint(node_id="score")])
+            for name in ("policy", "rates")
+        ],
+        output_ports=[SubmodelOutputPort(name="premium", source=SubmodelEndpoint(node_id="score"))],
+    )
+    return PipelineGraph(
+        nodes=[
+            _node(
+                "original_data", config={"code": "df = pl.LazyFrame({'x': [1], 'region': ['GB']})"}
+            ),
+            _node(
+                "owner_branch",
+                config={"code": "df = original_data.with_columns(pl.lit(1).alias('limit'))"},
+            ),
+            _node("other_data", config={"code": "df = pl.LazyFrame({'x': [2], 'extra': [3]})"}),
+            _node("original_rates", config={"code": "df = pl.LazyFrame({'x': [1], 'extra': [4]})"}),
+            _node(
+                "other_rates",
+                config={"code": "df = pl.LazyFrame({'x': [2], 'region': ['IE'], 'limit': [5]})"},
+            ),
+            _instance("owner"),
+            _instance("copy", instance_of="owner"),
+        ],
+        edges=[
+            GraphEdge(id="branch", source="original_data", target="owner_branch"),
+            *[
+                GraphEdge(
+                    id=f"{target}_{port}", source=source, target=target, targetHandle=f"in__{port}"
+                )
+                for target, port, source in (
+                    ("owner", "policy", "owner_branch"),
+                    ("owner", "rates", "original_rates"),
+                    ("copy", "policy", "other_data"),
+                    ("copy", "rates", "other_rates"),
+                )
+            ],
+        ],
+        submodels={"definition_scoring": definition},
+    )
+
+
+@pytest.mark.parametrize("mode", ["full", "target_only", "whole_graph"])
+def test_instance_missing_columns_by_input_agree_across_runs(mode: str) -> None:
+    from structlog.testing import capture_logs
+
+    from haute.executor import execute_graph
+
+    target = qualified_runtime_node_id("copy", "score")
+    options: dict[str, Any] = {} if mode == "whole_graph" else {"target_node_id": target}
+    if mode == "target_only":
+        options["target_preview_only"] = True
+    with capture_logs() as logs:
+        results = execute_graph(flatten_graph(_missing_columns_graph()), **options)
+    executed = next(entry for entry in logs if entry["event"] == "graph_executed")
+    assert executed["node_count"] == {"full": 3, "target_only": 1, "whole_graph": 7}[mode]
+    assert results[target].preview == [{"x": 2}]
+    assert [w.model_dump(exclude_none=True) for w in results["copy"].schema_warnings] == [
+        {"input": "policy", "column": "limit", "status": "missing"},
+        {"input": "policy", "column": "region", "status": "missing"},
+        {"input": "rates", "column": "extra", "status": "missing"},
+    ]
+    assert results[target].schema_warnings == []
+    if mode != "whole_graph":
+        assert "owner_branch" not in results
+        assert qualified_runtime_node_id("owner", "score") not in results
+
+
+def test_instance_missing_columns_resolves_unvisited_owner_without_rows() -> None:
+    from haute.executor import execute_graph
+
+    graph = _missing_columns_graph()
+    # Collection of this branch fails, but its schema is valid.
+    graph.node_map["owner_branch"].data.config["code"] = (
+        "df = original_data.with_columns(pl.col('region').cast(pl.Int64).alias('limit'))"
+    )
+    results = execute_graph(
+        flatten_graph(graph),
+        target_node_id=qualified_runtime_node_id("copy", "score"),
+        target_preview_only=True,
+    )
+    assert [(w.input, w.column, w.status) for w in results["copy"].schema_warnings] == [
+        ("policy", "limit", "missing"),
+        ("policy", "region", "missing"),
+        ("rates", "extra", "missing"),
+    ]
+
+
+@pytest.mark.parametrize("mode", ["full", "target_only", "whole_graph"])
+def test_instance_missing_columns_reports_unavailable_schema(mode: str) -> None:
+    from haute.executor import execute_graph
+
+    graph = _missing_columns_graph()
+    graph.node_map["owner_branch"].data.config["code"] = (
+        "df = original_data.select('absent_column')"
+    )
+    target = qualified_runtime_node_id("copy", "score")
+    options: dict[str, Any] = {} if mode == "whole_graph" else {"target_node_id": target}
+    if mode == "target_only":
+        options["target_preview_only"] = True
+    results = execute_graph(flatten_graph(graph), **options)
+    assert results[target].preview == [{"x": 2}]
+    warnings = results["copy"].schema_warnings
+    assert len(warnings) == 2
+    assert warnings[0].input == "policy"
+    assert warnings[0].status == "unavailable"
+    assert warnings[0].column is None
+    assert "absent_column" in warnings[0].detail
+    assert (warnings[1].input, warnings[1].column, warnings[1].status) == (
+        "rates",
+        "extra",
+        "missing",
+    )
+
+
+@pytest.mark.parametrize("recorded", [False, True])
+def test_instance_missing_columns_rejects_missing_binding_node(recorded: bool) -> None:
+    from haute.executor import _submodel_schema_warnings
+
+    graph = flatten_graph(_missing_columns_graph())
+    shared = graph._submodel_shared_bindings["copy"]
+    shared["policy"] = replace(shared["policy"], owner=SubmodelEndpoint(node_id="missing"))
+    columns = {"missing": [("x", "Int64")]} if recorded else {}
+    with pytest.raises(KeyError, match="missing"):
+        _submodel_schema_warnings(
+            graph, [qualified_runtime_node_id("copy", "score")], columns, {}, {}, source="live"
+        )
+
+
+def test_instance_missing_columns_propagates_invalid_recorded_schema() -> None:
+    from haute.executor import _submodel_schema_warnings
+
+    with pytest.raises(TypeError, match="not iterable"):
+        _submodel_schema_warnings(
+            flatten_graph(_missing_columns_graph()),
+            [qualified_runtime_node_id("copy", "score")],
+            {"owner_branch": None},
+            {},
+            {},
+            source="live",
+        )
+
+
+@pytest.mark.parametrize("mode", ["recorded", "unvisited", "empty_preamble", "failed_preamble"])
+def test_instance_missing_columns_compiles_preamble_once_when_needed(mode: str) -> None:
+    from haute.executor import _compile_preamble, _submodel_schema_warnings
+
+    graph = flatten_graph(_missing_columns_graph())
+    graph.preamble = "limit = 1"
+    if mode == "empty_preamble":
+        graph.preamble = ""
+    elif mode == "failed_preamble":
+        graph.preamble = "raise ValueError('broken warning preamble')"
+    else:
+        graph.node_map["owner_branch"].data.config["code"] = (
+            "df = original_data.with_columns(pl.lit(limit).alias('limit'))"
+        )
+    columns = {
+        "other_data": [("x", "Int64"), ("extra", "Int64")],
+        "other_rates": [("x", "Int64"), ("region", "String"), ("limit", "Int64")],
+    }
+    if mode == "recorded":
+        columns["owner_branch"] = [("x", "Int64"), ("region", "String"), ("limit", "Int64")]
+        columns["original_rates"] = [("x", "Int64"), ("extra", "Int64")]
+    with patch("haute.executor._compile_preamble", wraps=_compile_preamble) as compile_preamble:
+        warnings = _submodel_schema_warnings(
+            graph, [qualified_runtime_node_id("copy", "score")], columns, {}, {}, source="live"
+        )["copy"]
+    if mode == "failed_preamble":
+        assert [(w.input, w.status, w.column) for w in warnings] == [
+            ("policy", "unavailable", None),
+            ("rates", "unavailable", None),
+        ]
+        assert all("broken warning preamble" in w.detail for w in warnings)
+    else:
+        assert [(w.input, w.column, w.status) for w in warnings] == [
+            ("policy", "limit", "missing"),
+            ("policy", "region", "missing"),
+            ("rates", "extra", "missing"),
+        ]
+    assert compile_preamble.call_count == (0 if mode == "recorded" else 1)
+
+
+@pytest.mark.parametrize("warnings_last", [False, True])
+def test_haute_run_reports_executable_nodes_with_instance_warnings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, warnings_last: bool
+) -> None:
+    from click.testing import CliRunner
+
+    from haute.cli import cli
+    from haute.executor import execute_graph
+
+    if warnings_last:
+        # Metadata order has no meaning; exercise the real results in either order.
+        def execute_with_warnings_last(graph: PipelineGraph, **kwargs: Any) -> dict[str, Any]:
+            results = execute_graph(graph, **kwargs)
+            results["copy"] = results.pop("copy")
+            return results
+
+        monkeypatch.setattr("haute.executor.execute_graph", execute_with_warnings_last)
+
+    files = graph_to_code_multi(
+        _missing_columns_graph(), pipeline_name="warnings", source_file="main.py"
+    )
+    for relative_path, source in files.items():
+        destination = tmp_path / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(source, encoding="utf-8", newline="\n")
+    run = CliRunner().invoke(cli, ["run", str(tmp_path / "main.py")], catch_exceptions=False)
+    assert run.exit_code == 0, run.output
+    expected_columns = {
+        "original_data": 2,
+        "owner_branch": 3,
+        "other_data": 2,
+        "original_rates": 2,
+        "other_rates": 3,
+        qualified_runtime_node_id("owner", "score"): 1,
+        qualified_runtime_node_id("copy", "score"): 1,
+    }
+    assert {line for line in run.output.splitlines() if line.startswith("  \u2713 ")} == {
+        f"  \u2713 {node_id}: 1 rows \u00d7 {columns} cols"
+        for node_id, columns in expected_columns.items()
+    }
+    assert f"Output - {qualified_runtime_node_id('owner', 'score')} (1 rows):" in run.output
+
+
+def test_instance_missing_columns_preview_response_and_refresh() -> None:
+    from fastapi.testclient import TestClient
+
+    from haute.server import app
+
+    graph = _missing_columns_graph()
+    client = TestClient(app)
+
+    def preview() -> dict[str, Any]:
+        response = client.post(
+            "/api/pipeline/preview",
+            json={
+                "graph": graph.model_dump(mode="json", by_alias=True),
+                "node_id": qualified_runtime_node_id("copy", "score"),
+            },
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    first = preview()
+    assert first["preview"] == [{"x": 2}]
+    executable_ids = {"other_data", "other_rates", qualified_runtime_node_id("copy", "score")}
+    for key in ("node_statuses", "node_columns", "node_available_columns"):
+        assert set(first[key]) == executable_ids
+    for key in ("timings", "memory"):
+        assert {entry["node_id"] for entry in first[key]} == executable_ids
+    assert first["node_frame_columns"]["copy"] == {
+        "out__premium": [{"name": "x", "dtype": "Int64"}]
+    }
+    assert [(w["input"], w["column"]) for w in first["node_schema_warnings"]["copy"]] == [
+        ("policy", "limit"),
+        ("policy", "region"),
+        ("rates", "extra"),
+    ]
+    # Only the unvisited owner's lineage changes: a cached instance preview
+    # must still recompute its comparison, including the empty warning list.
+    graph.node_map["owner_branch"].data.config["code"] = "df = original_data.select('x')"
+    graph.node_map["original_rates"].data.config["code"] = "df = pl.LazyFrame({'x': [1]})"
+    assert preview()["node_schema_warnings"]["copy"] == []
+
+
+@pytest.mark.parametrize("staged", [False, True])
+def test_instance_missing_columns_expand_source_occurrences_without_persisting_bindings(
+    staged: bool,
+) -> None:
+    from haute.executor import execute_graph
+
+    graph = create_submodel_graph(
+        _missing_columns_graph(), ["original_data", "owner_branch"], "upstream"
+    ).graph
+    before = graph.model_dump(mode="json", by_alias=True)
+    if staged:
+        graph = flatten_graph(graph, target_instance_id="copy")
+    flat = flatten_graph(graph)
+    results = execute_graph(
+        flat, target_node_id=qualified_runtime_node_id("copy", "score"), target_preview_only=True
+    )
+    assert [(w.input, w.column) for w in results["copy"].schema_warnings] == [
+        ("policy", "limit"),
+        ("policy", "region"),
+        ("rates", "extra"),
+    ]
+    # The execution metadata has no representation in any serialized document.
+    assert "_submodel_shared_bindings" not in flat.model_dump_json()
+    assert all("_submodel_shared_bindings" not in node.data.config for node in flat.nodes)
+    if not staged:
+        assert graph.model_dump(mode="json", by_alias=True) == before
+
+
+@pytest.mark.parametrize("mode", ["full", "target_only", "whole_graph"])
+def test_instance_missing_columns_select_request_input_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    from haute._sandbox import set_project_root
+    from haute.executor import execute_graph
+    from tests.conftest import build_test_api_input_snapshots
+    from tests.test_apiinput_multi_port_runtime import _multi_port_config, _rating_records
+
+    monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(_rating_records()), encoding="utf-8")
+    config = _multi_port_config(path)
+    build_test_api_input_snapshots(path, config)
+    graph = _missing_columns_graph()
+    definition = graph.submodels["definition_scoring"]
+    definition.input_ports = definition.input_ports[:1]
+    definition.graph.node_map["score"].data.config["code"] = "df = policy"
+    graph = graph.model_copy(
+        update={
+            "nodes": [
+                _node("request", NodeType.API_INPUT, config=config),
+                _instance("owner"),
+                _instance("copy", instance_of="owner"),
+            ],
+            "edges": [
+                GraphEdge(
+                    id=name,
+                    source="request",
+                    sourceHandle=frame,
+                    target=name,
+                    targetHandle="in__policy",
+                )
+                for name, frame in (("owner", "policies"), ("copy", "drivers"))
+            ],
+        }
+    )
+    target = qualified_runtime_node_id("copy", "score")
+    options: dict[str, Any] = {} if mode == "whole_graph" else {"target_node_id": target}
+    if mode == "target_only":
+        options["target_preview_only"] = True
+    results = execute_graph(flatten_graph(graph), **options)
+    assert results[target].preview == [
+        {"driver_id": 1, "age_band": "30-59"},
+        {"driver_id": 2, "age_band": "60+"},
+        {"driver_id": 3, "age_band": "60+"},
+    ]
+    assert [(w.input, w.column, w.status) for w in results["copy"].schema_warnings] == [
+        ("policy", "policy_id", "missing")
+    ]
+
+
+def test_instance_missing_columns_cache_hit_collects_no_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute.executor import execute_graph
+
+    graph = flatten_graph(_missing_columns_graph())
+    target = qualified_runtime_node_id("copy", "score")
+    first = execute_graph(graph, target_node_id=target, target_preview_only=True)
+
+    def refuse_collect(*args: object, **kwargs: object) -> None:
+        raise AssertionError("Schema warnings must not collect rows")
+
+    monkeypatch.setattr(pl.LazyFrame, "collect", refuse_collect)
+    again = execute_graph(graph, target_node_id=target, target_preview_only=True)
+    assert again["copy"].schema_warnings == first["copy"].schema_warnings
+
+
+def test_instance_missing_columns_only_compares_shared_bound_inputs() -> None:
+    from haute.executor import execute_graph
+
+    graph = _missing_columns_graph()
+    graph = graph.model_copy(
+        update={"edges": [edge for edge in graph.edges if edge.id != "owner_rates"]}
+    )
+    results = execute_graph(
+        flatten_graph(graph),
+        target_node_id=qualified_runtime_node_id("copy", "score"),
+        target_preview_only=True,
+    )
+    assert [(w.input, w.column) for w in results["copy"].schema_warnings] == [
+        ("policy", "limit"),
+        ("policy", "region"),
+    ]
+
+
+def test_instance_missing_columns_excludes_unvisited_instances() -> None:
+    from haute.executor import execute_graph
+
+    target = qualified_runtime_node_id("owner", "score")
+    results = execute_graph(
+        flatten_graph(_missing_columns_graph()), target_node_id=target, target_preview_only=True
+    )
+    assert results[target].preview == [{"x": 1}]
+    assert "copy" not in results
+
+
+def test_instance_missing_columns_accepts_empty_schema() -> None:
+    from haute.executor import execute_graph
+
+    graph = _missing_columns_graph()
+    graph.node_map["owner_branch"].data.config["code"] = "df = pl.LazyFrame()"
+    results = execute_graph(
+        flatten_graph(graph),
+        target_node_id=qualified_runtime_node_id("copy", "score"),
+        target_preview_only=True,
+    )
+    assert [(w.input, w.column, w.status) for w in results["copy"].schema_warnings] == [
+        ("rates", "extra", "missing")
+    ]
 
 
 def test_instance_output_names_include_unconnected_declarations() -> None:

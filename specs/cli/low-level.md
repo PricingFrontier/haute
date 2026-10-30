@@ -71,6 +71,10 @@ invocation form the user selected.
 Every subcommand also exposes Click's eager `--help` option, which prints usage and exits 0
 without validating required positional arguments.
 
+`haute run` reports expanded executable nodes and previews the last executable
+result. Metadata-only submodel occurrence entries carry schema warnings, not
+rows, and are excluded from both selections. The CLI does not print schema warnings.
+
 | Command | Arguments and options | Exit and failure contract |
 |---|---|---|
 | `haute` | `--version`; `--help`. | Both print and exit 0. Unknown commands/options are Click usage errors (exit 2). |
@@ -404,6 +408,8 @@ sockets; other SDK/HTTP/uvicorn/subprocess/browser calls are mocked. Filesystem 
 pytest's `tmp_path`, and tests that need a specific cwd use `monkeypatch.chdir`.
 
 Key files and what they cover:
+- `test_submodel_instances.py` — real `haute run` reports and final preview with
+  occurrence warning entries in either result order; only executable nodes appear.
 - `test_cli.py` — end-to-end `CliRunner` coverage per command (`--version`, `init`, `run`, `lint`,
   `smoke`, `serve`), plus real-subprocess parity coverage for `python -m haute`; uses a shared
   `project_dir` fixture that builds a real minimal pipeline.

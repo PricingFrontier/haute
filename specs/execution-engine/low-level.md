@@ -1884,15 +1884,31 @@ present a structural or schema result as execution evidence.
   from the public input their code reads.
 - **An instance's missing-column warnings compare the frames its edges carry.** For
   each public input that an instance occurrence and its owner both bind (flattening
-  carries each instance's shared bindings with the flattened graph), every preview
+  carries each instance's shared bindings in the private
+  `PipelineGraph._submodel_shared_bindings` attribute), every preview
   (full, target-only, a run of the whole graph) that reaches one of the instance's
   nodes reports as `missing`, under the occurrence's id and naming the input
   (`SchemaWarning.input`), the columns the owner's bound frame carries that the
   instance's does not. Columns come from schemas, never rows: the walk's recorded
   schemas, and a lazy schema-only resolution of a bound frame the walk did not
   reach; a frame whose schema cannot be resolved gives one `unavailable` warning
-  for that input, carrying the error (`SchemaWarning.detail`). A
-  request input emits one frame per table it declares, and its edge carries the
+  for that input, carrying the error (`SchemaWarning.detail`). A schema
+  warning has `input` and `detail`; only `unavailable` omits `column`,
+  and it requires the input name and error detail. `executor._submodel_schema_warnings`
+  reads the original walk's schemas first and uses the same `walk_graph` with
+  `schema_only=True` and an empty collection set for unvisited sources, under
+  `recording_schema_tiers`. It compiles the preamble at most once per warning pass,
+  only when an unvisited lineage needs it, retaining a compilation failure for
+  each affected input. Only `ValueError`, `OSError`, Polars errors and `HauteError`
+  become `unavailable` warnings; missing endpoint nodes and other invariant or
+  programming errors propagate. Comparisons run again on preview cache hits, so
+  a change to an unvisited owner's lineage updates its instance's warnings.
+  The occurrence has a metadata-only `NodeResult` carrying its warnings
+  (including an empty list to clear an earlier comparison). These entries are
+  excluded from per-node execution reports, node counts, statuses and timing/memory lists;
+  preview responses retain them in `node_schema_warnings`. Occurrence output
+  schemas still come from the expanded output source nodes.
+  A request input emits one frame per table it declares, and its edge carries the
   declared schema of the frame its `sourceHandle` names (the schema the walk reports
   for that frame), never the bundle; an edge naming no table the input declares
   carries none, even from a one-frame source. Its consumer reports that binding as

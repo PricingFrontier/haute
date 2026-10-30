@@ -7,6 +7,7 @@ import { retargetSubmodelInput } from "../../utils/canonicalSubmodelBoundaryEdit
 import { edgeInputName } from "../../utils/apiInputPorts"
 import type { SimpleNode } from "./_shared"
 import useToastStore from "../../stores/useToastStore"
+import type { SchemaWarning } from "../../api/types"
 
 interface SubmodelEditorProps {
   nodeId: string
@@ -38,6 +39,17 @@ export default function SubmodelEditor({ nodeId, config, accentColor, readOnly =
     isSubmodelInstanceConfig(config) ? state.submodels[config.definitionId] : undefined,
   )
   const incoming = edges.filter((edge) => edge.target === nodeId)
+  const warnings = (nodes.find((node) => node.id === nodeId)?.data._schemaWarnings as SchemaWarning[] | undefined) ?? []
+  const warningsByInput = new Map<string, SchemaWarning[]>()
+  if (config.instanceOf) {
+    for (const warning of warnings) {
+      if (warning.status !== "missing" && warning.status !== "unavailable") continue
+      if (!warning.input) throw new Error(`Submodel warning for ${nodeId} has no public input`)
+      const group = warningsByInput.get(warning.input) ?? []
+      group.push(warning)
+      warningsByInput.set(warning.input, group)
+    }
+  }
   const retarget = (port: string, edgeId: string) => {
     if (readOnly) return
     try {
@@ -112,6 +124,24 @@ export default function SubmodelEditor({ nodeId, config, accentColor, readOnly =
             ))}
           </div>
         </div>
+      )}
+
+      {warningsByInput.size > 0 && (
+        <section aria-label="Missing columns">
+          <EditorLabel>Missing columns</EditorLabel>
+          <dl className="mt-1 space-y-2 text-xs" style={{ color: "var(--warning-strong)" }}>
+            {[...warningsByInput].map(([input, inputWarnings]) => (
+              <div key={input}>
+                <dt className="font-medium">{input}</dt>
+                {inputWarnings.map((warning) => (
+                  <dd key={warning.column ?? "unavailable"} className="mt-1 font-mono">
+                    {warning.status === "unavailable" ? warning.detail : warning.column}
+                  </dd>
+                ))}
+              </div>
+            ))}
+          </dl>
+        </section>
       )}
 
       {definition.outputPorts.length > 0 && (

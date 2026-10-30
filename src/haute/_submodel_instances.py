@@ -22,9 +22,11 @@ from haute._types import (
     NodeType,
     PipelineGraph,
     SubmodelDefinition,
+    SubmodelEndpoint,
     SubmodelInputPort,
     SubmodelInstanceConfig,
     SubmodelOutputPort,
+    SubmodelSharedBinding,
 )
 from haute.errors import ParseError
 
@@ -833,9 +835,7 @@ def expand_submodel_instances(
                 edge_id=edge.id,
             )
 
-    expanded_parent_edges: list[GraphEdge] = []
-    for edge in graph.edges:
-        source_variants = [(edge.source, edge.sourceHandle)]
+    def expanded_source(edge: GraphEdge) -> SubmodelEndpoint:
         source_instance = instances.get(edge.source)
         if edge.source in selected_ids:
             if source_instance is None:
@@ -845,12 +845,22 @@ def expand_submodel_instances(
                     instance_id=edge.source,
                 )
             output = bound_output_port(source_instance, edge)
-            source_variants = [
-                (id_maps[edge.source][output.source.node_id], output.source.handle_id)
-            ]
+            return SubmodelEndpoint(
+                nodeId=id_maps[edge.source][output.source.node_id],
+                handleId=output.source.handle_id,
+            )
+        return SubmodelEndpoint(nodeId=edge.source, handleId=edge.sourceHandle)
+
+    bindings: dict[str, dict[str, SubmodelEndpoint]] = {iid: {} for iid in instances}
+    expanded_parent_edges: list[GraphEdge] = []
+    for edge in graph.edges:
+        endpoint = expanded_source(edge)
+        source_variants = [(endpoint.node_id, endpoint.handle_id)]
 
         target_variants = [(edge.target, edge.targetHandle)]
         target_instance = instances.get(edge.target)
+        if target_instance is not None:
+            bindings[edge.target][bound_input_port(target_instance, edge).name] = endpoint
         if edge.target in selected_ids:
             if target_instance is None:
                 raise ParseError(
@@ -919,7 +929,7 @@ def expand_submodel_instances(
         if definition_id in remaining_instances
     } or None
     merged_preamble, merged_blocks = _merge_definition_support_code(graph, selected)
-    return graph.model_copy(
+    expanded = graph.model_copy(
         update={
             "nodes": [*remaining_nodes, *cloned_nodes],
             "edges": _deduplicate_edges([*expanded_parent_edges, *cloned_edges]),
@@ -928,3 +938,39 @@ def expand_submodel_instances(
             "submodels": remaining_definitions,
         }
     )
+    expanded._submodel_shared_bindings = {
+        iid: {
+            name: SubmodelSharedBinding(
+                owner=expanded_source(
+                    GraphEdge(
+                        id="binding",
+                        source=binding.owner.node_id,
+                        sourceHandle=binding.owner.handle_id,
+                        target=iid,
+                    )
+                ),
+                instance=expanded_source(
+                    GraphEdge(
+                        id="binding",
+                        source=binding.instance.node_id,
+                        sourceHandle=binding.instance.handle_id,
+                        target=iid,
+                    )
+                ),
+            )
+            for name, binding in shared.items()
+        }
+        for iid, shared in graph._submodel_shared_bindings.items()
+    }
+    for instance in selected:
+        owner = instance.config.instance_of
+        if owner is not None:
+            expanded._submodel_shared_bindings[instance.node.id] = {
+                port.name: SubmodelSharedBinding(
+                    owner=bindings[owner][port.name],
+                    instance=bindings[instance.node.id][port.name],
+                )
+                for port in instance.definition.input_ports
+                if port.name in bindings[owner] and port.name in bindings[instance.node.id]
+            }
+    return expanded

@@ -49,6 +49,7 @@ from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_utils import REQUEST_INPUT_KINDS
 from haute._graph_walker import CollectPolicy, walk_graph
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
+from haute._input_providers import recording_schema_tiers
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute._output_assembler import render_output_document
@@ -77,9 +78,10 @@ from haute._seed_plans import (
     resolve_seed_plan,
 )
 from haute._source_cache import SourceCacheGenerationMissingError
-from haute._types import NodeData
+from haute._submodel_instances import runtime_instance_id
+from haute._types import NodeData, SubmodelEndpoint
 from haute._validation_error import HauteValidationError
-from haute.errors import PreambleError
+from haute.errors import HauteError, PreambleError
 from haute.graph_utils import (
     GraphEdge,
     NodeType,
@@ -953,6 +955,97 @@ def _preview_entry_is_current(
     return True
 
 
+def _submodel_schema_warnings(
+    graph: PipelineGraph,
+    result_order: Sequence[str],
+    output_columns: dict[str, list[tuple[str, str]]],
+    frame_columns: dict[tuple[str, str], list[tuple[str, str]]],
+    errors: dict[str, str],
+    *,
+    source: str,
+) -> dict[str, list[SchemaWarning]]:
+    """Compare shared public inputs, resolving unvisited lineages without rows."""
+    if not graph._submodel_shared_bindings:
+        return {}
+    columns = dict(output_columns)
+    frames = dict(frame_columns)
+    failures = dict(errors)
+    resolved = set(columns) | set(failures)
+    schema_errors = (ValueError, OSError, pl.exceptions.PolarsError, HauteError)
+    preamble_ns: dict[str, Any] | None = None
+    preamble_error: Exception | None = None
+
+    def column_names(endpoint: SubmodelEndpoint) -> set[str]:
+        nonlocal preamble_ns, preamble_error
+        node_id, handle = endpoint.node_id, endpoint.handle_id
+        node = graph.node_map[node_id]
+        if node_id not in resolved:
+            if preamble_error is not None:
+                raise preamble_error
+            if preamble_ns is None:
+                try:
+                    preamble_ns = _compile_preamble(
+                        graph.preamble or "", pipeline_dir=_pipeline_dir(graph)
+                    )
+                except schema_errors as exc:
+                    # Each affected input reports the same failed compilation.
+                    preamble_error = exc
+                    raise
+            with recording_schema_tiers():
+                walked = walk_graph(
+                    graph,
+                    _build_node_fn,
+                    policy=CollectPolicy.display(collect=(), record_failures=True),
+                    target_node_id=node_id,
+                    preamble_ns=preamble_ns,
+                    source=source,
+                    schema_only=True,
+                )
+            # Keep the original walk's schemas authoritative, including empty schemas.
+            for nid, schema in walked.output_columns.items():
+                columns.setdefault(nid, schema)
+            for key, schema in walked.frame_columns.items():
+                frames.setdefault(key, schema)
+            failures.update(walked.errors)
+            resolved.update(walked.run_order)
+        if str(node.data.nodeType) in REQUEST_INPUT_KINDS:
+            declared = _declared_api_input_frame_schema_items(node)
+            if handle is None or handle not in declared:
+                raise ValueError(
+                    f"Input source {node_id!r} has no frame {handle!r}; select a declared frame."
+                )
+            if node_id in columns:
+                return {name for name, _ in declared[handle]}
+        elif handle is not None and (node_id, handle) in frames:
+            return {name for name, _ in frames[node_id, handle]}
+        elif not any(nid == node_id for nid, _ in frames) and node_id in columns:
+            return {name for name, _ in columns[node_id]}
+        detail = failures.get(node_id)
+        if detail is None:
+            detail = f"No schema for frame {handle!r}; check the source's output binding."
+        raise ValueError(f"Cannot resolve schema of {node_id!r}: {detail}")
+
+    warnings: dict[str, list[SchemaWarning]] = {}
+    reached = {runtime_instance_id(node_id) for node_id in result_order}
+    for instance_id, shared in graph._submodel_shared_bindings.items():
+        if instance_id not in reached:
+            continue
+        warnings[instance_id] = []
+        for name, binding in shared.items():
+            try:
+                missing = column_names(binding.owner) - column_names(binding.instance)
+            except schema_errors as exc:
+                warnings[instance_id].append(
+                    SchemaWarning(input=name, status="unavailable", detail=str(exc))
+                )
+            else:
+                warnings[instance_id].extend(
+                    SchemaWarning(input=name, column=column, status="missing")
+                    for column in sorted(missing)
+                )
+    return warnings
+
+
 def execute_graph(
     graph: PipelineGraph,
     target_node_id: str | None = None,  # pragma: no mutate
@@ -1570,7 +1663,12 @@ def _execute_graph_core(
                     )
             return node_warnings
 
-        results: dict[str, NodeResult] = {}
+        results: dict[str, NodeResult] = {
+            instance_id: NodeResult(status="ok", schema_warnings=warnings)
+            for instance_id, warnings in _submodel_schema_warnings(
+                graph, result_order, output_cols, frame_cols, errors, source=source
+            ).items()
+        }
         for nid in result_order:
             if nid in errors:
                 results[nid] = NodeResult(
@@ -1709,10 +1807,10 @@ def _execute_graph_core(
         if pinned_key is not None:
             _preview_cache.unpin(pinned_key)
 
-    error_count = sum(1 for r in results.values() if r.status == "error")
+    error_count = sum(1 for nid in result_order if results[nid].status == "error")
     logger.info(
         "graph_executed",
-        node_count=len(results),
+        node_count=len(result_order),
         error_count=error_count,
         target=target_node_id,
     )

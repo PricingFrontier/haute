@@ -1500,8 +1500,21 @@ class SavePipelineResponse(SaveCapture):
 
 
 class SchemaWarning(BaseModel):
-    column: str
+    column: str | None = None
     status: str
+    input: str | None = None
+    detail: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_warning(self) -> SchemaWarning:
+        if self.status == "unavailable":
+            if self.column is not None or not self.input or not self.detail:
+                raise ValueError(
+                    "An unavailable schema needs an input and error detail, with no column."
+                )
+        elif self.column is None:
+            raise ValueError("A column is required unless the schema is unavailable.")
+        return self
 
 
 class PortPreview(BaseModel):

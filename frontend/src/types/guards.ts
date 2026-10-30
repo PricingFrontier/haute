@@ -85,6 +85,7 @@ import type {
   PortPreview,
   PreviewInputsResponse,
   PreviewNodeResponse,
+  SchemaWarning,
   PreviewProgressResponse,
   PreviewSeedPlanEntry,
   SavePipelineResponse,
@@ -493,11 +494,24 @@ function parseNodeMemory(value: unknown, field: string): { node_id: string; labe
   }
 }
 
-function parseSchemaWarning(value: unknown, field: string): { column: string; status: string } {
-  const obj = expectPlainObject("parsePreviewNodeResponse", value, field)
+function parseSchemaWarning(value: unknown, field: string): SchemaWarning {
+  const parser = "parsePreviewNodeResponse"
+  const obj = expectPlainObject(parser, value, field)
+  const status = expectString(parser, obj.status, `${field}.status`)
+  if (status === "unavailable") {
+    if (obj.column != null) throw new Error(`${parser}: ${field}.column must be absent for an unavailable schema`)
+    return {
+      status,
+      column: optionalNullableString(parser, obj, "column"),
+      input: expectNonBlankString(parser, obj.input, `${field}.input`),
+      detail: expectNonBlankString(parser, obj.detail, `${field}.detail`),
+    }
+  }
   return {
-    column: expectString("parsePreviewNodeResponse", obj.column, `${field}.column`),
-    status: expectString("parsePreviewNodeResponse", obj.status, `${field}.status`),
+    column: expectString(parser, obj.column, `${field}.column`),
+    status,
+    input: optionalNullableString(parser, obj, "input"),
+    detail: optionalNullableString(parser, obj, "detail"),
   }
 }
 

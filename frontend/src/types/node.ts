@@ -1,6 +1,7 @@
 /** Shared node data shape used across hooks and components. */
 
 import type { Edge, Node } from "@xyflow/react"
+import type { SchemaWarning } from "../api/types"
 
 /** Persisted node-type vocabulary shared by runtime guards and canvas metadata. */
 export const PIPELINE_NODE_TYPES = {
@@ -69,7 +70,7 @@ export interface HauteNodeData extends Record<string, unknown> {
   /** Columns per output handle for a multi-frame producer (a submodel's outputs) — set by usePipelineAPI */
   _frameColumns?: Record<string, ColumnInfo[]>
   /** Schema warnings from last preview — set by usePipelineAPI */
-  _schemaWarnings?: { column: string; status: string }[]
+  _schemaWarnings?: SchemaWarning[]
   /** Notes from the last preview of this node (`NodeResult.notes`) — set by usePipelineAPI */
   _notes?: string[]
   /** Active source the column stash (_columns/_availableColumns/_schemaWarnings)

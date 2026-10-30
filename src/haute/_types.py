@@ -14,6 +14,7 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
+from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
 from typing import (
@@ -1367,6 +1368,14 @@ def _reject_duplicate_constant_names(constants: Sequence[GlobalConstant]) -> Non
         seen.add(constant.name)
 
 
+@dataclass(frozen=True)
+class SubmodelSharedBinding:
+    """Expanded sources of one public input bound by an instance and its owner."""
+
+    owner: SubmodelEndpoint
+    instance: SubmodelEndpoint
+
+
 class PipelineGraph(BaseModel):
     """React Flow graph structure used throughout Haute.
 
@@ -1446,6 +1455,10 @@ class PipelineGraph(BaseModel):
     active_source: str = "live"
     _parser_parameter_names: dict[str, list[str]] = PrivateAttr(default_factory=dict)
     _parser_edge_parameter_names: dict[str, list[str]] = PrivateAttr(default_factory=dict)
+    # Execution-only metadata: absent from graph JSON, source and sidecars.
+    _submodel_shared_bindings: dict[str, dict[str, SubmodelSharedBinding]] = PrivateAttr(
+        default_factory=dict
+    )
 
     _parser_definition_id: str | None = PrivateAttr(default=None)
     _parser_input_ports: list[SubmodelInputPort] | None = PrivateAttr(default=None)

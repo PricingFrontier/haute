@@ -4,7 +4,7 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/_submodel_instances.py` | Canonical reusable-instance resolver and validator, qualified-id expansion, schema-led reference rewriting, public-port binding, create-instance alias allocation, and targeted occurrence flattening. |
+| `src/haute/_submodel_instances.py` | Canonical reusable-instance resolver and validator, qualified-id expansion, schema-led reference rewriting, public-port binding, create-instance alias allocation, and targeted occurrence flattening, carrying runtime-only shared input bindings for schema warnings. |
 | `src/haute/_submodel_paths.py` | Validate route-level names, resolve recorded submodel references relative to the active pipeline directory, enforce project containment, and return typed malformed/outside-project errors plus the directory used as config base; `submodel_source_key` is the resolved-file identity by which the parser and recovery group registrations; `definition_pipeline_dir` turns a definition file's path into its `pipeline_dir` and `is_pipeline_dir` validates one. `SUBMODEL_PACKAGE` (`"modules"`) is the package beside a pipeline that holds its definition modules: `submodel_module_file` is the file `from modules import <name>` imports, `modules/<name>.py`, and `submodel_module_name` the name a definition file imports as, raising `MalformedSubmodelPathError` for a file that is not directly in `modules/` or whose name is not a canonical identifier as a node's is (ASCII letters, digits and underscores, not starting with a digit), is a keyword, starts with two underscores or is a Python built-in. |
 | `src/haute/_pipeline_revision.py` | Build deterministic canonical-graph revisions and the separate raw-artifact editor-document revision used by recovery-aware compare-and-swap. |
 | `src/haute/_flatten.py` | Public flatten/dissolve entry point: validates and expands canonical occurrences through `_submodel_instances.py`. `flatten_executable_graph` is the entry every route running a browser graph uses: it refuses a graph with an executable-name violation (codegen naming rule) before flattening, while internal flattening (a staged dissolve, save) uses `flatten_graph`, since a partly dissolved graph repeats a shared definition's child names. |
@@ -283,6 +283,10 @@ as dissolving any occurrence expands its nodes.
 **Missing columns.** Flattening carries with the flattened graph, never in node
 config, each instance's shared bindings: for every public input that the
 instance and its owner both bind, the expanded source endpoint of each binding.
+The carrier is `PipelineGraph._submodel_shared_bindings`, a private attribute
+keyed by occurrence id and public input name; each `SubmodelSharedBinding`
+holds the owner's and instance's `SubmodelEndpoint`. It survives graph copies
+and staged expansion but is absent from graph JSON, generated source and sidecars.
 The executor's schema-warning pass runs for every instance with an expanded
 node in the run's result order. For each such input it compares the columns
 the owner's frame carries with those the instance's carries, and reports the
@@ -742,7 +746,15 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
   flattening and in a dissolve, an instance's missing columns (an
   instance-only preview against an owner fed by a separate branch, two public
   inputs targeting one child, an owner frame whose schema cannot be
-  resolved), wrapping a node that reads a frame named like itself with
+  resolved; full, target-only and whole-graph agreement; request-input frame
+  selection; expanded source occurrences and staged flattening; runtime-only
+  bindings; cache-hit comparisons collecting no rows and refreshing after an
+  owner-only change; only jointly bound inputs compared; unvisited instances
+  excluded and an empty schema accepted; missing endpoint nodes and invalid
+  recorded schemas raising; preambles compiled once only when needed, including
+  empty preambles and retained compilation errors; occurrence warnings kept out
+  of executable-node counts, preview metadata and `haute run` row/column reports),
+  wrapping a node that reads a frame named like itself with
   unchanged rows and consumer names through save/reload and dissolve, a
   one-node owner dissolved back into its plain node,
   OUTPUT source-port migration across
@@ -791,7 +803,9 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
   instance's binding rule (by name, the one unbound input, the user's pick, the
   refusal when every input is bound) and re-targeting from the panel.
 - `frontend/src/__tests__/editors/SubmodelEditor.test.tsx` — every declared input
-  in the live occurrence panel, moving a connection onto a bound input, Undo and Redo.
+  in the live occurrence panel, moving a connection onto a bound input, Undo and Redo;
+  missing columns grouped by input, unavailable schema errors, and clearing the
+  warning section when a later preview reports no warnings.
 - `frontend/src/__tests__/nodes/SubmodelNode.test.tsx` — authoritative instance output labels,
   including an occurrence committed by Create Instance after identity resolution,
   with one or several declared outputs and no outgoing connections.

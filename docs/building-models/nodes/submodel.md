@@ -19,6 +19,7 @@ A submodel's panel has no tabs. It shows:
 - **FILE**: the definition's file, `modules/<name>.py`.
 - **INPUTS**: every public input, with a selector of this occurrence's incoming connections or **not connected**. Choosing a connection moves it to that input. If another connection already feeds the input, that connection is removed. The edit takes one Undo.
 - **OUTPUTS**: the definition's public output ports.
+- **MISSING COLUMNS**, on an instance after preview: the columns its inputs lack compared with the owner's, listed by public input. Only inputs connected on both occurrences are compared. If an input's schema cannot be resolved, its error appears instead. The section is absent when there are no warnings.
 
 Double-click the node on the canvas to step inside. The input selectors remain editable on an instance; its internal definition is read-only.
 
@@ -27,6 +28,8 @@ Double-click the node on the canvas to step inside. The input selectors remain e
 Click an owner or instance on the canvas to preview its first declared output. The preview uses that occurrence's inputs and shows the output's name. When it has several outputs, choose another from the preview's frame selector. Outputs from different frames of the same internal node show their respective rows.
 
 **Refresh** re-runs the output currently shown. Each output keeps its own cached preview and shows its own errors. Click a cell to trace that output and frame. A submodel with no public outputs has no preview. The Input and Output boundary nodes inside a submodel do not offer Refresh.
+
+`haute run` reports the rows and columns of each expanded internal node. Missing-column warnings appear in the instance's panel; the CLI does not print them or add a separate result row for the occurrence.
 
 ## Ports
 

@@ -76,9 +76,16 @@ export type {
   PolarsFreeCodeColumnsResponse,
   PolarsStepsRenderResponse,
 } from "../generated/api-contracts.generated"
-export interface SchemaWarning {
+export type SchemaWarning = {
   column: string
   status: string
+  input?: string | null
+  detail?: string | null
+} | {
+  column?: null
+  status: "unavailable"
+  input: string
+  detail: string
 }
 
 export interface ExecutionStageMetrics {

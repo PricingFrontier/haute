@@ -15,7 +15,7 @@ Select exactly one node on the canvas and click **Instance** in the toolbar. Hau
 
 ## The panel
 
-Submodel instances use the occurrence panel described in [Submodel](submodel.md): **INPUTS** lists every public input and lets you re-target an incoming connection. Their output frames are named after the instance, with `_<port>` appended when the definition has several outputs. The node-instance panel below applies to ordinary nodes.
+Submodel instances use the occurrence panel described in [Submodel](submodel.md): **INPUTS** lists every public input and lets you re-target an incoming connection. After preview, **MISSING COLUMNS** reports, by input, the columns the instance lacks compared with the owner's inputs, or a schema error when that comparison is unavailable. Their output frames are named after the instance, with `_<port>` appended when the definition has several outputs. The node-instance panel below applies to ordinary nodes.
 
 An instance's panel has no tabs, because its settings belong to the original:
 

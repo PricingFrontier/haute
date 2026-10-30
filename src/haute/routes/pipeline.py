@@ -1257,8 +1257,8 @@ def _occurrence_output_columns(
 ) -> dict[str, dict[str, list[ColumnInfo]]]:
     """Columns of every submodel occurrence's output ports, keyed like its edges.
 
-    The executor runs the flattened graph, so its results are keyed by the
-    cloned internal nodes and never by the occurrence the editor draws. An
+    The executor's frame results are keyed by cloned internal nodes; its
+    occurrence entries carry only schema warnings, not output columns. An
     edge from an occurrence leaves the ``out__<port>`` handle; this maps
     that handle to the columns of the port's internal source (its frame
     when the source is multi-frame), so the editor can offer them downstream.
@@ -1343,7 +1343,7 @@ def _preview_response_from_results(
     node_schema_warnings = {
         node_id: result.schema_warnings
         for node_id, result in results.items()
-        if node_id in node_map and node_id in relevant
+        if node_id in relevant or node_id in graph._submodel_shared_bindings
     }
     return PreviewNodeResponse(
         node_id=body.node_id,

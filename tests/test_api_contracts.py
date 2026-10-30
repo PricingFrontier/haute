@@ -7,6 +7,45 @@ from typing import Any
 import pytest
 
 
+def test_schema_warning_carries_input_and_unavailable_detail() -> None:
+    from haute.schemas import SchemaWarning
+
+    assert SchemaWarning(input="policy", column="region", status="missing").model_dump(
+        exclude_none=True
+    ) == {
+        "input": "policy",
+        "column": "region",
+        "status": "missing",
+    }
+    assert SchemaWarning(
+        input="rates", status="unavailable", detail="Missing rates file"
+    ).model_dump(exclude_none=True) == {
+        "input": "rates",
+        "status": "unavailable",
+        "detail": "Missing rates file",
+    }
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"status": "missing"},
+        {"status": "stale", "column": None},
+        {"status": "unavailable", "input": "policy"},
+        {"status": "unavailable", "input": "policy", "detail": "Cannot resolve", "column": "x"},
+    ],
+)
+def test_schema_warning_rejects_incomplete_or_contradictory_payload(
+    payload: dict[str, Any],
+) -> None:
+    from pydantic import ValidationError
+
+    from haute.schemas import SchemaWarning
+
+    with pytest.raises(ValidationError):
+        SchemaWarning.model_validate(payload)
+
+
 @pytest.mark.parametrize("outputs", [["premium"], ["premium", "audit"]])
 def test_editor_identity_names_every_instance_output(outputs: list[str]) -> None:
     from fastapi.testclient import TestClient
@@ -1023,6 +1062,20 @@ def _retrospective_fingerprint(
 
 
 def test_openapi_contract_fingerprint_matches_expected_snapshot() -> None:
+    from haute.server import app
+
+    # Route refs alone cannot detect a changed warning payload.
+    assert app.openapi()["components"]["schemas"]["SchemaWarning"] == {
+        "type": "object",
+        "title": "SchemaWarning",
+        "required": ["status"],
+        "properties": {
+            "column": {"anyOf": [{"type": "string"}, {"type": "null"}], "title": "Column"},
+            "status": {"type": "string", "title": "Status"},
+            "input": {"anyOf": [{"type": "string"}, {"type": "null"}], "title": "Input"},
+            "detail": {"anyOf": [{"type": "string"}, {"type": "null"}], "title": "Detail"},
+        },
+    }
     actual = _api_contract_fingerprint()
     if actual == EXPECTED_API_CONTRACT_FINGERPRINT:
         return
