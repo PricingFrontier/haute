@@ -5,7 +5,6 @@ Targets the specific uncovered lines in src/haute/_config_io.py:
 - ``_load_json_object`` rejecting non-object JSON (line 95)
 - ``collect_node_configs`` preserving executable ratebook input names
 - ``config_path_for_node`` base_dir escape guard (line 186)
-- ``config_load_errors`` swallowing a ValueError from path building (349/350)
 """
 
 from __future__ import annotations
@@ -18,7 +17,6 @@ from haute import _config_io
 from haute._config_io import (
     _load_json_object,
     collect_node_configs,
-    config_load_errors,
     config_path_for_node,
     load_node_config,
 )
@@ -137,34 +135,3 @@ class TestConfigPathEscapeGuard:
             pytest.skip("symlink creation not supported (requires elevated privileges on Windows)")
         with pytest.raises(ValueError, match="escapes config directory"):
             config_path_for_node(NodeType.BANDING, "node", base_dir=base)
-
-
-# ---------------------------------------------------------------------------
-# config_load_errors — ValueError from path building is swallowed
-# ---------------------------------------------------------------------------
-
-
-class TestConfigLoadErrorsPathFailure:
-    def test_path_build_failure_is_skipped(self, monkeypatch):
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "bad",
-                        "data": {
-                            "label": "broken",
-                            "nodeType": "dataInput",
-                            "config": {"_load_error": "boom"},
-                        },
-                    },
-                ],
-                "edges": [],
-            }
-        )
-
-        def raising_path(node_type, func_name):
-            raise ValueError("synthetic path failure")
-
-        monkeypatch.setattr(_config_io, "config_path_for_node", raising_path)
-        # The error node is dropped (path build failed) -> empty result.
-        assert config_load_errors(graph) == {}

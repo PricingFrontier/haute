@@ -16,8 +16,9 @@ from pathlib import Path
 from typing import TypeVar
 
 from haute._ast_helpers import (
+    _chained_receiver_calls,
+    _constructor_call,
     _extract_connect_calls,
-    _extract_function_bodies,
     _extract_global_constants_declaration,
     _extract_preamble,
     _extract_preserved_blocks,
@@ -293,16 +294,14 @@ def _registration_keyword(link: ast.Call, name: str) -> str | None:
     return expression.value
 
 
+def _registration_calls(statement: ast.stmt) -> list[ast.Call]:
+    """The ``pipeline.submodel(...)`` calls of one statement's chain, in source order."""
+    return _chained_receiver_calls(statement, receiver="pipeline", method="submodel")
+
+
 def _is_submodel_registration(statement: ast.stmt) -> bool:
     """Whether *statement* is a ``pipeline.submodel(...)`` call chain, whatever its arguments."""
-    if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
-        return False
-    registers = False
-    current: ast.expr = statement.value
-    while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
-        registers = registers or current.func.attr == "submodel"
-        current = current.func.value
-    return registers and isinstance(current, ast.Name) and current.id == "pipeline"
+    return bool(_registration_calls(statement))
 
 
 def registered_modules(statement: ast.stmt) -> list[str]:
@@ -311,22 +310,16 @@ def registered_modules(statement: ast.stmt) -> list[str]:
     Every link of a chain counts (``pipeline.submodel(a.submodel, "a").submodel(...)``);
     a link whose definition is not ``<module>.submodel`` names none.
     """
-    if not _is_submodel_registration(statement):
-        return []
-    assert isinstance(statement, ast.Expr)
     modules: list[str] = []
-    current: ast.expr = statement.value
-    while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
-        definition = current.args[0] if current.args else None
+    for link in _registration_calls(statement):
+        definition = link.args[0] if link.args else None
         if (
-            current.func.attr == "submodel"
-            and isinstance(definition, ast.Attribute)
+            isinstance(definition, ast.Attribute)
             and definition.attr == "submodel"
             and isinstance(definition.value, ast.Name)
         ):
             modules.append(definition.value.id)
-        current = current.func.value
-    return modules[::-1]
+    return modules
 
 
 def extract_submodel_registrations(
@@ -342,17 +335,7 @@ def extract_submodel_registrations(
     table = submodel_imports(tree) if imports is None else imports
     registrations: list[SubmodelRegistration] = []
     for node in tree.body:
-        if not _is_submodel_registration(node):
-            continue
-        assert isinstance(node, ast.Expr)
-        links: list[ast.Call] = []
-        current: ast.expr = node.value
-        while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
-            if current.func.attr == "submodel":
-                links.append(current)
-            current = current.func.value
-
-        for link in reversed(links):
+        for link in _registration_calls(node):
             line = getattr(link, "lineno", None)
             remediation = (
                 "Write pipeline.submodel(<module>.submodel, <name>) and let the definition "
@@ -442,17 +425,10 @@ def extract_submodel_registrations(
 
 def _submodel_constructor(tree: ast.Module) -> ast.Call:
     """The module-level ``submodel = haute.Submodel(...)`` call."""
-    for node in ast.iter_child_nodes(tree):
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-            continue
-        target = node.targets[0]
-        if (
-            isinstance(target, ast.Name)
-            and target.id == "submodel"
-            and isinstance(node.value, ast.Call)
-        ):
-            return node.value
-    raise ParseError("Submodel source must assign a haute.Submodel constructor.")
+    call = _constructor_call(tree, "submodel")
+    if call is None:
+        raise ParseError("Submodel source must assign a haute.Submodel constructor.")
+    return call
 
 
 def _validate_pipeline_dir(tree: ast.Module, source_file: str, base_dir: Path | None) -> None:
@@ -633,11 +609,9 @@ def parse_submodel_source(
             nested_lines=nested_lines,
         )
 
-    func_bodies = _extract_function_bodies(source, tree=tree)
     raw_nodes = _extract_decorated_nodes(
         tree,
         _is_submodel_authored_decorator,
-        func_bodies,
         _base_dir,
         source=source,
     )
@@ -666,9 +640,6 @@ def parse_submodel_source(
         preserved_blocks=_extract_preserved_blocks(source),
         source_file=source_file,
     )
-    graph._parser_parameter_names = {
-        str(node["func_name"]): [str(name) for name in node["param_names"]] for node in raw_nodes
-    }
     graph._parser_edge_parameter_names = {
         str(node["func_name"]): [str(name) for name in node["edge_param_names"]]
         for node in raw_nodes

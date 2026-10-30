@@ -278,17 +278,8 @@ def _strip_redundant_rhs_wrapper_once(code: str) -> str | None:
     """
     if not (code.startswith("df = (") or code.startswith("df=(")):
         return None
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
-        return None
-    if len(tree.body) != 1 or not isinstance(tree.body[0], ast.Assign):
-        return None
-    stmt = tree.body[0]
-    if len(stmt.targets) != 1:
-        return None
-    target = stmt.targets[0]
-    if not isinstance(target, ast.Name) or target.id != "df":
+    statement = _single_df_assignment(code)
+    if statement is None:
         return None
 
     open_idx = code.index("(")
@@ -296,11 +287,8 @@ def _strip_redundant_rhs_wrapper_once(code: str) -> str | None:
     if close_idx <= open_idx:
         return None
     candidate = code[:open_idx] + code[open_idx + 1 : close_idx] + code[close_idx + 1 :]
-    try:
-        candidate_tree = ast.parse(candidate)
-    except SyntaxError:
-        return None
-    if ast.dump(candidate_tree) != ast.dump(tree):
+    unwrapped = _single_df_assignment(candidate)
+    if unwrapped is None or ast.dump(unwrapped) != ast.dump(statement):
         return None
     return candidate.rstrip()
 
@@ -333,23 +321,29 @@ def _unwrap_chain_assignment(code: str) -> str | None:
     return current if unwrapped else None
 
 
-def _df_alias_target(line: str) -> str | None:
-    """Return the source name for a single-line ``df = source`` alias."""
+def _single_df_assignment(code: str) -> ast.Assign | None:
+    """The statement *code* is when it is exactly one ``df = <value>``, else ``None``."""
     try:
-        tree = ast.parse(line)
+        tree = ast.parse(code)
     except SyntaxError:
         return None
     if len(tree.body) != 1 or not isinstance(tree.body[0], ast.Assign):
         return None
-    stmt = tree.body[0]
-    if len(stmt.targets) != 1:
+    statement = tree.body[0]
+    if len(statement.targets) != 1:
         return None
-    target = stmt.targets[0]
+    target = statement.targets[0]
     if not isinstance(target, ast.Name) or target.id != "df":
         return None
-    if not isinstance(stmt.value, ast.Name):
+    return statement
+
+
+def _df_alias_target(line: str) -> str | None:
+    """Return the source name for a single-line ``df = source`` alias."""
+    statement = _single_df_assignment(line)
+    if statement is None or not isinstance(statement.value, ast.Name):
         return None
-    return stmt.value.id
+    return statement.value.id
 
 
 def _is_empty_chain_assignment(code: str) -> bool:
@@ -362,19 +356,12 @@ def _is_empty_chain_assignment(code: str) -> bool:
     so the GUI-facing finaliser collapses it to empty user code here
     instead.
     """
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
-        return False
-    if len(tree.body) != 1 or not isinstance(tree.body[0], ast.Assign):
-        return False
-    stmt = tree.body[0]
-    if len(stmt.targets) != 1:
-        return False
-    target = stmt.targets[0]
-    if not isinstance(target, ast.Name) or target.id != "df":
-        return False
-    return isinstance(stmt.value, ast.Tuple) and not stmt.value.elts
+    statement = _single_df_assignment(code)
+    return (
+        statement is not None
+        and isinstance(statement.value, ast.Tuple)
+        and not statement.value.elts
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -501,7 +488,7 @@ def is_declaration_body(body_source: str) -> bool:
 class MatcherResult(NamedTuple):
     """Where the user code starts in a cleaned body.
 
-    ``start_idx`` is the first index in ``cleaned_lines`` that is user
+    ``start_idx`` is the first index of the cleaned lines that is user
     code (everything before it is generated). ``return_vars`` are
     variables whose trailing ``return <var>`` is generated.
     """

@@ -48,7 +48,7 @@ In scope:
   `haute._registry.NODE_REGISTRY`. A builder describes its node (decorator
   keywords, parameters, body) rather than printing it.
 - Deciding whether a node's column contract adds information and, if so,
-  rendering it as the decorator's `contract=` keyword (`_format_contract_kwarg`
+  rendering it as the decorator's `contract=` keyword (`_contract_keyword`
   in `src/haute/codegen.py`).
 - Laying the module out the way `ruff format` would (`haute._source_layout`,
   a small document printer shared with the Polars step renderer).
@@ -347,8 +347,7 @@ Out of scope (owned by neighbouring components):
   A pipeline file's imports from `modules` are neither kept nor preamble: codegen writes them
   from the registrations (`_ast_helpers.is_submodel_import` recognises every spelling,
   including the relative and aliased ones the parser refuses). Preamble extraction leaves
-  their lines out wherever they sit, and the textual extraction of a file that does not parse
-  leaves out its `from modules ... import` lines, a parenthesised import to its closing line.
+  their lines out wherever they sit.
   `unkept_module_statements` does not report one, wherever it sits, since a save rewrites it
   rather than dropping it. In a submodel definition file, an import from `modules` is
   ordinary preamble.
@@ -513,7 +512,7 @@ execution time on a mis-wired pipeline). Concretely:
   `mlflow.*` exceptions are downgraded to the offline parse-time contract.
 - **`inputs_by_parent` has two distinct source keys colliding on the same
   emitted parent with different columns** → `ParseError` from
-  `_format_contract_source`; ambiguous data is never silently resolved by
+  `_contract_value`; ambiguous data is never silently resolved by
   "keep the last writer."
 - **Executable-name violations** (two node function names or occurrence aliases equal
   ignoring case anywhere in the root graph or any submodel, one that is reserved or a

@@ -89,7 +89,7 @@ pipeline file.
 
 **Strict parsing and editor recovery.** `parse_pipeline_file()` and
 `parse_pipeline_source()` are strict canonical entry points: Python syntax, decorator,
-configuration, contract, topology, and submodel failures raise and no regex-recovered graph
+configuration, contract, topology, and submodel failures raise and no recovered graph
 can reach execution, lint, code generation, Save verification, CI, or deploy. Editor loading
 uses a separate recovery entry point and separate models. It first records authored node and
 connection skeletons with source spans, then resolves known nodes independently. An expected
@@ -323,8 +323,7 @@ low-code steps instead of hand-written code. The steps live in the node's option
 `config/polars/<name>.json` sidecar, which the generated decorator references with
 `config=`; a `@pipeline.polars` function without `config=` is a code-only transform
 and has no sidecar. The `polars` folder is the one optional sidecar folder: the sidecar
-walks (collection, load-error protection, and the save-time collision and
-reserved-filename guard) treat a `polars` node as a sidecar owner only while its config
+walks (collection and the save-time collision and reserved-filename guard) treat a `polars` node as a sidecar owner only while its config
 carries a `steps` list, and the stale-file sweep removes the file when a node stops
 carrying one. One renderer (`src/haute/_polars_steps.py`) validates the closed step
 schema and renders the steps into the function body, recording each step's inclusive

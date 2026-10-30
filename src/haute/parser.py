@@ -16,7 +16,6 @@ from pathlib import Path
 
 from haute._ast_helpers import (
     _extract_connect_calls,
-    _extract_function_bodies,
     _extract_global_constants_declaration,
     _extract_pipeline_meta,
     _extract_preamble,
@@ -83,18 +82,6 @@ def _infer_parse_base_dir(filepath: Path) -> Path:
         return filepath.parent
 
 
-def _format_load_error_warning(labels: list[str]) -> str | None:
-    """Build a user-facing warning when config files failed to load."""
-    if not labels:
-        return None
-    names = ", ".join(labels[:3])
-    suffix = f" and {len(labels) - 3} more" if len(labels) > 3 else ""
-    return (
-        f"Config files could not be loaded for: {names}{suffix}. "
-        "These configs will not be overwritten on save."
-    )
-
-
 def load_declared_global_constants(
     base_dir: Path | None,
     *,
@@ -135,21 +122,14 @@ def load_declared_global_constants(
         return [], str(exc)
 
 
-def _graph_warning(load_error_labels: list[str], global_constants_error: str | None) -> str | None:
-    parts = [
-        part
-        for part in (
-            _format_load_error_warning(load_error_labels),
-            (
-                f"Global constants could not be loaded: {global_constants_error} "
-                "The file will not be overwritten on save."
-                if global_constants_error
-                else None
-            ),
-        )
-        if part
-    ]
-    return " ".join(parts) or None
+def _graph_warning(global_constants_error: str | None) -> str | None:
+    """The graph's warning: a declared global constants file that failed to load."""
+    if not global_constants_error:
+        return None
+    return (
+        f"Global constants could not be loaded: {global_constants_error} "
+        "The file will not be overwritten on save."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +243,7 @@ def parse_pipeline_source_with_name_violations(
         _read_global_constants_bytes: The same override for the global
             constants file the constructor names. Defaults to reading it.
     """
-    # Canonical consumers must never receive a regex-recovered graph.
+    # Invalid syntax is refused: canonical consumers never receive a recovered graph.
     try:
         tree = ast.parse(source)
     except SyntaxError as exc:
@@ -285,11 +265,9 @@ def parse_pipeline_source_with_name_violations(
     )
 
     # Find @pipeline.<type> decorated functions
-    func_bodies = _extract_function_bodies(source, tree=tree)
     raw_nodes = _extract_decorated_nodes(
         tree,
         _is_pipeline_authored_decorator,
-        func_bodies,
         _base_dir,
         source=source,
     )
@@ -312,7 +290,6 @@ def parse_pipeline_source_with_name_violations(
             )
 
     # Surface config load errors as a graph-level warning for the GUI.
-    load_error_labels = [n.data.label for n in rf_nodes if n.data.config.get("_load_error")]
 
     graph = PipelineGraph(
         nodes=rf_nodes,
@@ -324,12 +301,9 @@ def parse_pipeline_source_with_name_violations(
         global_constants=global_constants,
         global_constants_error=global_constants_error,
         source_file=source_file,
-        warning=_graph_warning(load_error_labels, global_constants_error),
+        warning=_graph_warning(global_constants_error),
     )
     graph._parser_global_constants_declared = declares_global_constants
-    graph._parser_parameter_names = {
-        str(node["func_name"]): [str(name) for name in node["param_names"]] for node in raw_nodes
-    }
     graph._parser_edge_parameter_names = {
         str(node["func_name"]): [str(name) for name in node["edge_param_names"]]
         for node in raw_nodes

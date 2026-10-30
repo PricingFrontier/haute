@@ -22,7 +22,7 @@
 | `src/haute/_sidecar.py` | Core read-side `.haute.json` contract: `SidecarModel`, the typed absent/valid/corrupt/unreadable read state (a sidecar that is not UTF-8 is corrupt; a leading byte order mark is dropped), and the sidecar source/position normalisers. Lives outside the web layer so editor recovery never imports routes. |
 | `src/haute/routes/__init__.py` | Package docstring only — no code. |
 | `src/haute/routes/_helpers.py` | Re-exports the core sidecar read contract and `load_pipeline_editor_document` for route consumers; path/index/watcher/WebSocket helpers; strict `parse_pipeline_to_graph`; the sidecar write path (`save_sidecar`); historical-commit parsing; the shared `save_lock`; and `project_write(project_root, work)`, the one way into the project for the editor's writes (the form's save, a Files panel's upload or delete): in turn with every other save (`save_lock`), in the thread pool, under the repository's lock a branch switch holds too (`repository_mutation`), so a write's checks, the write and its capture on the save ledger are never split. |
-| `src/haute/routes/pipeline.py` | `/api/pipelines`, `/api/pipeline`, `/api/pipeline/{name}`, `/api/pipeline/editor-identities`, `/api/pipeline/polars-steps/render`, `/api/pipeline/polars-steps/free-code-columns`, `/api/pipeline/save`, `/api/pipeline/repair/remove/dry-run`, `/api/pipeline/repair/remove/apply`, `/api/pipeline/read-json`, `/api/pipeline/trace`, `/api/pipeline/preview`, `/api/pipeline/preview/inputs`, `/api/pipeline/recovery-preview`, `/api/pipeline/write-output`, `/api/pipeline/output-destination` — plus the supersession-key builders, shared output-request preparation, `_prepare_runtime_graph` request containment, runtime-input/output path validators, and memory-limit-to-HTTP-exception translators shared across graph-executing route families. |
+| `src/haute/routes/pipeline.py` | `/api/pipelines`, `/api/pipeline`, `/api/pipeline/{name}`, `/api/pipeline/editor-identities`, `/api/pipeline/polars-steps/render`, `/api/pipeline/polars-steps/free-code-columns`, `/api/pipeline/save`, `/api/pipeline/repair/remove/apply`, `/api/pipeline/repair/connection/remove/apply`, `/api/pipeline/repair/recover/apply`, `/api/pipeline/node/save`, `/api/pipeline/read-json`, `/api/pipeline/trace`, `/api/pipeline/preview`, `/api/pipeline/preview/inputs`, `/api/pipeline/recovery-preview`, `/api/pipeline/write-output`, `/api/pipeline/output-destination` — plus the supersession-key builders, shared output-request preparation, `_prepare_runtime_graph` request containment, runtime-input/output path validators, and memory-limit-to-HTTP-exception translators shared across graph-executing route families. |
 | `src/haute/routes/files.py` | `/api/files` (directory browse), `/api/schema` (flat-file plus XML structured-record schema/preview) and `/api/model-file` (model-file inspection for the Model Scoring editor). |
 | `src/haute/routes/project_files.py` | `/api/project-files`: list, write (raw streamed body), download and delete the files of the two places, the pipeline folder's versioned `files/` and the root's local `data/` and `outputs/`, with the save-ledger capture of a pipeline-place write or delete. |
 | `src/haute/routes/io_capabilities.py` | `/api/io-capabilities`, the versioned provider/format/cache capability contract consumed by the input and output editors. |
@@ -36,7 +36,7 @@
 | `src/haute/routes/_node_data_service.py` | `NodeDataService`: consumer point responses, delegation, explicit node-output build jobs in isolated workers, the data-profile job, supersession, cancellation, and clear. `points_for_graph` resolves every node of a graph against one resolver for the per-node cache report, returning each node's input-snapshot identity digest alongside its point. |
 | `src/haute/routes/_synchronous_analysis.py` | Request-time analyses of a leased point: admitted execution, memoisation by data version, and client-disconnect cancellation. |
 | `src/haute/routes/utility.py` | `/api/utility` CRUD (list/read/create/update/delete) for `utility/*.py` helper modules, with AST syntax validation on every write; create first refuses (`_validate_new_module_name`) a hard keyword or `is_windows_reserved_filename` stem (400) and a case-folded duplicate of an existing `utility/*.py` (409); create and update first run `_refuse_new_name_violations`, which parses each discovered pipeline mentioning `utility` with the current and the edited utility reader and refuses the support-code violations only the edit adds. |
-| `src/haute/routes/_save_pipeline.py` | `SavePipelineService` — the transactional save orchestrator: singleton/name-collision/load-error validation, codegen invocation (`_write_generated_code_files` stages every generated file through the output allowlist, then an empty package marker in each `modules/` folder it wrote a definition module into that has none, never overwriting one), config-file + sidecar writes, stale-config cleanup, and rollback. Global constants: save takes the constants load state from the file on disk (`_adopt_disk_global_constants_state`), `validate_graph` refuses what would shadow the reserved name or read an undefined constant (`_validate_global_constants`), and the constants file is written with the node configs, retired with the stale ones, and left untouched while it fails to load. `capture_save_in_ledger` commits a save's files on the clone's ledger — no repository, no capture; no working branch chosen a warning with the files left uncaptured; a missing identity reported; a failure a warning — for the pipeline save and the workbench's form save alike. |
+| `src/haute/routes/_save_pipeline.py` | `SavePipelineService` — the transactional save orchestrator: singleton/name-collision validation, codegen invocation (`_write_generated_code_files` stages every generated file through the output allowlist, then an empty package marker in each `modules/` folder it wrote a definition module into that has none, never overwriting one), config-file + sidecar writes, stale-config cleanup, and rollback. Global constants: save takes the constants load state from the file on disk (`_adopt_disk_global_constants_state`), `validate_graph` refuses what would shadow the reserved name or read an undefined constant (`_validate_global_constants`), and the constants file is written with the node configs, retired with the stale ones, and left untouched while it fails to load. `capture_save_in_ledger` commits a save's files on the clone's ledger — no repository, no capture; no working branch chosen a warning with the files left uncaptured; a missing identity reported; a failure a warning — for the pipeline save and the workbench's form save alike. |
 | `src/haute/routes/_supersession.py` | `SupersessionCoordinator` / `_SupersessionState` — generation-counted "run latest, cancel/skip the rest" concurrency primitive used by preview, trace and the free-code column resolution. |
 | `src/haute/routes/output_assemble.py` | `POST /api/output-assemble/dry-run` — validates an unsaved `outputMapping`, swaps it into the target node's in-memory config, executes up to that node, returns the rendered document. |
 | `src/haute/routes/_contract_errors.py` | Shared public-contract-error adapter: validates the closed public error set, emits stable payloads, maps synchronous failures to HTTP 422, and supplies the matching contract-error fields for background jobs. Also owns `memory_limit_http_exception`, the one memory-limit → 507 mapping; a job-backed surface passes its operation noun so the detail also carries the curated message. |
@@ -473,8 +473,8 @@ milestone, restore or switch never meets a half-written save
    `validate_singleton_groups` (at most one request input, `apiInput` or `workbenchInput`, and
    one response node, `output` or `workbenchOutput`; any number of `liveSwitch` nodes, each routed by the active source) across the resulting executable pipeline, then validate
    unique sanitized node names (per-graph, then cross-module against every embedded submodel
-   graph), that no Quote Input table is labelled like another node's sanitized name, and
-   that no node carries a `_load_error` marker. A submodel boundary cannot hide a
+   graph), and that no Quote Input table is labelled like another node's sanitized name. A
+   submodel boundary cannot hide a
    second singleton, and creating another occurrence of a definition that contains one counts
    as another executable singleton. A node whose `instanceOf` names a `liveSwitch` is refused
    (a switch routes by its own input names, which an instance's inputs do not share).
@@ -518,8 +518,7 @@ milestone, restore or switch never meets a half-written save
    folder found elsewhere on `sys.path`. Like every staged write it is checked against the
    step-2 observation and rolled back with the rest.
 6. Emit non-blocking warnings for structured `apiInput` nodes with no `tables[]` yet.
-7. Write per-node config JSON sidecars (collision-checked against protected load-error paths
-   and against each other, casefolded).
+7. Write per-node config JSON sidecars (collision-checked against each other, casefolded).
 8. Write the parent `.haute.json` position sidecar. For each child whose
    ownership passed step 3, write positions plus `managed_parent`. All sidecar
    writes are transactional.
@@ -1378,7 +1377,11 @@ bounded; the server writes the complete untruncated edits. The post-apply
 document is authoritative.
 
 Each apply route acquires `save_lock`, reloads the document and computes the
-complete plan under the lock; a stale revision is HTTP 409 before staging. `_commit_repair_plan`
+complete plan under the lock; a stale revision is HTTP 409 before staging. The four routes
+(remove, connection remove, recover and `POST /api/pipeline/node/save`) answer it with one
+`detail` shape, `{code: "repair_revision_conflict", message, current_revision}`, built by
+`_pipeline_repair._document_at_revision`; `current_revision` is the revision on disk, and
+the commit's own revision re-check refuses in the same shape. `_commit_repair_plan`
 then holds the repository's `repository_mutation` lock from its revision and artifact
 re-checks through staging, verification and rollback, so a Git action never sees part of a
 repair or a node-scoped save. Staged writes/deletes and

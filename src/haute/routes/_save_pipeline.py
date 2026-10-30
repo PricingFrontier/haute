@@ -650,7 +650,6 @@ class SavePipelineService:
         self._validate_declared_config_keys(graph)
         self._validate_strict_node_configs(graph)
         self._validate_quote_input_tables_do_not_shadow_nodes(graph)
-        self._validate_no_load_errors(graph)
         self._validate_global_constants(graph)
         py_path = self._resolve_source_file(source_file)
         self._validate_source_file_matches_pipeline_root(py_path)
@@ -1177,23 +1176,6 @@ class SavePipelineService:
         """Yield canonical ``(definition_id, definition_graph)`` pairs."""
         for definition_id, definition in (graph.submodels or {}).items():
             yield definition_id, definition.graph
-
-    @staticmethod
-    def _validate_no_load_errors(graph: PipelineGraph) -> None:
-        """Reject saves while any parsed node is known to be incomplete."""
-        broken = [
-            node.data.label
-            for node in SavePipelineService._iter_nodes_recursive(graph)
-            if node.data.config.get("_load_error")
-        ]
-        if broken:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Cannot save while node configs failed to load or parse. "
-                    "Fix these nodes before saving: " + ", ".join(sorted(broken))
-                ),
-            )
 
     @staticmethod
     def _iter_nodes_recursive(graph: PipelineGraph) -> Iterator[GraphNode]:
@@ -1765,21 +1747,6 @@ class SavePipelineService:
             self._last_config_files[GLOBAL_CONSTANTS_FILE] = global_constants_json(
                 graph.global_constants
             )
-        self._protected_config_files: set[str] = set(
-            self._collect_config_load_errors_recursive(graph)
-        )
-        # Casefolded intersection, consistent with the collision guards below:
-        # a to-be-written path and a protected load-error path differing only
-        # in case are the same file on the case-insensitive filesystems macOS
-        # and Windows default to. (Defence in depth — the per-graph casefold
-        # guard already rejects such graphs upstream.)
-        protected_folded = {rel.casefold(): rel for rel in self._protected_config_files}
-        conflicts: set[str] = set()
-        for rel_path in self._last_config_files:
-            match = protected_folded.get(rel_path.casefold())
-            if match is not None:
-                conflicts.update((match, rel_path))
-        self._raise_config_path_conflicts(conflicts)
         for rel_path, json_content in self._last_config_files.items():
             out_path = (self._pipeline_root / rel_path).resolve()
             if not is_contained(self._pipeline_root, out_path):
@@ -1824,20 +1791,6 @@ class SavePipelineService:
                 SavePipelineService._collect_node_configs_recursive(nested),
             )
         return configs
-
-    @staticmethod
-    def _collect_config_load_errors_recursive(graph: PipelineGraph) -> dict[str, str]:
-        """Collect load-error protected config paths across submodel graphs."""
-        from haute._config_io import config_load_errors
-
-        SavePipelineService._validate_unique_config_paths_in_graph(graph)
-        errors = dict(config_load_errors(graph))
-        for nested in SavePipelineService._iter_embedded_submodel_graphs(graph):
-            SavePipelineService._merge_config_maps(
-                errors,
-                SavePipelineService._collect_config_load_errors_recursive(nested),
-            )
-        return errors
 
     @staticmethod
     def _validate_unique_config_paths_in_graph(graph: PipelineGraph) -> None:
@@ -1956,7 +1909,6 @@ class SavePipelineService:
         """
         prev = getattr(self, "_prev_config_files", {}) or {}
         current = getattr(self, "_last_config_files", {})
-        protected: set[str] = getattr(self, "_protected_config_files", set())
         removed: list[Path] = []
 
         # Compute the stale diff casefolded, mirroring the collision guards in
@@ -1965,14 +1917,11 @@ class SavePipelineService:
         # ``Foo.json`` and current's ``FOO.json`` are the SAME on-disk file on
         # the case-insensitive filesystems macOS and Windows default to — this
         # save has just rewritten it in place, so unlinking the prev casing
-        # would delete the freshly written survivor. Protected paths get the
-        # same treatment: a prev path differing only in case from a protected
-        # one names the same file there too. Excluding casefold matches on
+        # would delete the freshly written survivor. Excluding casefold matches on
         # every platform means a case-only rename on case-SENSITIVE Linux
         # leaves the old-cased file behind as harmless residue; data safety on
         # macOS/Windows wins over Linux tidiness.
         keep_folded = {rel.casefold() for rel in current}
-        keep_folded.update(rel.casefold() for rel in protected)
         stale = {rel for rel in prev if rel.casefold() not in keep_folded}
         if not stale:
             return removed

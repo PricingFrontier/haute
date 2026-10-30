@@ -50,7 +50,7 @@
 | `src/haute/_python_syntax.py` | Formatting-preserving valid-Python boundary: exact method-call discovery, exact expression/function replacement, and one import inserted below another (`insert_import_after`, used by the node-scoped save), with stable structured syntax failures. It never repairs invalid Python syntax or evaluates source. Codegen no longer edits generated source, so it does not use this module. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): codegen registers and reads per-node code builders through the canonical registry. |
 | `src/haute/_code_extraction.py` | Reverse direction of the builders: recovers the user-authored code from a function body. Three kinds (`polars`, `hook`, `external`) share one engine (`extract_user_code`): strip the docstring, recognise a declaration body (`is_declaration_body`: nothing but `...` or `pass`), strip the transform output declaration or the External File `df = <first input>` binding, recognise the incomplete placeholder, strip the trailing `return df`, and finalise with the Polars rules. |
-| `src/haute/_ast_helpers.py` | Stateless AST/source utilities with no node/graph knowledge: literal evaluation (`_eval_ast_literal`), decorator introspection (`_get_decorator_kwargs`, `_is_pipeline_node_decorator`, `_get_decorator_node_type`), docstring/whitespace handling (`_strip_docstring`, `_dedent`), and whole-file extraction helpers (`_extract_function_bodies`, whose bodies keep the comment lines above their first statement, `_extract_connect_calls`, `_extract_meta`, `_extract_preamble`, `_extract_preserved_blocks`) shared with the parser. It also reads the global constants declaration (`_extract_global_constants_declaration`) and refuses module-level bindings of the reserved name (`_reject_reserved_global_constants_bindings`). `is_submodel_import` recognises a statement importing from `modules` in any spelling; in a pipeline file such an import is generated code, so preamble extraction cuts its lines out (`_submodel_import_lines`, and `_textual_submodel_import_lines` for a file that does not parse) and `unkept_module_statements` (the statements a save would drop) does not report one, wherever it sits. |
+| `src/haute/_ast_helpers.py` | Stateless AST/source utilities with no node/graph knowledge: literal evaluation (`_eval_ast_literal`), decorator introspection (`_get_decorator_kwargs`, `_is_pipeline_authored_decorator`, `_get_decorator_node_type`), docstring/whitespace handling (`_strip_docstring`, `_dedent`), one function's body (`_function_body_source`, which keeps the comment lines above its first statement), and whole-file extraction helpers (`_extract_connect_calls`, `_extract_meta`, `_extract_preamble`, from a parsed module only, `_extract_preserved_blocks`) shared with the parser. It also reads the global constants declaration (`_extract_global_constants_declaration`) and refuses module-level bindings of the reserved name (`_reject_reserved_global_constants_bindings`). `is_submodel_import` recognises a statement importing from `modules` in any spelling; in a pipeline file such an import is generated code, so preamble extraction cuts its lines out (`_submodel_import_lines`) and `unkept_module_statements` (the statements a save would drop) does not report one, wherever it sits. |
 
 ## Key types and data structures
 
@@ -118,7 +118,7 @@
    list, translate parent boundary handles only to declared public port names,
    derive child-boundary parameters from sanitised public input port names and downstream names from sanitised public output port names, and emit one explicit
    `pipeline.submodel(<module>.submodel, name)` registration per occurrence (with `instance_of=owner_name` for copies), with the pipeline's
-   `from modules import ...` (`_submodel_import`) naming every definition's module. Parent `connect` calls refer to aliases
+   `from modules import ...` (`submodel_import_statement`) naming every definition's module. Parent `connect` calls refer to aliases
    plus public port names; synthetic `in__`/`out__` handles never enter source.
    Finally `_assert_emitted_files_parse` validates every emitted file.
 
@@ -168,11 +168,11 @@ that has inputs and moves each input-less node that feeds another to just before
 its first consumer, emitting the sources of one consumer in that consumer's edge
 order; an input-less node without consumers keeps its topological position.
 
-Preserved-block extraction is intentionally structural rather than byte-for-byte. The shared
-`haute._ast_helpers._extract_preserved_blocks` scan claims only completed column-zero marker
-pairs, removes marker lines and leading/trailing blank lines inside each block, ignores an
-unmatched start, and returns blocks in source order. `_extract_preamble` excludes those completed
-module spans, so the two stores are disjoint. Indented marker text remains in its enclosing
+Preserved-block extraction is intentionally structural rather than byte-for-byte. One scan,
+`haute._ast_helpers._module_preserve_spans`, finds the completed column-zero marker pairs and
+ignores an unmatched start. `_extract_preserved_blocks` returns each span's lines in source
+order without the marker lines and the blank lines at either end, and `_extract_preamble`
+excludes the same spans, so the two stores are disjoint. Indented marker text remains in its enclosing
 function or construct and is not separately extracted. `_render_module` emits each
 pipeline or submodel block once after object construction and before node functions, restoring
 fresh markers.
@@ -470,7 +470,7 @@ empty code.
 | Contract computation hits `OSError` or an `mlflow.*` exception | degraded, with a `contract_emit_offline_on_error` warning, to the offline parse-time contract (`_config_builder.resolve_parse_time_contract`); a Model Score annotation keeps any declared inputs, and the keyword is omitted when nothing the parser cannot derive remains | `codegen._derive_contract_for_codegen` |
 | Contract computation hits `ConfigError` | `ConfigError` (propagated) — except the `MlflowDestinationUnconfigured` marker: a MODEL_SCORE node whose explicit `mlflow_destination` is merely not configured on the authoring machine is environmental, so the annotation degrades to the offline parse-time contract with a warning (the executor resolves the same destination at run time and fails loudly there); every other `MlflowConfigError` (unknown key, rejected SDK mode) still propagates | `codegen._derive_contract_for_codegen` |
 | Contract computation hits a non-infra exception (`TypeError`, `KeyError`, `HauteError` incl. `ContractMismatchError`) | propagated unchanged | `codegen._derive_contract_for_codegen` |
-| `inputs_by_parent` ambiguous key collision | `ParseError` | `codegen._format_contract_source` |
+| `inputs_by_parent` ambiguous key collision | `ParseError` | `codegen._contract_value` |
 | Function names or occurrence aliases equal ignoring case across root graph + submodels (exact duplicates included); a reserved or built-in function name; a reserved input binding | `ParseError` (every violation listed, each naming its nodes and module) | `codegen.check_executable_names` → `_executable_names.executable_name_violations` |
 | Duplicate derived input names among one node's incoming edges | `ParseError` (target node + colliding input name) | `codegen.graph_to_code_multi` (per-edge input-name assembly) |
 | An `apiInput` edge carrying no `source_port`/`sourceHandle` (only reachable via a hand-edited file — the editor cannot create one) | `ParseError` naming the edge and source node | `codegen.graph_to_code_multi` (per-edge input-name assembly) |

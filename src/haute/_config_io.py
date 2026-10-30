@@ -403,8 +403,6 @@ def collect_node_configs(graph: PipelineGraph) -> dict[str, str]:
 
     Nodes without a config folder (transforms, submodels) are skipped.
     Instance nodes are skipped (they reference an original).
-    Nodes whose config failed to load (``_load_error`` marker) are skipped
-    so the original file on disk is preserved.
     """
     configs: dict[str, str] = {}
     for node in graph.nodes:
@@ -413,34 +411,10 @@ def collect_node_configs(graph: PipelineGraph) -> dict[str, str]:
             continue
         if node.data.config.get("instanceOf"):
             continue
-        if node.data.config.get("_load_error"):
-            continue
         func_name = _sanitize_func_name(node.data.label)
         rel_path = config_path_for_node(nt, func_name).as_posix()
         configs[rel_path] = node_config_json(nt, node.data.config, node_label=node.data.label)
     return configs
-
-
-def config_load_errors(graph: PipelineGraph) -> dict[str, str]:
-    """Return relative config paths for nodes whose config failed to load.
-
-    Used by the save service to protect these files from stale-file cleanup.
-    """
-    errors: dict[str, str] = {}
-    for node in graph.nodes:
-        nt = node.data.nodeType
-        if nt not in NODE_TYPE_TO_FOLDER:
-            continue
-        err = node.data.config.get("_load_error")
-        if not err:
-            continue
-        func_name = _sanitize_func_name(node.data.label)
-        try:
-            rel_path = config_path_for_node(nt, func_name).as_posix()
-        except ValueError:
-            continue
-        errors[rel_path] = str(err)
-    return errors
 
 
 # ---------------------------------------------------------------------------
@@ -508,15 +482,6 @@ def parse_global_constants(
         seen.add(constant.name)
         constants.append(constant)
     return constants
-
-
-def load_global_constants(path: Path) -> list[GlobalConstant]:
-    """Read and validate one pipeline's global constants file.
-
-    An ``OSError`` (a missing or unreadable file) propagates to the caller,
-    which decides how a declared file that cannot be read is reported.
-    """
-    return parse_global_constants(path.read_bytes())
 
 
 def global_constants_json(constants: Sequence[GlobalConstant]) -> str:

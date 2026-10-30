@@ -18,7 +18,6 @@ from uuid import uuid4
 from haute._ast_helpers import (
     _chained_receiver_calls,
     _connect_call_edge,
-    _extract_function_bodies,
     _extract_global_constants_declaration,
     _extract_pipeline_meta,
     _extract_preamble,
@@ -1431,12 +1430,8 @@ def _recover_submodel_snapshot(
         child_path, source_file=child_source_file, captures=captures, diagnostics=diagnostics
     )
 
-    bodies = _extract_function_bodies(source, tree=tree)
     skeletons = _extract_decorated_node_skeletons(
-        tree,
-        _is_submodel_authored_decorator,
-        bodies,
-        source=source,
+        tree, _is_submodel_authored_decorator, source=source
     )
     recovery_id = _recovery_ids((item.authored_id, item.start_line) for item in skeletons)
     candidates = [
@@ -1834,16 +1829,10 @@ def _source_references(
         # config or submodel artifact the revision could depend on.
         return config_refs, registrations
 
-    bodies = _extract_function_bodies(source, tree=tree)
     decorator_checker = (
         _is_submodel_authored_decorator if child else _is_pipeline_authored_decorator
     )
-    for skeleton in _extract_decorated_node_skeletons(
-        tree,
-        decorator_checker,
-        bodies,
-        source=source,
-    ):
+    for skeleton in _extract_decorated_node_skeletons(tree, decorator_checker, source=source):
         try:
             kwargs = _get_decorator_kwargs(skeleton.decorator)
         except HauteError:
@@ -2280,12 +2269,8 @@ def _load_readable_pipeline_editor_document(
                 diagnostics=diagnostics,
             )
             connections = recovered_connections
-            bodies = _extract_function_bodies(source, tree=tree)
             skeletons = _extract_decorated_node_skeletons(
-                tree,
-                _is_pipeline_authored_decorator,
-                bodies,
-                source=source,
+                tree, _is_pipeline_authored_decorator, source=source
             )
             # Nodes and occurrences, valid or not, share one id space: mint every
             # id over all of them before anything records one in a diagnostic.

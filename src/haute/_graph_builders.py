@@ -66,17 +66,16 @@ def _decorator_method(decorator: ast.expr) -> str:
 def _extract_decorated_node_skeletons(
     tree: ast.Module,
     decorator_checker: Callable[[ast.expr], bool],
-    func_bodies: dict[str, str],
     *,
-    source: str | None = None,
+    source: str,
 ) -> list[PipelineNodeSkeleton]:
     """Discover authored nodes without resolving their configuration.
 
-    ``source`` lets duplicate function names retain their own body rather
-    than sharing the last value from the legacy name-keyed body map.
+    Each node's body is read from *source*, the text *tree* was parsed from, at
+    its own lines, so two functions of one name keep their own bodies.
     """
     skeletons: list[PipelineNodeSkeleton] = []
-    source_lines = python_lines(source) if source is not None else None
+    source_lines = python_lines(source)
     for stmt in ast.iter_child_nodes(tree):
         if not isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
@@ -92,9 +91,7 @@ def _extract_decorated_node_skeletons(
             *positional_param_names,
             *(arg.arg for arg in stmt.args.kwonlyargs),
         )
-        body = func_bodies.get(stmt.name, "")
-        if source_lines is not None and stmt.body:
-            body = _function_body_source(source_lines, stmt)
+        body = _function_body_source(source_lines, stmt)
         decorator_start = min(
             getattr(decorator, "lineno", stmt.lineno)
             for decorator in stmt.decorator_list
@@ -153,7 +150,6 @@ def _resolve_node_skeleton(
             decorator_kwargs,
             skeleton.body,
             list(skeleton.param_names),
-            len(skeleton.param_names),
             base_dir,
             func_name=skeleton.authored_id,
             explicit_node_type=skeleton.explicit_node_type,
@@ -176,10 +172,9 @@ def _resolve_node_skeleton(
 def _extract_decorated_nodes(
     tree: ast.Module,
     decorator_checker: Callable[[ast.expr], bool],
-    func_bodies: dict[str, str],
     base_dir: Path | None,
     *,
-    source: str | None = None,
+    source: str,
 ) -> list[dict[str, Any]]:
     """Extract decorated function nodes from an AST tree.
 
@@ -191,21 +186,15 @@ def _extract_decorated_nodes(
     Args:
         tree: The parsed AST module.
         decorator_checker: A callable that returns True for matching
-            decorators (e.g. ``_is_pipeline_node_decorator``).
-        func_bodies: Pre-extracted function body source, keyed by name
-            (from ``_extract_function_bodies``).
+            decorators (e.g. ``_is_pipeline_authored_decorator``).
         base_dir: Project root for resolving ``config=`` references.
+        source: The text *tree* was parsed from, which each body is read from.
 
     Returns:
         A list of dicts with keys ``func_name``, ``node_type``,
         ``description``, ``config``, and ``param_names``.
     """
-    skeletons = _extract_decorated_node_skeletons(
-        tree,
-        decorator_checker,
-        func_bodies,
-        source=source,
-    )
+    skeletons = _extract_decorated_node_skeletons(tree, decorator_checker, source=source)
     raw_nodes: list[dict[str, Any]] = []
     seen_func_names: set[str] = set()
     for skeleton in skeletons:
@@ -319,10 +308,10 @@ def _build_edges(
         for param in edge_params:
             if param in node_names and param != node_info["func_name"]:
                 pair = (param, node_info["func_name"])
-                # A duplicated parameter name (reachable via the regex
-                # fallback, e.g. ``def f(a, a)``) would otherwise emit two
-                # GraphEdges sharing the same id ``e_a_f``. Dedupe here so the
-                # edge id stays unique.
+                # A duplicated parameter name (``ast.parse`` accepts
+                # ``def f(a, a)``; the signature check refuses it later) would
+                # otherwise emit two GraphEdges sharing the same id ``e_a_f``.
+                # Dedupe here so the edge id stays unique.
                 if pair not in explicit_edges and pair not in seen_implicit:
                     seen_implicit.add(pair)
                     edges.append(

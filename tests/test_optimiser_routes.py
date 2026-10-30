@@ -20,7 +20,6 @@ import pytest
 from fastapi import HTTPException
 from price_contour import PerFactorRecord
 
-from haute._config_builder import _build_node_config
 from haute._execution_context import ExecutionProfile
 from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
 from haute._sandbox import set_project_root
@@ -499,22 +498,6 @@ class TestNodeTypeRegistration:
 # ---------------------------------------------------------------------------
 # Step 1c: Parser inference
 # ---------------------------------------------------------------------------
-
-
-class TestParserInference:
-    def test_build_optimiser_config(self):
-        kwargs = {
-            "optimiser": True,
-            "mode": "online",
-            "objective": "expected_income",
-            "constraints": {"volume": {"min": 0.90}},
-            "max_iter": 50,
-        }
-        config = _build_node_config("optimiser", kwargs, "", ["df"])
-        assert config["mode"] == "online"
-        assert config["objective"] == "expected_income"
-        assert config["constraints"] == {"volume": {"min": 0.90}}
-        assert config["max_iter"] == 50
 
 
 # ---------------------------------------------------------------------------

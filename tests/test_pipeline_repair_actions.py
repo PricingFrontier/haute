@@ -382,6 +382,7 @@ def test_stale_revision_conflict_preserves_authored_bytes(
     monkeypatch.chdir(tmp_path)
     before_files = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     request = _request(tmp_path, "source", "reset").model_dump()
+    current_revision = request["source_revision"]
     request["source_revision"] = "0" * 64
 
     response = client.post("/api/pipeline/repair/recover/apply", json=request)
@@ -391,6 +392,7 @@ def test_stale_revision_conflict_preserves_authored_bytes(
         "message": (
             "The pipeline changed after this recovery document loaded; reload before repairing."
         ),
+        "current_revision": current_revision,
     }
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before_files
 
