@@ -17,6 +17,12 @@ Training in the editor keeps the model and its evaluation artifacts with that tr
 result; logging it to MLflow and saving it to a project file are explicit actions in the
 node's **EXPORT** pane.
 
+An owner and its submodel instances train on their own connected data. Each result
+keeps its own model, feature contract and evaluation files; training another occurrence
+does not replace them. Unless you set `name` in the configuration, artifact filenames use
+the node's executable name, with the occurrence prefix for an instance. Save a result
+to a project file to use that model in Model Scoring and deployment.
+
 ## Choosing the model family
 
 A new Model Training node opens on **Select algorithm**, with one button per family:
@@ -756,10 +762,10 @@ A Poisson claim-frequency GLM with an exposure offset:
 
     | Key | What it does |
     |---|---|
-    | `name` | Names the training artifacts; training uses the node's id when it is absent. |
+    | `name` | Names the training artifacts; when absent, uses the node's executable name, including its instance prefix. |
     | `feature_weights` | CatBoost feature weights. |
     | `fold_column`, `id_columns` | Columns kept as training metadata rather than features. |
-    | `output_dir` | Where training writes its working files (`outputs` by default). |
+    | `output_dir` | Where scripted training writes its files (`outputs` by default). Editor training keeps files with the job until you export them. |
     | `cv_seed` | The GLM penalty's cross-validation seed; the editor writes 42 when you choose a regularisation. |
     | `evaluation.seed` | The split seed; the editor writes 42. |
     | `evaluation.validation.window` | `"expanding"` for time-based cross-validation; the editor sets it. |

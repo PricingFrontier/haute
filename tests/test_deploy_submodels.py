@@ -19,7 +19,7 @@ import polars as pl
 import pytest
 
 from haute._sandbox import bound_project_root
-from haute._types import NodeType, PipelineGraph
+from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.deploy import DeployConfig, resolve_config
 from haute.deploy._config import ResolvedDeploy
 from haute.deploy._container import write_bundle
@@ -28,6 +28,7 @@ from haute.deploy._pruner import find_deploy_input_nodes, find_output_node, prun
 from haute.deploy._scorer import score_graph
 from haute.errors import ExecutionError
 from haute.parser import parse_pipeline_file
+from tests._git_helpers import init_repo
 
 _EXAMPLE = (
     Path(__file__).resolve().parents[1]
@@ -254,6 +255,153 @@ pipeline.connect("second", "response", source_port="rated")
     for key in keys:
         assert staged[key].parent == tmp_path / "staged"
         assert staged[key].read_bytes() == resolved.artifacts[key].read_bytes()
+
+
+@pytest.mark.parametrize("wrapped", [False, True], ids=["grouped", "wrapped"])
+@pytest.mark.parametrize("occurrence", ["owner", "instance"])
+def test_load_file_deploy_preserves_logical_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wrapped: bool, occurrence: str
+) -> None:
+    from haute._flatten import flatten_executable_graph
+    from haute._graph_utils import edge_input_name
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute.executor import execute_graph
+    from haute.routes._save_pipeline import SavePipelineService
+    from haute.routes._submodel_ops import create_node_instance_graph, create_submodel_graph
+
+    project = _project(tmp_path, monkeypatch, _ONE_SUBMODEL, {"factors": _FACTORS}, {})
+    init_repo(project)
+    monkeypatch.chdir(project)
+    (tmp_path / "project/data/rates.json").write_text('{"factor": 2}', encoding="utf-8")
+    request = parse_pipeline_file(project / "pipeline.py").node_map["quote"]
+    plain = PipelineGraph(
+        nodes=[
+            request,
+            GraphNode(
+                id="rates",
+                data=NodeData(
+                    label="rates",
+                    nodeType=NodeType.EXTERNAL_FILE,
+                    config={
+                        "path": "data/rates.json",
+                        "fileType": "json",
+                        "inputMapping": {"policies": "quote", "adjustment": "policies_extra"},
+                        "code": (
+                            "df = policies.join(adjustment.select('quote_id', "
+                            "fee=pl.col('fixture_value')), on='quote_id').with_columns("
+                            "premium=pl.col('fixture_value') * obj['factor'] + pl.col('fee'))"
+                        ),
+                    },
+                ),
+            ),
+            GraphNode(
+                id="after",
+                data=NodeData(
+                    label="after", nodeType=NodeType.POLARS, config={"code": "df = rates"}
+                ),
+            ),
+            GraphNode(
+                id="alternative",
+                data=NodeData(
+                    label="alternative",
+                    nodeType=NodeType.POLARS,
+                    config={
+                        "code": "df = quote.with_columns(fixture_value=pl.col('fixture_value') * 3)"
+                    },
+                ),
+            ),
+            GraphNode(
+                id="policies_extra",
+                data=NodeData(
+                    label="policies_extra",
+                    nodeType=NodeType.POLARS,
+                    config={
+                        "code": "df = quote.with_columns(fixture_value=pl.col('fixture_value') + 1)"
+                    },
+                ),
+            ),
+            GraphNode(
+                id="response",
+                data=NodeData(
+                    label="response",
+                    nodeType=NodeType.OUTPUT,
+                    config={
+                        "outputMapping": [
+                            {
+                                "source_port": "after",
+                                "source_column": "premium",
+                                "output_path": "$[:].premium",
+                                "enabled": True,
+                            }
+                        ]
+                    },
+                ),
+            ),
+        ],
+        edges=[
+            GraphEdge(id="input", source="quote", sourceHandle="quote", target="rates"),
+            GraphEdge(id="alternative", source="quote", sourceHandle="quote", target="alternative"),
+            GraphEdge(id="extra", source="quote", sourceHandle="quote", target="policies_extra"),
+            GraphEdge(id="adjustment", source="policies_extra", target="rates"),
+            GraphEdge(id="after", source="rates", target="after"),
+            GraphEdge(id="response", source="after", target="response"),
+        ],
+    )
+    if wrapped:
+        result = create_node_instance_graph(plain, "rates", "rates", read_utility=lambda _: None)
+        graph, owner, instance, output = result.graph, "rates", "rates_2", "rates"
+    else:
+        graph = create_submodel_graph(plain, ["rates", "after"], "pricing").graph
+        owner, instance, output = "pricing", "pricing_2", "after"
+        graph.nodes.append(
+            GraphNode(
+                id=instance,
+                type="submodel",
+                data=NodeData(
+                    label=instance,
+                    nodeType=NodeType.SUBMODEL,
+                    config={"definitionId": "pricing", "alias": instance, "instanceOf": owner},
+                ),
+            )
+        )
+    graph.edges = [edge for edge in graph.edges if edge.target != "response"]
+    graph.edges.append(
+        GraphEdge(id="copy_input", source="alternative", target=instance, targetHandle="in__quote")
+    )
+    graph.edges.append(
+        GraphEdge(
+            id="copy_adjustment",
+            source="policies_extra",
+            target=instance,
+            targetHandle="in__policies_extra",
+        )
+    )
+    selected = owner if occurrence == "owner" else instance
+    response_edge = GraphEdge(
+        id="response", source=selected, sourceHandle=f"out__{output}", target="response"
+    )
+    graph.edges.append(response_edge)
+    graph.node_map["response"].data.config["outputMapping"][0]["source_port"] = edge_input_name(
+        response_edge, graph.node_map[selected], submodels=graph.submodels
+    )
+    quotes = [{"quote_id": "q1", "fixture_value": 10}]
+    (tmp_path / "project/data/quote.json").write_text(json.dumps(quotes), encoding="utf-8")
+    graph.node_map["quote"].data.config["path"] = "data/quote.json"
+    with bound_project_root(project):
+        expected = [{"premium": 31 if occurrence == "owner" else 71}]
+        assert execute_graph(flatten_executable_graph(graph))["response"].preview == expected
+        SavePipelineService(project).save_graph_transactionally(
+            graph=graph,
+            name="logical_inputs",
+            description="",
+            preamble="",
+            source_file="pipeline.py",
+            base_revision=load_pipeline_editor_document(
+                project / "pipeline.py", project_root=project
+            ).source_revision,
+        )
+        resolved = _resolve(project)
+    assert _score_bundle(resolved, tmp_path / "build", quotes) == expected
 
 
 def test_a_response_inside_a_submodel_is_found(

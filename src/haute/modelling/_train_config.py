@@ -658,7 +658,7 @@ def build_training_job_kwargs(
         Path to the training data file the job will read.
     default_name:
         Name used when the config has no ``name`` (live training passes the
-        node id; export defaults to ``"model"``).
+        executable node name; direct config-only export defaults to ``"model"``).
 
     Raises
     ------

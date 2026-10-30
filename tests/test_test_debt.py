@@ -39,9 +39,7 @@ _PLAYWRIGHT_CI_RETRY_BUDGET = 2
 _EXPECTED_DEBT_IDS = {
     # SUB-R01 phase 4: these types retain node-level instances until the full
     # one-node proof passes. Strict xfails require removing the debt when fixed.
-    "67283701a70ede78",  # Load File: deploy loses the remapped input name.
     "e1ad12ebfe773e79",  # Data Output: shared destination is refused.
-    "c8053418607830e0",  # Model Training: qualified id used as artifact path.
     # Native Windows HighQoS requires the real Windows process API. The
     # strong-revision cache witness requires a filesystem exposing that proof;
     # unsupported filesystems are covered separately by cache-bypass tests.

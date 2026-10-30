@@ -680,12 +680,14 @@ scalar input selectors follow renamed edges. A collision refuses the entire edit
   scoring parity, and a real job for Model Training and Optimiser. Each test owns
   its Git repository and `haute.toml`; project discovery must not inherit the
   surrounding checkout, regardless of the pytest temporary-directory location. Source types
-  have no input to remap; sink types have no output to preview or trace. Transform,
+  have no input to remap; sink types have no output to preview or trace. Transform, Load File,
   Data Input, Constant, Banding, Rating Step, Model Score, Edge Join, Scenario
-  Expander, Explore, Optimiser and Apply Optimisation pass. Strict xfails retain
-  Load File (deploy loses the remapped input), Data Output (shared write
-  destination), and Model Training (qualified child id used as an artifact path)
-  on node-level instances; the debt is registered in `tests/test_test_debt.py`.
+  Expander, Model Training, Explore, Optimiser and Apply Optimisation pass.
+  Data Output alone remains on node-level instances: its strict xfail records the
+  deliberate refusal of two writers to one destination, registered in
+  `tests/test_test_debt.py`. Phase 5 withdraws its Create Instance action.
+  The training regression also trains an owner and two instances, reads all three
+  artifact sets, and compares exported Model Score preview and deployed predictions.
 - `frontend/src/utils/nodeTypes.ts` owns `WRAPPED_INSTANCE_TYPES`, the browser's
   phase-4 gate. `frontend/src/hooks/__tests__/useNodeHandlers.test.ts` checks every
   moved and retained type, and one resolved wrapped-graph commit/Undo/Redo.

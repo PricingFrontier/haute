@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -43,14 +44,7 @@ from tests.test_optimiser_routes_real_library import _scored_frame
 
 PROOF_TYPES = [
     NodeType.POLARS,
-    pytest.param(
-        NodeType.EXTERNAL_FILE,
-        marks=pytest.mark.xfail(
-            strict=True,
-            raises=NameError,
-            reason="SUB-R01: Load File deploy loses its remapped policies input",
-        ),
-    ),
+    NodeType.EXTERNAL_FILE,
     NodeType.DATA_INPUT,
     pytest.param(
         NodeType.DATA_OUTPUT,
@@ -66,14 +60,7 @@ PROOF_TYPES = [
     NodeType.MODEL_SCORE,
     NodeType.EDGE_JOIN,
     NodeType.SCENARIO_EXPANDER,
-    pytest.param(
-        NodeType.MODELLING,
-        marks=pytest.mark.xfail(
-            strict=True,
-            raises=AssertionError,
-            reason="SUB-R01: Model Training uses the qualified child id as an artifact path",
-        ),
-    ),
+    NodeType.MODELLING,
     NodeType.EXPLORE,
     NodeType.OPTIMISER,
     NodeType.OPTIMISER_APPLY,
@@ -81,9 +68,12 @@ PROOF_TYPES = [
 
 
 @pytest.fixture(autouse=True)
-def _isolated_project(tmp_path: Path) -> None:
+def _isolated_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Neither standalone execution nor Git discovery may inherit the checkout."""
     init_repo(tmp_path)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setenv("TMP", str(tmp_path))
+    monkeypatch.setenv("TEMP", str(tmp_path))
     (tmp_path / "haute.toml").write_text(
         '[project]\nname = "instance-proof"\n', encoding="utf-8", newline="\n"
     )
@@ -409,12 +399,7 @@ def _proof_graph(kind: NodeType, root: Path) -> tuple[PipelineGraph, list[dict],
 def test_one_node_instance_cross_path_proof(
     kind: NodeType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, client: TestClient
 ) -> None:
-    import tempfile
-
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
-    monkeypatch.setenv("TMP", str(tmp_path))
-    monkeypatch.setenv("TEMP", str(tmp_path))
     pipeline_dir.cache_clear()
     invalidate_pipeline_index()
     (tmp_path / "haute.toml").write_text(
@@ -536,6 +521,168 @@ def test_one_node_instance_cross_path_proof(
                 assert (
                     result["total_objective"] > 6
                 )  # The owner's six quotes each have objective 1.
+
+
+def test_training_occurrences_publish_distinct_readable_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    training_artifact_root: Path,
+    clean_training_job_store,
+) -> None:
+    from catboost import CatBoostRegressor
+
+    from haute.deploy._config import ContainerConfig
+    from haute.modelling._feature_contract import load_contract
+    from haute.modelling._training_job import model_contract_filename
+
+    monkeypatch.chdir(tmp_path)
+    pipeline_dir.cache_clear()
+    invalidate_pipeline_index()
+    graph, rows, _ = _proof_graph(NodeType.MODELLING, tmp_path)
+    graph.submodels["rate_calc"].graph.nodes[0].data.label = "Risk model"
+    # All three fits see different targets; reading another occurrence's model is observable.
+    pl.DataFrame(
+        [{**row, "fixture_value": row["fixture_value"] + 100} for row in rows]
+    ).write_parquet(tmp_path / "policies.parquet")
+    graph.nodes.extend(
+        [
+            _node(
+                "other_training_rows",
+                code="df = claims_data.with_columns(fixture_value=pl.col('fixture_value') + 200)",
+            ),
+            _node(
+                "rate_calc_3",
+                NodeType.SUBMODEL,
+                definitionId="rate_calc",
+                alias="rate_calc_3",
+                instanceOf="rate_calc",
+            ),
+        ]
+    )
+    graph.edges.extend(
+        [
+            _edge("request", "other_training_rows", "claims_data"),
+            _edge("other_training_rows", "rate_calc_3", target_handle="in__policies"),
+        ]
+    )
+    raw = graph.model_dump(mode="json", by_alias=True)
+    models: list[tuple[str, Path, bytes, list[float]]] = []
+    with bound_project_root(tmp_path):
+        for occurrence, stem in [
+            ("rate_calc", "Risk_model"),
+            ("rate_calc_2", "rate_calc_2__Risk_model"),
+            ("rate_calc_3", "rate_calc_3__Risk_model"),
+        ]:
+            target = qualified_runtime_node_id(occurrence, "rate_calc_node")
+            started = client.post("/api/modelling/train", json={"graph": raw, "node_id": target})
+            assert started.status_code == 200, started.text
+            job_id = started.json()["job_id"]
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                job = client.get(f"/api/modelling/train/status/{job_id}").json()
+                if job["status"] not in {"pending", "running", "queued", "preparing"}:
+                    break
+                time.sleep(0.05)
+            assert job["status"] == "completed", (
+                job["message"],
+                job.get("worker_remote_traceback"),
+            )
+            result = job["result"]
+            model_path = Path(result["model_path"])
+            assert model_path.name == f"{stem}.cbm"
+            assert model_path.parent.parent.parent == training_artifact_root
+            contract_path = model_path.with_name(model_contract_filename(stem))
+            assert load_contract(contract_path).features == ["region"]
+            for kind in ("plan", "results", "report"):
+                artifact = Path(result["evaluation"][f"{kind}_path"])
+                assert artifact.parent == model_path.parent
+                assert artifact.name == f"{stem}.evaluation-{kind}.json"
+                assert json.loads(artifact.read_text(encoding="utf-8"))
+            model = CatBoostRegressor()
+            model.load_model(str(model_path))
+            predictions = model.predict([[row["region"]] for row in rows]).tolist()
+            models.append((job_id, model_path, model_path.read_bytes(), predictions))
+
+        assert len({path.parent for _, path, _, _ in models}) == 3
+        assert len({tuple(predictions) for _, _, _, predictions in models}) == 3
+        for index, (job_id, model_path, model_bytes, predictions) in enumerate(models):
+            # Later fits must not retire or overwrite another occurrence's immutable artifacts.
+            assert model_path.read_bytes() == model_bytes
+            result = client.get(f"/api/modelling/train/status/{job_id}").json()["result"]
+            assert result["model_path"] == str(model_path)
+            exported = client.post(
+                "/api/modelling/save",
+                json={
+                    "job_id": job_id,
+                    "output_path": f"exports/{model_path.name}",
+                },
+            )
+            assert exported.status_code == 200, exported.text
+            exported_path = tmp_path / exported.json()["path"]
+            assert exported_path.read_bytes() == model_bytes
+            assert load_contract(tmp_path / exported.json()["feature_contract_path"]).features == [
+                "region"
+            ]
+            scoring = PipelineGraph(
+                nodes=[
+                    graph.node_map["request"],
+                    _node(
+                        "score",
+                        NodeType.MODEL_SCORE,
+                        sourceType="file",
+                        model_path=exported.json()["path"],
+                        task="regression",
+                        output_column="prediction",
+                        contract={"inputs": ["region"], "outputs": ["prediction"]},
+                    ),
+                    _node(
+                        "scored_response",
+                        NodeType.OUTPUT,
+                        outputMapping=[
+                            {
+                                "source_port": "score",
+                                "source_column": column,
+                                "output_path": f"$[:].{column}",
+                                "enabled": True,
+                            }
+                            for column in ("quote_id", "prediction")
+                        ],
+                    ),
+                ],
+                edges=[_edge("request", "score", "claims_data"), _edge("score", "scored_response")],
+            )
+            expected = [
+                {"quote_id": row["quote_id"], "prediction": value}
+                for row, value in zip(rows, predictions, strict=True)
+            ]
+            preview = client.post(
+                "/api/pipeline/preview",
+                json={
+                    "graph": scoring.model_dump(mode="json", by_alias=True),
+                    "node_id": "score",
+                },
+            )
+            assert preview.status_code == 200, preview.text
+            assert [row["prediction"] for row in preview.json()["preview"]] == predictions
+            assert execute_graph(scoring)["scored_response"].preview == expected
+            source = f"score_{index}.py"
+            SavePipelineService(tmp_path).save_graph_transactionally(
+                graph=scoring,
+                name=f"score_{index}",
+                description="",
+                preamble="",
+                source_file=source,
+                base_revision=None,
+            )
+            config = DeployConfig(
+                pipeline_file=Path(source),
+                model_name=f"score_{index}",
+                target="container",
+                container=ContainerConfig(base_image="python:3.11.9-slim"),
+            )
+            deployed = resolve_config(config)
+            assert _score_bundle(deployed, tmp_path / f"bundle_{index}", rows) == expected
 
 
 @pytest.mark.parametrize("kind", [NodeType.POLARS, NodeType.MODEL_SCORE], ids=str)

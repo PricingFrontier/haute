@@ -11,7 +11,7 @@ An instance shares a definition with its **owner**. Connect different data to it
 
 ## Creating an instance
 
-In the parent pipeline, select one node and click **Instance** in the toolbar. For Transform, Data Input, Constant, Banding, Rating Step, Model Score, Edge Join, Scenario Expander, Explore, Optimiser and Apply Optimisation, Haute wraps the node in a one-node submodel and places an unconnected instance beside it. The action takes one Undo and writes files only when you click **Save**.
+In the parent pipeline, select one node and click **Instance** in the toolbar. For Transform, Load File, Data Input, Constant, Banding, Rating Step, Model Score, Edge Join, Scenario Expander, Model Training, Explore, Optimiser and Apply Optimisation, Haute wraps the node in a one-node submodel and places an unconnected instance beside it. The action takes one Undo and writes files only when you click **Save**.
 
 The owner keeps the original node's name, position, connections and output name. Its inner node becomes `<name>_node`, with a numeric suffix if needed. Any config file follows that inner name. The definition and module use the original name, suffixed when another definition or module already uses it. The instance normally starts as `<name>_2`.
 
@@ -19,7 +19,7 @@ Connect the instance to the data you want to process. Each public input keeps th
 
 For an existing submodel, **Instance** adds another occurrence of its definition. You can also right-click a submodel and choose **Create Instance**. Plain nodes use the toolbar.
 
-Load File, Data Output and Model Training currently keep node-level instances, with the panel described below. Previously created node-level instances continue to work.
+Data Output retains node-level instances, but two writers to the same destination are refused. Previously created node-level instances continue to work with the panel described below.
 
 ## The panel
 
@@ -60,7 +60,7 @@ Quote Input, Workbench Input, Quote Response and Workbench Output cannot have in
     pipeline.connect("claims_data", "clean_policies_2", target_port="policies")
     ```
 
-    Node-level instances retained for Load File, Data Output and Model Training have no JSON sidecar. Their decorator names the original, and their function takes their own inputs:
+    Existing node-level instances have no JSON sidecar. Their decorator names the original, and their function takes their own inputs:
 
     ```python
     @pipeline.instance(of="load_rates", inputMapping={"policies": "claims_data"})

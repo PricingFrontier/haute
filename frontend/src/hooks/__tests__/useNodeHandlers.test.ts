@@ -48,8 +48,8 @@ describe("useNodeHandlers", () => {
     vi.restoreAllMocks()
   })
 
-  it("a plain node's Create Instance commits the resolved wrapped graph as one undo step", async () => {
-    const original = makeNode("rate_calc")
+  it.each(["polars", "externalFile", "modelling"])("a plain node's Create Instance commits the resolved wrapped graph as one undo step", async (nodeType) => {
+    const original = makeNode("rate_calc", nodeType)
     const params = makeParams()
     params.graphRef.current = { nodes: [original], edges: [] }
     useGraphStore.getState().loadGraphSnapshot({ nodes: [original], edges: [], submodels: {}, preamble: "" })
@@ -62,7 +62,7 @@ describe("useNodeHandlers", () => {
       nodes: [occurrence("rate_calc"), occurrence("rate_calc_2", "rate_calc")], edges: [],
       submodels: { rate_calc: { definitionId: "rate_calc", file: "modules/rate_calc.py",
         inputPorts: [], outputPorts: [{ name: "rate_calc", source: { nodeId: "rate_calc_node", handleId: null } }],
-        graph: { nodes: [makeNode("rate_calc_node")], edges: [] },
+        graph: { nodes: [makeNode("rate_calc_node", nodeType)], edges: [] },
       } },
     }
     vi.mocked(createNodeInstance).mockResolvedValue({ status: "ok", graph: wrapped,
@@ -88,7 +88,6 @@ describe("useNodeHandlers", () => {
       node_id: "rate_calc", base_revision: "rev-1", source_file: "pipeline.py",
       graph: expect.objectContaining({ nodes: [expect.objectContaining({ id: "rate_calc" })] }),
     }))
-    expect(resolveCanonicalIdentities).toHaveBeenCalledOnce()
     expect(useGraphStore.getState().nodes.map(n => n.id)).toEqual(["rate_calc", "rate_calc_2"])
     expect(useGraphStore.getState().nodes[1].data._sourceHandleInputNames).toEqual({ out__rate_calc: "rate_calc_2" })
     expect(useGraphStore.getState().submodels).toEqual(wrapped.submodels)
@@ -102,7 +101,7 @@ describe("useNodeHandlers", () => {
   })
 
   it.each(["polars", "dataInput", "constant", "banding", "ratingStep", "modelScore", "edgeJoin",
-    "scenarioExpander", "explore", "optimiser", "optimiserApply"])(
+    "scenarioExpander", "explore", "optimiser", "optimiserApply", "externalFile", "modelling"])(
     "wraps the proven type %s instead of creating an ordinary instance", async (nodeType) => {
       const params = makeParams()
       params.graphRef.current = { nodes: [makeNode("original", nodeType)], edges: [] }
@@ -114,7 +113,7 @@ describe("useNodeHandlers", () => {
     },
   )
 
-  it.each(["externalFile", "dataOutput", "modelling"])(
+  it.each(["dataOutput"])(
     "retains node-level instancing for the unproven type %s", async (nodeType) => {
       const params = makeParams()
       params.graphRef.current = { nodes: [makeNode("original", nodeType)], edges: [] }

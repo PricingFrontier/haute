@@ -13,7 +13,7 @@ Select two or more nodes on the canvas, then click **Submodel** in the toolbar (
 
 ## Reusing one node
 
-Select one Transform, Data Input, Constant, Banding, Rating Step, Model Score, Edge Join, Scenario Expander, Explore, Optimiser or Apply Optimisation node in the parent pipeline and click **Instance**. Haute wraps it in a one-node definition and places an unbound instance beside it, in one Undo step. Nothing is written until **Save**.
+Select one Transform, Load File, Data Input, Constant, Banding, Rating Step, Model Score, Edge Join, Scenario Expander, Model Training, Explore, Optimiser or Apply Optimisation node in the parent pipeline and click **Instance**. Haute wraps it in a one-node definition and places an unbound instance beside it, in one Undo step. Nothing is written until **Save**.
 
 The owner keeps the node's name, position, connections and output name. The inner node is renamed `<name>_node`, suffixed if needed, and its config file follows that name. Public inputs keep the original incoming frame names; a name that conflicts with the output takes a suffix while the code continues reading its old name. The definition and module take the original name, suffixed when occupied, and the new instance normally becomes `<name>_2`.
 
